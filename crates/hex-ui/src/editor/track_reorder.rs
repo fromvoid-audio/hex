@@ -238,7 +238,7 @@ impl EditorView {
                         return;
                     } else if let Some(position) = position {
                         if released.is_some() {
-                            view.finish_track_reorder(position);
+                            view.finish_track_reorder(position, cx);
                         } else {
                             view.update_track_reorder(position);
                         }
@@ -691,13 +691,32 @@ impl EditorView {
             .as_ref()
             .and_then(|g| self.track_gap_witness(g));
     }
-    fn finish_track_reorder(&mut self, position: gpui::Point<gpui::Pixels>) -> bool {
+    pub(super) fn sidechain_drag(&self) -> Option<(TrackId, gpui::Point<gpui::Pixels>)> {
+        let drag = self
+            .track_reorder
+            .gesture
+            .as_ref()
+            .filter(|drag| drag.moved)?;
+        Some((
+            drag.track,
+            gpui::point(px(drag.pointer.0), px(drag.pointer.1)),
+        ))
+    }
+
+    fn finish_track_reorder(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let was_captured = self.track_reorder.gesture.as_ref().is_some_and(|g| g.moved);
         self.update_track_reorder(position);
         let captured = was_captured || self.track_reorder.gesture.as_ref().is_some_and(|g| g.moved);
         let Some(g) = self.track_reorder.gesture.take() else {
             return captured;
         };
+        if g.moved && super::device_panel::drop_track_key(self, g.track, position, cx) {
+            return true;
+        }
         // A wheel/scrollbar or final pointer event can arrive before a repaint.
         // Never commit a different gap than the user actually saw highlighted.
         if g.pending_page.is_some() || self.track_gap_witness(&g) != self.track_reorder.painted_gap
@@ -965,7 +984,7 @@ impl EditorView {
                     up.update(cx, |v, cx| {
                         let candidate = v.track_reorder.gesture.is_some();
                         let captured = if v.console_gesture_current(window) {
-                            v.finish_track_reorder(event.position)
+                            v.finish_track_reorder(event.position, cx)
                         } else {
                             v.cancel_track_reorder()
                         };

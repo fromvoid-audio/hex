@@ -267,6 +267,22 @@ impl EditorView {
             })
     }
 
+    /// Position of the captured anchor clip in the displayed move preview.
+    /// The same borrowed payload survives release until its own receipt settles.
+    pub(super) fn displayed_clip_move_guide_frame(&self) -> Option<u64> {
+        use super::drag::{ClipDropDestination, preview_for};
+        let drag = self.displayed_clip_drag()?;
+        match drag.destination.get()? {
+            ClipDropDestination::ExistingTrack(_) => {
+                drag.preview.get().map(|preview| preview.start_frame)
+            }
+            ClipDropDestination::NewTrack { position, .. } => {
+                let project = &self.state.as_ref()?.project;
+                preview_for(project, drag.source_track, position).map(|preview| preview.start_frame)
+            }
+        }
+    }
+
     pub(super) fn pending_clip_move_matches(&self, request: &Request) -> bool {
         self.pending_clip_move
             .as_ref()

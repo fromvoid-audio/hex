@@ -4,6 +4,7 @@ use hex_project::{GainInterpolation, GainLane, GainPoint, Project, TempoMap};
 
 mod touch;
 use touch::PreparedTouch;
+pub(crate) use touch::TouchTarget;
 
 pub const MAX_PREPARED_GAIN_KNOTS: usize = 327_680;
 /// Combined prepared base-knot and touch-array allocation ceiling.
@@ -71,7 +72,7 @@ impl GainAutomationPreview {
             .map(|(_, envelope)| envelope.knots.as_slice())
             .unwrap_or(&[])
     }
-    /// Visit exact base-ramp and held-touch segments clipped to a frame range.
+    /// Visit exact base and touch transition segments clipped to a frame range.
     /// Base knots remain separately available as authored-curve metadata.
     pub fn visit_segments(
         &self,
@@ -268,12 +269,14 @@ impl PreparedGainEnvelope {
             return Err(Invalid("prepared gain knot allocation exceeds its bound"));
         }
         fill_knots(&mut knots, points, tempo, |_| Ok(()))?;
+        let touch =
+            PreparedTouch::prepare(lane, tempo, |frame| base_gain_at(&knots, fallback, frame))?;
         Ok(Some(Self {
             knots,
             mix,
             authored_points: points.len(),
             authored_units: lane.units().map_err(|e| Invalid(e.0))?,
-            touch: PreparedTouch::prepare(lane, tempo)?,
+            touch,
             fallback,
         }))
     }
@@ -303,23 +306,11 @@ impl PreparedGainEnvelope {
             .value_at(frame)
             .unwrap_or_else(|| self.base_value_at(frame))
     }
-    fn base_value_at(&self, frame: u64) -> f32 {
-        if self.knots.is_empty() {
-            return self.fallback;
-        }
-        let index = self
-            .knots
-            .partition_point(|knot| knot.frame <= frame)
-            .saturating_sub(1);
-        let point = self.knots[index];
-        if frame <= point.frame || point.outgoing == GainInterpolation::Step {
-            return point.gain as f32;
-        }
-        let Some(next) = self.knots.get(index + 1) else {
-            return point.gain as f32;
-        };
-        let fraction = (frame - point.frame) as f64 / (next.frame - point.frame) as f64;
-        (point.gain + (next.incoming_gain - point.gain) * fraction) as f32
+    pub(crate) fn touch_target_at(&self, frame: u64) -> Option<TouchTarget> {
+        self.touch.target_at(frame)
+    }
+    pub(crate) fn base_value_at(&self, frame: u64) -> f32 {
+        base_gain_at(&self.knots, self.fallback, frame)
     }
     fn visit_segments(&self, mut start: u64, end: u64, visit: &mut impl FnMut(GainPreviewSegment)) {
         while start < end {
@@ -332,8 +323,8 @@ impl PreparedGainEnvelope {
                 .next_boundary(start)
                 .map_or(next_knot, |frame| frame.min(next_knot));
             let start_gain = self.value_at(start);
-            let held = self.touch.value_at(start).is_some()
-                || self.knots.is_empty()
+            let touch_end = self.touch.segment_end(start, next);
+            let held = self.knots.is_empty()
                 || self.knots[self
                     .knots
                     .partition_point(|knot| knot.frame <= start)
@@ -341,7 +332,9 @@ impl PreparedGainEnvelope {
                 .outgoing
                     == GainInterpolation::Step
                 || self.knots.first().is_some_and(|knot| start < knot.frame);
-            let end_gain = if held {
+            let end_gain = if let Some(end_gain) = touch_end {
+                end_gain
+            } else if held {
                 start_gain
             } else {
                 self.knots
@@ -373,6 +366,24 @@ impl PreparedGainEnvelope {
             allocated_touch_bytes: self.touch.allocated_bytes(),
         }
     }
+}
+
+fn base_gain_at(knots: &[GainEnvelopeKnot], fallback: f32, frame: u64) -> f32 {
+    if knots.is_empty() {
+        return fallback;
+    }
+    let index = knots
+        .partition_point(|knot| knot.frame <= frame)
+        .saturating_sub(1);
+    let point = knots[index];
+    if frame <= point.frame || point.outgoing == GainInterpolation::Step {
+        return point.gain as f32;
+    }
+    let Some(next) = knots.get(index + 1) else {
+        return point.gain as f32;
+    };
+    let fraction = (frame - point.frame) as f64 / (next.frame - point.frame) as f64;
+    (point.gain + (next.incoming_gain - point.gain) * fraction) as f32
 }
 
 impl PreparedGainEnvelope {

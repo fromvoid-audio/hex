@@ -136,10 +136,10 @@ impl EditorView {
                         }
                         match picked {
                             Ok(Ok(Some(mut paths))) if !paths.is_empty() => {
-                                if let Some(path) = paths.pop() {
-                                    if super::device_panel::finalize_controls(view, cx) {
-                                        view.choose_project(path, mode);
-                                    }
+                                if let Some(path) = paths.pop()
+                                    && super::device_panel::finalize_controls(view, cx)
+                                {
+                                    view.choose_project(path, mode);
                                 }
                             }
                             Ok(Err(error)) => {

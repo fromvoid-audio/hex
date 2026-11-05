@@ -13,7 +13,7 @@ const RAMP_FRAMES: usize = 240;
 /// ramp multiplies the unchanged EQ8 output exactly.
 fn instrument_eq8_utility(
     utility_gain: f32,
-    eq8_bypassed: bool,
+    remove_eq8: bool,
     table: &Arc<hex_devices::SineTable>,
 ) -> Arc<PreparedRevision> {
     use hex_devices::eq8::parameter as eq8;
@@ -43,10 +43,13 @@ fn instrument_eq8_utility(
             automation: Vec::new(),
             comparison: None,
             id,
-            bypassed: id == 20 && eq8_bypassed,
+            bypassed: false,
             state,
         })
         .collect();
+    if remove_eq8 {
+        snapshot.tracks[0].devices.retain(|device| device.id != 20);
+    }
     snapshot.next_id = 22;
     let project = legacy_project_from_snapshot(snapshot).unwrap();
     // The instrument precedes both effects, so they form its suffix.
@@ -110,10 +113,9 @@ fn utility_gain_edit_after_a_sounding_instrument_ramps_over_five_ms() {
     }
 }
 
-/// A really incompatible suffix change (EQ8 bypass toggled) still retains the
-/// old suffix as a tail; only static-matrix differences are retargetable.
+/// Removing a stateful suffix still retains its old owner as a tail.
 #[test]
-fn incompatible_suffix_change_after_a_sounding_instrument_keeps_a_retained_tail() {
+fn removed_suffix_after_a_sounding_instrument_keeps_a_retained_tail() {
     let table = Arc::new(hex_devices::SineTable::new());
     let old_revision = instrument_eq8_utility(1.0, false, &table);
     let candidate_revision = instrument_eq8_utility(0.25, true, &table);

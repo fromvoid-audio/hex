@@ -315,6 +315,9 @@ fn seek_during_latency_rebuild_cancels_the_automatic_resume(cx: &mut gpui::TestA
             },
             output: 1,
             frame: 123,
+            resume: true,
+            runtime_audio: None,
+            installed: false,
         });
         view.stopped_playback_restore =
             Some(super::super::audio_admission::StoppedPlaybackRestore::Preparing);
@@ -344,12 +347,67 @@ fn replaced_project_cannot_resume_an_older_latency_rebuild(cx: &mut gpui::TestAp
             },
             output: 1,
             frame: 123,
+            resume: true,
+            runtime_audio: None,
+            installed: false,
         });
         view.project_generation = 1;
         assert!(!view.tick_latency_rebuild());
         assert!(view.latency_rebuild.is_none());
         assert!(view.pending_audio_commands.is_empty());
     });
+}
+
+#[gpui::test]
+fn failed_native_latency_restore_cannot_resume_the_old_audio(cx: &mut gpui::TestAppContext) {
+    use super::super::audio_admission::{LatencyRebuild, ProjectRevision, StoppedPlaybackRestore};
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let client = output.take_client().unwrap();
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, _| {
+        let output = client.output_identity().unwrap();
+        view.audio = Some(EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "latency restore fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        let revision = view.state.as_ref().unwrap().revision;
+        view.applied_project_revision = Some(revision);
+        view.latency_rebuild = Some(LatencyRebuild::Restoring {
+            project: ProjectRevision {
+                generation: view.project_generation,
+                revision,
+            },
+            output,
+            frame: 123,
+            resume: true,
+            runtime_audio: Some(1),
+            installed: false,
+        });
+        view.stopped_playback_restore = Some(StoppedPlaybackRestore::Published(2));
+        assert!(!view.tick_latency_rebuild());
+        assert!(view.latency_rebuild.is_some());
+        // A failed publication clears its pending state. The old graph still
+        // represents the canonical project revision, but cannot justify Play.
+        view.stopped_playback_restore = None;
+        assert!(!view.tick_latency_rebuild());
+        assert!(view.latency_rebuild.is_none());
+        let mut pcm = [[0.0; 2]; 64];
+        backend.render(&mut pcm).unwrap();
+        let status = view.audio.as_ref().unwrap().status().unwrap();
+        assert!(!status.playing.load(Acquire));
+        assert_eq!(status.position.load(Acquire), 0);
+        view.audio.take().unwrap().control.close();
+    });
+    backend.close();
 }
 
 #[gpui::test]
@@ -951,6 +1009,65 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
 }
 
 #[gpui::test]
+fn automatic_latency_rebuild_renders_the_stop_fade_before_requesting_restore(
+    cx: &mut gpui::TestAppContext,
+) {
+    use super::super::audio_admission::{LatencyRebuild, ProjectRevision, StoppedPlaybackRestore};
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let dc = hex_engine::Audio::new(48_000, vec![[1.0, -1.0]; 4096]).unwrap();
+    let clip = hex_engine::Clip::new(dc, 0, 4096, false).unwrap();
+    let track = hex_engine::Track::new(vec![clip], 1.0, false).unwrap();
+    output
+        .publication
+        .control()
+        .unwrap()
+        .publish(Playback::new(
+            hex_engine::Project::new(48_000, vec![track]).unwrap(),
+        ))
+        .unwrap();
+    let mut client = output.take_client().unwrap();
+    client.command(PlaybackCommand::Play).unwrap();
+    let mut pcm = [[0.0; 2]; 64];
+    backend.render(&mut pcm).unwrap();
+    assert_eq!(pcm[63], [1.0, -1.0]);
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, _| {
+        let output = client.output_identity().unwrap();
+        let frame = client.status().unwrap().position.load(Acquire);
+        view.audio = Some(EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "latency fade fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.latency_rebuild = Some(LatencyRebuild::Waiting {
+            project: ProjectRevision { generation: view.project_generation, revision: view.state.as_ref().unwrap().revision },
+            output,
+            runtime_audio: None,
+        });
+        assert!(view.tick_latency_rebuild());
+        backend.render(&mut pcm).unwrap();
+        assert!(pcm[0][0] > 0.9 && pcm[63][0] > 0.0 && pcm[63][0] < pcm[0][0], "the automatic transition must render the falling ramp");
+        assert!(!view.tick_latency_rebuild(), "consuming Stop only starts the fade");
+        assert!(view.stopped_playback_restore.is_none());
+        backend.render(&mut pcm).unwrap();
+        assert_eq!(pcm[63], [0.0; 2]);
+        assert!(view.tick_latency_rebuild());
+        assert_eq!(view.stopped_playback_restore, Some(StoppedPlaybackRestore::Preparing));
+        assert!(matches!(view.latency_rebuild, Some(LatencyRebuild::Restoring { frame: saved, .. }) if saved == frame));
+        view.audio.take().unwrap().control.close();
+    });
+    backend.close();
+}
+
+#[gpui::test]
 fn refused_latency_edit_in_midi_project_shows_waiting_until_applied_or_stopped(
     cx: &mut gpui::TestAppContext,
 ) {
@@ -991,7 +1108,11 @@ fn refused_latency_edit_in_midi_project_shows_waiting_until_applied_or_stopped(
             generation: 0,
             revision,
         };
-        view.latency_rebuild = Some(LatencyRebuild::Waiting { project, output });
+        view.latency_rebuild = Some(LatencyRebuild::Waiting {
+            project,
+            output,
+            runtime_audio: None,
+        });
 
         // Playing: MIDI voices are kept, and the wait is visible, once.
         assert!(view.tick_latency_rebuild());
@@ -1008,7 +1129,11 @@ fn refused_latency_edit_in_midi_project_shows_waiting_until_applied_or_stopped(
 
         // Stop installs the waiting revision through the stopped restore.
         view.applied_project_revision = None;
-        view.latency_rebuild = Some(LatencyRebuild::Waiting { project, output });
+        view.latency_rebuild = Some(LatencyRebuild::Waiting {
+            project,
+            output,
+            runtime_audio: None,
+        });
         assert!(view.tick_latency_rebuild());
         view.stop();
         assert!(view.latency_rebuild.is_none());

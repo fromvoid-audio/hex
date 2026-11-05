@@ -614,6 +614,7 @@ fn track_mix_edits_preserve_delay_history_under_new_gain_and_balance() {
         block(&mut reference, &mut expected);
     }
     assert_eq!(output, expected);
+    let mut current_gain = [1.0_f32; 2];
     for (gain, balance) in [(0.5, 0.0), (0.25, -1.0), (0.75, 1.0), (1.0, 0.0)] {
         editor.execute(Command::Gain { track, gain }).unwrap();
         editor.execute(Command::Balance { track, balance }).unwrap();
@@ -623,8 +624,12 @@ fn track_mix_edits_preserve_delay_history_under_new_gain_and_balance() {
         assert_eq!(control.status.applied_revision.load(Acquire), revision);
         let left = gain * if balance > 0.0 { 1.0 - balance } else { 1.0 };
         let right = gain * if balance < 0.0 { 1.0 + balance } else { 1.0 };
-        for (actual, source) in output.iter().zip(&expected) {
-            assert_eq!(*actual, [source[0] * left, source[1] * right]);
+        for (index, (actual, source)) in output.iter().zip(&expected).enumerate() {
+            let remaining = (240 - index) as f32;
+            for (channel, target) in [left, right].into_iter().enumerate() {
+                current_gain[channel] += (target - current_gain[channel]) / remaining;
+                assert!((actual[channel] - source[channel] * current_gain[channel]).abs() < 1e-6);
+            }
         }
         control.reclaim();
     }

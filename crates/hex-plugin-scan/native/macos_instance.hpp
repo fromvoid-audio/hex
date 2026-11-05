@@ -312,6 +312,18 @@ public:
         return processor->getTailSamples();
     }
 
+    // Explicit latency-facts renewal at the stopped main-lane barrier. Normal
+    // epochs do not reset component activity or DSP history. No rollback after
+    // a foreign refusal: the existing terminal owner retains this component.
+    bool reactivate_on_control() {
+        if (![NSThread isMainThread] || !configured || !active || processing.load() ||
+            processing_fault.load() || quarantined.load()) return false;
+        if (component->setActive(false)!=kResultOk) return refuse_cleanup();
+        active=false;
+        if (component->setActive(true)!=kResultOk) return refuse_cleanup();
+        active=true;
+        return true;
+    }
     bool start_processing() {
         if ([NSThread isMainThread] || !configured || !active || processing.load() || processing_fault.load() || quarantined.load()) return false;
         if (processing_thread != std::thread::id{} && processing_thread != std::this_thread::get_id()) return false;
@@ -391,6 +403,9 @@ public:
     uint64 host_callback_revision_on_control() const { return host?host->callback_revision_on_control():0; }
     void complete_parameter_edit() { if(host) host->complete_parameter_edit(); }
     uint32 host_refusals() const { return host?host->refusal_flags():0; }
+    void observe_latency_restarts() { if(host) host->observe_latency_restarts(); }
+    uint64 latency_restart() const { return host?host->latency_restart():0; }
+    void cover_latency_restart(uint64 covered) { if(host) host->cover_latency_restart(covered); }
 
     bool close() {
         if (![NSThread isMainThread] || processing.load() || quarantined.load()) return false;
