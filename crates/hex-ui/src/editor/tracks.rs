@@ -913,8 +913,8 @@ impl EditorView {
                             );
                     let looping = loop_handles::audio_repeats(&preview_clip);
                     preview = loop_handles::surface(preview, looping);
-                    if self.track_body_height(track_id) > super::track_layout::HEADER_ONLY_HEIGHT {
-                        if let Some(waveform) = super::waveform::preview_waveform_view_cached(
+                    if self.track_body_height(track_id) > super::track_layout::HEADER_ONLY_HEIGHT
+                        && let Some(waveform) = super::waveform::preview_waveform_view_cached(
                             super::waveform::WaveformPreview {
                                 original: &original_clip,
                                 preview: &preview_clip,
@@ -926,10 +926,10 @@ impl EditorView {
                             visible_end,
                             std::rc::Rc::clone(&self.waveform_geometry_cache),
                             self.waveform_grid(track_id, viewport, scale_factor),
-                        ) {
-                            preview = preview
-                                .child(loop_handles::body(clip_waveform_body(waveform), looping));
-                        }
+                        )
+                    {
+                        preview = preview
+                            .child(loop_handles::body(clip_waveform_body(waveform), looping));
                     }
                     preview = preview.child(self.clip_name_preview_header(
                         track_id,
@@ -1553,6 +1553,7 @@ impl EditorView {
                 track.name(),
                 cx,
             ))
+            .children(self.track_tags_header(track, cx))
             .tooltip(move |_, cx| {
                 cx.new(|_| ClipTooltip {
                     kind: crate::tooltips::Kind::Identification,
@@ -1886,6 +1887,12 @@ impl EditorView {
                 .items_center()
                 .gap(px(2.0))
                 .children([header_content.flex_1().min_w_0()])
+                .children(
+                    self.track_performance_indicator(hex_engine::OutputCaptureId::Track(track_id)),
+                )
+                .children(
+                    self.track_latency_indicator(super::track_latency::Owner::Track(track_id)),
+                )
                 .children([super::track_meters::render(
                     track_id,
                     self.track_meters.level(track_id),

@@ -533,11 +533,11 @@ impl AudioBatchImport {
                     ));
                 }
                 admissions += 1;
-                if admissions == 2 {
-                    if let Err(error) = self.control.claim_commit() {
-                        admission_error = Some(AudioBatchError::Canceled);
-                        return Err(error);
-                    }
+                if admissions == 2
+                    && let Err(error) = self.control.claim_commit()
+                {
+                    admission_error = Some(AudioBatchError::Canceled);
+                    return Err(error);
                 }
                 Ok(())
             },

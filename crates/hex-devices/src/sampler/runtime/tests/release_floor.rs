@@ -66,3 +66,74 @@ fn zero_authored_release_note_off_on_sustained_dc_steps_at_most_one_floor_increm
         assert!(runtime.committed_is_quiescent());
     }
 }
+
+#[test]
+fn note_off_inside_the_pitched_loop_crossfade_preserves_both_transitions() {
+    const RATE: u32 = 8_000;
+    const NOTE_OFF: usize = 45;
+    const FRAMES: usize = 80;
+    let pcm: [f32; 320] = std::array::from_fn(|frame| frame as f32 / 320.0);
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let render = |crossfade_ms, block| {
+        let mut settings = Settings::new(Region {
+            start: 10,
+            end: 300,
+        });
+        settings.mode = Mode::Classic {
+            loop_region: Some(Region {
+                start: 100,
+                end: 200,
+            }),
+        };
+        settings.loop_crossfade_ms = crossfade_ms;
+        let prepared = PreparedSamplerPlan::new(
+            SampleShape::new(320, RATE, SampleChannels::Mono).unwrap(),
+            RATE,
+            settings,
+        )
+        .unwrap()
+        .bind_source_on_control(views[0])
+        .unwrap()
+        .prepare_runtime_on_control(1, 259, &hex_lattice::TuningTable::default())
+        .unwrap();
+        assert_eq!(prepared.max_release_tail_frames(), 16);
+        let mut runtime = pair(&prepared);
+        let mut output = [[0.0; 2]; FRAMES];
+        let mut events = Vec::with_capacity(2);
+        for (index, chunk) in output.chunks_mut(block).enumerate() {
+            let start = index * block;
+            events.clear();
+            if start == 0 {
+                events.push(on(0, 1, 84));
+            }
+            if (start..start + chunk.len()).contains(&NOTE_OFF) {
+                events.push(off(NOTE_OFF - start, 1));
+            }
+            process(&mut runtime, &events, chunk, &resources);
+        }
+        assert!(runtime.committed_is_quiescent());
+        assert_eq!(output[NOTE_OFF + 16..], [[0.0; 2]; FRAMES - NOTE_OFF - 16]);
+        output
+    };
+    let largest_step = |pcm: &[StereoFrame]| {
+        pcm[24..]
+            .windows(2)
+            .map(|pair| (pair[1][0] - pair[0][0]).abs())
+            .fold(0.0_f32, f32::max)
+    };
+    // At +24 semitones the source advances four frames per output frame.
+    // The first wrap is at age 48, after the default release has started.
+    let faded = render(5.0, 64);
+    let hard = render(0.0, 64);
+    assert!(faded[NOTE_OFF - 1][0] > 0.25);
+    assert!(
+        faded[48][0] > 0.1,
+        "the note is still releasing at the seam"
+    );
+    assert!(largest_step(&faded) < 0.08, "{:?}", largest_step(&faded));
+    assert!(largest_step(&hard) > largest_step(&faded) * 2.0);
+    for block in [1, 7, 16] {
+        assert_eq!(render(5.0, block), faded, "block {block}");
+    }
+}

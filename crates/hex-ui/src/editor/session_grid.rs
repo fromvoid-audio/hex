@@ -647,7 +647,20 @@ impl EditorView {
                                             })
                                             .child(theme::text("group · "))
                                     }))
-                                    .child(theme::text(track.name().to_lowercase())),
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .child(theme::text(track.name().to_lowercase())),
+                                    )
+                                    .children(self.track_performance_indicator(
+                                        hex_engine::OutputCaptureId::Track(track_id),
+                                    ))
+                                    .children(self.track_latency_indicator(
+                                        super::track_latency::Owner::Track(track_id),
+                                    ))
+                                    .children(self.track_tags_header(track, cx)),
                             )
                             .children(self.route_marker_for_track(
                                 track.id().value(),
@@ -1808,7 +1821,7 @@ impl EditorView {
         self.cancel_midi_stroke();
         self.midi_group_gesture = None;
         self.midi_hit_cycle = None;
-        self.piano_beat_start = BeatTime::ZERO;
+        self.piano_beat_start = 0;
         self.reveal_session_position(Some(track), Some(scene));
     }
 

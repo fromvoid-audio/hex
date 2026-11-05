@@ -336,11 +336,11 @@ pub(super) fn render_body(
                 index as u8 == bank,
             )
             .on_click(cx.listener(move |view, _, _, cx| {
-                if finalize_controls(view, cx) {
-                    if let Some(p) = view.device_panel.eq_panels.get_mut(&device) {
-                        p.bank = index as u8;
-                        p.group.clear();
-                    }
+                if finalize_controls(view, cx)
+                    && let Some(p) = view.device_panel.eq_panels.get_mut(&device)
+                {
+                    p.bank = index as u8;
+                    p.group.clear();
                 }
                 cx.notify();
             })),
@@ -1194,16 +1194,16 @@ fn handle_event(
             }
         }
         ResponseGraphPhase::Select => {
-            if finalize_controls(view, cx) {
-                if let Some(p) = view.device_panel.eq_panels.get_mut(&device) {
-                    selection::select_node(
-                        &mut p.selected,
-                        &mut p.group,
-                        &mut p.collapse,
-                        id,
-                        event.modifiers.shift,
-                    );
-                }
+            if finalize_controls(view, cx)
+                && let Some(p) = view.device_panel.eq_panels.get_mut(&device)
+            {
+                selection::select_node(
+                    &mut p.selected,
+                    &mut p.group,
+                    &mut p.collapse,
+                    id,
+                    event.modifiers.shift,
+                );
             }
         }
         ResponseGraphPhase::Begin => {

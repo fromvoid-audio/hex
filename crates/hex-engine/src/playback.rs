@@ -243,7 +243,8 @@ impl PlaybackHandoffRejection {
                 Self::LatencyLayoutChanged
             }
             PlaybackHandoffError::Session(
-                crate::SessionPlaybackError::SourceHistoryUnavailable,
+                crate::SessionPlaybackError::SourceHistoryUnavailable
+                | crate::SessionPlaybackError::DetachedReceiverHistoryUnavailable,
             ) => Self::SourceHistoryUnavailable,
             PlaybackHandoffError::Session(crate::SessionPlaybackError::CandidateAlreadyUsed) => {
                 Self::SessionRuntime
@@ -1161,6 +1162,11 @@ impl Playback {
     pub fn invalidate_native_parameter_input(&mut self) {
         if let Some(runtime) = self.session_runtime.as_mut() {
             runtime.invalidate_native_parameter_input();
+        }
+    }
+    pub fn finish_native_parameter_input(&mut self) {
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            runtime.finish_native_parameter_input();
         }
     }
     pub fn take_native_parameter_application(
@@ -2155,7 +2161,10 @@ impl Playback {
         }
     }
 
-    /// Render either the selected mixed source or the legacy finite Arrangement.
+    /// Enable live scalar observations on an already prepared runtime. The
+    /// audio publication owner enables this after preparation. Preroll/seek
+    /// preparation must leave it disabled: endpoints may also be retained by
+    /// applied playback. Enablement grants no publication or delivery authority.
     pub fn set_device_metering(&mut self, enabled: bool) {
         if let Some(runtime) = self.session_runtime.as_mut() {
             runtime.set_device_metering(enabled);
@@ -2619,35 +2628,35 @@ impl Playback {
                 self.position = start;
             }
             let remaining = output.len() - output_offset;
-            if self.position == start {
-                if let Ok(period_length) = usize::try_from(length) {
-                    let stateful = self
-                        .linear_runtime
-                        .as_ref()
-                        .is_some_and(|runtime| runtime.has_stateful_processors());
-                    if period_length > 0 && period_length <= remaining && !stateful {
-                        let period_end = output_offset + period_length;
-                        self.render_linear_with_pages(
-                            &mut output[output_offset..period_end],
-                            pages.as_deref_mut(),
-                        )?;
-                        self.position = start;
+            if self.position == start
+                && let Ok(period_length) = usize::try_from(length)
+            {
+                let stateful = self
+                    .linear_runtime
+                    .as_ref()
+                    .is_some_and(|runtime| runtime.has_stateful_processors());
+                if period_length > 0 && period_length <= remaining && !stateful {
+                    let period_end = output_offset + period_length;
+                    self.render_linear_with_pages(
+                        &mut output[output_offset..period_end],
+                        pages.as_deref_mut(),
+                    )?;
+                    self.position = start;
 
-                        let mut filled = period_length;
-                        while filled < remaining {
-                            let copy_length = filled.min(remaining - filled);
-                            let source_start = output_offset;
-                            let source_end = source_start + copy_length;
-                            let destination = output_offset + filled;
-                            output.copy_within(source_start..source_end, destination);
-                            filled += copy_length;
-                        }
-                        let offset = u64::try_from(remaining % period_length)
-                            .map_err(|_| Invalid("loop offset overflow"))?;
-                        self.position = start + offset;
-                        output_offset = output.len();
-                        continue;
+                    let mut filled = period_length;
+                    while filled < remaining {
+                        let copy_length = filled.min(remaining - filled);
+                        let source_start = output_offset;
+                        let source_end = source_start + copy_length;
+                        let destination = output_offset + filled;
+                        output.copy_within(source_start..source_end, destination);
+                        filled += copy_length;
                     }
+                    let offset = u64::try_from(remaining % period_length)
+                        .map_err(|_| Invalid("loop offset overflow"))?;
+                    self.position = start + offset;
+                    output_offset = output.len();
+                    continue;
                 }
             }
             let span_length = if self.position < start {

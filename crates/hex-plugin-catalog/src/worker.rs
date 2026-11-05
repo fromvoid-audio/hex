@@ -161,21 +161,19 @@ pub struct Update {
     pub diagnostics: Option<ScanDiagnostics>,
 }
 
-/// Capture only on the worker; raw executables do not receive a checkout fallback.
-pub fn current_app() -> Result<PathBuf, String> {
-    let executable =
-        std::env::current_exe().map_err(|e| format!("app executable unavailable: {e}"))?;
-    let contents = executable
-        .parent()
-        .and_then(Path::parent)
-        .ok_or("app contents unavailable")?;
-    if contents.file_name().and_then(|v| v.to_str()) != Some("Contents") {
-        return Err("packaged vst3 tools unavailable in this build".into());
+fn discovery_app_path(executable: &Path, launch_app: Option<&Path>) -> Result<PathBuf, String> {
+    if let Some(contents) = executable.parent().and_then(Path::parent)
+        && contents.file_name().and_then(|name| name.to_str()) == Some("Contents")
+    {
+        return contents
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| "app bundle unavailable".into());
     }
-    Ok(contents
-        .parent()
-        .ok_or("app bundle unavailable")?
-        .to_path_buf())
+    launch_app
+        .filter(|app| app.is_absolute())
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "packaged vst3 tools unavailable in this build".into())
 }
 
 fn drain(input: &mut UnixStream, output: &mut Vec<u8>, limit: usize) -> Result<bool, String> {
@@ -744,7 +742,12 @@ fn scan_batch(
 }
 
 pub fn available_app() -> Result<PathBuf, String> {
-    let app = current_app()?;
+    let executable =
+        std::env::current_exe().map_err(|error| format!("app executable unavailable: {error}"))?;
+    // Source launch selects its verified tools explicitly. An installed app
+    // always uses its own bundle and cannot be redirected by this setting.
+    let launch_app = std::env::var_os("HEX_LAUNCH_DISCOVERY_APP").map(PathBuf::from);
+    let app = discovery_app_path(&executable, launch_app.as_deref())?;
     Package::inspect(&app)?;
     Ok(app)
 }
@@ -752,6 +755,20 @@ pub fn available_app() -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_launch_can_select_absolute_tools_and_packaged_apps_keep_their_own() {
+        let tools = Path::new("/checkout/artifacts/tools/hex.app");
+        let raw = Path::new("/checkout/target/release/hex-desktop");
+        assert_eq!(discovery_app_path(raw, Some(tools)).unwrap(), tools);
+        assert!(discovery_app_path(raw, Some(Path::new("hex.app"))).is_err());
+        assert!(discovery_app_path(raw, None).is_err());
+        let packaged = Path::new("/Applications/hex.app/Contents/MacOS/hex");
+        assert_eq!(
+            discovery_app_path(packaged, Some(tools)).unwrap(),
+            Path::new("/Applications/hex.app")
+        );
+    }
     #[test]
     fn scan_deadline_is_bounded_and_applies_to_scanner_and_outer_guard() {
         assert!(ScanDeadline::from_millis(0).is_err());

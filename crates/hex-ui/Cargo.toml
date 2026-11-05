@@ -9,6 +9,8 @@ publish.workspace = true
 ui-test-support = ["gpui/test-support", "hex-session/source-overview-test-support"]
 
 [dependencies]
+# UI-only random result selection; already pinned in the workspace lock graph.
+fastrand = "=2.5.0"
 hex-plugin-catalog = { path = "../hex-plugin-catalog" }
 hex-mts = { path = "../hex-mts" }
 hex-tuning = { path = "../hex-tuning" }

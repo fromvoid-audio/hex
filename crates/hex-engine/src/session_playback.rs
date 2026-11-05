@@ -28,6 +28,7 @@ use std::{fmt, sync::Arc};
 mod candidate_storage;
 mod midi_capture;
 mod mutable_checkpoint;
+mod render_work;
 mod track_fader;
 mod transport_loop_admission;
 pub use mutable_checkpoint::{
@@ -133,6 +134,9 @@ pub enum SessionPlaybackError {
     LatencyLayoutChanged,
     /// Active source history cannot be adopted by the replacement provider.
     SourceHistoryUnavailable,
+    /// The active detached receiver still owns effect history that must not
+    /// be replaced by a live reset/chase. The prior graph keeps rendering.
+    DetachedReceiverHistoryUnavailable,
     /// The exact foreign endpoint is still needed by an outgoing tail. A
     /// publication owner may retry pure handoff planning after real rendering
     /// advances that tail; it must not duplicate, reset or substitute the source.
@@ -186,7 +190,7 @@ impl SessionPlaybackError {
             Self::LatencyLayoutChanged => {
                 "latency layout could not change live · previous audio continues"
             }
-            Self::SourceHistoryUnavailable => {
+            Self::SourceHistoryUnavailable | Self::DetachedReceiverHistoryUnavailable => {
                 "source history cannot transfer live · previous audio continues"
             }
             Self::ForeignTailSourceBusy => {
@@ -479,6 +483,7 @@ pub struct SessionPlayback {
     native_parameter_state: Option<Box<native_parameter_input::State>>,
     compensation: Option<crate::signal_graph::SignalRuntime>,
     device_metering: bool,
+    render_work: render_work::Sampler,
     revision: Arc<PreparedRevision>,
     /// Graph-local section audition; expires when the source graph is replaced.
     pub(crate) transient_loop: Option<hex_project::LoopRegion>,
@@ -882,6 +887,7 @@ impl SessionPlayback {
             native_parameter_state: _,
             compensation,
             device_metering: _,
+            render_work: _,
             revision: _,
             transient_loop: _,
             midi_admission: _,
@@ -965,18 +971,17 @@ impl SessionPlayback {
             visit(1, index, owner.is_some())?;
         }
         for (index, owner) in mutable_instruments.iter().enumerate() {
-            if let Some(owner) = owner {
-                if self.revision.resource_scope.is_none()
+            if let Some(owner) = owner
+                && (self.revision.resource_scope.is_none()
                     || !owner.is_concrete_current_sampler()
                     || self
                         .revision
                         .arrangement()
                         .tracks()
                         .get(index)
-                        .is_none_or(|t| t.instrument_id != owner.expression_identity)
-                {
-                    return Err(crate::AudioStorageError::UnsupportedGraph);
-                }
+                        .is_none_or(|t| t.instrument_id != owner.expression_identity))
+            {
+                return Err(crate::AudioStorageError::UnsupportedGraph);
             }
             visit(2, index, owner.is_some())?;
         }
@@ -1991,6 +1996,7 @@ impl SessionPlayback {
             native_parameter_state,
             compensation,
             device_metering: false,
+            render_work: Default::default(),
             revision,
             transient_loop,
             midi_admission,

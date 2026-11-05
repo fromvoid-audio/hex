@@ -24,6 +24,7 @@ impl SessionPlayback {
             native_parameter_state,
             compensation,
             device_metering: _,
+            render_work: _, // inline scalar timing scratch, charged by size_of::<Self>()
             revision,
             transient_loop: _,
             midi_admission,

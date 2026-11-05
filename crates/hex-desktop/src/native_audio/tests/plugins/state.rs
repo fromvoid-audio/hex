@@ -529,12 +529,12 @@ fn native_effect_reopen_paints_pending_until_real_ack_then_restored_canonical(
             {
                 slot.take().unwrap().close();
                 old_closed = true;
-            } else if release || !old_closed {
-                if let Some(backend) = slot.as_mut() {
-                    backend
-                        .render_native_direct(&mut [[0.0; 2]; 64], &mut [0.0; 128])
-                        .unwrap();
-                }
+            } else if (release || !old_closed)
+                && let Some(backend) = slot.as_mut()
+            {
+                backend
+                    .render_native_direct(&mut [[0.0; 2]; 64], &mut [0.0; 128])
+                    .unwrap();
             }
             drop(slot);
             ui::repaint(cx, visual);

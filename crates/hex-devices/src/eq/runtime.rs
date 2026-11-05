@@ -157,6 +157,7 @@ impl PreparedNativeProcessor for PreparedEq {
         for (index, coefficients) in self.stages.iter().enumerate() {
             bands[index].current = *coefficients;
             bands[index].target = *coefficients;
+            bands[index].stages_used = stages_used(coefficients);
             bands[index].shape = self.configuration.nodes[index].kind as u8;
         }
         Box::new(EqRuntime {
@@ -213,6 +214,9 @@ struct RuntimeBand {
     history: [[[f64; 2]; 4]; 2],
     remaining: u16,
     shape: u8,
+    // A stage that has processed a non-identity filter remains in the bound
+    // until its histories are reset, including through coefficient ramps.
+    stages_used: u8,
 }
 impl Default for RuntimeBand {
     fn default() -> Self {
@@ -222,6 +226,23 @@ impl Default for RuntimeBand {
             history: [[[0.0; 2]; 4]; 2],
             remaining: 0,
             shape: 0,
+            stages_used: 1,
+        }
+    }
+}
+impl RuntimeBand {
+    #[inline]
+    fn filter_channel(&mut self, channel: usize, input: f64) -> f64 {
+        let used = usize::from(self.stages_used);
+        let history = &mut self.history[channel];
+        let output = filter(input, &self.current[..used], history);
+        // Even identity arithmetic can change history on a non-finite input.
+        // Preserve that state until reset.
+        if used < self.current.len() && !output.is_finite() {
+            self.stages_used = self.current.len() as u8;
+            filter(output, &self.current[used..], &mut history[used..])
+        } else {
+            output
         }
     }
 }
@@ -439,6 +460,7 @@ impl EqRuntime {
         clock: Option<&dyn NativeInstrumentClock>,
         bypassed: bool,
     ) {
+        let automated = !self.configuration.lanes.is_empty();
         for (offset, frame) in frames.iter_mut().enumerate() {
             let running = clock.is_some_and(|c| c.transport_is_running() == Some(true));
             // A stopped monitoring clock may repeat its arrangement origin.
@@ -460,9 +482,9 @@ impl EqRuntime {
                 self.audition_history = [[[0.0; 2]; 4]; 2];
                 self.mode_fade.clear();
             }
-            if self.refresh_target || discontinuity || position % CADENCE == 0 {
+            if self.refresh_target || discontinuity || (automated && position % CADENCE == 0) {
                 self.refresh_target = false;
-                let beat = if origin.is_some() && !self.configuration.lanes.is_empty() {
+                let beat = if origin.is_some() && automated {
                     clock.and_then(|clock| clock.arrangement_beat_at_offset(offset))
                 } else {
                     None
@@ -485,8 +507,10 @@ impl EqRuntime {
                         band.target = target;
                         band.current = target;
                         band.remaining = 0;
+                        band.stages_used = stages_used(&target);
                     } else if band.target != target {
                         band.target = target;
+                        band.stages_used = band.stages_used.max(stages_used(&target));
                         band.remaining = if band.current == target {
                             0
                         } else {
@@ -526,7 +550,7 @@ impl EqRuntime {
                 }
                 for (channel, value) in working.iter_mut().enumerate() {
                     if self.effective_banks[index] == bank(self.configuration.mode, channel) {
-                        *value = filter(*value, &band.current, &mut band.history[channel]);
+                        *value = band.filter_channel(channel, *value);
                     }
                 }
             }
@@ -576,7 +600,17 @@ impl EqRuntime {
         }
     }
 }
-fn filter(mut input: f64, stages: &BandStages, history: &mut [[f64; 2]; 4]) -> f64 {
+fn stages_used(stages: &BandStages) -> u8 {
+    // Always run one section so even an identity band applies the existing
+    // finite-value and denormal law. Further untouched identity sections
+    // have zero history and would repeat that same operation.
+    stages
+        .iter()
+        .rposition(|stage| *stage != Coefficients::IDENTITY)
+        .map_or(1, |index| (index + 1) as u8)
+}
+
+fn filter(mut input: f64, stages: &[Coefficients], history: &mut [[f64; 2]]) -> f64 {
     for (c, h) in stages.iter().zip(history) {
         let output = c.b0 * input + h[0];
         h[0] = quiet(c.b1 * input - c.a1 * output + h[1]);
@@ -628,6 +662,7 @@ impl NativeProcessorRuntime for EqRuntime {
             band.history = [[[0.0; 2]; 4]; 2];
             band.current = band.target;
             band.remaining = 0;
+            band.stages_used = stages_used(&band.target);
         }
         self.last_frame = None;
         self.fallback_frame = 0;
@@ -710,6 +745,9 @@ impl NativeProcessorRuntime for EqRuntime {
                 } else {
                     self.bands[index].current = old.bands[prior].current;
                     self.bands[index].remaining = coefficient_smooth_frames(self.sample_rate);
+                    self.bands[index].stages_used = self.bands[index]
+                        .stages_used
+                        .max(old.bands[prior].stages_used);
                 }
             }
         }
@@ -896,6 +934,47 @@ fn design(node: Node, sample_rate: u32) -> BandStages {
 mod smoothing_tests {
     use super::*;
     use hex_lattice::EMPTY_DEVICE_RESOURCES;
+
+    #[test]
+    fn sparse_filter_matches_full_sections_with_residual_and_nonfinite_history() {
+        let mut band = RuntimeBand::default();
+        band.current[0].b0 = 0.75;
+        band.current[0].b1 = 0.25;
+        let mut full_history = [[0.0; 2]; 4];
+        let mut compare = |band: &mut RuntimeBand, input| {
+            let expected = filter(input, &band.current, &mut full_history);
+            let actual = band.filter_channel(0, input);
+            assert_eq!(actual.to_bits(), expected.to_bits());
+            assert_eq!(band.history[0], full_history);
+        };
+        for input in [-0.0, 0.5, f64::MIN_POSITIVE, -0.25] {
+            compare(&mut band, input);
+            assert_eq!(band.stages_used, 1);
+        }
+        // The last stage's stored sample still matters after its coefficients
+        // reach identity at the end of a ramp.
+        band.current[3].b1 = 0.5;
+        band.stages_used = stages_used(&band.current);
+        compare(&mut band, 0.5);
+        band.current[3] = Coefficients::IDENTITY;
+        compare(&mut band, 0.0);
+        compare(&mut band, 0.25);
+
+        let mut malformed = RuntimeBand::default();
+        let mut full = [[0.0; 2]; 4];
+        for input in [f64::INFINITY, 0.5, f64::NAN] {
+            let expected = filter(input, &malformed.current, &mut full);
+            let actual = malformed.filter_channel(0, input);
+            assert!(actual == expected || (actual.is_nan() && expected.is_nan()));
+            assert_eq!(malformed.stages_used, 4);
+        }
+        assert!(
+            malformed.history[0]
+                .iter()
+                .flatten()
+                .all(|value| value.is_nan())
+        );
+    }
 
     fn runtime(rate: u32, gain: f32) -> Box<dyn NativeProcessorRuntime> {
         let mut state = EqState::default();

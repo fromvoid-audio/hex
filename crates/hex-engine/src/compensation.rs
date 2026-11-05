@@ -8,6 +8,8 @@
 use crate::Frame;
 use std::{fmt, mem::size_of};
 
+mod block_origins;
+pub(crate) use block_origins::OriginWindow;
 mod delay;
 mod plan;
 pub use delay::DelayPair;

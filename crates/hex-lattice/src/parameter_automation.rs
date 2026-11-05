@@ -556,6 +556,15 @@ impl PreparedParameterAutomation {
     pub fn is_empty(&self) -> bool {
         self.lanes.is_empty() && self.input_target.is_none()
     }
+    /// The tail split can stage output-gain control while input gain stays
+    /// static. Provider controls, authored curves and input-gain windows need
+    /// their own verified combined-signal contracts.
+    pub(crate) fn supports_tail_split_controls(&self) -> bool {
+        self.points.is_empty()
+            && self.ids.is_empty()
+            && self.host_input.is_none()
+            && self.input_target != Some(DeviceAutomationTarget::HostInputGain)
+    }
     pub fn has_host_target(&self, target: DeviceAutomationTarget) -> bool {
         match target {
             DeviceAutomationTarget::HostInputGain => self.host_input.is_some(),

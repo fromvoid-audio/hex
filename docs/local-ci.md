@@ -133,6 +133,12 @@ with "changed modules ran no tests". Example targets (the device gallery) are
 skipped for module-scoped owners. Smaller, self-tested modules therefore mean
 faster merges; an untested module inherits its parent's often-large suite.
 
+Standalone `scripts/test_shards.py` refuses an empty combined selection, including
+filter typos and skips removing every case. The runner passes `--allow-empty` only
+for module-scoped configurations whose coverage it checks together. That option
+reports an empty selection without claiming tests passed; callers must verify
+aggregate coverage themselves. An empty target alongside selected tests is allowed.
+
 A changed module root (for example `editor/mod.rs`) runs its complete test
 subtree, including tests in child modules, regardless of which child names
 appear in the diff. Module-scoped doctest steps run only when a changed file
@@ -471,6 +477,31 @@ native UI, listening, device deadline or release acceptance. Keep SDK paths and
 local receipts out of Git; record the exact receipt hashes and result with the
 issue or PR being verified.
 
+### Dense playback baseline
+
+The opt-in macOS arm64 profile uses the resident Session and prepared callback
+with generated audio. The native and mixed runs use the same 48 tracks and 96
+native effects. The mixed run also admits four instances of the controlled VST3
+processing fixture. Export both verified receipt paths above before the mixed
+run. The fixture uses a fixed 256-frame VST3 transport quantum. Select 64, 128,
+or 256 frames per measured callback and keep that size fixed when comparing
+revisions. Smaller callbacks feed fragments into the fixed transport quantum.
+
+```sh
+HEX_PLAYBACK_PROFILE_BLOCK=256 cargo test --release --locked -p hex-desktop \
+  --features allocation-probe --bin hex-desktop \
+  -- native_audio::tests::plugins::performance_profile \
+  --ignored --nocapture --test-threads=1
+```
+
+The native-only test can run without the VST3 receipts. Each profile prints the
+warm-up and measured block counts, elapsed-time percentiles, blocks that exceeded
+their nominal budget, first nonzero audio, observed presentation lag, and PCM
+fingerprint. Run alternating candidates on the same machine and compare
+fingerprints only within the same workload and block size. Measure aggregate
+process CPU and physical output/monitoring latency separately. The paced
+headless callback does not verify device deadlines or listening quality.
+
 ## Focused commands
 
 For partial edit feedback, optionally select the owning library or named
@@ -501,6 +532,19 @@ cargo test -p hex-audio --features allocation-probe --locked
 cargo test -p hex-stream --features allocation-probe --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
+
+The headless callback probes share the `allocation_probes` integration target.
+Use the former target name as a module filter to run one fixture family, for
+example:
+
+```sh
+cargo test -p hex-audio --locked --features allocation-probe \
+  --test allocation_probes -- track_gain_allocations::
+```
+
+The calibration, stage-clock and device-comparison targets still support
+isolated runs. The stream-pressure target requires both `allocation-probe` and
+`stream-test-support`.
 
 For the focused Limiter stage-clock allocation check, a smaller test binary
 can reduce cold-start time while retaining debug assertions and the same test

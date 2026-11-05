@@ -67,6 +67,25 @@ def bounded_checkpoint_case(function):
 
 
 class LocalCiRunnerTests(unittest.TestCase):
+    def test_module_shard_empty_configs_require_aggregate_passes(self):
+        (self.bin / "python3").write_text(
+            '#!/bin/sh\ncase "$*" in\n'
+            '  *"--filter covered::"*) echo "test result: ok. 1 passed; 0 failed; 0 ignored;" ;;\n'
+            '  *) echo "no tests matched the selection" ;;\n'
+            'esac\n')
+        for covered in (False, True):
+            with self.subTest(covered=covered):
+                steps = tuple(local_ci.Step(
+                    f"config-{index}", ("python3", "scripts/test_shards.py", "--shards", "2",
+                    "--allow-empty", "--filter", name, "--", "cargo", "test"))
+                    for index, name in enumerate(("absent::", "covered::" if covered else "absent::")))
+                runner = local_ci.LocalCiRunner(
+                    self.repo, mode="merge", run_id=f"module-coverage-{covered}",
+                    env=self.env, steps=steps, min_free_bytes=0,
+                    target_state_dir=self.target_state_dir)
+                self.assertEqual(runner.run(), 0 if covered else 1)
+                self.assertEqual("module_scope_error" in runner.summary, not covered)
+
     def test_log_timing_estimates_label_unknown_and_overlapping_durations(self):
         text = ("    Finished `test` profile target(s) in 1m 2.50s\n"
                 "test result: ok. 2 passed; finished in 3.25s\n"
