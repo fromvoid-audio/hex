@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 mod content;
 mod prefix;
-pub(crate) use prefix::prepend_silence;
+pub(crate) use prefix::extend_frame_left;
 mod timing;
 pub use content::AudioContentView;
 pub use timing::AudioClipTiming;

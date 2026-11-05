@@ -354,58 +354,72 @@ fn freely_placed_events_roundtrip_on_their_grouped_timeline() {
 
 #[test]
 fn silent_left_prefix_keeps_complete_state_through_history_and_current_storage() {
-    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
-    let Created::Imported { track, clip, .. } = editor
-        .execute(Command::ImportAudioTrack {
-            name: "prefix".into(),
-            path: "prefix.wav".into(),
-            sample_rate: 48_000,
-            frames: 128,
-        })
-        .unwrap()
-    else {
-        panic!("import")
-    };
-    editor
-        .execute(Command::MoveClip {
-            clip,
-            track,
-            start: 4000,
-        })
-        .unwrap();
-    editor
-        .execute(Command::SetClipFadeEnvelope {
-            clip,
-            fade: hex_project::ClipFade::new(128, 0, 13, 17).unwrap(),
-        })
-        .unwrap();
-    let before = editor.project().clone();
-    editor
-        .execute(Command::TrimClipEdge {
-            clip,
-            edge: hex_project::TrimEdge::Left,
-            frame: 3500,
-        })
-        .unwrap();
-    let changed = editor.project().clone();
-    let bytes = hex_storage::encode(&changed).unwrap();
-    assert_eq!(hex_storage::decode(&bytes).unwrap(), changed);
-    assert_eq!(
-        changed
-            .clip(clip)
+    for once in [false, true] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Imported { track, clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "prefix".into(),
+                path: "prefix.wav".into(),
+                sample_rate: 48_000,
+                frames: 128,
+            })
             .unwrap()
-            .audio_edit()
-            .unwrap()
-            .domain
-            .fade_start,
-        500
-    );
-    assert_eq!(
-        changed.clip(clip).unwrap().audio_events().events[0].start,
-        500
-    );
-    assert!(editor.undo());
-    assert_eq!(editor.project(), &before);
-    assert!(editor.redo());
-    assert_eq!(editor.project(), &changed);
+        else {
+            panic!("import")
+        };
+        editor
+            .execute(Command::MoveClip {
+                clip,
+                track,
+                start: 4000,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetClipFadeEnvelope {
+                clip,
+                fade: hex_project::ClipFade::new(128, 0, 13, 17).unwrap(),
+            })
+            .unwrap();
+        if once {
+            editor
+                .execute(Command::ResizeAudioClipView {
+                    clip,
+                    operation: hex_project::AudioViewResizeOperation::CycleRange {
+                        start: 0,
+                        end: 96,
+                        looping: false,
+                    },
+                })
+                .unwrap();
+        }
+        let before = editor.project().clone();
+        editor
+            .execute(Command::TrimClipEdge {
+                clip,
+                edge: hex_project::TrimEdge::Left,
+                frame: 3500,
+            })
+            .unwrap();
+        let changed = editor.project().clone();
+        let bytes = hex_storage::encode(&changed).unwrap();
+        assert_eq!(hex_storage::decode(&bytes).unwrap(), changed);
+        assert_eq!(
+            changed
+                .clip(clip)
+                .unwrap()
+                .audio_edit()
+                .unwrap()
+                .domain
+                .fade_start,
+            500
+        );
+        assert_eq!(
+            changed.clip(clip).unwrap().audio_events().events[0].start,
+            500
+        );
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &before);
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &changed);
+    }
 }

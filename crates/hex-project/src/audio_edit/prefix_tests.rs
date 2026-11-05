@@ -1,6 +1,6 @@
 use crate::{
-    AudioDomainClock, AudioEventEdit, ClipFade, ClipFlavor, ClipId, Command, Created, Editor,
-    Project, TrimEdge,
+    AudioDomainClock, AudioEventEdit, AudioViewProjection, AudioViewResizeOperation, ClipFade,
+    ClipFlavor, ClipId, Command, Created, Editor, Project, TrimEdge,
 };
 
 fn fixture() -> (Editor, ClipId) {
@@ -158,6 +158,62 @@ fn cropped_frame_events_keep_source_reads_and_identity_when_the_root_gains_silen
         );
         assert_eq!((a.start, a.end), (b.start + 500, b.end + 500));
     }
+}
+
+#[test]
+fn once_placement_rewinds_hidden_media_before_adding_silence() {
+    let (mut editor, clip) = fixture();
+    for operation in [
+        AudioViewResizeOperation::CycleRange {
+            start: 16,
+            end: 96,
+            looping: false,
+        },
+        AudioViewResizeOperation::PlayStart { position: 40 },
+        AudioViewResizeOperation::OuterEnd {
+            project_frame: 4180,
+        },
+    ] {
+        editor
+            .execute(Command::ResizeAudioClipView { clip, operation })
+            .unwrap();
+    }
+    let before = editor.project().snapshot();
+    let root_origin = {
+        let old = editor.project().clip(clip).unwrap();
+        let p = AudioViewProjection::new(old, editor.project().tempo_map()).unwrap();
+        assert_eq!(p.occurrence(0).unwrap().root_start, 40);
+        u64::try_from(p.root_origin()).unwrap()
+    };
+    for frame in [root_origin + 8, root_origin, 0] {
+        trim(&mut editor, clip, frame).unwrap();
+        let updated = editor.project().clip(clip).unwrap();
+        let p = AudioViewProjection::new(updated, editor.project().tempo_map()).unwrap();
+        assert_eq!(p.outer_frame_bounds(), (frame, 4180));
+        let read = p.occurrence(0).unwrap();
+        assert_eq!(read.destination_start, frame);
+        assert_eq!(read.destination_end, root_origin + 96);
+        assert_eq!(p.occurrence_count(), 1, "the finite gate must stay Once");
+        if frame < root_origin {
+            assert_eq!(updated.audio_events().events[0].start, root_origin - frame);
+        } else {
+            assert_eq!(p.root_origin(), i128::from(root_origin));
+        }
+    }
+    let extended = editor.project().snapshot();
+    assert!(editor.undo() && editor.undo() && editor.undo());
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(editor.redo() && editor.redo() && editor.redo());
+    assert_eq!(editor.project().snapshot(), extended);
+}
+
+#[test]
+fn directed_view_refuses_pre_root_extension_without_changing_its_read_program() {
+    let (mut editor, clip) = fixture();
+    editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+    let before = editor.project().snapshot();
+    assert!(trim(&mut editor, clip, 3500).is_err());
+    assert_eq!(editor.project().snapshot(), before);
 }
 
 #[test]

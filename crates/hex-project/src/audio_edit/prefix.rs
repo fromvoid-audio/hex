@@ -2,19 +2,22 @@
 //! A prefix shifts destination events and the container fade, never their raw
 //! source reads. Repeated extension reuses this sequence without nested roots.
 //! Unwarped pitch and source gain read a fixed frame map before event composition:
-//! increasing its output length leaves its original prefix unchanged. Musical,
-//! directed and looping roots retain their existing trim policy.
-use super::{AudioClipEdit, AudioClipTiming, AudioDomainClock, MAX_AUDIO_DOMAIN_FRAMES};
+//! increasing its output length leaves its original prefix unchanged. A frame
+//! Once placement also retains its finite gate and trailing silence. Musical,
+//! directed and repeating roots retain their existing trim policy.
+use super::{
+    AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioViewMode, MAX_AUDIO_DOMAIN_FRAMES,
+};
 use crate::{AudioEvent, AudioEvents, Clip, ClipFade, ClipGain, Invalid, MAX_AUDIO_EVENTS};
 use std::sync::Arc;
 
-fn can_prepend_silence(clip: &Clip) -> bool {
+fn can_extend_frame_left(clip: &Clip) -> bool {
     !clip.looping()
         && clip.audio_edit().is_none_or(|edit| {
             matches!(edit.domain.clock, AudioDomainClock::Frames(_))
                 && matches!(edit.timing, AudioClipTiming::Frames)
                 && edit.content_view.is_none()
-                && edit.placement.is_none()
+                && edit.placement.is_none_or(|p| p.mode == AudioViewMode::Once)
                 && edit.processing_projection.is_none()
                 && edit.domain.fade_projection.is_none()
                 && !edit.domain.looping
@@ -23,19 +26,47 @@ fn can_prepend_silence(clip: &Clip) -> bool {
         })
 }
 
-/// Return a checked frame-root prefix only when the requested edge precedes
-/// its retained origin. This does not mutate a project or admit new resources.
-pub(crate) fn prepend_silence(clip: &Clip, frame: u64) -> Result<Option<Clip>, Invalid> {
-    if !can_prepend_silence(clip) {
+/// Rewind a frame Once crop past its first marker, or add silence if the
+/// requested edge precedes the retained root. This never admits resources.
+pub(crate) fn extend_frame_left(clip: &Clip, frame: u64) -> Result<Option<Clip>, Invalid> {
+    if !can_extend_frame_left(clip) {
         return Ok(None);
     }
-    let (length, start, end) = clip
-        .audio_edit()
-        .map_or((clip.duration(), 0, clip.duration()), |edit| {
-            (edit.domain.clock.length(), edit.view_start, edit.view_end)
-        });
-    let origin = i128::from(clip.start()) - i128::from(start);
+    let (length, cursor, end) =
+        clip.audio_edit()
+            .map_or((clip.duration(), 0, clip.duration()), |edit| {
+                (
+                    edit.domain.clock.length(),
+                    i128::from(edit.view_start)
+                        + i128::from(edit.placement.map_or(0, |p| p.cycle_phase)),
+                    edit.view_end,
+                )
+            });
+    let origin = i128::from(clip.start()) - cursor;
     if i128::from(frame) >= origin {
+        if let Some(edit) = clip.audio_edit()
+            && let Some(mut placement) = edit.placement
+            && i128::from(frame) < origin + i128::from(edit.view_start)
+        {
+            let duration = clip
+                .start
+                .checked_add(clip.duration)
+                .and_then(|end| end.checked_sub(frame))
+                .ok_or(Invalid("audio trim length overflow"))?;
+            let mut result = clip.clone();
+            let next = result
+                .audio_edit_mut()
+                .ok_or(Invalid("audio crop has no domain"))?;
+            next.view_start = u64::try_from(i128::from(frame) - origin)
+                .map_err(|_| Invalid("audio trim position overflow"))?;
+            placement.cycle_phase = 0;
+            placement.outer_length = AudioDomainClock::Frames(duration);
+            next.placement = Some(placement);
+            result.start = frame;
+            result.duration = duration;
+            result.fade = ClipFade::neutral(duration)?;
+            return Ok(Some(result));
+        }
         return Ok(None);
     }
     let lead =
@@ -121,6 +152,10 @@ pub(crate) fn prepend_silence(clip: &Clip, frame: u64) -> Result<Option<Clip>, I
     domain.events = Some(Arc::new(events));
     edit.view_start = 0;
     edit.view_end = end;
+    if let Some(placement) = &mut edit.placement {
+        placement.cycle_phase = 0;
+        placement.outer_length = AudioDomainClock::Frames(duration);
+    }
     let mut result = clip.clone();
     result.start = frame;
     result.duration = duration;

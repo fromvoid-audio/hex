@@ -1,7 +1,8 @@
 //! Extending a frame source adds silence while its audio stays at song time.
 use hex_engine::{Audio, Frame, Renderer, compile};
 use hex_project::{
-    AudioEventEdit, ClipFade, ClipId, Command, Created, Editor, Project, SourceGainPoint, TrimEdge,
+    AudioEventEdit, AudioViewProjection, AudioViewResizeOperation, ClipFade, ClipId, Command,
+    Created, Editor, Project, SourceGainPoint, TrimEdge,
 };
 use std::collections::BTreeMap;
 
@@ -35,6 +36,93 @@ fn fixture() -> (Editor, ClipId) {
     })
     .unwrap();
     (e, clip)
+}
+
+#[test]
+fn placed_once_and_repeat_extend_with_their_own_source_laws() {
+    for looping in [false, true] {
+        let (mut editor, clip) = fixture();
+        for operation in [
+            AudioViewResizeOperation::CycleRange {
+                start: 16,
+                end: 96,
+                looping,
+            },
+            AudioViewResizeOperation::PlayStart { position: 40 },
+            AudioViewResizeOperation::OuterEnd {
+                project_frame: 4400,
+            },
+        ] {
+            editor
+                .execute(Command::ResizeAudioClipView { clip, operation })
+                .unwrap();
+        }
+        let old = editor.project().clip(clip).unwrap();
+        let origin = AudioViewProjection::new(old, editor.project().tempo_map())
+            .unwrap()
+            .root_origin() as usize;
+        let original_start = old.start() as usize;
+        let original = render(&editor, 64);
+        if !looping {
+            editor
+                .execute(Command::TrimClipEdge {
+                    clip,
+                    edge: TrimEdge::Left,
+                    frame: origin as u64,
+                })
+                .unwrap();
+        }
+        let rewound = render(&editor, 64);
+        editor
+            .execute(Command::TrimClipEdge {
+                clip,
+                edge: TrimEdge::Left,
+                frame: 3501,
+            })
+            .unwrap();
+        for block in [7, 64] {
+            let extended = render(&editor, block);
+            let keep = if looping { original_start } else { origin };
+            assert!(
+                extended[keep..]
+                    .iter()
+                    .flatten()
+                    .zip(rewound[keep..].iter().flatten())
+                    .all(|(a, b)| (a - b).abs() <= 1e-7)
+            );
+            assert!(
+                extended[original_start..]
+                    .iter()
+                    .flatten()
+                    .zip(original[original_start..].iter().flatten())
+                    .all(|(a, b)| (a - b).abs() <= 1e-7)
+            );
+            if looping {
+                for frame in 3501..original_start {
+                    assert_eq!(
+                        extended[frame],
+                        original[original_start + (frame + 80 - original_start % 80) % 80]
+                    );
+                }
+            } else {
+                assert!(
+                    extended[3501..origin]
+                        .iter()
+                        .all(|sample| *sample == [0.0; 2])
+                );
+                assert!(
+                    extended[origin + 96..4400]
+                        .iter()
+                        .all(|sample| *sample == [0.0; 2])
+                );
+                assert!(
+                    extended[origin..original_start]
+                        .iter()
+                        .any(|sample| *sample != [0.0; 2])
+                );
+            }
+        }
+    }
 }
 fn render(e: &Editor, block: usize) -> Vec<Frame> {
     let asset = e.project().assets().next().unwrap().id();

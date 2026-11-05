@@ -235,7 +235,7 @@ fn selection_crossfade_publication_seek_stop_and_retirement_are_callback_allocat
 #[test]
 fn silent_left_prefix_publication_keeps_pcm_and_allocates_or_frees_nothing()
 -> Result<(), Box<dyn Error>> {
-    for cents in [0, 137] {
+    for (cents, once) in [(0, false), (137, false), (137, true)] {
         let mut editor = Editor::new(Project::new(RATE)?, 16)?;
         let Created::Imported { track, asset, clip } =
             editor.execute(Command::ImportAudioTrack {
@@ -258,6 +258,16 @@ fn silent_left_prefix_publication_keeps_pcm_and_allocates_or_frees_nothing()
         })?;
         if cents != 0 {
             editor.execute(Command::SetAudioClipPitch { clip, cents })?;
+        }
+        if once {
+            editor.execute(Command::ResizeAudioClipView {
+                clip,
+                operation: hex_project::AudioViewResizeOperation::CycleRange {
+                    start: 0,
+                    end: 48,
+                    looping: false,
+                },
+            })?;
         }
         let media = BTreeMap::from([(asset, Audio::new(RATE, vec![[0.5; 2]; 64])?)]);
         let sine = Arc::new(SineTable::new());

@@ -390,7 +390,7 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
 fn silent_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack(cx: &mut TestAppContext) {
     use crate::editor::clip_drag_ui_test::{pump_move, trim_grab_point, upper_rail_owned_fixture};
     use hex_session::service::Request;
-    for processed in [false, true] {
+    for (processed, once) in [(false, false), (true, false), (true, true)] {
         let (_files, handle, editor) = upper_rail_owned_fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
         let (track, clip) = editor.read_with(&visual, |v, _| {
@@ -426,6 +426,19 @@ fn silent_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack(cx: &m
             });
             pump_move(&editor, &mut visual);
         }
+        if once {
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(Command::ResizeAudioClipView {
+                    clip,
+                    operation: hex_project::AudioViewResizeOperation::CycleRange {
+                        start: 0,
+                        end: 72_000,
+                        looping: false,
+                    },
+                })))
+            });
+            pump_move(&editor, &mut visual);
+        }
         let (before, source) = editor.update(&mut visual, |v, cx| {
             v.viewport = Some(crate::editor::viewport::Viewport {
                 start: 0,
@@ -433,7 +446,15 @@ fn silent_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack(cx: &m
             });
             v.snap_grid = SnapGrid::Off;
             let state = v.state.as_ref().unwrap();
-            let source = if processed {
+            let source = if once {
+                Arc::clone(
+                    &state.audio_clip_waveforms[&clip]
+                        .preview_root
+                        .as_ref()
+                        .unwrap()
+                        .waveform,
+                )
+            } else if processed {
                 Arc::clone(&state.audio_clip_waveforms[&clip].waveform)
             } else {
                 Arc::clone(&state.waveforms[&state.project.clip(clip).unwrap().asset()])
@@ -498,7 +519,7 @@ fn silent_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack(cx: &m
                         waveforms[0].spans.iter().all(|s| *s > 1.0),
                         "both leading silence and nonzero audio must be painted"
                     );
-                    if processed {
+                    if processed && !once {
                         assert_eq!(waveforms[0].prepared, Some((48_000, 0)));
                     }
                 });

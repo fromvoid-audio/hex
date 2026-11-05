@@ -136,10 +136,21 @@ pub(crate) fn trim_view(
     tempo: &TempoMap,
 ) -> Result<Clip, Invalid> {
     if edge == TrimEdge::Left
-        && let Some(prefixed) = super::prepend_silence(clip, frame)?
+        && let Some(prefixed) = super::extend_frame_left(clip, frame)?
     {
         return Ok(prefixed);
     }
+    trim_retained_view(clip, edge, frame, tempo)
+}
+
+/// A directed carrier describes the read window's extent only. It cannot
+/// author a new source program as if it were an independent forward clip.
+pub(super) fn trim_retained_view(
+    clip: &Clip,
+    edge: TrimEdge,
+    frame: u64,
+    tempo: &TempoMap,
+) -> Result<Clip, Invalid> {
     let edit = clip
         .edit
         .as_ref()

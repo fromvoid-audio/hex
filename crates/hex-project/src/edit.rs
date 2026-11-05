@@ -1406,7 +1406,7 @@ pub(crate) fn preview_edge_trim(
         let first = clip.start.saturating_sub(clip.source_offset);
         if frame < first {
             let rewound = preview_edge_trim(clip, edge, first, asset_playback_frames)?;
-            return crate::audio_edit::prepend_silence(&rewound, frame)?
+            return crate::audio_edit::extend_frame_left(&rewound, frame)?
                 .ok_or(Invalid("audio source cannot retain a silent prefix"));
         }
     }

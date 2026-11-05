@@ -64,40 +64,14 @@ fn prefix_waveform_view(
         .source_offset()
         .checked_add(original.source_length())?;
     let asset_frames = asset.map_or(source_end, |wave| wave.source_frames as u64);
-    let (origin, source, mapping) = if let Some(old) = original.audio_edit() {
-        let (_, length, offset, _) = old.projected_domain(tempo).ok()?;
-        let origin = original.start().checked_sub(offset)?;
-        let accepted = prepared?;
-        if accepted.offset != offset
-            || accepted.length != original.duration()
-            || accepted.waveform.source_frames as u64 != length
-            || accepted.preview_root.is_some()
-        {
+    let origin = if let Some(old) = original.audio_edit() {
+        if !matches!(old.domain.clock, hex_project::AudioDomainClock::Frames(_)) {
             return None;
         }
-        (
-            origin,
-            Arc::clone(&accepted.waveform),
-            WaveformMapping::Prepared {
-                timeline_origin: origin,
-                root_offset: 0,
-                gain: preview.gain(),
-            },
-        )
+        let projection = hex_project::AudioViewProjection::new(original, tempo).ok()?;
+        u64::try_from(projection.root_origin()).ok()?
     } else {
-        let origin = original.start().checked_sub(original.source_offset())?;
-        let source = Arc::clone(asset?);
-        let rewound = original
-            .preview_edge_trim(hex_project::TrimEdge::Left, origin, asset_frames)
-            .ok()?;
-        (
-            origin,
-            source,
-            WaveformMapping::Clip {
-                clip: rewound,
-                timeline_origin: origin,
-            },
-        )
+        original.start().checked_sub(original.source_offset())?
     };
     if preview.start() >= origin {
         return None;
@@ -112,9 +86,9 @@ fn prefix_waveform_view(
         .ok()?;
     // Plain cached peaks are raw source samples, with fades painted separately.
     // Their existing lower-handle operation can borrow the same raw mapping.
-    if &expected != preview {
-        let lower_handle = original.audio_edit().is_none()
-            && original
+    if &expected != preview
+        && (original.audio_edit().is_some()
+            || original
                 .preview_fade_edge_trim(
                     hex_project::TrimEdge::Left,
                     preview.start(),
@@ -123,11 +97,59 @@ fn prefix_waveform_view(
                 )
                 .ok()
                 .as_ref()
-                == Some(preview);
-        if !lower_handle {
+                != Some(preview))
+    {
+        return None;
+    }
+    let rewound = original
+        .preview_edge_trim_with_tempo(hex_project::TrimEdge::Left, origin, asset_frames, tempo)
+        .ok()?;
+    if rewound
+        .audio_edit()
+        .is_some_and(|edit| edit.placement.is_some())
+    {
+        // The original root, rewound to zero, already has the exact sounding
+        // interval of the prefixed clip. Its finite gate excludes hidden PCM
+        // after the Once cycle end even if the clip has a silent tail.
+        return super::waveform_loop::loop_waveform_view(
+            WaveformPreview {
+                preview: &rewound,
+                ..request
+            },
+            visible_start,
+            visible_end,
+            cache,
+            grid,
+        );
+    }
+    let (source, mapping) = if let Some(old) = original.audio_edit() {
+        let (_, length, offset, _) = old.projected_domain(tempo).ok()?;
+        let accepted = prepared?;
+        if accepted.offset != offset
+            || accepted.length != original.duration()
+            || accepted.waveform.source_frames as u64 != length
+            || accepted.preview_root.is_some()
+        {
             return None;
         }
-    }
+        (
+            Arc::clone(&accepted.waveform),
+            WaveformMapping::Prepared {
+                timeline_origin: origin,
+                root_offset: 0,
+                gain: preview.gain(),
+            },
+        )
+    } else {
+        let source = Arc::clone(asset?);
+        (
+            source,
+            WaveformMapping::Clip {
+                clip: rewound,
+                timeline_origin: origin,
+            },
+        )
+    };
     Some(timeline_waveform_view_cached(
         source,
         mapping,
@@ -156,6 +178,15 @@ fn preview_waveform_view_cached_inner(
         return None;
     }
     if let Some(edit) = preview.audio_edit() {
+        let changed_root = original
+            .audio_edit()
+            .is_none_or(|old| !Arc::ptr_eq(&old.domain, &edit.domain));
+        if changed_root
+            && let Some(prefix) =
+                prefix_waveform_view(request, visible_start, visible_end, Rc::clone(&cache), grid)
+        {
+            return Some(prefix);
+        }
         // Placement sampling owns repeat wraps for both ordinary crop/loop
         // changes and canonical Shift-Warp root retiming.
         if edit.placement.is_some() {
@@ -167,15 +198,7 @@ fn preview_waveform_view_cached_inner(
                 grid,
             );
         }
-        if original
-            .audio_edit()
-            .is_none_or(|old| !Arc::ptr_eq(&old.domain, &edit.domain))
-        {
-            if let Some(prefix) =
-                prefix_waveform_view(request, visible_start, visible_end, Rc::clone(&cache), grid)
-            {
-                return Some(prefix);
-            }
+        if changed_root {
             return super::waveform_stretch::stretch_waveform_view(
                 request,
                 visible_start,
