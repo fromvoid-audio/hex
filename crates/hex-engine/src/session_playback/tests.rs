@@ -2126,12 +2126,12 @@ fn detached_arrangement_effect_suffix_renders_after_its_source_ends() {
         }
     }
 
-    // A device replacement mid-ramp freezes the old suffix at the gain that
+    // Device removal mid-ramp freezes the old suffix at the gain that
     // actually reached the output, rather than jumping to the target.
     let mut zero_snapshot = old_project.snapshot();
     zero_snapshot.tracks[0].gain = 0.0;
     let zero = legacy_project_from_snapshot(zero_snapshot.clone()).unwrap();
-    zero_snapshot.tracks[0].devices[0].bypassed = true;
+    zero_snapshot.tracks[0].devices.clear();
     let detached = legacy_project_from_snapshot(zero_snapshot).unwrap();
     let mut previous = start_old(old_revision);
     let mut fading = SessionPlayback::new(prepare(&zero)).unwrap();
