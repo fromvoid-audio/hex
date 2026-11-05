@@ -173,6 +173,11 @@ impl LoopProjection {
     }
     fn at(&self, occurrence: hex_project::AudioViewOccurrence, frame: u64) -> Option<u64> {
         let edit = self.preview.audio_edit()?;
+        if edit.placement.is_some_and(|p| p.mode.leading_ticks() > 0) {
+            return occurrence
+                .root_start
+                .checked_add(frame.checked_sub(occurrence.destination_start)?);
+        }
         match edit.domain.clock {
             AudioDomainClock::Frames(_) => occurrence
                 .root_start
@@ -338,6 +343,49 @@ mod tests {
             .unwrap(),
         );
         (editor, clip, waveform)
+    }
+
+    #[test]
+    fn leading_musical_waveform_starts_at_the_retained_read() {
+        let (mut editor, clip, waveform) = directed_fixture();
+        let track = editor.project().tracks()[0].id();
+        editor
+            .execute(Command::MoveClip {
+                clip,
+                track,
+                start: 12,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipMusical {
+                clip,
+                enabled: true,
+            })
+            .unwrap();
+        let project = editor.project();
+        let original = project.clip(clip).unwrap().clone();
+        let tempo = project.tempo_map().clone();
+        let accepted_origin = original.audio_edit().unwrap().processing_origin().unwrap();
+        let preview = original
+            .preview_edge_trim_with_tempo(TrimEdge::Left, 7, 8, &tempo)
+            .unwrap();
+        let view = AudioViewProjection::new(&preview, &tempo).unwrap();
+        assert_eq!(view.outer_frame_bounds(), (7, 18));
+        assert_eq!(view.occurrence(0).unwrap().destination_start, 10);
+        let projection = LoopProjection {
+            original,
+            preview,
+            tempo,
+            prepared: true,
+            accepted_origin,
+            retimed: false,
+        };
+        assert!(projection.peaks(&waveform, 7..10).is_none());
+        let first = projection.peaks(&waveform, 10..11).unwrap()[0];
+        assert_eq!((first.min, first.max), (0.0, 0.0));
+        let last = projection.peaks(&waveform, 17..18).unwrap()[0];
+        assert_eq!((last.min, last.max), (0.7, 0.7));
+        assert!(projection.peaks(&waveform, 18..19).is_none());
     }
 
     #[test]

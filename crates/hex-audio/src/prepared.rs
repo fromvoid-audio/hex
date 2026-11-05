@@ -5288,6 +5288,7 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                group_output_mutes: Vec::new(),
                 tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
@@ -5456,6 +5457,7 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                group_output_mutes: Vec::new(),
                 tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
@@ -5593,6 +5595,7 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                group_output_mutes: Vec::new(),
                 tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
@@ -5749,6 +5752,7 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                group_output_mutes: Vec::new(),
                 tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
@@ -10372,6 +10376,7 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                group_output_mutes: Vec::new(),
                 tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
@@ -11085,6 +11090,7 @@ mod tests {
             next_id: track_id + 1,
             assets: Vec::new(),
             tracks: vec![TrackSnapshot {
+                group_output_mutes: Vec::new(),
                 tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,

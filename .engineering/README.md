@@ -30,7 +30,7 @@ test runner, database or dependency is needed.
 ## activation and continuation
 
 The user supplies this mission manually through `/goal`. A supplied goal instruction
-is also followed as task scope; native runtime activation requires separate readback.
+is also followed as task scope; native runtime activation requires runtime evidence.
 See the checkpoint for the observed status. To activate it in a supporting Codex
 interface, submit this instruction (or paste the complete file after `/goal`):
 
@@ -38,8 +38,8 @@ interface, submit this instruction (or paste the complete file after `/goal`):
 /goal Read .engineering/goal.md and adopt its complete Continuous Engineering Improvement mission, including every core responsibility, operating-loop step, evidence requirement, autonomy constraint, and Hex execution/recovery rule. Begin by reading .engineering/README.md and .engineering/state.json, reconcile them with live Pulse and current Git/PR state, and continue one valuable verified improvement at a time. Preserve the full goal across sessions. Do not create scheduled tasks.
 ```
 
-This repository cannot verify native goal activation. Saving this file does not
-activate `/goal`. No scheduler is configured or required by this workspace; goal
+Repository files alone cannot activate or verify a native goal. The runtime has
+now supplied an automatic goal continuation; the checkpoint records that evidence. No scheduler is configured or required by this workspace; goal
 activation alone does not guarantee unattended execution or recovery after a
 runtime stops. Resume the goal in an available authorized Codex runtime when needed.
 

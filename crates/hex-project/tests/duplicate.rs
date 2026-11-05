@@ -199,6 +199,7 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
             conversion_version: 0,
         }],
         tracks: vec![TrackSnapshot {
+            group_output_mutes: Vec::new(),
             tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,

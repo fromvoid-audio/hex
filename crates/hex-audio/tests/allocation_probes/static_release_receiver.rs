@@ -375,6 +375,22 @@ fn check(case: usize, block: usize) {
                 previous_revision
             );
             assert_eq!(control.reclaim(), 1, "refused owner returns to control");
+            if case == 6 {
+                // A terminal compensated-source refusal must not obstruct
+                // priority Stop or chase the later onset from a fresh kernel.
+                control.stop();
+                oracle.apply(SessionPlaybackCommand::Stop).unwrap();
+                for frames in [1, 7, 64, 512, 512, 64] {
+                    render(
+                        &mut callback,
+                        &mut oracle,
+                        &mut actual[..frames],
+                        &mut expected[..frames],
+                    );
+                    assert_eq!(&actual[..frames], &expected[..frames]);
+                }
+                assert!(actual[..64].iter().all(|frame| *frame == [0.0; 2]));
+            }
             control.request_shutdown();
             zero(measure(|| callback.begin_block()));
             assert_eq!(control.reclaim(), 1);

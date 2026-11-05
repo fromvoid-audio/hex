@@ -40,7 +40,40 @@ pub(crate) fn isolated(
     let selected_is_receiver =
         selected_source.is_some_and(|source| source.receiver == Some(selected_track_id));
 
-    if target.is_audio_group() {
+    if matches!(target, BounceTarget::Range(_) | BounceTarget::Track(_))
+        && project
+            .track(item.track)
+            .is_some_and(hex_project::Track::is_group)
+    {
+        let members = project
+            .group_bounce_tracks(item.track)
+            .map_err(|e| e.to_string())?;
+        let ids: std::collections::BTreeSet<_> =
+            members.iter().map(|track| track.id().value()).collect();
+        let effects: std::collections::BTreeSet<_> = members
+            .iter()
+            .flat_map(|track| track.devices())
+            .map(|device| device.id().value())
+            .collect();
+        snapshot.tracks.retain(|track| ids.contains(&track.id));
+        snapshot
+            .sidechains
+            .retain(|route| effects.contains(&route.device));
+        for track in &mut snapshot.tracks {
+            track.sends.clear();
+            if track.id == selected_track_id {
+                // The descendants mix through their ordinary routes. Only
+                // the selected post-device bus is connected to offline Main.
+                track.parent_group = None;
+                track.gain = 1.0;
+                track.balance = 0.0;
+                track.muted = false;
+                track.soloed = false;
+                track.gain_envelope.clear();
+                track.gain_touch_spans.clear();
+            }
+        }
+    } else if target.is_audio_group() {
         let selected: std::collections::BTreeSet<_> =
             item.clips.iter().map(|id| id.value()).collect();
         // Keep the group hierarchy valid, but remove every non-source signal.
@@ -603,6 +636,9 @@ impl Session {
         previous: Option<&hex_engine::PreparedRevision>,
         streamed: Option<StreamedBouncer>,
     ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), String> {
+        self.project()
+            .validate_bounce_adoption(&target, in_place, adoption)
+            .map_err(|e| e.to_string())?;
         let captured = target.clone();
         self.bounce_arrangement_using(
             target,

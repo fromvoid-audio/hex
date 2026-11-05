@@ -19,3 +19,10 @@ local tasks. Retire their index row with a brief reason in the owning Pulse note
 Retired from the active index after verification: [empty-shard refusal](https://pulse.iocore.dev/#/issues/4990) now passes real Cargo/libtest regressions; [scrollbar test inventory registration](https://pulse.iocore.dev/#/issues/4993) is merged in PR #2078. Reconcile the live PR/checkpoint before selecting new work. No additional ready lead is asserted by this snapshot.
 
 The prior blocked prerequisite description for #4001 is stale as to source delivery: #4594 merged in e07d90d0, while user review remains open. Do not reset its acceptance. The broad overrun investigation #4100 is cancelled and is not resumed. The document-output slice is removed from new-work selection after verification; its canonical PR/checkpoint owns integration state.
+
+Routed-source work [4995](https://pulse.iocore.dev/#/issues/4995) and
+[4817](https://pulse.iocore.dev/#/issues/4817) are now source-merged and in user
+review. Retire the provisional send-refusal idea: current upstream owns captured
+static sends. [5009](https://pulse.iocore.dev/#/issues/5009) retains only the focused
+post-refusal Stop regression. Do not recreate those runtime fixes or infer native
+acceptance from the source merges.
