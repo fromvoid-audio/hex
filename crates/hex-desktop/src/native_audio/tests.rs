@@ -3,7 +3,6 @@
 use super::*;
 mod bypass_latency;
 mod delay_bypass;
-mod reverb_bypass;
 mod limiter;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod plugins;
@@ -20,6 +19,7 @@ mod resident_reverb;
 mod resident_routes;
 mod resident_sections;
 mod resident_streamed_bounce;
+mod reverb_bypass;
 mod sampler;
 mod section_benchmark;
 mod solo_latency;
