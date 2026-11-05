@@ -10,7 +10,16 @@ pub(super) fn surface(
     width: f32,
     height: f32,
     selected: bool,
+    fill: Option<u32>,
 ) -> Stateful<Div> {
+    let background = fill.unwrap_or_else(|| {
+        theme::color(if selected {
+            theme::PaletteRole::Raised
+        } else {
+            theme::PaletteRole::Surface
+        })
+    });
+    let hover = fill.unwrap_or_else(|| theme::color(theme::PaletteRole::Hover));
     div()
         .id(id.into())
         .w(px(width))
@@ -25,12 +34,8 @@ pub(super) fn surface(
         .border_l_2()
         .border_b_1()
         .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-        .bg(rgb(theme::color(if selected {
-            theme::PaletteRole::Raised
-        } else {
-            theme::PaletteRole::Surface
-        })))
-        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
+        .bg(rgb(background))
+        .hover(move |style| style.bg(rgb(hover)))
 }
 
 pub(super) fn name() -> Div {

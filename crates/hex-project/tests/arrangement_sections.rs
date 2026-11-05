@@ -160,10 +160,8 @@ fn section_drag_copies_use_stable_destinations_fresh_identity_and_one_history_st
             assert_eq!((marker.start(), marker.end()), (b(range.0), b(range.1)));
         }
         let copied = editor.project().arrangement_section(copy).unwrap();
-        assert_eq!(
-            (copied.name(), copied.color()),
-            (original.name(), original.color())
-        );
+        assert_eq!(copied.name(), original.name());
+        assert!(ElementColor::ALL.contains(&copied.color()));
         let shape = |markers: &[hex_project::ArrangementSection]| {
             markers
                 .iter()
@@ -1123,7 +1121,7 @@ fn duplication_copies_midi_gain_touch_tempo_and_meter_with_fresh_identities() {
         copy.name(),
         e.project().arrangement_section(section_id).unwrap().name()
     );
-    assert_eq!(
+    assert_ne!(
         copy.color(),
         e.project().arrangement_section(section_id).unwrap().color()
     );
@@ -2117,5 +2115,84 @@ fn moving_and_duplicating_sections_preserve_a_single_global_tempo_clock() {
                 assert_eq!(editor.project().tempo_map(), &clock);
             }
         }
+    }
+}
+
+#[test]
+fn repeated_duplicates_at_a_fractional_tempo_keep_musical_audio_editable() {
+    // Reported on a saved 143 bpm project: after earlier section edits left a
+    // musical clip one residual sample before a section's end fence,
+    // duplicating that section refused with a rounding-residual error, and
+    // every splice added same-tempo points.
+    let mut e = Editor::new(Project::new(8_000).unwrap(), 64).unwrap();
+    let Created::Imported { clip, .. } = e
+        .execute(Command::ImportAudioTrack {
+            name: "audio".into(),
+            path: "loop.wav".into(),
+            sample_rate: 8_000,
+            frames: 9_000,
+        })
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    e.execute(Command::SetTempoPoint {
+        beat: b(0),
+        tempo: Tempo::new(143_000_000).unwrap(),
+    })
+    .unwrap();
+    e.execute(Command::SetAudioClipMusical {
+        clip,
+        enabled: true,
+    })
+    .unwrap();
+    let mut snapshot = e.project().snapshot();
+    let audio = &mut snapshot.tracks[0].audio_clips_mut().unwrap()[0];
+    audio.edit.as_mut().unwrap().timing = hex_project::AudioClipTiming::Musical(b(8));
+    audio.start = e.project().tempo_map().beat_to_frame(b(8)).unwrap();
+    let mut e = Editor::new(Project::from_snapshot(snapshot).unwrap(), 64).unwrap();
+    let first = section(&mut e, "a", 0, 3);
+    section(&mut e, "b", 3, 8);
+    for round in 0..12 {
+        let Created::ArrangementSection(copy) = e
+            .execute(Command::DuplicateArrangementSection(first))
+            .unwrap_or_else(|error| panic!("round {round} first: {error:?}"))
+        else {
+            panic!("copy identity")
+        };
+        // Explicit recoloring remains independent of the duplication color draw.
+        e.execute(Command::SetArrangementSectionColor {
+            section: copy,
+            color: ElementColor::Cyan,
+        })
+        .unwrap();
+        let ending_at_clip = e
+            .project()
+            .arrangement_sections()
+            .iter()
+            .rev()
+            .find(|s| {
+                e.project().clip(clip).unwrap().audio_edit().unwrap().timing
+                    == hex_project::AudioClipTiming::Musical(s.end())
+            })
+            .map(|s| s.id());
+        if let Some(section) = ending_at_clip {
+            let Created::ArrangementSection(copy) = e
+                .execute(Command::DuplicateArrangementSection(section))
+                .unwrap_or_else(|error| panic!("round {round} fence: {error:?}"))
+            else {
+                panic!("copy identity")
+            };
+            e.execute(Command::SetArrangementSectionColor {
+                section: copy,
+                color: ElementColor::Cyan,
+            })
+            .unwrap();
+        }
+        assert_eq!(
+            e.project().tempo_map().points().len(),
+            1,
+            "a constant tempo stays one point"
+        );
     }
 }

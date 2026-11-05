@@ -118,6 +118,13 @@ user and contributor instructions only. research/ contains recorded reference
 observations, reproducible measurements and provenance, not implementation plans or task logs.
 Preserve licenses, raw evidence, private analyses, original media and user data.
 
+The user-requested `.engineering/` workspace is the narrow exception to the local
+backlog/checkpoint rule below. Read `.engineering/README.md` when continuing its
+mission. It retains the mission, recovery pointer, measured health and a small
+ranked index of Pulse work; live Pulse remains authoritative for issue state and
+acceptance, and source doc comments remain authoritative for technical contracts.
+Goal activation is manual; do not create scheduled tasks for this mission.
+
 ### User guide presentation
 
 Use the Ableton Live 12 reference manual supplied by the user
@@ -273,6 +280,21 @@ feature/platform configurations, and proportionate formatting, lint and build
 checks. Record the scope, exact source/base, commands, results and omissions with
 reasons in the canonical PR. A small diff or passing mock alone does not establish
 isolation; tests do not mathematically guarantee unrelated code.
+
+Owner boundaries carry merge verification (user decision, 1 November 2026). A
+merge runs the test suites of the packages that own the change, plus reviewed
+runtime consumers with no Cargo edge. Every Cargo consumer must still compile and
+lint, but consumer test suites are not rerun. Rely on the owner's boundary tests
+to guarantee behaviour downstream. When a consumer later breaks, the defect is a
+missing owner boundary test: add the regression at the owner instead of widening
+merge checks. Within an owner crate, merges test only the changed modules'
+own test subtrees (a module without tests falls back to its nearest tested
+ancestor), so give each module its own boundary tests and split large modules
+along their responsibilities. Keep each merge's test setup and execution,
+excluding build time, under one minute. `scripts/local-ci.py --profile merge` reports this
+budget as a warning, not a merge failure (user decision, 1 November 2026; see
+`docs/local-ci.md`). Merge when every other check is green. A recurring
+over-budget owner suite is a test-design bug: record it in Pulse.
 
 Broaden only for a documented concrete impact or unresolved risk. Explain unknown
 selection, then resolve it by inspecting owners/consumers or conservatively check

@@ -251,6 +251,19 @@ fn clip_titles_paint_inherited_flavor_colors_through_selection_and_recolor(
                     gpui::Background::from(gpui::rgb(expected)),
                     "actual audio/MIDI body and title consume the same shared fill"
                 );
+                let (divider_color, divider_widths, _) = visual.rendered_border(header).unwrap();
+                assert!(divider_widths.bottom > gpui::ScaledPixels::default());
+                assert!(
+                    divider_widths.bottom
+                        <= gpui::ScaledPixels::from(
+                            visual.update(|window, _| window.scale_factor())
+                        )
+                );
+                assert_eq!(divider_widths.top, gpui::ScaledPixels::default());
+                assert_eq!(divider_widths.left, gpui::ScaledPixels::default());
+                assert_eq!(divider_widths.right, gpui::ScaledPixels::default());
+                let ink = theme::readable_text(expected, theme::color(theme::PaletteRole::Text));
+                assert_eq!(divider_color, gpui::rgba((ink << 8) | 0x70).into());
                 assert_eq!(
                     visual.debug_bounds(header).unwrap(),
                     bounds[i],
@@ -266,7 +279,7 @@ fn clip_titles_paint_inherited_flavor_colors_through_selection_and_recolor(
                     gpui::Hsla::from(gpui::rgb(if select {
                         theme::color(theme::PaletteRole::Primary)
                     } else {
-                        0x000000
+                        theme::color(theme::PaletteRole::ClipOutline)
                     })),
                     "selection outline remains independent"
                 );

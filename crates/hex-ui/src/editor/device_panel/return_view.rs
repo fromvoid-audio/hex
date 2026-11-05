@@ -57,6 +57,7 @@ pub(super) fn render(
         | GestureTarget::EqNodeCreation { device } => !alive.contains(&device),
         GestureTarget::ReturnSend { .. }
         | GestureTarget::TrackGain { .. }
+        | GestureTarget::TrackGains { .. }
         | GestureTarget::TrackBalance { .. }
         | GestureTarget::ReturnGain { .. } => false,
     }) || stale_keys.iter().any(|key| {
@@ -134,8 +135,9 @@ pub(super) fn render(
 
     if view.device_panel.effect_catalog.is_none() {
         view.device_panel.effect_catalog = Some(
-            hex_engine::native_device_catalog_for_class(NativeDeviceClass::Effect)
-                .map_err(|error| error.to_string().to_lowercase()),
+            hex_engine::native_device_catalog_for_class(NativeDeviceClass::Effect).map_err(
+                |error| hex_session::service::text::lowercase_outside_verbatim(&error.to_string()),
+            ),
         );
     }
     let catalog = view
@@ -224,9 +226,11 @@ pub(super) fn render_return_effect(
         .map(|(_, _, result)| result)
         .unwrap_or_else(|| {
             hex_engine::native_device_view_for_class(NativeDeviceClass::Effect, device.state())
-                .map_err(|error| error.to_string().to_lowercase())
+                .map_err(|error| {
+                    hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
+                })
         });
-    let leading = bypass_action(device, NativeDeviceClass::Effect, cx);
+    let leading = bypass_action(view, device, NativeDeviceClass::Effect, cx);
     let mut actions = div().flex().items_center().gap(px(2.0));
     if device_view.is_ok() {
         actions = actions
@@ -418,7 +422,7 @@ pub(super) fn render_return_effect(
             cx,
         ))
         .child(rendered)
-        .child(super::device_meter::render(view, device))
+        .child(super::device_meter::render(view, device, cx))
 }
 
 fn render_return_add_menu(

@@ -606,6 +606,11 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
                 });
             }
             let generation = editor.read_with(cx, |view, _| view.project_generation);
+            let held_output = editor.read_with(cx, |view, _| {
+                view.audio
+                    .as_ref()
+                    .and_then(|a| a.control.output_identity())
+            });
             match action {
                 "sequence" => {
                     let next = plot(&mut visual, device, 0.71, 0.6);
@@ -714,7 +719,14 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
                 if action == "commit" {
                     assert_ne!(read(view, device), before);
                 } else if action == "project" {
-                    assert!(view.audio.is_none());
+                    // This fixture worker never reports OutputReleased, so the
+                    // Resident endpoint stays held across the replacement.
+                    assert_eq!(
+                        view.audio
+                            .as_ref()
+                            .and_then(|a| a.control.output_identity()),
+                        held_output
+                    );
                     assert!(view.state.as_ref().unwrap().project.tracks().is_empty());
                     if let Some(pending) = view.pending_playback.as_ref() {
                         assert_eq!(pending.project_generation, view.project_generation);

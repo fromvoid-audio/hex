@@ -688,269 +688,329 @@ fn live_section_moves_duplicates_and_history_keep_advancing_audio_and_atomic_ref
     );
 }
 
-#[test]
-fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
+fn live_section_edits_retain_sampler(micro_bpm: u32, copy_before_self: bool) {
     let _native = native_fixture();
-    for (micro_bpm, copy_before_self) in [
-        (143_000_000, false),
-        (180_000_000, false),
-        (143_000_000, true),
-    ] {
-        let files = Files::new();
-        let mut h = ResidentHarness::with_frame_limit(8_000_000);
-        assert!(h.next().error.is_none());
-        let (mut applied, _) = h.applied(0);
-        let added = h.run(Request::Edit(Command::AddMidiTrack {
-            name: "sampler".into(),
-        }));
-        let Some(Created::Track(track)) = added.created else {
-            panic!("track")
-        };
-        (applied, _) = h.applied(applied);
-        // Original periodic PCM supplies an independent phase/amplitude oracle
-        // at the actual content position, including non-quantum-aligned wraps.
-        let sampler_path = files.wav(48_000, 192_000);
-        let mut bytes = fs::read(&sampler_path).unwrap();
-        for (i, sample) in bytes[44..].chunks_exact_mut(2).enumerate() {
-            let value =
-                (8192.0 * (std::f64::consts::TAU * (i % 64) as f64 / 64.0).sin()).round() as i16;
-            sample.copy_from_slice(&value.to_le_bytes());
-        }
-        let source_period: [hex_engine::Frame; 64] = std::array::from_fn(|i| {
-            let offset = 44 + i * 2;
-            let sample =
-                f32::from(i16::from_le_bytes([bytes[offset], bytes[offset + 1]])) / 32768.0;
-            [sample; 2]
-        });
-        fs::write(&sampler_path, bytes).unwrap();
-        let loaded = h.run(Request::LoadFirstSampler {
-            request_id: 1,
-            project_generation: 0,
-            revision: added.state.revision,
-            track,
-            empty_sampler: None,
-            path: sampler_path,
-            cancel: Arc::new(AtomicBool::new(false)),
-        });
-        assert!(loaded.error.is_none());
-        (applied, _) = h.applied(applied);
-        h.run(Request::Edit(Command::SetProjectTempo {
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(8_000_000);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "sampler".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("track")
+    };
+    (applied, _) = h.applied(applied);
+    // Original periodic PCM supplies an independent phase/amplitude oracle
+    // at the actual content position, including non-quantum-aligned wraps.
+    let source_frames = 64_000;
+    let sampler_path = files.wav(48_000, source_frames);
+    let mut bytes = fs::read(&sampler_path).unwrap();
+    for (i, sample) in bytes[44..].chunks_exact_mut(2).enumerate() {
+        let value =
+            (8192.0 * (std::f64::consts::TAU * (i % 64) as f64 / 64.0).sin()).round() as i16;
+        sample.copy_from_slice(&value.to_le_bytes());
+    }
+    let source_period: [hex_engine::Frame; 64] = std::array::from_fn(|i| {
+        let offset = 44 + i * 2;
+        let sample = f32::from(i16::from_le_bytes([bytes[offset], bytes[offset + 1]])) / 32768.0;
+        [sample; 2]
+    });
+    fs::write(&sampler_path, bytes).unwrap();
+    let loaded = h.run(Request::LoadFirstSampler {
+        request_id: 1,
+        project_generation: 0,
+        revision: added.state.revision,
+        track,
+        empty_sampler: None,
+        path: sampler_path,
+        cancel: Arc::new(AtomicBool::new(false)),
+    });
+    assert!(loaded.error.is_none());
+    (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::SetProjectTempo {
+        tempo: Tempo::new(micro_bpm).unwrap(),
+    }));
+    (applied, _) = h.applied(applied);
+    // Authored same-BPM points still move with sections. At180BPM these
+    // whole-beat seams have an exactly equal forward/inverse sample clock.
+    if micro_bpm == 180_000_000 {
+        h.run(Request::Edit(Command::SetTempoPoint {
+            beat: BeatTime::from_quarters(3).unwrap(),
             tempo: Tempo::new(micro_bpm).unwrap(),
         }));
         (applied, _) = h.applied(applied);
-        // Authored same-BPM points still move with sections. At180BPM these
-        // whole-beat seams have an exactly equal forward/inverse sample clock.
-        if micro_bpm == 180_000_000 {
-            h.run(Request::Edit(Command::SetTempoPoint {
-                beat: BeatTime::from_quarters(3).unwrap(),
-                tempo: Tempo::new(micro_bpm).unwrap(),
-            }));
-            (applied, _) = h.applied(applied);
-        }
-        let placed = h.run(Request::Edit(Command::PlaceMidiClip {
-            track,
-            start: BeatTime::ZERO,
-            length: BeatTime::from_quarters(8).unwrap(),
-        }));
-        let Some(Created::Clip(clip)) = placed.created else {
-            panic!("clip")
-        };
-        (applied, _) = h.applied(applied);
-        let notes = h.run(Request::Edit(Command::AddMidiNote {
-            clip,
-            start: BeatTime::ZERO,
-            duration: BeatTime::from_quarters(6).unwrap(),
-            pitch: 60,
-            channel: 0,
-            velocity: 127,
-        }));
-        (applied, _) = h.applied(applied);
-        let (first, intro) = add(&mut h, notes.state.revision, "intro", 0, 2);
-        (applied, _) = h.applied(applied);
-        let (mut event, chorus) = add(&mut h, first.state.revision, "chorus", 4, 7);
-        (applied, _) = h.applied(applied);
-        let loop_frames = event
-            .state
-            .project
-            .tempo_map()
-            .beat_to_frame(BeatTime::from_quarters(2).unwrap())
-            .unwrap();
-        let expected_from_start = |start: u64| -> [hex_engine::Frame; 64] {
-            std::array::from_fn(|i| source_period[((start + i as u64) % loop_frames % 64) as usize])
-        };
-        let expected_at = |end: u64| {
-            let start = (end + loop_frames - 64) % loop_frames;
-            std::array::from_fn::<_, 64, _>(|index| {
-                source_period[((start + index as u64) % loop_frames % 64) as usize]
-            })
-        };
-        let mut intent = h.seek_intent(2, event.state.revision, None, None);
-        intent.destination_frame = 0;
-        intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
-            region: hex_project::LoopRegion::new(0, loop_frames, true).unwrap(),
-            quantization: hex_engine::LaunchQuantization::Immediate,
-        });
-        h.service.submit_resident_arrangement_seek(intent).unwrap();
-        assert!(h.next().error.is_none());
-        assert!(h.seek_result().result.is_ok());
-        (applied, _) = h.applied(applied);
-        assert!(h.render().iter().flatten().any(|s| *s != 0.0));
-        // Identical A/B sounds advance canonical history without a new audio
-        // binding. The next ordinary edit may therefore skip source revisions.
-        let instrument = event
-            .state
-            .project
-            .track(track)
-            .unwrap()
-            .instrument()
-            .unwrap();
-        let before_comparison = h.render();
-        let status = h.audio.as_ref().unwrap().status().unwrap();
-        let comparison_clock = (
-            status.position.load(Acquire),
-            status.performance_frame.load(Acquire),
-        );
-        assert_eq!(before_comparison, expected_at(comparison_clock.0));
-        event = h.run(Request::CompareDevice {
-            owner: hex_session::service::preset::Owner {
-                project_generation: 0,
-                revision: event.state.revision,
-                device: instrument.id(),
-                class: hex_engine::NativeDeviceClass::Instrument,
-                type_id: instrument.state().type_id(),
-            },
-            expected: hex_project::DeviceVariant::A,
-            action: hex_project::DeviceComparisonAction::Switch,
-        });
-        assert_eq!(
-            h.audio
-                .as_ref()
-                .unwrap()
-                .status()
-                .unwrap()
-                .applied_revision
-                .load(Acquire),
-            applied
-        );
-        let compared = h.render();
-        let status = h.audio.as_ref().unwrap().status().unwrap();
-        assert_eq!(
-            status.performance_frame.load(Acquire),
-            comparison_clock.1 + 64
-        );
-        assert_eq!(
-            status.position.load(Acquire),
-            (comparison_clock.0 + 64) % loop_frames
-        );
-        assert_eq!(compared, expected_at(status.position.load(Acquire)));
-        let before_noop = event.state.project.snapshot();
-        let noop = run_callback(
-            &mut h,
-            section_request(
-                event.state.revision,
-                Command::ReorderSectionBefore {
-                    section: intro,
-                    before: intro,
-                },
-            ),
-        );
-        assert!(noop.error.is_none(), "{:?}", noop.error);
-        assert_eq!(noop.state.revision, event.state.revision);
-        assert_eq!(noop.state.project.snapshot(), before_noop);
-        for command in [
-            Command::RenameArrangementSection {
-                section: intro,
-                name: "renamed".into(),
-            },
-            Command::SetArrangementSectionColor {
-                section: intro,
-                color: ElementColor::Rose,
-            },
-            Command::MoveArrangementSectionMarker {
-                section: intro,
-                start: BeatTime::from_quarters(5).unwrap(),
-            },
-            Command::ResizeArrangementSectionMarker {
-                section: intro,
-                edge: hex_project::TrimEdge::Right,
-                boundary: BeatTime::from_quarters(5).unwrap(),
-            },
-            Command::RenameTrack {
-                track,
-                name: "metadata".into(),
-            },
-            Command::DuplicateArrangementSection(intro),
-        ] {
-            let before = event.state.project.snapshot();
-            let unchanged_prefix = matches!(&command, Command::DuplicateArrangementSection(_))
-                || !command.requires_section_publication();
-            if matches!(&command, Command::RenameArrangementSection { .. }) {
-                // Deterministically cross a real non-quantum-aligned seam during
-                // publication, rather than depending on worker/compiler speed.
-                for _ in 0..loop_frames.div_ceil(64) {
-                    if h.audio
-                        .as_ref()
-                        .unwrap()
-                        .status()
-                        .unwrap()
-                        .position
-                        .load(Acquire)
-                        + 128
-                        >= loop_frames
-                    {
-                        break;
-                    }
-                    h.render();
-                }
-                assert!(
-                    h.audio
-                        .as_ref()
-                        .unwrap()
-                        .status()
-                        .unwrap()
-                        .position
-                        .load(Acquire)
-                        + 128
-                        >= loop_frames,
-                    "callback must reach the seam within one admitted loop"
-                );
-            }
-            let before_frame = h
-                .audio
-                .as_ref()
-                .unwrap()
-                .status()
-                .unwrap()
-                .position
-                .load(Acquire);
-            let before_pcm = h.render();
-            let before_status = h.audio.as_ref().unwrap().status().unwrap();
-            let before_clock = (
-                before_status.position.load(Acquire),
-                before_status.performance_frame.load(Acquire),
+    }
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::from_quarters(8).unwrap(),
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("clip")
+    };
+    (applied, _) = h.applied(applied);
+    let notes = h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_quarters(6).unwrap(),
+        pitch: 60,
+        channel: 0,
+        velocity: 127,
+    }));
+    (applied, _) = h.applied(applied);
+    let (first, intro) = add(&mut h, notes.state.revision, "intro", 0, 2);
+    (applied, _) = h.applied(applied);
+    let (mut event, chorus) = add(&mut h, first.state.revision, "chorus", 4, 7);
+    (applied, _) = h.applied(applied);
+    let loop_frames = event
+        .state
+        .project
+        .tempo_map()
+        .beat_to_frame(BeatTime::from_quarters(2).unwrap())
+        .unwrap();
+    // Every pass after the first also carries the previous pass's voice,
+    // gated at the seam, through the prepared ~2 ms declick floor (96
+    // frames at 48 kHz). The loop is a whole number of source periods,
+    // so that tail keeps the same phase. These checks all run after the
+    // first seam whenever the position is inside that tail.
+    let release_floor = 96;
+    assert!(u64::from(source_frames) > loop_frames + release_floor);
+    let expected_from_start = |start: u64| -> [hex_engine::Frame; 64] {
+        std::array::from_fn(|i| {
+            let position = (start + i as u64) % loop_frames;
+            let frame = source_period[(position % 64) as usize];
+            let tail = 1.0 - position.min(release_floor) as f32 / release_floor as f32;
+            [frame[0] * (1.0 + tail), frame[1] * (1.0 + tail)]
+        })
+    };
+    // Two summed voices round differently from the single-voice product.
+    let assert_near = |actual: [hex_engine::Frame; 64], start: u64, context: &str| {
+        let expected = expected_from_start(start);
+        for (index, (a, e)) in actual.iter().zip(&expected).enumerate() {
+            assert!(
+                (a[0] - e[0]).abs() < 1e-6 && (a[1] - e[1]).abs() < 1e-6,
+                "{context} frame {index} from {start}: {a:?} != {e:?}"
             );
-            if unchanged_prefix {
-                assert_eq!(before_pcm, expected_from_start(before_frame));
-                assert_eq!(before_pcm, expected_at(before_clock.0));
+        }
+    };
+    let expected_at = |end: u64| {
+        let start = (end + loop_frames - 64) % loop_frames;
+        std::array::from_fn::<_, 64, _>(|index| {
+            source_period[((start + index as u64) % loop_frames % 64) as usize]
+        })
+    };
+    let mut intent = h.seek_intent(2, event.state.revision, None, None);
+    intent.destination_frame = 0;
+    intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
+        region: hex_project::LoopRegion::new(0, loop_frames, true).unwrap(),
+        quantization: hex_engine::LaunchQuantization::Immediate,
+    });
+    h.service.submit_resident_arrangement_seek(intent).unwrap();
+    assert!(h.next().error.is_none());
+    assert!(h.seek_result().result.is_ok());
+    (applied, _) = h.applied(applied);
+    assert!(h.render().iter().flatten().any(|s| *s != 0.0));
+    // Identical A/B sounds advance canonical history without a new audio
+    // binding. The next ordinary edit may therefore skip source revisions.
+    let instrument = event
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap();
+    let before_comparison = h.render();
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    let comparison_clock = (
+        status.position.load(Acquire),
+        status.performance_frame.load(Acquire),
+    );
+    assert_eq!(before_comparison, expected_at(comparison_clock.0));
+    event = h.run(Request::CompareDevice {
+        owner: hex_session::service::preset::Owner {
+            project_generation: 0,
+            revision: event.state.revision,
+            device: instrument.id(),
+            class: hex_engine::NativeDeviceClass::Instrument,
+            type_id: instrument.state().type_id(),
+        },
+        expected: hex_project::DeviceVariant::A,
+        action: hex_project::DeviceComparisonAction::Switch,
+    });
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire),
+        applied
+    );
+    let compared = h.render();
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert_eq!(
+        status.performance_frame.load(Acquire),
+        comparison_clock.1 + 64
+    );
+    assert_eq!(
+        status.position.load(Acquire),
+        (comparison_clock.0 + 64) % loop_frames
+    );
+    assert_eq!(compared, expected_at(status.position.load(Acquire)));
+    let before_noop = event.state.project.snapshot();
+    let noop = run_callback(
+        &mut h,
+        section_request(
+            event.state.revision,
+            Command::ReorderSectionBefore {
+                section: intro,
+                before: intro,
+            },
+        ),
+    );
+    assert!(noop.error.is_none(), "{:?}", noop.error);
+    assert_eq!(noop.state.revision, event.state.revision);
+    assert_eq!(noop.state.project.snapshot(), before_noop);
+    for command in [
+        Command::RenameArrangementSection {
+            section: intro,
+            name: "renamed".into(),
+        },
+        Command::SetArrangementSectionColor {
+            section: intro,
+            color: ElementColor::Rose,
+        },
+        Command::MoveArrangementSectionMarker {
+            section: intro,
+            start: BeatTime::from_quarters(5).unwrap(),
+        },
+        Command::ResizeArrangementSectionMarker {
+            section: intro,
+            edge: hex_project::TrimEdge::Right,
+            boundary: BeatTime::from_quarters(5).unwrap(),
+        },
+        Command::RenameTrack {
+            track,
+            name: "metadata".into(),
+        },
+        Command::DuplicateArrangementSection(intro),
+    ] {
+        let before = event.state.project.snapshot();
+        let unchanged_prefix = matches!(&command, Command::DuplicateArrangementSection(_))
+            || !command.requires_section_publication();
+        if matches!(&command, Command::RenameArrangementSection { .. }) {
+            // Deterministically cross a real non-quantum-aligned seam during
+            // publication, rather than depending on worker/compiler speed.
+            for _ in 0..loop_frames.div_ceil(64) {
+                if h.audio
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .unwrap()
+                    .position
+                    .load(Acquire)
+                    + 128
+                    >= loop_frames
+                {
+                    break;
+                }
+                h.render();
             }
-            let request = if matches!(&command, Command::RenameTrack { .. }) {
-                Request::Edit(command)
-            } else {
-                section_request(event.state.revision, command)
-            };
-            event = run_callback(&mut h, request);
-            assert!(event.error.is_none(), "{:?}", event.error);
-            (applied, _) = h.applied(applied);
             assert!(
                 h.audio
                     .as_ref()
                     .unwrap()
                     .status()
                     .unwrap()
-                    .playing
+                    .position
                     .load(Acquire)
+                    + 128
+                    >= loop_frames,
+                "callback must reach the seam within one admitted loop"
             );
-            let heard_frame = h
+        }
+        let before_frame = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire);
+        let before_pcm = h.render();
+        let before_status = h.audio.as_ref().unwrap().status().unwrap();
+        let before_clock = (
+            before_status.position.load(Acquire),
+            before_status.performance_frame.load(Acquire),
+        );
+        if unchanged_prefix {
+            assert_near(before_pcm, before_frame, "before");
+            assert_eq!(before_pcm, expected_at(before_clock.0));
+        }
+        let request = if matches!(&command, Command::RenameTrack { .. }) {
+            Request::Edit(command)
+        } else {
+            section_request(event.state.revision, command)
+        };
+        event = run_callback(&mut h, request);
+        assert!(event.error.is_none(), "{:?}", event.error);
+        (applied, _) = h.applied(applied);
+        assert!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
+        );
+        let heard_frame = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire);
+        let heard = h.render();
+        assert!(heard.iter().flatten().any(|s| *s != 0.0));
+        if unchanged_prefix {
+            assert_near(heard, heard_frame, "heard");
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            let after_clock = (
+                status.position.load(Acquire),
+                status.performance_frame.load(Acquire),
+            );
+            assert!(after_clock.1 >= before_clock.1 + 64);
+            assert_eq!(
+                after_clock.0,
+                (before_clock.0 + after_clock.1 - before_clock.1) % loop_frames
+            );
+            assert_near(
+                heard,
+                (after_clock.0 + loop_frames - 64) % loop_frames,
+                &format!(
+                    "metadata or duplicating later music must retain exact source phase and amplitude at the continuous loop clock: before={before_clock:?}, after={after_clock:?}, loop={loop_frames}"
+                ),
+            );
+        }
+        // A new loop pass dispatches the shortened prefix signature. Undo
+        // must work after this boundary, independently of worker timing.
+        if unchanged_prefix && event.state.project.arrangement_sections().len() > 2 {
+            for _ in 0..loop_frames.div_ceil(64) + 1 {
+                h.render();
+            }
+        }
+        event = run_callback(&mut h, Request::Undo);
+        assert!(event.error.is_none(), "{:?}", event.error);
+        (applied, _) = h.applied(applied);
+        let mut restored = event.state.project.snapshot();
+        restored.next_id = before.next_id;
+        assert_eq!(restored, before);
+        if unchanged_prefix {
+            let start = h
                 .audio
                 .as_ref()
                 .unwrap()
@@ -958,107 +1018,79 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
                 .unwrap()
                 .position
                 .load(Acquire);
-            let heard = h.render();
-            assert!(heard.iter().flatten().any(|s| *s != 0.0));
-            if unchanged_prefix {
-                assert_eq!(heard, expected_from_start(heard_frame));
-                let status = h.audio.as_ref().unwrap().status().unwrap();
-                let after_clock = (
-                    status.position.load(Acquire),
-                    status.performance_frame.load(Acquire),
-                );
-                assert!(after_clock.1 >= before_clock.1 + 64);
-                assert_eq!(
-                    after_clock.0,
-                    (before_clock.0 + after_clock.1 - before_clock.1) % loop_frames
-                );
-                assert_eq!(
-                    heard,
-                    expected_at(after_clock.0),
-                    "metadata or duplicating later music must retain exact source phase and amplitude at the continuous loop clock: before={before_clock:?}, after={after_clock:?}, loop={loop_frames}"
-                );
-            }
-            // A new loop pass dispatches the shortened prefix signature. Undo
-            // must work after this boundary, independently of worker timing.
-            if unchanged_prefix && event.state.project.arrangement_sections().len() > 2 {
-                for _ in 0..loop_frames.div_ceil(64) + 1 {
-                    h.render();
-                }
-            }
-            event = run_callback(&mut h, Request::Undo);
-            assert!(event.error.is_none(), "{:?}", event.error);
-            (applied, _) = h.applied(applied);
-            let mut restored = event.state.project.snapshot();
-            restored.next_id = before.next_id;
-            assert_eq!(restored, before);
-            if unchanged_prefix {
-                let start = h
-                    .audio
-                    .as_ref()
-                    .unwrap()
-                    .status()
-                    .unwrap()
-                    .position
-                    .load(Acquire);
-                assert_eq!(
-                    h.render(),
-                    expected_from_start(start),
-                    "Undo must preserve the original sampler phase without a second NoteOn"
-                );
-            }
-        }
-        let original = event.state.project.snapshot();
-
-        let relocation = if copy_before_self {
-            Command::DuplicateArrangementSectionAt {
-                section: intro,
-                target: intro,
-                after: false,
-            }
-        } else {
-            Command::ReorderSectionAfter {
-                section: intro,
-                after: chorus,
-            }
-        };
-        // Relocating sounding sampler MIDI while playing used to refuse with
-        // "stop playback". It now applies live (Pulse #3774): audio restarts at
-        // the cursor, the launched loop keeps running and the sampler sounds.
-        let moved = run_callback(&mut h, section_request(event.state.revision, relocation));
-        assert!(moved.error.is_none(), "{:?}", moved.error);
-        assert_ne!(moved.state.project.snapshot(), original);
-        (applied, _) = h.applied(applied);
-        let audible_loop = |h: &mut ResidentHarness| {
-            let mut heard = false;
-            for _ in 0..loop_frames.div_ceil(64) + 1 {
-                heard |= h.render().iter().flatten().any(|s| *s != 0.0);
-            }
-            let status = h.audio.as_ref().unwrap().status().unwrap();
-            assert!(status.playing.load(Acquire), "transport keeps running");
-            assert!(
-                status.position.load(Acquire) < loop_frames,
-                "launched loop kept"
+            assert_near(
+                h.render(),
+                start,
+                "Undo must preserve the original sampler phase without a second NoteOn",
             );
-            assert!(status.rejected_revision().is_none());
-            heard
-        };
-        assert!(audible_loop(&mut h));
-        let undone = run_callback(&mut h, Request::Undo);
-        assert!(undone.error.is_none(), "{:?}", undone.error);
-        (applied, _) = h.applied(applied);
-        let mut restored = undone.state.project.snapshot();
-        restored.next_id = original.next_id;
-        assert_eq!(restored, original);
-        assert!(audible_loop(&mut h));
-        let redone = run_callback(&mut h, Request::Redo);
-        assert!(redone.error.is_none(), "{:?}", redone.error);
-        h.applied(applied);
-        assert_eq!(
-            redone.state.project.snapshot(),
-            moved.state.project.snapshot()
-        );
-        assert!(audible_loop(&mut h));
+        }
     }
+    let original = event.state.project.snapshot();
+
+    let relocation = if copy_before_self {
+        Command::DuplicateArrangementSectionAt {
+            section: intro,
+            target: intro,
+            after: false,
+        }
+    } else {
+        Command::ReorderSectionAfter {
+            section: intro,
+            after: chorus,
+        }
+    };
+    // Relocating sounding sampler MIDI while playing used to refuse with
+    // "stop playback". It now applies live (Pulse #3774): audio restarts at
+    // the cursor, the launched loop keeps running and the sampler sounds.
+    let moved = run_callback(&mut h, section_request(event.state.revision, relocation));
+    assert!(moved.error.is_none(), "{:?}", moved.error);
+    assert_ne!(moved.state.project.snapshot(), original);
+    (applied, _) = h.applied(applied);
+    let audible_loop = |h: &mut ResidentHarness| {
+        let mut heard = false;
+        for _ in 0..loop_frames.div_ceil(64) + 1 {
+            heard |= h.render().iter().flatten().any(|s| *s != 0.0);
+        }
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.playing.load(Acquire), "transport keeps running");
+        assert!(
+            status.position.load(Acquire) < loop_frames,
+            "launched loop kept"
+        );
+        assert!(status.rejected_revision().is_none());
+        heard
+    };
+    assert!(audible_loop(&mut h));
+    let undone = run_callback(&mut h, Request::Undo);
+    assert!(undone.error.is_none(), "{:?}", undone.error);
+    (applied, _) = h.applied(applied);
+    let mut restored = undone.state.project.snapshot();
+    restored.next_id = original.next_id;
+    assert_eq!(restored, original);
+    assert!(audible_loop(&mut h));
+    let redone = run_callback(&mut h, Request::Redo);
+    assert!(redone.error.is_none(), "{:?}", redone.error);
+    h.applied(applied);
+    assert_eq!(
+        redone.state.project.snapshot(),
+        moved.state.project.snapshot()
+    );
+    assert!(audible_loop(&mut h));
+}
+
+#[test]
+fn live_section_edits_retain_sampler_at_143_bpm() {
+    live_section_edits_retain_sampler(143_000_000, false);
+}
+
+#[test]
+fn live_section_edits_retain_sampler_at_180_bpm() {
+    live_section_edits_retain_sampler(180_000_000, false);
+}
+
+#[test]
+fn live_section_copy_before_self_retains_sampler() {
+    live_section_edits_retain_sampler(143_000_000, true);
 }
 
 #[test]
@@ -1319,6 +1351,92 @@ fn offline_metadata_edits_and_history_do_not_require_an_applied_loop_witness() {
     assert!(h.submitted.is_none());
 }
 
+/// Regression for #3917: with no output there is no callback to fence, so a
+/// structural edit and its history complete from control state instead of
+/// refusing, and the retained result installs when an output opens.
+#[test]
+fn structural_section_edits_complete_without_an_output_then_install_on_restart() {
+    let _native = native_fixture();
+    let gate = Arc::new(AtomicBool::new(false));
+    let mut h = ResidentHarness::with_open_gate(8192, Arc::clone(&gate));
+    let initial = h.next();
+    let (added, intro) = add(&mut h, initial.state.revision, "offline", 0, 2);
+    let started = Instant::now();
+    let duplicated = h.run(section_request(
+        added.state.revision,
+        Command::DuplicateArrangementSection(intro),
+    ));
+    // No fence poll: well under the session's 100 ms acknowledgement deadline.
+    assert!(
+        started.elapsed() < Duration::from_millis(100),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(duplicated.state.project.arrangement_sections().len(), 2);
+    let undone = h.run(Request::Undo);
+    assert_eq!(undone.state.project.arrangement_sections().len(), 1);
+    let redone = h.run(Request::Redo);
+    assert_eq!(
+        redone.state.project.snapshot(),
+        duplicated.state.project.snapshot()
+    );
+    assert!(h.audio.is_none() && h.submitted.is_none());
+    assert!(h.pending_present.load(Acquire));
+    gate.store(true, std::sync::atomic::Ordering::Release);
+    h.service
+        .submit(Request::RestartAudio {
+            project_generation: 0,
+            request_id: 1,
+        })
+        .unwrap();
+    let restarted = h.next();
+    assert!(restarted.error.is_none(), "{:?}", restarted.error);
+    h.wait_fresh_output(0);
+    let (_, metadata) = h.applied(0);
+    assert_eq!(metadata.context.editor_revision, redone.state.revision);
+}
+
+/// Regression for #3917: a latched output fault refuses a stopped edit at
+/// once with a recoverable error instead of waiting on a fence.
+#[test]
+fn latched_output_faults_refuse_section_edits_promptly_and_keep_the_project() {
+    let _native = native_fixture();
+    let mut h = ResidentHarness::new();
+    let initial = h.next();
+    let (applied, _) = h.applied(0);
+    let (added, intro) = add(&mut h, initial.state.revision, "intro", 0, 2);
+    h.applied(applied);
+    for fault in [true, false] {
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        status
+            .device_fault
+            .store(fault, std::sync::atomic::Ordering::Release);
+        status
+            .render_fault
+            .store(!fault, std::sync::atomic::Ordering::Release);
+        let started = Instant::now();
+        h.service
+            .submit(section_request(
+                added.state.revision,
+                Command::DuplicateArrangementSection(intro),
+            ))
+            .unwrap();
+        let refused = h.next();
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "{:?}",
+            started.elapsed()
+        );
+        let error = refused.error.as_deref().expect("fault refusal");
+        assert!(error.contains("restart audio"), "{error}");
+        assert_eq!(error, error.to_lowercase());
+        assert_eq!(
+            refused.state.project.snapshot(),
+            added.state.project.snapshot()
+        );
+    }
+}
+
 /// Submit an immediate section launch and leave it unapplied by the callback.
 fn submit_pending_launch(h: &mut ResidentHarness, request_id: u64, revision: u64) {
     let mut intent = h.seek_intent(request_id, revision, None, None);
@@ -1464,6 +1582,10 @@ fn pending_launch_refuses_metadata_and_stop_cancellation_keeps_the_actual_loop()
         .control
         .command(PlaybackCommand::Stop)
         .unwrap();
+    // The queued Stop settles after its declick fade.
+    for _ in 0..super::FADE_BLOCKS {
+        h.render();
+    }
     assert!(h.render().iter().flatten().all(|s| *s == 0.0));
     let status = h.audio.as_ref().unwrap().status().unwrap();
     assert!(!status.playing.load(Acquire));
@@ -1700,5 +1822,99 @@ fn section_outcomes_report_worker_phases() {
             measured <= worker,
             "phases {measured} within worker {worker}"
         );
+    }
+}
+#[test]
+fn marker_only_edits_and_history_republish_without_preparation() {
+    use hex_session::service::diagnostics::{DiagnosticObserver, DiagnosticStage};
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let mut h = ResidentHarness::new();
+    let outcomes = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&outcomes);
+    h.service
+        .set_diagnostic_observer(Arc::new(DiagnosticObserver::new(move |event| {
+            if matches!(event.stage, DiagnosticStage::OutcomeReady { .. }) {
+                sink.lock().unwrap().push(event.details.clone());
+            }
+        })))
+        .unwrap();
+    h.next();
+    let (mut applied, _) = h.applied(0);
+    let track = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "song".into(),
+    }));
+    (applied, _) = h.applied(applied);
+    let Some(Created::Track(track)) = track.created else {
+        panic!("track");
+    };
+    let clip = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::from_quarters(8).unwrap(),
+    }));
+    (applied, _) = h.applied(applied);
+    let tracks = clip.state.project.tracks().to_vec();
+    let prepare_us = |outcomes: &Mutex<Vec<String>>| -> u64 {
+        let details = outcomes.lock().unwrap().last().cloned().unwrap();
+        details
+            .split_whitespace()
+            .find_map(|f| f.strip_prefix("section_prepare_us=")?.parse().ok())
+            .unwrap_or_else(|| panic!("section_prepare_us missing from {details:?}"))
+    };
+    outcomes.lock().unwrap().clear();
+    let (added, intro) = add(&mut h, clip.state.revision, "intro", 0, 4);
+    assert_eq!(prepare_us(&outcomes), 0, "add marker");
+    assert_eq!(added.state.revision, clip.state.revision + 1);
+    // Every marker edit still publishes, so the native context follows the
+    // revision; `applied` waits for the callback to install each one.
+    (applied, _) = h.applied(applied);
+    let mut states = Vec::new();
+    let mut revision = added.state.revision;
+    for command in [
+        Command::MoveArrangementSectionMarker {
+            section: intro,
+            start: BeatTime::from_quarters(1).unwrap(),
+        },
+        Command::RenameArrangementSection {
+            section: intro,
+            name: "verse".into(),
+        },
+    ] {
+        outcomes.lock().unwrap().clear();
+        let event = h.run(section_request(revision, command));
+        assert_eq!(prepare_us(&outcomes), 0);
+        assert_eq!(event.state.revision, revision + 1);
+        assert_eq!(event.state.project.tracks(), tracks);
+        (applied, _) = h.applied(applied);
+        revision = event.state.revision;
+        states.push(Arc::clone(&event.state.project));
+    }
+    // A structural edit after marker-only republication takes its fenced lease.
+    outcomes.lock().unwrap().clear();
+    let duplicated = run_callback(
+        &mut h,
+        section_request(revision, Command::DuplicateArrangementSection(intro)),
+    );
+    assert!(duplicated.error.is_none(), "{:?}", duplicated.error);
+    assert!(prepare_us(&outcomes) > 0, "structural edits still prepare");
+    (applied, _) = h.applied(applied);
+    // History keeps the ID allocator advanced; compare everything else.
+    let same = |actual: &hex_project::Project, expected: &hex_project::Project| {
+        let mut actual = actual.snapshot();
+        actual.next_id = expected.snapshot().next_id;
+        assert_eq!(actual, expected.snapshot());
+    };
+    let undone = run_callback(&mut h, Request::Undo);
+    assert!(undone.error.is_none(), "{:?}", undone.error);
+    same(&undone.state.project, &states[1]);
+    (applied, _) = h.applied(applied);
+    // Undo/Redo of the rename republish without preparation and restore exactly.
+    for (request, expected) in [(Request::Undo, &states[0]), (Request::Redo, &states[1])] {
+        outcomes.lock().unwrap().clear();
+        let event = run_callback(&mut h, request);
+        assert!(event.error.is_none(), "{:?}", event.error);
+        assert_eq!(prepare_us(&outcomes), 0);
+        same(&event.state.project, expected);
+        (applied, _) = h.applied(applied);
     }
 }

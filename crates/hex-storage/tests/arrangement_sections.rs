@@ -96,7 +96,8 @@ fn fixture() -> Project {
         &hex_project::MeterMap::common_time(),
         "section reorder must not persist synthetic same-meter seams"
     );
-    e.project().clone()
+    // Its envelopes are relabelled as historical schemas below.
+    implied_warp_laws(e.project())
 }
 #[test]
 fn current_format_roundtrips_section_ids_case_colors_ranges_frozen_processing_and_automation() {
@@ -224,6 +225,8 @@ fn schema47_accepts_but_historical_schemas_reject_musical_directed_empty_base_in
         }),
         base_start_delta: 0,
         window: hex_project::ContentWindow::new(0, cycle, false).unwrap(),
+        // Historical musical views carry the implied frozen v1 read law.
+        read_resampler: hex_project::WarpResampler::V1,
     });
     let displacement = i128::from(audio.start)
         - hex_project::audio_projection_frame(&tempo, i128::from(start.raw())).unwrap();
@@ -368,6 +371,8 @@ fn schema46_accepts_frozen_directed_repeat_trimmed_to_its_base_seam() {
         }),
         base_start_delta: 0,
         window: hex_project::ContentWindow::new(seam, seam + window_length, false).unwrap(),
+        // Historical musical views carry the implied frozen v1 read law.
+        read_resampler: hex_project::WarpResampler::V1,
     });
     let displacement =
         i128::from(audio.start) - hex_project::audio_projection_frame(&tempo, start).unwrap();
@@ -605,7 +610,7 @@ fn structural_section_edits_roundtrip_the_complete_project_and_one_history_edge(
                 let duplicate = editor.project().arrangement_section(copy).unwrap();
                 assert_eq!(duplicate.start(), source.end());
                 assert_eq!(duplicate.name(), source.name());
-                assert_eq!(duplicate.color(), source.color());
+                assert!(ElementColor::ALL.contains(&duplicate.color()));
             }
             "duplicate-before" | "duplicate-after" => {
                 let after_target = operation == "duplicate-after";
@@ -622,10 +627,8 @@ fn structural_section_edits_roundtrip_the_complete_project_and_one_history_edge(
                 let source = editor.project().arrangement_section(ids[0]).unwrap();
                 let target = editor.project().arrangement_section(ids[1]).unwrap();
                 let copied = editor.project().arrangement_section(copy).unwrap();
-                assert_eq!(
-                    (copied.name(), copied.color()),
-                    (source.name(), source.color())
-                );
+                assert_eq!(copied.name(), source.name());
+                assert!(ElementColor::ALL.contains(&copied.color()));
                 if after_target {
                     assert_eq!(copied.start(), target.end());
                 } else {
@@ -727,4 +730,84 @@ fn marker_resize_overlap_roundtrips_with_unchanged_music() {
     assert_eq!(editor.project().snapshot(), before);
     assert!(editor.redo());
     assert_eq!(editor.project().snapshot(), after);
+}
+
+/// Model a project authored before schema65 warp resampler laws: visible clip
+/// content takes the law its pitch/warp state implies (v1 when it reads
+/// fractional positions). This fixture relabels current envelopes as historical
+/// schemas; it has no retained roots or aliases.
+fn implied_warp_laws(project: &hex_project::Project) -> hex_project::Project {
+    let mut snapshot = project.snapshot();
+    for track in &mut snapshot.tracks {
+        if let hex_project::TrackContentSnapshot::Hybrid { audio_clips, .. } = &mut track.content {
+            for edit in audio_clips.iter_mut().filter_map(|clip| clip.edit.as_mut()) {
+                let domain = std::sync::Arc::make_mut(&mut edit.domain);
+                domain.warp_resampler =
+                    hex_project::WarpResampler::implied(domain.pitch_cents, domain.warp_enabled);
+            }
+        }
+    }
+    let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+    assert!(
+        hex_storage::schema_version_for(&project) < hex_storage::WARP_RESAMPLER_SCHEMA_VERSION,
+        "only visible clip content is converted"
+    );
+    project
+}
+
+#[test]
+fn exhausted_section_palette_keeps_drawn_colors_through_history_and_reopen() {
+    let mut editor = Editor::new(fixture(), 64).unwrap();
+    let source = editor.project().arrangement_sections()[0].id();
+    let original_color = editor
+        .project()
+        .arrangement_section(source)
+        .unwrap()
+        .color();
+    for (index, color) in ElementColor::ALL.into_iter().enumerate() {
+        editor
+            .execute(Command::AddArrangementSection {
+                name: "palette".into(),
+                color,
+                start: b(100 + index as u64 * 2),
+                end: b(101 + index as u64 * 2),
+            })
+            .unwrap();
+    }
+    for round in 0..4 {
+        let before = editor.project().snapshot();
+        let command = if round % 2 == 0 {
+            Command::DuplicateArrangementSection(source)
+        } else {
+            Command::DuplicateArrangementSectionAt {
+                section: source,
+                target: source,
+                after: false,
+            }
+        };
+        let Created::ArrangementSection(copy) = editor.execute(command).unwrap() else {
+            panic!("copy identity")
+        };
+        let chosen = editor.project().arrangement_section(copy).unwrap().color();
+        assert!(ElementColor::ALL.contains(&chosen));
+        assert_eq!(
+            editor
+                .project()
+                .arrangement_section(source)
+                .unwrap()
+                .color(),
+            original_color
+        );
+        let after = editor.project().snapshot();
+        let reopened =
+            hex_storage::decode(&hex_storage::encode(editor.project()).unwrap()).unwrap();
+        assert_eq!(reopened.snapshot(), after);
+        assert_eq!(reopened.arrangement_section(copy).unwrap().color(), chosen);
+        assert!(editor.undo());
+        let mut undone = editor.project().snapshot();
+        undone.next_id = before.next_id;
+        assert_eq!(undone, before);
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), after);
+    }
 }

@@ -17,7 +17,7 @@ pub(super) enum StoppedPlaybackRestore {
     Published(u64),
 }
 
-/// A rejected canonical latency change may be rebuilt after an explicit Stop.
+/// A canonical or native latency change can rebuild after a faded Stop.
 /// The output and project identities fence both the stop and the later resume.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum LatencyRebuild {
@@ -29,11 +29,22 @@ pub(super) enum LatencyRebuild {
     Waiting {
         project: ProjectRevision,
         output: u64,
+        runtime_audio: Option<u64>,
+    },
+    Fading {
+        project: ProjectRevision,
+        output: u64,
+        frame: u64,
+        ticket: u64,
+        runtime_audio: Option<u64>,
     },
     Restoring {
         project: ProjectRevision,
         output: u64,
         frame: u64,
+        resume: bool,
+        runtime_audio: Option<u64>,
+        installed: bool,
     },
 }
 

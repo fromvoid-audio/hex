@@ -25,6 +25,7 @@ use std::{
 
 mod auto_pan_panel;
 mod bindings;
+mod bypass;
 mod delay_panel;
 mod overdrive_panel;
 use bindings::{
@@ -41,6 +42,7 @@ mod chain_window;
 mod effect_bus;
 pub(super) use effect_bus::{EffectBusOwner, select_main, selected_owner};
 mod compressor_panel;
+pub(super) use compressor_panel::sidechain::drop_track_key;
 mod eq8_panel;
 mod eq_panel;
 mod limiter_panel;
@@ -110,6 +112,7 @@ struct DeviceControlIdentity {
 
 #[derive(Default)]
 pub(super) struct DevicePanelState {
+    bypass: bypass::State,
     pub(super) owner: Option<DevicePanelOwner>,
     pub(super) main_selected: Option<u64>,
     chain_window: chain_window::ChainWindow,
@@ -158,6 +161,7 @@ pub(super) struct DevicePanelState {
     eq8_responses: HashMap<DeviceId, eq8_panel::ResponseCache>,
     saturator_previews: HashMap<DeviceId, saturator_panel::PreviewCache>,
     compressor_previews: HashMap<DeviceId, compressor_panel::PreviewCache>,
+    pub(super) compressor_sidechains: compressor_panel::sidechain::Controls,
     auto_pan_previews: HashMap<DeviceId, auto_pan_panel::PreviewCache>,
     reverb_previews: HashMap<DeviceId, reverb_panel::PreviewCache>,
     overdrive_previews: HashMap<DeviceId, overdrive_panel::PreviewCache>,
@@ -167,6 +171,8 @@ pub(super) struct DevicePanelState {
         hex_audio::spectrum_worker::SpectrumTargetId,
         hex_audio::spectrum_worker::PublishedSpectra,
     >,
+    /// Retained per-tick read buffer for the latest spectrum pairs.
+    pub(super) spectrum_scratch: Vec<hex_audio::spectrum_worker::PublishedSpectra>,
     add_menu_open: bool,
     message: Option<String>,
 }
@@ -373,8 +379,10 @@ fn cache_device_metadata(
         .get(&device.id())
         .is_some_and(|(cached_class, state, _)| *cached_class == class && state == device.state());
     if !current {
-        let metadata = hex_engine::native_device_view_for_class(class, device.state())
-            .map_err(|error| error.to_string().to_lowercase());
+        let metadata =
+            hex_engine::native_device_view_for_class(class, device.state()).map_err(|error| {
+                hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
+            });
         panel
             .views
             .insert(device.id(), (class, device.state().clone(), metadata));
@@ -396,6 +404,26 @@ fn title_label(title: String, warning: bool) -> Div {
             preferred,
         )))
         .child(theme::text(title))
+}
+
+fn retained_source_path_label(track: &hex_project::Track) -> Option<&'static str> {
+    track
+        .retained_source_path()
+        .then_some("source path · printed audio bypasses")
+}
+
+fn retained_source_path_badge(label: &'static str) -> Div {
+    let background = theme::color(theme::PaletteRole::Surface);
+    div()
+        .debug_selector(|| "retained-source-path".into())
+        .flex_shrink()
+        .min_w_0()
+        .truncate()
+        .text_color(rgb(theme::readable_text(
+            background,
+            theme::color(theme::PaletteRole::SecondaryText),
+        )))
+        .child(theme::text(label))
 }
 
 pub(super) fn control_style() -> ControlStyle {
@@ -935,6 +963,7 @@ fn render_track(
         | GestureTarget::EqNodeCreation { device } => !alive.contains(&device),
         GestureTarget::ReturnSend { .. }
         | GestureTarget::TrackGain { .. }
+        | GestureTarget::TrackGains { .. }
         | GestureTarget::TrackBalance { .. }
         | GestureTarget::ReturnGain { .. } => false,
     }) || stale_keys.iter().any(|key| {
@@ -1033,14 +1062,16 @@ fn render_track(
 
     if view.device_panel.effect_catalog.is_none() {
         view.device_panel.effect_catalog = Some(
-            hex_engine::native_device_catalog_for_class(NativeDeviceClass::Effect)
-                .map_err(|error| error.to_string().to_lowercase()),
+            hex_engine::native_device_catalog_for_class(NativeDeviceClass::Effect).map_err(
+                |error| hex_session::service::text::lowercase_outside_verbatim(&error.to_string()),
+            ),
         );
     }
     if view.device_panel.instrument_catalog.is_none() {
         view.device_panel.instrument_catalog = Some(
-            hex_engine::native_device_catalog_for_class(NativeDeviceClass::Instrument)
-                .map_err(|error| error.to_string().to_lowercase()),
+            hex_engine::native_device_catalog_for_class(NativeDeviceClass::Instrument).map_err(
+                |error| hex_session::service::text::lowercase_outside_verbatim(&error.to_string()),
+            ),
         );
     }
     let effect_catalog = view
@@ -1080,6 +1111,11 @@ fn render_track(
         .overflow_x_scroll()
         .overflow_y_hidden();
     chain = navigation::rail(view, chain);
+    if retained_source_path_label(track).is_some() {
+        chain = chain
+            .border_t_1()
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)));
+    }
     let chain_entity = cx.entity();
     let visible_chain_bounds = std::rc::Rc::new(std::cell::RefCell::new(None));
     let chain_visible_bounds = visible_chain_bounds.clone();
@@ -1239,8 +1275,12 @@ fn render_track(
         .px(px(5.0))
         .text_xs()
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-        .child(track_name_view)
-        .child(add_button);
+        .child(track_name_view);
+    if let Some(label) = retained_source_path_label(track) {
+        let element = retained_source_path_badge(label);
+        header = header.child(element);
+    }
+    header = header.child(add_button);
     if effect_catalog.is_err() || instrument_catalog.is_err() {
         header = header.child(menu_message("device catalog unavailable"));
     }
@@ -1424,11 +1464,11 @@ fn render_device_card_target(
                 _ => None,
             };
             let previous = payload.destination.get();
-            if let Some(target) = target.filter(|_| inside) {
-                if previous != Some(target) {
-                    payload.destination.set(Some(target));
-                    entity.update(cx, |_, cx| cx.notify());
-                }
+            if let Some(target) = target.filter(|_| inside)
+                && previous != Some(target)
+            {
+                payload.destination.set(Some(target));
+                entity.update(cx, |_, cx| cx.notify());
             }
         })
         .on_drop(
@@ -1783,6 +1823,9 @@ fn device_selection_listener(
 
 fn vst3_status_body(view: &EditorView, device: &hex_project::Device) -> Stateful<Div> {
     let device_id = device.id();
+    if view.degraded_plugins.contains(device_id.value()) {
+        return vst3_degraded_body(device_id);
+    }
     let foreign = view
         .audible_playback
         .as_ref()
@@ -1819,6 +1862,33 @@ fn vst3_status_body(view: &EditorView, device: &hex_project::Device) -> Stateful
         .debug_selector(move || format!("device-body-{}", device_id.value()))
 }
 
+/// A vst3 endpoint that faulted renders as an aligned pass-through while the
+/// other devices keep processing (#3977). Shows the shared unsupported-body
+/// display with an explanatory tooltip.
+fn vst3_degraded_body(device_id: DeviceId) -> Stateful<Div> {
+    let selector = format!("device-vst3-degraded-{}", device_id.value());
+    let content = crate::device_composition::unsupported_body(theme::text(
+        "vst3 stopped responding · audio passes through",
+    ))
+    .id(ElementId::Name(selector.clone().into()))
+    .debug_selector(move || selector.clone())
+    .tooltip(|_, cx| {
+        cx.new(|_| super::transport::MiniTooltip {
+            kind: crate::tooltips::Kind::Help,
+            description: theme::text(
+                "the plugin missed its audio deadline · it is bypassed with its latency kept, and other devices keep playing",
+            ),
+        })
+        .into()
+    });
+    div()
+        .child(content)
+        .id(ElementId::Name(
+            format!("device-body-{}", device_id.value()).into(),
+        ))
+        .debug_selector(move || format!("device-body-{}", device_id.value()))
+}
+
 fn render_effect(
     view: &mut EditorView,
     window: Option<&Window>,
@@ -1838,9 +1908,11 @@ fn render_effect(
         .map(|(_, _, result)| result)
         .unwrap_or_else(|| {
             hex_engine::native_device_view_for_class(NativeDeviceClass::Effect, device.state())
-                .map_err(|error| error.to_string().to_lowercase())
+                .map_err(|error| {
+                    hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
+                })
         });
-    let leading = bypass_action(device, NativeDeviceClass::Effect, cx);
+    let leading = bypass_action(view, device, NativeDeviceClass::Effect, cx);
     let header_actions = device_actions(view, device, selected, device_view.is_ok(), cx);
     let rendered = match &device_view {
         _ if device.state().type_id().as_str() == Ok("hex.vst3") => {
@@ -1995,7 +2067,7 @@ fn render_effect(
             cx,
         ))
         .child(rendered)
-        .child(device_meter::render(view, device))
+        .child(device_meter::render(view, device, cx))
 }
 
 impl EditorView {
@@ -2444,11 +2516,13 @@ fn render_instrument(
         .map(|(_, _, result)| result);
     let device_view = cached.unwrap_or_else(|| {
         hex_engine::native_device_view_for_class(NativeDeviceClass::Instrument, device.state())
-            .map_err(|error| error.to_string().to_lowercase())
+            .map_err(|error| {
+                hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
+            })
     });
     let is_operator = device.state().type_id().as_str() == Ok("hex.instrument.operator");
     let is_sampler = device.state().type_id().as_str() == Ok("hex.instrument.sampler");
-    let leading = bypass_action(device, NativeDeviceClass::Instrument, cx);
+    let leading = bypass_action(view, device, NativeDeviceClass::Instrument, cx);
     let header_actions = instrument_actions(view, track, device, selected, device_view.is_ok(), cx);
     let rendered = if hex_engine::is_empty_sampler_state_on_control(device.state()) {
         device_frame(
@@ -2519,6 +2593,7 @@ fn render_instrument(
                     hex_engine::SamplerParameter::LoopEnabled,
                     hex_engine::SamplerParameter::LoopStartFrame,
                     hex_engine::SamplerParameter::LoopEndFrame,
+                    hex_engine::SamplerParameter::LoopCrossfadeMs,
                 ] {
                     fields.push(view.sampler_parameter_control(track, device, parameter, cx));
                 }
@@ -2536,7 +2611,10 @@ fn render_instrument(
         }
         let controls = div()
             .grid()
-            .grid_cols(if loop_error.is_none() { 11 } else { 8 })
+            // One dense row: twelve classic controls at the sampler's inline
+            // value width (see `SAMPLER_INLINE_VALUE_WIDTH`) fit the 1024 px
+            // device body, keeping the waveform overview's full height.
+            .grid_cols(if loop_error.is_none() { 12 } else { 8 })
             .gap(px(2.0))
             .w_full()
             .flex_shrink_0()
@@ -2683,7 +2761,7 @@ fn render_instrument(
             cx,
         ))
         .child(rendered)
-        .child(device_meter::render(view, device))
+        .child(device_meter::render(view, device, cx))
 }
 
 fn instrument_actions(
@@ -2845,12 +2923,13 @@ fn render_add_menu(
 }
 
 fn bypass_action(
+    view: &EditorView,
     device: &hex_project::Device,
     class: NativeDeviceClass,
     cx: &mut Context<EditorView>,
 ) -> Stateful<Div> {
     let id = device.id();
-    let bypassed = device.bypassed();
+    let bypassed = view.device_panel.bypass.displayed(id, device.bypassed());
     let (on_color, off_color) = theme::device_enable_colors();
     let tooltip = if class == NativeDeviceClass::Instrument {
         "toggle instrument bypass"
@@ -2872,10 +2951,7 @@ fn bypass_action(
     })
     .on_click(cx.listener(move |view, _, _, cx| {
         if finalize_controls(view, cx) {
-            view.enqueue_device_barrier(Request::Edit(Command::SetDeviceBypass {
-                device: id,
-                bypassed: !bypassed,
-            }));
+            view.toggle_device_bypass(id);
         }
         cx.notify();
     }))

@@ -81,6 +81,18 @@ saved project.
   sample rate equal the saved recording. when several files match, pick one;
   a file that differs is shown as a mismatch and is not used. you can cancel a
   search at any time.
+- **open with missing offline** opens the project now. clips that use a missing
+  file stay in place but play silence, and **missing files: n** shows in the
+  status bar. saving keeps their original locations. click **missing files: n**
+  to open the same panel for the open project: find the files with **locate…**
+  or **search folders…**, then **relink**. relinking is one edit, so **undo**
+  makes those clips silent again; files you have not found stay offline. a missing sampler or other device sample, or a missing
+  file used by a session clip, still has to be found before the project opens.
+- **relink all found** appears when the browser's scanned sample folders
+  contain files with the same names. it applies only when you click it: files
+  with exactly one matching candidate are found, and files with several
+  matches list them for you to pick. add the new sample folder to the browser
+  first so it is scanned.
 - **open** becomes available once every file is found. the project then opens
   with the new locations as unsaved changes; your project file stays unchanged
   until you save. **cancel** keeps the current project.
@@ -191,9 +203,11 @@ repeats it, and starting after its end plays on without looping. only when there
 is no selection or edit cursor does an enabled loop supply its beginning.
 moving or resizing the loop during playback takes effect immediately with the
 same rule: inside the new loop the playhead wraps at its new end, before it the
-playhead plays into it, and after it playback continues. a known limit: a loop
-change made while an arrangement instrument note is still sounding is not yet
-applied to playback.
+playhead plays into it, and after it playback continues. some first-pass loop
+edits keep a held arrangement instrument note sounding, when the note and its
+release finish before both loop ends and playback can retain the same source
+history. when playback needs to restart at the playhead, effect tails reset and
+notes under the playhead start again from there.
 for multiple sections, the loop spans the earliest start to the latest end,
 including gaps. while the computer midi keyboard is on, plain **l** and **w** play notes.
 setting new loop bounds from selected main sections also turns on section focus
@@ -272,9 +286,10 @@ removes the drop. the drop shows as pending until rendering finishes. let go of 
 before releasing to move normally. a bounce drop that would overlap its own source, or
 that lands between tracks, is refused.
 
-stop playback and disable live midi input or audition before bouncing in place. hex keeps the stopped cursor and installs
-a fresh playback state so live release voices cannot duplicate the baked tails.
-undo and redo of an in-place bounce use the same stopped-edit rule.
+disable live midi input or audition before bouncing in place. bounce in place works while
+playing: the render runs while the song continues, then audio restarts at the cursor on the
+baked clips, so release voices and effect tails cannot duplicate the baked tails. when stopped,
+hex keeps the stopped cursor. undo and redo of an in-place bounce follow the same rule.
 
 bounce writes float audio before the track mixer. mixer automation, sends, returns
 and main processing remain live. only the track-header **bounce in place** action replaces material in place and
@@ -552,6 +567,13 @@ folder stays in its original location; bookmarking keeps the current browser
 source and search. dragging the same folder again preserves its existing place
 and icon. press **escape** or drop outside places to cancel.
 
+adding a sample folder starts a background scan; the samples count shows its
+progress. the scan records each sample's size and a content fingerprint so hex
+can later find moved files. it only reads your samples; it never moves or
+changes them. if a place's folder has been moved or renamed, the place shows
+**missing**. right-click it and choose **relocate…** to point it at the new
+folder; its position and icon are kept and its samples reappear after the scan.
+
 the preview controls audition a selected audio file. the waveform can be used to
 choose a preview position. stop preview playback before judging the main project's
 output. auditioning a file and inserting it into the project are separate actions.
@@ -806,11 +828,16 @@ or the physical device is working correctly.
 
 select the intended time range and press **command+shift+e**. the **export output**
 dialog offers **main mix**, **selected tracks**, **shared returns**, and
-**selected stems and shared returns**. select the tracks needed for a stem export
-and choose a new destination in the native file dialog.
+**selected stems and shared returns**. the **export format** dialog then offers
+**16-bit pcm**, **24-bit pcm** and **32-bit float**. select the tracks needed for
+a stem export and choose a new destination in the native file dialog.
 
 exports are wav files. main mix produces the combined output; the stem choices
-keep the selected outputs separate. check the range and output choice before
+keep the selected outputs separate, each in the chosen format. 16-bit files are
+dithered and 24-bit files are rounded; both clamp samples above full scale, and
+the status line reports how many samples clipped. 32-bit float files keep levels
+above full scale and never clip. the format is chosen for each export and is not
+saved in the project. check the range and output choice before
 exporting, then audition the resulting files. offline rendering can be available
 even when live audio output is unavailable.
 
@@ -906,6 +933,28 @@ audio device, the steps that reproduce the problem, and what you expected to
 happen. include the displayed error and whether the issue survives a normal quit
 and reopen. keep original projects and media; share only material you have the
 right to share.
+
+## inspect diagnostic logs
+
+select the log button beside the version to open the diagnostic log window.
+the current session opens first. use previous session and next session to browse
+retained sessions, and refresh to read records written since the last refresh.
+the time column is in utc.
+
+use the category and time controls and the search field to narrow the visible
+records. the time window is measured back from the latest event on the displayed
+page; search for `level=error` to find error records. older unclassified records
+appear under uncategorised. in a large session, use older lines and newer lines
+to move between pages. filters apply to the displayed page, and live history can
+shift between page reads.
+
+click a row to inspect it below the list. unusually long rows are clipped in
+the detail view. to share a section, click its first row, shift-click its last
+row, and select copy selection. the copied excerpt includes the original rows,
+available session context and warnings, and is limited to 1 mib. the viewer
+reports missing, truncated or unreadable data; oversized legacy segments may
+be clipped. logs and excerpts can contain paths or other private information,
+so review them before sharing.
 
 `TESTING.md` is the finite checklist for this specific package. record actual
 results against that version. passing automated checks does not replace native

@@ -1,0 +1,107 @@
+--- cpal-0.17.3/src/host/coreaudio/macos/device.rs
++++ hex-patched/src/host/coreaudio/macos/device.rs
+@@ -203,7 +203,14 @@
+     Ok(())
+ }
+ 
++#[cfg(test)]
++thread_local! {
++    static AUDIO_UNIT_CONSTRUCTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
++}
++
+ fn audio_unit_from_device(device: &Device, input: bool) -> Result<AudioUnit, coreaudio::Error> {
++    #[cfg(test)]
++    AUDIO_UNIT_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
+     let output_type = if !input && is_default_output_device(device) {
+         coreaudio::audio_unit::IOType::DefaultOutput
+     } else {
+@@ -240,6 +247,41 @@
+     )?;
+ 
+     Ok(audio_unit)
++}
++
++#[cfg(test)]
++mod route_probe_regression {
++    use super::*;
++
++    #[test]
++    fn repeated_default_output_config_does_not_construct_audio_units() {
++        let device =
++            default_output_device().expect("this native regression needs a default output");
++        let before = AUDIO_UNIT_CONSTRUCTIONS.with(|count| count.get());
++        for _ in 0..4 {
++            let config = device
++                .default_output_config()
++                .expect("default output config");
++            assert!(config.sample_rate() > 0);
++        }
++        let after = AUDIO_UNIT_CONSTRUCTIONS.with(|count| count.get());
++        assert_eq!(
++            before, after,
++            "route polling must not construct Audio Units"
++        );
++    }
++
++    #[test]
++    fn direct_default_buffer_range_matches_existing_audio_unit_query() {
++        let device =
++            default_output_device().expect("this native regression needs a default output");
++        let config = device
++            .default_output_config()
++            .expect("default output config");
++        let unit = audio_unit_from_device(&device, false).expect("output Audio Unit");
++        let previous = get_io_buffer_frame_size_range(&unit).expect("Audio Unit buffer range");
++        assert_eq!(*config.buffer_size(), previous);
++    }
+ }
+ 
+ fn get_io_buffer_frame_size_range(
+@@ -688,8 +730,45 @@
+                     description: format!("unexpected scope (neither input nor output): {scope:?}"),
+                 }),
+             }?;
+-            let audio_unit = audio_unit_from_device(self, input)?;
+-            let buffer_size = get_io_buffer_frame_size_range(&audio_unit)?;
++            let buffer_size = if input {
++                let audio_unit = audio_unit_from_device(self, true)?;
++                get_io_buffer_frame_size_range(&audio_unit)?
++            } else {
++                // The range is a device property; querying it directly avoids
++                // constructing a temporary Audio Unit on each output config read.
++                let range_address = AudioObjectPropertyAddress {
++                    mSelector: kAudioDevicePropertyBufferFrameSizeRange,
++                    mScope: kAudioObjectPropertyScopeGlobal,
++                    mElement: kAudioObjectPropertyElementMain,
++                };
++                let mut range = AudioValueRange {
++                    mMinimum: 0.0,
++                    mMaximum: 0.0,
++                };
++                let mut range_size = mem::size_of::<AudioValueRange>() as u32;
++                // SAFETY: Core Audio receives the exact size and a valid pointer to
++                // one AudioValueRange. Check both status and returned size before use.
++                let status = AudioObjectGetPropertyData(
++                    self.audio_device_id,
++                    NonNull::from(&range_address),
++                    0,
++                    null(),
++                    NonNull::from(&mut range_size),
++                    NonNull::from(&mut range).cast(),
++                );
++                default_config_error_from_os_status(status)?;
++                if range_size as usize != mem::size_of::<AudioValueRange>() {
++                    return Err(DefaultStreamConfigError::BackendSpecific {
++                        err: BackendSpecificError {
++                            description: "invalid device buffer range size".to_string(),
++                        },
++                    });
++                }
++                SupportedBufferSize::Range {
++                    min: range.mMinimum as u32,
++                    max: range.mMaximum as u32,
++                }
++            };
+ 
+             let config = SupportedStreamConfig {
+                 sample_rate: asbd.mSampleRate as _,

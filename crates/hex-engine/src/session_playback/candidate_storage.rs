@@ -19,6 +19,8 @@ impl SessionPlayback {
             capture_runtime: _,
             capture_epoch: _,
             gain_recording_override: _,
+            live_gain: _,
+            live_gain_scratch: _,
             native_parameter_state,
             compensation,
             device_metering: _,
@@ -31,8 +33,11 @@ impl SessionPlayback {
             historical_floor: _,
             route_historical_floors: _,
             source_voice_envelopes: _,
+            stream_miss_fades: _,
             routes,
             route_scratch,
+            track_faders: _,
+            track_fader_scratch: _,
             device_chains,
             return_chains,
             main_chain,
@@ -74,6 +79,7 @@ impl SessionPlayback {
             current_sampler_console: _,
             route_state_generation: _,
             candidate_admission_open,
+            live_restart: _,
         } = self;
         if midi_admission.is_some()
             || live_expression.is_some()

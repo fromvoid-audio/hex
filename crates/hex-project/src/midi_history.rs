@@ -325,6 +325,18 @@ impl Plan {
                     },
                 }
             }
+            Command::UpdateMidiNotesWithSourceExtent { clip, notes } => Kind::Notes {
+                volume_range: None,
+                location: location(*clip)?,
+                source_length: Some(crate::midi::extended_update_source_length(
+                    source.midi_source(*clip).ok_or(MISSING)?.source_length(),
+                    notes,
+                )?),
+                edit: Notes::OverwriteUpdate {
+                    only: None,
+                    removed: 0,
+                },
+            },
             Command::UpdateMidiNotes { clip, .. } => Kind::Notes {
                 volume_range: None,
                 location: location(*clip)?,
@@ -1042,6 +1054,7 @@ fn same_shell(
         routing,
         audio_feeds,
         midi_routes,
+        sidechains,
         import_provenance,
         sample_rate,
         next_id: _,
@@ -1054,7 +1067,11 @@ fn same_shell(
         main_devices,
         tempo_map,
         meter_map,
+        offline_assets,
     } = a;
+    if offline_assets != &b.offline_assets {
+        return false;
+    }
     let death = match kind {
         Kind::ArrangeDeath { clip, .. } | Kind::ConsoleDeath { clip, .. } => Some(clip),
         _ => None,
@@ -1100,6 +1117,7 @@ fn same_shell(
         || routing != &b.routing
         || audio_feeds != &b.audio_feeds
         || midi_routes != &b.midi_routes
+        || sidechains != &b.sidechains
         || import_provenance != &b.import_provenance
         || sample_rate != &b.sample_rate
         || assets != &b.assets
@@ -1115,6 +1133,7 @@ fn same_shell(
     }
     tracks.iter().zip(&b.tracks).all(|(a, b)| {
         let Track {
+            tags,
             kind,
             parent_group,
             color,
@@ -1128,6 +1147,7 @@ fn same_shell(
             soloed,
             devices,
             instrument,
+            retained_source_path,
             instrument_position,
             content,
             sends,
@@ -1145,6 +1165,7 @@ fn same_shell(
             && parent_group == &b.parent_group
             && color == &b.color
             && id == &b.id
+            && tags == &b.tags
             && name == &b.name
             && automatic_name == &b.automatic_name
             && gain == &b.gain
@@ -1153,6 +1174,7 @@ fn same_shell(
             && soloed == &b.soloed
             && devices == &b.devices
             && instrument == &b.instrument
+            && retained_source_path == &b.retained_source_path
             && instrument_position == &b.instrument_position
             && sends == &b.sends
             && base == &b.gain_lane.base
