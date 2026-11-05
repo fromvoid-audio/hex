@@ -154,6 +154,12 @@ pub(crate) fn trim_view(
                 let read = projection.occurrence(0)?;
                 let first = read.destination_start.saturating_sub(read.root_start);
                 if frame < first {
+                    // Rewind and add the lead in one retained clock. A
+                    // temporary live crop can cross a different tempo seam
+                    // and fail its endpoint check before the lead is added.
+                    if edit.processing_projection.is_some() {
+                        return trim_retained_outer(clip, edge, frame, tempo);
+                    }
                     let rewound = if first == clip.start {
                         clip.clone()
                     } else {

@@ -605,6 +605,28 @@ mod tests {
                 ..old
             }
         );
+        let gate = current.beat_to_frame(b(16)).unwrap();
+        let trimmed =
+            super::super::commands::trim_view(&clip, crate::TrimEdge::Left, gate, &current)
+                .unwrap();
+        trimmed
+            .audio_edit()
+            .unwrap()
+            .validate(&trimmed, &current, 192_000)
+            .unwrap();
+        let view = AudioViewProjection::new(&trimmed, &current).unwrap();
+        let read = view.occurrence(0).unwrap();
+        assert_eq!(
+            view.outer_frame_bounds(),
+            (gate, clip.start + clip.duration)
+        );
+        assert_eq!(
+            read.destination_start,
+            old.destination_start - old.root_start
+        );
+        assert_eq!(read.destination_end, old.destination_end);
+        assert_eq!(read.root_origin, old.root_origin);
+        assert_eq!(read.root_start, 0);
         edit.placement_end_offset = 1;
         clip.edit = Some(Arc::new(edit.clone()));
         assert!(
