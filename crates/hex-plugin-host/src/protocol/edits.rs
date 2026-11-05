@@ -3,6 +3,9 @@
 use super::*;
 use std::num::NonZeroU64;
 pub const MAX_PARAMETER_EDITS: usize = 8;
+// Native main-thread FIFO plus the eight worker handoff slots. Completed
+// receipts are tracked separately and do not count toward pending callbacks.
+const MAX_PENDING_PARAMETER_EDITS: u16 = 72;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ParameterEditKind {
     #[default]
@@ -97,7 +100,11 @@ pub fn parameter_edits(
     let pending = u16::from_le_bytes(reader.array()?);
     let ready = u16::from_le_bytes(reader.array()?);
     let len = usize::from(u16::from_le_bytes(reader.array()?));
-    if pending > 24 || ready > 8 || ready > pending || len > MAX_PARAMETER_EDITS {
+    if pending > MAX_PENDING_PARAMETER_EDITS
+        || usize::from(ready) > MAX_PARAMETER_EDITS
+        || ready > pending
+        || len > MAX_PARAMETER_EDITS
+    {
         return Err(Error::Protocol("parameter edit capacity differs"));
     }
     let mut result = ParameterEdits {

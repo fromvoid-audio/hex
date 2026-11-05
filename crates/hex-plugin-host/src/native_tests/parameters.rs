@@ -762,6 +762,59 @@ fn actual_sdk_ui_gestures_apply_on_original_worker_live_and_stopped_with_ordered
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_sdk_editor_burst_drains_in_order_on_the_original_worker() {
+    use crate::protocol::ParameterEditKind;
+
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(116),
+    )
+    .unwrap();
+    let child = instance.child_id_on_control();
+    std::fs::write(case.release(), b"emit one native editor burst").unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    let mut edits = Vec::new();
+    let mut next_block = 0;
+    while edits.len() < 14 {
+        let batch = instance.poll_parameter_edits_on_worker().unwrap();
+        edits.extend_from_slice(batch.as_slice());
+        if batch.ready > 0 {
+            let input = request(instance.configuration(), next_block);
+            instance.exchange_on_worker(input).unwrap();
+            next_block += 1;
+        }
+        assert!(Instant::now() < until, "native editor burst must drain");
+        thread::yield_now();
+    }
+    assert_eq!(edits.len(), 14);
+    for (index, edit) in edits.iter().enumerate() {
+        let expected = match index {
+            0 => (ParameterEditKind::Begin, 0.0),
+            13 => (ParameterEditKind::End, 0.0),
+            _ => (ParameterEditKind::Perform, 0.75),
+        };
+        assert_eq!(
+            (edit.sequence, edit.gesture, edit.id),
+            (index as u64 + 1, 1, 7)
+        );
+        assert_eq!((edit.kind, edit.normalized), expected);
+    }
+    assert_eq!(instance.child_id_on_control(), child);
+    let paused = instance.quiesce_retained_on_control().unwrap();
+    let (paused, captured) = paused.capture_state_retained_on_control().unwrap();
+    assert_eq!(
+        &decode(&captured).unwrap().component.unwrap()[8..12],
+        &3.0_f32.to_le_bytes()
+    );
+    assert!(paused.retire_on_control().unwrap().status.success());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_sdk_invalid_or_overflowing_ui_gestures_refuse_before_dsp() {
     for variant in [86, 87, 88] {
         let case = Case::new();

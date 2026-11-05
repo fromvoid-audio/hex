@@ -866,6 +866,10 @@ fn edit_receipts_bind_source_prefix_operation_order_and_gesture_without_coalesci
     assert_eq!(result.as_slice().len(), 3);
     assert_eq!(result.as_slice()[1].kind, ParameterEditKind::Perform);
     assert_eq!(result.as_slice()[1].id, 0);
+    let mut backlogged = body.clone();
+    backlogged[58..60].copy_from_slice(&72_u16.to_le_bytes());
+    let backlog = parameter_edits(&backlogged, &config, 2, 3, (0, 0)).unwrap();
+    assert_eq!(backlog.pending, 72);
     for end in 0..body.len() {
         assert!(parameter_edits(&body[..end], &config, 2, 3, (0, 0)).is_err());
     }
@@ -874,7 +878,7 @@ fn edit_receipts_bind_source_prefix_operation_order_and_gesture_without_coalesci
         (34, 1),
         (42, 15),
         (50, 2),
-        (58, 25),
+        (58, 73),
         (60, 1),
         (62, 9),
         (64, 0),
