@@ -994,8 +994,19 @@ impl SessionPlayback {
         let old_base = previous.revision.session().timing();
         let new_base = self.revision.session().timing();
         let same_base = old_base.same_map(new_base);
+        let candidate_periodic = self.periodic_tempo_at(previous.arrangement_frame);
+        let same_periodic = previous.periodic_tempo() == candidate_periodic;
+        let old_clock = previous.timing_view();
+        let old_beat = old_clock
+            .frame_to_beat(previous.performance_frame)
+            .map_err(|_| SessionPlaybackError::TempoConversion)?;
+        let new_base_view = base_timing_for(self.revision.session(), candidate_periodic);
+        let new_beat = new_base_view
+            .frame_to_beat(previous.performance_frame)
+            .map_err(|_| SessionPlaybackError::TempoConversion)?;
         let arrangement_loop_continuity = same_base
             && old_loop != new_loop
+            && old_beat == new_beat
             && first_pass_arrangement_loop_continuity(self, previous);
         // An edited base map cuts every held mutable Arrangement gate at the
         // donor's cut (`arrangement_tempo_remap` below), so a retimed loop
@@ -1015,16 +1026,6 @@ impl SessionPlayback {
         {
             return Err(SessionPlaybackError::MutableInstrumentLoopBoundsActive);
         }
-        let candidate_periodic = self.periodic_tempo_at(previous.arrangement_frame);
-        let same_periodic = previous.periodic_tempo() == candidate_periodic;
-        let old_clock = previous.timing_view();
-        let old_beat = old_clock
-            .frame_to_beat(previous.performance_frame)
-            .map_err(|_| SessionPlaybackError::TempoConversion)?;
-        let new_base_view = base_timing_for(self.revision.session(), candidate_periodic);
-        let new_beat = new_base_view
-            .frame_to_beat(previous.performance_frame)
-            .map_err(|_| SessionPlaybackError::TempoConversion)?;
         let timing_changed = !same_base || !same_periodic;
         // Arrangement content is beat-anchored, so an edited base tempo map
         // keeps the cursor's beat, not its frame (Pulse #3935). Old-revision
@@ -4843,20 +4844,20 @@ fn mutable_proof_deadline(
     deadline
 }
 
-/// A route-local proof, not equivalence of the periodic Session clocks.
-/// Before the first wrap, Arrangement queries use the unchanged canonical map.
-/// No retained gate or tail may reach either discontinuity. Existing candidate
-/// signature, source-law and occupancy checks still run before runtime transfer.
+/// With equal canonical maps and equal beats at the cut, a first-pass loop
+/// edit can retain Arrangement voices until the earlier wrap. The periodic
+/// view returns the canonical inverse before its start, uses that same inverse
+/// at its admitted round-tripping start, and lifts canonical local beats by
+/// zero cycles until its end. Round-tripping beats for interior frames lie
+/// strictly between the endpoint beats by monotonicity of the forward map.
+/// The candidate anchor therefore has zero shift over the retained interval.
+/// No retained gate or tail may reach either wrap. Signature, source-law and
+/// occupancy checks still run before runtime transfer.
 fn first_pass_arrangement_loop_continuity(
     candidate: &SessionPlayback,
     previous: &SessionPlayback,
 ) -> bool {
-    if !previous
-        .revision
-        .session()
-        .timing()
-        .same_map(candidate.revision.session().timing())
-        || previous.anchor.is_some()
+    if previous.anchor.is_some()
         || previous.computer_keyboard.is_some()
         || candidate.computer_keyboard.is_some()
         || previous.arrangement_loop_pass != 0
