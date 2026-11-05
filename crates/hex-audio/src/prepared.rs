@@ -6275,6 +6275,19 @@ mod tests {
     #[cfg(feature = "allocation-probe")]
     #[test]
     fn held_mutable_arrangement_loop_handoff_preserves_pcm_without_callback_allocation() {
+        for (old_enabled, new_enabled, block_frames) in
+            [(true, true, 256), (false, true, 17), (true, false, 1)]
+        {
+            check_held_arrangement_loop_handoff(old_enabled, new_enabled, block_frames);
+        }
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    fn check_held_arrangement_loop_handoff(
+        old_enabled: bool,
+        new_enabled: bool,
+        block_frames: usize,
+    ) {
         use hex_project::{BeatTime, Command, Created, Editor, Project};
         let class = hex_engine::NativeDeviceClass::Instrument;
         let state = hex_engine::default_native_device_state_for_class(
@@ -6326,7 +6339,7 @@ mod tests {
             .execute(Command::SetLoopRegion {
                 start: 48_000,
                 end: 96_000_000,
-                enabled: true,
+                enabled: old_enabled,
             })
             .unwrap();
         let prepare = |project: &Project| {
@@ -6357,14 +6370,16 @@ mod tests {
             .execute(Command::SetLoopRegion {
                 start: 24_000,
                 end: 120_000_000,
-                enabled: true,
+                enabled: new_enabled,
             })
             .unwrap();
-        control.publish(prepare(editor.project())).unwrap();
-        let mut actual = [[0.0; 2]; 256];
+        let revision = control.publish(prepare(editor.project())).unwrap();
+        let mut actual = vec![[0.0; 2]; block_frames * 3];
         let measured = allocation_counter::measure(|| {
-            callback.begin_block();
-            callback.render(&mut actual).unwrap();
+            for chunk in actual.chunks_mut(block_frames) {
+                callback.begin_block();
+                callback.render(chunk).unwrap();
+            }
         });
         assert_eq!(
             (
@@ -6375,8 +6390,12 @@ mod tests {
             ),
             (0, 0, 0, 0)
         );
-        let mut expected = actual;
-        reference.render(&mut expected).unwrap();
+        assert_eq!(control.status.applied_revision.load(Relaxed), revision);
+        assert_eq!(control.status.rejected_revision(), None);
+        let mut expected = vec![[0.0; 2]; actual.len()];
+        for chunk in expected.chunks_mut(block_frames) {
+            reference.render(chunk).unwrap();
+        }
         assert!(expected.iter().flatten().any(|sample| sample.abs() > 1e-6));
         assert_eq!(actual, expected, "held source must keep its DSP history");
         control.request_shutdown();
