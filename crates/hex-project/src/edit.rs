@@ -1165,10 +1165,10 @@ pub enum Command {
         clip: ClipId,
         notes: Vec<MidiNoteUpdate>,
     },
-    /// Translate a plain, nonlooping, unique Arrangement source by a positive
-    /// prefix, then apply stable note updates in rebased storage coordinates.
-    /// At least one requested note must begin inside the new prefix. Placement and
-    /// elapsed windows do not move; unproved consumer shapes refuse atomically.
+    /// Translate an Arrangement MIDI source by a positive prefix, then apply
+    /// stable note updates in the rebased storage coordinates. At least one
+    /// requested onset must be inside the new prefix. Placement, direction and
+    /// elapsed windows stay fixed, including those of linked clips.
     UpdateMidiNotesWithSourcePrefix {
         clip: ClipId,
         prefix: crate::BeatTime,

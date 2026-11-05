@@ -183,21 +183,12 @@ fn negative_moves_keep_released_geometry_and_translate_origin_only_on_success(
             std::thread::yield_now();
         }
         let event = terminal(&editor, &mut visual);
-        assert_eq!(event.error.is_some(), looping, "{:?}", event.error);
+        assert!(event.error.is_none(), "{:?}", event.error);
         editor.update(&mut visual, |v, cx| {
             v.receive(event);
             cx.notify();
         });
         visual.run_until_parked();
-        if looping {
-            editor.read_with(&visual, |v, _| {
-                assert_eq!(v.state.as_ref().unwrap().project.as_ref(), &before);
-                assert_eq!(v.piano_beat_start, -i128::from(beat(1, 1).raw()));
-                assert_eq!(v.midi_marker, Some(beat(1, 1).raw()));
-                assert!(v.pending_midi_drag.is_none());
-            });
-            continue;
-        }
         assert_eq!(
             bodies(&editor, &mut visual),
             held_bodies,
@@ -213,6 +204,9 @@ fn negative_moves_keep_released_geometry_and_translate_origin_only_on_success(
             let source = project.midi_source(clip).unwrap();
             assert_eq!(source.source_start(), beat(4, 1));
             assert_eq!(source.source_length(), beat(8, 1));
+            assert_eq!(source.looping(), looping);
+            assert_eq!(source.loop_start(), beat(4, 1));
+            assert_eq!(source.loop_end(), beat(8, 1));
             assert_eq!(project.midi_clip(clip).unwrap().length(), beat(4, 1));
             assert_eq!(project.midi_note(moved).unwrap().start(), beat(7, 2));
             assert_eq!(project.midi_note(moved).unwrap().duration(), beat(1, 1));

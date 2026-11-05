@@ -20,12 +20,13 @@ fn source_prefix_preserves_uninterrupted_held_voice_gate_and_tail_without_callba
 -> Result<(), Box<dyn Error>> {
     for mutable in [false, true] {
         for block_size in [1, 7, 64, 512] {
-            compare(mutable, block_size)?;
+            compare(mutable, block_size, false)?;
         }
+        compare(mutable, 64, true)?;
     }
     Ok(())
 }
-fn compare(mutable: bool, block_size: usize) -> Result<(), Box<dyn Error>> {
+fn compare(mutable: bool, block_size: usize, looping: bool) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(48_000)?, 16)?;
     let state = if mutable {
         let mut state = hex_engine::default_native_device_state_for_class(
@@ -82,9 +83,9 @@ fn compare(mutable: bool, block_size: usize) -> Result<(), Box<dyn Error>> {
         clip,
         source_length: BeatTime::from_quarters(8)?,
         source_start: BeatTime::ZERO,
-        loop_start: BeatTime::ZERO,
-        loop_end: BeatTime::from_quarters(8)?,
-        looping: false,
+        loop_start: BeatTime::from_quarters(1)?,
+        loop_end: BeatTime::from_ratio(5, 2)?,
+        looping,
         length: BeatTime::from_quarters(4)?,
     })?;
     let Created::Note(moved) = editor.execute(Command::AddMidiNote {
@@ -174,7 +175,7 @@ fn compare(mutable: bool, block_size: usize) -> Result<(), Box<dyn Error>> {
             assert_eq!(
                 actual[..count],
                 expected[..count],
-                "mutable={mutable} block={block_size} frame={position}"
+                "mutable={mutable} looping={looping} block={block_size} frame={position}"
             );
             if position >= 127_000 {
                 assert!(

@@ -43,6 +43,24 @@ fn rebased_notes_keep_complete_project_state_through_codec_and_history() {
             active: false,
         })
         .unwrap();
+    let Created::Clips { first: alias, .. } = editor
+        .execute(Command::DuplicateAliasClips(vec![clip]))
+        .unwrap()
+    else {
+        panic!("alias")
+    };
+    editor
+        .execute(Command::SetMidiClipSource {
+            clip: alias,
+            source_length: beat(4),
+            source_start: BeatTime::ZERO,
+            loop_start: beat(1),
+            loop_end: beat(4),
+            looping: true,
+            length: beat(4),
+        })
+        .unwrap();
+    editor.execute(Command::ReverseClips(vec![alias])).unwrap();
     let before = editor.project().clone();
     editor
         .execute(Command::UpdateMidiNotesWithSourcePrefix {

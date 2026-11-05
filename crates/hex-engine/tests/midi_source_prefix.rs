@@ -136,3 +136,124 @@ fn source_prefix_keeps_unmoved_deadlines_and_existing_source_start_admission() {
         ]
     );
 }
+
+#[test]
+fn source_prefix_preserves_crossing_gates_in_looped_trimmed_and_reversed_windows() {
+    use hex_project::TrimEdge;
+    let beat = |n| BeatTime::from_quarters(n).unwrap();
+    for (looping, trimmed, reversed) in [
+        (true, false, false),
+        (false, true, false),
+        (true, true, true),
+    ] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "prefix".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: beat(4),
+                length: beat(9),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        editor
+            .execute(Command::SetMidiClipSource {
+                clip,
+                source_length: beat(6),
+                source_start: BeatTime::ZERO,
+                loop_start: beat(1),
+                loop_end: beat(4),
+                looping,
+                length: beat(9),
+            })
+            .unwrap();
+        let mut add_note = |start, duration, pitch| {
+            let Created::Note(id) = editor
+                .execute(Command::AddMidiNote {
+                    clip,
+                    start,
+                    duration,
+                    pitch,
+                    channel: 2,
+                    velocity: 71,
+                })
+                .unwrap()
+            else {
+                panic!("note")
+            };
+            id
+        };
+        let opening = add_note(BeatTime::ZERO, beat(2), 60);
+        let crossing = add_note(beat(3), beat(2), 64);
+        let moved = add_note(beat(2), beat(2), 67);
+        if trimmed {
+            editor
+                .execute(Command::TrimMidiClipEdge {
+                    clip,
+                    edge: TrimEdge::Left,
+                    beat: beat(5),
+                })
+                .unwrap();
+        }
+        if reversed {
+            editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+        }
+        let before = midi_events(editor.project()).unwrap();
+        let old_clip = editor.project().midi_clip(clip).unwrap().clone();
+        let duration = beat(2);
+        editor
+            .execute(Command::UpdateMidiNotesWithSourcePrefix {
+                clip,
+                prefix: beat(1),
+                notes: vec![MidiNoteUpdate {
+                    note: moved,
+                    start: BeatTime::ZERO,
+                    duration,
+                    pitch: 67,
+                    channel: 2,
+                    velocity: 71,
+                }],
+            })
+            .unwrap();
+
+        let new_clip = editor.project().midi_clip(clip).unwrap();
+        assert_eq!(new_clip.start(), old_clip.start());
+        assert_eq!(new_clip.length(), old_clip.length());
+        assert_eq!(new_clip.playback_offset(), old_clip.playback_offset());
+        assert_eq!(new_clip.content_view(), old_clip.content_view());
+        assert_eq!(new_clip.loop_start(), beat(2));
+        assert_eq!(new_clip.loop_end(), beat(5));
+        assert_eq!(new_clip.looping(), looping);
+        assert_eq!(
+            editor.project().midi_note(moved).unwrap().duration(),
+            duration
+        );
+        let after = midi_events(editor.project()).unwrap();
+        assert!(before.iter().any(|edge| edge.note == moved));
+        assert_eq!(
+            after,
+            before
+                .into_iter()
+                .filter(|edge| edge.note != moved)
+                .collect::<Vec<_>>()
+        );
+
+        for note in [opening, crossing] {
+            let edges: Vec<_> = after.iter().filter(|edge| edge.note == note).collect();
+            assert!(!edges.is_empty());
+            assert!(edges.chunks(2).all(|pair| pair.len() == 2
+                && pair[0].kind == MidiEventKind::NoteOn
+                && pair[1].kind == MidiEventKind::NoteOff
+                && pair[0].frame < pair[1].frame));
+        }
+    }
+}

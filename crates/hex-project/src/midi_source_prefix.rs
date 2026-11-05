@@ -1,12 +1,9 @@
-//! Translate a proved MIDI storage origin before authoring a negative-local note.
-//! The finite Arrangement placement and elapsed window stay unchanged. Translating
-//! all retained note/curve coordinates and source markers by the same positive
-//! Q32.32 amount preserves the read law of every unchanged note before tempo
-//! conversion. This owns no signed saved time, new IDs or runtime adoption rule.
-//! Linked aliases, Console sources, directed windows and loops currently refuse:
-//! their independent consumers need a complete translation proof before admission.
+//! Translate MIDI source coordinates before authoring a negative-local note.
+//! Finite placement and directed/elapsed playback windows stay unchanged.
+//! Shifting the source markers, notes and clip volume together preserves the
+//! first-pass and loop phase of all unmoved material before tempo conversion.
+//! Linked peers use the Editor's existing shared-content prefix reconciliation.
 use crate::{BeatTime, ClipId, Command, Created, Invalid, MidiNoteUpdate, Project};
-use std::sync::Arc;
 
 pub(crate) fn apply(
     project: &mut Project,
@@ -14,6 +11,9 @@ pub(crate) fn apply(
     prefix: BeatTime,
     notes: Vec<MidiNoteUpdate>,
 ) -> Result<Created, Invalid> {
+    if notes.is_empty() || notes.len() > crate::MAX_NOTES {
+        return Err(Invalid("invalid midi update batch size"));
+    }
     if prefix == BeatTime::ZERO
         || notes
             .iter()
@@ -25,22 +25,9 @@ pub(crate) fn apply(
             "negative midi authoring needs a positive prefix containing an authored note",
         ));
     }
-    if project.clip_alias(clip).is_some() {
-        return Err(Invalid(
-            "negative note movement is unavailable for linked sources; make the clip unique first",
-        ));
-    }
     let original = project.midi_clip(clip).ok_or(Invalid(
         "negative note movement requires an arrangement midi clip",
     ))?;
-    if original.content_view().is_some()
-        || original.playback_offset() != BeatTime::ZERO
-        || original.looping()
-    {
-        return Err(Invalid(
-            "negative note movement is unavailable for this playback window",
-        ));
-    }
     let shift = |value: BeatTime| {
         value
             .raw()
@@ -48,21 +35,17 @@ pub(crate) fn apply(
             .map(BeatTime::from_raw)
             .ok_or(Invalid("midi source prefix overflow"))
     };
-    let mut target = original.clone();
-    let source = Arc::make_mut(&mut target.source);
-    source.source_length = shift(source.source_length())?;
+    let source_length = shift(original.source_length())?;
+    let volume = original.volume().shifted(prefix, source_length)?;
+    let source = project.midi_source_mut(clip)?;
+    source.source_length = source_length;
     source.source_start = shift(source.source_start())?;
     source.loop_start = shift(source.loop_start())?;
     source.loop_end = shift(source.loop_end())?;
-    target.volume = target.volume.shifted(prefix, source.source_length())?;
     for note in &mut source.notes {
         note.start = shift(note.start())?;
     }
-    *project
-        .midi_clips_mut(clip)?
-        .iter_mut()
-        .find(|item| item.id() == clip)
-        .ok_or(Invalid("midi clip no longer exists"))? = target;
+    project.replace_midi_clip_volume(clip, volume)?;
     // Reuse stable-ID, active-state and same-pitch overwrite semantics, including
     // a possible rightward extension in this same private Editor candidate.
     crate::midi::apply(
@@ -193,7 +176,7 @@ mod tests {
         assert_eq!(e.project(), &after);
     }
     #[test]
-    fn ordinary_copy_and_elapsed_consumer_are_not_silently_rebased() {
+    fn ordinary_copy_keeps_its_independent_source_origin() {
         let (mut e, clip, _, moved) = fixture();
         let Created::Clips { first: copy, .. } =
             e.execute(Command::DuplicateClips(vec![clip])).unwrap()
@@ -208,28 +191,6 @@ mod tests {
         })
         .unwrap();
         assert_eq!(e.project().midi_clip(copy).unwrap(), &untouched);
-        let mut project = e.project().clone();
-        let clip_data = project
-            .midi_clips_mut(clip)
-            .unwrap()
-            .iter_mut()
-            .find(|c| c.id() == clip)
-            .unwrap();
-        clip_data.playback_offset = beat(1);
-        clip_data.length = beat(3);
-        let project = Project::from_snapshot(project.snapshot()).unwrap();
-        let mut e = Editor::new(project, 8).unwrap();
-        let before = e.project().clone();
-        assert!(
-            e.execute(Command::UpdateMidiNotesWithSourcePrefix {
-                clip,
-                prefix: beat(1),
-                notes: vec![update(moved)]
-            })
-            .is_err()
-        );
-        assert_eq!(e.project(), &before);
-        assert!(!e.can_undo());
     }
 
     #[test]
@@ -272,7 +233,7 @@ mod tests {
         }
     }
     #[test]
-    fn unproved_consumers_and_numeric_failures_refuse_atomically() {
+    fn invalid_prefixes_refuse_atomically() {
         let (e, clip, _, moved) = fixture();
         for prefix in [BeatTime::ZERO, BeatTime::from_raw(u64::MAX)] {
             let mut e = Editor::new(e.project().clone(), 8).unwrap();
@@ -288,44 +249,6 @@ mod tests {
             assert_eq!(e.project(), &before);
             assert!(!e.can_undo());
         }
-        let mut linked = Editor::new(e.project().clone(), 8).unwrap();
-        linked
-            .execute(Command::DuplicateAliasClips(vec![clip]))
-            .unwrap();
-        let before = linked.project().clone();
-        assert!(
-            linked
-                .execute(Command::UpdateMidiNotesWithSourcePrefix {
-                    clip,
-                    prefix: beat(1),
-                    notes: vec![update(moved)]
-                })
-                .is_err()
-        );
-        assert_eq!(linked.project(), &before);
-        let mut looped = Editor::new(e.project().clone(), 8).unwrap();
-        looped
-            .execute(Command::SetMidiClipSource {
-                clip,
-                source_length: beat(4),
-                source_start: BeatTime::ZERO,
-                loop_start: BeatTime::ZERO,
-                loop_end: beat(4),
-                looping: true,
-                length: beat(4),
-            })
-            .unwrap();
-        let before = looped.project().clone();
-        assert!(
-            looped
-                .execute(Command::UpdateMidiNotesWithSourcePrefix {
-                    clip,
-                    prefix: beat(1),
-                    notes: vec![update(moved)]
-                })
-                .is_err()
-        );
-        assert_eq!(looped.project(), &before);
         let mut wrong = Editor::new(e.project().clone(), 8).unwrap();
         let before = wrong.project().clone();
         let mut note = update(moved);
