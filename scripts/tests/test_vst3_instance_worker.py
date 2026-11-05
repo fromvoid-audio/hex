@@ -251,6 +251,46 @@ class NativeInstanceTests(unittest.TestCase):
         self.assertEqual(session.render(7)[2][0], b"HXVB")
         self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (2, 14))
 
+    def instrument_block(self, session, notes, frames=8):
+        header = bytearray(session.packet(frames))
+        struct.pack_into("<H", header, 8, len(notes))
+        events = b"".join(struct.pack("<HBBBB2x", offset, 3, status, key, velocity)
+                          for offset, status, key, velocity in notes)
+        session.socket.sendall(header + bytes(frames * 8) + events)
+        reply = session.message()
+        session.sequence += 1
+        session.frames += frames
+        return reply
+
+    def test_instrument_note_offsets_gate_pcm_across_blocks(self):
+        session = self.session(variant=115, channels=(0, 2))
+        self.assertEqual(session.message()[0], b"HXVIRD04")
+        for notes, expected in [
+            ([(3, 0x92, 60, 127)], [0.] * 3 + [.5] * 5),
+            ([(4, 0x92, 60, 0)], [.625] * 4 + [0.] * 4),
+            ([], [0.] * 8),
+        ]:
+            magic, reply = self.instrument_block(session, notes)
+            self.assertEqual(magic, b"HXVB")
+            self.assertEqual(reply[8:10], bytes(2))
+            self.assertEqual(struct.unpack("<16f", reply[64:]), tuple(x for v in expected for x in (v, v)))
+        self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (3, 24))
+
+    def test_midi_outside_the_active_instrument_bus_refuses_before_dsp(self):
+        for channels, variant, note in [
+            ((0, 2), 115, (0, 0x94, 60, 127)),  # the fixture has four MIDI channels
+            ((0, 2), 115, (0, 0xb2, 60, 127)),  # controllers are not note events
+            ((2, 2), 0, (0, 0x92, 60, 127)),
+        ]:
+            with self.subTest(channels=channels, note=note):
+                session = self.session(variant=variant, channels=channels)
+                self.assertEqual(session.message()[0], b"HXVIRD04")
+                magic, error = self.instrument_block(session, [note])
+                self.assertEqual(magic, b"HXVIER01")
+                self.assertEqual(struct.unpack("<HB4QI", error), (1, 1, *BINDING, 8))
+                self.terminal(session, 8)
+                self.assertEqual(self.observation()[10], 0)
+
     def test_processor_feedback_reaches_original_controller_before_live_and_quiescent_capture(self):
         session = self.session(variant=37)
         self.ready(session, controller=True)

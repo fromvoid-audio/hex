@@ -34,6 +34,7 @@ class Instance final {
     bool component_initialized = false, controller_initialized = false;
     bool handler_set = false, connected_component = false, connected_controller = false;
     bool input_active = false, output_active = false, active = false;
+    int32 event_input_channels_ = 0;
     bool configured = false, configuration_started = false, opened = false, used = false;
     ProcessingConfiguration configuration_{};
     StateStream* component_stream=nullptr;
@@ -183,6 +184,17 @@ public:
         if (!audio_buses(component,kInput,input_count,request.input_channels,false) ||
             !audio_buses(component,kOutput,output_count,request.output_channels,false))
             return ConfigurationResult::UnsupportedTopology;
+        int32 event_channels=0;
+        if (!request.input_channels) {
+            const auto event_count=component->getBusCount(kEvent,kInput);
+            BusInfo event{};
+            if (event_count!=0) {
+                if (event_count!=1 || component->getBusInfo(kEvent,kInput,0,event)!=kResultOk ||
+                    event.mediaType!=kEvent || event.direction!=kInput || event.busType!=kMain ||
+                    event.channelCount<1 || event.channelCount>16) return ConfigurationResult::UnsupportedTopology;
+                event_channels=event.channelCount;
+            }
+        }
         const auto main_input=arrangement(request.input_channels);
         const auto main_output=arrangement(request.output_channels);
         SpeakerArrangement aux_input{};
@@ -216,6 +228,11 @@ public:
                 return ConfigurationResult::ActivationRefused;
             input_active = request.input_enabled;
         }
+        if (event_channels) {
+            if (component->activateBus(kEvent,kInput,0,true)!=kResultOk)
+                return ConfigurationResult::ActivationRefused;
+            event_input_channels_=event_channels;
+        }
         if (component->setActive(true) != kResultOk) return ConfigurationResult::ActivationRefused;
         configuration_=request;
         active = true; configured = true;
@@ -230,6 +247,8 @@ public:
     const ProcessingConfiguration* configuration() const {
         return configured?&configuration_:nullptr;
     }
+    // Immutable while the serialized processing lane owns the instance.
+    int32 event_input_channels() const { return event_input_channels_; }
 
     // One initial stopped capture; later project restore/capture transactions
     // must reuse the same actual instance owner, not create a competing state path.
@@ -444,6 +463,10 @@ public:
         if (input_active) {
             if (component->activateBus(kAudio, kInput, 0, false) != kResultOk) return refuse_cleanup();
             input_active = false;
+        }
+        if (event_input_channels_) {
+            if (component->activateBus(kEvent,kInput,0,false)!=kResultOk) return refuse_cleanup();
+            event_input_channels_=0;
         }
         if (output_active) {
             if (component->activateBus(kAudio, kOutput, 0, false) != kResultOk) return refuse_cleanup();

@@ -373,6 +373,24 @@ fn immutable_request_bounds_and_failed_reply_never_fabricate_pcm() {
         })
         .unwrap();
     assert!(config.validate_block(&event, 0).is_err());
+    let mut instrument = config.clone();
+    instrument.input_channels = 0;
+    assert!(
+        instrument.validate_block(&event, 0).is_err(),
+        "instrument PCM input must be zero"
+    );
+    event.pcm.fill([0.0; 2]);
+    instrument.validate_block(&event, 0).unwrap();
+    event.events = Events::default();
+    event
+        .events
+        .push(MidiEvent {
+            frame: 0,
+            bytes: [0xb0, 64, 127],
+            len: 3,
+        })
+        .unwrap();
+    assert!(instrument.validate_block(&event, 0).is_err());
     let mut bad = config.clone();
     bad.quantum = u16::MAX;
     assert!(bad.validate_block(&block, 0).is_err());

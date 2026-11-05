@@ -151,7 +151,11 @@ impl Configuration {
             || block.frames != self.quantum
             || block.sequence != sequence
             || sequence.checked_mul(u64::from(self.quantum)) != Some(block.first_frame)
-            || !block.events.as_slice().is_empty()
+            || block.events.as_slice().iter().any(|event| {
+                self.input_channels != 0
+                    || event.len != 3
+                    || !matches!(event.bytes[0] & 0xf0, 0x80 | 0x90)
+            })
             || !block.pcm[..usize::from(self.quantum)]
                 .iter()
                 .flatten()

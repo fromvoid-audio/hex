@@ -2,6 +2,7 @@
 // plug-in stdio is disconnected before loading. No native pointer is serialized.
 #pragma once
 #include "macos_state_stream.hpp"
+#include "macos_input_notes.hpp"
 #include "macos_parameters.hpp"
 #include "macos_parameter_page.hpp"
 #include <array>
@@ -178,8 +179,10 @@ inline void sample(uint8_t* p,float value) {
     uint32_t bits=0;std::memcpy(&bits,&value,4);for(size_t n=0;n<4;++n) p[n]=static_cast<uint8_t>(bits>>(n*8));
 }
 struct Packet {
-    std::array<uint8_t,header_size+max_frames*8+hex_instance::PARAMETER_POINT_COUNT*16> bytes{};
+    std::array<uint8_t,header_size+max_frames*8+hex_instance::INPUT_NOTE_COUNT*8+hex_instance::PARAMETER_POINT_COUNT*16> bytes{};
     std::array<hex_instance::ParameterPoint,hex_instance::PARAMETER_POINT_COUNT> parameters{};
+    std::array<hex_instance::InputNote,hex_instance::INPUT_NOTE_COUNT> notes{};
+    size_t note_count=0;
     size_t parameter_count=0;
     uint16_t frames=0;bool stop=false,observe_latency=false;
     uint64_t next_graph=0,next_epoch=0;
@@ -205,7 +208,9 @@ struct Packet {
         const auto version=number(p+4,2);
         observe_latency=edit_query && version==2;
         if((!stop && !quiesce && !resume && !capture && !live_start && !live_poll && !pcm && !flush && !edit_query && !page_start && !page_poll && !reactivate) ||
-            ((pcm || flush || edit_query)?(version!=1 && version!=2):version!=1) || number(p+8,2)) return -1;
+            ((pcm || flush || edit_query)?(version!=1 && version!=2):version!=1)) return -1;
+        note_count=static_cast<size_t>(number(p+8,2));
+        if (note_count>notes.size() || (note_count && (!pcm || config.inputs))) return -1;
         parameter_count=(pcm || flush) && version==2?static_cast<size_t>(number(p+10,2)):0;
         if(parameter_count>parameters.size()) return -1;
         for(size_t n=resume?11:((pcm || flush) && version==2?12:10);n<16;++n) if(p[n]) return -1;
@@ -247,9 +252,20 @@ struct Packet {
             capture_operation=number(p+header_size,8);return capture_operation?(reactivate?12:(edit_query?9:(live_start?6:(live_poll?7:5)))):-1;
         }
         if(!frames || frames>config.maximum || frame>std::numeric_limits<uint64_t>::max()-frames || sequence==std::numeric_limits<uint64_t>::max()) return -1;
-        if(read_exact(fd,p+header_size,frames*8+parameter_count*16)!=1) return -1;
+        if(read_exact(fd,p+header_size,frames*8+note_count*8+parameter_count*16)!=1) return -1;
         for(size_t n=0;n<frames*2u;++n) if(!std::isfinite(sample(p+header_size+n*4))) return -1;
-        return parse_parameters(p+header_size+frames*8,frames)?1:-1;
+        const auto* payload=p+header_size+frames*8;
+        for (size_t n=0;n<note_count;++n) {
+            const auto* raw=payload+n*8;
+            const auto offset=number(raw,2);
+            const auto status=raw[3]&0xf0;
+            if (offset>=frames || raw[2]!=3 || (status!=0x80 && status!=0x90) ||
+                raw[4]>=128 || raw[5]>=128 || raw[6] || raw[7] ||
+                (n && notes[n-1].offset>static_cast<int32_t>(offset))) return -1;
+            notes[n]={static_cast<int32_t>(offset),static_cast<int16_t>(raw[3]&0x0f),
+                static_cast<int16_t>(raw[4]),raw[5],status==0x90 && raw[5]!=0};
+        }
+        return parse_parameters(payload+note_count*8,frames)?1:-1;
     }
     bool parse_parameters(const uint8_t* start,int32_t limit) {
         for(size_t n=0;n<parameter_count;++n) {
@@ -266,6 +282,7 @@ struct Packet {
     bool write(int fd,const hex_instance::ParameterChanges& output) {
         if(output.size()>parameters.size()) return false;
         bytes[4]=output.size()?2:1;bytes[5]=0;
+        bytes[8]=bytes[9]=0; // Input notes are never echoed as processor output.
         bytes[10]=static_cast<uint8_t>(output.size());bytes[11]=0;
         for(size_t n=0;n<output.size();++n) {
             hex_instance::ParameterPoint value{};if(!output.point(n,value)) return false;
