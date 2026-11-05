@@ -40,6 +40,15 @@ pub(super) struct State {
     midi: Option<((u64, ClipId), PianoView)>,
 }
 impl State {
+    pub(super) fn shift_midi_origin(&mut self, generation: u64, clip: ClipId, delta: i128) {
+        if let Some((owner, view)) = self.midi.as_mut()
+            && *owner == (generation, clip)
+        {
+            view.start =
+                super::midi_scene::clamp_start(view.start.saturating_add(delta), view.span.raw());
+        }
+    }
+
     pub(super) fn clear_clip(&mut self) {
         self.midi = None;
     }

@@ -77,6 +77,9 @@ impl std::ops::DerefMut for MidiSource {
 /// Holding the token prevents source-address reuse while cached artifacts use it.
 #[derive(Debug, Clone)]
 pub struct MidiSourceIdentity(Arc<MidiSource>);
+#[path = "midi_source_weak_identity.rs"]
+mod view_identity;
+pub use view_identity::MidiSourceWeakIdentity;
 impl MidiSourceIdentity {
     pub(crate) fn of(source: &Arc<MidiSource>) -> Self {
         Self(Arc::clone(source))

@@ -32,7 +32,7 @@ pub(super) struct Pending {
     preview: Frozen,
 }
 
-fn source_identity(project: &Project, clip: ClipId) -> Option<MidiSourceIdentity> {
+pub(super) fn source_identity(project: &Project, clip: ClipId) -> Option<MidiSourceIdentity> {
     project
         .midi_clip(clip)
         .map(|clip| clip.source_identity())
@@ -268,7 +268,7 @@ impl EditorView {
             && event.error.is_none()
             && let Some(pending) = self.pending_midi_drag.as_ref()
             && let Command::UpdateMidiNotesWithSourcePrefix { clip, prefix, .. } = pending.command
-            && pending.displayed(self)
+            && pending.source_current(self)
             && self
                 .state
                 .as_ref()
@@ -279,17 +279,15 @@ impl EditorView {
                         == Some(new.source_start().raw())
                 })
         {
-            // Same receive as canonical installation: no intermediate repaint at
-            // the old origin and no camera motion on refusal/earlier terminals.
-            self.piano_beat_start = super::midi_scene::clamp_start(
-                self.piano_beat_start
-                    .saturating_add(i128::from(prefix.raw())),
-                self.piano_beat_span.raw(),
-            );
-            self.midi_marker = self
-                .midi_marker
-                .and_then(|raw| raw.checked_add(prefix.raw()));
-            self.shift_midi_time_selection_origin(prefix.raw());
+            if let Some(source) = source_identity(&event.state.project, clip) {
+                self.midi_origin_history.record_prefix(
+                    self.project_generation,
+                    clip,
+                    &pending.source,
+                    &source,
+                    prefix.raw(),
+                );
+            }
         }
         self.retire_pending_midi_drag();
     }

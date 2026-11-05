@@ -87,14 +87,11 @@ impl Capture {
     }
 }
 impl EditorView {
-    pub(in crate::editor) fn shift_midi_time_selection_origin(&mut self, prefix: u64) {
+    pub(in crate::editor) fn shift_midi_time_selection_origin(&mut self, delta: i128) {
         self.midi_time_selection.gesture = None;
         if let Some(selection) = self.midi_time_selection.selection.as_mut() {
-            if let Some((start, end)) = selection
-                .start
-                .checked_add(prefix)
-                .zip(selection.end.checked_add(prefix))
-            {
+            let shift = |raw: u64| u64::try_from(i128::from(raw).saturating_add(delta)).ok();
+            if let Some((start, end)) = shift(selection.start).zip(shift(selection.end)) {
                 selection.start = start;
                 selection.end = end;
             } else {

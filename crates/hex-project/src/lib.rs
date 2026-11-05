@@ -191,7 +191,7 @@ pub use import_existing::ExistingAudioPlacement;
 pub use instrument_history::{InstrumentAssetHistoryDelta, InstrumentHistoryDelta};
 pub use midi::{
     MidiClip, MidiClipTrim, MidiContent, MidiNote, MidiOneShotBoundary, MidiSource,
-    MidiSourceIdentity, TrackContent,
+    MidiSourceIdentity, MidiSourceWeakIdentity, TrackContent,
 };
 mod midi_loop_resize;
 pub use midi_loop_resize::{MidiClipLoopResize, MidiViewResizeOperation};

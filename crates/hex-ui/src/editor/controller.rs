@@ -2318,6 +2318,7 @@ impl EditorView {
         self.section_request_complete(&event);
         self.track_reorder_complete(&event);
         self.midi_drag_request_complete(&event);
+        self.advance_midi_origin_view(&event);
         self.fade_request_complete(&event);
         self.clip_gain_complete(&event);
         self.gain_request_complete(&event);

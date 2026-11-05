@@ -143,6 +143,7 @@ mod midi_group_drag;
 mod midi_marquee;
 mod midi_note_copy;
 mod midi_note_overwrite;
+mod midi_origin_view;
 mod midi_pan;
 mod midi_pitch_zoom;
 mod midi_recording;
@@ -826,6 +827,7 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_note_gesture: Option<midi_drag::NoteGesture>,
     pub(in crate::editor) midi_group_gesture: Option<midi_group_drag::GroupGesture>,
     pending_midi_drag: Option<midi_pending_drag::Pending>,
+    midi_origin_history: midi_origin_view::State,
     pub(in crate::editor) midi_creation: Option<midi_creation::Creation>,
     pub(in crate::editor) midi_stroke: Option<midi_stroke::MidiStroke>,
     pub(in crate::editor) midi_draw_mode: bool,
@@ -1592,6 +1594,7 @@ impl EditorView {
             midi_note_gesture: None,
             midi_group_gesture: None,
             pending_midi_drag: None,
+            midi_origin_history: midi_origin_view::State::default(),
             midi_creation: None,
             midi_stroke: None,
             midi_draw_mode: false,
