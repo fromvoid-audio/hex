@@ -181,16 +181,16 @@ fn frozen_reverb_reversal_rollback_and_unchanged_handoff_keep_one_audible_mix() 
 #[ignore = "manual release hot-path profile; no physical deadline acceptance"]
 fn reverb_bypass_hot_path_profile() {
     use std::{hint::black_box, time::Instant};
-    assert!(!cfg!(debug_assertions), "run with --release");
+    println!("optimized={}", !cfg!(debug_assertions));
     let definition = &crate::reverb::REVERB_DEFINITION;
     let mut on = chain(definition, false, 48_000);
     let mut off = chain(definition, true, 48_000);
     let mut times = Vec::with_capacity(4096);
     let mut enabled = true;
-    for iteration in 0..4608 {
+    for iteration in 0_u32..4608 {
         let mut input = [[0.25, -0.25]; 128];
         let start = Instant::now();
-        if iteration % 16 == 0 {
+        if iteration.is_multiple_of(16) {
             if enabled {
                 off.transfer_history_from(&mut on);
             } else {
