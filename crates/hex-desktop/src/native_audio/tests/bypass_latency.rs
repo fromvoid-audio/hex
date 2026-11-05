@@ -886,46 +886,76 @@ fn eq_bypass_waits_for_inflight_parameter_publication() {
     h.service
         .submit(Request::Edit(Command::ToggleDeviceBypass { device }))
         .unwrap();
-    let wait = Instant::now() + Duration::from_millis(100);
-    let mut terminal = None;
-    while Instant::now() < wait {
-        h.pump();
-        if let Ok(event) = h.service.try_event()
-            && event.request_complete
-        {
-            assert!(event.error.is_none(), "{:?}", event.error);
-            terminal = Some(event);
-            break;
+    let assert_waiting = |h: &mut ResidentHarness| {
+        let deadline = Instant::now() + Duration::from_millis(50);
+        while Instant::now() < deadline {
+            h.pump();
+            if let Ok(event) = h.service.try_event()
+                && event.request_complete
+            {
+                panic!(
+                    "request completed before its predecessor applied: {:?}",
+                    event.error
+                );
+            }
+            std::thread::yield_now();
         }
-        std::thread::yield_now();
-    }
-    h.render();
-    let event = terminal.unwrap_or_else(|| h.next());
-    assert!(event.error.is_none(), "{:?}", event.error);
-    assert!(event.state.project.device(device).unwrap().bypassed());
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while h
-        .submitted
-        .is_none_or(|(revision, _)| revision <= parameter_revision)
-    {
-        h.pump();
-        assert!(
-            Instant::now() < deadline,
-            "bypass publication was not staged"
-        );
-        std::thread::yield_now();
-    }
-    let bypass_revision = h.submitted.unwrap().0;
+    };
+    assert_waiting(&mut h);
+    let (applied, _) = h.applied(applied);
+    assert_eq!(applied, parameter_revision);
+    let bypassed = h.next();
+    assert!(bypassed.error.is_none(), "{:?}", bypassed.error);
+    assert!(bypassed.state.project.device(device).unwrap().bypassed());
+
+    // A discrete parameter control and a reversal arrive while the bypass
+    // candidate still owns the publication slot. The FIFO must keep both.
+    let parameter = hex_engine::DEVICE_OUTPUT_GAIN.id;
+    let value = hex_session::device_gesture::ParameterValue::Float(-6.0);
+    h.service
+        .submit(Request::SetDeviceParameter {
+            device,
+            parameter,
+            value,
+        })
+        .unwrap();
     h.service
         .submit(Request::Edit(Command::ToggleDeviceBypass { device }))
         .unwrap();
-    h.render();
+    assert_waiting(&mut h);
+
+    let (applied, metadata) = h.applied(applied);
+    assert_eq!(metadata.context.editor_revision, bypassed.state.revision);
+    let changed = h.next();
+    assert!(changed.error.is_none(), "{:?}", changed.error);
+    assert_eq!(
+        changed.status.as_deref(),
+        Some("resident edit accepted · waiting for audio")
+    );
+    let changed_device = changed.state.project.device(device).unwrap();
+    assert!(changed_device.bypassed());
+    assert_eq!(
+        hex_engine::native_device_parameter(changed_device.state(), parameter).unwrap(),
+        value
+    );
+    let (applied, metadata) = h.applied(applied);
+    assert_eq!(metadata.context.editor_revision, changed.state.revision);
     let reversed = h.next();
     assert!(reversed.error.is_none(), "{:?}", reversed.error);
-    assert!(!reversed.state.project.device(device).unwrap().bypassed());
-    let (next, metadata) = h.applied(bypass_revision);
+    let reversed_device = reversed.state.project.device(device).unwrap();
+    assert!(!reversed_device.bypassed());
+    assert_eq!(reversed_device.state(), changed_device.state());
+    let (applied, metadata) = h.applied(applied);
     assert_eq!(metadata.context.editor_revision, reversed.state.revision);
-    assert!(next > bypass_revision);
+
+    let undone = h.run(Request::Undo);
+    assert_eq!(undone.state.project, changed.state.project);
+    let (applied, metadata) = h.applied(applied);
+    assert_eq!(metadata.context.editor_revision, undone.state.revision);
+    let redone = h.run(Request::Redo);
+    assert_eq!(redone.state.project, reversed.state.project);
+    let (_, metadata) = h.applied(applied);
+    assert_eq!(metadata.context.editor_revision, redone.state.revision);
 }
 
 #[test]
