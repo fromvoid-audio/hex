@@ -62,12 +62,8 @@ impl Project {
         let mut waveform = Vec::new();
         if matches!(root.domain.clock, AudioDomainClock::Frames(_))
             && matches!(root.timing, AudioClipTiming::Frames)
-            && root.placement.is_none()
-            && root.content_view.is_none()
             && root.processing_projection.is_none()
             && !root.domain.warp_enabled
-            && root.domain.pitch_cents == 0
-            && root.domain.source_gain.is_empty()
             && root.domain.fade.is_neutral()
         {
             let before = original.editable_audio_events()?;
@@ -189,10 +185,27 @@ impl Clip {
             || after.domain.source_length != before.domain.source_length
             || after.domain.looping != before.domain.looping
             || after.domain.source_phase != before.domain.source_phase
+            || after.domain.pitch_cents != before.domain.pitch_cents
+            || after.domain.source_gain != before.domain.source_gain
+            || after.domain.warp_resampler != before.domain.warp_resampler
+            || after.placement != before.placement
             || i128::from(after.view_start) - i128::from(before.view_start) != shift
             || i128::from(after.view_end) - i128::from(before.view_end) != shift
         {
             return None;
+        }
+        match (before.content_view, after.content_view) {
+            (Some(mut previous), Some(current)) => {
+                previous.base_view_start =
+                    u64::try_from(i128::from(previous.base_view_start) + shift).ok()?;
+                previous.base_view_end =
+                    u64::try_from(i128::from(previous.base_view_end) + shift).ok()?;
+                if previous != current {
+                    return None;
+                }
+            }
+            (None, None) => {}
+            _ => return None,
         }
         i64::try_from(shift).ok()
     }
