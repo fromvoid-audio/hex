@@ -622,6 +622,10 @@ pub enum Command {
     RemoveTrack(TrackId),
     /// Remove explicit tracks through the existing cleanup as one history edit.
     RemoveTracks(Vec<TrackId>),
+    SetTrackTags {
+        track: TrackId,
+        tags: Vec<crate::TrackTag>,
+    },
     RenameTrack {
         track: TrackId,
         name: String,
@@ -1334,6 +1338,7 @@ pub(crate) fn new_track(
     let id = TrackId(project.allocate_id()?);
     let color = crate::appearance::new_track_color(project);
     Ok(Track {
+        tags: Vec::new(),
         kind,
         parent_group,
         color,
@@ -2639,6 +2644,11 @@ impl Project {
                 crate::clip_selection_edit::apply(self, clips, edit)
             }
             Command::RenameClip { clip, name } => crate::clip_name::rename(self, clip, name),
+            Command::SetTrackTags { track, tags } => {
+                let tags = crate::track_tags::canonical_list(tags)?;
+                self.track_mut(track)?.tags = tags;
+                Ok(Created::None)
+            }
             Command::RenameTrack { track, name } => {
                 name_valid(&name)?;
                 let target = self.track_mut(track)?;

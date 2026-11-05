@@ -3,7 +3,8 @@
 //! schema69 identifies the arrangement clip and nested source path. The
 //! existing event codec still owns all event IDs, geometry and media. Schema71
 //! reuses this layout, allowing an empty musical inventory for extended frame
-//! roots. The top-level codec checks the schema-specific frame extent.
+//! roots. Schema72 also uses this inventory. The top-level codec checks the
+//! schema-specific frame extent.
 use crate::{MUSICAL_EVENT_SOURCE_SCHEMA_VERSION, Project, SIDECHAIN_SCHEMA_VERSION, StorageError};
 use hex_project::{AudioClipEdit, BeatTime, MusicalEventSource, Snapshot, TrackContentSnapshot};
 use serde::{Deserialize, Serialize};
@@ -118,7 +119,10 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
 }
 
 pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError> {
-    let mut value = super::audio_events::parse_unique(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?, version)
+}
+
+pub(crate) fn decode_value(mut value: Value, version: u32) -> Result<Project, StorageError> {
     if value.get("version").and_then(Value::as_u64) != Some(version.into()) {
         return Err(StorageError::Invalid("invalid musical event source schema"));
     }

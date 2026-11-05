@@ -31,5 +31,6 @@ mod streamed_loop_seam;
 mod streamed_publication_boundary;
 mod touch_playback_allocations;
 mod track_gain_allocations;
+mod track_tag_allocations;
 mod vector_global_allocations;
 mod warp_preview_metadata_cost;
