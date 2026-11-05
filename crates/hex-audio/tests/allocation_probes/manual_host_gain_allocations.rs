@@ -34,12 +34,28 @@ fn render(callback: &mut prepared::Callback, pcm: &mut [Frame]) -> Result<(), Bo
 #[test]
 fn direct_utility_controls_ramp_for_five_ms_across_prepared_publication()
 -> Result<(), Box<dyn Error>> {
+    check_direct_utility_controls(false)
+}
+
+#[test]
+fn filtered_utility_controls_ramp_without_resetting_dc_history() -> Result<(), Box<dyn Error>> {
+    check_direct_utility_controls(true)
+}
+
+fn check_direct_utility_controls(filtered: bool) -> Result<(), Box<dyn Error>> {
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 
     const SOURCE: Frame = [0.25, -0.125];
     const FRAMES: u64 = 4096;
-    let neutral = UTILITY_DEFINITION.default_state()?;
+    let mut neutral = UTILITY_DEFINITION.default_state()?;
+    if filtered {
+        neutral = UTILITY_DEFINITION.patch_parameter(
+            &neutral,
+            parameter::DC_REMOVE,
+            ParameterValue::Bool(true),
+        )?;
+    }
     for rate in [48_000, 192_000] {
         let ramp_frames = rate / 200;
         for block in [1, 7, 64, 512] {
@@ -111,15 +127,29 @@ fn direct_utility_controls_ramp_for_five_ms_across_prepared_publication()
                 }
                 assert_eq!(control.status.applied_revision.load(Acquire), revision);
                 assert_eq!(control.status.rejected_revision(), None);
-                assert_eq!(output[ramp_frames as usize - 1..], [target; 2]);
-                for (frame, actual) in output.iter().take(ramp_frames as usize).enumerate() {
-                    let fraction = (frame + 1) as f32 / ramp_frames as f32;
+                use hex_devices::utility_filters::{
+                    PreparedUtilityFilters, UtilityFilterProcessor,
+                };
+                let mut reference = UtilityFilterProcessor::new(PreparedUtilityFilters::new(
+                    rate, filtered, false, 120.0, false,
+                )?);
+                assert_eq!(reference.process_frame(SOURCE), SOURCE);
+                for (frame, actual) in output.iter().enumerate() {
+                    let fraction = ((frame + 1) as f32 / ramp_frames as f32).min(1.0);
+                    let expected = if filtered && parameter == parameter::MUTE {
+                        let gain = 1.0 - fraction;
+                        let signal = if gain == 0.0 { [0.0; 2] } else { SOURCE };
+                        reference.process_frame(signal).map(|value| value * gain)
+                    } else {
+                        let input = std::array::from_fn(|channel| {
+                            SOURCE[channel] + (target[channel] - SOURCE[channel]) * fraction
+                        });
+                        reference.process_frame(input)
+                    };
                     for channel in 0..2 {
-                        let expected =
-                            SOURCE[channel] + (target[channel] - SOURCE[channel]) * fraction;
                         assert!(
-                            (actual[channel] - expected).abs() < 1.0e-7,
-                            "{rate} hz, block {block}, {parameter:?}, frame {frame}: {actual:?}"
+                            (actual[channel] - expected[channel]).abs() < 1.0e-7,
+                            "{rate} hz, filtered {filtered}, block {block}, {parameter:?}, frame {frame}: {actual:?} != {expected:?}"
                         );
                     }
                 }

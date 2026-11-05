@@ -173,6 +173,7 @@ pub struct UtilityFilterProcessor {
     bass_history_valid: bool,
     automation: Option<crate::utility::UtilityAutomation>,
     prepared: PreparedUtilityFilters,
+    mute_ramp: Option<crate::utility::UtilityRamp>,
     dc_input: [f64; 2],
     dc_output: [f64; 2],
     side_high: [BiquadHistory; 2],
@@ -192,6 +193,7 @@ impl UtilityFilterProcessor {
             bass_history_valid: true,
             automation,
             prepared,
+            mute_ramp: None,
             dc_input: [0.0; 2],
             dc_output: [0.0; 2],
             side_high: [BiquadHistory::default(); 2],
@@ -210,6 +212,7 @@ impl UtilityFilterProcessor {
             bass_history_valid,
             automation,
             prepared,
+            mute_ramp,
             dc_input,
             dc_output,
             side_high,
@@ -220,6 +223,9 @@ impl UtilityFilterProcessor {
             automation.check_inline();
         }
         prepared.check_inline();
+        if let Some(ramp) = mute_ramp {
+            ramp.check_inline();
+        }
         let _: (&[f64; 2], &[f64; 2]) = (dc_input, dc_output);
         for history in side_high.iter().chain(mid_low) {
             history.check_inline();
@@ -257,6 +263,21 @@ impl UtilityFilterProcessor {
             self.reset();
             return false;
         }
+        self.mute_ramp = self.manual_mute_target().and_then(|target| {
+            if Some(target) == previous.manual_mute_target() {
+                previous.mute_ramp
+            } else {
+                let from = previous.mute_ramp.map_or(
+                    f32::from(!previous.prepared.output_muted),
+                    crate::utility::UtilityRamp::value,
+                );
+                crate::utility::UtilityRamp::new(
+                    from,
+                    f32::from(!target),
+                    self.prepared.sample_rate,
+                )
+            }
+        });
         self.dc_history_valid = previous.dc_history_valid;
         self.bass_history_valid = previous.bass_history_valid;
         self.dc_input = if previous.dc_history_valid {
@@ -284,6 +305,13 @@ impl UtilityFilterProcessor {
             self.prepared = previous.prepared;
         }
         true
+    }
+
+    fn manual_mute_target(&self) -> Option<bool> {
+        self.automation.as_ref().map_or(
+            Some(self.prepared.output_muted),
+            crate::utility::UtilityAutomation::manual_mute_target,
+        )
     }
 
     fn process_automated(
@@ -324,11 +352,16 @@ impl UtilityFilterProcessor {
             .automation
             .as_ref()
             .map_or(input, |automation| automation.matrix.apply(input));
-        let input = if self.prepared.output_muted {
-            [0.0; 2]
+        let gain = if let Some(ramp) = self.mute_ramp.as_mut() {
+            let gain = ramp.advance();
+            if ramp.finished() {
+                self.mute_ramp = None;
+            }
+            gain
         } else {
-            input
+            f32::from(!self.prepared.output_muted)
         };
+        let input = if gain == 0.0 { [0.0; 2] } else { input };
         let mut signal = [f64::from(input[0]), f64::from(input[1])];
         // Modes which this revision can enable retain their dormant histories.
         // A skipped mode is explicitly invalidated so a later revision starts it
@@ -378,10 +411,12 @@ impl UtilityFilterProcessor {
         } else {
             [(mid + side) as f32, (mid - side) as f32]
         };
-        if self.prepared.output_muted {
+        if gain == 1.0 {
+            output
+        } else if gain == 0.0 {
             [0.0; 2]
         } else {
-            output
+            output.map(|sample| sample * gain)
         }
     }
 
