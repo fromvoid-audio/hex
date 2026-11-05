@@ -530,3 +530,64 @@ fn musical_event_source_schema_preserves_cropped_and_nested_event_spans() {
         }
     }
 }
+
+#[test]
+fn extended_frame_roots_require_schema71_and_refuse_malformed_extents() {
+    use hex_project::{MAX_AUDIO_DOMAIN_FRAMES, MAX_SPARSE_AUDIO_TIMELINE_FRAMES};
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { clip, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "audio".into(),
+            path: "audio.wav".into(),
+            sample_rate: 48_000,
+            frames: 100,
+        })
+        .unwrap()
+    else {
+        panic!("fixture")
+    };
+    editor
+        .execute(Command::ImportAudioTrack {
+            name: "ordinary".into(),
+            path: "ordinary.wav".into(),
+            sample_rate: 48_000,
+            frames: 100,
+        })
+        .unwrap();
+    let historical = hex_storage::encode(editor.project()).unwrap();
+    assert_eq!(hex_storage::decode(&historical).unwrap(), *editor.project());
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Place {
+                event: 1,
+                start: MAX_AUDIO_DOMAIN_FRAMES as i64 + 100,
+            },
+        })
+        .unwrap();
+    let bytes = hex_storage::encode(editor.project()).unwrap();
+    assert_eq!(hex_storage::decode(&bytes).unwrap(), *editor.project());
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        value["version"],
+        hex_storage::EXTENDED_FRAME_EVENTS_SCHEMA_VERSION
+    );
+    let mut mislabeled = value.clone();
+    mislabeled["version"] = hex_storage::SIDECHAIN_SCHEMA_VERSION.into();
+    mislabeled
+        .as_object_mut()
+        .unwrap()
+        .remove("musical_event_sources");
+    assert!(hex_storage::decode(&serde_json::to_vec(&mislabeled).unwrap()).is_err());
+    let mut missing = value.clone();
+    missing["extended_frame_geometry"]
+        .as_object_mut()
+        .unwrap()
+        .remove(&clip.value().to_string());
+    assert!(hex_storage::decode(&serde_json::to_vec(&missing).unwrap()).is_err());
+    let mut malformed = value;
+    let extent = &mut malformed["extended_frame_geometry"][clip.value().to_string()]["length"];
+    assert!(extent.as_u64().unwrap() > MAX_AUDIO_DOMAIN_FRAMES);
+    *extent = (MAX_SPARSE_AUDIO_TIMELINE_FRAMES + 1).into();
+    assert!(hex_storage::decode(&serde_json::to_vec(&malformed).unwrap()).is_err());
+}

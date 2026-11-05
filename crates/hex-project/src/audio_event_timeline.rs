@@ -12,12 +12,12 @@
 //! directed frame views translate their crop coordinates with the events;
 //! their duration, direction and cycle phase remain fixed. Musical one-shots
 //! retain a source span at the original processing origin, even when the
-//! destination grows. Work stays bounded by
-//! [`MAX_AUDIO_DOMAIN_FRAMES`].
+//! destination grows. One-shot frame roots have a separate sparse timeline
+//! horizon. Other transform roots keep the dense processing cap.
 use crate::{
     AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioEventEdit, AudioEvents, BeatTime, Clip,
     ClipFade, ClipGain, ClipId, Invalid, MusicalEventSource, Project,
-    audio_edit::{MAX_AUDIO_DOMAIN_FRAMES, project_clip},
+    audio_edit::{MAX_AUDIO_DOMAIN_FRAMES, MAX_SPARSE_AUDIO_TIMELINE_FRAMES, project_clip},
 };
 use std::sync::Arc;
 
@@ -56,12 +56,17 @@ pub(crate) fn prepare(
     let end = destination
         .checked_add(span)
         .ok_or(Invalid("audio event placement overflow"))?;
+    let limit = if edit.plain_frame_event_root() && project.clip_alias(clip).is_none() {
+        MAX_SPARSE_AUDIO_TIMELINE_FRAMES
+    } else {
+        MAX_AUDIO_DOMAIN_FRAMES
+    };
     let timeline = length
         .checked_add(lead)
         .map(|shifted| shifted.max(end))
-        .filter(|timeline| musical || *timeline <= MAX_AUDIO_DOMAIN_FRAMES)
+        .filter(|timeline| musical || *timeline <= limit)
         .ok_or(Invalid(
-            "audio event placement exceeds the 16777216 frame timeline limit",
+            "audio event placement exceeds its bounded timeline",
         ))?;
     if lead > 0 {
         for event in &mut events.events {
@@ -205,13 +210,16 @@ impl Clip {
     pub fn audio_event_placement_limit(&self) -> Option<u64> {
         let root = self.audio_event_root();
         check_timeline(&root).ok()?;
-        // Legacy unprocessed clips can exceed the derived-root budget. Keep
-        // their existing camera and bounded edit path rather than truncating
-        // navigation to a smaller free-placement envelope.
-        if root.domain.clock.length() > MAX_AUDIO_DOMAIN_FRAMES {
+        if root.domain.clock.length() > MAX_AUDIO_DOMAIN_FRAMES
+            && !root.accepts_projected_extent(root.domain.clock.length())
+        {
             return None;
         }
-        Some(MAX_AUDIO_DOMAIN_FRAMES)
+        Some(if root.frame_event_root_shape() {
+            MAX_SPARSE_AUDIO_TIMELINE_FRAMES
+        } else {
+            MAX_AUDIO_DOMAIN_FRAMES
+        })
     }
 }
 

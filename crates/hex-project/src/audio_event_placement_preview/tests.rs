@@ -304,8 +304,11 @@ fn signed_numeric_bounds_and_origin_translation_preserve_the_unchanged_clip_wind
     let (mut editor, clip) = fixture();
     let before = editor.project().clip(clip).unwrap().clone();
     let (first, last) = before.audio_event_placement_bounds(1).unwrap();
-    assert_eq!(first, -(crate::MAX_AUDIO_DOMAIN_FRAMES as i64 - 100));
-    assert_eq!(last, crate::MAX_AUDIO_DOMAIN_FRAMES as i64 - 40);
+    assert_eq!(
+        first,
+        -(crate::MAX_SPARSE_AUDIO_TIMELINE_FRAMES as i64 - 100)
+    );
+    assert_eq!(last, crate::MAX_SPARSE_AUDIO_TIMELINE_FRAMES as i64 - 40);
     assert!(before.audio_event_placement_bounds(99).is_err());
     for value in [first, last] {
         let preview = editor
@@ -314,7 +317,7 @@ fn signed_numeric_bounds_and_origin_translation_preserve_the_unchanged_clip_wind
             .unwrap();
         assert_eq!(
             preview.clip().audio_event_root().domain.clock.length(),
-            crate::MAX_AUDIO_DOMAIN_FRAMES
+            crate::MAX_SPARSE_AUDIO_TIMELINE_FRAMES
         );
     }
     editor

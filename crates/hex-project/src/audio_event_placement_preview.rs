@@ -151,6 +151,9 @@ impl Project {
         let clip = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
         let root = clip.audio_event_root();
         if matches!(root.domain.clock, AudioDomainClock::Frames(_)) {
+            if self.clip_alias(clip.id()).is_some() {
+                return clip.frame_placement_bounds(start, end, crate::MAX_AUDIO_DOMAIN_FRAMES);
+            }
             return clip.audio_event_range_placement_bounds(start, end);
         }
         if root.placement.is_some()
@@ -202,6 +205,15 @@ impl Clip {
         let limit = self.audio_event_placement_limit().ok_or(Invalid(
             "free editor placement needs a fixed frame timeline",
         ))?;
+        self.frame_placement_bounds(start, end, limit)
+    }
+
+    fn frame_placement_bounds(
+        &self,
+        start: u64,
+        end: u64,
+        limit: u64,
+    ) -> Result<(i64, i64), Invalid> {
         let length = self.audio_event_root().domain.clock.length();
         if start >= end || end > length {
             return Err(Invalid("invalid audio event placement range"));
