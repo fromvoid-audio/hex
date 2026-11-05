@@ -536,8 +536,8 @@ impl SelectorConfig {
         if choices.is_empty() || selected >= choices.len() {
             return Err("selector requires a valid selected option");
         }
-        if choices.len() > 128 {
-            return Err("selector exceeds 128 options");
+        if choices.len() > 257 {
+            return Err("selector exceeds 257 options");
         }
         Ok(Self {
             accessibility_name: "choice".into(),

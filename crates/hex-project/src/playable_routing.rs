@@ -227,6 +227,40 @@ impl Project {
             .chain(self.returns.iter().map(|b| RoutingOwner::Return(b.id())))
             .chain([RoutingOwner::Main])
             .collect();
+        let audio = self.playable_audio_edges(None)?;
+        dag(&nodes, &audio)?;
+        let mut destinations = BTreeSet::new();
+        let mut midi = BTreeSet::new();
+        for route in &self.midi_routes {
+            let source = self
+                .track(route.source)
+                .ok_or(Invalid("track no longer exists"))?;
+            if source.is_group() {
+                return Err(Invalid("group tracks do not carry midi"));
+            }
+            if self
+                .track(route.destination)
+                .ok_or(Invalid("track no longer exists"))?
+                .instrument()
+                .is_none()
+            {
+                return Err(Invalid("midi destination requires an instrument"));
+            }
+            if !destinations.insert(route.destination) {
+                return Err(Invalid("duplicate midi destination"));
+            }
+            midi.insert((
+                RoutingOwner::Track(route.source),
+                RoutingOwner::Track(route.destination),
+            ));
+        }
+        dag(&nodes, &midi)
+    }
+
+    pub(crate) fn playable_audio_edges(
+        &self,
+        skip_sidechain: Option<crate::DeviceId>,
+    ) -> Result<BTreeSet<(RoutingOwner, RoutingOwner)>, Invalid> {
         let mut audio = BTreeSet::new();
         // Default group outputs participate in the same graph as authored
         // additive feeds/sends. A new hierarchy cannot hide a feedback cycle.
@@ -267,39 +301,17 @@ impl Project {
             // output. Preserve both signals; topology needs their union once.
             audio.insert(edge);
         }
-        for route in &self.sidechains {
+        for route in self
+            .sidechains
+            .iter()
+            .filter(|route| Some(route.device) != skip_sidechain)
+        {
             audio.insert((
                 RoutingOwner::Track(route.source),
                 self.sidechain_destination(route.device)?,
             ));
         }
-        dag(&nodes, &audio)?;
-        let mut destinations = BTreeSet::new();
-        let mut midi = BTreeSet::new();
-        for route in &self.midi_routes {
-            let source = self
-                .track(route.source)
-                .ok_or(Invalid("track no longer exists"))?;
-            if source.is_group() {
-                return Err(Invalid("group tracks do not carry midi"));
-            }
-            if self
-                .track(route.destination)
-                .ok_or(Invalid("track no longer exists"))?
-                .instrument()
-                .is_none()
-            {
-                return Err(Invalid("midi destination requires an instrument"));
-            }
-            if !destinations.insert(route.destination) {
-                return Err(Invalid("duplicate midi destination"));
-            }
-            midi.insert((
-                RoutingOwner::Track(route.source),
-                RoutingOwner::Track(route.destination),
-            ));
-        }
-        dag(&nodes, &midi)
+        Ok(audio)
     }
 }
 
