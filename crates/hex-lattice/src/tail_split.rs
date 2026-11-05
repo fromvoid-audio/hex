@@ -266,6 +266,7 @@ impl TailSplit {
         let old_result = NativeRuntimeChain::process_entry_with_foreign_inner(
             previous,
             old_output,
+            None,
             frame_offset,
             clock,
             clock,

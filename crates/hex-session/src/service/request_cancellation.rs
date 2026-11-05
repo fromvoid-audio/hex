@@ -58,8 +58,12 @@ impl RequestCancellation {
     pub fn requires_publication_admission_check(&self) -> bool {
         self.publication_waited
     }
-    pub fn is_cancelled(&self) -> bool {
+    /// Shutdown alone interrupts FIFO document replacement.
+    pub fn is_shutting_down(&self) -> bool {
         self.shutdown.load(Ordering::Acquire)
+    }
+    pub fn is_cancelled(&self) -> bool {
+        self.is_shutting_down()
             || self.document_intent.load(Ordering::Acquire) != self.expected_intent
     }
 }

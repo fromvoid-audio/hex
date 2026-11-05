@@ -342,6 +342,40 @@ impl EditorView {
         self.audio_admission.reset_audio();
     }
 
+    /// Whether the current endpoint may stay open across a project replacement
+    /// until the worker reports `OutputRebound` or `OutputReleased`. Only an
+    /// idle Resident endpoint qualifies; anything else retires as before.
+    fn hold_audio_across_replacement(&self, next_generation: u64) -> bool {
+        self.audio.as_ref().is_some_and(|audio| {
+            audio.mode == hex_session::DocumentAudioMode::Resident
+                && audio.control.output_identity().is_some()
+                && audio.control.status().is_some()
+        }) && !self.gain_recorder.busy()
+            && self.pending_audio_result.as_ref().is_none_or(|pending| {
+                matches!(pending, PendingEditorAudioResult::Rebound { .. })
+                    || pending.project_generation() < next_generation
+            })
+    }
+
+    /// Keep the held endpoint for the current generation when the worker kept
+    /// that exact output; otherwise request a fresh one.
+    fn apply_output_rebound(&mut self, output_identity: u64) {
+        if self
+            .audio
+            .as_ref()
+            .and_then(|a| a.control.output_identity())
+            == Some(output_identity)
+        {
+            self.status = "audio ready".into();
+            self.reconcile_publication_observation();
+            return;
+        }
+        // The kept output has no live client here (it was already closed), so
+        // retire anything stale and reopen through the ordinary restart.
+        self.retire_audio_preserving_gain_take();
+        self.restart_audio_for_current_document();
+    }
+
     fn retain_future_audio_result(&mut self, result: PendingEditorAudioResult) {
         let slot_generation = self
             .pending_audio_result
@@ -697,6 +731,19 @@ impl EditorView {
                     old_output_identity,
                     target,
                 } => {
+                    if target.project_generation > self.project_generation
+                        && self
+                            .audio
+                            .as_ref()
+                            .and_then(|a| a.control.output_identity())
+                            == Some(old_output_identity)
+                    {
+                        // A replacement not yet installed here retires this
+                        // output; close it now so the fresh open can proceed.
+                        self.retire_audio_preserving_gain_take();
+                        changed = true;
+                        continue;
+                    }
                     if !relinquish_client_matches(
                         self.project_generation,
                         self.state.as_ref().map(|s| s.revision),
@@ -752,10 +799,9 @@ impl EditorView {
                         .pending_audio_result
                         .as_ref()
                         .is_some_and(|pending| pending.project_generation() <= project_generation)
+                        && let Some(previous) = self.pending_audio_result.take()
                     {
-                        if let Some(previous) = self.pending_audio_result.take() {
-                            previous.close();
-                        }
+                        previous.close();
                     }
                     let new_identity = audio.control.output_identity();
                     if self
@@ -780,22 +826,22 @@ impl EditorView {
                     self.document_audio_mode = audio.mode;
                     self.audio = Some(audio);
                     let mut recovery_status = None;
-                    if restart_request.is_some() {
-                        if let Some(generation) = self.pending_recovery_generation {
-                            self.recovery.opened(generation);
-                            match self.document_audio_mode {
-                                hex_session::DocumentAudioMode::Resident => {
-                                    if self.enqueue(Request::RestorePlayback { generation }) {
-                                        recovery_status = Some("restoring audio graph");
-                                    } else {
-                                        self.fail_audio_recovery(
-                                            "audio opened but graph restore was not admitted",
-                                        );
-                                    }
+                    if restart_request.is_some()
+                        && let Some(generation) = self.pending_recovery_generation
+                    {
+                        self.recovery.opened(generation);
+                        match self.document_audio_mode {
+                            hex_session::DocumentAudioMode::Resident => {
+                                if self.enqueue(Request::RestorePlayback { generation }) {
+                                    recovery_status = Some("restoring audio graph");
+                                } else {
+                                    self.fail_audio_recovery(
+                                        "audio opened but graph restore was not admitted",
+                                    );
                                 }
-                                hex_session::DocumentAudioMode::VerifiedStreaming => {
-                                    recovery_status = Some("preparing streamed audio");
-                                }
+                            }
+                            hex_session::DocumentAudioMode::VerifiedStreaming => {
+                                recovery_status = Some("preparing streamed audio");
                             }
                         }
                     }
@@ -806,6 +852,45 @@ impl EditorView {
                     }
                     self.reconcile_publication_observation();
                     changed = true;
+                }
+                crate::EditorAudioEvent::OutputRebound {
+                    project_generation,
+                    output_identity,
+                } => {
+                    match audio_event_disposition(
+                        self.project_generation,
+                        self.pending_restart_request,
+                        project_generation,
+                        None,
+                    ) {
+                        AudioEventDisposition::Ignore => continue,
+                        AudioEventDisposition::Future => {
+                            // Keep the held endpoint; apply with the replacement.
+                            self.retain_future_audio_result(PendingEditorAudioResult::Rebound {
+                                project_generation,
+                                output_identity,
+                            });
+                            continue;
+                        }
+                        AudioEventDisposition::Current => {}
+                    }
+                    self.apply_output_rebound(output_identity);
+                    changed = true;
+                }
+                crate::EditorAudioEvent::OutputReleased {
+                    project_generation: _,
+                    old_output_identity,
+                } => {
+                    if self
+                        .audio
+                        .as_ref()
+                        .and_then(|a| a.control.output_identity())
+                        == Some(old_output_identity)
+                    {
+                        self.retire_audio_preserving_gain_take();
+                        self.status = "preparing audio output".into();
+                        changed = true;
+                    }
                 }
                 crate::EditorAudioEvent::Unavailable {
                     project_generation,
@@ -843,10 +928,9 @@ impl EditorView {
                         .pending_audio_result
                         .as_ref()
                         .is_some_and(|pending| pending.project_generation() <= project_generation)
+                        && let Some(previous) = self.pending_audio_result.take()
                     {
-                        if let Some(previous) = self.pending_audio_result.take() {
-                            previous.close();
-                        }
+                        previous.close();
                     }
                     self.retire_audio_preserving_gain_take();
                     if self
@@ -886,6 +970,31 @@ impl EditorView {
                         == Some(output_identity)
                     {
                         self.route_follow = Some(output_identity);
+                        changed = true;
+                    }
+                }
+                crate::EditorAudioEvent::NativeLatencyRestart { source } => {
+                    if self.latency_rebuild.is_none()
+                        && self.stopped_playback_restore.is_none()
+                        && self.project_generation == source.context.project_generation
+                        && self
+                            .audio
+                            .as_ref()
+                            .and_then(|audio| audio.control.status())
+                            .and_then(|status| status.native_effect_source())
+                            == Some(source)
+                        && let Some(state) = self.state.as_ref()
+                        && state.audio_authoring_revision(source.context) == Some(state.revision)
+                    {
+                        self.latency_rebuild =
+                            Some(super::audio_admission::LatencyRebuild::Waiting {
+                                project: super::audio_admission::ProjectRevision {
+                                    generation: self.project_generation,
+                                    revision: state.revision,
+                                },
+                                output: source.output_identity,
+                                runtime_audio: Some(source.audio_revision),
+                            });
                         changed = true;
                     }
                 }
@@ -1498,8 +1607,11 @@ impl EditorView {
                         .is_some_and(|status| status.playing.load(Acquire))
                     && let Some(output) = audio.control.output_identity()
                 {
-                    self.latency_rebuild =
-                        Some(super::audio_admission::LatencyRebuild::Waiting { project, output });
+                    self.latency_rebuild = Some(super::audio_admission::LatencyRebuild::Waiting {
+                        project,
+                        output,
+                        runtime_audio: None,
+                    });
                 }
             } else if rejected_preview_candidate(
                 &self.playback_candidates,
@@ -1529,6 +1641,40 @@ impl EditorView {
             .control
             .status()
             .map_or(0, |status| status.applied_revision.load(Acquire));
+        if let Some(super::audio_admission::LatencyRebuild::Restoring {
+            project,
+            output,
+            runtime_audio: Some(previous),
+            installed,
+            ..
+        }) = self.latency_rebuild.as_mut()
+            && let Some(super::audio_admission::StoppedPlaybackRestore::Published(required)) =
+                self.stopped_playback_restore
+            && required > *previous
+            && let Some(source) = audio
+                .control
+                .status()
+                .and_then(|status| status.recording_source())
+            && source.audio_revision == required
+            && source.output_identity == *output
+            && source.context.project_generation == project.generation
+            && self.state.as_ref().is_some_and(|state| {
+                state.revision == project.revision
+                    && state.audio_authoring_revision(source.context) == Some(project.revision)
+            })
+        {
+            *installed = true;
+            self.applied_project_revision = Some(project.revision);
+            self.stopped_playback_restore = None;
+        }
+        let awaiting_native_restore = matches!(
+            self.latency_rebuild,
+            Some(super::audio_admission::LatencyRebuild::Restoring {
+                runtime_audio: Some(_),
+                installed: false,
+                ..
+            })
+        );
         let (reconciled, current_applied) = reconcile_verified_source_binding(
             &mut self.audio_admission,
             self.document_audio_mode,
@@ -1596,7 +1742,8 @@ impl EditorView {
                     if matches!(
                         self.stopped_playback_restore,
                         Some(super::audio_admission::StoppedPlaybackRestore::Published(required))
-                            if candidate.audio_revision >= required
+                            if candidate.audio_revision > required
+                                || (candidate.audio_revision == required && !awaiting_native_restore)
                     ) {
                         self.stopped_playback_restore = None;
                     }
@@ -1751,6 +1898,16 @@ impl EditorView {
                 self.play_intent
                     .reconcile_receipt(receipt.ticket, actual_playing);
                 self.recovery.observe_receipt(receipt);
+                if matches!(
+                    self.latency_rebuild,
+                    Some(super::audio_admission::LatencyRebuild::Fading { ticket, .. })
+                        if ticket == receipt.ticket
+                ) && !matches!(receipt.outcome, hex_audio::prepared::ActionOutcome::Applied)
+                {
+                    self.latency_rebuild = None;
+                    visible_change |=
+                        replace_status(&mut self.status, "latency rebuild stop was interrupted");
+                }
                 if self.pending_metronome_ticket == Some(receipt.ticket) {
                     self.pending_metronome_ticket = None;
                     visible_change = true;
@@ -1809,6 +1966,12 @@ impl EditorView {
                 }
             }
             if outcome_failure.is_some() {
+                if matches!(
+                    self.latency_rebuild,
+                    Some(super::audio_admission::LatencyRebuild::Fading { .. })
+                ) {
+                    self.latency_rebuild = None;
+                }
                 if !action_errors.is_empty() {
                     action_errors.push_str(" · ");
                 }
@@ -1939,10 +2102,10 @@ impl EditorView {
                 && !status.render_fault.load(Relaxed)
                 && !status.shutdown_complete.load(Acquire)
         }) {
-            if let Some(identity) = audio.control.output_identity() {
-                if let Some(status) = audio.control.status() {
-                    visible_change |= self.session_routes.poll(identity, status);
-                }
+            if let Some(identity) = audio.control.output_identity()
+                && let Some(status) = audio.control.status()
+            {
+                visible_change |= self.session_routes.poll(identity, status);
             }
         } else {
             self.session_routes.clear();
@@ -2146,7 +2309,7 @@ impl EditorView {
         {
             self.retire_sample_bpm_control();
         }
-        self.audio_events_request_complete(&event);
+        let placed_audio_range = self.audio_events_request_complete(&event);
         self.clip_loop_request_complete(&event);
         self.bypass_request_complete(&event);
         self.clip_move_request_complete(&event);
@@ -2175,16 +2338,19 @@ impl EditorView {
             self.retire_first_sampler_load();
             self.cancel_open_after_save();
             self.invalidate_prepared_seek();
-            self.retire_audio_preserving_gain_take();
             let next_generation = self.project_generation.saturating_add(1);
+            // A held endpoint stays open until the worker names the outcome
+            // (`OutputRebound`/`OutputReleased`) or a fresh result replaces it.
+            if !self.hold_audio_across_replacement(next_generation) {
+                self.retire_audio_preserving_gain_take();
+            }
             if self
                 .pending_audio_result
                 .as_ref()
                 .is_some_and(|pending| pending.project_generation() < next_generation)
+                && let Some(pending) = self.pending_audio_result.take()
             {
-                if let Some(pending) = self.pending_audio_result.take() {
-                    pending.close();
-                }
+                pending.close();
             }
             if self
                 .pending_restart_request
@@ -2343,12 +2509,10 @@ impl EditorView {
                     self.cancel_computer_keyboard();
                     self.computer_keyboard.suspended = true;
                 }
-                if audition_ok {
-                    if let Err(error) = self.trigger_prepared_midi_audition() {
-                        self.error = Some(error.to_string().into());
-                        self.cancel_computer_keyboard();
-                        return None;
-                    }
+                if audition_ok && let Err(error) = self.trigger_prepared_midi_audition() {
+                    self.error = Some(error.to_string().into());
+                    self.cancel_computer_keyboard();
+                    return None;
                 }
                 if let Some(playback) = event.playback {
                     let previous_reset = self
@@ -2469,6 +2633,9 @@ impl EditorView {
             .and_then(|state| state.project.loop_region())
             .is_some_and(|region| region.enabled());
         self.state = Some(event.state);
+        if let Some(range) = placed_audio_range {
+            self.install_placed_audio_range(range);
+        }
         if self.selection_loop_start.is_some_and(|(_, region)| {
             self.state
                 .as_ref()
@@ -2515,57 +2682,62 @@ impl EditorView {
                 .pending_audio_result
                 .as_ref()
                 .is_some_and(|pending| pending.project_generation() <= self.project_generation)
+                && let Some(pending) = self.pending_audio_result.take()
             {
-                if let Some(pending) = self.pending_audio_result.take() {
-                    match pending {
-                        PendingEditorAudioResult::Opened {
-                            project_generation,
-                            restart_request,
-                            mut audio,
-                        } if audio_event_disposition(
-                            self.project_generation,
-                            self.pending_restart_request,
-                            project_generation,
-                            restart_request,
-                        ) == AudioEventDisposition::Current =>
-                        {
-                            if self.audio.as_ref().is_some_and(|old| {
-                                old.control.has_action_outcomes() && old.control.status().is_none()
-                            }) {
-                                audio.control.close();
-                                self.error = Some(
-                                    "waiting for previous audio outcomes · retry audio".into(),
-                                );
-                            } else {
-                                self.document_audio_mode = audio.mode;
-                                self.audio = Some(audio);
-                            }
-                            self.pending_restart_request = None;
+                match pending {
+                    PendingEditorAudioResult::Opened {
+                        project_generation,
+                        restart_request,
+                        mut audio,
+                    } if audio_event_disposition(
+                        self.project_generation,
+                        self.pending_restart_request,
+                        project_generation,
+                        restart_request,
+                    ) == AudioEventDisposition::Current =>
+                    {
+                        if self.audio.as_ref().is_some_and(|old| {
+                            old.control.has_action_outcomes() && old.control.status().is_none()
+                        }) {
+                            audio.control.close();
+                            self.error =
+                                Some("waiting for previous audio outcomes · retry audio".into());
+                        } else {
+                            self.document_audio_mode = audio.mode;
+                            self.audio = Some(audio);
                         }
-                        PendingEditorAudioResult::Unavailable {
-                            project_generation,
-                            restart_request,
-                            error,
-                        } if audio_event_disposition(
-                            self.project_generation,
-                            self.pending_restart_request,
-                            project_generation,
-                            restart_request,
-                        ) == AudioEventDisposition::Current =>
-                        {
-                            let message = super::audio_unavailable::unavailable_message(&error);
-                            self.status = message.clone();
-                            self.error = Some(message.into());
-                            self.pending_restart_request = None;
-                        }
-                        result => result.close(),
+                        self.pending_restart_request = None;
                     }
+                    PendingEditorAudioResult::Unavailable {
+                        project_generation,
+                        restart_request,
+                        error,
+                    } if audio_event_disposition(
+                        self.project_generation,
+                        self.pending_restart_request,
+                        project_generation,
+                        restart_request,
+                    ) == AudioEventDisposition::Current =>
+                    {
+                        let message = super::audio_unavailable::unavailable_message(&error);
+                        self.status = message.clone();
+                        self.error = Some(message.into());
+                        self.pending_restart_request = None;
+                    }
+                    PendingEditorAudioResult::Rebound {
+                        project_generation,
+                        output_identity,
+                    } if project_generation == self.project_generation => {
+                        self.apply_output_rebound(output_identity);
+                    }
+                    result => result.close(),
                 }
             }
             self.device_gesture.reset();
             self.device_gesture_barriers.clear();
             self.refuse_effect_bus_barriers("effect insertion canceled · project replaced");
             self.edit_cursor = None;
+            self.locked_play_start = None;
             self.loop_start_over_clip = None;
             self.selection_loop_start = None;
             self.clip_paint_gesture = None;
@@ -3277,21 +3449,20 @@ impl EditorView {
             options,
             ..
         } = &request
+            && let [path] = paths.as_slice()
         {
-            if let [path] = paths.as_slice() {
-                match destination {
-                    hex_session::import_batch::AudioBatchDestination::Console(_) => {}
-                    hex_session::import_batch::AudioBatchDestination::Track { track, start } => {
-                        self.last_enqueued_import_to_track =
-                            Some((path.clone(), *track, *start, options.overwrite))
-                    }
-                    hex_session::import_batch::AudioBatchDestination::NewTracks {
-                        before_track,
-                        start,
-                    } => {
-                        self.last_enqueued_import_to_new_track =
-                            Some((path.clone(), *before_track, *start))
-                    }
+            match destination {
+                hex_session::import_batch::AudioBatchDestination::Console(_) => {}
+                hex_session::import_batch::AudioBatchDestination::Track { track, start } => {
+                    self.last_enqueued_import_to_track =
+                        Some((path.clone(), *track, *start, options.overwrite))
+                }
+                hex_session::import_batch::AudioBatchDestination::NewTracks {
+                    before_track,
+                    start,
+                } => {
+                    self.last_enqueued_import_to_new_track =
+                        Some((path.clone(), *before_track, *start))
                 }
             }
         }
@@ -4098,11 +4269,20 @@ impl EditorView {
                 audio_revision,
                 hex_engine::PlaybackHandoffRejection::LatencyLayoutChanged.message(),
             );
-            self.latency_rebuild = Some(LatencyRebuild::Waiting { project, output });
+            self.latency_rebuild = Some(LatencyRebuild::Waiting {
+                project,
+                output,
+                runtime_audio: None,
+            });
             return true;
         }
         let (project, output) = match rebuild {
-            LatencyRebuild::Waiting { project, output }
+            LatencyRebuild::Waiting {
+                project, output, ..
+            }
+            | LatencyRebuild::Fading {
+                project, output, ..
+            }
             | LatencyRebuild::Restoring {
                 project, output, ..
             } => (project, output),
@@ -4126,7 +4306,7 @@ impl EditorView {
         }
         match rebuild {
             LatencyRebuild::Unresolved { .. } => false,
-            LatencyRebuild::Waiting { .. } => {
+            LatencyRebuild::Waiting { runtime_audio, .. } => {
                 if self.edit_pending()
                     || self.opening_project
                     || self.close_prompt_open
@@ -4152,11 +4332,13 @@ impl EditorView {
                 else {
                     return false;
                 };
-                if self.applied_project_revision == Some(project.revision) {
+                if runtime_audio.is_none()
+                    && self.applied_project_revision == Some(project.revision)
+                {
                     self.latency_rebuild = None;
                     return self.clear_latency_waiting();
                 }
-                if !playing {
+                if !playing && runtime_audio.is_none() {
                     // Paused: the callback applies the new latency layout at
                     // the kept cursor. Republish the refused current revision
                     // once rather than leaving audio on the old graph.
@@ -4169,7 +4351,7 @@ impl EditorView {
                 }
                 // A requested pause has not reached the callback yet; republish
                 // once it reports paused.
-                if !self.play_intent.desired_playing(true) {
+                if playing && !self.play_intent.desired_playing(true) {
                     return false;
                 }
                 // A fresh runtime cuts mutable voices. Until their live-input
@@ -4190,6 +4372,14 @@ impl EditorView {
                 else {
                     return false;
                 };
+                if runtime_audio.is_some_and(|revision| {
+                    status
+                        .native_effect_source()
+                        .is_none_or(|source| source.audio_revision != revision)
+                }) {
+                    self.latency_rebuild = None;
+                    return self.clear_latency_waiting();
+                }
                 // Stop would discard Session launches. Only rebuild when a
                 // fresh route snapshot proves that every track is in Arrangement.
                 let mut routes = [hex_audio::prepared::SessionRouteEntry::default();
@@ -4211,25 +4401,94 @@ impl EditorView {
                     return false;
                 }
                 let frame = status.position.load(Acquire);
-                self.stop();
-                if self.stopped_playback_restore
-                    == Some(super::audio_admission::StoppedPlaybackRestore::Preparing)
-                {
-                    self.latency_rebuild = Some(LatencyRebuild::Restoring {
+                if !playing {
+                    return self.request_latency_restore(
                         project,
                         output,
                         frame,
-                    });
-                    self.status =
-                        "rebuilding audio · effect tails will reset · playback will resume".into();
+                        false,
+                        runtime_audio,
+                    );
                 }
+                let Some(audio) = self.audio.as_mut() else {
+                    return false;
+                };
+                let action = PlaybackAction::Transport(PlaybackCommand::Stop);
+                let admitted = if let Some(trace) = &self.transport_trace {
+                    trace.attempt(audio, action)
+                } else {
+                    audio.control.action_with_ticket(action)
+                };
+                let Ok(ticket) = admitted else {
+                    // Backpressure leaves the exact rebuild waiting.
+                    return false;
+                };
+                self.invalidate_prepared_seek();
+                self.latency_rebuild = Some(LatencyRebuild::Fading {
+                    project,
+                    output,
+                    frame,
+                    ticket,
+                    runtime_audio,
+                });
+                self.status = "fading playback before rebuilding audio".into();
                 true
             }
-            LatencyRebuild::Restoring { frame, .. } => {
+            LatencyRebuild::Fading {
+                frame,
+                ticket,
+                runtime_audio,
+                ..
+            } => {
+                let Some(status) = self.audio.as_ref().and_then(|audio| audio.status()) else {
+                    self.latency_rebuild = None;
+                    return false;
+                };
+                if status.device_fault.load(Acquire)
+                    || status.render_fault.load(Acquire)
+                    || status
+                        .rejected_action()
+                        .is_some_and(|(rejected, _)| rejected == ticket)
+                {
+                    self.latency_rebuild = None;
+                    return replace_status(
+                        &mut self.status,
+                        "latency rebuild stop was interrupted",
+                    );
+                }
+                // Consumption only starts the fade. The callback keeps
+                // reporting playing until the queued Stop actually settles.
+                if audio_command_prefix(status, self.document_audio_mode) < ticket
+                    || status.playing.load(Acquire)
+                    || self.edit_pending()
+                    || self.update_preparing()
+                    || self.stopped_playback_restore.is_some()
+                {
+                    return false;
+                }
+                if runtime_audio.is_none()
+                    && self.applied_project_revision == Some(project.revision)
+                {
+                    self.clear_latency_waiting();
+                    self.queue_audio_command(PlaybackCommand::PlayFrom(frame));
+                    true
+                } else {
+                    self.request_latency_restore(project, output, frame, true, runtime_audio)
+                }
+            }
+            LatencyRebuild::Restoring {
+                frame,
+                resume,
+                runtime_audio,
+                installed,
+                ..
+            } => {
                 if self.stopped_playback_restore.is_some() {
                     return false;
                 }
-                if self.applied_project_revision != Some(project.revision) {
+                if self.applied_project_revision != Some(project.revision)
+                    || (runtime_audio.is_some() && !installed)
+                {
                     self.latency_rebuild = None;
                     return false;
                 }
@@ -4239,10 +4498,46 @@ impl EditorView {
                     return false;
                 }
                 self.latency_rebuild = None;
-                self.queue_audio_command(PlaybackCommand::PlayFrom(frame));
+                if resume {
+                    self.queue_audio_command(PlaybackCommand::PlayFrom(frame));
+                } else {
+                    self.queue_audio_command(PlaybackCommand::Seek(frame));
+                }
                 true
             }
         }
+    }
+
+    fn request_latency_restore(
+        &mut self,
+        project: super::audio_admission::ProjectRevision,
+        output: u64,
+        frame: u64,
+        resume: bool,
+        runtime_audio: Option<u64>,
+    ) -> bool {
+        if !self.enqueue(Request::RestoreStoppedPlayback) {
+            return false;
+        }
+        self.clear_latency_waiting();
+        self.stopped_playback_restore =
+            Some(super::audio_admission::StoppedPlaybackRestore::Preparing);
+        self.latency_rebuild = Some(super::audio_admission::LatencyRebuild::Restoring {
+            project,
+            output,
+            frame,
+            resume,
+            runtime_audio,
+            installed: false,
+        });
+        self.status = if resume {
+            "rebuilding audio · effect tails will reset · playback will resume"
+        } else {
+            "rebuilding audio at the paused cursor"
+        }
+        .into();
+        self.error = None;
+        true
     }
 
     /// Retire the waiting notice once its refused revision is applied,
@@ -4257,7 +4552,19 @@ impl EditorView {
     }
 
     pub(super) fn stop(&mut self) {
-        self.latency_rebuild = None;
+        use super::audio_admission::LatencyRebuild;
+        let native_restore = matches!(
+            self.latency_rebuild.take(),
+            Some(
+                LatencyRebuild::Waiting {
+                    runtime_audio: Some(_),
+                    ..
+                } | LatencyRebuild::Fading {
+                    runtime_audio: Some(_),
+                    ..
+                }
+            )
+        );
         // Stop restores the refused revision below, or a pending edit
         // publishes it while stopped.
         self.clear_latency_waiting();
@@ -4272,7 +4579,8 @@ impl EditorView {
             && self.recovery.generation().is_none()
             && self.audio.as_ref().is_some_and(|audio| {
                 self.state.as_ref().is_some_and(|state| {
-                    self.applied_project_revision != Some(state.revision)
+                    native_restore
+                        || self.applied_project_revision != Some(state.revision)
                         || self.audible_playback.as_ref().is_none_or(|audible| {
                             audible.audio_revision
                                 != audio

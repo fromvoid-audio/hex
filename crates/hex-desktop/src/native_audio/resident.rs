@@ -409,12 +409,12 @@ impl NativeAudioSink {
             });
         };
         self.flush_events();
-        let replacing_document = matches!(policy, ResidentPublicationPolicy::ReplaceDocument);
+        let replacing_document =
+            matches!(policy, ResidentPublicationPolicy::ReplaceDocument { .. });
         // Current-output publication needs its previous observation delivered.
-        // Replacement instead retains an admitted candidate offline, then its
-        // canonical swap retires the old output and observations. Old UI event
-        // backpressure must not refuse that independent admission. On refusal
-        // no swap occurs, so all old observations and custody remain intact.
+        // A document replacement uses either a private output or offline
+        // retention. Observations of the previous endpoint do not gate that
+        // admission; a refusal leaves the previous document canonical.
         if !replacing_document
             && (self.pending_observation.is_some() || self.pending_status_observation.is_some())
         {
@@ -464,12 +464,21 @@ impl NativeAudioSink {
                 error: "document replacement context is stale".into(),
             });
         }
+        let on_replacement_output = self
+            .replacement_output
+            .as_ref()
+            .is_some_and(|replacement| replacement.context == metadata.context);
+        let replacement_deadline = self
+            .replacement_output
+            .as_ref()
+            .map(|replacement| replacement.deadline);
+        let request_cancellation = self.request_cancellation.as_ref();
         // Active-output refusal never enters the offline slot. The prospective view already
         // includes the active book, so it must not also be selected from resident_inventory.
         if let Some(control) = self
             .output
             .as_mut()
-            .filter(|_| !replacing_document)
+            .filter(|_| !replacing_document || on_replacement_output)
             .and_then(|output| output.publication.control())
         {
             control.reclaim();
@@ -512,11 +521,8 @@ impl NativeAudioSink {
                 ResidentPublicationPolicy::RestorePluginState => {
                     hex_audio::prepared::PublicationPolicy::InstallFreshRuntime
                 }
-                ResidentPublicationPolicy::ReplaceDocument => {
-                    return Err(ResidentPublicationRefusal {
-                        playback,
-                        error: "document replacement must retain before output teardown".into(),
-                    });
+                ResidentPublicationPolicy::ReplaceDocument { .. } => {
+                    hex_audio::prepared::PublicationPolicy::InstallFreshRuntime
                 }
                 ResidentPublicationPolicy::FreshIfUnchanged(expected)
                 | ResidentPublicationPolicy::SectionWhenReady {
@@ -579,6 +585,15 @@ impl NativeAudioSink {
                 });
             }
             let result = loop {
+                if let Some(deadline) = replacement_deadline
+                    && let Err(error) =
+                        super::document_output::check_deadline(deadline, request_cancellation)
+                {
+                    return Err(ResidentPublicationRefusal {
+                        playback: retained_playback,
+                        error,
+                    });
+                }
                 if !edit_admitted.get() && publication_cancelled() {
                     return Err(ResidentPublicationRefusal {
                         playback: retained_playback,
@@ -664,7 +679,7 @@ impl NativeAudioSink {
                 }
             };
         }
-        if self.output.is_some() && !replacing_document {
+        if (self.output.is_some() && !replacing_document) || on_replacement_output {
             return Err(ResidentPublicationRefusal {
                 playback,
                 error: "active audio publication endpoint is closed".into(),

@@ -94,13 +94,12 @@ impl GainLane {
             self.selected = None;
             self.gain = None;
         }
-        if let Some(track) = self.track.and_then(|track| project.track(track)) {
-            if self
+        if let Some(track) = self.track.and_then(|track| project.track(track))
+            && self
                 .selected
                 .is_some_and(|beat| !track.gain_envelope().iter().any(|point| point.beat == beat))
-            {
-                self.selected = track.gain_envelope().first().map(|point| point.beat);
-            }
+        {
+            self.selected = track.gain_envelope().first().map(|point| point.beat);
         }
     }
 }

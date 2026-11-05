@@ -560,6 +560,7 @@ impl Command {
             | Self::ClearTrackGainEnvelope { .. }
             | Self::SetRouting(..)
             | Self::SetAudioFeed { .. }
+            | Self::SetSidechain { .. }
             | Self::SetMidiSource { .. }
             | Self::SetReturnFeed { .. }
             | Self::InsertMainDevice { .. }
@@ -616,6 +617,7 @@ impl Command {
             | Self::RemoveTracks(..)
             | Self::RenameTrack { .. }
             | Self::Gain { .. }
+            | Self::SetTrackGains { .. }
             | Self::Balance { .. }
             | Self::MasterGain { .. }
             | Self::SetProjectTempo { .. }

@@ -55,12 +55,17 @@ impl AudioPreparationCustody {
             fade: _,
             owner,
             prepared_origin,
+            sparse_frames: _,
+            sparse,
             transformed: _,
             disposal: _,
             #[cfg(test)]
                 probe: _,
         } in slots
         {
+            if let Some(map) = sparse {
+                l.sparse_map(map)?;
+            }
             if let Some(origin) = prepared_origin {
                 l.source(origin)?;
             }

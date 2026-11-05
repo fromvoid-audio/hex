@@ -567,8 +567,25 @@ fn main() -> Result<()> {
 mod tests {
     use super::*;
 
+    // Return only the digest so large inline playback owners never overlap
+    // between profile comparisons on the test thread's normal stack.
+    fn rendered_digest(
+        project: &Project,
+        media: &BTreeMap<hex_project::AssetId, Audio>,
+        table: &Arc<SineTable>,
+    ) -> Result<u64> {
+        let mut runtime = playback(revision(project, media, table, None)?)?;
+        let mut hash = 0xcbf29ce484222325;
+        let mut block = [[0.0; 2]; 128];
+        for _ in 0..375 {
+            runtime.render(&mut block)?;
+            digest(&mut hash, &block);
+        }
+        Ok(hash)
+    }
+
     #[test]
-    fn looping_companion_mixed_fixture_matches_continuous_and_composed_output() -> Result<()> {
+    fn looping_companion_profiles_preserve_structure_and_change_pcm() -> Result<()> {
         let (looped, media) = fixture_with_companion(2, 1, CompanionProfile::Uniform)?;
         let (asymmetric, _) = fixture_with_companion(2, 1, CompanionProfile::Asymmetric)?;
         let (distinct, _) = fixture_with_companion(2, 1, CompanionProfile::Distinct)?;
@@ -603,28 +620,10 @@ mod tests {
             );
         }
         let table = Arc::new(SineTable::new());
-        let mut looped_playback = playback(revision(&looped, &media, &table, None)?)?;
-        let mut asymmetric_playback = playback(revision(&asymmetric, &media, &table, None)?)?;
-        let mut distinct_playback = playback(revision(&distinct, &media, &table, None)?)?;
-        let mut normal_playback = playback(revision(&normal, &media, &table, None)?)?;
-        let mut looped_hash = 0xcbf29ce484222325;
-        let mut normal_hash = looped_hash;
-        let mut asymmetric_hash = looped_hash;
-        let mut distinct_hash = looped_hash;
-        for _ in 0..375 {
-            let mut looped_block = [[0.0; 2]; 128];
-            let mut normal_block = [[0.0; 2]; 128];
-            let mut asymmetric_block = [[0.0; 2]; 128];
-            let mut distinct_block = [[0.0; 2]; 128];
-            looped_playback.render(&mut looped_block)?;
-            normal_playback.render(&mut normal_block)?;
-            asymmetric_playback.render(&mut asymmetric_block)?;
-            distinct_playback.render(&mut distinct_block)?;
-            digest(&mut looped_hash, &looped_block);
-            digest(&mut normal_hash, &normal_block);
-            digest(&mut asymmetric_hash, &asymmetric_block);
-            digest(&mut distinct_hash, &distinct_block);
-        }
+        let looped_hash = rendered_digest(&looped, &media, &table)?;
+        let normal_hash = rendered_digest(&normal, &media, &table)?;
+        let asymmetric_hash = rendered_digest(&asymmetric, &media, &table)?;
+        let distinct_hash = rendered_digest(&distinct, &media, &table)?;
         assert_ne!(
             looped_hash, normal_hash,
             "companion mode must affect rendered PCM"
@@ -637,8 +636,21 @@ mod tests {
             asymmetric_hash, distinct_hash,
             "distinct laws must affect rendered PCM"
         );
-        run(2, 1, 128, 1, true, CompanionProfile::Uniform)?;
-        run(2, 1, 128, 1, true, CompanionProfile::Asymmetric)?;
+        Ok(())
+    }
+
+    #[test]
+    fn uniform_companion_matches_continuous_and_composed_output() -> Result<()> {
+        run(2, 1, 128, 1, true, CompanionProfile::Uniform)
+    }
+
+    #[test]
+    fn asymmetric_companion_matches_continuous_and_composed_output() -> Result<()> {
+        run(2, 1, 128, 1, true, CompanionProfile::Asymmetric)
+    }
+
+    #[test]
+    fn distinct_companion_matches_continuous_and_composed_output() -> Result<()> {
         run(2, 1, 128, 1, true, CompanionProfile::Distinct)
     }
 

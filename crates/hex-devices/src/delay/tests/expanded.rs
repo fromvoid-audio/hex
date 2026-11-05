@@ -759,7 +759,11 @@ fn tail_split_delivers_successor_host_control_and_combined_observations() {
         )
         .unwrap();
     let combined = [a[0][0] + b[0][0], a[0][1] + b[0][1]];
-    let expected = 0.5 + 0.5 * HostGain::from_db(-6.0).unwrap().linear();
+    // The split is halfway through its 40 frames. The successor has just
+    // rendered the first sample of its independent 5 ms output-gain ramp.
+    let target = HostGain::from_db(-6.0).unwrap().linear();
+    let first_ramped_gain = 1.0 + (target - 1.0) / 40.0;
+    let expected = 0.5 + 0.5 * first_ramped_gain;
     assert!((combined[0] - expected).abs() < 1e-6);
     assert!((combined[1] + expected * 0.5).abs() < 1e-6);
     assert_eq!(context.applied.unwrap().identity, identity);
@@ -1020,6 +1024,58 @@ fn tail_split_applies_external_output_gain_at_the_requested_offset() {
     old.rollback_block();
     next.rollback_block();
     split.rollback_block();
+}
+
+#[test]
+fn owned_delay_bypass_retargets_from_the_audible_mix_across_handoffs() {
+    fn render(
+        chain: &mut hex_lattice::NativeRuntimeChain,
+        frames: usize,
+        block: usize,
+    ) -> Vec<StereoFrame> {
+        let mut output = vec![[0.25; 2]; frames];
+        for chunk in output.chunks_mut(block) {
+            chain.begin_block();
+            chain.process_block(chunk).unwrap();
+            chain.commit_block();
+        }
+        output
+    }
+    fn run(block: usize) -> Vec<StereoFrame> {
+        let configured = state(&[
+            (LEFT_SYNC, ParameterValue::Bool(false)),
+            (TIME, ParameterValue::Float(10.0)),
+            (FEEDBACK, ParameterValue::Float(0.5)),
+            (DRY_WET, ParameterValue::Float(1.0)),
+            (FILTER, ParameterValue::Bool(false)),
+            (HIGH_QUALITY, ParameterValue::Bool(false)),
+        ]);
+        let mut old = split_test_chain(&configured, false);
+        let warm = render(&mut old, 1600, block);
+        let mut off = split_test_chain(&configured, true);
+        assert!(off.configuration_matches_range(&old, 0..1));
+        off.transfer_history_from(&mut old);
+        let mut result = vec![*warm.last().unwrap()];
+        result.extend(render(&mut off, 13, block));
+        let mut unchanged = split_test_chain(&configured, true);
+        unchanged.transfer_history_from(&mut off);
+        result.extend(render(&mut unchanged, 5, block));
+        let mut on = split_test_chain(&configured, false);
+        on.transfer_history_from(&mut unchanged);
+        // A failed render must not consume any of the reversal ramp.
+        on.begin_block();
+        on.process_block(&mut [[0.25; 2]; 7]).unwrap();
+        on.rollback_block();
+        result.extend(render(&mut on, 100, block));
+        result
+    }
+    let reference = run(1);
+    for pair in reference.windows(2) {
+        assert!((pair[1][0] - pair[0][0]).abs() < 0.007, "{pair:?}");
+    }
+    for block in [17, 64, 256] {
+        assert_eq!(run(block), reference, "block size {block}");
+    }
 }
 
 #[test]
@@ -1429,4 +1485,31 @@ fn tail_split_refuses_frozen_changed_and_invalid_buffers_without_losing_history(
     old.commit_block();
     reference.commit_block();
     assert_eq!(before, expected);
+}
+
+#[test]
+fn static_output_trim_ramp_retains_tail_split_fallback_until_its_exact_endpoint() {
+    let configured = state(&[(DRY_WET, ParameterValue::Float(0.0))]);
+    let mut old = split_test_chain(&configured, false);
+    old.begin_block();
+    old.process_block(&mut [[0.25; 2]; 16]).unwrap();
+    old.commit_block();
+    let changed = configured.with_output_gain_db(-6.0).unwrap();
+    let mut current = split_test_chain(&changed, false);
+    current.transfer_history_from(&mut old);
+    current.begin_block();
+    current.process_block(&mut [[0.25; 2]; 7]).unwrap();
+    current.commit_block();
+    let next = split_test_chain(&changed, true);
+    assert!(
+        !next.can_prepare_tail_split_at(&current, 0),
+        "an active static trim must not bypass the existing split control proof"
+    );
+    current.begin_block();
+    current.process_block(&mut [[0.25; 2]; 33]).unwrap();
+    current.commit_block();
+    assert!(
+        next.can_prepare_tail_split_at(&current, 0),
+        "the exact40-frame endpoint at8kHz restores ordinary split eligibility"
+    );
 }

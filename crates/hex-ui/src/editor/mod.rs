@@ -200,6 +200,7 @@ mod session_navigation_ui_test;
 mod session_route_view;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod session_track_reorder_ui_test;
+mod signed_frame_viewport;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod snap_nudge_ui_test;
 mod tempo_input;
@@ -320,6 +321,11 @@ enum PendingEditorAudioResult {
         restart_request: Option<u64>,
         error: hex_audio::OutputOpenError,
     },
+    /// The worker kept the held output for a replacement not yet installed.
+    Rebound {
+        project_generation: u64,
+        output_identity: u64,
+    },
 }
 
 impl PendingEditorAudioResult {
@@ -329,6 +335,9 @@ impl PendingEditorAudioResult {
                 project_generation, ..
             }
             | Self::Unavailable {
+                project_generation, ..
+            }
+            | Self::Rebound {
                 project_generation, ..
             } => *project_generation,
         }
@@ -537,6 +546,11 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("shift-right", TrimRight, Some("hex_editor")),
         KeyBinding::new("backspace", DeleteClip, Some("hex_editor")),
         KeyBinding::new("delete", DeleteClip, Some("hex_editor")),
+        KeyBinding::new(
+            "x",
+            DeleteClip,
+            Some("hex_editor && !hex_text_editing && !hex_text_input && !hex_device_selection && !hex_response_graph_remove && !hex_track_header"),
+        ),
         KeyBinding::new("cmd-backspace", DeleteSectionMarker, Some("hex_editor")),
         KeyBinding::new("cmd-delete", DeleteSectionMarker, Some("hex_editor")),
         KeyBinding::new(
@@ -586,7 +600,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd--", ZoomOut, Some("hex_editor")),
         KeyBinding::new("cmd-0", FitTimeline, Some("hex_editor")),
         KeyBinding::new("z", ZoomToFit, Some("hex_editor && !hex_text_editing")),
-        KeyBinding::new("x", ZoomBack, Some("hex_editor && !hex_text_editing")),
+        KeyBinding::new("v", ZoomBack, Some("hex_editor && !hex_text_editing && !hex_text_input")),
         KeyBinding::new("alt-left", PanTimelineLeft, Some("hex_editor")),
         KeyBinding::new("alt-right", PanTimelineRight, Some("hex_editor")),
         KeyBinding::new("cmd-q", Quit, None),
@@ -1034,6 +1048,8 @@ pub(super) struct EditorView {
     tuning: tuning::TuningState,
     context_menu: Option<crate::context_menu::PopupMenu<context_menu::EditorContextAction>>,
     edit_cursor: Option<edit_cursor::EditCursor>,
+    /// Transient Arrangement play-start lock; never seeks the active transport.
+    locked_play_start: Option<edit_cursor::EditCursor>,
     /// The selected clip a point cursor was deliberately placed inside; that
     /// cursor then outranks the clip's play start (see `selected_clip_play_start`).
     edit_cursor_in_selected_clip: Option<ClipId>,
@@ -1054,6 +1070,24 @@ pub(super) struct EditorView {
 }
 
 impl EditorView {
+    /// Modal operations retain project selections but must not delete them.
+    fn selection_delete_blocked(&self) -> bool {
+        self.opening_project
+            || self.close_prompt_open
+            || self.changelog.is_open()
+            || self.save_dialog_open
+            || self.export_dialog_open
+            || self.preset_dialog_open
+            || self.tuning.open
+            || self.theme_settings.open
+            || self.context_menu.is_some()
+            || self.controller_input_is_open()
+            || self.send_menu_track.is_some()
+            || (self.clip_view_open
+                && self.device_panel_active
+                && self.device_panel.add_menu_is_open(self.state.as_deref()))
+    }
+
     fn new_with_backend(
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1767,6 +1801,7 @@ impl EditorView {
             tuning: tuning::TuningState::new(cx),
             context_menu: None,
             edit_cursor: None,
+            locked_play_start: None,
             edit_cursor_in_selected_clip: None,
             loop_start_over_clip: None,
             selection_loop_start: None,
@@ -1888,6 +1923,9 @@ impl EditorView {
     }
 
     fn playback_start_frame(&self) -> u64 {
+        if let Some(cursor) = self.valid_locked_play_start() {
+            return cursor.frame;
+        }
         if let Some((epoch, region)) = self.selection_loop_start
             && self.selection_intent_epoch == Some(epoch)
             && self
@@ -2041,13 +2079,13 @@ impl EditorView {
         if !device_panel::finalize_controls(self, cx) {
             return;
         }
-        if let (Some(track), Some(state)) = (self.selected_track, self.state.as_ref()) {
-            if state.project.track(track).is_some() {
-                self.duplicate_intent.cancel_chain();
-                self.enqueue_device_barrier(Request::Edit(Command::RemoveTrack(track)));
-                self.selected_track = None;
-                self.selected_clip = None;
-            }
+        if let (Some(track), Some(state)) = (self.selected_track, self.state.as_ref())
+            && state.project.track(track).is_some()
+        {
+            self.duplicate_intent.cancel_chain();
+            self.enqueue_device_barrier(Request::Edit(Command::RemoveTrack(track)));
+            self.selected_track = None;
+            self.selected_clip = None;
         }
     }
 

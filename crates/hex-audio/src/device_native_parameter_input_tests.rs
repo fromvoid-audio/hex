@@ -189,6 +189,56 @@ fn shutdown(control: &mut prepared::Control, callback: &mut prepared::Callback) 
     control.reclaim();
 }
 #[test]
+fn output_trim_clear_receipt_does_not_end_ramp_and_seek_discards_it() {
+    let (mut control, mut callback, target) =
+        fixture_with_target(false, DeviceAutomationTarget::HostOutputGain, false, |_| {});
+    let gain = HostGain::from_db(-6.0).unwrap();
+    control
+        .native_parameter_input
+        .begin(target, NativeTransientValue::HostOutputGain(gain))
+        .unwrap();
+    let mut pcm = [[0.0; 2]; 64];
+    for block in 0..4 {
+        let rendered = render(&mut callback, &mut pcm);
+        if block == 0 {
+            assert!(pcm[0][0] < 0.25 && pcm[0][0] > 0.249);
+        }
+        assert!(control.native_parameter_input.try_receipt().is_none());
+        assert!(write(&mut callback, &mut pcm, &rendered, 2));
+        if block == 0 {
+            assert!(matches!(
+                control.native_parameter_input.try_receipt(),
+                Some(Receipt::Applied { sequence: 1, .. })
+            ));
+        }
+    }
+    assert_eq!(pcm[63], [0.25 * gain.linear(), -0.5 * gain.linear()]);
+    control.native_parameter_input.release().unwrap();
+    let rendered = render(&mut callback, &mut pcm[..1]);
+    let first = pcm[0];
+    assert!(first[0] > 0.25 * gain.linear() && first[0] < 0.25);
+    assert!(control.native_parameter_input.try_receipt().is_none());
+    assert!(write(&mut callback, &mut pcm[..1], &rendered, 2));
+    assert!(matches!(
+        control.native_parameter_input.try_receipt(),
+        Some(Receipt::Finished { .. })
+    ));
+    let rendered = render(&mut callback, &mut pcm);
+    assert!(pcm[0][0] > first[0] && pcm[63][0] < 0.25);
+    assert!(write(&mut callback, &mut pcm, &rendered, 2));
+    control
+        .command(hex_engine::PlaybackCommand::Seek(1024))
+        .unwrap();
+    for _ in 0..4 {
+        let rendered = render(&mut callback, &mut pcm);
+        assert!(write(&mut callback, &mut pcm, &rendered, 2));
+    }
+    assert_eq!(pcm[63], [0.25, -0.5]);
+    assert!(control.native_parameter_input.try_receipt().is_none());
+    shutdown(&mut control, &mut callback);
+}
+
+#[test]
 fn native_input_receipt_waits_for_actual_delayed_pcm_and_clear_waits_for_sink() {
     let (mut control, mut callback, target) = fixture(true);
     control

@@ -692,9 +692,13 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
             offset += frames;
         }
         for index in 0..8 {
-            let current = if replacement { [0.1, -0.025] } else { [0.0; 2] };
+            let current = if replacement {
+                [0.1, -0.1 + 0.075 * (index + 1) as f32 / 240.0]
+            } else {
+                [0.0; 2]
+            };
             let current_return = if replacement {
-                [(0.1 - 0.025) * 0.5 * 0.25; 2]
+                [(current[0] + current[1]) * 0.5 * 0.25; 2]
             } else {
                 [0.0; 2]
             };

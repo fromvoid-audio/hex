@@ -1051,6 +1051,8 @@ impl EditorView {
         self.suppress_cursor_click = gesture.moved;
         if gesture.moved {
             self.fit_clip_editor_to_time_selection();
+        } else {
+            self.update_locked_play_start_from_point();
         }
         true
     }

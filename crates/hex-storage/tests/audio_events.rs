@@ -312,7 +312,13 @@ fn non_affine_event_clock_refusal_is_atomic_and_global_tempo_recovers_without_un
 }
 
 #[test]
-fn freely_placed_events_roundtrip_on_their_grouped_timeline() {
+fn freely_placed_events_roundtrip_with_and_without_a_source_loop() {
+    for (looping, directed) in [(false, false), (true, false), (false, true)] {
+        roundtrip_placed_events(looping, directed);
+    }
+}
+
+fn roundtrip_placed_events(looping: bool, directed: bool) {
     let mut editor = Editor::new(Project::new(48000).unwrap(), 16).unwrap();
     let Created::Imported { clip, .. } = editor
         .execute(Command::ImportAudioTrack {
@@ -325,8 +331,34 @@ fn freely_placed_events_roundtrip_on_their_grouped_timeline() {
     else {
         panic!("fixture")
     };
+    if looping {
+        editor
+            .execute(Command::SetClipLooping { clip, looping })
+            .unwrap();
+        editor
+            .execute(Command::SetClipSourcePhase { clip, phase: 65 })
+            .unwrap();
+    }
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Split { at: 40 },
+        })
+        .unwrap();
+    if directed {
+        editor
+            .execute(Command::ResizeAudioClipView {
+                clip,
+                operation: hex_project::AudioViewResizeOperation::CycleRange {
+                    start: 0,
+                    end: 80,
+                    looping: true,
+                },
+            })
+            .unwrap();
+        editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+    }
     for operation in [
-        AudioEventEdit::Split { at: 40 },
         AudioEventEdit::Place {
             event: 2,
             start: 130,
@@ -341,8 +373,14 @@ fn freely_placed_events_roundtrip_on_their_grouped_timeline() {
             .unwrap();
     }
     let project = editor.project();
-    let edit = project.clip(clip).unwrap().audio_edit().unwrap();
-    assert_eq!((edit.view_start, edit.domain.clock.length()), (25, 215));
+    let placed = project.clip(clip).unwrap();
+    assert_eq!(
+        (placed.looping(), placed.source_phase()),
+        (looping, if looping { 65 } else { 0 })
+    );
+    let edit = placed.audio_edit().unwrap();
+    assert_eq!(edit.view_start, 25);
+    assert_eq!(edit.domain.clock.length(), if directed { 195 } else { 215 });
     let saved = hex_storage::encode(project).unwrap();
     let value: serde_json::Value = serde_json::from_slice(&saved).unwrap();
     assert_eq!(value["version"], hex_storage::CURRENT_SCHEMA_VERSION);
@@ -350,4 +388,206 @@ fn freely_placed_events_roundtrip_on_their_grouped_timeline() {
         hex_storage::decode(&saved).unwrap().snapshot(),
         project.snapshot()
     );
+}
+
+#[test]
+fn musical_event_source_schema_preserves_cropped_and_nested_event_spans() {
+    use hex_project::{BeatTime, TrimEdge, WarpMode};
+    let old = hex_storage::decode(include_bytes!("fixtures/warp-resampler/schema64.json")).unwrap();
+    assert!(
+        old.tracks()
+            .iter()
+            .flat_map(|track| track.clips())
+            .all(|clip| {
+                clip.audio_event_root()
+                    .domain
+                    .musical_event_source
+                    .is_none()
+            })
+    );
+    assert!(
+        hex_storage::schema_version_for(&old) < hex_storage::MUSICAL_EVENT_SOURCE_SCHEMA_VERSION
+    );
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Imported { clip, track, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "audio".into(),
+            path: "audio.wav".into(),
+            sample_rate: 48_000,
+            frames: 24_000,
+        })
+        .unwrap()
+    else {
+        panic!("fixture")
+    };
+    editor
+        .execute(Command::MoveClip {
+            clip,
+            track,
+            start: 24_000,
+        })
+        .unwrap();
+    let settings = hex_project::default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    editor
+        .execute(Command::TrimClipEdge {
+            clip,
+            edge: TrimEdge::Left,
+            frame: 27_000,
+        })
+        .unwrap();
+    let before = editor.project().clone();
+    let original = before.clip(clip).unwrap();
+    let root = original.audio_event_root();
+    let event = original
+        .editable_audio_events()
+        .unwrap()
+        .events
+        .into_iter()
+        .find(|event| event.start == root.view_start)
+        .unwrap();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Place {
+                event: event.id,
+                start: -(BeatTime::ONE.raw() as i64),
+            },
+        })
+        .unwrap();
+    let left = editor.project().clone();
+    let candidate = left.clip(clip).unwrap();
+    assert_eq!(
+        (candidate.start(), candidate.duration()),
+        (original.start(), original.duration())
+    );
+    assert_eq!(
+        candidate
+            .audio_event_root()
+            .domain
+            .musical_event_source
+            .unwrap()
+            .zero_in_destination,
+        BeatTime::ONE.raw()
+    );
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Place {
+                event: event.id,
+                start: (3 * BeatTime::ONE.raw()) as i64,
+            },
+        })
+        .unwrap();
+    let both = editor.project().clone();
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &left);
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &both);
+
+    for nested in [false, true] {
+        if nested {
+            let Created::Clip(copy) = editor.execute(Command::DuplicateClip(clip)).unwrap() else {
+                panic!("duplicate")
+            };
+            editor
+                .execute(Command::GroupClips(vec![clip, copy]))
+                .unwrap();
+        }
+        let bytes = hex_storage::encode(editor.project()).unwrap();
+        assert_eq!(
+            hex_storage::schema_version_for(editor.project()),
+            hex_storage::MUSICAL_EVENT_SOURCE_SCHEMA_VERSION
+        );
+        assert_eq!(hex_storage::decode(&bytes).unwrap(), *editor.project());
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        for mutation in 0..4 {
+            let mut malformed = value.clone();
+            match mutation {
+                0 => malformed["version"] = hex_storage::SIDECHAIN_SCHEMA_VERSION.into(),
+                1 => malformed["musical_event_sources"][0]["length_raw"] = u64::MAX.into(),
+                2 => malformed["musical_event_sources"][0]["path"][0] = u64::MAX.into(),
+                _ => {
+                    let row = malformed["musical_event_sources"][0].clone();
+                    malformed["musical_event_sources"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(row);
+                }
+            }
+            assert!(hex_storage::decode(&serde_json::to_vec(&malformed).unwrap()).is_err());
+        }
+    }
+}
+
+#[test]
+fn extended_frame_roots_require_schema71_and_refuse_malformed_extents() {
+    use hex_project::{MAX_AUDIO_DOMAIN_FRAMES, MAX_SPARSE_AUDIO_TIMELINE_FRAMES};
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { clip, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "audio".into(),
+            path: "audio.wav".into(),
+            sample_rate: 48_000,
+            frames: 100,
+        })
+        .unwrap()
+    else {
+        panic!("fixture")
+    };
+    editor
+        .execute(Command::ImportAudioTrack {
+            name: "ordinary".into(),
+            path: "ordinary.wav".into(),
+            sample_rate: 48_000,
+            frames: 100,
+        })
+        .unwrap();
+    let historical = hex_storage::encode(editor.project()).unwrap();
+    assert_eq!(hex_storage::decode(&historical).unwrap(), *editor.project());
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Place {
+                event: 1,
+                start: MAX_AUDIO_DOMAIN_FRAMES as i64 + 100,
+            },
+        })
+        .unwrap();
+    let bytes = hex_storage::encode(editor.project()).unwrap();
+    assert_eq!(hex_storage::decode(&bytes).unwrap(), *editor.project());
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        value["version"],
+        hex_storage::EXTENDED_FRAME_EVENTS_SCHEMA_VERSION
+    );
+    let mut mislabeled = value.clone();
+    mislabeled["version"] = hex_storage::SIDECHAIN_SCHEMA_VERSION.into();
+    mislabeled
+        .as_object_mut()
+        .unwrap()
+        .remove("musical_event_sources");
+    assert!(hex_storage::decode(&serde_json::to_vec(&mislabeled).unwrap()).is_err());
+    let mut missing = value.clone();
+    missing["extended_frame_geometry"]
+        .as_object_mut()
+        .unwrap()
+        .remove(&clip.value().to_string());
+    assert!(hex_storage::decode(&serde_json::to_vec(&missing).unwrap()).is_err());
+    let mut malformed = value;
+    let extent = &mut malformed["extended_frame_geometry"][clip.value().to_string()]["length"];
+    assert!(extent.as_u64().unwrap() > MAX_AUDIO_DOMAIN_FRAMES);
+    *extent = (MAX_SPARSE_AUDIO_TIMELINE_FRAMES + 1).into();
+    assert!(hex_storage::decode(&serde_json::to_vec(&malformed).unwrap()).is_err());
 }
