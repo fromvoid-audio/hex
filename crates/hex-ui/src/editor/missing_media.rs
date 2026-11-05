@@ -631,16 +631,24 @@ impl EditorView {
             }
             let (status, detail) = match &row.resolution {
                 Resolution::Missing => ("missing", None),
-                Resolution::Found(path, CandidateFit::Unverified(_)) => {
-                    ("found · unverified", Some(path.display().to_string()))
-                }
-                Resolution::Found(path, _) => ("found", Some(path.display().to_string())),
+                Resolution::Found(path, CandidateFit::Unverified(_)) => (
+                    "found · unverified",
+                    Some(hex_session::service::text::verbatim(path.display())),
+                ),
+                Resolution::Found(path, _) => (
+                    "found",
+                    Some(hex_session::service::text::verbatim(path.display())),
+                ),
                 Resolution::Choices(paths) => {
                     ("several matches", Some(format!("{} files", paths.len())))
                 }
-                Resolution::Mismatch(path, reason) => {
-                    ("mismatch", Some(format!("{} · {reason}", path.display())))
-                }
+                Resolution::Mismatch(path, reason) => (
+                    "mismatch",
+                    Some(format!(
+                        "{} · {reason}",
+                        hex_session::service::text::verbatim(path.display())
+                    )),
+                ),
             };
             let mut entry = div()
                 .id(("missing-media-row", index))
@@ -655,13 +663,9 @@ impl EditorView {
                         .flex()
                         .items_center()
                         .gap_2()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .child(theme::text(media.file_name())),
-                        )
+                        .child(div().flex_1().min_w_0().truncate().child(theme::text(
+                            hex_session::service::text::verbatim(media.file_name()),
+                        )))
                         .child(div().text_color(muted).child(theme::text(status)))
                         .child(button(("missing-media-locate", index), "locate…").on_click(
                             cx.listener(move |view, _, _, cx| view.missing_media_locate(index, cx)),
@@ -672,7 +676,9 @@ impl EditorView {
                         .text_xs()
                         .text_color(muted)
                         .truncate()
-                        .child(theme::text(media.expected_path.display().to_string())),
+                        .child(theme::text(hex_session::service::text::verbatim(
+                            media.expected_path.display(),
+                        ))),
                 )
                 .child(
                     div()
@@ -698,7 +704,10 @@ impl EditorView {
                             .truncate()
                             .cursor_pointer()
                             .hover(|s| s.bg(rgb(theme::color(PaletteRole::Hover))))
-                            .child(theme::text(format!("use {}", path.display())))
+                            .child(theme::text(format!(
+                                "use {}",
+                                hex_session::service::text::verbatim(path.display())
+                            )))
                             .on_click(cx.listener(move |view, _, _, cx| {
                                 view.missing_media_choose(index, choice, cx)
                             })),

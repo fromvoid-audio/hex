@@ -772,7 +772,7 @@ impl EditorView {
             Ok(activation) => activation,
             Err(error) => {
                 self.error = Some(
-                    format!("controller note activation failed: {error:?}")
+                    format!("controller note activation failed · {error}")
                         .to_lowercase()
                         .into(),
                 );

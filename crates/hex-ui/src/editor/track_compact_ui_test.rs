@@ -186,7 +186,10 @@ fn assert_no_bodies(f: &mut Fixture) {
             super::midi_thumbnail::rendered_notes(&mut f.visual, f.clips[1], dragging).is_empty()
         );
     }
-    assert!(f.visual.debug_bounds("midi-trim-preview-note-60").is_none());
+    assert!(
+        super::midi_thumbnail::rendered_note_layer(&mut f.visual, "midi-trim-preview-notes")
+            .is_empty()
+    );
     for prefix in [
         "fade-in-top",
         "fade-in-bottom",
@@ -254,8 +257,8 @@ fn compact_rows_preserve_canonical_titles_selection_and_restore_body_on_expansio
     assert!(
         f.visual
             .debug_bounds(selector("midi-preview-count", f.clips[1].value()))
-            .is_some(),
-        "fixture has a genuine capped-preview count badge"
+            .is_none(),
+        "expanded rows draw every note and never a sample-count badge"
     );
     let before = f.editor.read_with(&f.visual, |view, _| {
         view.state.as_ref().unwrap().project.snapshot()
@@ -279,6 +282,14 @@ fn compact_rows_preserve_canonical_titles_selection_and_restore_body_on_expansio
         let surface = bounds(&mut f.visual, prefix, clip.value());
         assert_eq!(surface.size.height, px(23.0));
         assert_title(&mut f.visual, "clip-name", clip, surface);
+        let (_, divider, _) = f
+            .visual
+            .rendered_border(selector("clip-name", clip.value()))
+            .unwrap();
+        assert!(
+            divider.bottom > gpui::ScaledPixels::default(),
+            "compact clip title retains its divider"
+        );
         let (color, widths, _) = f
             .visual
             .rendered_border(selector(prefix, clip.value()))
@@ -324,7 +335,8 @@ fn compact_rows_preserve_canonical_titles_selection_and_restore_body_on_expansio
     f.editor.read_with(&f.visual, |view, _| {
         assert!(!view.pointer_hits_priority_clip_control(
             f32::from(audio.center().x),
-            f32::from(audio.center().y)
+            f32::from(audio.center().y),
+            false,
         ));
         assert_eq!(view.selected_clip_ids(), f.clips);
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);

@@ -429,7 +429,15 @@ pub(super) mod tests {
             runtime.set_native_parameter_input(operation).unwrap();
             let mut output = vec![[9.0; 2]; frames];
             runtime.render(&mut output).unwrap();
-            assert_eq!(output, vec![[0.25, -0.5]; frames]);
+            for (offset, frame) in output.iter().enumerate() {
+                let position = (performance + offset as u64) % 64;
+                let fade = if position >= 49 {
+                    (63 - position) as f32 / 15.0
+                } else {
+                    1.0
+                };
+                assert_eq!(*frame, [0.25 * fade, -0.5 * fade]);
+            }
             let applied = runtime.take_native_parameter_application().unwrap();
             assert_eq!(
                 (

@@ -819,6 +819,7 @@ impl UtilityDefinition {
             matrix: StereoMatrix::identity(),
             pre_gain: StereoMatrix::identity(),
             post_gain: StereoMatrix::identity(),
+            width_ramp: None,
         };
         let (matrix, filters) = automation.configuration(None, 0, sample_rate, None)?;
         let filters = filters.ok_or(DeviceContractError::InvalidDescriptor)?;
@@ -901,6 +902,37 @@ pub(crate) struct UtilityAutomation {
     pub(crate) matrix: StereoMatrix,
     pre_gain: StereoMatrix,
     post_gain: StereoMatrix,
+    width_ramp: Option<WidthRamp>,
+}
+
+/// A direct, unautomated width retarget inside an otherwise automated Utility.
+/// Authored width automation remains sample-exact and does not use this ramp.
+#[derive(Clone, Copy, Debug)]
+struct WidthRamp {
+    from: f32,
+    target: f32,
+    elapsed: u32,
+    total: u32,
+}
+impl WidthRamp {
+    fn check_inline(&self) {
+        let Self {
+            from,
+            target,
+            elapsed,
+            total,
+        } = self;
+        let _: (&f32, &f32, &u32, &u32) = (from, target, elapsed, total);
+    }
+    fn advance(&mut self) -> f32 {
+        self.elapsed += 1;
+        if self.elapsed >= self.total {
+            self.target
+        } else {
+            let t = f64::from(self.elapsed) / f64::from(self.total);
+            (f64::from(self.from) + (f64::from(self.target) - f64::from(self.from)) * t) as f32
+        }
+    }
 }
 impl UtilityAutomation {
     pub(crate) fn check_inline(&self) {
@@ -910,12 +942,34 @@ impl UtilityAutomation {
             matrix,
             pre_gain,
             post_gain,
+            width_ramp,
         } = self;
         controls.check_inline(UtilityControls::check_inline);
         effective.check_inline();
         let _: (&StereoMatrix, &StereoMatrix, &StereoMatrix) = (matrix, pre_gain, post_gain);
+        if let Some(ramp) = width_ramp {
+            ramp.check_inline();
+        }
     }
-    pub(crate) fn inherit(&mut self, previous: &Self) {
+    pub(crate) fn inherit(&mut self, previous: &Self, sample_rate: u32) {
+        let target_width = self.controls.base().settings().width;
+        let previous_width = previous.effective.width;
+        self.width_ramp = if self.controls.admitted(2) {
+            None
+        } else if !previous.controls.admitted(2)
+            && target_width == previous.controls.base().settings().width
+        {
+            previous.width_ramp
+        } else if target_width != previous_width {
+            Some(WidthRamp {
+                from: previous_width,
+                target: target_width,
+                elapsed: 0,
+                total: sample_rate.div_ceil(200).max(1),
+            })
+        } else {
+            None
+        };
         self.controls.inherit(&previous.controls);
         self.matrix = previous.matrix;
         self.pre_gain = previous.pre_gain;
@@ -960,10 +1014,10 @@ impl UtilityAutomation {
         } else {
             None
         };
-        if !reset && pending.is_none() && previous.is_some() {
+        if !reset && pending.is_none() && previous.is_some() && self.width_ramp.is_none() {
             return Ok((self.matrix, None));
         }
-        let settings = if reset {
+        let mut settings = if reset {
             self.controls.base()
         } else {
             pending
@@ -971,6 +1025,13 @@ impl UtilityAutomation {
                 .map_or_else(|| self.controls.effective(), |next| next.effective())
         }
         .settings();
+        let mut width_ramp = if reset { None } else { self.width_ramp };
+        if let Some(ramp) = &mut width_ramp {
+            settings.width = ramp.advance();
+            if ramp.elapsed >= ramp.total {
+                width_ramp = None;
+            }
+        }
         let filters = if previous.is_some()
             && settings.dc_remove == self.effective.dc_remove
             && settings.bass_mono == self.effective.bass_mono
@@ -1034,6 +1095,7 @@ impl UtilityAutomation {
         self.matrix = matrix;
         self.pre_gain = pre_gain;
         self.post_gain = post_gain;
+        self.width_ramp = width_ramp;
         Ok((matrix, filters))
     }
 }
@@ -1897,3 +1959,5 @@ mod tests {
 #[cfg(test)]
 #[path = "utility/automation_tests.rs"]
 mod automation_tests;
+#[cfg(test)]
+mod width_ramp_tests;

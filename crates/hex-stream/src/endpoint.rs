@@ -119,6 +119,8 @@ pub(crate) struct Endpoint {
     eviction_cursor: usize,
     pending: Vec<PendingSlot>,
     pending_mask: usize,
+    /// Occupied `pending` slots; gates speculative prefetch.
+    pending_count: usize,
     source_keys: Vec<StreamResourceKey>,
     request_tx: Producer<PageRequest>,
     ready_rx: Consumer<Box<PageBuffer>>,
@@ -127,6 +129,7 @@ pub(crate) struct Endpoint {
     held_returns: Vec<Box<PageBuffer>>,
     misses: u64,
     queued_requests: u64,
+    prefetched_requests: u64,
     coalesced_requests: u64,
     rejected_requests: u64,
     stale_pages: u64,
@@ -140,6 +143,9 @@ pub(crate) struct Endpoint {
 pub struct EndpointStats {
     pub misses: u64,
     pub queued_requests: u64,
+    /// Lookahead requests attempted (`Endpoint::prefetch`); a subset of
+    /// `queued_requests` when the queue accepted them.
+    pub prefetched_requests: u64,
     pub coalesced_requests: u64,
     pub rejected_requests: u64,
     pub stale_pages: u64,
@@ -221,6 +227,7 @@ impl Endpoint {
             eviction_cursor: 0,
             pending,
             pending_mask: pending_count - 1,
+            pending_count: 0,
             source_keys: sources,
             request_tx: queues.request_tx,
             ready_rx: queues.ready_rx,
@@ -229,6 +236,7 @@ impl Endpoint {
             held_returns,
             misses: 0,
             queued_requests: 0,
+            prefetched_requests: 0,
             coalesced_requests: 0,
             rejected_requests: 0,
             stale_pages: 0,
@@ -347,6 +355,7 @@ impl Endpoint {
         EndpointStats {
             misses: self.misses,
             queued_requests: self.queued_requests,
+            prefetched_requests: self.prefetched_requests,
             coalesced_requests: self.coalesced_requests,
             rejected_requests: self.rejected_requests,
             stale_pages: self.stale_pages,
@@ -360,10 +369,10 @@ impl Endpoint {
             return false;
         }
         for key in keys {
-            if let Some(index) = self.cache_lookup(*key) {
-                if let CacheSlot::Occupied { pinned, .. } = &mut self.cache[index] {
-                    *pinned |= 8;
-                }
+            if let Some(index) = self.cache_lookup(*key)
+                && let CacheSlot::Occupied { pinned, .. } = &mut self.cache[index]
+            {
+                *pinned |= 8;
             }
         }
         true
@@ -451,6 +460,7 @@ impl Endpoint {
             match self.pending[slot] {
                 PendingSlot::Key(found) if found == key => {
                     self.pending[slot] = PendingSlot::Empty;
+                    self.pending_count = self.pending_count.saturating_sub(1);
                     self.pending_shift_delete(slot);
                     return;
                 }
@@ -509,12 +519,65 @@ impl Endpoint {
         match self.request_tx.push(PageRequest(key)) {
             Ok(()) => {
                 self.pending[slot] = PendingSlot::Key(key);
+                self.pending_count += 1;
                 self.queued_requests = self.queued_requests.saturating_add(1);
             }
             Err(PushError::Full(_)) => {
                 self.rejected_requests = self.rejected_requests.saturating_add(1);
             }
         }
+    }
+
+    /// Speculatively request `page_index` ahead of the playhead, which is
+    /// reading `page_index - 1` of the same source.
+    ///
+    /// Lookahead contract (#4075): at most one request is ever outstanding
+    /// because of it, since it queues only while no other request is pending,
+    /// so it never delays a demand request by more than one page decode and
+    /// never fills the bounded request queue. It skips pages already cached or
+    /// pending and unknown sources (without counting a rejection). The page
+    /// arrives unpinned, so readiness reclaim and ordinary eviction can take
+    /// it back: a prefetch never holds pool pages against demand. To make
+    /// room in a full cache it evicts at most one unpinned page other than
+    /// the one being read, so it cannot evict the playhead's own page. A full
+    /// request queue drops it like any rejected request; the callback never
+    /// waits.
+    pub(crate) fn prefetch(&mut self, key: impl Into<ResourcePageKey>) {
+        let key = key.into();
+        if self.pending_count != 0
+            || self.source_keys.binary_search(&key.source).is_err()
+            || self.cache_lookup(key).is_some()
+        {
+            return;
+        }
+        let reading = ResourcePageKey {
+            source: key.source,
+            page_index: key.page_index.wrapping_sub(1),
+        };
+        if self.cache_count >= self.max_cached_pages {
+            let Some(index) = self.unpinned_victim_except(reading) else {
+                return;
+            };
+            if let Some((page, _)) = self.cache_remove(index) {
+                self.return_buffer(page);
+            }
+        }
+        self.prefetched_requests = self.prefetched_requests.saturating_add(1);
+        self.queue_request(key);
+    }
+
+    fn unpinned_victim_except(&mut self, keep: ResourcePageKey) -> Option<usize> {
+        let mask = self.cache.len() - 1;
+        for offset in 0..self.cache.len() {
+            let index = (self.eviction_cursor + offset) & mask;
+            if let CacheSlot::Occupied { page, pinned: 0 } = &self.cache[index]
+                && page.key != Some(keep)
+            {
+                self.eviction_cursor = (index + 1) & mask;
+                return Some(index);
+            }
+        }
+        None
     }
 
     fn cache_lookup(&self, key: impl Into<ResourcePageKey>) -> Option<usize> {
@@ -686,13 +749,13 @@ impl MediaPages for Endpoint {
             source: key.into(),
             page_index,
         };
-        if let Some(slot) = self.cache_lookup(key) {
-            if let CacheSlot::Occupied { page, .. } = &self.cache[slot] {
-                return Some(BorrowedMediaPage {
-                    page_index,
-                    frames: &page.frames[..page.valid_frames],
-                });
-            }
+        if let Some(slot) = self.cache_lookup(key)
+            && let CacheSlot::Occupied { page, .. } = &self.cache[slot]
+        {
+            return Some(BorrowedMediaPage {
+                page_index,
+                frames: &page.frames[..page.valid_frames],
+            });
         }
         self.misses = self.misses.saturating_add(1);
         None
@@ -700,6 +763,13 @@ impl MediaPages for Endpoint {
 
     fn request_page(&mut self, key: StreamSourceKey, page_index: u64) {
         self.queue_request(ResourcePageKey {
+            source: key.into(),
+            page_index,
+        });
+    }
+
+    fn prefetch_page(&mut self, key: StreamSourceKey, page_index: u64) {
+        self.prefetch(ResourcePageKey {
             source: key.into(),
             page_index,
         });
@@ -713,15 +783,15 @@ impl MediaPages for Endpoint {
             source: key.into(),
             page_index,
         };
-        if let Some(slot) = self.cache_lookup(resource) {
-            if let CacheSlot::Occupied { page, .. } = &self.cache[slot] {
-                return Some(BorrowedScalarPage {
-                    key,
-                    page_index,
-                    values: &page.scalar_values[..page.valid_frames],
-                    coverage: &page.scalar_coverage[..page.valid_frames.div_ceil(64)],
-                });
-            }
+        if let Some(slot) = self.cache_lookup(resource)
+            && let CacheSlot::Occupied { page, .. } = &self.cache[slot]
+        {
+            return Some(BorrowedScalarPage {
+                key,
+                page_index,
+                values: &page.scalar_values[..page.valid_frames],
+                coverage: &page.scalar_coverage[..page.valid_frames.div_ceil(64)],
+            });
         }
         self.misses = self.misses.saturating_add(1);
         None
@@ -766,6 +836,7 @@ impl Endpoint {
             eviction_cursor: _,
             pending,
             pending_mask: _,
+            pending_count: _,
             source_keys,
             request_tx: _,
             ready_rx: _,
@@ -774,6 +845,7 @@ impl Endpoint {
             held_returns,
             misses: _,
             queued_requests: _,
+            prefetched_requests: _,
             coalesced_requests: _,
             rejected_requests: _,
             stale_pages: _,
@@ -790,6 +862,9 @@ impl Endpoint {
         }
     }
 }
+
+#[cfg(test)]
+mod prefetch_tests;
 
 #[cfg(test)]
 mod tests {

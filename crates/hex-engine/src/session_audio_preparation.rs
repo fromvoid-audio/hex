@@ -270,15 +270,14 @@ impl SessionSourceConstruction {
             {
                 return Err(AudioStorageError::SourceMismatch);
             }
-            if let SourceKind::Streamed(meta) = &owner.kind {
-                if meta.key().generation() != generation
+            if let SourceKind::Streamed(meta) = &owner.kind
+                && (meta.key().generation() != generation
                     || meta.key().asset() != asset.id()
                     || meta.source_rate() != asset.source_sample_rate()
                     || meta.source_frames() != asset.source_frames()
-                    || meta.conversion_version() != asset.conversion_version()
-                {
-                    return Err(AudioStorageError::SourceMismatch);
-                }
+                    || meta.conversion_version() != asset.conversion_version())
+            {
+                return Err(AudioStorageError::SourceMismatch);
             }
             if clip.name().trim().is_empty()
                 || clip.name().len() > hex_project::MAX_NAME_BYTES

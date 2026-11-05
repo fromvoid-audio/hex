@@ -50,13 +50,17 @@ fn save_admission(
     }
 }
 
-fn prepare_save_path(mut path: PathBuf) -> Result<PathBuf, &'static str> {
+/// Final Save As target, or a display message. Storage owns the filename
+/// limit for the recovery files it keeps beside the project; its message
+/// marks the chosen name verbatim.
+fn prepare_save_path(mut path: PathBuf) -> Result<PathBuf, String> {
     if path.extension().is_none() {
         path.set_extension("hex");
     }
     if path.as_os_str().len() > MAX_PROJECT_PATH_BYTES {
-        return Err("project path exceeds the 4096-byte limit");
+        return Err("project path exceeds the 4096-byte limit".into());
     }
+    hex_session::service::project_name::check(&path).map_err(|error| error.to_string())?;
     Ok(path)
 }
 
@@ -258,7 +262,12 @@ impl EditorView {
                             }
                         }
                         Ok(Err(error)) => {
-                            view.error = Some(error.to_string().to_lowercase().into())
+                            view.error = Some(
+                                hex_session::service::text::lowercase_outside_verbatim(
+                                    &error.to_string(),
+                                )
+                                .into(),
+                            )
                         }
                         _ => {}
                     }
@@ -288,6 +297,10 @@ impl EditorView {
     }
 
     fn begin_save_new(&mut self, path: PathBuf) {
+        // The OS replace prompt confirmed only the exact chosen path. The
+        // session replaces an existing file, so never let an appended
+        // extension silently retarget the save onto another existing file.
+        let extension_added = path.extension().is_none();
         let path = match prepare_save_path(path) {
             Ok(path) => path,
             Err(message) => {
@@ -295,6 +308,15 @@ impl EditorView {
                 return;
             }
         };
+        if extension_added && std::fs::symlink_metadata(&path).is_ok() {
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            self.error =
+                Some(format!("{name} already exists · choose it by name to replace it").into());
+            return;
+        }
         if self.enqueue_device_barrier(Request::SaveNew(path)) {
             self.saving_project = true;
             self.status = "saving project as".into();
@@ -354,7 +376,13 @@ mod tests {
         let too_long = PathBuf::from(format!("{}.hex", "x".repeat(4_096)));
         assert_eq!(
             prepare_save_path(too_long),
-            Err("project path exceeds the 4096-byte limit")
+            Err("project path exceeds the 4096-byte limit".into())
         );
+        // 80 CJK characters fit one component but not the journal lock beside it.
+        let name = format!("Take {}.hex", "界".repeat(80));
+        let message = prepare_save_path(PathBuf::from(&name)).expect_err("long name");
+        let shown = crate::theme::text(&message);
+        assert!(shown.contains(&name), "{shown}");
+        assert!(shown.contains("choose a name of at most"), "{shown}");
     }
 }

@@ -9,32 +9,17 @@ Supply optimized exact-source builds for user testing. Save and quit hex first;
 never force-quit, discard unsaved projects or claim replacing a file reloads a
 running process. Preserve projects, media, preferences and historical artifacts.
 
-## Update and open
+## Run from source
 
 ```sh
-./launch          # verify/open installed app only
-./launch --update # fetch/fast-forward clean main, optimized build/install/open
-./launch --test   # add full exact-source local CI
-./launch --open   # verify/open installed app only
-./launch --help
+./launch                    # git pull, then cargo run -r
+./launch --diagnostics=off  # forward arguments to hex
 ```
 
-Normal update refuses dirty/non-main/ahead/divergent source and running installed
-or raw desktop processes. Without `--test`, it records source-only verification
-and tests as not run. `--open` does not update or build.
-
-Unless `CARGO_TARGET_DIR` is set, `./launch` builds in its own Cargo targets:
-`artifacts/cargo-ci-target` for full local CI and `artifacts/cargo-release-target`
-for packaging and release-target recovery. The release guard refuses a target
-already populated by development checks, so the two stay separate. The checkout's
-`target/` is left for ad-hoc Cargo use. An explicit `CARGO_TARGET_DIR` is used for
-both; `--recover-release-target --test` still verifies in a fresh invocation target.
-
-`--force-restart` is a separate explicit destructive opt-in: it can terminate the
-verified development app after normal quit fails. Never infer that authorization
-from a build request. `--recover-release-target` handles supported recreated or
-pending targets without terminating hex; read its exact diagnostic and help first.
-Do not edit release ownership markers or delete uncertain installation custody.
+The launcher runs in the checkout containing it. It stops on a failed pull and
+forwards all arguments to the release binary. It does not install an app bundle,
+run local CI, or terminate an existing process. Git and Cargo use their normal
+configuration, including `CARGO_TARGET_DIR` when set.
 
 ## Qualified user-test delivery
 

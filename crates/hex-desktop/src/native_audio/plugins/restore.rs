@@ -17,6 +17,7 @@ enum Stage {
     Fence,
     Return,
     Renew(usize),
+    RefreshLatency(Binding),
     Prepare(usize),
     Ready,
 }
@@ -127,7 +128,11 @@ impl Plugins {
         };
         if let Some(revision) = restore.submitted {
             if control.output_identity() == Some(restore.source.output_identity)
-                && control.status.applied_revision.load(Acquire) == revision
+                && (control.status.applied_revision.load(Acquire) == revision
+                    || control
+                        .status
+                        .rejected_revision()
+                        .is_some_and(|(rejected, _)| rejected == revision))
             {
                 control.release_stopped_edit_fence(restore.fence);
                 self.restore = None;
@@ -147,7 +152,9 @@ impl Plugins {
                 Stage::Fence => match control.stopped_edit_fence_state(restore.fence) {
                     StoppedEditFenceState::Pending => {}
                     StoppedEditFenceState::Refused => {
-                        return Err("stop playback before restoring vst3 effects".into());
+                        // The editor holds Play until this restore settles;
+                        // another transport source started playback first.
+                        return Err("playback started before vst3 effects were restored".into());
                     }
                     StoppedEditFenceState::Ready => restore.stage = Stage::Return,
                 },
@@ -168,6 +175,10 @@ impl Plugins {
                                 Ok(binding) => {
                                     source.binding = binding;
                                     source.queued = false;
+                                    if source.observes_latency {
+                                        restore.stage = Stage::RefreshLatency(binding);
+                                        return Ok(false);
+                                    }
                                 }
                                 Err(
                                     "native preparation is busy"
@@ -179,6 +190,23 @@ impl Plugins {
                         restore.stage = Stage::Renew(index + 1);
                     } else {
                         restore.stage = Stage::Prepare(0);
+                    }
+                }
+                Stage::RefreshLatency(binding) => {
+                    let index = self
+                        .sources
+                        .iter()
+                        .position(|source| source.binding == binding && !source.retiring)
+                        .ok_or("vst3 latency source changed")?;
+                    match control.settle_native_latency_on_control(binding) {
+                        Ok(Some(_)) => restore.stage = Stage::Renew(index + 1),
+                        Err("native preparation is busy") => {}
+                        Ok(None) => {
+                            return Err(control
+                                .native_source_preparation_error(binding)
+                                .unwrap_or_else(|| "vst3 latency reactivation refused".into()));
+                        }
+                        Err(reason) => return Err(reason.into()),
                     }
                 }
                 Stage::Prepare(index) => {

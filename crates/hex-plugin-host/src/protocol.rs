@@ -9,8 +9,8 @@ mod capture;
 mod edits;
 mod parameter_page;
 pub use edits::{
-    MAX_PARAMETER_EDITS, ParameterEdit, ParameterEditKind, ParameterEdits, edit_request,
-    parameter_edits,
+    MAX_PARAMETER_EDITS, ParameterEdit, ParameterEditKind, ParameterEdits, RecoveryEdits,
+    edit_request, parameter_edits, recovery_edit_request, recovery_edits,
 };
 pub use parameter_page::{
     ControllerParameter, MAX_CONTROLLER_PARAMETERS, PARAMETER_PAGE_SIZE, ParameterConversion,
@@ -18,7 +18,10 @@ pub use parameter_page::{
     ParameterPageQuery, ParameterPlainValue, ParameterText, parameter_page, parameter_page_request,
 };
 mod flush;
-pub use capture::{capture_request, captured_state, live_capture_request, live_captured_state};
+pub use capture::{
+    CAPTURE_REFUSAL_MAGIC, StateCaptureRefusal, capture_refusal, capture_request, captured_state,
+    live_capture_reply, live_capture_request, live_captured_state,
+};
 pub use flush::{
     FlushDisposition, FlushedParameter, FlushedParameters, MAX_FLUSHED_PARAMETERS, flush_request,
     flushed_parameters,
@@ -442,6 +445,18 @@ pub fn quiesce(config: &Configuration, sequence: u64) -> Result<[u8; 64]> {
     Ok(out)
 }
 
+/// Explicit stopped component reactivation, distinct from ordinary quiescence.
+pub fn reactivate(config: &Configuration, sequence: u64, operation: u64) -> Result<[u8; 72]> {
+    if operation == 0 {
+        return Err(Error::Protocol("reactivation operation must be nonzero"));
+    }
+    let mut out = [0; 72];
+    out[..64].copy_from_slice(&quiesce(config, sequence)?);
+    out[..4].copy_from_slice(b"HXVA");
+    out[64..].copy_from_slice(&operation.to_le_bytes());
+    Ok(out)
+}
+
 pub fn validate_resume(previous: Binding, next: Binding) -> Result<()> {
     if [
         previous.root,
@@ -521,6 +536,20 @@ fn epoch_facts<'a>(
 
 pub fn quiescent_facts(body: &[u8], config: &Configuration, sequence: u64) -> Result<Facts> {
     let (facts, rest) = epoch_facts(body, config, sequence)?;
+    rest.end()?;
+    Ok(facts)
+}
+
+pub fn reactivated_facts(
+    body: &[u8],
+    config: &Configuration,
+    sequence: u64,
+    operation: u64,
+) -> Result<Facts> {
+    let (facts, mut rest) = epoch_facts(body, config, sequence)?;
+    if operation == 0 || u64::from_le_bytes(rest.array()?) != operation {
+        return Err(Error::Protocol("reactivation operation differs"));
+    }
     rest.end()?;
     Ok(facts)
 }

@@ -39,3 +39,7 @@ pub(super) fn restyle(input: &Entity<TextInput>, cx: &mut App) {
         let _ = input.set_external_style(theme::control_style(), theme::action_style(), cx);
     });
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "browser_input_caret_ui_test.rs"]
+mod caret_idle_tests;
