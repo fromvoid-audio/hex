@@ -2776,8 +2776,8 @@ impl EditorView {
             self.main_track_lane_epoch = 0;
             self.retire_active_clip_drag();
             self.pointer_down = None;
-            // The document transaction already owns fresh playback publication.
-            // Reset transport without submitting a second graph during the handoff.
+            // The document transaction owns transport and publication during
+            // replacement. Reset the UI without revoking a staged effect endpoint.
             self.stop_transport(false);
             self.viewport = None;
             self.duplicate_intent.reject();
@@ -4567,7 +4567,7 @@ impl EditorView {
         self.stop_transport(true);
     }
 
-    fn stop_transport(&mut self, restore_current_sound: bool) {
+    fn stop_transport(&mut self, stop_output: bool) {
         use super::audio_admission::LatencyRebuild;
         let native_restore = matches!(
             self.latency_rebuild.take(),
@@ -4588,7 +4588,7 @@ impl EditorView {
         // Stop explicitly discards voice histories. A previously refused edit
         // or restoration can now install the canonical sound without inheriting
         // an incompatible preview's history. Keep construction on the worker.
-        let restore = restore_current_sound
+        let restore = stop_output
             && self.stopped_playback_restore.is_none()
             && !self.edit_pending()
             && self.device_gesture.snapshot().is_none()
@@ -4611,7 +4611,7 @@ impl EditorView {
             });
         self.finish_midi_recording();
         // Publish the MIDI finish intent before any input prefix is revoked.
-        if let Some(audio) = &self.audio {
+        if stop_output && let Some(audio) = &self.audio {
             if let Some(trace) = &self.transport_trace {
                 trace.stop(audio);
             }

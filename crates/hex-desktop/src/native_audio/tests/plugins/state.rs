@@ -198,6 +198,59 @@ fn retained_output_restores_saved_vst3_before_retiring_the_previous_generation()
 }
 
 #[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn priority_stop_reopens_after_a_retained_vst3_endpoint_was_staged() {
+    let _native = native_fixture();
+    let saved = nondefault_fixture();
+    let mut h = ResidentHarness::with_plugins_and_catalog(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        saved.catalog.clone(),
+    );
+    assert!(h.next().error.is_none());
+    h.applied(0);
+    let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let opened = h.run(Request::Open(saved.path.clone()));
+    // Advance only the outgoing stopped witness. The successor's actual
+    // queued endpoint stays unpublished to the callback until after Stop.
+    h.render();
+    wait(|| h.plugin_queued.load(Acquire));
+    h.audio.as_ref().unwrap().control.stop();
+
+    super::super::resident_lifecycle::finish_replacement(&mut h, &opened, output);
+    assert_ne!(
+        h.audio.as_ref().unwrap().control.output_identity(),
+        Some(output)
+    );
+    let restored = h.next();
+    assert!(restored.error.is_none());
+    assert_eq!(restored.state.project.as_ref(), &saved.project);
+    assert!(
+        !h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(Acquire)
+    );
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for block in 0..3 {
+        let pcm = h.render_plugin_block();
+        wait(|| h.plugin_completed.load(Acquire) > block);
+        assert_eq!(pcm, [[if block == 2 { 0.09375 } else { 0.0 }; 2]; 256]);
+    }
+}
+
+#[test]
 #[ignore = "explicit original SDK helper/source receipts; variant37 additionally exercises controller state"]
 fn native_effect_saved_state_restores_fresh_instance_and_nondefault_pcm() {
     let _native = native_fixture();
@@ -714,7 +767,12 @@ fn native_effect_saved_project_without_resolved_source_retains_opaque_state() {
         // Opening recoverable state must not require an available output or
         // helper. Offline custody remains distinct from callback application.
         let mut offline = ResidentHarness::with_open_gate(8192, Arc::new(AtomicBool::new(false)));
-        assert!(offline.next().error.is_some());
+        // Authoring starts before the asynchronous output result.
+        offline.next();
+        wait(|| {
+            offline.pump();
+            !offline.unavailable.is_empty()
+        });
         let opened = offline.run(Request::Open(files.0.join("effect.hex")));
         assert!(opened.error.is_none(), "{:?}", opened.error);
         assert!(opened.open_complete && opened.project_replaced);

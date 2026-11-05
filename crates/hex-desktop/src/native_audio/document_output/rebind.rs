@@ -9,6 +9,7 @@ use std::time::Instant;
 pub(in crate::native_audio) struct Rebind {
     pub(in crate::native_audio) context: AudioSourceContext,
     pub(in crate::native_audio) fence: StoppedEditFence,
+    pub(in crate::native_audio) restores_plugins: bool,
     outgoing_generation: u64,
     output_identity: u64,
     deadline: Instant,
@@ -17,6 +18,11 @@ pub(in crate::native_audio) struct Rebind {
 impl Rebind {
     pub(in crate::native_audio) fn ready(&self, control: &PublicationControl) -> bool {
         control.stopped_edit_fence_state(self.fence) == StoppedEditFenceState::Ready
+            && !self.interrupted(control)
+    }
+
+    fn interrupted(&self, control: &PublicationControl) -> bool {
+        self.restores_plugins && control.stopped_arrangement_edit_interrupted(self.fence)
     }
 }
 
@@ -96,6 +102,7 @@ impl NativeAudioSink {
             context,
             output_identity,
             outgoing_generation,
+            restores_plugins: incoming.effect_preparation().requires_plugin_profile(),
             fence,
             deadline: Instant::now() + STARTUP_OPEN_DEADLINE,
         });
@@ -111,6 +118,13 @@ impl NativeAudioSink {
         let Some(rebind) = self.document_rebind.as_ref() else {
             return true;
         };
+        if self
+            .resident
+            .current_submission
+            .is_some_and(|submission| submission.source_context == Some(rebind.context))
+        {
+            return false;
+        }
         self.output
             .as_mut()
             .and_then(|output| output.publication.control())
@@ -129,6 +143,10 @@ impl NativeAudioSink {
             self.fallback_document_rebind();
             return;
         };
+        if rebind.interrupted(control) {
+            self.fallback_document_rebind();
+            return;
+        }
         let submitted = self.resident.current_submission.filter(|submission| {
             submission.source_context == Some(rebind.context)
                 && submission.output_identity == rebind.output_identity
@@ -144,6 +162,8 @@ impl NativeAudioSink {
             let output_identity = rebind.output_identity;
             self.plugins
                 .retire_document_sources(rebind.outgoing_generation);
+            self.resident
+                .discard_obsolete_pending_after_restore(rebind.context);
             control.release_stopped_edit_fence(rebind.fence);
             self.document_rebind = None;
             self.output_generation = Some(generation);
