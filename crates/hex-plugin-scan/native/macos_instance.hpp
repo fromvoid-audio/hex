@@ -173,23 +173,36 @@ public:
         configuration_started = true;
         if (processor->canProcessSampleSize(kSample32)!=kResultOk)
             return ConfigurationResult::UnsupportedPrecision;
-        if (!main_bus(component,kInput,request.input_channels,false) ||
-            !main_bus(component,kOutput,request.output_channels,false))
+        const auto input_count=component->getBusCount(kAudio,kInput);
+        const auto output_count=component->getBusCount(kAudio,kOutput);
+        if (!audio_buses(component,kInput,input_count,request.input_channels,false) ||
+            !audio_buses(component,kOutput,output_count,request.output_channels,false))
             return ConfigurationResult::UnsupportedTopology;
-        auto input=arrangement(request.input_channels),output=arrangement(request.output_channels);
-        if (processor->setBusArrangements(request.input_channels?&input:nullptr,
-            request.input_channels?1:0,&output,1)!=kResultOk)
+        const auto main_input=arrangement(request.input_channels);
+        const auto main_output=arrangement(request.output_channels);
+        SpeakerArrangement aux_input{};
+        if (input_count==2 &&
+            (processor->getBusArrangement(kInput,1,aux_input)!=kResultOk || !aux_input))
+            return ConfigurationResult::ArrangementMismatch;
+        SpeakerArrangement inputs[]{main_input,aux_input},output=main_output;
+        if (processor->setBusArrangements(input_count?inputs:nullptr,input_count,&output,output_count)!=kResultOk)
             return ConfigurationResult::ArrangementRefused;
         SpeakerArrangement observed{};
-        if (!main_bus(component,kInput,request.input_channels,true) ||
-            !main_bus(component,kOutput,request.output_channels,true) ||
-            processor->getBusArrangement(kOutput,0,observed)!=kResultOk || observed!=output ||
-            (request.input_channels && (processor->getBusArrangement(kInput,0,observed)!=kResultOk || observed!=input)))
+        if (component->getBusCount(kAudio,kInput)!=input_count ||
+            component->getBusCount(kAudio,kOutput)!=output_count ||
+            !audio_buses(component,kInput,input_count,request.input_channels,true) ||
+            !audio_buses(component,kOutput,output_count,request.output_channels,true) ||
+            processor->getBusArrangement(kOutput,0,observed)!=kResultOk || observed!=main_output ||
+            (input_count && (processor->getBusArrangement(kInput,0,observed)!=kResultOk || observed!=main_input)) ||
+            (input_count==2 && (processor->getBusArrangement(kInput,1,observed)!=kResultOk || observed!=aux_input)))
             return ConfigurationResult::ArrangementMismatch;
         ProcessSetup setup{};
         setup.processMode = kRealtime; setup.symbolicSampleSize = kSample32;
         setup.maxSamplesPerBlock = request.maximum_frames; setup.sampleRate = request.sample_rate;
         if (processor->setupProcessing(setup) != kResultOk) return ConfigurationResult::SetupRefused;
+        // An inactive trailing bus needs no PCM buffer, even if default active.
+        if (input_count==2 && component->activateBus(kAudio,kInput,1,false)!=kResultOk)
+            return ConfigurationResult::ActivationRefused;
         if (component->activateBus(kAudio,kOutput,0,request.output_enabled)!=kResultOk)
             return ConfigurationResult::ActivationRefused;
         output_active = request.output_enabled;

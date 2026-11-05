@@ -505,6 +505,15 @@ class NativeInstanceTests(unittest.TestCase):
                 self.assertEqual(observed[8:11], (1, 1, 4))
                 self.assertEqual(observed[12:], (0, 0))
 
+    def test_effect_disables_trailing_auxiliary_input_and_renders_only_main(self):
+        session = self.session(variant=106, channels=(1, 2))
+        self.ready(session, controller=True)
+        header, inputs, (magic, reply) = session.render(7)
+        self.assertEqual((magic, reply[:64]), (b"HXVB", header))
+        self.assertEqual(struct.unpack("<14f", reply[64:]),
+                         tuple(value * .5 for value in inputs[::2] for _ in range(2)))
+        self.terminal(session, 0, message=session.stop())
+
     def test_optional_presentation_and_missing_state_are_not_fabricated(self):
         shutil.rmtree(self.bundle)
         source = self.fixtures.parent / BOOT.APP / "Contents/Resources/fixtures/effect.vst3"
