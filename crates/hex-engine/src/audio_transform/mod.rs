@@ -21,7 +21,7 @@ mod budget;
 mod content;
 mod events;
 mod group;
-pub(crate) use group::GroupSource;
+pub(crate) use group::{GroupSource, sparse_group_plan};
 mod mapping;
 mod view;
 use crate::{Audio, Clip, Invalid, compile::PreparedAudioSourceRef};
