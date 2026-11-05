@@ -2565,5 +2565,5 @@ fn isolated_bounce_admits_projects_with_automatic_names_on_dropped_tracks() {
     assert_eq!(session.project(), &original);
 }
 
-#[path = "tests/group_ranges.rs"]
-mod group_ranges;
+#[path = "tests/group_bounces.rs"]
+mod group_bounces;
