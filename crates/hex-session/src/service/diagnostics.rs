@@ -661,8 +661,9 @@ mod tests {
         assert!(event.request_complete);
         assert!(event.error.is_some());
         assert_eq!(event.state.revision, initial.state.revision);
-        let rows = records.lock().unwrap();
-        let stamp = rows
+        let stamp = records
+            .lock()
+            .unwrap()
             .iter()
             .find_map(|(stamp, stage, _)| {
                 matches!(stage, DiagnosticStage::SubmitAttempt)
@@ -670,6 +671,22 @@ mod tests {
                     .flatten()
             })
             .unwrap();
+        // Reception may beat the observer notification after successful queue
+        // publication. Wait without holding its mutex, so the worker can emit it.
+        let deadline = std::time::Instant::now() + crate::test_wait::HANG_BOUND;
+        loop {
+            if records.lock().unwrap().iter().any(|(id, stage, _)| {
+                *id == Some(stamp) && *stage == DiagnosticStage::OutcomeQueued
+            }) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "queued outcome diagnostic missing"
+            );
+            std::thread::yield_now();
+        }
+        let rows = records.lock().unwrap();
         assert_eq!(stamp.ui_action_id, Some(42));
         assert_eq!(stamp.operation, Some("add_track"));
         assert!(
