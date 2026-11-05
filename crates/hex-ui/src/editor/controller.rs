@@ -2309,7 +2309,7 @@ impl EditorView {
         {
             self.retire_sample_bpm_control();
         }
-        let placed_audio_range = self.audio_events_request_complete(&event);
+        let audio_placement_selection = self.audio_events_request_complete(&event);
         self.clip_loop_request_complete(&event);
         self.bypass_request_complete(&event);
         self.clip_move_request_complete(&event);
@@ -2634,8 +2634,8 @@ impl EditorView {
             .and_then(|state| state.project.loop_region())
             .is_some_and(|region| region.enabled());
         self.state = Some(event.state);
-        if let Some(range) = placed_audio_range {
-            self.install_placed_audio_range(range);
+        if let Some(selection) = audio_placement_selection {
+            self.install_audio_placement_selection(selection);
         }
         if self.selection_loop_start.is_some_and(|(_, region)| {
             self.state

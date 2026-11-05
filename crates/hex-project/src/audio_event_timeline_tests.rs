@@ -108,6 +108,74 @@ fn events_placed_past_either_edge_are_kept_and_revealed_by_widening() {
 }
 
 #[test]
+fn duplicates_use_fresh_ids_without_moving_the_source_window() {
+    let (mut editor, clip) = imported(100);
+    let before = editor.project().clone();
+    let command = |start| Command::EditAudioEvents {
+        clip,
+        operation: AudioEventEdit::Duplicate { event: 1, start },
+    };
+    for invalid in [i64::MIN, -1, 0, 99, i64::MAX] {
+        assert!(editor.execute(command(invalid)).is_err());
+        assert_eq!(editor.project(), &before);
+    }
+    for start in [-100, 100] {
+        editor.execute(command(start)).unwrap();
+        let after = editor.project().clone();
+        let current = after.clip(clip).unwrap();
+        let root = current.audio_event_root();
+        let events = current.audio_events();
+        let original = events.events.iter().find(|item| item.id == 1).unwrap();
+        let copy = events.events.iter().find(|item| item.id == 2).unwrap();
+        assert_eq!((current.start(), current.duration()), (0, 100));
+        assert_eq!(original.start, root.view_start);
+        assert_eq!(
+            i128::from(copy.start) - i128::from(root.view_start),
+            i128::from(start)
+        );
+        assert_eq!(
+            (original.source, original.source_start),
+            (copy.source, copy.source_start)
+        );
+        assert_eq!(original.length(), copy.length());
+        assert_eq!(Project::from_snapshot(after.snapshot()).unwrap(), after);
+        editor
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::SetGain {
+                    event: 2,
+                    gain: crate::ClipGain::new(-4500).unwrap(),
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            editor
+                .project()
+                .clip(clip)
+                .unwrap()
+                .audio_events()
+                .events
+                .iter()
+                .find(|item| item.id == 1),
+            Some(original)
+        );
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &after);
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &before);
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &after);
+        assert!(editor.undo());
+    }
+    editor
+        .execute(Command::DuplicateAliasClips(vec![clip]))
+        .unwrap();
+    let linked = editor.project().clone();
+    assert!(editor.execute(command(-100)).is_err());
+    assert_eq!(editor.project(), &linked);
+}
+
+#[test]
 fn placement_refuses_unsupported_roots_and_unbounded_timelines() {
     let (mut editor, clip) = imported(100);
     let before = editor.project().clone();
