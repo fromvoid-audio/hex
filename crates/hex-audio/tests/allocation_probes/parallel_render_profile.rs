@@ -7,7 +7,7 @@ use hex_engine::{
     SessionPlaybackCommand, SineTable, default_native_device_state,
 };
 use hex_lattice::RefuseForeign;
-use hex_project::{Command, Created, Editor, Project};
+use hex_project::{BeatTime, Command, Created, Editor, GainInterpolation, GainPoint, Project};
 use rtrb::{Consumer, RingBuffer};
 use rustix::time::{ClockId, clock_gettime};
 use std::{
@@ -26,7 +26,7 @@ const TRACKS_PER_SHARD: usize = 24;
 const LANES: usize = 2;
 const AHEAD: usize = 2;
 const WARMUP: usize = 128;
-const SAMPLES: usize = 512;
+const SAMPLES: usize = 384;
 const BLOCKS: usize = WARMUP + SAMPLES;
 const GENERATION: u64 = 1;
 
@@ -41,6 +41,29 @@ enum Fault {
     Stopped,
     Missing,
     Stale,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CaptureMode {
+    Tap,
+    Prepared,
+}
+
+impl CaptureMode {
+    fn render(
+        self,
+        playback: &mut SessionPlayback,
+        ids: &[u64],
+        tracks: &mut [[Frame; BLOCK]],
+        main: &mut [Frame; BLOCK],
+    ) {
+        match self {
+            Self::Tap => render_tapped(playback, ids, tracks, main),
+            Self::Prepared => playback
+                .render_prepared_track_windows_probe(ids, tracks, main)
+                .unwrap(),
+        }
+    }
 }
 
 fn collect(
@@ -66,14 +89,18 @@ fn collect(
             output.fill([0.0; 2]);
             return Err(Fault::Stale);
         }
-        for track in &window.tracks {
-            for (mixed, frame) in output.iter_mut().zip(track) {
-                mixed[0] += frame[0];
-                mixed[1] += frame[1];
-            }
-        }
+        mix_tracks(output, &window.tracks);
     }
     Ok(())
+}
+
+fn mix_tracks(output: &mut [Frame; BLOCK], tracks: &[[Frame; BLOCK]]) {
+    for track in tracks {
+        for (mixed, frame) in output.iter_mut().zip(track) {
+            mixed[0] += frame[0];
+            mixed[1] += frame[1];
+        }
+    }
 }
 
 fn cpu_ns(clock: ClockId) -> u128 {
@@ -126,8 +153,27 @@ fn prepare(tracks: usize) -> (SessionPlayback, Vec<u64>) {
             })
             .unwrap();
         editor
-            .execute(Command::Gain { track, gain: 0.025 })
+            .execute(Command::Gain {
+                track,
+                gain: 0.025 + (index % TRACKS_PER_SHARD) as f32 * 0.0005,
+            })
             .unwrap();
+        if index % TRACKS_PER_SHARD == 7 {
+            let beat = editor.project().tempo_map().frame_to_beat(773).unwrap();
+            editor
+                .execute(Command::ReplaceTrackGainEnvelope {
+                    track,
+                    points: [(BeatTime::ZERO, 0.01), (beat, 0.037)]
+                        .map(|(beat, gain)| GainPoint {
+                            incoming_gain: None,
+                            beat,
+                            gain,
+                            outgoing: GainInterpolation::Linear,
+                        })
+                        .to_vec(),
+                })
+                .unwrap();
+        }
         let second = if index % 4 == 0 {
             "hex.reverb"
         } else {
@@ -169,13 +215,33 @@ fn prepare(tracks: usize) -> (SessionPlayback, Vec<u64>) {
     (playback, ids)
 }
 
+fn render_tapped(
+    playback: &mut SessionPlayback,
+    ids: &[u64],
+    tracks: &mut [[Frame; BLOCK]],
+    main: &mut [Frame; BLOCK],
+) {
+    let mut observe = |signal, offset, frames: &[Frame]| {
+        if let ProjectSignal::Track(id) = signal {
+            let row = ids.binary_search(&id).unwrap();
+            tracks[row][offset..offset + frames.len()].copy_from_slice(frames);
+        }
+    };
+    let mut tap = ProjectOutputTap::new(ids, &mut observe).unwrap();
+    playback
+        .render_with_foreign_processors(main, None, None, Some(&mut tap), &mut RefuseForeign)
+        .unwrap();
+}
+
 fn start_worker(
     mut playback: SessionPlayback,
     ids: Vec<u64>,
     stop: Arc<AtomicBool>,
+    capture: CaptureMode,
 ) -> (Consumer<Window>, thread::JoinHandle<u128>) {
     let (mut queue, ready) = RingBuffer::new(AHEAD);
     let worker = thread::spawn(move || {
+        qos_threads::set_current_thread(qos_threads::Qos::High).unwrap();
         let cpu = cpu_ns(ClockId::ThreadCPUTime);
         let mut main = [[0.0; 2]; BLOCK];
         for sequence in 0..BLOCKS {
@@ -190,22 +256,7 @@ fn start_worker(
                 sequence,
                 tracks: [[[0.0; 2]; BLOCK]; TRACKS_PER_SHARD],
             };
-            let mut observe = |signal, offset, frames: &[Frame]| {
-                if let ProjectSignal::Track(id) = signal {
-                    let row = ids.binary_search(&id).unwrap();
-                    window.tracks[row][offset..offset + frames.len()].copy_from_slice(frames);
-                }
-            };
-            let mut tap = ProjectOutputTap::new(&ids, &mut observe).unwrap();
-            playback
-                .render_with_foreign_processors(
-                    &mut main,
-                    None,
-                    None,
-                    Some(&mut tap),
-                    &mut RefuseForeign,
-                )
-                .unwrap();
+            capture.render(&mut playback, &ids, &mut window.tracks, &mut main);
             assert!(queue.push(window).is_ok());
         }
         cpu_ns(ClockId::ThreadCPUTime) - cpu
@@ -247,7 +298,21 @@ fn report(
 #[ignore = "opt-in optimized, paced native multicore experiment"]
 fn two_workers_compare_exact_audio_and_total_work() {
     require_release();
+    let capture = match std::env::var("HEX_PROFILE_TRACK_WINDOWS").as_deref() {
+        Ok("prepared") => CaptureMode::Prepared,
+        Err(_) => CaptureMode::Tap,
+        Ok(other) => panic!("unknown track-window mode {other}"),
+    };
+    thread::spawn(move || compare_modes(capture))
+        .join()
+        .unwrap();
+}
+
+fn compare_modes(capture: CaptureMode) {
+    qos_threads::set_current_thread(qos_threads::Qos::High).unwrap();
+    println!("track_window_capture={capture:?}");
     let (mut serial, _) = prepare(TRACKS_PER_SHARD * LANES);
+    let (mut captured, captured_ids) = prepare(TRACKS_PER_SHARD * LANES);
     let (first, first_ids) = prepare(TRACKS_PER_SHARD);
     let (second, second_ids) = prepare(TRACKS_PER_SHARD);
     let budget = Duration::from_nanos(BLOCK as u64 * 1_000_000_000 / u64::from(RATE));
@@ -279,10 +344,68 @@ fn two_workers_compare_exact_audio_and_total_work() {
             .any(|sample| *sample != 0.0)
     );
 
+    let mut tracks = [[[0.0; 2]; BLOCK]; TRACKS_PER_SHARD * LANES];
+    let mut capture_times = Vec::with_capacity(SAMPLES);
+    let mut output = [[0.0; 2]; BLOCK];
+    let start = Instant::now();
+    let cpu = cpu_ns(ClockId::ProcessCPUTime);
+    for (sequence, wanted) in expected.iter().enumerate() {
+        cadence(start, budget, sequence);
+        let begin = Instant::now();
+        capture.render(&mut captured, &captured_ids, &mut tracks, &mut output);
+        std::hint::black_box(&tracks);
+        if sequence >= WARMUP {
+            capture_times.push(begin.elapsed());
+        }
+        assert!(
+            same_pcm(&output, wanted),
+            "capture changed PCM at {sequence}"
+        );
+    }
+    report(
+        "serial_capture",
+        &mut capture_times,
+        budget,
+        cpu_ns(ClockId::ProcessCPUTime) - cpu,
+        [0; LANES],
+        0,
+    );
+
+    let mut shards = [prepare(TRACKS_PER_SHARD), prepare(TRACKS_PER_SHARD)];
+    let mut shard_main = [[0.0; 2]; BLOCK];
+    let mut shard_tracks = [[[0.0; 2]; BLOCK]; TRACKS_PER_SHARD];
+    let mut shard_times = Vec::with_capacity(SAMPLES);
+    let start = Instant::now();
+    let cpu = cpu_ns(ClockId::ProcessCPUTime);
+    for (sequence, wanted) in expected.iter().enumerate() {
+        cadence(start, budget, sequence);
+        let begin = Instant::now();
+        output.fill([0.0; 2]);
+        for (playback, ids) in &mut shards {
+            capture.render(playback, ids, &mut shard_tracks, &mut shard_main);
+            mix_tracks(&mut output, &shard_tracks);
+        }
+        if sequence >= WARMUP {
+            shard_times.push(begin.elapsed());
+        }
+        assert!(
+            same_pcm(&output, wanted),
+            "sharding changed PCM at {sequence}"
+        );
+    }
+    report(
+        "serial_shards",
+        &mut shard_times,
+        budget,
+        cpu_ns(ClockId::ProcessCPUTime) - cpu,
+        [0; LANES],
+        0,
+    );
+
     let stop = Arc::new(AtomicBool::new(false));
     let cpu = cpu_ns(ClockId::ProcessCPUTime);
-    let (first_ready, first_join) = start_worker(first, first_ids, Arc::clone(&stop));
-    let (second_ready, second_join) = start_worker(second, second_ids, Arc::clone(&stop));
+    let (first_ready, first_join) = start_worker(first, first_ids, Arc::clone(&stop), capture);
+    let (second_ready, second_join) = start_worker(second, second_ids, Arc::clone(&stop), capture);
     let mut ready = [first_ready, second_ready];
     let prime_deadline = Instant::now() + Duration::from_secs(2);
     while ready.iter().any(|queue| queue.slots() < AHEAD) {
@@ -315,12 +438,7 @@ fn two_workers_compare_exact_audio_and_total_work() {
             fault = Some((sequence, error));
             break;
         }
-        if output
-            .iter()
-            .flatten()
-            .zip(expected[sequence].iter().flatten())
-            .any(|(actual, expected)| actual.to_bits() != expected.to_bits())
-        {
+        if !same_pcm(&output, &expected[sequence]) {
             mismatch = Some(sequence);
             break;
         }
@@ -342,9 +460,58 @@ fn two_workers_compare_exact_audio_and_total_work() {
     assert_eq!(times.len(), SAMPLES);
 }
 
+fn same_pcm(actual: &[Frame; BLOCK], expected: &[Frame; BLOCK]) -> bool {
+    actual
+        .iter()
+        .flatten()
+        .zip(expected.iter().flatten())
+        .all(|(actual, expected)| actual.to_bits() == expected.to_bits())
+}
+
 fn require_release() {
     #[cfg(debug_assertions)]
     panic!("run this profile with --release");
+}
+
+#[test]
+fn prepared_windows_match_tap_without_allocating_and_refuse_wrong_layout() {
+    let (mut tapped, ids) = prepare(TRACKS_PER_SHARD);
+    let (mut prepared, _) = prepare(TRACKS_PER_SHARD);
+    let mut want = [[[0.0; 2]; BLOCK]; TRACKS_PER_SHARD];
+    let mut actual = want;
+    let mut want_main = [[0.0; 2]; BLOCK];
+    let mut actual_main = want_main;
+    let mut wrong = ids.clone();
+    wrong.swap(0, 1);
+    assert!(
+        prepared
+            .render_prepared_track_windows_probe(&wrong, &mut actual, &mut actual_main)
+            .is_err()
+    );
+    for _ in 0..=(8197 / BLOCK) {
+        render_tapped(&mut tapped, &ids, &mut want, &mut want_main);
+        let count = allocation_counter::measure(|| {
+            prepared
+                .render_prepared_track_windows_probe(&ids, &mut actual, &mut actual_main)
+                .unwrap();
+        });
+        assert_eq!(
+            (
+                count.count_total,
+                count.bytes_total,
+                count.count_current,
+                count.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(same_pcm(&actual_main, &want_main));
+        assert!(
+            actual
+                .iter()
+                .zip(&want)
+                .all(|(actual, want)| same_pcm(actual, want))
+        );
+    }
 }
 
 #[test]
