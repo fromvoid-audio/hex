@@ -2106,6 +2106,82 @@ impl NativeRuntimeChain {
         clock: Option<&dyn NativeInstrumentClock>,
         output_clock: Option<&dyn NativeInstrumentClock>,
         foreign: &mut dyn ForeignProcessors,
+        transient: Option<&mut NativeTransientProcessing>,
+        external: Option<NativeExternalAutomation<'_>>,
+        observer: &mut impl FnMut(
+            ProcessorChainOwner,
+            u64,
+            DeviceTypeId,
+            NodeSignalPhase,
+            usize,
+            &[StereoFrame],
+        ),
+    ) -> Result<(), DeviceContractError> {
+        self.process_tapped(
+            range,
+            frames,
+            None,
+            frame_offset,
+            clock,
+            output_clock,
+            foreign,
+            transient,
+            external,
+            observer,
+        )
+    }
+
+    /// Run one exact effect stage with its admitted key in the ordinary
+    /// begin/commit/rollback transaction. Main and key are borrowed only for
+    /// this call. A stereo key requires a stateful native identity-matrix stage.
+    /// The caller rolls back the complete block on any stage refusal.
+    #[allow(clippy::too_many_arguments)]
+    pub fn process_auxiliary_stage(
+        &mut self,
+        stage: usize,
+        block: StereoAuxiliaryBlock<'_>,
+        frame_offset: usize,
+        clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
+        transient: Option<&mut NativeTransientProcessing>,
+        external: Option<NativeExternalAutomation<'_>>,
+        observer: &mut impl FnMut(
+            ProcessorChainOwner,
+            u64,
+            DeviceTypeId,
+            NodeSignalPhase,
+            usize,
+            &[StereoFrame],
+        ),
+    ) -> Result<(), DeviceContractError> {
+        let end = stage
+            .checked_add(1)
+            .ok_or(DeviceContractError::InvalidDescriptor)?;
+        let (main, key) = block.into_parts();
+        self.process_tapped(
+            stage..end,
+            main,
+            Some(key),
+            frame_offset,
+            clock,
+            output_clock,
+            &mut RefuseForeign,
+            transient,
+            external,
+            observer,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn process_tapped(
+        &mut self,
+        range: std::ops::Range<usize>,
+        frames: &mut [StereoFrame],
+        key: Option<&[StereoFrame]>,
+        frame_offset: usize,
+        clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
+        foreign: &mut dyn ForeignProcessors,
         mut transient: Option<&mut NativeTransientProcessing>,
         external: Option<NativeExternalAutomation<'_>>,
         observer: &mut impl FnMut(
@@ -2186,6 +2262,7 @@ impl NativeRuntimeChain {
                 Self::process_entry_with_foreign(
                     entry,
                     frames,
+                    key,
                     frame_offset,
                     clock,
                     output_clock,
@@ -2314,6 +2391,7 @@ impl NativeRuntimeChain {
         Self::process_entry_with_foreign(
             entry,
             frames,
+            None,
             0,
             clock,
             output_clock,
@@ -2327,6 +2405,7 @@ impl NativeRuntimeChain {
     fn process_entry_with_foreign(
         entry: &mut RuntimeEntry,
         frames: &mut [StereoFrame],
+        key: Option<&[StereoFrame]>,
         frame_offset: usize,
         clock: Option<&dyn NativeInstrumentClock>,
         output_clock: Option<&dyn NativeInstrumentClock>,
@@ -2338,6 +2417,7 @@ impl NativeRuntimeChain {
             return Self::process_entry_with_foreign_inner(
                 entry,
                 frames,
+                key,
                 frame_offset,
                 clock,
                 output_clock,
@@ -2365,6 +2445,7 @@ impl NativeRuntimeChain {
             let result = Self::process_entry_with_foreign_inner(
                 entry,
                 &mut frames[offset..end],
+                key.map(|key| &key[offset..end]),
                 shifted_frame_offset,
                 shifted_clock
                     .as_ref()
@@ -2394,6 +2475,7 @@ impl NativeRuntimeChain {
         Self::process_entry_with_foreign_inner(
             entry,
             &mut frames[offset..],
+            key.map(|key| &key[offset..]),
             frame_offset
                 .checked_add(offset)
                 .ok_or(DeviceContractError::InvalidDescriptor)?,
@@ -2413,6 +2495,7 @@ impl NativeRuntimeChain {
     fn process_entry_with_foreign_inner(
         entry: &mut RuntimeEntry,
         frames: &mut [StereoFrame],
+        key: Option<&[StereoFrame]>,
         frame_offset: usize,
         clock: Option<&dyn NativeInstrumentClock>,
         output_clock: Option<&dyn NativeInstrumentClock>,
@@ -2447,6 +2530,11 @@ impl NativeRuntimeChain {
             .as_ref()
             .map(|segment| segment as &dyn ExternalParameterAutomation);
         let is_foreign = matches!(entry.runtime, RuntimeOwnership::Foreign(_));
+        if key.is_some()
+            && (is_foreign || !entry.runtime.is_stateful() || !entry.matrix.is_identity())
+        {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
         if !entry.bypassed && !is_foreign {
             Self::apply_host_gain(entry, frames, clock, true, input, external)?;
         }
@@ -2460,7 +2548,29 @@ impl NativeRuntimeChain {
             }
         }
         let mut foreign_applies_output_gain = false;
-        if let RuntimeOwnership::Foreign(runtime) = &mut entry.runtime {
+        if let Some(key) = key {
+            if !entry.bypassed {
+                entry.scratch_matrix_ramp.apply_block(entry.matrix, frames);
+            }
+            let values = (!entry.automation.parameter_ids().is_empty() && !entry.automation_frozen)
+                .then(|| {
+                    entry.automation.block_with_optional_external(
+                        clock,
+                        frames.len(),
+                        input,
+                        external,
+                    )
+                })
+                .transpose()?;
+            entry.runtime.process_auxiliary(
+                StereoAuxiliaryBlock::paired(frames, key),
+                clock,
+                values
+                    .as_ref()
+                    .map(|value| value as &dyn NativeParameterAutomation),
+                entry.bypassed,
+            )?;
+        } else if let RuntimeOwnership::Foreign(runtime) = &mut entry.runtime {
             let configuration = entry
                 .configuration
                 .as_deref()
