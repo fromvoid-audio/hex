@@ -4,10 +4,33 @@ use hex_project::{
     AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioFadeProjection,
     AudioProcessingProjection, AudioViewMode, AudioViewPlacement, BeatTime, BeatsPreserve,
     BeatsTail, ClipFade, SourceGainPoint, Tempo, TempoMap, TempoPoint, WarpMarker, WarpMode,
-    WarpSettings,
+    WarpResampler, WarpSettings,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+
+/// Saved tags of [`WarpResampler`]; a tag is never reused for another law.
+const WARP_RESAMPLER_V1: u8 = 1;
+const WARP_RESAMPLER_V2: u8 = 2;
+
+/// Saved tag of `law`, shared by every record that names a [`WarpResampler`].
+pub(crate) fn warp_resampler_tag(law: WarpResampler) -> u8 {
+    match law {
+        WarpResampler::V1 => WARP_RESAMPLER_V1,
+        WarpResampler::V2 => WARP_RESAMPLER_V2,
+    }
+}
+
+/// Law named by a saved tag; an unknown tag belongs to a newer writer.
+pub(crate) fn warp_resampler_from_tag(tag: u8) -> Result<WarpResampler, StorageError> {
+    match tag {
+        WARP_RESAMPLER_V1 => Ok(WarpResampler::V1),
+        WARP_RESAMPLER_V2 => Ok(WarpResampler::V2),
+        _ => Err(StorageError::Invalid(
+            "unsupported warp resampler version; open it with a newer hex version",
+        )),
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -22,6 +45,12 @@ pub(crate) struct AudioEditDto {
     timing: Timing,
     #[serde(deserialize_with = "required_placement")]
     placement: Option<Placement>,
+}
+/// An omitted law is implied; a present one must be a tag, never null.
+pub(crate) fn present_warp_resampler<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<u8>, D::Error> {
+    u8::deserialize(d).map(Some)
 }
 fn required_processing_projection<'de, D: serde::Deserializer<'de>>(
     d: D,
@@ -109,6 +138,14 @@ struct Domain {
     fade: Fade,
     fade_start: u64,
     fade_projection: Option<Projection>,
+    /// Schema65 content law, present only when it differs from
+    /// [`WarpResampler::implied`]; older layouts never contain it.
+    #[serde(
+        default,
+        deserialize_with = "present_warp_resampler",
+        skip_serializing_if = "Option::is_none"
+    )]
+    warp_resampler: Option<u8>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -221,6 +258,9 @@ impl From<AudioClipEdit> for AudioEditDto {
                 },
                 pitch_cents: d.pitch_cents,
                 sample_micro_bpm: d.sample_bpm.map(Tempo::micro_bpm),
+                warp_resampler: d
+                    .has_explicit_warp_resampler()
+                    .then_some(warp_resampler_tag(d.warp_resampler)),
                 warp_enabled: d.warp_enabled,
                 warp: d.warp.as_ref().map(|warp| Warp {
                     mode: match warp.mode {
@@ -347,6 +387,15 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
         }
         let fade = ClipFade::new(d.fade.span, d.fade.offset, d.fade.fade_in, d.fade.fade_out)
             .map_err(|e| StorageError::Invalid(e.0))?;
+        let implied = WarpResampler::implied(d.pitch_cents, d.warp_enabled);
+        let warp_resampler = d
+            .warp_resampler
+            .map_or(Ok(implied), warp_resampler_from_tag)?;
+        if d.warp_resampler.is_some() && warp_resampler == implied {
+            return Err(StorageError::Invalid(
+                "redundant warp resampler version in audio domain",
+            ));
+        }
         let fade_projection = d
             .fade_projection
             .map(|p| -> Result<_, StorageError> {
@@ -451,6 +500,7 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
             domain: Arc::new(AudioClipDomain {
                 content: Arc::new(hex_project::AudioClipContent {
                     events: None,
+                    musical_event_source: None,
                     source_offset: d.source_offset,
                     source_length: d.source_length,
                     clock: match d.clock {
@@ -467,6 +517,7 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
                         .map_err(|e| StorageError::Invalid(e.0))?,
                     warp_enabled: d.warp_enabled,
                     warp,
+                    warp_resampler,
                     source_gain: d
                         .source_gain
                         .into_iter()

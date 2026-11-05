@@ -130,7 +130,7 @@ impl ProjectSelectionMailbox {
     // counters, storage or synchronization to the callback.
     fn read_using(&self, mut load: impl FnMut(&AtomicU64) -> u64) -> Option<ProjectSelection> {
         let token = self.token();
-        if token == 0 || token % 2 != 0 {
+        if token == 0 || !token.is_multiple_of(2) {
             return None;
         }
         let count = self.count.load(SeqCst);
@@ -194,7 +194,7 @@ impl ProjectSelectionMailbox {
     }
     fn publish(&self, mut selection: ProjectSelection) -> Result<ProjectSelection, &'static str> {
         let token = self.token();
-        let Some(next) = token.checked_add(2).filter(|_| token % 2 == 0) else {
+        let Some(next) = token.checked_add(2).filter(|_| token.is_multiple_of(2)) else {
             if token >= u64::MAX - 1 {
                 self.active.store(false, SeqCst);
                 self.version.store(u64::MAX, SeqCst);

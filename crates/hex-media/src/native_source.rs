@@ -46,6 +46,7 @@ impl DecodedAudio {
             audio,
             sample_rate,
             frames,
+            file_identity,
         } = self;
         match OwnedAudioSource::try_from_decoded_audio_on_control(audio, max_scan_frames, cancel) {
             Ok(source) => Ok(NativeDecodedAudio { path, source }),
@@ -56,6 +57,7 @@ impl DecodedAudio {
                     audio: refused.audio,
                     sample_rate,
                     frames,
+                    file_identity,
                 },
             })),
         }

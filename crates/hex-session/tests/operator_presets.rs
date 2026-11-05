@@ -4,7 +4,7 @@ use hex_project::{Command, Created};
 use hex_session::Session;
 
 #[test]
-fn lfo_history_save_and_nyquist_admission_preserve_the_project_on_refusal() {
+fn lfo_history_save_and_above_nyquist_note_admission() {
     let mut session = Session::new(48_000, 64, 0).unwrap();
     let (Created::Track(track), graph) = session
         .command_prepared_revision(
@@ -88,27 +88,27 @@ fn lfo_history_save_and_nyquist_admission_preserve_the_project_on_refusal() {
         panic!("clip")
     };
     graph = next;
+    // Operators the LFO could push past nyquist are silenced for this note
+    // only (Pulse #3957); the note itself is admitted.
     let before = session.project().clone();
-    assert!(
-        session
-            .command_prepared_revision(
-                Command::AddMidiNote {
-                    clip,
-                    start: hex_project::BeatTime::ZERO,
-                    duration: hex_project::BeatTime::from_quarters(1).unwrap(),
-                    pitch: 127,
-                    channel: 0,
-                    velocity: 127
-                },
-                Some(&graph)
-            )
-            .is_err()
-    );
-    assert_eq!(session.project(), &before);
+    session
+        .command_prepared_revision(
+            Command::AddMidiNote {
+                clip,
+                start: hex_project::BeatTime::ZERO,
+                duration: hex_project::BeatTime::from_quarters(1).unwrap(),
+                pitch: 127,
+                channel: 0,
+                velocity: 127,
+            },
+            Some(&graph),
+        )
+        .expect("above-nyquist operators are silenced, not refused");
+    assert_ne!(session.project(), &before);
 }
 
 #[test]
-fn fixed_tuning_history_and_invalid_effective_frequency_are_atomic() {
+fn fixed_tuning_history_and_above_nyquist_effective_frequency() {
     let mut session = Session::new(48_000, 16, 0).expect("session");
     let (Created::Track(track), _) = session
         .command_prepared_revision(
@@ -182,17 +182,21 @@ fn fixed_tuning_history_and_invalid_effective_frequency_are_atomic() {
             Some(&graph),
         )
         .expect("inactive multiplier");
+    // A 24 kHz fixed tone silences that operator (Pulse #3957), not the edit.
     let before = session.project().clone();
-    assert!(
-        session
-            .commit_device_parameter(
-                device,
-                ParameterId::from_static(62),
-                ParameterValue::Bool(true),
-                Some(&graph)
-            )
-            .is_err()
-    );
+    let admitted = session
+        .commit_device_parameter(
+            device,
+            ParameterId::from_static(62),
+            ParameterValue::Bool(true),
+            Some(&graph),
+        )
+        .expect("above-nyquist fixed tone is admitted");
+    assert_ne!(session.project().snapshot(), before.snapshot());
+    graph = session
+        .undo_prepared_revision(Some(&admitted))
+        .expect("undo")
+        .expect("one edit");
     assert_eq!(session.project().snapshot(), before.snapshot());
     graph = session
         .commit_device_parameter(

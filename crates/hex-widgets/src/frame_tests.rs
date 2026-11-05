@@ -24,6 +24,8 @@ const STYLE: ControlStyle = ControlStyle {
     focus_marker: 0xaaaaaa,
     dial_rail: 0,
     hover: 0x555555,
+    selection: 0x3350a0,
+    invalid: 0xff554c,
     font_size: 9.0,
     text_case: crate::TextCase::Preserve,
 };

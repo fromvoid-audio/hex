@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "updated_date": "2026-11-05",
+  "phase": "first_cycle_verified_pending_integration",
+  "mission": "goal.md",
+  "goal_activation": "pending_user_manual_activation",
+  "scheduler": "none_user_requested_manual_goal",
+  "checkpoint_issue": "https://pulse.iocore.dev/#/issues/4990",
+  "checkpoint_pr": "https://github.com/PORTALSURFER/hex/pull/2077",
+  "branch": "pulse/task-4990-g1-d9b8b962fbfe",
+  "baseline_source": "4b7309c4fd930ef4c51eadb0cb7408fd5c2b5ac0",
+  "upstream_base": "423103c60a15f724821f3ca603e6c98e923a1447",
+  "evidence": "measurements.jsonl",
+  "next_action": "Reconcile actual PR 2077 merge and live Pulse first. The user will activate the complete manual goal; then refresh the ranked index and select one valuable ready owner, respecting blocked/paused work.",
+  "limits": [
+    "Snapshot only; reconcile Git and live Pulse before recovery.",
+    "Raw ignored artifact logs are executor-local; essential results also belong in canonical PRs/Pulse.",
+    "Focused Linux checks do not qualify native macOS or full-workspace health."
+  ],
+  "last_verified_source": "e7cbe9ca107db5c4e945a7ee64ecd9b33085ef13"
+}

@@ -44,12 +44,19 @@ pub(super) fn bounded_window(
 ) -> (gpui::AnyWindowHandle, gpui::Entity<EditorView>, BrowserRoot) {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    let root = BrowserRoot(std::env::temp_dir().join(format!(
-        "hex-eq-layout-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    )));
-    std::fs::create_dir(&root.0).unwrap();
+    // A reused PID can meet a leftover directory; take the next free name.
+    let root = loop {
+        let path = std::env::temp_dir().join(format!(
+            "hex-eq-layout-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        match std::fs::create_dir(&path) {
+            Ok(()) => break BrowserRoot(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!("create eq layout root: {error}"),
+        }
+    };
     std::fs::create_dir(root.0.join("samples")).unwrap();
     #[cfg(target_os = "macos")]
     cx.use_native_text_system()

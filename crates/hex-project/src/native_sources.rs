@@ -162,11 +162,11 @@ impl Project {
         self.native_sources.iter().find(|s| s.id() == source)
     }
 
-    /// Tracks that share a binding to this retained source, in track order.
+    /// MIDI-contributing tracks bound to this retained source, in track order.
     pub fn source_contributors(&self, source: SourceId) -> impl Iterator<Item = &crate::Track> {
         self.tracks
             .iter()
-            .filter(move |track| track.source_id() == Some(source))
+            .filter(move |track| track.source_id() == Some(source) && !track.retained_source_path())
     }
 }
 
@@ -199,13 +199,12 @@ impl Project {
         id: SourceId,
         receiver: Option<TrackId>,
     ) -> Result<(), Invalid> {
-        if let Some(track) = receiver {
-            if self
+        if let Some(track) = receiver
+            && self
                 .track(track)
                 .is_none_or(|track| track.source_id() != Some(id))
-            {
-                return Err(Invalid("source receiver must be a bound track"));
-            }
+        {
+            return Err(Invalid("source receiver must be a bound track"));
         }
         self.edit_native_source(id, |definition| {
             definition.receiver = receiver;
@@ -295,6 +294,9 @@ impl Project {
     }
     pub(crate) fn validate_source_bindings(&self) -> Result<(), Invalid> {
         for track in self.tracks() {
+            if track.retained_source_path() && !track.receives_source_audio() {
+                return Err(Invalid("retained source path requires its bound receiver"));
+            }
             if let Some(binding) = &track.instrument {
                 let source = self
                     .native_source(binding.source_id())

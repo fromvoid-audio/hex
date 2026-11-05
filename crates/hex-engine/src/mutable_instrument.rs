@@ -8,6 +8,8 @@
 //! retain their own ingress/capture acknowledgements, never another instrument.
 
 mod live;
+#[cfg(test)]
+mod steal_tests;
 mod volume;
 pub(crate) use live::{ImportedLiveOccurrence, LiveInputId};
 pub(crate) use volume::{VolumeLookup, VolumeSlice};
@@ -678,6 +680,29 @@ impl MutableInstrumentTrackRuntime {
         self.pair.max_active_occurrences()
     }
 
+    /// The pair's admission-time `steals_releasing_voices` declaration.
+    pub(crate) const fn steals_releasing_voices(&self) -> bool {
+        self.pair.steals_releasing_voices()
+    }
+
+    /// Authored proofs that occupy a provider voice slot at `frame`.
+    ///
+    /// Without stealing every proof holds its slot until its quiet deadline.
+    /// A stealing provider frees a releasing slot on demand, so only proofs
+    /// still gated at `frame` count; equal-offset NoteOffs sort before NoteOns,
+    /// so a gate ending exactly at `frame` is already releasing. Released
+    /// proofs keep their deadlines for retirement only.
+    fn occupied_voices_at(&self, frame: u64) -> usize {
+        if self.steals_releasing_voices() {
+            self.scratch
+                .iter()
+                .filter(|proof| !proof.note_off_sent || proof.gate_end_frame > frame)
+                .count()
+        } else {
+            self.scratch.len()
+        }
+    }
+
     pub(crate) fn max_release_tail_frames(&self) -> u64 {
         self.pair.max_release_tail_frames()
     }
@@ -707,14 +732,14 @@ impl MutableInstrumentTrackRuntime {
     ) {
         let release_tail_frames = self.max_release_tail_frames();
         for occurrence in &mut self.primary {
-            if !occurrence.note_off_sent && occurrence.gate_end_frame > performance_frame {
-                if let Some(deadline) = cutoff(occurrence.signature)
+            if !occurrence.note_off_sent
+                && occurrence.gate_end_frame > performance_frame
+                && let Some(deadline) = cutoff(occurrence.signature)
                     .map(|deadline| deadline.max(performance_frame))
                     .filter(|deadline| *deadline < occurrence.gate_end_frame)
-                {
-                    occurrence.gate_end_frame = deadline;
-                    occurrence.quiet_deadline_frame = deadline.saturating_add(release_tail_frames);
-                }
+            {
+                occurrence.gate_end_frame = deadline;
+                occurrence.quiet_deadline_frame = deadline.saturating_add(release_tail_frames);
             }
         }
     }
@@ -971,10 +996,14 @@ impl MutableInstrumentTrackRuntime {
                 // Gateoffs at the exclusive block end are emitted at offset
                 // zero of the next segment, preserving half-open semantics.
             }
-            if self.scratch.len() + self.source_live_count()
+            // Voice slots and the fixed proof ledger are bounded separately:
+            // stolen releases leave the provider's slots but keep their proofs.
+            let live = self.source_live_count();
+            if self.occupied_voices_at(onset_frame) + live
                 >= self
                     .max_active_occurrences()
                     .min(MAX_MUTABLE_OCCURRENCE_PROOFS)
+                || self.scratch.len() + live >= MAX_MUTABLE_OCCURRENCE_PROOFS
             {
                 return Err(MutableInstrumentRuntimeError::OccurrenceCapacity);
             }

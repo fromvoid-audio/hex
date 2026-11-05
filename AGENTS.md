@@ -118,6 +118,13 @@ user and contributor instructions only. research/ contains recorded reference
 observations, reproducible measurements and provenance, not implementation plans or task logs.
 Preserve licenses, raw evidence, private analyses, original media and user data.
 
+The user-requested `.engineering/` workspace is the narrow exception to the local
+backlog/checkpoint rule below. Read `.engineering/README.md` when continuing its
+mission. It retains the mission, recovery pointer, measured health and a small
+ranked index of Pulse work; live Pulse remains authoritative for issue state and
+acceptance, and source doc comments remain authoritative for technical contracts.
+Goal activation is manual; do not create scheduled tasks for this mission.
+
 ### User guide presentation
 
 Use the Ableton Live 12 reference manual supplied by the user
@@ -284,9 +291,10 @@ merge checks. Within an owner crate, merges test only the changed modules'
 own test subtrees (a module without tests falls back to its nearest tested
 ancestor), so give each module its own boundary tests and split large modules
 along their responsibilities. Keep each merge's test setup and execution,
-excluding build time, under one minute. `scripts/local-ci.py --profile merge` enforces this budget (see
-`docs/local-ci.md`). An over-budget owner suite is a test-design bug: record it in
-Pulse and pass its reason with `--over-budget-reason` until it is fixed.
+excluding build time, under one minute. `scripts/local-ci.py --profile merge` reports this
+budget as a warning, not a merge failure (user decision, 1 November 2026; see
+`docs/local-ci.md`). Merge when every other check is green. A recurring
+over-budget owner suite is a test-design bug: record it in Pulse.
 
 Broaden only for a documented concrete impact or unresolved risk. Explain unknown
 selection, then resolve it by inspecting owners/consumers or conservatively check

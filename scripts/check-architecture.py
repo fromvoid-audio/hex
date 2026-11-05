@@ -11,8 +11,11 @@ ALLOWED = {
     'hex-tuning': set(),
     'hex-dsp': set(),
     'hex-midi': set(),
-    'hex-clap-scan': set(),
-    'hex-plugin-scan': set(),
+    # Standalone scanner executables share one Linux child supervisor; no library
+    # or host may depend on it because it owns process-wide child disposition.
+    'hex-scan-supervisor': set(),
+    'hex-clap-scan': {'hex-scan-supervisor'},
+    'hex-plugin-scan': {'hex-scan-supervisor'},
     'hex-plugin-catalog': {'hex-plugin-scan'},
     'hex-plugin-state': {'hex-lattice-contract'},
     # Ordinary control/worker client; never callback, process-global signals or graph authority.
@@ -70,11 +73,11 @@ BOUNDARIES = {'mts-esp-master-adapter': {'hex-mts'}, 'libloading': set(), 'corem
               # control-side hashes of retained PCM and selected desktop update receipts; never callback DSP.
               'sha2': {'hex-storage', 'hex-media', 'hex-engine', 'hex-plugin-scan', 'hex-clap-scan', 'hex-desktop'},
               # Child disposition belongs only to the standalone scanners.
-              'signal-hook': {'hex-plugin-scan', 'hex-clap-scan'},
+              'signal-hook': {'hex-plugin-scan', 'hex-clap-scan', 'hex-scan-supervisor'},
               # Signal only the owned local-update helper group on desktop control workers.
               'nix': {'hex-desktop'},
               # Safe publication/standalone child ownership; host event-only socket readiness.
-              'rustix': {'hex-export', 'hex-plugin-scan', 'hex-clap-scan', 'hex-plugin-host'},
+              'rustix': {'hex-export', 'hex-storage', 'hex-plugin-scan', 'hex-clap-scan', 'hex-scan-supervisor', 'hex-plugin-host'},
               # Advisory document/catalog and desktop update-lifetime locks stay on control boundaries.
               'fs2': {'hex-storage', 'hex-plugin-catalog', 'hex-desktop'}}
 # Build-only hash checks of observed pinned rtrb constructor files. This does
@@ -102,7 +105,7 @@ for name, package in packages.items():
             errors.append(f'{name}: crate doc comments must define {heading}')
     for dep in package['dependencies']:
         target = dep['name']
-        if target == 'rustix' and 'process' in dep.get('features', []) and name not in {'hex-plugin-scan', 'hex-clap-scan'}:
+        if target == 'rustix' and 'process' in dep.get('features', []) and name not in {'hex-plugin-scan', 'hex-clap-scan', 'hex-scan-supervisor'}:
             errors.append(f'{name}: rustix process APIs belong only to the scanner supervisor')
         if target == 'allocation-counter' and (name not in {'hex-audio', 'hex-stream', 'hex-desktop', 'hex-plugin-host'} or dep['kind'] != 'dev'):
             errors.append(f'{name}: allocation-counter is allowed only for audio/stream/desktop/copied-host dev probes')

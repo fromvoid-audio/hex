@@ -12,8 +12,25 @@ pub struct AudioContentView {
     /// base reference = current reference + delta, in the current clip clock.
     pub base_start_delta: i128,
     pub window: ContentWindow,
+    /// Law that reconstructs fractional base reads. Only musical-clock views
+    /// read fractional root positions; frame-clock views copy integer samples,
+    /// which every law reproduces exactly. New views take the current default.
+    pub read_resampler: WarpResampler,
 }
 impl AudioContentView {
+    /// Law implied when a saved view does not name one. Musical-clock views
+    /// were rendered by the frozen v1 law before views were versioned and keep
+    /// it; frame-clock views read integer samples and take the current default.
+    pub fn implied_read_resampler(clock: AudioDomainClock) -> WarpResampler {
+        match clock {
+            AudioDomainClock::Beats(_) => WarpResampler::V1,
+            AudioDomainClock::Frames(_) => WarpResampler::default(),
+        }
+    }
+    /// Whether this view's law differs from the one its clip clock implies.
+    pub fn has_explicit_read_resampler(self, clock: AudioDomainClock) -> bool {
+        self.read_resampler != Self::implied_read_resampler(clock)
+    }
     pub fn base_length(self) -> Result<u64, Invalid> {
         self.base_placement.map_or_else(
             || {
@@ -44,15 +61,14 @@ impl AudioContentView {
                 "audio directed window exceeds its retained placement",
             ));
         }
-        if let Some(p) = self.base_placement {
-            if matches!(p.outer_length, AudioDomainClock::Beats(_))
+        if let Some(p) = self.base_placement
+            && (matches!(p.outer_length, AudioDomainClock::Beats(_))
                 != matches!(edit.domain.clock, AudioDomainClock::Beats(_))
                 || p.outer_length.length() == 0
                 || (p.mode == AudioViewMode::Repeat
-                    && p.cycle_phase >= self.base_view_end - self.base_view_start)
-            {
-                return Err(Invalid("audio directed base placement is invalid"));
-            }
+                    && p.cycle_phase >= self.base_view_end - self.base_view_start))
+        {
+            return Err(Invalid("audio directed base placement is invalid"));
         }
         Ok(())
     }
@@ -179,6 +195,7 @@ impl AudioClipEdit {
                 base_placement: self.placement,
                 base_start_delta: 0,
                 window: crate::ContentWindow::new(0, length, old.window.reversed)?,
+                read_resampler: old.read_resampler,
             });
         }
         Ok(())

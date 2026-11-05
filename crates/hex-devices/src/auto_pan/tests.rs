@@ -856,3 +856,53 @@ fn auto_pan_v1_state_migrates_to_a_sine_waveform() {
         Err(DeviceContractError::UnsupportedStateVersion)
     );
 }
+
+/// Pulse #3959: square and saw edges at full depth become a 1 ms linear
+/// transition at every rate, so no sample steps the gain by more than the
+/// transition slope (formerly a full 0 to 1 step every cycle).
+#[test]
+fn square_and_saw_edges_ramp_over_one_millisecond_at_full_depth() {
+    for sample_rate in [44_100_u32, 192_000] {
+        for shape in [2_u32, 3, 4] {
+            for rate_hz in [1.0_f32, 20.0] {
+                let state = patch(
+                    &patch(
+                        &choice(&AUTO_PAN_DEFINITION.default_state().unwrap(), shape),
+                        parameter::AMOUNT,
+                        1.0,
+                    ),
+                    parameter::RATE,
+                    rate_hz,
+                );
+                let frames = (f64::from(sample_rate) / f64::from(rate_hz) * 1.2) as usize;
+                let mut signal = vec![[1.0_f32, 1.0]; frames];
+                runtime(&state, sample_rate)
+                    .process_block(&mut signal, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+                let edge_slope = 1.0 / (EDGE_SECONDS * f64::from(sample_rate));
+                let bound = edge_slope + f64::from(rate_hz) / f64::from(sample_rate) + 1.0e-6;
+                for channel in 0..2 {
+                    let largest = signal
+                        .windows(2)
+                        .map(|pair| {
+                            (f64::from(pair[1][channel]) - f64::from(pair[0][channel])).abs()
+                        })
+                        .fold(0.0, f64::max);
+                    let context = format!("rate={sample_rate} shape={shape} lfo={rate_hz}");
+                    assert!(largest <= bound, "{context}: step {largest} > {bound}");
+                    // The transition is about 1 ms, not a slower smear of the edge.
+                    assert!(largest >= 0.9 * edge_slope, "{context}: step {largest}");
+                    let (low, high) = signal.iter().fold((1.0_f32, 0.0_f32), |(l, h), f| {
+                        (l.min(f[channel]), h.max(f[channel]))
+                    });
+                    // A saw turns where its edge transition starts, one edge width
+                    // inside its full range; a square still reaches 0 and 1.
+                    let inset = f64::from(rate_hz) * EDGE_SECONDS + 1.0e-3;
+                    assert!(
+                        f64::from(low) < inset && f64::from(high) > 1.0 - inset,
+                        "{context}: depth {low}..{high}"
+                    );
+                }
+            }
+        }
+    }
+}
