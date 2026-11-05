@@ -129,8 +129,7 @@ share of audio processing time and the scale. group indicators show only the
 group's own work; a shared instrument belongs to its receiver. main processing,
 old detached tails and shared overhead remain in the global meter. external
 worker cpu is excluded. dim segments mean a fresh reading is unavailable, not
-zero work. currently, outputs without a playback observation cannot supply these
-readings. the indicators are diagnostic: they do not measure latency or prove
+zero work. some playback modes cannot supply these timings and show unavailable. the indicators are diagnostic: they do not measure latency or prove
 which track caused a dropout.
 
 solo takes precedence over track mute or deactivation. a muted track sounds while
