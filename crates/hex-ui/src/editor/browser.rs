@@ -13,6 +13,7 @@ mod place_icons;
 mod plugins;
 mod resize;
 mod samples;
+mod scrollbar;
 mod tree;
 
 use super::{EditorMode, EditorView, browser_input, drag};
@@ -230,6 +231,7 @@ pub(super) struct BrowserState {
     results_focused: bool,
     selected_index: usize,
     scroll: gpui::UniformListScrollHandle,
+    scrollbar: scrollbar::State,
     _search_observer: gpui::Subscription,
     observed_query: String,
     history: history::History,
@@ -320,6 +322,7 @@ impl BrowserState {
             results_focused: false,
             selected_index: 0,
             scroll: gpui::UniformListScrollHandle::new(),
+            scrollbar: scrollbar::State::default(),
             _search_observer: observer,
             observed_query: String::new(),
             history: history::History::default(),
@@ -364,6 +367,7 @@ impl BrowserState {
         self.auto_audition = false;
     }
     fn reset_results(&mut self) {
+        self.scrollbar.invalidate();
         self.selected_index = 0;
         self.results_focused = false;
         self.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
@@ -1861,6 +1865,7 @@ impl EditorView {
     }
 
     pub(super) fn browser_view(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
+        self.browser.scrollbar.begin_render();
         if !self.browser.open {
             let rail = div()
                 .w(px(COLLAPSED_WIDTH))
@@ -2049,7 +2054,9 @@ impl EditorView {
         match section {
             BrowserSection::Plugins => {
                 let controls = self.plugin_controls(cx);
-                panel = panel.child(controls).child(rows.flex_1());
+                panel = panel
+                    .child(controls)
+                    .child(self.browser_results(rows, row_count, cx));
             }
             BrowserSection::Collection(_) => {
                 panel = panel.child(
@@ -2083,32 +2090,27 @@ impl EditorView {
                             );
                         } else {
                             let count = entries.len();
-                            panel = panel.child(
-                                uniform_list(
-                                    "native-device-browser-entries",
-                                    count,
-                                    cx.processor(
-                                        move |view, range: std::ops::Range<usize>, _window, cx| {
-                                            range
-                                                .filter_map(|index| {
-                                                    entries.get(index).cloned().map(
-                                                        |(class, entry)| {
-                                                            view.browser_device_row(
-                                                                index, class, entry, cx,
-                                                            )
-                                                        },
-                                                    )
+                            let list = uniform_list(
+                                "native-device-browser-entries",
+                                count,
+                                cx.processor(
+                                    move |view, range: std::ops::Range<usize>, _window, cx| {
+                                        range
+                                            .filter_map(|index| {
+                                                entries.get(index).cloned().map(|(class, entry)| {
+                                                    view.browser_device_row(index, class, entry, cx)
                                                 })
-                                                .collect()
-                                        },
-                                    ),
-                                )
-                                .h_full()
-                                .min_h_0()
-                                .w_full()
-                                .track_scroll(self.browser.scroll.clone())
-                                .flex_1(),
-                            );
+                                            })
+                                            .collect()
+                                    },
+                                ),
+                            )
+                            .h_full()
+                            .min_h_0()
+                            .w_full()
+                            .track_scroll(self.browser.scroll.clone())
+                            .flex_1();
+                            panel = panel.child(self.browser_results(list, count, cx));
                         }
                     }
                     Err(error) => {
@@ -2141,7 +2143,7 @@ impl EditorView {
                             )),
                     );
                 } else {
-                    panel = panel.child(rows.flex_1());
+                    panel = panel.child(self.browser_results(rows, row_count, cx));
                 }
             }
             _ if row_count == 0
@@ -2200,7 +2202,7 @@ impl EditorView {
                 );
             }
             _ => {
-                panel = panel.child(rows.flex_1());
+                panel = panel.child(self.browser_results(rows, row_count, cx));
                 if self
                     .browser
                     .listing
