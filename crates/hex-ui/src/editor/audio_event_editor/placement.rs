@@ -276,8 +276,17 @@ impl EditorView {
         x: f32,
         platform: bool,
     ) {
+        if matches!(gesture.kind, Kind::Duplicate { .. }) {
+            // An invalid final drop cannot admit an earlier valid preview.
+            gesture.operation = None;
+            gesture.placement = None;
+        }
         let (origin, limits) = match gesture.kind {
-            Kind::FreeMove { event, limits } => (event.start, limits),
+            Kind::FreeMove { event, limits }
+            | Kind::Duplicate {
+                event,
+                limits: Some(limits),
+            } => (event.start, limits),
             Kind::FreeRangeMove { start, limits, .. } => (start, limits),
             _ => return,
         };
@@ -316,6 +325,10 @@ impl EditorView {
         };
         let start = start.clamp(i128::from(first), i128::from(last)) as i64;
         let operation = match gesture.kind {
+            Kind::Duplicate { event, .. } => AudioEventEdit::Duplicate {
+                event: event.id,
+                start,
+            },
             Kind::FreeMove { event, .. } => AudioEventEdit::Place {
                 event: event.id,
                 start,
@@ -358,7 +371,9 @@ impl EditorView {
     pub(super) fn placement_preview(&self, operation: &AudioEventEdit) -> Option<Arc<Preview>> {
         if !matches!(
             operation,
-            AudioEventEdit::Place { .. } | AudioEventEdit::PlaceRange { .. }
+            AudioEventEdit::Place { .. }
+                | AudioEventEdit::PlaceRange { .. }
+                | AudioEventEdit::Duplicate { .. }
         ) {
             return None;
         };

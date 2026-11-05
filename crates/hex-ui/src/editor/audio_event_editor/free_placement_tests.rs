@@ -160,7 +160,7 @@ fn frame_event_drag_beyond_clip_end_keeps_waveform_release_history_and_saved_mat
             viewport.start > duration * 4,
             "camera should not stop at four clip lengths"
         );
-        assert!(viewport.end().unwrap() <= hex_project::MAX_AUDIO_DOMAIN_FRAMES);
+        assert!(viewport.end().unwrap() <= hex_project::MAX_SPARSE_AUDIO_TIMELINE_FRAMES);
         assert_eq!(v.state.as_ref().unwrap().project, after);
         cx.notify();
     });
@@ -216,7 +216,7 @@ fn free_event_extreme_pointer_reversal_and_escape_leave_canonical_material_untou
             .unwrap();
         assert_eq!(
             query.clip().audio_event_root().domain.clock.length(),
-            hex_project::MAX_AUDIO_DOMAIN_FRAMES
+            hex_project::MAX_SPARSE_AUDIO_TIMELINE_FRAMES
         );
         assert_eq!(v.state.as_ref().unwrap().project, before);
         assert!(v.audio_event_editor.pending.is_none());

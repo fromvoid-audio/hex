@@ -5,6 +5,8 @@ mod bypass_latency;
 mod delay_bypass;
 mod document_output;
 mod limiter;
+mod limiter_bypass;
+mod manual_host_gain;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod plugins;
 mod recovery;
@@ -33,6 +35,7 @@ mod transport_loop;
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 mod unavailable_plugins;
 mod utility_width;
+mod verified_device_preview;
 mod verified_gain;
 mod worker_idle;
 use hex_audio::worker_fixture::HeadlessBackend;
@@ -86,6 +89,8 @@ struct Observation {
         hex_engine::AudioCandidateIdentity,
         hex_engine::AudioCandidateIdentity,
     )>,
+    received_verified_device: Option<Arc<hex_session::service::VerifiedDeviceParameterSource>>,
+    replay_verified_device: Option<Arc<hex_session::service::VerifiedDeviceParameterSource>>,
     received_verified_gain: Option<Arc<hex_session::service::VerifiedTrackGainSource>>,
     replay_verified_gain: Option<Arc<hex_session::service::VerifiedTrackGainSource>>,
     fail_gain_open: bool,
@@ -392,6 +397,14 @@ impl WorkerAudioSink for ObservedSink {
         self.inner.verified_track_gain_source(Arc::clone(&source));
         self.observation.lock().unwrap().received_verified_gain = Some(source);
     }
+    fn verified_device_parameter_source(
+        &mut self,
+        source: Arc<hex_session::service::VerifiedDeviceParameterSource>,
+    ) {
+        self.inner
+            .verified_device_parameter_source(Arc::clone(&source));
+        self.observation.lock().unwrap().received_verified_device = Some(source);
+    }
     fn native_sampler_input(&mut self, input: hex_session::service::NativeSamplerInput<'_>) {
         self.inner.native_sampler_input(input);
         let mut observation = self.observation.lock().unwrap();
@@ -505,6 +518,15 @@ impl WorkerAudioSink for ObservedSink {
         self.inner.restart_audio(generation, request)
     }
     fn poll(&mut self) {
+        let device = self
+            .observation
+            .lock()
+            .unwrap()
+            .replay_verified_device
+            .take();
+        if let Some(source) = device {
+            self.inner.verified_device_parameter_source(source);
+        }
         let replay = self.observation.lock().unwrap().replay_verified_gain.take();
         if let Some(source) = replay {
             self.inner.verified_track_gain_source(source);

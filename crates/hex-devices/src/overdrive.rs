@@ -9,7 +9,9 @@
 //! declares 11 frames of latency; the dry path and the envelope's input peak
 //! are delayed by the same 11 frames so mix and dynamics stay aligned.
 //! Compatible revisions inherit history and ramp coefficients/gains over 5 ms;
-//! reset clears history, bypass advances it, and rate changes refuse inheritance.
+//! reset clears history and rate changes refuse inheritance. Host bypass keeps
+//! the same 11-frame latency and advances the ordinary wet filter/envelope/tail
+//! history behind its bounded aligned dry ramp.
 //! No callback allocation, resources, host-contract changes or project-schema
 //! changes are needed. This is an independent implementation; the supplied image
 //! establishes controls/defaults, not measured Ableton transfer functions or parity.
@@ -322,6 +324,13 @@ struct PreparedOverdrive {
     kernel: Kernel,
 }
 impl PreparedNativeProcessor for PreparedOverdrive {
+    // Keep the exact 11-frame dry delay and ordinary wet processing (including
+    // automation, noise/filter/envelope state and finite-tail guards) warm.
+    // The host owns the bounded dry history and transactional bypass ramp.
+    fn supports_latency_aligned_bypass(&self) -> bool {
+        true
+    }
+
     fn runtime_version(&self) -> u32 {
         1
     }

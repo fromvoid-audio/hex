@@ -147,7 +147,7 @@ impl EditorView {
         self.midi_selection.clear();
         self.midi_note_gesture = None;
         self.midi_group_gesture = None;
-        self.piano_beat_start = hex_project::BeatTime::ZERO;
+        self.piano_beat_start = 0;
         self.midi_hit_cycle = None;
         true
     }

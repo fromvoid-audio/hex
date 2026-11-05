@@ -37,10 +37,11 @@ impl SparseFrameMap {
                 .ok_or(Invalid("sparse audio length overflow"))?;
             count += 1;
         }
-        Ok(
-            (packed_len != 0 && extent.saturating_sub(packed_len) >= 8_192)
-                .then_some((packed_len, count)),
-        )
+        // The PCM constructor requires a nonempty buffer even when no span
+        // reads it. A single neutral frame carries the fully silent root.
+        Ok((extent as u64 > hex_project::MAX_AUDIO_DOMAIN_FRAMES
+            || (packed_len != 0 && extent.saturating_sub(packed_len) >= 8_192))
+            .then_some((packed_len.max(1), count)))
     }
 
     /// Construct a layout from an already validated event inventory.

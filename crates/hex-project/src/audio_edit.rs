@@ -10,6 +10,9 @@ pub use timing::AudioClipTiming;
 
 pub const MAX_AUDIO_POINTS: usize = 1_024;
 pub const MAX_AUDIO_DOMAIN_FRAMES: u64 = 16_777_216;
+/// Virtual frame horizon for an Arrangement event root that can be read as
+/// occupied spans. It bounds editor coordinates, not allocation or DSP work.
+pub const MAX_SPARSE_AUDIO_TIMELINE_FRAMES: u64 = 1 << 36;
 
 /// Refusal for an edit whose whole root must fit the bounded resident transform
 /// workspace (reverse, pitch, warp and stretch; #4145). Durations are
@@ -824,6 +827,46 @@ impl AudioClipEdit {
             }
         }
     }
+    /// The packed Arrangement reader requires a forward, one-shot frame root.
+    pub(crate) fn plain_frame_event_root(&self) -> bool {
+        self.frame_event_root_shape()
+            && self
+                .domain
+                .events
+                .as_ref()
+                .is_some_and(|events| !events.sources.is_empty())
+    }
+
+    pub(crate) fn frame_event_root_shape(&self) -> bool {
+        matches!(self.domain.clock, AudioDomainClock::Frames(_))
+            && matches!(self.timing, AudioClipTiming::Frames)
+            && self.placement.is_none()
+            && self.content_view.is_none()
+            && self.processing_projection.is_none()
+            && !self.domain.warp_enabled
+            && !self.domain.looping
+            && self.domain.pitch_cents == 0
+            && self.domain.source_gain.is_empty()
+    }
+
+    pub(crate) fn accepts_projected_extent(&self, length: u64) -> bool {
+        if length <= MAX_AUDIO_DOMAIN_FRAMES {
+            return true;
+        }
+        length <= MAX_SPARSE_AUDIO_TIMELINE_FRAMES
+            && self.plain_frame_event_root()
+            && self.domain.events.as_ref().is_some_and(|events| {
+                events
+                    .events
+                    .iter()
+                    .try_fold(0u64, |n, event| {
+                        n.checked_add(event.end.checked_sub(event.start)?)
+                            .filter(|n| *n <= MAX_AUDIO_DOMAIN_FRAMES)
+                    })
+                    .is_some()
+            })
+    }
+
     pub fn validate(
         &self,
         clip: &Clip,
@@ -977,7 +1020,7 @@ impl AudioClipEdit {
             return Err(Invalid("active warp needs settings and markers"));
         }
         let (_, length, view_start, view_end) = self.projected_domain(tempo)?;
-        if length > MAX_AUDIO_DOMAIN_FRAMES {
+        if !self.accepts_projected_extent(length) {
             return Err(transform_domain_limit(tempo.sample_rate()));
         }
         if length == 0 || view_start >= view_end {
