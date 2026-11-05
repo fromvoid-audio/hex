@@ -1828,3 +1828,167 @@ fn sampler_bypass_keeps_held_note_continuous_in_the_actual_callback() {
         "reenable must not retrigger the held note: {settled:?}"
     );
 }
+
+#[test]
+fn long_sampler_release_survives_immediate_reenable() {
+    use super::resident_preview::ResidentHarness;
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    h.next();
+    let (mut applied, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "sampler".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("track")
+    };
+    (applied, _) = h.applied(applied);
+    let loaded = h.run(Request::LoadFirstSampler {
+        request_id: 99,
+        project_generation: 0,
+        revision: added.state.revision,
+        track,
+        empty_sampler: None,
+        path: files.wav(48_000, 65_536),
+        cancel: Arc::new(AtomicBool::new(false)),
+    });
+    let device = loaded
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    (applied, _) = h.applied(applied);
+    let state = loaded
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .state()
+        .clone();
+    let state = hex_engine::patch_sampler_parameter_on_control(
+        hex_engine::SamplerParameter::ReleaseMs,
+        &state,
+        100.0,
+    )
+    .unwrap();
+    h.run(Request::Edit(Command::ReplaceDeviceState { device, state }));
+    (applied, _) = h.applied(applied);
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::ONE,
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("clip")
+    };
+    (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::ONE,
+        pitch: 60,
+        channel: 0,
+        velocity: 127,
+    }));
+    (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::from_raw(BeatTime::ONE.raw() / 6),
+        duration: BeatTime::from_raw(BeatTime::ONE.raw() / 32),
+        pitch: 60,
+        channel: 0,
+        velocity: 127,
+    }));
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::PlayFrom(0))
+        .unwrap();
+    for _ in 0..16 {
+        h.render();
+    }
+    let before = h.render();
+    assert!(before[63][0].abs() > 0.01, "held note must be audible");
+    let toggled = h.run(Request::Edit(Command::ToggleDeviceBypass { device }));
+    assert!(toggled.error.is_none());
+    let after = h.render();
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(std::sync::atomic::Ordering::Acquire)
+            > applied,
+        "bypass must reach the callback"
+    );
+    assert!(
+        (after[0][0] - before[63][0]).abs() < 0.01,
+        "sampler bypass: {:?} -> {:?}",
+        before[63],
+        after[0]
+    );
+    let mut halfway = after;
+    for _ in 0..35 {
+        halfway = h.render();
+    }
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    let cut = status
+        .performance_frame
+        .load(std::sync::atomic::Ordering::Acquire);
+    let bypass_revision = status
+        .applied_revision
+        .load(std::sync::atomic::Ordering::Acquire);
+    let enabled = h.run(Request::Edit(Command::ToggleDeviceBypass { device }));
+    assert!(enabled.error.is_none(), "{:?}", enabled.error);
+    let resumed = h.render();
+    assert!(
+        (resumed[0][0] - halfway[63][0]).abs() < 0.01,
+        "sampler reenable: {:?} -> {:?}",
+        halfway[63],
+        resumed[0]
+    );
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert_eq!(
+        status
+            .performance_frame
+            .load(std::sync::atomic::Ordering::Acquire),
+        cut + 64
+    );
+    assert!(
+        status
+            .applied_revision
+            .load(std::sync::atomic::Ordering::Acquire)
+            > bypass_revision,
+        "reenable must reach the next callback while the release is audible"
+    );
+    h.applied(bypass_revision);
+    let mut release = Vec::new();
+    for _ in 0..140 {
+        release.extend_from_slice(&h.render());
+    }
+    assert!(
+        release.iter().any(|frame| frame[0] > 0.3),
+        "a future note must sound while the original release continues"
+    );
+    assert!(
+        release[..200].iter().any(|frame| frame[0].abs() > 0.01),
+        "original release must continue"
+    );
+    assert!(
+        release[release.len() - 64..]
+            .iter()
+            .flatten()
+            .all(|sample| sample.abs() < 1e-6),
+        "release must end without a stuck note"
+    );
+}
