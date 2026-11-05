@@ -13,6 +13,8 @@ use gpui::{
 use hex_project::{AudioEventFade, ClipFade, TempoMap};
 use std::ops::Range;
 
+pub(super) const CONTENT_TOP: f32 = 16.0;
+
 #[derive(Clone, Copy)]
 pub(super) struct FadeGesture {
     event: AudioEvent,
@@ -476,7 +478,8 @@ impl EditorView {
             .gesture
             .as_ref()
             .is_some_and(|g| matches!(g.kind,Kind::Fade(f) if f.event.id==event.id));
-        if !held && !active && event.fade.is_none_or(|fade| fade.shape().is_neutral()) {
+        let hovered = self.audio_event_editor.fade_hover == Some(event.id);
+        if !held && !active && !hovered && event.fade.is_none_or(|fade| fade.shape().is_neutral()) {
             return Vec::new();
         }
         let Some(state) = self.state.as_ref() else {
@@ -552,7 +555,7 @@ impl EditorView {
                 },
             )
             .absolute()
-            .top(px(16.0))
+            .top(px(CONTENT_TOP))
             .bottom_0()
             .left_0()
             .right_0()
@@ -689,6 +692,7 @@ impl EditorView {
                                     {
                                         return;
                                     }
+                                    v.audio_event_editor.fade_hover = None;
                                     v.audio_event_editor.gesture = Some(Gesture {
                                         anchor: 0,
                                         pointer_x: f32::from(e.position.x),

@@ -107,12 +107,35 @@ pub(super) struct State {
     range: Option<(u64, u64)>,
     grid: SnapGrid,
     pub(super) fade_key_held: bool,
+    fade_hover: Option<u64>,
     bounds: Option<Bounds<Pixels>>,
     pub(super) gesture: Option<Gesture>,
     clipboard: Option<Clipboard>,
     pending: Option<pending::Pending>,
 }
 impl State {
+    fn set_fade_hover(
+        &mut self,
+        owner: (ClipId, u64),
+        revision: u64,
+        event: u64,
+        hovered: bool,
+    ) -> bool {
+        if self.owner != Some(owner) || self.revision != revision {
+            return false;
+        }
+        let next = if hovered {
+            Some(event)
+        } else {
+            self.fade_hover.filter(|id| *id != event)
+        };
+        if self.fade_hover == next {
+            return false;
+        }
+        self.fade_hover = next;
+        true
+    }
+
     pub(super) fn clear_fit_back(&mut self) {
         self.fit_back = None;
         self.fit_back_negative = 0;
