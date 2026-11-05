@@ -163,6 +163,7 @@ public:
         if (restoration.component_set && restoration.phase!=1) {++observed.violations;return kResultFalse;}
         std::memcpy(&component_gain,data.data()+8,4);
         if(!std::isfinite(component_gain) || component_gain<0 || component_gain>4)return kResultFalse;
+        if(fault==110 && handler->restartComponent(kLatencyChanged)!=kResultOk) return kResultFalse;
         if(fault==53)stream->write(data.data(),1,nullptr); // ignored illegal write must still invalidate stream
         restoration.controller_gain=bits(component_gain);restoration.phase=2;trace(17);return kResultOk;
     }
@@ -697,7 +698,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>106) return false;next_fault=value;
+        if (value>110) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);
