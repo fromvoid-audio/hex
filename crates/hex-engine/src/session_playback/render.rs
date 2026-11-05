@@ -742,6 +742,7 @@ impl SessionPlayback {
         let mut resident_source_end = 0;
         let mut resident_source_eligible = [false; MAX_TRACKS];
         let mut resident_analytic_eligible = [false; MAX_TRACKS];
+        let mut aligned_dry = [false; MAX_TRACKS];
 
         while output_offset < output.len() {
             if let Some(region) = region {
@@ -800,6 +801,12 @@ impl SessionPlayback {
                     count,
                     &mut resident_source_eligible,
                     &mut resident_analytic_eligible,
+                )?;
+                self.align_resident_dry_tracks(
+                    arrangement_frame,
+                    count,
+                    &resident_source_eligible,
+                    &mut aligned_dry,
                 )?;
                 resident_source_index = 0;
                 resident_source_end = count;
@@ -915,6 +922,7 @@ impl SessionPlayback {
                         index: resident_source_index,
                         audio: &resident_source_eligible,
                         analytic: &resident_analytic_eligible,
+                        aligned_dry: &aligned_dry,
                     }),
                 )?;
                 if use_resident_sources {
