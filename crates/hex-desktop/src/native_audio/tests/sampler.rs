@@ -1915,12 +1915,11 @@ fn long_sampler_release_survives_immediate_reenable() {
     for _ in 0..35 {
         halfway = h.render();
     }
-    let bypass_revision = h
-        .audio
-        .as_ref()
-        .unwrap()
-        .status()
-        .unwrap()
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    let cut = status
+        .performance_frame
+        .load(std::sync::atomic::Ordering::Acquire);
+    let bypass_revision = status
         .applied_revision
         .load(std::sync::atomic::Ordering::Acquire);
     let enabled = h.run(Request::Edit(Command::ToggleDeviceBypass { device }));
@@ -1931,6 +1930,20 @@ fn long_sampler_release_survives_immediate_reenable() {
         "sampler reenable: {:?} -> {:?}",
         halfway[63],
         resumed[0]
+    );
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert_eq!(
+        status
+            .performance_frame
+            .load(std::sync::atomic::Ordering::Acquire),
+        cut + 64
+    );
+    assert!(
+        status
+            .applied_revision
+            .load(std::sync::atomic::Ordering::Acquire)
+            > bypass_revision,
+        "reenable must reach the next callback while the release is audible"
     );
     h.applied(bypass_revision);
     let mut release = Vec::new();
