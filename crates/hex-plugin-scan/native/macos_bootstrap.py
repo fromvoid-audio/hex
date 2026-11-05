@@ -276,7 +276,8 @@ def build(sdk, output, *, discovery_only=False, instance_only=False):
     (output / app / "Contents/Info.plist").write_bytes(plistlib.dumps({
         "CFBundleExecutable": "hex-vst3-instance" if instance_only else ("hex-vst3-factory-scan" if discovery_only else "hex-vst3-host"),
         "CFBundleIdentifier": "org.portalsurfer.hex.vst3.instance" if instance_only else ("org.portalsurfer.hex.vst3.discovery" if discovery_only else "org.portalsurfer.hex.vst3.bootstrap"),
-        "CFBundlePackageType": "APPL", "CFBundleVersion": "1", "LSBackgroundOnly": True,
+        "CFBundlePackageType": "APPL", "CFBundleVersion": "1",
+        ("LSUIElement" if instance_only else "LSBackgroundOnly"): True,
     }, sort_keys=True))
     # CommonCrypto's legacy one-shot function remains available for local identity.
     if not minimal:
