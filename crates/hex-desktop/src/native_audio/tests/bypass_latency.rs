@@ -124,7 +124,7 @@ fn live_short_latency_bypass(kind: &'static str) {
             hex_engine::patch_native_device_parameter(
                 &state,
                 hex_session::device_gesture::ParameterId::from_static(6),
-                hex_session::device_gesture::ParameterValue::Float(100.0),
+                hex_session::device_gesture::ParameterValue::Float(1.0),
             )
             .unwrap()
         } else {
