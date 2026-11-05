@@ -31,6 +31,7 @@ mod transport_loop;
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 mod unavailable_plugins;
 mod utility_width;
+mod verified_device_preview;
 mod verified_gain;
 mod worker_idle;
 use hex_audio::worker_fixture::HeadlessBackend;
