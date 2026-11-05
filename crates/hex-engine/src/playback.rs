@@ -2161,7 +2161,10 @@ impl Playback {
         }
     }
 
-    /// Render either the selected mixed source or the legacy finite Arrangement.
+    /// Enable live scalar observations on an already prepared runtime. The
+    /// audio publication owner enables this after preparation. Preroll/seek
+    /// preparation must leave it disabled: endpoints may also be retained by
+    /// applied playback. Enablement grants no publication or delivery authority.
     pub fn set_device_metering(&mut self, enabled: bool) {
         if let Some(runtime) = self.session_runtime.as_mut() {
             runtime.set_device_metering(enabled);

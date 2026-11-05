@@ -60,6 +60,7 @@ impl SessionPlayback {
             .zip(self.resident_source_scratch.iter_mut())
             .enumerate()
         {
+            let work_start = self.render_work.track(index);
             let output = &mut scratch[..frames];
             output.fill([0.0; 2]);
             if batch_analytic && self.revision.source_routing().is_shared(index) {
@@ -118,6 +119,7 @@ impl SessionPlayback {
                     *analytic
                         .get_mut(index)
                         .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
+                    self.render_work.finish(work_start);
                     continue;
                 }
             }
@@ -183,6 +185,7 @@ impl SessionPlayback {
                             .get(index)
                             .is_some_and(Option::is_none)
                     {
+                        self.render_work.finish(work_start);
                         continue;
                     }
                     let midi = crate::session_inventory::EffectiveSessionMidi::new(
@@ -198,6 +201,7 @@ impl SessionPlayback {
                     if !prepared.instrument_enabled()
                         || prepared.instrument_template().is_event_source()
                     {
+                        self.render_work.finish(work_start);
                         continue;
                     }
                     let floor = self
@@ -245,6 +249,7 @@ impl SessionPlayback {
                         .ok_or(SessionPlaybackError::DeviceRuntime)?;
                     if !track.audio_content_enabled() {
                         *is_eligible = true;
+                        self.render_work.finish(work_start);
                         continue;
                     }
                     let prepared = self
@@ -271,6 +276,7 @@ impl SessionPlayback {
                 }
                 _ => {}
             }
+            self.render_work.finish(work_start);
         }
         Ok(())
     }
@@ -337,6 +343,7 @@ impl SessionPlayback {
                     delay: arrival,
                 })
             };
+            let work_start = self.render_work.track(index);
             let samples = &mut scratch[..frames];
             for frame in samples.iter_mut() {
                 // Match the two zero-valued merges in the scalar route.
@@ -405,6 +412,7 @@ impl SessionPlayback {
             compensation
                 .edge_block(edge, samples)
                 .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+            self.render_work.finish(work_start);
             *aligned = true;
         }
         Ok(())
@@ -580,6 +588,7 @@ impl SessionPlayback {
                 .owner_order[order];
             match owner {
                 crate::signal_graph::Owner::Track(index) => {
+                    let work_start = self.render_work.track(index);
                     let track = &self.revision.arrangement().tracks()[index];
                     let route = self.route_scratch[index];
                     if let Some(batch) = resident_source.filter(|batch| batch.aligned[index]) {
@@ -911,8 +920,10 @@ impl SessionPlayback {
                         self.return_scratch[target][0][0] += sent[0];
                         self.return_scratch[target][0][1] += sent[1];
                     }
+                    self.render_work.finish(work_start);
                 }
                 crate::signal_graph::Owner::Return(index) => {
+                    let work_start = self.render_work.return_bus(index);
                     let compensation = self
                         .compensation
                         .as_mut()
@@ -973,6 +984,7 @@ impl SessionPlayback {
                             main,
                         )?;
                     }
+                    self.render_work.finish(work_start);
                 }
             }
         }

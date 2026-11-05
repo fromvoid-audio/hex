@@ -123,6 +123,15 @@ arrange places clips along a time ruler. console provides the clip/scene workspa
 these views share the project; switching views does not create another document.
 tracks can contain both audio and midi clips under the same mixer controls.
 
+choose **view → track performance indicators** to show six compact segments in
+track headers and arrange return headers. hover an indicator for its sampled
+share of audio processing time and the scale. group indicators show only the
+group's own work; a shared instrument belongs to its receiver. main processing,
+old detached tails and shared overhead remain in the global meter. external
+worker cpu is excluded. dim segments mean a fresh reading is unavailable, not
+zero work. some playback modes cannot supply these timings and show unavailable. the indicators are diagnostic: they do not measure latency or prove
+which track caused a dropout.
+
 solo takes precedence over track mute or deactivation. a muted track sounds while
 soloed; turning solo off restores its muted state. solo does not change the stored
 track activator setting.

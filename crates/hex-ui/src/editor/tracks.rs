@@ -1888,6 +1888,9 @@ impl EditorView {
                 .gap(px(2.0))
                 .children([header_content.flex_1().min_w_0()])
                 .children(
+                    self.track_performance_indicator(hex_engine::OutputCaptureId::Track(track_id)),
+                )
+                .children(
                     self.track_latency_indicator(super::track_latency::Owner::Track(track_id)),
                 )
                 .children([super::track_meters::render(

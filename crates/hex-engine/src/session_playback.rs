@@ -28,6 +28,7 @@ use std::{fmt, sync::Arc};
 mod candidate_storage;
 mod midi_capture;
 mod mutable_checkpoint;
+mod render_work;
 mod track_fader;
 mod transport_loop_admission;
 pub use mutable_checkpoint::{
@@ -482,6 +483,7 @@ pub struct SessionPlayback {
     native_parameter_state: Option<Box<native_parameter_input::State>>,
     compensation: Option<crate::signal_graph::SignalRuntime>,
     device_metering: bool,
+    render_work: render_work::Sampler,
     revision: Arc<PreparedRevision>,
     /// Graph-local section audition; expires when the source graph is replaced.
     pub(crate) transient_loop: Option<hex_project::LoopRegion>,
@@ -885,6 +887,7 @@ impl SessionPlayback {
             native_parameter_state: _,
             compensation,
             device_metering: _,
+            render_work: _,
             revision: _,
             transient_loop: _,
             midi_admission: _,
@@ -1993,6 +1996,7 @@ impl SessionPlayback {
             native_parameter_state,
             compensation,
             device_metering: false,
+            render_work: Default::default(),
             revision,
             transient_loop,
             midi_admission,

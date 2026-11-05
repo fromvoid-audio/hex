@@ -1406,6 +1406,7 @@ impl EditorView {
                 .saturating_add(self.pending_requests.len());
             visible_change |= pending_before != pending_after;
             visible_change |= self.tick_track_meters(Instant::now());
+            visible_change |= self.tick_track_performance(Instant::now());
             return self.observe_audio_frame(None, visible_change, Instant::now());
         };
         let reliable_outcomes = audio.control.has_action_outcomes();
@@ -2122,6 +2123,7 @@ impl EditorView {
         visible_change |= self.follow_output_route();
         visible_change |= self.finish_audio_recovery_tick();
         visible_change |= self.tick_track_meters(Instant::now());
+        visible_change |= self.tick_track_performance(Instant::now());
         visible_change |= self.tick_latency_rebuild();
         visible_change |= self.tick_sampler_edit_resume();
         visible_change |= self.tick_deferred_play();

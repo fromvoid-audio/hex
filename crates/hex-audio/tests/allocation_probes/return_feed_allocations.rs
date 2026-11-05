@@ -120,6 +120,9 @@ fn assert_callback(automation: bool) {
     let revision = Arc::new(
         PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None).unwrap(),
     );
+    let observation =
+        hex_engine::PreparedPlaybackObservation::prepare_on_control(&revision).unwrap();
+    observation.set_render_work_enabled(true);
     let mut session = SessionPlayback::new(Arc::clone(&revision)).unwrap();
     session.apply(SessionPlaybackCommand::Play).unwrap();
     let owners = Arc::strong_count(&revision);
@@ -146,6 +149,17 @@ fn assert_callback(automation: bool) {
         callback.begin_block();
         callback.render(&mut output).unwrap();
     }));
+    assert_zero(measure(|| {
+        for _ in 0..2 {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        }
+    }));
+    assert!(
+        observation
+            .render_work_meters()
+            .all(|(_, meter)| meter.sample().is_some())
+    );
     editor
         .execute(Command::SetReturnFeed {
             source: returns[1],
@@ -167,6 +181,9 @@ fn assert_callback(automation: bool) {
             .unwrap();
     }
     let next = Arc::new(PreparedRevision::prepare(editor.project(), &media, table, None).unwrap());
+    let next_observation =
+        hex_engine::PreparedPlaybackObservation::prepare_on_control(&next).unwrap();
+    next_observation.set_render_work_enabled(true);
     control
         .publish(Playback::try_from_prepared_with_session(next).unwrap())
         .unwrap();
