@@ -45,6 +45,34 @@ impl SessionPlayback {
         self.render_with_post_node_observer(output, None)
     }
 
+    /// Test-only comparison with the project tap for ordered resident track
+    /// windows. Callers pass every canonical track in prepared order, with
+    /// preallocated output for one render window. No worker or history moves.
+    #[cfg(feature = "instrument-test-support")]
+    #[doc(hidden)]
+    pub fn render_prepared_track_windows_probe<const N: usize>(
+        &mut self,
+        ids: &[u64],
+        tracks: &mut [[Frame; N]],
+        output: &mut [Frame; N],
+    ) -> Result<(), SessionPlaybackError> {
+        let layout = self.revision.arrangement().tracks();
+        if N == 0
+            || N > 256
+            || tracks.len() != ids.len()
+            || ids.len() != layout.len()
+            || layout
+                .iter()
+                .zip(ids)
+                .any(|(track, id)| track.track_id.map(|canonical| canonical.value()) != Some(*id))
+        {
+            return Err(SessionPlaybackError::DeviceRuntime);
+        }
+        tracks.fill([[0.0; 2]; N]);
+        let mut capture = super::capture::window_probe::TrackWindowProbe { ids, tracks };
+        self.render_internal::<dyn MediaPages>(output, None, None, Some(&mut capture), None)
+    }
+
     /// Render using borrowed, already admitted foreign endpoints. This stages
     /// copied input only: the audio owner must separately accept the complete
     /// physical callback after final host conversion. Every refusal revokes
