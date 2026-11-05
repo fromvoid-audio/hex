@@ -3,10 +3,5 @@
 set -e
 cd "$(dirname "$0")"
 git pull
-if [ "$(uname -s):$(uname -m)" = Darwin:arm64 ]; then
-    HEX_LAUNCH_DISCOVERY_APP=$(python3 scripts/prepare-launch-discovery.py) || HEX_LAUNCH_DISCOVERY_APP=
-    export HEX_LAUNCH_DISCOVERY_APP
-    HEX_LAUNCH_INSTANCE_APP=$(python3 scripts/prepare-launch-discovery.py --instance) || HEX_LAUNCH_INSTANCE_APP=
-    export HEX_LAUNCH_INSTANCE_APP
-fi
-exec cargo run -r -- "$@"
+# Open the runtime steps from the updated checkout.
+exec /bin/sh ./scripts/run-desktop.sh "$@"
