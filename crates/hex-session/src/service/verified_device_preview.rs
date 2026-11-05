@@ -172,6 +172,7 @@ mod tests {
     use crate::device_gesture::{GestureRequest, ParameterId, ParameterValue};
     struct Sink(Arc<std::sync::atomic::AtomicUsize>);
     impl WorkerAudioSink for Sink {
+        fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {}
         fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
             Ok(48_000)
         }
@@ -336,6 +337,15 @@ mod tests {
                 .read_selection,
             hex_project::AutomationReadSelection::Authored
         );
+        let target = changed.active_device_gesture.unwrap().target;
+        changed.active_device_gesture.as_mut().unwrap().target =
+            GestureTarget::DeviceParameterPair {
+                device,
+                first: ParameterId::from_static(3),
+                second: ParameterId::from_static(2),
+            };
+        assert!(VerifiedDeviceParameterSource::capture(&changed, None).is_err());
+        changed.active_device_gesture.as_mut().unwrap().target = target;
         let valid_state = changed.device_preview.as_ref().unwrap().state.clone();
         let started = std::time::Instant::now();
         for _ in 0..1024 {
