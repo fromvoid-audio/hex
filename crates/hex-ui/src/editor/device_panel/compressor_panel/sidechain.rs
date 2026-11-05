@@ -143,7 +143,7 @@ pub(super) fn control(
     controls.visible.push(device);
     control.bounds.set(None);
     let target = Rc::clone(&control.bounds);
-    let selector = control.selector.clone();
+    let entity = &control.selector;
     let source = drag.filter(|(source, _)| control.sources.contains(&Some(*source)));
     let accent = rgb(theme::color(theme::PaletteRole::Primary));
     Some(
@@ -155,29 +155,35 @@ pub(super) fn control(
             .gap(px(3.0))
             .child(theme::text("sidechain"))
             .child(
-                div().relative().flex_1().min_w_0().child(selector).child(
-                    canvas(
-                        move |bounds, window, _| {
-                            let mask = window.content_mask().bounds;
-                            let clipped = bounds.intersects(&mask).then(|| bounds.intersect(&mask));
-                            target.set(clipped);
-                            source.is_some_and(|(_, point)| {
-                                clipped.is_some_and(|visible| visible.contains(&point))
-                            })
-                        },
-                        move |bounds, highlighted, window, _| {
-                            if highlighted {
-                                window.paint_quad(gpui::outline(
-                                    bounds,
-                                    accent,
-                                    gpui::BorderStyle::Solid,
-                                ));
-                            }
-                        },
-                    )
-                    .absolute()
-                    .inset_0(),
-                ),
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_w_0()
+                    .child(entity.clone())
+                    .child(
+                        canvas(
+                            move |bounds, window, _| {
+                                let mask = window.content_mask().bounds;
+                                let clipped =
+                                    bounds.intersects(&mask).then(|| bounds.intersect(&mask));
+                                target.set(clipped);
+                                source.is_some_and(|(_, point)| {
+                                    clipped.is_some_and(|visible| visible.contains(&point))
+                                })
+                            },
+                            move |bounds, highlighted, window, _| {
+                                if highlighted {
+                                    window.paint_quad(gpui::outline(
+                                        bounds,
+                                        accent,
+                                        gpui::BorderStyle::Solid,
+                                    ));
+                                }
+                            },
+                        )
+                        .absolute()
+                        .inset_0(),
+                    ),
             ),
     )
 }
