@@ -1,5 +1,4 @@
 //! Instrumented headless callback allocation regression; no device is opened.
-#![cfg(feature = "allocation-probe")]
 
 #[path = "callback_allocations/cursor_loop.rs"]
 mod cursor_loop;
@@ -8,10 +7,10 @@ mod finite_bounce;
 #[path = "callback_allocations/output_capture.rs"]
 mod output_capture;
 #[path = "callback_allocations/probe.rs"]
-mod probe;
+pub(super) mod probe;
 #[path = "callback_allocations/project_tuning.rs"]
 mod project_tuning;
-#[path = "../../hex-engine/examples/support/session_audio_fixture.rs"]
+#[path = "../../../hex-engine/examples/support/session_audio_fixture.rs"]
 #[allow(dead_code)]
 mod session_audio_fixture;
 #[path = "callback_allocations/transport_fade.rs"]

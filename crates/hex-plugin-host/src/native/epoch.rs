@@ -91,6 +91,26 @@ impl Prepared {
     }
 }
 impl Quiescent {
+    /// Settle the opted-in latency request before the owner computes its next
+    /// compensation layout. Bound repeated SDK invalidations on control.
+    pub fn settle_latency_retained_on_control(
+        mut self,
+    ) -> std::result::Result<Self, PreparationFailure> {
+        for _ in 0..2 {
+            match self.poll_recovery_edits_on_control() {
+                Ok(batch) if batch.pending_latency_restart.is_none() => return Ok(self),
+                Ok(_) => self = self.reactivate_retained_on_control()?,
+                Err(error) => return Err(self.instance.refuse_epoch_retained(error)),
+            }
+        }
+        let error = match self.poll_recovery_edits_on_control() {
+            Ok(batch) if batch.pending_latency_restart.is_none() => return Ok(self),
+            Ok(_) => Error::Protocol("native latency keeps changing during reactivation"),
+            Err(error) => error,
+        };
+        Err(self.instance.refuse_epoch_retained(error))
+    }
+
     /// Deactivate/reactivate the same stopped component on its main lane, then
     /// refresh raw facts. This intentionally permits DSP history/tail reset;
     /// ordinary quiescence never does so. The caller must plan compensation

@@ -24,6 +24,39 @@ pub(crate) fn process_range_with_external(
     foreign: &mut dyn ForeignProcessors,
     observer: &mut Option<&mut NodeSignalObserver<'_>>,
 ) -> Result<(), Invalid> {
+    process_range_with_key(
+        input,
+        external,
+        chain,
+        range,
+        frames,
+        offset,
+        clock,
+        output_clock,
+        input_arrival,
+        output_arrival,
+        foreign,
+        None,
+        observer,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn process_range_with_key(
+    input: Option<&mut Processing>,
+    external: Option<hex_lattice::NativeExternalAutomation<'_>>,
+    chain: &mut NativeRuntimeChain,
+    range: std::ops::Range<usize>,
+    frames: &mut [Frame],
+    offset: usize,
+    clock: Option<&dyn NativeInstrumentClock>,
+    output_clock: Option<&dyn NativeInstrumentClock>,
+    input_arrival: u32,
+    output_arrival: u32,
+    foreign: &mut dyn ForeignProcessors,
+    key: Option<Frame>,
+    observer: &mut Option<&mut NodeSignalObserver<'_>>,
+) -> Result<(), Invalid> {
     if let Some(input) = input {
         input.process_with_external(
             external,
@@ -36,31 +69,84 @@ pub(crate) fn process_range_with_external(
             input_arrival,
             output_arrival,
             foreign,
+            key,
             observer,
         )
     } else {
-        chain
-            .process_range_tapped_with_foreign_input_and_external(
-                range,
-                frames,
+        dispatch_stage(
+            chain,
+            range,
+            frames,
+            offset,
+            clock,
+            output_clock,
+            foreign,
+            None,
+            external,
+            key,
+            observer,
+        )
+        .map_err(|_| Invalid("native effect processing failed"))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dispatch_stage(
+    chain: &mut NativeRuntimeChain,
+    range: std::ops::Range<usize>,
+    frames: &mut [Frame],
+    offset: usize,
+    clock: Option<&dyn NativeInstrumentClock>,
+    output_clock: Option<&dyn NativeInstrumentClock>,
+    foreign: &mut dyn ForeignProcessors,
+    transient: Option<&mut NativeTransientProcessing>,
+    external: Option<hex_lattice::NativeExternalAutomation<'_>>,
+    key: Option<Frame>,
+    observer: &mut Option<&mut NodeSignalObserver<'_>>,
+) -> Result<(), hex_lattice_contract::DeviceContractError> {
+    let mut observe = |owner, device, kind, phase, offset, frames: &[Frame]| {
+        if let Some(observer) = observer.as_mut() {
+            observer(
+                PostNodeIdentity::new(owner, device, kind),
+                phase,
                 offset,
-                clock,
-                output_clock,
-                foreign,
-                None,
-                external,
-                &mut |owner, device, kind, phase, offset, frames| {
-                    if let Some(observer) = observer.as_mut() {
-                        observer(
-                            PostNodeIdentity::new(owner, device, kind),
-                            phase,
-                            offset,
-                            frames,
-                        );
-                    }
-                },
-            )
-            .map_err(|_| Invalid("native effect processing failed"))
+                frames,
+            );
+        }
+    };
+    if let Some(key) = key {
+        if range.len() != 1 {
+            return Err(hex_lattice_contract::DeviceContractError::InvalidDescriptor);
+        }
+        let block = hex_lattice::StereoAuxiliaryBlock::new(
+            frames,
+            Some(std::slice::from_ref(&key)),
+            &mut [],
+            1,
+        )
+        .map_err(|_| hex_lattice_contract::DeviceContractError::InvalidDescriptor)?;
+        chain.process_auxiliary_stage(
+            range.start,
+            block,
+            offset,
+            clock,
+            output_clock,
+            transient,
+            external,
+            &mut observe,
+        )
+    } else {
+        chain.process_range_tapped_with_foreign_input_and_external(
+            range,
+            frames,
+            offset,
+            clock,
+            output_clock,
+            foreign,
+            transient,
+            external,
+            &mut observe,
+        )
     }
 }
 
@@ -115,6 +201,7 @@ impl Processing {
         input_arrival: u32,
         output_arrival: u32,
         foreign: &mut dyn ForeignProcessors,
+        key: Option<Frame>,
         observer: &mut Option<&mut NodeSignalObserver<'_>>,
     ) -> Result<(), Invalid> {
         let (origin, arrival) =
@@ -140,7 +227,8 @@ impl Processing {
             .final_arrival
             .checked_sub(arrival)
             .ok_or(Invalid("native input stage exceeds final arrival"))?;
-        let result = chain.process_range_tapped_with_foreign_input_and_external(
+        let result = dispatch_stage(
+            chain,
             range,
             frames,
             offset,
@@ -149,16 +237,8 @@ impl Processing {
             foreign,
             transient.as_mut(),
             external,
-            &mut |owner, device, kind, phase, offset, frames| {
-                if let Some(observer) = observer.as_mut() {
-                    observer(
-                        PostNodeIdentity::new(owner, device, kind),
-                        phase,
-                        offset,
-                        frames,
-                    );
-                }
-            },
+            key,
+            observer,
         );
         if result.is_err() {
             self.applied = None;

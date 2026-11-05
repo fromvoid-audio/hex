@@ -1,5 +1,4 @@
 //! Headless allocation/retirement proof; this does not measure native deadlines.
-#![cfg(feature = "allocation-probe")]
 use allocation_counter::measure;
 use hex_audio::prepared;
 use hex_engine::{

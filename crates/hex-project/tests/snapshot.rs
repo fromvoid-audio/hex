@@ -16,6 +16,7 @@ fn valid_snapshot() -> Snapshot {
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
+        sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
         next_id: 100,

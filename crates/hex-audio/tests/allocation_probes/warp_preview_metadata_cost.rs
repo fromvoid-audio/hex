@@ -1,5 +1,4 @@
 //! Control-side metadata cost only: no PCM/render, callback, OS audio or native UI.
-#![cfg(feature = "allocation-probe")]
 use hex_project::{
     BeatTime, BeatsPreserve, BeatsTail, Command, Created, Editor, Project, TrimEdge, WarpMode,
     default_audio_warp, preview_audio_clip_stretch,

@@ -1,5 +1,4 @@
 //! Headless prepared-callback evidence for the retained one-shot source policy.
-#![cfg(feature = "allocation-probe")]
 use hex_audio::prepared;
 use hex_engine::{PlaybackCommand, PreparedRevision, SineTable, playback::Playback};
 use hex_project::{

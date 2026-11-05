@@ -1,5 +1,4 @@
 //! Cancellation and callback ownership probe for conditional fresh publications.
-#![cfg(feature = "allocation-probe")]
 
 use allocation_counter::measure;
 use hex_audio::prepared::{self, FreshRuntimeCancellationResult, PublicationPolicy};

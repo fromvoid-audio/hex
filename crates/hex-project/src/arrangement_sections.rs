@@ -208,6 +208,7 @@ impl Project {
             routing,
             audio_feeds,
             midi_routes,
+            sidechains,
             import_provenance,
             sample_rate,
             next_id: _,
@@ -233,6 +234,7 @@ impl Project {
             && *routing == other.routing
             && *audio_feeds == other.audio_feeds
             && *midi_routes == other.midi_routes
+            && *sidechains == other.sidechains
             && *import_provenance == other.import_provenance
             && *assets == other.assets
             && *offline_assets == other.offline_assets

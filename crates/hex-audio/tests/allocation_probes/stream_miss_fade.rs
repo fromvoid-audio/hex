@@ -1,5 +1,4 @@
 //! The streamed page-miss fade path renders without callback allocation.
-#![cfg(feature = "allocation-probe")]
 use hex_engine::{
     BorrowedMediaPage, Frame, MediaPages, PreparedRevision, STREAM_PAGE_FRAMES, SineTable,
     StreamSourceKey, StreamedSourceMetadata,

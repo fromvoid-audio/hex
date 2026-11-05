@@ -1,5 +1,4 @@
 //! Real callback handoff for static track-volume candidates; no UI or device I/O.
-#![cfg(feature = "allocation-probe")]
 use allocation_counter::measure;
 use hex_audio::prepared::{self, PublicationPolicy};
 use hex_engine::{
