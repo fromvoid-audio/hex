@@ -195,6 +195,9 @@ impl SignalGraph {
         canonical: &hex_project::Project,
         printed_audio_tracks: &[usize],
     ) -> Result<Self, Invalid> {
+        if !canonical.sidechains().is_empty() {
+            return Err(Invalid("compressor sidechain playback is unavailable"));
+        }
         if printed_audio_tracks
             .windows(2)
             .any(|pair| pair[0] >= pair[1])
