@@ -378,6 +378,7 @@ impl SessionPlayback {
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
+        self.render_work.begin(&self.revision, self.device_metering);
         let result = if self.device_metering {
             // Keep bounded scratch outside the mutable playback borrow; the
             // revision remains owned by playback until scratch is restored.
@@ -400,6 +401,8 @@ impl SessionPlayback {
         } else {
             self.render_internal_borrowed(output, pages, observer, capture, sources, foreign)
         };
+        self.render_work
+            .publish(&self.revision, output.len(), result.is_ok());
         if result.is_err() {
             foreign.reject_callback();
             output.fill([0.0; 2]);
@@ -1301,6 +1304,7 @@ impl SessionPlayback {
         let table = self.revision.session().sine_table().as_ref();
         let mut release_cursor = 0;
         for index in 0..tracks.len() {
+            let work_start = self.render_work.track(index);
             let track = tracks
                 .get(index)
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
@@ -1798,6 +1802,7 @@ impl SessionPlayback {
                     if let Some(capture) = capture.as_mut() {
                         capture.add(capture_id, frame_offset, &captured[..output.len()])?;
                     }
+                    self.render_work.finish(work_start);
                     continue;
                 }
                 for release in &self.release_scratch[first_release..release_cursor] {
@@ -1840,6 +1845,7 @@ impl SessionPlayback {
                     SourceStage::Whole,
                 )?;
             }
+            self.render_work.finish(work_start);
         }
         self.render_detached_tails(performance_frame, output, frame_offset, capture, None)?;
         self.render_return_buses(
@@ -1867,6 +1873,7 @@ impl SessionPlayback {
         let arrangement = self.revision.arrangement();
         if !arrangement.return_feed_plan.is_empty() {
             for &index in arrangement.return_feed_plan.order() {
+                let work_start = self.render_work.return_bus(index);
                 let bus = &arrangement.return_buses()[index];
                 let frames = &mut self.return_scratch[index][..output.len()];
                 let chain = self
@@ -1914,6 +1921,7 @@ impl SessionPlayback {
                     &mut self.return_scratch,
                     output.len(),
                 );
+                self.render_work.finish(work_start);
             }
             let count = output.len();
             for frames in &self.return_scratch {
@@ -1936,6 +1944,7 @@ impl SessionPlayback {
             .iter()
             .enumerate()
         {
+            let work_start = self.render_work.return_bus(index);
             let frames = self
                 .return_scratch
                 .get_mut(index)
@@ -1984,6 +1993,7 @@ impl SessionPlayback {
             if let Some(capture) = capture.as_mut() {
                 capture.add(OutputCaptureId::Return(bus.id), frame_offset, frames)?;
             }
+            self.render_work.finish(work_start);
         }
         if self.playing {
             self.return_effect_tails

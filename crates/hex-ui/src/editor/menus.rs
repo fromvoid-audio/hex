@@ -67,10 +67,16 @@ fn application_menus(recent_projects: &[PathBuf]) -> Vec<Menu> {
         },
         Menu {
             name: theme::text("view"),
-            items: vec![MenuItem::action(
-                theme::text("track latency indicators"),
-                super::ToggleTrackLatency,
-            )],
+            items: vec![
+                MenuItem::action(
+                    theme::text("track performance indicators"),
+                    super::ToggleTrackPerformance,
+                ),
+                MenuItem::action(
+                    theme::text("track latency indicators"),
+                    super::ToggleTrackLatency,
+                ),
+            ],
         },
     ]
 }

@@ -2,7 +2,8 @@
 use super::callback_allocations::probe;
 use hex_audio::prepared;
 use hex_engine::{
-    Audio, LaunchQuantization, PreparedRevision, SessionPlaybackCommand, SineTable,
+    Audio, LaunchQuantization, PreparedPlaybackObservation, PreparedRevision,
+    SessionPlaybackCommand, SineTable,
     playback::{Playback, PlaybackCommand},
 };
 use hex_lattice::{NativeDeviceDefinition, NativeDeviceRegistry, NativeInstrumentRegistry};
@@ -82,6 +83,8 @@ fn check_compensated_audio_batch(session: bool) -> Result<(), Box<dyn Error>> {
         &instruments,
     )?);
     assert_eq!(revision.arrangement().main_latency_frames(), latency as u32);
+    let observation = PreparedPlaybackObservation::prepare_on_control(&revision)?;
+    observation.set_render_work_enabled(true);
     let (mut control, mut callback) = prepared::channel(RATE)?;
     control
         .publish(Playback::try_from_prepared_with_session(revision)?)
@@ -114,6 +117,11 @@ fn check_compensated_audio_batch(session: bool) -> Result<(), Box<dyn Error>> {
         probe::compare_output(&output[..count], &expected);
         offset += count;
     }
+    assert!(
+        observation
+            .render_work_meters()
+            .all(|(_, meter)| meter.sample().is_some())
+    );
     control.stop();
     probe::measured_shutdown(&mut callback, &mut output[..64]);
     control.reclaim();

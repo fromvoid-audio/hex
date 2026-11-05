@@ -198,6 +198,12 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/track_meters.rs'
             and suffix.startswith(('meter)', 'render_meter('))
         )
+        # This fixture calls the typed, text-free performance segment view.
+        # Keep the registration local; tooltip prose is normalized by its owner.
+        header_mixer_component = header_mixer_component or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/track_performance/tests.rs'
+            and suffix.startswith('super::super::render(')
+        )
         # Clip-detail bindings return shared widgets; their labels pass through
         # theme::text in the owning component, never raw .child text.
         clip_detail_component = (

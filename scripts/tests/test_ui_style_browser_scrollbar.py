@@ -1,4 +1,4 @@
-"""Browser scrollbar components keep raw text and unrelated components guarded."""
+"""Native wrapper registrations keep raw text and unrelated components guarded."""
 from pathlib import Path
 import shutil
 import subprocess
@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class BrowserScrollbarStyleGuardTests(unittest.TestCase):
-    def test_only_registered_browser_views_are_exempt(self):
+    def test_only_registered_native_views_are_exempt(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "scripts").mkdir()
@@ -22,6 +22,7 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 "crates/hex-ui/src/editor/header.rs": 'crate::build_info::HEADER_INSET.max(theme::TITLEBAR_LEADING_INSET) .px(px(',
                 "crates/hex-ui/src/layout/transport.rs": '.pl(px(theme::TITLEBAR_LEADING_INSET))',
                 "scripts/hex-test-build.py": '"CFBundleName": "hex"\n"CFBundleDisplayName": "hex"',
+                "crates/hex-ui/src/editor/track_performance/tests.rs": '.child(super::super::render(&self.state, self.owner, self.now))',
                 "crates/hex-ui/src/editor/browser.rs": '.child(self.browser_results(rows, count, cx))',
                 "crates/hex-ui/src/editor/browser/scrollbar.rs": '.child(list) .child(self.browser_scrollbar(cx))',
             }
@@ -33,6 +34,9 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 return subprocess.run([sys.executable, str(root / "scripts/check-ui-style.py")], capture_output=True, text=True)
             self.assertEqual(run().returncode, 0)
             for name, content in [
+                ("other.rs", '.child(super::super::render(&self.state, self.owner, self.now))'),
+                ("editor/track_performance/tests.rs", '.child("Unnormalized")'),
+                ("editor/track_performance/tests.rs", '.child(self.unregistered_component(cx))'),
                 ("other.rs", '.child(self.browser_results(rows, count, cx))'),
                 ("other.rs", '.child(self.browser_scrollbar(cx))'),
                 ("other.rs", '.child(list)'),

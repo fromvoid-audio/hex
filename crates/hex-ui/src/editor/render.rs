@@ -931,6 +931,10 @@ impl Render for EditorView {
                     view.finish_clip_name(false, window, cx);
                 }
             }))
+            .on_action(cx.trace(|view, _: &super::ToggleTrackPerformance, _, cx| {
+                view.toggle_track_performance();
+                cx.notify();
+            }))
             .on_action(cx.trace(|view, _: &super::ToggleTrackLatency, _, cx| {
                 view.show_track_latency = !view.show_track_latency;
                 cx.notify();
