@@ -924,6 +924,29 @@ impl SignalGraph {
                 .any(|track| !track.audio_feeds.is_empty() || track.printed_merge.is_some())
             || self.returns.iter().any(|bus| !bus.audio_feeds.is_empty())
     }
+    /// A flat graph has no consumer of a track's unaligned fader output.
+    /// Its independent Main alignment edges can advance in a different owner
+    /// order as long as each edge preserves its own frame order.
+    pub(crate) fn independent_main_routes(&self) -> bool {
+        !self.has_group_outputs
+            && self.key_stages.is_empty()
+            && self.returns.is_empty()
+            && self.tracks.iter().all(|track| track.audio_feeds.is_empty())
+    }
+    pub(crate) fn dry_main_edge(&self, index: usize) -> Option<usize> {
+        let track = self.tracks.get(index)?;
+        let TrackOutput::Main { edge } = track.output else {
+            return None;
+        };
+        (track.devices.is_empty()
+            && track.generator.is_none()
+            && track.printed_merge.is_none()
+            && track.group_output_mutes.is_empty()
+            && self.plan.edges()[track.source_input].delay_frames == 0
+            && self.plan.edges()[track.audio_merge].delay_frames == 0
+            && self.plan.nodes()[track.fader].output_arrival_frames == 0)
+            .then_some(edge)
+    }
     /// With no pre-Main latency or typed feeds, these graphs retain transport
     /// stamps only: every pre-Main edge has zero delay and owns no pending PCM.
     /// Inserting/removing zero-latency effects may change node/edge indices, but
@@ -1589,15 +1612,18 @@ impl SignalRuntime {
     }
     pub(crate) fn edge(&mut self, index: usize, frame: Frame) -> Result<Frame, Invalid> {
         let mut frames = [frame];
+        self.edge_block(index, &mut frames)?;
+        Ok(frames[0])
+    }
+    pub(crate) fn edge_block(&mut self, index: usize, frames: &mut [Frame]) -> Result<(), Invalid> {
         let index = *self
             .delay_graph
             .pre_main_edges
             .get(index)
             .ok_or(Invalid("mapped delay edge is missing"))?;
         self.delays
-            .process_edge_in_place(index, &mut frames)
-            .map_err(error)?;
-        Ok(frames[0])
+            .process_edge_in_place(index, frames)
+            .map_err(error)
     }
     pub(crate) fn fader(
         &self,

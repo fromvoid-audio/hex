@@ -1,5 +1,6 @@
 //! Shared compensated/typed-route path. Upstream latency and typed audio routes
-//! use single-frame routing. Serial Main-only latency retains batched upstream
+//! normally use single-frame routing. Independent resident dry tracks can
+//! batch their faders and alignment. Serial Main-only latency retains batched upstream
 //! rendering; its stamps, Main processors and retained tails still advance one
 //! sample at a time through the same compensation owner.
 use super::*;
@@ -9,6 +10,7 @@ pub(super) struct BatchedSources<'a> {
     pub(super) index: usize,
     pub(super) audio: &'a [bool; MAX_TRACKS],
     pub(super) analytic: &'a [bool; MAX_TRACKS],
+    pub(super) aligned_dry: &'a [bool; MAX_TRACKS],
 }
 
 impl SessionPlayback {
@@ -270,6 +272,77 @@ impl SessionPlayback {
         }
         Ok(())
     }
+    /// Advance only independent, zero-arrival dry faders and their private
+    /// Main alignment rings. The outer frame loop still pushes stamps and
+    /// sums the aligned outputs in their original order.
+    pub(super) fn align_resident_dry_tracks(
+        &mut self,
+        arrangement_frame: u64,
+        frames: usize,
+        eligible: &[bool; MAX_TRACKS],
+        aligned: &mut [bool; MAX_TRACKS],
+    ) -> Result<(), SessionPlaybackError> {
+        aligned.fill(false);
+        let Some(compensation) = self.compensation.as_mut() else {
+            return Ok(());
+        };
+        if !compensation.graph.independent_main_routes() {
+            return Ok(());
+        }
+        arrangement_frame
+            .checked_add(frames as u64)
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        for (index, ((route, scratch), aligned)) in self
+            .route_scratch
+            .iter()
+            .zip(&mut self.resident_source_scratch)
+            .zip(aligned)
+            .enumerate()
+        {
+            if !eligible[index]
+                || !matches!(route.owner, RouteOwner::Arrangement)
+                || self.revision.gain_recording_track() == Some(route.id)
+            {
+                continue;
+            }
+            let track = &self.revision.arrangement().tracks()[index];
+            let Some(edge) = compensation.graph.dry_main_edge(index) else {
+                continue;
+            };
+            if track.instrument_id.is_some() {
+                continue;
+            }
+            let samples = &mut scratch[..frames];
+            for frame in samples.iter_mut() {
+                // Match the two zero-valued merges in the scalar route.
+                frame[0] += 0.0;
+                frame[1] += 0.0;
+            }
+            track.apply_instrument_input_gain(samples);
+            for frame in samples.iter_mut() {
+                frame[0] += 0.0;
+                frame[1] += 0.0;
+            }
+            track.apply_instrument_output_gain(samples);
+            let fader = &mut self.track_fader_scratch[index];
+            let automated = track.has_gain_automation();
+            for (offset, frame) in samples.iter_mut().enumerate() {
+                let mix = track.mix_at(arrangement_frame + offset as u64);
+                let mix = if automated {
+                    fader.follow(mix.channel_gain());
+                    mix
+                } else {
+                    mix.with_channel_gain(fader.next())
+                };
+                *frame = mix.apply_frame(*frame);
+            }
+            compensation
+                .edge_block(edge, samples)
+                .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+            *aligned = true;
+        }
+        Ok(())
+    }
     /// Publish one transport origin immediately before processing its Main
     /// sample. Pre-pushing a whole block could overwrite the bounded stamp ring.
     pub(super) fn push_compensated_stamp(
@@ -374,6 +447,22 @@ impl SessionPlayback {
                 crate::signal_graph::Owner::Track(index) => {
                     let track = &self.revision.arrangement().tracks()[index];
                     let route = self.route_scratch[index];
+                    if let Some(batch) = resident_source.filter(|batch| batch.aligned_dry[index]) {
+                        let main = self.resident_source_scratch[index][batch.index];
+                        self.compensation
+                            .as_mut()
+                            .ok_or(SessionPlaybackError::DeviceRuntime)?
+                            .main[index] = main;
+                        if let Some(capture) = capture.as_mut() {
+                            capture.add_prepared_frame(
+                                owner,
+                                OutputCaptureId::Track(route.id),
+                                frame_offset,
+                                main,
+                            )?;
+                        }
+                        continue;
+                    }
                     let mut audio = [[0.0; 2]];
                     let mut generator = [[0.0; 2]];
                     if self.playing {
@@ -775,5 +864,89 @@ impl SessionPlayback {
                 .render_chunk(output, frame_offset, capture, foreign)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::signal_graph::tests::{fixture, prepare};
+
+    struct RefuseTrack(TrackId);
+
+    impl CaptureSink for RefuseTrack {
+        fn selects(&self, id: OutputCaptureId) -> bool {
+            id == OutputCaptureId::Track(self.0)
+        }
+
+        fn add(
+            &mut self,
+            id: OutputCaptureId,
+            offset: usize,
+            _: &[Frame],
+        ) -> Result<(), SessionPlaybackError> {
+            if self.selects(id) && offset == 13 {
+                Err(SessionPlaybackError::DeviceRuntime)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn dry_alignment_matches_scalar_capture_and_retries_after_refusal() {
+        let mut f = fixture(&[&[], &[11], &[]], 333);
+        for audio in f.media.values_mut() {
+            *audio = crate::Audio::new(48_000, vec![[0.125, -0.375]; 333]).unwrap();
+        }
+        f.editor
+            .execute(hex_project::Command::SetLoopRegion {
+                start: 49,
+                end: 313,
+                enabled: true,
+            })
+            .unwrap();
+        let revision = prepare(&f).unwrap();
+        let mut batched = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut scalar = SessionPlayback::new(revision).unwrap();
+        scalar.resident_source_scratch.clear();
+        for runtime in [&mut batched, &mut scalar] {
+            runtime.track_faders[0].retarget([0.7, 0.2], 48_000);
+            runtime.set_device_metering(true);
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        }
+        let dry = f.tracks[0];
+        let mut output = [[9.0; 2]; 512];
+        assert_eq!(
+            batched.render_internal::<dyn MediaPages>(
+                &mut output,
+                None,
+                None,
+                Some(&mut RefuseTrack(dry)),
+                None,
+            ),
+            Err(SessionPlaybackError::DeviceRuntime)
+        );
+        assert_eq!(output, [[0.0; 2]; 512]);
+        let render = |runtime: &mut SessionPlayback, len| {
+            let mut out = vec![[0.0; 2]; len];
+            let mut track = out.clone();
+            let selection = [dry.value()];
+            let mut observer = |signal, offset, frames: &[Frame]| {
+                if signal == crate::ProjectSignal::Track(dry.value()) {
+                    track[offset..offset + frames.len()].copy_from_slice(frames);
+                }
+            };
+            let mut capture = crate::ProjectOutputTap::new(&selection, &mut observer).unwrap();
+            runtime
+                .render_internal::<dyn MediaPages>(&mut out, None, None, Some(&mut capture), None)
+                .unwrap();
+            (out, track)
+        };
+        for size in [1, 7, 256, 512] {
+            assert_eq!(render(&mut batched, size), render(&mut scalar, size));
+        }
+        assert_eq!(batched.track_faders[0], scalar.track_faders[0]);
+        assert_eq!(batched.arrangement_frame, scalar.arrangement_frame);
     }
 }
