@@ -73,7 +73,7 @@ fn future_audio_result_replaces(slot_generation: Option<u64>, event_generation: 
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PublicationObservationDisposition {
+pub(super) enum PublicationObservationDisposition {
     Apply,
     Wait,
     Stale,
@@ -133,7 +133,7 @@ fn publication_observation_disposition(
 
 // A comparison may retain its exact source context while authoring advances. Normalize only
 // contexts accepted by the sealed comparison binding; intermediate revisions remain stale.
-fn publication_observation_for_view(
+pub(super) fn publication_observation_for_view(
     generation: u64,
     view: Option<&ViewState>,
     output: Option<u64>,

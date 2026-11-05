@@ -879,6 +879,7 @@ impl EditorView {
                             .child(theme::text("main")),
                     )
                     .child(div().flex_1())
+                    .children(self.track_latency_indicator(super::track_latency::Owner::Main))
                     .children(
                         (self.main_track_height() > super::track_layout::HEADER_ONLY_HEIGHT)
                             .then(|| self.main_track_controls(cx)),

@@ -390,6 +390,20 @@ fn shared_source_has_one_generator_and_preserves_both_local_chains_and_midi_bank
     assert_eq!(graph.tracks[1].devices.len(), 1);
     assert_eq!(compiled.tracks[0].instrument_latency, Some(5));
     assert_eq!(compiled.tracks[1].instrument_latency, Some(0));
+    // The shared generator belongs to its receiver. Both local chains still
+    // contribute independently, and the parallel contributor aligns to it.
+    let receiver = graph
+        .track_latency(0, compiled.tracks[0].instrument_position())
+        .unwrap();
+    let contributor = graph
+        .track_latency(1, compiled.tracks[1].instrument_position())
+        .unwrap();
+    assert_eq!((receiver.local_frames, receiver.arrival_frames), (8, 8));
+    assert_eq!(
+        (contributor.local_frames, contributor.arrival_frames),
+        (7, 7)
+    );
+    assert_eq!(contributor.default_route_delay_frames, 1);
     for (index, clip) in clips.iter().enumerate() {
         assert_eq!(
             compiled.tracks[index].instrument.as_ref().unwrap().spans[0].clip,
