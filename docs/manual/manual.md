@@ -495,6 +495,11 @@ with several clips selected, pitch changes remain relative to each clip's
 existing value. in **re-pitch** mode the dial is unavailable: tempo determines
 the audible pitch while the stored transpose value is retained.
 
+pitch and warp reconstruction use the resampling version saved with the clip.
+new material uses the current version, which reduces aliasing when you raise
+pitch substantially. opening an older project preserves the version used by
+its existing pitched or warped material.
+
 ## clip loop resizing
 
 hold **option** over a clip's right header edge to show the circle cursor, then
@@ -615,6 +620,10 @@ do not assume double-clicking a sample inserts it into a track.
 **command+i** opens audio import. imported material retains its own sample rate
 and channel information; check duration, placement and playback after importing.
 keep source recordings available with the project.
+
+when a new import has a different sample rate from the project, hex uses the
+current conversion to prepare playback. a saved import keeps its original
+conversion version when the project is reopened.
 
 as projects grow, ordinary audio clips can play directly from their original
 files while retaining their complete duration. single-file and bulk imports keep
