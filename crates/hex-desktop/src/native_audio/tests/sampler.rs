@@ -1831,6 +1831,15 @@ fn sampler_bypass_keeps_held_note_continuous_in_the_actual_callback() {
 
 #[test]
 fn long_sampler_release_survives_immediate_reenable() {
+    long_sampler_release(false);
+}
+
+#[test]
+fn long_sampler_release_through_post_utility_survives_immediate_reenable() {
+    long_sampler_release(true);
+}
+
+fn long_sampler_release(post_utility: bool) {
     use super::resident_preview::ResidentHarness;
     let _native = native_fixture();
     let files = Files::new();
@@ -1879,6 +1888,17 @@ fn long_sampler_release_survives_immediate_reenable() {
     .unwrap();
     h.run(Request::Edit(Command::ReplaceDeviceState { device, state }));
     (applied, _) = h.applied(applied);
+    if post_utility {
+        h.run(Request::Edit(Command::InsertDevice {
+            track,
+            before: None,
+            state: hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
+                "hex.utility",
+            ))
+            .unwrap(),
+        }));
+        (applied, _) = h.applied(applied);
+    }
     let placed = h.run(Request::Edit(Command::PlaceMidiClip {
         track,
         start: BeatTime::ZERO,
