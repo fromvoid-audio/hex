@@ -400,6 +400,9 @@ impl SessionPlayback {
                 "retained source path changes require stopped graph replacement",
             ));
         }
+        if shared_sources::compensated_long_source_bypass(self, previous) {
+            return Err(SessionPlaybackError::DetachedReceiverHistoryUnavailable);
+        }
         if live && self.live_restart && self.candidate_admission_open {
             return self.inherit_state_planned_once(previous, None, demand, true);
         }
@@ -3205,6 +3208,19 @@ impl SessionPlayback {
             else {
                 continue;
             };
+            if !tail.sends.is_empty()
+                && (self.compensation.is_some()
+                    || tail.sends.iter().any(|(id, _)| {
+                        !self
+                            .revision
+                            .arrangement()
+                            .return_buses()
+                            .iter()
+                            .any(|bus| bus.id == id)
+                    }))
+            {
+                return Err(SessionPlaybackError::DetachedReceiverHistoryUnavailable);
+            }
             let Some(active) = active_tail_groups.get_mut(slot) else {
                 return Err(SessionPlaybackError::DeviceRuntime);
             };
@@ -3245,6 +3261,7 @@ impl SessionPlayback {
         let mut old_track_tail_slots = [None; MAX_TRACKS];
         let mut old_track_mutable_tail_slots = [None; MAX_TRACKS];
         let mut cut_mutable_gateoffs = [false; MAX_TRACKS];
+        let mut retain_mutable_sends = [false; MAX_TRACKS];
         let mut old_track_tail_metadata: [Option<(usize, Option<hex_lattice::StereoMatrix>)>;
             MAX_TRACKS] = [None; MAX_TRACKS];
         let mut old_track_tail_output_active = [false; MAX_TRACKS];
@@ -3584,12 +3601,13 @@ impl SessionPlayback {
                 .tracks()
                 .get(old_index)
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
-            let candidate_enabled = self
+            let candidate_track = self
                 .routes
                 .iter()
                 .position(|route| route.id == old_route.id)
-                .and_then(|new_index| self.revision.arrangement().tracks().get(new_index))
-                .is_some_and(|track| track.instrument_slot_enabled());
+                .and_then(|new_index| self.revision.arrangement().tracks().get(new_index));
+            let candidate_enabled =
+                candidate_track.is_some_and(|track| track.instrument_slot_enabled());
             if let Some(cutoff) = cut_mutable_gateoffs.get_mut(old_index) {
                 *cutoff = !candidate_enabled;
             } else {
@@ -3599,6 +3617,34 @@ impl SessionPlayback {
                 .device_chains
                 .get(old_index)
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            if !old_track.sends().is_empty()
+                && candidate_track.is_some_and(|track| {
+                    track.instrument_bypassed && track.instrument_id == old_track.instrument_id
+                })
+            {
+                let old_sends = crate::mutable_instrument::DetachedSourceSends::from_track(
+                    old_track,
+                    previous.revision.arrangement().return_buses(),
+                );
+                let candidate_sends = candidate_track.and_then(|track| {
+                    crate::mutable_instrument::DetachedSourceSends::from_track(
+                        track,
+                        self.revision.arrangement().return_buses(),
+                    )
+                });
+                if self.compensation.is_some()
+                    || previous.compensation.is_some()
+                    || old_sends.is_none()
+                    || old_sends != candidate_sends
+                    || old_track.has_gain_automation()
+                    || previous.track_faders[old_index].active()
+                    || previous.revision.gain_recording_track() == Some(old_route.id)
+                    || !old_chain.static_processing_matches(old_chain)
+                {
+                    return Err(SessionPlaybackError::DetachedReceiverHistoryUnavailable);
+                }
+                retain_mutable_sends[old_index] = true;
+            }
             let suffix_start =
                 tail_runtime_suffix_start(old_chain, old_track.instrument_position())?;
             *old_track_tail_output_active
@@ -4463,9 +4509,24 @@ impl SessionPlayback {
                 {
                     old_runtime.cut_gate_deadlines_at(previous.performance_frame);
                 }
+                let sends = if retain_mutable_sends[old_index] {
+                    let arrangement = previous.revision.arrangement();
+                    let track = arrangement
+                        .tracks()
+                        .get(old_index)
+                        .ok_or(SessionPlaybackError::UnknownTrack)?;
+                    crate::mutable_instrument::DetachedSourceSends::from_track(
+                        track,
+                        arrangement.return_buses(),
+                    )
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?
+                } else {
+                    Default::default()
+                };
                 *candidate = Some(MutableInstrumentTail {
                     track_id,
                     runtime: old_runtime,
+                    sends,
                 });
             }
         }

@@ -5375,6 +5375,7 @@ fn held_eq8_audition_transfers_from_mutable_release_suffix_without_transferring_
     candidate.tail_groups[stale_slot] = Some(hex_lattice::NativeRuntimeChain::empty());
     candidate.tail_suffix_starts[stale_slot] = suffix_start;
     candidate.tail_mutable_instruments[stale_slot] = Some(MutableInstrumentTail {
+        sends: Default::default(),
         track_id,
         runtime: crate::mutable_instrument::MutableInstrumentTrackRuntime::new(
             &ZeroTailMutableFactory,
