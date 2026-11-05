@@ -244,10 +244,15 @@ fn effect_trim_keeps_mutable_note_phase_against_uninterrupted_playback_without_a
             .map_err(|_| "trim publication")?;
         let target = 10.0_f32.powf(-6.0 / 20.0);
         let mut offset = 0;
+        let mut oracle_peak = 0.0_f32;
         while offset < 256 {
             let n = (256 - offset).min(block);
             render(&mut callback, &mut actual[..n])?;
             uninterrupted.render(&mut expected[..n])?;
+            oracle_peak = expected[..n]
+                .iter()
+                .flatten()
+                .fold(oracle_peak, |peak, value| peak.max(value.abs()));
             assert_eq!(control.status.applied_revision.load(Acquire), sequence);
             for i in 0..n {
                 let elapsed = offset + i + 1;
@@ -267,10 +272,7 @@ fn effect_trim_keeps_mutable_note_phase_against_uninterrupted_playback_without_a
             }
             offset += n;
         }
-        assert!(
-            expected.iter().flatten().any(|sample| sample.abs() > 1e-5),
-            "audible held-note oracle"
-        );
+        assert!(oracle_peak > 1e-5, "audible held-note oracle");
         assert_eq!(control.status.position.load(Acquire), 30256);
         control.reclaim();
     }
