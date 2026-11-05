@@ -304,6 +304,7 @@ int main(int argc,char** argv) {
                     };
                     const auto read_edit_receipts=[&](const wire::Packet& packet) {
                         if(edit_query_operation==std::numeric_limits<uint64_t>::max() || packet.capture_operation!=edit_query_operation+1) return false;
+                        if(packet.observe_latency) instance.observe_latency_restarts();
                         drain_edit_boundaries();
                         wire::Bytes body;config->stamp(body);wire::number(body,blocks,8);wire::number(body,frames,8);
                         const auto ready=instance.ready_parameter_edits();
@@ -315,7 +316,8 @@ int main(int argc,char** argv) {
                             uint64_t bits=0;std::memcpy(&bits,&value.normalized,8);wire::number(body,bits,8);
                             wire::number(body,value.id,4);wire::number(body,value.kind,4);wire::number(body,record.first_frame,8);
                         }
-                        if(!wire::send(channel,"HXVIGE01",body)) return false;
+                        if(packet.observe_latency) wire::number(body,instance.latency_restart(),8);
+                        if(!wire::send(channel,packet.observe_latency?"HXVIGE02":"HXVIGE01",body)) return false;
                         ++edit_query_operation;completed_edit_count=0;return true;
                     };
                     std::array<hex_instance::EditEvent,hex_instance::HOST_EDIT_COUNT> applying_edits{};size_t applying_edit_count=0;
@@ -753,6 +755,7 @@ int main(int argc,char** argv) {
                         epoch_stage=FactsSent;startup_changed.notify_all();
                     } else if(stage==ReactivateRequested) {
                         try {
+                            const auto covered=instance.latency_restart();
                             if(!instance.reactivate_on_control()) { error(channel,&*config,Quiescence);std::_Exit(Quiescence); }
                             latency=instance.reported_latency_on_control();
                             tail=instance.reported_tail_on_control();
@@ -760,6 +763,7 @@ int main(int argc,char** argv) {
                             if(!latency || !tail || !available || instance.host_refusals()) {
                                 error(channel,&*config,Quiescence);std::_Exit(Quiescence);
                             }
+                            instance.cover_latency_restart(covered);
                             auto body=facts_body(*config,*latency,*tail,*available,restoration);
                             wire::number(body,blocks,8);wire::number(body,frames,8);wire::number(body,reactivate_operation,8);
                             if(!wire::send(channel,"HXVIAR01",body)) std::_Exit(Cancelled);
@@ -834,6 +838,7 @@ int main(int argc,char** argv) {
                         std::lock_guard<std::mutex> lock(startup_mutex);
                         epoch_stage=CaptureSent;startup_changed.notify_all();
                     } else if(stage==ResumeRequested) {
+                        if(instance.latency_restart()) { error(channel,&*config,Quiescence);std::_Exit(Quiescence); }
                         supplied=next_presentation;
                         presentation=hex_instance::Instance::PresentationResult::Absent;
                         if(supplied) presentation=instance.set_presentation_latency(supplied->input,supplied->output);
@@ -846,6 +851,7 @@ int main(int argc,char** argv) {
                              presentation!=hex_instance::Instance::PresentationResult::Absent)) {
                             error(channel,&*config,Presentation);std::_Exit(Presentation);
                         }
+                        if(instance.latency_restart()) { error(channel,&*config,Quiescence);std::_Exit(Quiescence); }
                         // The old input/reply sequence is quiescent. Only this
                         // acknowledged transition changes its wire binding;
                         // no old queued request is accepted under the new one.

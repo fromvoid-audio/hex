@@ -747,6 +747,41 @@ fn stopped_flush_request_and_ack_bind_source_prefix_operation_and_complete_value
 }
 
 #[test]
+fn recovery_edit_receipts_keep_exact_prefix_and_versioned_ordinal() {
+    let config = config();
+    let request = recovery_edit_request(&config, 2, 3).unwrap();
+    assert_eq!(&request[..6], b"HXVG\x02\0");
+    assert_eq!(&request[6..], &edit_request(&config, 2, 3).unwrap()[6..]);
+    assert!(recovery_edit_request(&config, 2, 0).is_err());
+    let mut body = Vec::new();
+    stamp(&mut body, config.binding);
+    for field in [2_u64, 16, 3] {
+        body.extend(field.to_le_bytes());
+    }
+    body.extend([0; 6]);
+    body.extend(9_u64.to_le_bytes());
+    let response = recovery_edits(&body, &config, 2, 3, (0, 0)).unwrap();
+    assert!(response.edits.as_slice().is_empty());
+    assert_eq!(response.pending_latency_restart.unwrap().get(), 9);
+    for end in 0..body.len() {
+        assert!(recovery_edits(&body[..end], &config, 2, 3, (0, 0)).is_err());
+    }
+    for offset in [2, 10, 18, 26, 34, 42, 50, 58, 60, 62] {
+        let mut bad = body.clone();
+        bad[offset] ^= 128;
+        assert!(recovery_edits(&bad, &config, 2, 3, (0, 0)).is_err());
+    }
+    assert!(parameter_edits(&body, &config, 2, 3, (0, 0)).is_err());
+    body[64..].fill(0);
+    assert!(
+        recovery_edits(&body, &config, 2, 3, (0, 0))
+            .unwrap()
+            .pending_latency_restart
+            .is_none()
+    );
+}
+
+#[test]
 fn edit_receipts_bind_source_prefix_operation_order_and_gesture_without_coalescing() {
     let config = config();
     let request = edit_request(&config, 2, 3).unwrap();

@@ -9,8 +9,8 @@ mod capture;
 mod edits;
 mod parameter_page;
 pub use edits::{
-    MAX_PARAMETER_EDITS, ParameterEdit, ParameterEditKind, ParameterEdits, edit_request,
-    parameter_edits,
+    MAX_PARAMETER_EDITS, ParameterEdit, ParameterEditKind, ParameterEdits, RecoveryEdits,
+    edit_request, parameter_edits, recovery_edit_request, recovery_edits,
 };
 pub use parameter_page::{
     ControllerParameter, MAX_CONTROLLER_PARAMETERS, PARAMETER_PAGE_SIZE, ParameterConversion,
