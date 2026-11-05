@@ -531,6 +531,47 @@ fn epoch_body(config: &Configuration, sequence: u64) -> Vec<u8> {
     body
 }
 #[test]
+fn reactivation_binds_source_completed_prefix_and_unique_operation() {
+    let config = config();
+    let request = reactivate(&config, 3, 2).unwrap();
+    assert_eq!(&request[..4], b"HXVA");
+    assert_eq!(
+        &request[48..],
+        &[
+            3_u64.to_le_bytes(),
+            24_u64.to_le_bytes(),
+            2_u64.to_le_bytes()
+        ]
+        .concat()
+    );
+    assert!(reactivate(&config, 3, 0).is_err());
+    assert!(reactivate(&config, u64::MAX, 2).is_err());
+    let mut body = epoch_body(&config, 3);
+    body.extend(2_u64.to_le_bytes());
+    assert_eq!(
+        reactivated_facts(&body, &config, 3, 2)
+            .unwrap()
+            .algorithmic_latency_frames,
+        3
+    );
+    for end in 0..body.len() {
+        assert!(reactivated_facts(&body[..end], &config, 3, 2).is_err());
+    }
+    for offset in [0, 32, 48, 80, 112, 120, 134, 135, 138, 146, 154] {
+        let mut bad = body.clone();
+        bad[offset] ^= 128;
+        assert!(
+            reactivated_facts(&bad, &config, 3, 2).is_err(),
+            "offset {offset}"
+        );
+    }
+    assert!(reactivated_facts(&body, &config, 2, 2).is_err());
+    assert!(reactivated_facts(&body, &config, 3, 1).is_err());
+    assert!(reactivated_facts(&body, &config, 3, 0).is_err());
+    body.push(0);
+    assert!(reactivated_facts(&body, &config, 3, 2).is_err());
+}
+#[test]
 fn epoch_acknowledgements_bind_exact_source_prefix_facts_and_presentation() {
     let mut config = config();
     let body = epoch_body(&config, 3);
@@ -703,6 +744,41 @@ fn stopped_flush_request_and_ack_bind_source_prefix_operation_and_complete_value
     })
     .unwrap();
     assert!(flush_request(&config, 0, 1, &late).is_err());
+}
+
+#[test]
+fn recovery_edit_receipts_keep_exact_prefix_and_versioned_ordinal() {
+    let config = config();
+    let request = recovery_edit_request(&config, 2, 3).unwrap();
+    assert_eq!(&request[..6], b"HXVG\x02\0");
+    assert_eq!(&request[6..], &edit_request(&config, 2, 3).unwrap()[6..]);
+    assert!(recovery_edit_request(&config, 2, 0).is_err());
+    let mut body = Vec::new();
+    stamp(&mut body, config.binding);
+    for field in [2_u64, 16, 3] {
+        body.extend(field.to_le_bytes());
+    }
+    body.extend([0; 6]);
+    body.extend(9_u64.to_le_bytes());
+    let response = recovery_edits(&body, &config, 2, 3, (0, 0)).unwrap();
+    assert!(response.edits.as_slice().is_empty());
+    assert_eq!(response.pending_latency_restart.unwrap().get(), 9);
+    for end in 0..body.len() {
+        assert!(recovery_edits(&body[..end], &config, 2, 3, (0, 0)).is_err());
+    }
+    for offset in [2, 10, 18, 26, 34, 42, 50, 58, 60, 62] {
+        let mut bad = body.clone();
+        bad[offset] ^= 128;
+        assert!(recovery_edits(&bad, &config, 2, 3, (0, 0)).is_err());
+    }
+    assert!(parameter_edits(&body, &config, 2, 3, (0, 0)).is_err());
+    body[64..].fill(0);
+    assert!(
+        recovery_edits(&body, &config, 2, 3, (0, 0))
+            .unwrap()
+            .pending_latency_restart
+            .is_none()
+    );
 }
 
 #[test]

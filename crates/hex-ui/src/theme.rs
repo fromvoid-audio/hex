@@ -60,6 +60,34 @@ pub(crate) fn time_position_marker_color() -> u32 {
     readable_text(color(PaletteRole::Surface), 0xffffff)
 }
 
+/// Color for a locked Arrangement play-start marker.
+///
+/// Preserve the theme accent where it separates from both the ordinary marker
+/// and the ruler surface; otherwise choose the better of two fixed fallbacks.
+pub(crate) fn locked_time_position_marker_color() -> u32 {
+    locked_marker_color_for(
+        color(PaletteRole::Surface),
+        time_position_marker_color(),
+        color(PaletteRole::Secondary),
+    )
+}
+
+fn locked_marker_color_for(surface: u32, normal: u32, accent: u32) -> u32 {
+    let score = |candidate| {
+        (contrast_ratio(candidate, surface) / 3.0).min(contrast_ratio(candidate, normal) / 1.5)
+    };
+    if score(accent) >= 1.0 {
+        return accent;
+    }
+    let light = 0x00c8ff;
+    let dark = 0x0057c2;
+    if score(light) >= score(dark) {
+        light
+    } else {
+        dark
+    }
+}
+
 /// Neutral four-unit bands stay visible independently of the saved palette.
 pub(crate) fn time_grid_band_color(alternate: bool) -> u32 {
     mix(
@@ -469,6 +497,23 @@ mod tests {
         fn drop(&mut self) {
             apply_preferences(self.0);
         }
+    }
+
+    #[test]
+    fn locked_marker_color_avoids_matching_normal_and_surface() {
+        for (surface, normal) in [(0x000000, 0xffffff), (0xffffff, 0x000000)] {
+            for accent in [normal, surface] {
+                let locked = locked_marker_color_for(surface, normal, accent);
+                assert_ne!(locked, normal);
+                assert_ne!(locked, surface);
+                assert!(contrast_ratio(locked, normal) >= 1.5);
+                assert!(contrast_ratio(locked, surface) >= 3.0);
+            }
+        }
+        assert_eq!(
+            locked_marker_color_for(0x000000, 0xffffff, 0x00c8ff),
+            0x00c8ff
+        );
     }
 
     #[test]

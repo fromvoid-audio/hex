@@ -268,7 +268,9 @@ fn transport_clock_survives_session_ownership_pause_seek_wrap_and_linear_export(
     p.render(&mut output).unwrap();
     assert_eq!(
         output,
-        [[0.125, -0.25], [0.25, -0.5], [0.125, -0.25], [0.25, -0.5]]
+        // A two-frame loop preserves its attack and fades its final
+        // Arrangement-audio frame to zero on every pass.
+        [[0.125, -0.25], [0.0; 2], [0.125, -0.25], [0.0; 2]]
     );
     let mut linear = SessionPlayback::new_linear_arrangement_export(revision(&f)).unwrap();
     linear.apply(SessionPlaybackCommand::Play).unwrap();

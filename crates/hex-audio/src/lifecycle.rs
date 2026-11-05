@@ -869,10 +869,10 @@ fn retirement_tick(retirement: &mut Retirement) -> Result<bool, ()> {
     )? {
         return Ok(false);
     }
-    if let Some(reaper) = retirement.spectrum_reaper.as_mut() {
-        if reaper.advance_shutdown_on_control().is_err() {
-            return Err(());
-        }
+    if let Some(reaper) = retirement.spectrum_reaper.as_mut()
+        && reaper.advance_shutdown_on_control().is_err()
+    {
+        return Err(());
     }
     drop(retirement.spectrum_reaper.take());
     Ok(true)
