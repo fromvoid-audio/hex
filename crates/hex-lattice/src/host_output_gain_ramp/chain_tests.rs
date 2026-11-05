@@ -253,3 +253,34 @@ fn authored_output_gain_step_stays_sample_accurate_across_a_canonical_state_edit
         );
     }
 }
+
+#[test]
+fn unchanged_output_trajectory_continues_across_a_separate_static_matrix_edit() {
+    let owner = ProcessorChainOwner::Track(1);
+    let mut old = edited(48000, owner);
+    render(&mut old, 73, 7);
+    let mut new = chain(48000, -6.0, owner);
+    new.entries[0].matrix = StereoMatrix::new([[0.5, 0.0], [0.0, 0.5]]).unwrap();
+    new.transfer_history_from(&mut old);
+    let output = render(&mut new, 300, 7);
+    let gain = HostGain::from_db(-6.0).unwrap().linear();
+    for (i, p) in output.iter().enumerate() {
+        let n = i + 1;
+        let out = if n + 73 >= 240 {
+            gain
+        } else {
+            (1.0 + (f64::from(gain) - 1.0) * (n + 73) as f64 / 240.0) as f32
+        };
+        let matrix = if n >= 240 {
+            0.5
+        } else {
+            (1.0 - 0.5 * n as f64 / 240.0) as f32
+        };
+        for c in 0..2 {
+            assert!(
+                (p[c] - INPUT[c] * matrix * out).abs() < 1e-7,
+                "frame{n} {p:?}"
+            );
+        }
+    }
+}

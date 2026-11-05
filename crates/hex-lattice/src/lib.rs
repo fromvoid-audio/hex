@@ -1728,31 +1728,38 @@ impl NativeRuntimeChain {
                 .find(|(_, old)| Self::same_runtime_identity(entry, old));
             let mut ramp = host_output_gain_ramp::OutputGainRamp::INACTIVE;
             if let Some((index, old)) = old {
-                let gain_edit = !entry.bypassed && !old.bypassed;
-                let continuing_bypass = entry.output_gain == old.output_gain
+                let configuration_present =
+                    entry.configuration.is_some() && old.configuration.is_some();
+                let gain_edit = !entry.bypassed
+                    && !old.bypassed
+                    && entry.input_gain == old.input_gain
+                    && entry.matrix == old.matrix
+                    && entry.automation == old.automation
+                    && match (&entry.configuration, &old.configuration) {
+                        (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b) || a.processing_eq(b),
+                        _ => false,
+                    };
+                // An unchanged host target continues independently of a
+                // simultaneously retargeted device payload/input/matrix. Its
+                // existing trajectory grants no new DSP-history authority.
+                let continuing = entry.output_gain == old.output_gain
                     && (entry.bypassed == old.bypassed
                         || (entry.algorithmic_latency_frames == Some(0)
                             && old.algorithmic_latency_frames == Some(0)
                             && entry.supports_smoothed_bypass
                             && old.supports_smoothed_bypass));
                 let eligible = !excluded.contains(&index)
-                    && (gain_edit || continuing_bypass)
+                    && configuration_present
+                    && (gain_edit || continuing)
                     && !entry.automation_frozen
                     && !old.automation_frozen
-                    && entry.input_gain == old.input_gain
-                    && entry.matrix == old.matrix
-                    && entry.automation == old.automation
                     && !entry.automation.has_host_target(HostOutputGain)
                     && !old.automation.has_host_target(HostOutputGain)
                     && entry.automation.input_target() != Some(HostOutputGain)
                     && old.automation.input_target() != Some(HostOutputGain)
                     && !matches!(entry.runtime, RuntimeOwnership::Foreign(_))
                     && !matches!(old.runtime, RuntimeOwnership::Foreign(_))
-                    && entry.runtime.can_inherit_from(&old.runtime)
-                    && match (&entry.configuration, &old.configuration) {
-                        (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b) || a.processing_eq(b),
-                        _ => false,
-                    };
+                    && entry.runtime.can_inherit_from(&old.runtime);
                 ramp = host_output_gain_ramp::OutputGainRamp::inherited(
                     old.committed_output_gain_ramp,
                     old.output_gain,
