@@ -458,9 +458,12 @@ fn command_f_escape_keeps_navigation_until_explicit_text_entry(cx: &mut TestAppC
             );
         });
     });
-    visual.simulate_input("ignored");
+    // Unbound printable keys leave result navigation untouched. `r` now has
+    // its explicit random-sample action in this context.
+    visual.simulate_input("text");
     editor.read_with(visual, |view, cx| {
-        assert!(view.browser.search.read(cx).text().is_empty())
+        assert!(view.browser.search.read(cx).text().is_empty());
+        assert_eq!(view.browser.playback_generation, generation);
     });
     let field = visual.debug_bounds("browser-search").unwrap();
     visual.simulate_click(field.center(), Modifiers::default());
