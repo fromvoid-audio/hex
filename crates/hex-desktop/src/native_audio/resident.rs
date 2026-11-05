@@ -412,10 +412,9 @@ impl NativeAudioSink {
         let replacing_document =
             matches!(policy, ResidentPublicationPolicy::ReplaceDocument { .. });
         // Current-output publication needs its previous observation delivered.
-        // Replacement instead retains an admitted candidate offline, then its
-        // canonical swap retires the old output and observations. Old UI event
-        // backpressure must not refuse that independent admission. On refusal
-        // no swap occurs, so all old observations and custody remain intact.
+        // A document replacement uses either a private output or offline
+        // retention. Observations of the previous endpoint do not gate that
+        // admission; a refusal leaves the previous document canonical.
         if !replacing_document
             && (self.pending_observation.is_some() || self.pending_status_observation.is_some())
         {
