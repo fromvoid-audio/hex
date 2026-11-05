@@ -102,6 +102,10 @@ class RestoreController final : public IEditController {
         const auto* release=std::getenv("HEX_ORIGINAL_INSTANCE_RELEASE");
         if(!self || self->edits_sent || !release || std::strlen(release)>4096 || ::access(release,F_OK)!=0) return;
         self->edits_sent=true;CFRunLoopTimerInvalidate(self->edit_timer);
+        if(self->fault==105) {
+            self->handler->restartComponent(kLatencyChanged);
+            return;
+        }
         const auto id=parameter_id(self->fault);
         if(self->fault==86) self->handler->performEdit(id,0.75);
         else {
@@ -137,8 +141,8 @@ public:
     tresult PLUGIN_API setComponentHandler(IComponentHandler* value) override {
         if (!control() || !context || (value && handler)) return kResultFalse;
         if(value)value->addRef();if(handler)handler->release();handler=value;
-        if(fault==104) latency_handler=handler;
-        if(value && fault>=85 && fault<=89) {
+        if(fault==104 || fault==105) latency_handler=handler;
+        if(value && ((fault>=85 && fault<=89) || fault==105)) {
             CFRunLoopTimerContext timer_context{};timer_context.info=this;
             edit_timer=CFRunLoopTimerCreate(nullptr,CFAbsoluteTimeGetCurrent(),0.001,0,0,edit_tick,&timer_context);
             if(!edit_timer) return kResultFalse;
@@ -474,9 +478,9 @@ public:
             if((fault==102 && !enabled) || (fault==103 && enabled)) {
                 trace(25);throw std::runtime_error("original SDK reactivation exception");
             }
-            if((fault==99 || fault==104) && enabled && !active) {
+            if((fault==99 || fault==104 || fault==105) && enabled && !active) {
                 restored_latency=7;delay={};delay_cursor=0;
-                if(fault==104 && !activation_restart_sent && latency_handler) {
+                if((fault==104 || fault==105) && !activation_restart_sent && latency_handler) {
                     activation_restart_sent=true;
                     latency_handler->restartComponent(kLatencyChanged);
                 }
@@ -680,7 +684,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>104) return false;next_fault=value;
+        if (value>105) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

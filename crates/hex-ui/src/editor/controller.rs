@@ -973,6 +973,31 @@ impl EditorView {
                         changed = true;
                     }
                 }
+                crate::EditorAudioEvent::NativeLatencyRestart { source } => {
+                    if self.latency_rebuild.is_none()
+                        && self.stopped_playback_restore.is_none()
+                        && self.project_generation == source.context.project_generation
+                        && self
+                            .audio
+                            .as_ref()
+                            .and_then(|audio| audio.control.status())
+                            .and_then(|status| status.native_effect_source())
+                            == Some(source)
+                        && let Some(state) = self.state.as_ref()
+                        && state.audio_authoring_revision(source.context) == Some(state.revision)
+                    {
+                        self.latency_rebuild =
+                            Some(super::audio_admission::LatencyRebuild::Waiting {
+                                project: super::audio_admission::ProjectRevision {
+                                    generation: self.project_generation,
+                                    revision: state.revision,
+                                },
+                                output: source.output_identity,
+                                runtime_audio: Some(source.audio_revision),
+                            });
+                        changed = true;
+                    }
+                }
                 crate::EditorAudioEvent::DegradedPlugins {
                     output_identity,
                     devices,
@@ -1582,8 +1607,11 @@ impl EditorView {
                         .is_some_and(|status| status.playing.load(Acquire))
                     && let Some(output) = audio.control.output_identity()
                 {
-                    self.latency_rebuild =
-                        Some(super::audio_admission::LatencyRebuild::Waiting { project, output });
+                    self.latency_rebuild = Some(super::audio_admission::LatencyRebuild::Waiting {
+                        project,
+                        output,
+                        runtime_audio: None,
+                    });
                 }
             } else if rejected_preview_candidate(
                 &self.playback_candidates,
@@ -1613,6 +1641,40 @@ impl EditorView {
             .control
             .status()
             .map_or(0, |status| status.applied_revision.load(Acquire));
+        if let Some(super::audio_admission::LatencyRebuild::Restoring {
+            project,
+            output,
+            runtime_audio: Some(previous),
+            installed,
+            ..
+        }) = self.latency_rebuild.as_mut()
+            && let Some(super::audio_admission::StoppedPlaybackRestore::Published(required)) =
+                self.stopped_playback_restore
+            && required > *previous
+            && let Some(source) = audio
+                .control
+                .status()
+                .and_then(|status| status.recording_source())
+            && source.audio_revision == required
+            && source.output_identity == *output
+            && source.context.project_generation == project.generation
+            && self.state.as_ref().is_some_and(|state| {
+                state.revision == project.revision
+                    && state.audio_authoring_revision(source.context) == Some(project.revision)
+            })
+        {
+            *installed = true;
+            self.applied_project_revision = Some(project.revision);
+            self.stopped_playback_restore = None;
+        }
+        let awaiting_native_restore = matches!(
+            self.latency_rebuild,
+            Some(super::audio_admission::LatencyRebuild::Restoring {
+                runtime_audio: Some(_),
+                installed: false,
+                ..
+            })
+        );
         let (reconciled, current_applied) = reconcile_verified_source_binding(
             &mut self.audio_admission,
             self.document_audio_mode,
@@ -1680,7 +1742,8 @@ impl EditorView {
                     if matches!(
                         self.stopped_playback_restore,
                         Some(super::audio_admission::StoppedPlaybackRestore::Published(required))
-                            if candidate.audio_revision >= required
+                            if candidate.audio_revision > required
+                                || (candidate.audio_revision == required && !awaiting_native_restore)
                     ) {
                         self.stopped_playback_restore = None;
                     }
@@ -4203,11 +4266,17 @@ impl EditorView {
                 audio_revision,
                 hex_engine::PlaybackHandoffRejection::LatencyLayoutChanged.message(),
             );
-            self.latency_rebuild = Some(LatencyRebuild::Waiting { project, output });
+            self.latency_rebuild = Some(LatencyRebuild::Waiting {
+                project,
+                output,
+                runtime_audio: None,
+            });
             return true;
         }
         let (project, output) = match rebuild {
-            LatencyRebuild::Waiting { project, output }
+            LatencyRebuild::Waiting {
+                project, output, ..
+            }
             | LatencyRebuild::Fading {
                 project, output, ..
             }
@@ -4234,7 +4303,7 @@ impl EditorView {
         }
         match rebuild {
             LatencyRebuild::Unresolved { .. } => false,
-            LatencyRebuild::Waiting { .. } => {
+            LatencyRebuild::Waiting { runtime_audio, .. } => {
                 if self.edit_pending()
                     || self.opening_project
                     || self.close_prompt_open
@@ -4260,11 +4329,13 @@ impl EditorView {
                 else {
                     return false;
                 };
-                if self.applied_project_revision == Some(project.revision) {
+                if runtime_audio.is_none()
+                    && self.applied_project_revision == Some(project.revision)
+                {
                     self.latency_rebuild = None;
                     return self.clear_latency_waiting();
                 }
-                if !playing {
+                if !playing && runtime_audio.is_none() {
                     // Paused: the callback applies the new latency layout at
                     // the kept cursor. Republish the refused current revision
                     // once rather than leaving audio on the old graph.
@@ -4277,7 +4348,7 @@ impl EditorView {
                 }
                 // A requested pause has not reached the callback yet; republish
                 // once it reports paused.
-                if !self.play_intent.desired_playing(true) {
+                if playing && !self.play_intent.desired_playing(true) {
                     return false;
                 }
                 // A fresh runtime cuts mutable voices. Until their live-input
@@ -4298,6 +4369,14 @@ impl EditorView {
                 else {
                     return false;
                 };
+                if runtime_audio.is_some_and(|revision| {
+                    status
+                        .native_effect_source()
+                        .is_none_or(|source| source.audio_revision != revision)
+                }) {
+                    self.latency_rebuild = None;
+                    return self.clear_latency_waiting();
+                }
                 // Stop would discard Session launches. Only rebuild when a
                 // fresh route snapshot proves that every track is in Arrangement.
                 let mut routes = [hex_audio::prepared::SessionRouteEntry::default();
@@ -4319,6 +4398,15 @@ impl EditorView {
                     return false;
                 }
                 let frame = status.position.load(Acquire);
+                if !playing {
+                    return self.request_latency_restore(
+                        project,
+                        output,
+                        frame,
+                        false,
+                        runtime_audio,
+                    );
+                }
                 let Some(audio) = self.audio.as_mut() else {
                     return false;
                 };
@@ -4338,11 +4426,17 @@ impl EditorView {
                     output,
                     frame,
                     ticket,
+                    runtime_audio,
                 });
                 self.status = "fading playback before rebuilding audio".into();
                 true
             }
-            LatencyRebuild::Fading { frame, ticket, .. } => {
+            LatencyRebuild::Fading {
+                frame,
+                ticket,
+                runtime_audio,
+                ..
+            } => {
                 let Some(status) = self.audio.as_ref().and_then(|audio| audio.status()) else {
                     self.latency_rebuild = None;
                     return false;
@@ -4369,29 +4463,29 @@ impl EditorView {
                 {
                     return false;
                 }
-                self.latency_rebuild = None;
-                self.clear_latency_waiting();
-                if self.applied_project_revision == Some(project.revision) {
+                if runtime_audio.is_none()
+                    && self.applied_project_revision == Some(project.revision)
+                {
+                    self.clear_latency_waiting();
                     self.queue_audio_command(PlaybackCommand::PlayFrom(frame));
-                } else if self.enqueue(Request::RestoreStoppedPlayback) {
-                    self.stopped_playback_restore =
-                        Some(super::audio_admission::StoppedPlaybackRestore::Preparing);
-                    self.latency_rebuild = Some(LatencyRebuild::Restoring {
-                        project,
-                        output,
-                        frame,
-                    });
-                    self.status =
-                        "rebuilding audio · effect tails will reset · playback will resume".into();
-                    self.error = None;
+                    true
+                } else {
+                    self.request_latency_restore(project, output, frame, true, runtime_audio)
                 }
-                true
             }
-            LatencyRebuild::Restoring { frame, .. } => {
+            LatencyRebuild::Restoring {
+                frame,
+                resume,
+                runtime_audio,
+                installed,
+                ..
+            } => {
                 if self.stopped_playback_restore.is_some() {
                     return false;
                 }
-                if self.applied_project_revision != Some(project.revision) {
+                if self.applied_project_revision != Some(project.revision)
+                    || (runtime_audio.is_some() && !installed)
+                {
                     self.latency_rebuild = None;
                     return false;
                 }
@@ -4401,10 +4495,46 @@ impl EditorView {
                     return false;
                 }
                 self.latency_rebuild = None;
-                self.queue_audio_command(PlaybackCommand::PlayFrom(frame));
+                if resume {
+                    self.queue_audio_command(PlaybackCommand::PlayFrom(frame));
+                } else {
+                    self.queue_audio_command(PlaybackCommand::Seek(frame));
+                }
                 true
             }
         }
+    }
+
+    fn request_latency_restore(
+        &mut self,
+        project: super::audio_admission::ProjectRevision,
+        output: u64,
+        frame: u64,
+        resume: bool,
+        runtime_audio: Option<u64>,
+    ) -> bool {
+        if !self.enqueue(Request::RestoreStoppedPlayback) {
+            return false;
+        }
+        self.clear_latency_waiting();
+        self.stopped_playback_restore =
+            Some(super::audio_admission::StoppedPlaybackRestore::Preparing);
+        self.latency_rebuild = Some(super::audio_admission::LatencyRebuild::Restoring {
+            project,
+            output,
+            frame,
+            resume,
+            runtime_audio,
+            installed: false,
+        });
+        self.status = if resume {
+            "rebuilding audio · effect tails will reset · playback will resume"
+        } else {
+            "rebuilding audio at the paused cursor"
+        }
+        .into();
+        self.error = None;
+        true
     }
 
     /// Retire the waiting notice once its refused revision is applied,
@@ -4419,7 +4549,19 @@ impl EditorView {
     }
 
     pub(super) fn stop(&mut self) {
-        self.latency_rebuild = None;
+        use super::audio_admission::LatencyRebuild;
+        let native_restore = matches!(
+            self.latency_rebuild.take(),
+            Some(
+                LatencyRebuild::Waiting {
+                    runtime_audio: Some(_),
+                    ..
+                } | LatencyRebuild::Fading {
+                    runtime_audio: Some(_),
+                    ..
+                }
+            )
+        );
         // Stop restores the refused revision below, or a pending edit
         // publishes it while stopped.
         self.clear_latency_waiting();
@@ -4434,7 +4576,8 @@ impl EditorView {
             && self.recovery.generation().is_none()
             && self.audio.as_ref().is_some_and(|audio| {
                 self.state.as_ref().is_some_and(|state| {
-                    self.applied_project_revision != Some(state.revision)
+                    native_restore
+                        || self.applied_project_revision != Some(state.revision)
                         || self.audible_playback.as_ref().is_none_or(|audible| {
                             audible.audio_revision
                                 != audio
