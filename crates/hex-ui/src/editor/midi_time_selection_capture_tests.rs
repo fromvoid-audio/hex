@@ -176,7 +176,7 @@ fn time_selection_loss_preserves_prior_range_without_stale_release(cx: &mut Test
                     cx.notify();
                 }),
                 "viewport" => editor.update(&mut visual, |v, cx| {
-                    v.piano_beat_start = hex_project::BeatTime::ONE;
+                    v.piano_beat_start = i128::from(hex_project::BeatTime::ONE.raw());
                     cx.notify();
                 }),
                 "hidden" => editor.update(&mut visual, |v, cx| {
