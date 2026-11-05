@@ -417,6 +417,9 @@ public:
     void complete_parameter_edit() { if(host) host->complete_parameter_edit(); }
     uint32 host_refusals() const { return host?host->refusal_flags():0; }
     void observe_latency_restarts() { if(host) host->observe_latency_restarts(); }
+    void finish_startup_latency_observation_on_control() {
+        if(host) host->finish_startup_latency_observation_on_control();
+    }
     uint64 latency_restart() const { return host?host->latency_restart():0; }
     void cover_latency_restart(uint64 covered) { if(host) host->cover_latency_restart(covered); }
 

@@ -151,6 +151,12 @@ public:
     void observe_latency_restarts() {
         observes_latency_restarts.store(true,std::memory_order_release);
     }
+    // Only main invokes this after sampling final startup facts, before any
+    // processing lane exists. Live observation remains explicitly opt-in.
+    void finish_startup_latency_observation_on_control() {
+        observes_latency_restarts.store(false,std::memory_order_release);
+        pending_latency_restart.store(0,std::memory_order_release);
+    }
     uint64 latency_restart() const {
         return pending_latency_restart.load(std::memory_order_acquire);
     }

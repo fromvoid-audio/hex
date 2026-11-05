@@ -235,6 +235,9 @@ int main(int argc,char** argv) {
             TUID cid{};std::memcpy(cid,config->cid.data(),16);
             failure=InstanceOpen;
             if(!instance.open(module.factory,cid)) throw Refusal{};
+            // State synchronization can issue kLatencyChanged even before
+            // processing. Fold it into the facts we already validate here.
+            instance.observe_latency_restarts();
             if(restoration.restored()) {
                 failure=Restore;
                 if(!instance.restore_initial_state_on_control(restoration.state)) {
@@ -276,6 +279,7 @@ int main(int argc,char** argv) {
             const auto final_tail=instance.reported_tail_on_control();
             failure=Presentation;
             if(!final_latency || !final_tail || *final_latency!=*latency || *final_tail!=*tail) throw Refusal{}; // caller's plan became stale
+            instance.finish_startup_latency_observation_on_control();
             const auto hello=ready_body(*config,state,*latency,*tail,presentation,supplied,restoration.restored());
             auto processing_parameters=instance.processing_parameters_on_control();
             hex_instance::ParameterChanges parameter_input,parameter_output;
