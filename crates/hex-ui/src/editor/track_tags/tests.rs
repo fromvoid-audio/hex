@@ -414,3 +414,42 @@ fn filter_catalog_pages_are_bounded_and_keep_later_tags_reachable(cx: &mut TestA
         assert_eq!(v.arrangement_track_indices(), [2])
     });
 }
+
+#[gpui::test]
+fn invalid_tag_blur_retires_the_draft_without_committing_or_blocking_other_headers(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, view, ids) = live_tracks(cx, 2, false);
+    edit(
+        &mut visual,
+        &view,
+        Command::SetTrackTags {
+            track: ids[0],
+            tags: tags(&["drums"]),
+        },
+    );
+    click(
+        &mut visual,
+        selector("track-tag-more", ids[0]),
+        Modifiers::default(),
+    );
+    choose(&mut visual, &view, |action| {
+        matches!(action, Action::Edit { .. })
+    });
+    visual.simulate_input("drums,,lowend");
+    let before = view.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());
+    click(
+        &mut visual,
+        selector("track-name", ids[1]),
+        Modifiers::default(),
+    );
+    view.read_with(&visual, |v, _| {
+        assert!(
+            !v.track_name.is_editing(),
+            "a refused blurred tag edit must not leave an active header draft"
+        );
+        assert!(v.error.is_some());
+        assert_eq!(v.state.as_ref().unwrap().project, before);
+        assert_eq!(v.worker_requests_pending, 0);
+    });
+}
