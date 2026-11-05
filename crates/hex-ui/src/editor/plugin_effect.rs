@@ -77,10 +77,6 @@ impl EditorView {
         &mut self,
         selection: hex_plugin_catalog::EffectSelection,
     ) {
-        if self.pending_plugin_effect.is_some() {
-            self.error = Some("wait for the pending vst3 effect insertion".into());
-            return;
-        }
         let Some(state) = self.state.as_ref() else {
             return;
         };
@@ -94,6 +90,22 @@ impl EditorView {
                 return;
             }
         };
+        self.insert_plugin_effect(&selection, destination, None);
+    }
+
+    pub(super) fn insert_plugin_effect(
+        &mut self,
+        selection: &hex_plugin_catalog::EffectSelection,
+        destination: PluginEffectDestination,
+        before: Option<hex_project::DeviceId>,
+    ) {
+        if self.pending_plugin_effect.is_some() {
+            self.error = Some("wait for the pending vst3 effect insertion".into());
+            return;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
         let control = Arc::new(PluginEffectControl::default());
         let request = PluginEffectInsertion {
             context: hex_engine::AudioSourceContext {
@@ -101,14 +113,14 @@ impl EditorView {
                 editor_revision: state.revision,
             },
             selection: PluginEffectSelection {
-                module: selection.module,
-                executable: selection.executable_relative_path,
+                module: selection.module.clone(),
+                executable: selection.executable_relative_path.clone(),
                 cid: selection.cid,
-                executable_sha256: selection.executable_sha256,
-                info_sha256: selection.info_sha256,
+                executable_sha256: selection.executable_sha256.clone(),
+                info_sha256: selection.info_sha256.clone(),
             },
             destination,
-            before: None,
+            before,
             control: Arc::clone(&control),
         };
         if self.enqueue(Request::InsertPluginEffect(request)) {

@@ -2765,6 +2765,14 @@ impl EditorView {
                     .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                     .child(theme::text(name)),
             );
+        Self::with_browser_device_drag(row, payload, cx)
+    }
+
+    fn with_browser_device_drag(
+        row: gpui::Stateful<Div>,
+        payload: Option<drag::NativeDeviceDrag>,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<Div> {
         let Some(payload) = payload else {
             return row;
         };
