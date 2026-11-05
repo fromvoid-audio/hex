@@ -199,6 +199,7 @@ pub(super) fn pinned(view: &EditorView, key: ParameterKey, window: &Window, cx: 
                 | GestureTarget::EqNodeCreation { device } => device == key.device,
                 GestureTarget::ReturnSend { .. }
                 | GestureTarget::TrackGain { .. }
+                | GestureTarget::TrackGains { .. }
                 | GestureTarget::TrackBalance { .. }
                 | GestureTarget::ReturnGain { .. } => false,
             })

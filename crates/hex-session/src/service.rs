@@ -3659,6 +3659,7 @@ fn run_worker(
                         && matches!(
                             gesture,
                             GestureRequest::Begin { .. }
+                                | GestureRequest::BeginTrackGains { .. }
                                 | GestureRequest::BeginSnapshot { .. }
                                 | GestureRequest::BeginEqCreation { .. }
                         ) {
