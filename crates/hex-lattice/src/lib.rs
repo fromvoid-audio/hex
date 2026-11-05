@@ -15,6 +15,7 @@ mod bypass_ramp;
 pub mod conformance;
 pub use aux_input::{AuxiliaryBlockError, StereoAuxiliaryBlock};
 mod foreign_processor;
+mod host_output_gain_ramp;
 mod matrix_ramp;
 mod meter;
 mod owned_processor;
@@ -29,7 +30,7 @@ pub use parameter_automation::{
     ParameterAutomationBlock, ParameterAutomationLane, ParameterAutomationPoint,
     PreparedParameterAutomation, PreparedParameterAutomationLane, PreparedParameterAutomationPoint,
 };
-pub use tail_split::TailSplit;
+pub use tail_split::{TailSplit, TailSplitObserver};
 mod resources;
 mod runtime_ownership;
 use hex_lattice_contract::{
@@ -630,6 +631,10 @@ struct RuntimeEntry {
     // freeze speculative controls into a retained output suffix.
     committed_host_gains: [f32; 2],
     scratch_host_gains: [f32; 2],
+    committed_output_gain_ramp: host_output_gain_ramp::OutputGainRamp,
+    scratch_output_gain_ramp: host_output_gain_ramp::OutputGainRamp,
+    committed_transient_output_gain: host_output_gain_ramp::TransientGain,
+    scratch_transient_output_gain: host_output_gain_ramp::TransientGain,
     // Static matrix ramp twins; see `matrix_ramp` for the handoff law.
     committed_matrix_ramp: matrix_ramp::MatrixRamp,
     scratch_matrix_ramp: matrix_ramp::MatrixRamp,
@@ -773,6 +778,10 @@ impl<'a> NativeRuntimeEntryStorage<'a> {
             automation_frozen: _,
             committed_host_gains: _,
             scratch_host_gains: _,
+            committed_output_gain_ramp: _,
+            scratch_output_gain_ramp: _,
+            committed_transient_output_gain: _,
+            scratch_transient_output_gain: _,
             committed_matrix_ramp: _,
             scratch_matrix_ramp: _,
             meter: _,
@@ -1049,6 +1058,10 @@ impl NativeRuntimeChain {
                 scratch_host_gains: instance.configuration.as_ref().map_or([1.0; 2], |state| {
                     [state.input_gain_linear(), state.output_gain_linear()]
                 }),
+                committed_output_gain_ramp: host_output_gain_ramp::OutputGainRamp::INACTIVE,
+                scratch_output_gain_ramp: host_output_gain_ramp::OutputGainRamp::INACTIVE,
+                committed_transient_output_gain: Default::default(),
+                scratch_transient_output_gain: Default::default(),
                 committed_matrix_ramp: matrix_ramp::MatrixRamp::INACTIVE,
                 scratch_matrix_ramp: matrix_ramp::MatrixRamp::INACTIVE,
                 meter: instance.meter,
@@ -1633,6 +1646,9 @@ impl NativeRuntimeChain {
             return false;
         };
         Self::same_runtime_identity(new, old)
+            // A timing-only fork has no control-trajectory transfer contract.
+            // Keep its existing fallback until an active output ramp is proved.
+            && !old.committed_output_gain_ramp.active()
             && new.input_gain == old.input_gain
             && new.output_gain == old.output_gain
             && new.matrix == old.matrix
@@ -1697,7 +1713,7 @@ impl NativeRuntimeChain {
         previous: &Self,
         excluded_old_range: std::ops::Range<usize>,
     ) {
-        self.inherit_matrix_ramps(previous, &excluded_old_range);
+        self.inherit_host_stage_ramps(previous, &excluded_old_range);
         self.inherit_bypass_ramps(previous, &excluded_old_range);
         for entry in &mut self.entries {
             if let Some((index, old)) = previous.entries.iter().enumerate().find(|(_, old)| {
@@ -1735,7 +1751,7 @@ impl NativeRuntimeChain {
         previous: &mut Self,
         excluded: std::ops::Range<usize>,
     ) {
-        self.inherit_matrix_ramps(previous, &excluded);
+        self.inherit_host_stage_ramps(previous, &excluded);
         self.inherit_bypass_ramps(previous, &excluded);
         for entry in &mut self.entries {
             if let Some((index, old)) = previous.entries.iter_mut().enumerate().find(|(_, old)| {
@@ -1747,16 +1763,17 @@ impl NativeRuntimeChain {
         }
     }
 
-    /// Start or continue each static matrix ramp from the same-identity old
-    /// entry's committed matrix. Excluded (retained-tail) donors, bypass and
-    /// automation on either side apply the candidate matrix exactly.
-    fn inherit_matrix_ramps(&mut self, previous: &Self, excluded: &std::ops::Range<usize>) {
+    /// Reuse one same-identity donor lookup for the independent output-trim
+    /// and static-matrix trajectories. Excluded donors, bypass and automation
+    /// keep the existing matrix law; the scalar proof lives with its owner.
+    fn inherit_host_stage_ramps(&mut self, previous: &Self, excluded: &std::ops::Range<usize>) {
         for entry in &mut self.entries {
             let old = previous
                 .entries
                 .iter()
                 .enumerate()
                 .find(|(_, old)| Self::same_runtime_identity(entry, old));
+            host_output_gain_ramp::inherit(entry, old, excluded);
             let ramp = match old {
                 Some((index, old)) => matrix_ramp::MatrixRamp::inherited(
                     old.committed_matrix_ramp,
@@ -1841,6 +1858,8 @@ impl NativeRuntimeChain {
     pub fn begin_block(&mut self) {
         for entry in &mut self.entries {
             entry.scratch_host_gains = entry.committed_host_gains;
+            entry.scratch_output_gain_ramp = entry.committed_output_gain_ramp;
+            entry.scratch_transient_output_gain = entry.committed_transient_output_gain;
             entry.scratch_matrix_ramp = entry.committed_matrix_ramp;
             entry.scratch_bypass_ramp = entry.committed_bypass_ramp;
             entry.scratch_aligned_dry = entry.committed_aligned_dry;
@@ -2100,6 +2119,11 @@ impl NativeRuntimeChain {
         if entry.bypassed && input.operation.target().is_host() {
             return Err(DeviceContractError::UnsupportedProcessingClass);
         }
+        if input.operation.target() == hex_lattice_contract::DeviceAutomationTarget::HostOutputGain
+            && matches!(entry.runtime, RuntimeOwnership::Foreign(_))
+        {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
         if let Some(value) = input.operation.value() {
             entry.automation.validate_input(value)?;
         }
@@ -2110,6 +2134,19 @@ impl NativeRuntimeChain {
             return Err(DeviceContractError::UnsupportedProcessingClass);
         }
         Ok(true)
+    }
+
+    /// Drop an armed output override and its trajectory at a lifecycle fence.
+    /// Call between render transactions. Missing input during rendering does
+    /// not cross this fence; a delivered Clear can settle without its request.
+    pub fn invalidate_transient_output_gain(&mut self, identity: ProcessorInstanceIdentity) {
+        for entry in self.entries.iter_mut().filter(|entry| {
+            !entry.automation_frozen
+                && entry.owner == identity.owner()
+                && entry.device_id == identity.device_id()
+        }) {
+            host_output_gain_ramp::invalidate_transient(entry);
+        }
     }
 
     /// Same transaction and taps with one prepared transient input. Only the
@@ -2304,6 +2341,12 @@ impl NativeRuntimeChain {
                     }
                 }
 
+                if !frames.is_empty()
+                    && !entry.bypassed
+                    && let Some(operation) = input
+                {
+                    host_output_gain_ramp::stage_transient(entry, operation)?;
+                }
                 observer(
                     entry.owner,
                     entry.device_id,
@@ -2320,7 +2363,9 @@ impl NativeRuntimeChain {
                     clock,
                     output_clock,
                     foreign,
-                    input.and_then(NativeTransientOperation::value),
+                    input
+                        .and_then(NativeTransientOperation::value)
+                        .filter(|value| !matches!(value, NativeTransientValue::HostOutputGain(_))),
                     external,
                 )?;
                 if !frames.is_empty()
@@ -2768,6 +2813,21 @@ impl NativeRuntimeChain {
         } else {
             hex_lattice_contract::DeviceAutomationTarget::HostOutputGain
         };
+        use host_output_gain_ramp::TransientGain;
+        if !input
+            && !entry.automation_frozen
+            && let TransientGain::Held(gain) = entry.scratch_transient_output_gain
+        {
+            if let Some(external) = external {
+                entry
+                    .automation
+                    .block_with_external(clock, frames.len(), None, external)?;
+            }
+            if let Some(applied) = entry.scratch_output_gain_ramp.apply(gain, frames) {
+                entry.scratch_host_gains[index] = applied;
+            }
+            return Ok(());
+        }
         if entry.automation_frozen
             || (!entry.automation.has_host_target(target)
                 && transient.is_none_or(|value| value.target() != target))
@@ -2777,14 +2837,21 @@ impl NativeRuntimeChain {
             } else {
                 base
             };
-            if gain != 1.0 {
-                for frame in frames.iter_mut() {
-                    frame[0] *= gain;
-                    frame[1] *= gain;
+            if !input && !entry.automation_frozen {
+                if let Some(gain) = entry.scratch_output_gain_ramp.apply(gain, frames) {
+                    entry.scratch_host_gains[index] = gain;
+                    host_output_gain_ramp::finish_release(entry);
                 }
-            }
-            if !frames.is_empty() {
-                entry.scratch_host_gains[index] = gain;
+            } else {
+                if gain != 1.0 {
+                    for frame in frames.iter_mut() {
+                        frame[0] *= gain;
+                        frame[1] *= gain;
+                    }
+                }
+                if !frames.is_empty() {
+                    entry.scratch_host_gains[index] = gain;
+                }
             }
             return Ok(());
         }
@@ -2794,13 +2861,23 @@ impl NativeRuntimeChain {
             transient,
             external,
         )?;
+        let releasing = !input && entry.scratch_transient_output_gain == TransientGain::Releasing;
+        if !input && !releasing && !frames.is_empty() {
+            entry.scratch_output_gain_ramp = host_output_gain_ramp::OutputGainRamp::INACTIVE;
+        }
         for (offset, frame) in frames.iter_mut().enumerate() {
-            let gain = values.host_gain_at(target, offset).unwrap_or(base);
+            let mut gain = values.host_gain_at(target, offset).unwrap_or(base);
+            if releasing {
+                gain = entry.scratch_output_gain_ramp.next(gain);
+            }
             if gain != 1.0 {
                 frame[0] *= gain;
                 frame[1] *= gain;
             }
             entry.scratch_host_gains[index] = gain;
+        }
+        if releasing && !frames.is_empty() {
+            host_output_gain_ramp::finish_release(entry);
         }
         Ok(())
     }
@@ -2809,6 +2886,8 @@ impl NativeRuntimeChain {
     pub fn commit_block(&mut self) {
         for entry in &mut self.entries {
             entry.committed_host_gains = entry.scratch_host_gains;
+            entry.committed_output_gain_ramp = entry.scratch_output_gain_ramp;
+            entry.committed_transient_output_gain = entry.scratch_transient_output_gain;
             entry.committed_matrix_ramp = entry.scratch_matrix_ramp;
             entry.committed_bypass_ramp = entry.scratch_bypass_ramp;
             entry.committed_aligned_dry = entry.scratch_aligned_dry;
@@ -2823,6 +2902,8 @@ impl NativeRuntimeChain {
     pub fn rollback_block(&mut self) {
         for entry in &mut self.entries {
             entry.scratch_host_gains = entry.committed_host_gains;
+            entry.scratch_output_gain_ramp = entry.committed_output_gain_ramp;
+            entry.scratch_transient_output_gain = entry.committed_transient_output_gain;
             entry.scratch_matrix_ramp = entry.committed_matrix_ramp;
             entry.scratch_bypass_ramp = entry.committed_bypass_ramp;
             entry.scratch_aligned_dry = entry.committed_aligned_dry;
@@ -2835,6 +2916,10 @@ impl NativeRuntimeChain {
         for entry in &mut self.entries {
             entry.committed_host_gains = [entry.input_gain, entry.output_gain];
             entry.scratch_host_gains = entry.committed_host_gains;
+            entry.committed_output_gain_ramp = host_output_gain_ramp::OutputGainRamp::INACTIVE;
+            entry.scratch_output_gain_ramp = host_output_gain_ramp::OutputGainRamp::INACTIVE;
+            entry.committed_transient_output_gain = Default::default();
+            entry.scratch_transient_output_gain = Default::default();
             entry.committed_matrix_ramp = matrix_ramp::MatrixRamp::INACTIVE;
             entry.scratch_matrix_ramp = matrix_ramp::MatrixRamp::INACTIVE;
             entry.committed_bypass_ramp = bypass_ramp::BypassRamp::INACTIVE;

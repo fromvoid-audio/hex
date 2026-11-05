@@ -43,15 +43,15 @@ fn signed_preview_matches_canonical_transaction_without_changing_history_or_sour
         );
         let events = preview.clip().audio_events();
         let moved = events.events.iter().find(|e| e.id == 1).unwrap();
-        assert_eq!(preview.original_waveform_frame(1, moved.start), Some(0));
-        assert_eq!(preview.original_waveform_frame(1, moved.end), Some(40));
+        assert_eq!(preview.original_waveform_position(1, moved.start), Some(0));
+        assert_eq!(preview.original_waveform_position(1, moved.end), Some(40));
         for e in &events.events {
             assert_eq!(
-                preview.original_waveform_frame(e.id, e.start),
+                preview.original_waveform_position(e.id, e.start),
                 Some(e.source_start)
             );
             assert_eq!(
-                preview.original_waveform_frame(e.id, e.end),
+                preview.original_waveform_position(e.id, e.end),
                 Some(e.source_start + e.length())
             );
         }
@@ -75,9 +75,9 @@ fn gain_fade_identity_and_unsupported_roots_do_not_borrow_unproved_peaks() {
         .project()
         .preview_audio_event_placement(clip, 1, 130)
         .unwrap();
-    assert_eq!(preview.original_waveform_frame(1, 130), Some(0));
-    assert_eq!(preview.original_waveform_frame(1, 129), None);
-    assert_eq!(preview.original_waveform_frame(99, 130), None);
+    assert_eq!(preview.original_waveform_position(1, 130), Some(0));
+    assert_eq!(preview.original_waveform_position(1, 129), None);
+    assert_eq!(preview.original_waveform_position(99, 130), None);
     editor
         .execute(Command::SetClipFades {
             clip,
@@ -104,7 +104,7 @@ fn gain_fade_identity_and_unsupported_roots_do_not_borrow_unproved_peaks() {
 }
 
 #[test]
-fn musical_and_warped_roots_keep_bounded_moves_and_refuse_free_placement() {
+fn musical_and_warped_roots_admit_signed_editor_previews() {
     for warped in [false, true] {
         let (mut editor, clip) = fixture();
         let command = if warped {
@@ -132,25 +132,24 @@ fn musical_and_warped_roots_keep_bounded_moves_and_refuse_free_placement() {
             before.clip(clip).unwrap().audio_event_placement_limit(),
             None
         );
-        assert!(before.preview_audio_event_placement(clip, 1, 130).is_err());
-        assert!(
-            editor
-                .execute(Command::EditAudioEvents {
-                    clip,
-                    operation: AudioEventEdit::Place {
-                        event: 1,
-                        start: -25
-                    },
-                })
-                .is_err()
-        );
+        let preview = before.preview_audio_event_placement(clip, 1, -130).unwrap();
+        assert_eq!(preview.waveform_destination(1).unwrap().0, 0);
+        assert!(before.audio_event_drag_bounds(clip, 0, 1).unwrap().0 < 0);
         assert_eq!(editor.project(), &before);
         editor
             .execute(Command::EditAudioEvents {
                 clip,
-                operation: AudioEventEdit::Move { event: 1, start: 1 },
+                operation: AudioEventEdit::Place {
+                    event: 1,
+                    start: -130,
+                },
             })
             .unwrap();
+        let next = editor
+            .project()
+            .preview_audio_event_placement(clip, 1, 130)
+            .unwrap();
+        assert_eq!(next.waveform_destination(1), None);
     }
 }
 
@@ -265,7 +264,7 @@ fn grouped_source_refuses_pitch_before_any_editor_source_read_changes() {
         .project()
         .preview_audio_event_placement(clip, 1, 150)
         .unwrap();
-    assert_eq!(preview.original_waveform_frame(1, 150), Some(130));
+    assert_eq!(preview.original_waveform_position(1, 150), Some(130));
 }
 
 #[test]
@@ -305,8 +304,11 @@ fn signed_numeric_bounds_and_origin_translation_preserve_the_unchanged_clip_wind
     let (mut editor, clip) = fixture();
     let before = editor.project().clip(clip).unwrap().clone();
     let (first, last) = before.audio_event_placement_bounds(1).unwrap();
-    assert_eq!(first, -(crate::MAX_AUDIO_DOMAIN_FRAMES as i64 - 100));
-    assert_eq!(last, crate::MAX_AUDIO_DOMAIN_FRAMES as i64 - 40);
+    assert_eq!(
+        first,
+        -(crate::MAX_SPARSE_AUDIO_TIMELINE_FRAMES as i64 - 100)
+    );
+    assert_eq!(last, crate::MAX_SPARSE_AUDIO_TIMELINE_FRAMES as i64 - 40);
     assert!(before.audio_event_placement_bounds(99).is_err());
     for value in [first, last] {
         let preview = editor
@@ -315,7 +317,7 @@ fn signed_numeric_bounds_and_origin_translation_preserve_the_unchanged_clip_wind
             .unwrap();
         assert_eq!(
             preview.clip().audio_event_root().domain.clock.length(),
-            crate::MAX_AUDIO_DOMAIN_FRAMES
+            crate::MAX_SPARSE_AUDIO_TIMELINE_FRAMES
         );
     }
     editor

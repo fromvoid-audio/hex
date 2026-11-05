@@ -1,7 +1,7 @@
 //! Audio clip loop brace in the event editor's retained-root viewport.
 //! Window input capture ends independently of the existing clip-loop receipt.
 use super::*;
-use crate::editor::audio_event_editor::editor_bounds;
+use crate::editor::audio_event_editor::{editor_bounds, event_grid_origin};
 use crate::editor::{musical_time::SnapGrid, signed_frame_viewport::SignedFrameViewport};
 use gpui::{Bounds, Context, Div, MouseButton, Pixels, canvas, div, prelude::*, px, relative};
 use hex_project::AudioClipEdit;
@@ -146,7 +146,7 @@ impl EditorView {
         }
         if (x - g.down_x).abs() >= 3.0 {
             let tempo = state.project.tempo_map();
-            let first = g.root.root_frame_at(editor_bounds(&g.root).0, tempo).ok();
+            let first = g.root.root_frame_at(event_grid_origin(&g.root), tempo).ok();
             let horizon = g
                 .root
                 .root_frame_at(g.root.domain.clock.length(), tempo)
@@ -170,9 +170,8 @@ impl EditorView {
                     + offset.clamp(-(u64::MAX as f64), u64::MAX as f64) as i128)
                     .clamp(0, i128::from(horizon)) as u64;
                 let absolute = i128::from(g.clip_start) + i128::from(raw) - i128::from(first);
-                let snapped = g
-                    .viewport
-                    .shifted(i128::from(g.clip_start))
+                let snapped = self
+                    .event_project_window(&g.root)
                     .and_then(|window| {
                         g.grid.with_platform_modifier(platform).snap_signed_frame(
                             &state.project,

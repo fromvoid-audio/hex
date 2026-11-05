@@ -239,6 +239,8 @@ pub(super) struct BrowserState {
     playback_in_flight: Option<Arc<AtomicBool>>,
     playback_pending: Option<PlaybackPreviewRequest>,
     auto_audition: bool,
+    audition_gain: f32,
+    audition_gain_dragging: bool,
     playback_phase: Phase,
     playback_output: Option<(u64, u64)>,
     playback_path: Option<PathBuf>,
@@ -325,6 +327,8 @@ impl BrowserState {
             history: history::History::default(),
             playback_generation: 0,
             auto_audition: true,
+            audition_gain: 1.0,
+            audition_gain_dragging: false,
             playback_phase: Phase::Idle,
             playback_output: None,
             playback_path: None,
@@ -855,7 +859,11 @@ impl EditorView {
             self.error = Some("sample preview unavailable · no audio output".into());
             return;
         };
-        let output_generation = match audio.control.preview_request() {
+        let output_generation = match audio
+            .control
+            .preview_set_gain(self.browser.audition_gain)
+            .and_then(|()| audio.control.preview_request())
+        {
             Ok(token) => token,
             Err(error) => {
                 self.error = Some(format!("sample preview failed · {error}").into());
