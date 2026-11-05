@@ -710,11 +710,11 @@ impl NativeRetirement {
         }
         // The constructor owner stays here through both actual carrier
         // destructors. A failure before this point cannot publish READY/reuse.
-        if let Some(returned) = self.final_active.take() {
-            if let Err(returned) = self.root.ingest_final(returned) {
-                self.final_active = Some(returned);
-                return Err(());
-            }
+        if let Some(returned) = self.final_active.take()
+            && let Err(returned) = self.root.ingest_final(returned)
+        {
+            self.final_active = Some(returned);
+            return Err(());
         }
         // Graph/domain work progresses even while the UI client remains live.
         // Only complete normal endpoint destruction can release the whole

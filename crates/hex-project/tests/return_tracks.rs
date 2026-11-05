@@ -340,3 +340,56 @@ fn undo_branch_keeps_return_and_device_ids_below_the_allocator_highwater() {
     assert!(device_id.value() > second.value());
     assert!(editor.project().snapshot().next_id > device_id.value());
 }
+
+#[test]
+fn return_initial_gain_is_validated_prepared_and_undoes_atomically() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    created_return(&mut editor, "original");
+    let before = editor.project().clone();
+    for gain in [f32::NAN, f32::INFINITY, -0.1, 2.1] {
+        assert!(
+            editor
+                .execute(Command::AddReturnTrackWithGain {
+                    name: "new".into(),
+                    gain
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project(), &before);
+    }
+    assert!(
+        editor
+            .execute_prepared(
+                Command::AddReturnTrackWithGain {
+                    name: "new".into(),
+                    gain: 0.25
+                },
+                |_| Err::<(), _>(hex_project::Invalid("refused")),
+            )
+            .is_err()
+    );
+    assert_eq!(editor.project(), &before);
+    let Created::ReturnTrack(id) = editor
+        .execute(Command::AddReturnTrackWithGain {
+            name: "new".into(),
+            gain: 0.25,
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    assert_eq!(editor.project().return_tracks()[1].id(), id);
+    assert_eq!(editor.project().return_tracks()[1].gain(), 0.25);
+    assert_eq!(editor.project().return_tracks()[0].gain(), 1.0);
+    let after = editor.project().snapshot();
+    assert_eq!(
+        Project::from_snapshot(after.clone()).unwrap(),
+        *editor.project()
+    );
+    assert!(editor.undo());
+    let mut restored = editor.project().snapshot();
+    restored.next_id = before.snapshot().next_id;
+    assert_eq!(restored, before.snapshot());
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), after);
+}

@@ -32,10 +32,11 @@ pub(crate) fn project_clip(clip: &mut Clip, tempo: &TempoMap) -> Result<(), Inva
         .ok_or(Invalid("audio placement end overflow"))?;
     clip.fade = ClipFade::neutral(clip.duration)?;
     let (_, full, start, end) = edit.projected_domain(tempo)?;
-    if full > MAX_AUDIO_DOMAIN_FRAMES || start >= end {
-        return Err(Invalid(
-            "full audio domain exceeds its 16777216 frame limit or has an empty crop",
-        ));
+    if !edit.accepts_projected_extent(full) {
+        return Err(transform_domain_limit(tempo.sample_rate()));
+    }
+    if start >= end {
+        return Err(EMPTY_DOMAIN_CROP);
     }
     if edit.processing_projection.is_some()
         && edit.placement.is_none()
@@ -446,6 +447,7 @@ pub(crate) fn reset_region(
                     .map_or(edit.view_end - edit.view_start, |p| p.outer_length.length()),
                 view.window.reversed,
             )?,
+            read_resampler: view.read_resampler,
         });
     }
     clip.edit = Some(Arc::new(edit));

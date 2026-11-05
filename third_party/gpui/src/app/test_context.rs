@@ -359,6 +359,24 @@ impl TestAppContext {
     pub fn pending_save_options(&self) -> Option<(std::path::PathBuf, Option<String>)> {
         self.test_platform.pending_save_options()
     }
+    /// Hex patch: deliver an OS termination request (Dock Quit, logout,
+    /// restart) to the app's [`App::on_should_quit`] handler. Returns true when
+    /// the app deferred its answer; false means it would terminate immediately.
+    pub fn simulate_should_quit(&self) -> bool {
+        self.test_platform.simulate_should_quit()
+    }
+
+    /// Hex patch: whether a simulated termination request awaits its reply.
+    pub fn quit_request_pending(&self) -> bool {
+        self.test_platform.quit_request_pending()
+    }
+
+    /// Hex patch: every [`App::reply_to_quit`] answer to a pending simulated
+    /// request, in order (`true` terminates, `false` cancels).
+    pub fn quit_replies(&self) -> Vec<bool> {
+        self.test_platform.quit_replies()
+    }
+
     /// Complete the injected Open request with a platform error, without a panel.
     pub fn simulate_paths_error(&self, message: &str) {
         self.test_platform.simulate_paths_error(message);

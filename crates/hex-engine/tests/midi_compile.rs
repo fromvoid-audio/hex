@@ -586,6 +586,46 @@ fn zero_frame_note_is_explicitly_refused() {
     );
 }
 
+#[test]
+fn loop_clamped_subframe_gate_is_skipped_without_rejecting_project() {
+    let (mut editor, track) = setup();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, BeatTime::ONE);
+    editor
+        .execute(Command::SetMidiClipSource {
+            clip,
+            source_length: beat(2, 1),
+            source_start: BeatTime::ZERO,
+            loop_start: BeatTime::ZERO,
+            loop_end: BeatTime::ONE,
+            looping: true,
+            length: BeatTime::ONE,
+        })
+        .unwrap();
+    for (start, duration, pitch) in [
+        (BeatTime::ZERO, beat(1, 2), 60),
+        (
+            BeatTime::from_raw(BeatTime::ONE.raw() - 1),
+            BeatTime::from_raw(100),
+            72,
+        ),
+    ] {
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start,
+                duration,
+                pitch,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+    }
+    let events = midi_events(editor.project()).unwrap();
+    assert_eq!(events.len(), 2);
+    assert!(events.iter().all(|event| event.pitch == 60));
+    compile::project(editor.project(), &BTreeMap::new()).unwrap();
+}
+
 fn arrangement_source_window_editor(high_note_start: BeatTime) -> Editor {
     let mut editor = Editor::new(Project::new(8_000).unwrap(), 8).unwrap();
     let track = match editor
@@ -1180,7 +1220,7 @@ fn instrument_render_is_partition_seek_pause_and_stop_invariant() {
     playing_graph.apply(PlaybackCommand::Play);
     let replacement_project = compile::project(editor.project(), &BTreeMap::new()).unwrap();
     let mut replacement = Playback::new(replacement_project);
-    replacement.inherit_transport(&playing_graph);
+    replacement.inherit_transport(&playing_graph).unwrap();
     assert_eq!(replacement.position(), 5_000);
     assert!(replacement.playing());
     let mut replacement_output = [[0.0; 2]; 128];
@@ -1815,4 +1855,125 @@ fn frame_range_copy_keeps_a_touching_midi_source_exact() {
         "a clip ending in the cut's first frame has no frame overlap"
     );
     assert_eq!(midi_events(editor.project()).unwrap(), events);
+}
+
+#[test]
+fn arrangement_split_preserves_playability_of_a_subframe_carry() {
+    for (rate, bpm) in [
+        (44_100, 120_000_000),
+        (48_000, 120_000_000),
+        (44_100, 137_000_000),
+        (48_000, 137_000_000),
+    ] {
+        let (mut editor, track) = setup_at_rate(rate);
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::ZERO,
+                tempo: Tempo::new(bpm).unwrap(),
+            })
+            .unwrap();
+        let frame = editor
+            .project()
+            .tempo_map()
+            .beat_to_frame(BeatTime::ONE)
+            .unwrap();
+        let cut = editor.project().tempo_map().frame_to_beat(frame).unwrap();
+        let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(2, 1));
+        for (start, duration, pitch) in [
+            (BeatTime::ZERO, BeatTime::from_raw(cut.raw() + 1), 60),
+            (BeatTime::from_raw(cut.raw() + 100), beat(1, 64), 64),
+        ] {
+            editor
+                .execute(Command::AddMidiNote {
+                    clip,
+                    start,
+                    duration,
+                    pitch,
+                    channel: 0,
+                    velocity: 100,
+                })
+                .unwrap();
+        }
+        let edges = |project: &Project| {
+            midi_events(project)
+                .unwrap()
+                .into_iter()
+                .map(|event| {
+                    (
+                        event.frame,
+                        event.kind,
+                        event.pitch,
+                        event.channel,
+                        event.velocity,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = edges(editor.project());
+        editor
+            .execute(Command::SplitTracksAtFrame {
+                tracks: vec![track],
+                frame,
+            })
+            .unwrap();
+        assert_eq!(
+            edges(editor.project()),
+            before,
+            "the subframe carry adds no edges at {rate} Hz and {bpm} microbpm"
+        );
+        let after = editor.project().snapshot();
+        assert!(editor.undo());
+        assert_eq!(edges(editor.project()), before);
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), after);
+        assert_eq!(edges(editor.project()), before);
+    }
+}
+
+#[test]
+fn subframe_carry_fallback_keeps_other_crossing_gates_balanced() {
+    let (mut editor, track) = setup();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(2, 1));
+    for (start, duration, pitch) in [
+        (
+            BeatTime::ZERO,
+            BeatTime::from_raw(BeatTime::ONE.raw() + 1),
+            60,
+        ),
+        (beat(3, 4), beat(1, 2), 70),
+    ] {
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start,
+                duration,
+                pitch,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+    }
+    let frame = editor
+        .project()
+        .tempo_map()
+        .beat_to_frame(BeatTime::ONE)
+        .unwrap();
+    editor
+        .execute(Command::SplitTracksAtFrame {
+            tracks: vec![track],
+            frame,
+        })
+        .unwrap();
+    let edges: Vec<_> = midi_events(editor.project())
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.pitch == 70)
+        .map(|event| (event.frame, event.kind))
+        .collect();
+    assert_eq!(edges.len(), 4);
+    assert_eq!(edges[0].1, MidiEventKind::NoteOn);
+    assert_eq!(edges[1], (frame, MidiEventKind::NoteOff));
+    assert_eq!(edges[2], (frame, MidiEventKind::NoteOn));
+    assert_eq!(edges[3].1, MidiEventKind::NoteOff);
+    assert!(edges[0].0 < frame && edges[3].0 > frame);
 }

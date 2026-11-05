@@ -1,7 +1,6 @@
 //! Standalone controlled Linux offline child owner; never an engine host.
 #[cfg(target_os = "linux")]
-#[path = "../supervisor.rs"]
-mod supervisor;
+use hex_scan_supervisor as supervisor;
 #[cfg(target_os = "linux")]
 fn main() {
     use hex_plugin_scan::{
@@ -68,6 +67,7 @@ fn main() {
             request.request,
             Duration::from_millis(deadline),
             &input,
+            hex_plugin_scan::MAX_PACKET,
         )?;
         if let Some(lease) = pending.as_mut() {
             actual.packet.clear();

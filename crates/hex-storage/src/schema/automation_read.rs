@@ -129,8 +129,10 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
     Ok(value)
 }
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: Value = serde_json::from_slice(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?)
+}
+/// Decode an envelope parsed once by [`super::audio_events::parse_unique`].
+pub(crate) fn decode_value(mut value: Value) -> Result<Project, StorageError> {
     if value.get("version").and_then(Value::as_u64) != Some(55) {
         return Err(StorageError::Invalid("invalid automation read schema"));
     }
@@ -155,7 +157,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         }
     }
     value["version"] = 53.into();
-    let core = super::host_automation::decode(&serde_json::to_vec(&value)?)?;
+    let core = super::host_automation::decode_value(value)?;
     // Strict53 has validated and retained every row and its canonical owner,
     // constructing Authored selections. No model copy is needed in that case.
     if selections

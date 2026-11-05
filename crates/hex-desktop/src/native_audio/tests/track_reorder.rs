@@ -33,6 +33,7 @@ fn add_instrument(h: &mut ResidentHarness, applied: &mut u64, prior: &Event) -> 
         h,
         applied,
         Request::InsertBrowserInstrumentTrack {
+            new_track_gain: None,
             project_generation: 0,
             revision: prior.state.revision,
             class: NativeDeviceClass::Instrument,

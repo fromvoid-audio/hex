@@ -220,9 +220,15 @@ pub(crate) fn paste(
             content,
         });
     }
-    crate::clip_group::place_batch(project, incoming, &[])?;
+    let created = crate::clip_group::place_batch(project, incoming, &[])?;
     Project::from_snapshot(project.snapshot())?;
-    Ok(Created::None)
+    // `first..=last` names only pasted clips: overwrite fragments (and ripple
+    // splits from `insert`) take their IDs before the first pasted clip, and
+    // the pasted MIDI note IDs inside the range are not clip IDs.
+    Ok(match created {
+        Created::Clips { first, last } if first == last => Created::Clip(first),
+        other => other,
+    })
 }
 
 #[cfg(test)]
@@ -606,5 +612,100 @@ mod tests {
             assert!(editor.redo());
             assert_eq!(editor.project().snapshot(), after);
         }
+    }
+
+    fn clips_in(project: &Project, first: ClipId, last: ClipId) -> BTreeSet<ClipId> {
+        project
+            .tracks()
+            .iter()
+            .flat_map(|t| {
+                t.clips()
+                    .iter()
+                    .map(|c| c.id())
+                    .chain(t.midi_clips().iter().map(|c| c.id()))
+            })
+            .filter(|id| *id >= first && *id <= last)
+            .collect()
+    }
+    #[test]
+    fn paste_reports_exactly_the_pasted_clips_and_never_overwrite_fragments() {
+        let (mut editor, _, target, audio, midi, gap) = fixture();
+        let several = Arc::new(editor.project().capture_clips(&[audio, midi]).unwrap());
+        let Created::Clips { first, last } = editor
+            .execute(Command::PasteClips {
+                clipboard: several,
+                track: target,
+                frame: 240_000,
+                insert: false,
+            })
+            .unwrap()
+        else {
+            panic!("several pasted clips report a clip range")
+        };
+        let destination = editor.project().track(target).unwrap();
+        let pasted = BTreeSet::from([
+            destination
+                .clips()
+                .iter()
+                .find(|c| c.start() == 240_000)
+                .unwrap()
+                .id(),
+            destination
+                .midi_clips()
+                .iter()
+                .find(|c| c.start() == beat(14))
+                .unwrap()
+                .id(),
+        ]);
+        assert_eq!(
+            clips_in(editor.project(), first, last),
+            pasted,
+            "pasted note IDs inside the range are not clips"
+        );
+
+        // A ripple insert inside the gap clip splits it; that fragment is
+        // born before the pasted clip and stays outside the reported result.
+        let one = Arc::new(editor.project().capture_clips(&[audio]).unwrap());
+        let before: BTreeSet<ClipId> = editor
+            .project()
+            .track(target)
+            .unwrap()
+            .clips()
+            .iter()
+            .map(|c| c.id())
+            .collect();
+        let Created::Clip(clip) = editor
+            .execute(Command::PasteClips {
+                clipboard: one,
+                track: target,
+                frame: 306_000,
+                insert: true,
+            })
+            .unwrap()
+        else {
+            panic!("one pasted clip reports Created::Clip")
+        };
+        let destination = editor.project().track(target).unwrap();
+        assert_eq!(
+            destination
+                .clips()
+                .iter()
+                .find(|c| c.start() == 306_000)
+                .map(|c| c.id()),
+            Some(clip)
+        );
+        let fragments: Vec<ClipId> = destination
+            .clips()
+            .iter()
+            .map(|c| c.id())
+            .filter(|id| !before.contains(id) && *id != clip)
+            .collect();
+        assert!(!fragments.is_empty(), "insert split the gap clip");
+        assert!(fragments.iter().all(|id| *id < clip));
+        assert!(editor.project().clip(gap).is_some());
+        assert_eq!(
+            clips_in(editor.project(), clip, clip),
+            BTreeSet::from([clip])
+        );
     }
 }

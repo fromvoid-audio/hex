@@ -31,6 +31,17 @@ impl Handle {
         }
     }
 }
+// Two 8 px endpoints plus an 8 px gap in each dimension. The body starts
+// below the title; use post-zoom logical pixels so the threshold is DPI independent.
+const MIN_FADE_CONTROL_EXTENT: f32 = 24.0;
+
+fn fade_controls_fit(width: f32, height: f32) -> bool {
+    width.is_finite()
+        && height.is_finite()
+        && width >= MIN_FADE_CONTROL_EXTENT
+        && height - super::clip_name::CLIP_NAME_HEIGHT >= MIN_FADE_CONTROL_EXTENT
+}
+
 struct FadeControls {
     lane: LaneBounds,
     local_fade: ClipFade,
@@ -354,13 +365,7 @@ impl EditorView {
             && self.state.as_ref().is_some_and(|state| {
                 self.project_generation == drag.generation
                     && state.revision == drag.revision
-                    && self.visible_viewport(state.timeline_frames) == drag.viewport
-                    && self.drag_lanes.get(&drag.track).is_some_and(|lane| {
-                        lane.left == drag.lane.left
-                            && lane.width == drag.lane.width
-                            && lane.top == drag.lane.top
-                            && lane.height == drag.lane.height
-                    })
+                    && self.drag_lanes.contains_key(&drag.track)
                     && state.project.clip(drag.clip.id()) == Some(drag.clip.as_ref())
             })
     }
@@ -567,15 +572,15 @@ impl EditorView {
         visible: (u64, u64),
         viewport: Viewport,
     ) -> Option<FadeControls> {
-        // Header-only rows have no visible fade body; arbitration and rendered
-        // handles must both refuse those hidden targets.
-        if self.track_height(track) <= super::track_layout::HEADER_ONLY_HEIGHT {
+        // An admitted gesture keeps its display through sizing changes; its
+        // captured lane and viewport continue to own pointer conversion.
+        let preview = self.fade_preview(clip.id());
+        let active = self.fade_curve_active(clip.id());
+        if !active && self.track_height(track) <= super::track_layout::HEADER_ONLY_HEIGHT {
             return None;
         }
         // Held `f` reveals every clip; otherwise only the hovered clip (or the
         // one whose gesture is still displayed) shows its controls.
-        let preview = self.fade_preview(clip.id());
-        let active = self.fade_curve_active(clip.id());
         if !self.fade_key_held
             && !active
             && self.hovered_fade_clip != Some((self.project_generation, clip.id()))
@@ -591,6 +596,10 @@ impl EditorView {
             || viewport.length == 0
             || visible.0 >= visible.1
         {
+            return None;
+        }
+        let visible_width = lane.width * ((visible.1 - visible.0) as f32 / viewport.length as f32);
+        if !active && !fade_controls_fit(visible_width, lane.height) {
             return None;
         }
         // Hover and held `f` share these local controls, so the hovered clip
@@ -775,6 +784,16 @@ impl EditorView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fade_control_geometry_requires_room_in_both_dimensions() {
+        let height = super::super::clip_name::CLIP_NAME_HEIGHT + MIN_FADE_CONTROL_EXTENT;
+        assert!(!fade_controls_fit(MIN_FADE_CONTROL_EXTENT - 0.01, height));
+        assert!(!fade_controls_fit(MIN_FADE_CONTROL_EXTENT, height - 0.01));
+        assert!(fade_controls_fit(MIN_FADE_CONTROL_EXTENT, height));
+        assert!(!fade_controls_fit(f32::NAN, height));
+        assert!(!fade_controls_fit(MIN_FADE_CONTROL_EXTENT, f32::INFINITY));
+    }
+
     #[test]
     fn upper_lengths_and_curves_remain_independent() {
         let fade = ClipFade::new(100, 0, 40, 30)

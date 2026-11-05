@@ -3,6 +3,25 @@ use hex_devices::saturator::{SATURATOR_DEFINITION, parameter as saturator_parame
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 use hex_project::{DeviceSnapshot, ReturnTrackSnapshot, SendLevelSnapshot};
 
+fn saturator_state(drive: f32) -> hex_lattice_contract::NativeDeviceState {
+    let state = SATURATOR_DEFINITION
+        .patch_parameter(
+            &SATURATOR_DEFINITION
+                .default_state()
+                .expect("default saturator"),
+            saturator_parameter::DRIVE,
+            ParameterValue::Float(drive),
+        )
+        .expect("valid drive state");
+    SATURATOR_DEFINITION
+        .patch_parameter(
+            &state,
+            saturator_parameter::CURVE,
+            ParameterValue::Choice(1),
+        )
+        .expect("digital clip state")
+}
+
 fn project_with_saturators(track_drive: f32, return_drive: f32) -> Project {
     project_with_saturators_bypassed(track_drive, return_drive, false, false)
 }
@@ -19,30 +38,12 @@ fn project_with_saturators_bypassed(
     let return_device = track_device + 2;
     snapshot.next_id = return_device + 1;
 
-    let state_with_drive = |drive| {
-        let state = SATURATOR_DEFINITION
-            .patch_parameter(
-                &SATURATOR_DEFINITION
-                    .default_state()
-                    .expect("default saturator"),
-                saturator_parameter::DRIVE,
-                ParameterValue::Float(drive),
-            )
-            .expect("valid drive state");
-        SATURATOR_DEFINITION
-            .patch_parameter(
-                &state,
-                saturator_parameter::CURVE,
-                ParameterValue::Choice(1),
-            )
-            .expect("digital clip state")
-    };
     snapshot.tracks[0].devices.push(DeviceSnapshot {
         automation: Vec::new(),
         comparison: None,
         id: track_device,
         bypassed: track_bypassed,
-        state: state_with_drive(track_drive),
+        state: saturator_state(track_drive),
     });
     snapshot.tracks[0].sends.push(SendLevelSnapshot {
         return_track,
@@ -58,7 +59,7 @@ fn project_with_saturators_bypassed(
             comparison: None,
             id: return_device,
             bypassed: return_bypassed,
-            state: state_with_drive(return_drive),
+            state: saturator_state(return_drive),
         }],
     });
     Project::from_snapshot(snapshot).expect("valid track and Return Saturator project")
@@ -77,7 +78,7 @@ fn render_project(project: &Project) -> Vec<[f32; 2]> {
 }
 
 #[test]
-fn saturator_runs_on_track_and_return_chains_and_bypass_is_transparent() {
+fn saturator_runs_on_track_and_return_chains_and_bypass_keeps_dry_alignment() {
     let no_devices = render_project(&project(1.0, 0, 8 << 32));
     let track_only = render_project(&project_with_saturators(36.0, 0.0));
     let return_only = render_project(&project_with_saturators(0.0, 36.0));
@@ -93,37 +94,70 @@ fn saturator_runs_on_track_and_return_chains_and_bypass_is_transparent() {
     assert!(differs(&return_only));
     assert!(differs(&both));
 
-    let drive_gain = 10.0_f64.powf(36.0 / 20.0);
-    let digital_clip = |sample: f64, gain: f64| (sample * gain).clamp(-1.0, 1.0);
-    for (input, track_output, return_output, combined_output) in no_devices
-        .iter()
-        .zip(&track_only)
-        .zip(&return_only)
-        .zip(&both)
-        .map(|(((input, track), return_), combined)| (input, track, return_, combined))
-    {
-        for channel in 0..2 {
-            let input = f64::from(input[channel]);
-            let track_only_track = digital_clip(input, drive_gain);
-            let track_expected =
-                track_only_track + 0.75 * digital_clip(track_only_track * 0.5, 1.0);
-            let return_expected = input + 0.75 * digital_clip(input * 0.5, drive_gain);
-            let combined_track = digital_clip(input, drive_gain);
-            let combined_expected =
-                combined_track + 0.75 * digital_clip(combined_track * 0.5, drive_gain);
-            for (actual, expected) in [
-                (track_output[channel], track_expected),
-                (return_output[channel], return_expected),
-                (combined_output[channel], combined_expected),
-            ] {
-                assert!((f64::from(actual) - expected).abs() <= 2.0e-6);
+    // Oracle: standalone oversampled runtimes, aligned the way compensation
+    // aligns the graph. Each active Saturator adds its declared latency, so the
+    // track's direct path to Main waits for the return path (track -> send ->
+    // return Saturator). A device's output is silent while its output origin
+    // precedes the playback epoch, which discards the kernels' pre-ringing.
+    let expected = |track_drive: f32, return_drive: f32| {
+        let saturate = |drive: f32, input: &[[f32; 2]], input_arrival: usize| {
+            let prepared = hex_devices::saturator::SaturatorDefinition::prepare_owned(
+                &saturator_state(drive),
+                48_000,
+                &[],
+            )
+            .expect("standalone saturator");
+            let arrival = input_arrival
+                + hex_lattice::PreparedNativeProcessor::algorithmic_latency_frames(&prepared)
+                    .expect("declared latency") as usize;
+            let mut frames = input.to_vec();
+            hex_lattice::PreparedNativeProcessor::create_runtime(&prepared)
+                .process_block(&mut frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            frames[..arrival].fill([0.0; 2]);
+            (frames, arrival)
+        };
+        let (track, track_arrival) = saturate(track_drive, &no_devices, 0);
+        let sent: Vec<[f32; 2]> = track.iter().map(|f| [f[0] * 0.5, f[1] * 0.5]).collect();
+        let (returned, return_arrival) = saturate(return_drive, &sent, track_arrival);
+        assert_eq!((track_arrival, return_arrival), (11, 22));
+        (0..no_devices.len())
+            .map(|index| {
+                let direct = index
+                    .checked_sub(return_arrival - track_arrival)
+                    .map_or([0.0; 2], |delayed| track[delayed]);
+                [0, 1].map(|channel| {
+                    f64::from(direct[channel]) + 0.75 * f64::from(returned[index][channel])
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    for (actual, track_drive, return_drive) in [
+        (&track_only, 36.0, 0.0),
+        (&return_only, 0.0, 36.0),
+        (&both, 36.0, 36.0),
+    ] {
+        let expected = expected(track_drive, return_drive);
+        assert!(expected.iter().flatten().any(|value| value.abs() > 0.001));
+        for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+            for channel in 0..2 {
+                assert!(
+                    (f64::from(actual[channel]) - expected[channel]).abs() <= 2.0e-6,
+                    "drive {track_drive}/{return_drive} frame {index}: {actual:?} vs {expected:?}"
+                );
             }
         }
     }
 
+    // The two bypassed Saturators preserve the 11-frame latency on each
+    // path. Both the aligned direct signal and the return are dry.
     let bypassed = render_project(&project_with_saturators_bypassed(36.0, 36.0, true, true));
-    let unity = render_project(&project_with_saturators(0.0, 0.0));
-    assert_eq!(bypassed, unity);
+    assert_eq!(&bypassed[..22], &[[0.0; 2]; 22]);
+    for (actual, input) in bypassed[22..].iter().zip(&no_devices) {
+        for channel in 0..2 {
+            let expected = f64::from(input[channel]) * (1.0 + 0.75 * 0.5);
+            assert!((f64::from(actual[channel]) - expected).abs() <= 2.0e-6);
+        }
+    }
 }
 
 #[test]

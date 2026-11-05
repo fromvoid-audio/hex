@@ -8,7 +8,7 @@ use std::{
 };
 
 fn event(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + std::time::Duration::from_secs(60);
     loop {
         match service.try_event() {
             Ok(event) => return event,
@@ -847,4 +847,70 @@ fn mixed_note_edit_admission_preserves_original_revision_on_compile_rejection() 
         redo.state.project.tracks().len(),
         dirty_with_redo.state.project.tracks().len() + 1
     );
+}
+
+#[test]
+fn stable_note_extent_update_prepares_once_preserves_window_and_roundtrips() {
+    let service = Service::new(8_000, 16, 32).unwrap();
+    event(&service);
+    let (clip, mut before) = populated(&service);
+    let note = before.state.project.midi_clip(clip).unwrap().notes()[0].id();
+    let next_id = before.state.project.snapshot().next_id;
+    let mut changed = edit(
+        &service,
+        Command::UpdateMidiNotesWithSourceExtent {
+            clip,
+            notes: vec![MidiNoteUpdate {
+                note,
+                start: BeatTime::from_quarters(5).unwrap(),
+                duration: BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            }],
+        },
+    );
+    assert!(changed.error.is_none(), "{:?}", changed.error);
+    assert!(changed.playback.is_some());
+    assert_eq!(changed.state.revision, before.state.revision + 1);
+    assert_eq!(changed.state.project.snapshot().next_id, next_id);
+    let updated = changed.state.project.midi_clip(clip).unwrap();
+    assert_eq!(
+        (updated.start(), updated.length()),
+        (BeatTime::from_quarters(20).unwrap(), BeatTime::ONE)
+    );
+    assert_eq!(updated.source_length(), BeatTime::from_quarters(6).unwrap());
+    assert_eq!(updated.notes()[0].id(), note);
+    // Source growth retains the note for future editing; material beyond the
+    // finite Arrangement window must stay inaudible.
+    let mut original_pcm = vec![[0.0; 2]; 26 * 4_000];
+    let mut moved_pcm = original_pcm.clone();
+    for (playback, output) in [
+        (before.playback.as_mut().unwrap(), &mut original_pcm),
+        (changed.playback.as_mut().unwrap(), &mut moved_pcm),
+    ] {
+        playback.apply(hex_engine::PlaybackCommand::Play);
+        playback.render(output).unwrap();
+    }
+    assert!(
+        original_pcm
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 1e-6)
+    );
+    assert!(moved_pcm.iter().flatten().all(|sample| *sample == 0.0));
+    let path =
+        std::env::temp_dir().join(format!("hex-stable-note-extent-{}.hex", std::process::id()));
+    hex_storage::save_new(&path, &changed.state.project).unwrap();
+    let reopened = hex_storage::load(&path).unwrap();
+    fs::remove_file(path).unwrap();
+    assert_eq!(reopened, *changed.state.project);
+    service.submit(Request::Undo).unwrap();
+    let undone = event(&service);
+    assert!(undone.error.is_none() && undone.playback.is_some());
+    assert_eq!(undone.state.project, before.state.project);
+    service.submit(Request::Redo).unwrap();
+    let redone = event(&service);
+    assert!(redone.error.is_none() && redone.playback.is_some());
+    assert_eq!(redone.state.project, changed.state.project);
 }

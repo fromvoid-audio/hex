@@ -46,7 +46,7 @@ mod take;
 pub use take::{
     AutomationSharedData, CompletedAutomationTake, MAX_PREVIEW_QUERIES, MAX_SCALAR_RANGE_FRAMES,
     MAX_SPANS_PER_STEP, PreparedAutomationTake, PreparedAutomationTakeDataLayout,
-    ProjectedAutomationSpan, ProjectedSpanCursor, SpanReadProgress, SpanReadState,
+    ProjectedAutomationSpan, ProjectedSpanCursor, SpanReadProgress, SpanReadState, TakeOpenError,
     automation_projection_fingerprint,
 };
 
@@ -327,7 +327,9 @@ impl DraftWriter {
                 .open(&temporary.path)?;
             fs2::FileExt::try_lock_exclusive(&file)?;
             file.seek(SeekFrom::End(0))?;
-            fs::hard_link(&temporary.path, path)?;
+            // The open locked handle must stay bound to the published draft,
+            // so a non-atomic copy is not an acceptable fallback here.
+            crate::publication::publish_new_atomic(&temporary.path, path)?;
             published = true;
             finish(&temporary.path, path).map_err(|(operation, source)| {
                 StorageError::PublishedButNotDurable {
@@ -531,7 +533,15 @@ impl DraftReader {
             ));
         }
         let mut file = File::open(path)?;
-        fs2::FileExt::try_lock_shared(&file)?;
+        fs2::FileExt::try_lock_shared(&file).map_err(|error| {
+            if error.raw_os_error().is_some()
+                && error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+            {
+                StorageError::AutomationDraftBusy(error)
+            } else {
+                StorageError::Io(error)
+            }
+        })?;
         let mut prefix = [0; PREFIX_BYTES];
         file.read_exact(&mut prefix)?;
         if &prefix[..8] != MAGIC || prefix[12..16] != [0; 4] {
@@ -933,12 +943,12 @@ fn validate_event(previous: Option<AppliedEvent>, event: AppliedEvent) -> Result
     }
     AutomationValue::new(event.value.get())
         .map_err(|_| StorageError::Invalid("invalid automation draft value"))?;
-    if let Some(previous) = previous {
-        if event.sequence <= previous.sequence || !clock_follows(clock(previous), clock(event)) {
-            return Err(StorageError::Invalid(
-                "automation draft sequence or clocks are out of order",
-            ));
-        }
+    if let Some(previous) = previous
+        && (event.sequence <= previous.sequence || !clock_follows(clock(previous), clock(event)))
+    {
+        return Err(StorageError::Invalid(
+            "automation draft sequence or clocks are out of order",
+        ));
     }
     Ok(())
 }
@@ -958,12 +968,12 @@ fn validate_terminal(
     previous: Option<AppliedEvent>,
     terminal: DraftTerminal,
 ) -> Result<(), StorageError> {
-    if let (Some(previous), DraftTerminal::Finished(next)) = (previous, terminal) {
-        if !clock_follows(clock(previous), next) {
-            return Err(StorageError::Invalid(
-                "automation draft terminal clocks are out of order",
-            ));
-        }
+    if let (Some(previous), DraftTerminal::Finished(next)) = (previous, terminal)
+        && !clock_follows(clock(previous), next)
+    {
+        return Err(StorageError::Invalid(
+            "automation draft terminal clocks are out of order",
+        ));
     }
     Ok(())
 }
