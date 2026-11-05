@@ -12,6 +12,7 @@ mod eq8_audition_allocations;
 mod eq8_oversampling_study;
 mod fresh_publication_cancellation;
 mod limiter_allocations;
+mod live_release_receiver;
 mod main_chain_allocations;
 mod midi_once_allocations;
 mod operator_filter_proof_allocations;

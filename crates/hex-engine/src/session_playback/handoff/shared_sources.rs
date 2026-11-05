@@ -34,6 +34,8 @@ pub(super) fn short_source_release_blocks_reenable(
 /// Plan a return from a detached release to the same dry receiver. Copying
 /// the committed kernel and its ledger admits future onsets immediately;
 /// the old tail stays in the retiring graph and cannot render a second copy.
+/// Live releases require committed NoteOffs; source inheritance retains their
+/// generations, IDs, allocator and render-age deadlines beside the same DSP pair.
 pub(super) fn reenabled_release_receivers(
     candidate: &SessionPlayback,
     previous: &SessionPlayback,
@@ -96,7 +98,7 @@ pub(super) fn reenabled_release_receivers(
                 .iter()
                 .any(|release| release.location.tail_group().map(usize::from) == Some(slot));
         let released = tail.runtime.max_release_tail_frames() > short_limit
-            && !tail.runtime.has_committed_live_occurrences()
+            && tail.runtime.committed_live_gates_released()
             && tail.runtime.proofs().all(|note| {
                 note.note_off_sent || note.gate_end_frame <= previous.performance_frame
             });
@@ -1510,9 +1512,15 @@ mod tests {
                 compare(&mut disabled, &mut oracle, 32, "disable release");
                 assert!(input.is_cancelled(), "disabled input is terminal");
                 if key_up == "while-disabled" {
-                    assert!(input.set_key(0, None).is_err());
+                    input.set_key(0, None).unwrap();
                 }
-                compare(&mut disabled, &mut oracle, 7, "disabled key up");
+                input.set_key(1, Some((67, 127, 2))).unwrap();
+                compare(
+                    &mut disabled,
+                    &mut oracle,
+                    7,
+                    "disabled key up and new press",
+                );
                 f.editor
                     .execute(Command::SetDeviceBypass {
                         device,
@@ -1531,7 +1539,7 @@ mod tests {
                     keys.set_key(1, Some((67, 127, 1))).unwrap();
                 }
                 compare(&mut enabled, &mut oracle, 13, "new physical key");
-                assert!(input.set_key(0, None).is_err());
+                input.set_key(0, None).unwrap();
                 fresh.set_key(0, None).unwrap();
                 compare(
                     &mut enabled,
