@@ -57,7 +57,7 @@ fn open_browser(
     location: u8,
     presentation: Option<EffectPresentation>,
 ) -> BrowserFixture {
-    open_browser_metadata(cx, location, presentation, "Fx", 0)
+    open_browser_metadata(cx, location, presentation, "Fx", 0, false)
 }
 
 pub(super) fn copy_original_module(source: &Path, target: &Path) {
@@ -82,6 +82,7 @@ fn open_browser_metadata(
     presentation: Option<EffectPresentation>,
     subcategories: &str,
     factory_flags: u32,
+    seed_anchor: bool,
 ) -> BrowserFixture {
     let (reached, facts) = mpsc::sync_channel(1);
     let (resume, resumed) = mpsc::sync_channel(1);
@@ -112,10 +113,40 @@ fn open_browser_metadata(
                 gain: 0.5,
             }))
             .state;
-        h.applied(applied);
+        (applied, _) = h.applied(applied);
         target = format!("return-track-focus-{}", bus.value());
     } else if location == 2 {
         target = "main-track-header".into();
+    }
+    let expected_owner = match location {
+        0 => PluginEffectDestination::Track(track),
+        1 => PluginEffectDestination::Return(state.project.return_tracks()[0].id()),
+        _ => PluginEffectDestination::Main,
+    };
+    if seed_anchor {
+        let utility = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            hex_engine::DeviceTypeId::from_static("hex.utility"),
+        )
+        .unwrap();
+        let command = match expected_owner {
+            PluginEffectDestination::Track(track) => Command::InsertDevice {
+                track,
+                before: None,
+                state: utility,
+            },
+            PluginEffectDestination::Return(return_track) => Command::InsertReturnDevice {
+                return_track,
+                before: None,
+                state: utility,
+            },
+            PluginEffectDestination::Main => Command::InsertMainDevice {
+                before: None,
+                state: utility,
+            },
+        };
+        state = h.run(Request::Edit(command)).state;
+        h.applied(applied);
     }
     let mut selected = selection();
     // Each rendered test owns its bundle copy. Missing/replacement controls
@@ -150,11 +181,6 @@ fn open_browser_metadata(
             .is_some_and(|s| s.revision == state.revision)
     });
     click(&mut visual, Box::leak(target.into_boxed_str()));
-    let expected_owner = match location {
-        0 => PluginEffectDestination::Track(track),
-        1 => PluginEffectDestination::Return(state.project.return_tracks()[0].id()),
-        _ => PluginEffectDestination::Main,
-    };
     assert_eq!(
         cx.update(|app| hex_ui::plugin_effect_test_view(window, app))
             .unwrap()
@@ -234,6 +260,126 @@ impl BrowserFixture {
     }
 }
 
+#[gpui::test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn rendered_vst3_effect_drop_inserts_before_the_pointed_device_on_each_owner(
+    cx: &mut TestAppContext,
+) {
+    let _native = native_fixture();
+    for location in 0..3 {
+        let mut fixture = open_browser_metadata(
+            cx,
+            location,
+            Some(EffectPresentation {
+                input_frames: 0,
+                output_frames: 512,
+            }),
+            "Fx",
+            0,
+            true,
+        );
+        let owner = fixture.expected_owner;
+        let devices = |state: &hex_session::service::ViewState| -> Vec<hex_project::DeviceId> {
+            match owner {
+                PluginEffectDestination::Track(id) => state.project.track(id).unwrap().devices(),
+                PluginEffectDestination::Return(id) => state
+                    .project
+                    .return_tracks()
+                    .iter()
+                    .find(|bus| bus.id() == id)
+                    .unwrap()
+                    .devices(),
+                PluginEffectDestination::Main => state.project.main_devices(),
+            }
+            .iter()
+            .map(|device| device.id())
+            .collect()
+        };
+        let anchor = devices(&fixture.state)[0];
+        let selector = match owner {
+            PluginEffectDestination::Track(_) => format!("device-drop-card-{}", anchor.value()),
+            PluginEffectDestination::Return(_) => {
+                format!("return-device-drop-card-{}", anchor.value())
+            }
+            PluginEffectDestination::Main => format!("main-device-drop-card-{}", anchor.value()),
+        };
+        let row = fixture.visual.debug_bounds("browser-vst3-row-0").unwrap();
+        let start = row.center();
+        let modifiers = Modifiers::default();
+        let begin_drag = |visual: &mut VisualTestContext| {
+            visual.simulate_mouse_down(start, MouseButton::Left, modifiers);
+            visual.simulate_mouse_move(
+                gpui::point(start.x + gpui::px(12.0), start.y),
+                MouseButton::Left,
+                modifiers,
+            );
+            visual.run_until_parked();
+        };
+        begin_drag(&mut fixture.visual);
+        fixture.visual.simulate_keystrokes("escape");
+        fixture
+            .visual
+            .simulate_mouse_up(start, MouseButton::Left, modifiers);
+        repaint(cx, &mut fixture.visual);
+        assert!(!fixture.view(cx).pending);
+        assert_eq!(
+            fixture.view(cx).state.unwrap().revision,
+            fixture.state.revision
+        );
+        assert_eq!(fixture.records.load(Acquire), 0);
+
+        begin_drag(&mut fixture.visual);
+        let card = fixture
+            .visual
+            .debug_bounds(Box::leak(selector.into_boxed_str()))
+            .expect("painted device-chain insertion target");
+        let before = gpui::point(card.origin.x + gpui::px(10.0), card.center().y);
+        fixture
+            .visual
+            .simulate_mouse_move(before, MouseButton::Left, modifiers);
+        repaint(cx, &mut fixture.visual);
+        assert!(
+            !fixture.view(cx).pending,
+            "hover only must not admit a plug-in"
+        );
+        fixture
+            .visual
+            .simulate_mouse_up(before, MouseButton::Left, modifiers);
+        until("drop reaches original native worker", || {
+            repaint(cx, &mut fixture.visual);
+            let view = fixture.view(cx);
+            assert!(
+                view.pending && view.error.is_none(),
+                "location {location}: {:?}",
+                view.error
+            );
+            fixture.facts.try_recv().is_ok()
+        });
+        fixture.resume.send(()).unwrap();
+        until("accepted drop and native endpoint", || {
+            fixture.step(cx);
+            let view = fixture.view(cx);
+            assert!(
+                view.error.is_none(),
+                "location {location}: {:?}",
+                view.error
+            );
+            !view.pending
+                && view.applied.is_some_and(|source| {
+                    source.context.editor_revision == fixture.state.revision + 1
+                })
+        });
+        let accepted = fixture.view(cx).state.unwrap();
+        let ids = devices(&accepted);
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0].value(), fixture.state.project.next_identity());
+        assert_eq!(ids[1], anchor);
+        assert_eq!(fixture.records.load(Acquire), 1);
+        fixture.visual.update(|window, _| window.remove_window());
+        fixture.visual.run_until_parked();
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum InvalidSource {
     Missing,
@@ -276,6 +422,7 @@ fn rendered_native_effect_refuses_changed_sources_and_unsupported_inventory_befo
             }),
             categories,
             flags,
+            false,
         );
         // Change the owned source only after the last-good catalog has loaded
         // and its actual row has painted. Admission must revalidate at use.

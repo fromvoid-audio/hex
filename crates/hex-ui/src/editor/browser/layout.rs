@@ -563,6 +563,7 @@ impl EditorView {
             cx,
         ));
         if self.browser.layout.settings_visible {
+            sidebar = sidebar.children([self.plugin_scan_settings(cx)]);
             sidebar = sidebar.child(picker_group_heading("sections · session", compact));
             for (index, (_, name)) in SECTIONS.into_iter().enumerate() {
                 let visible = self.browser.layout.visible[index];

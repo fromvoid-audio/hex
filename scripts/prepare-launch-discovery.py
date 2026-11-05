@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Prepare signed VST3 discovery tools for the raw Cargo desktop."""
+"""Prepare a signed VST3 helper profile for the raw Cargo desktop."""
+import argparse
 from contextlib import redirect_stdout
 import fcntl
 import hashlib
@@ -35,33 +36,38 @@ def optimized_scanner() -> Path:
     return paths[0]
 
 
-def verify_tools(app: Path, signing: dict) -> None:
+def verify_tools(app: Path, signing: dict, instance: bool) -> None:
     receipt_path = app / "Contents/Resources/test-build.json"
     delivery.assert_plain_path(receipt_path)
     receipt = json.loads(receipt_path.read_bytes())
     if (receipt.get("schema") != 2 or receipt.get("profile") != "release"
             or receipt.get("signing") != signing
             or receipt.get("files") != delivery.inventory(app)):
-        raise delivery.DeliveryError(f"invalid discovery tools cache: {app}")
-    delivery.verify_discovery_package(app, receipt)
+        raise delivery.DeliveryError(f"invalid launch tools cache: {app}")
+    if instance:
+        delivery.verify_instance_package(app, receipt)
+    else:
+        delivery.verify_discovery_package(app, receipt)
 
 
-def prepare() -> Path:
+def prepare(instance: bool) -> Path:
     common = Path(delivery.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"]))
     artifacts = common.parent / "artifacts"
     sdk = Path(os.environ.get("HEX_VST3_SDK") or artifacts / "vst3-sdk")
     builder = delivery.discovery_builder()
     native_digest = builder.source_digest()
-    cache = artifacts / "launch-discovery"
+    cache = artifacts / ("launch-instance" if instance else "launch-discovery")
     native = cache / ("native-" + native_digest)
     if not native.exists() and not sdk.is_dir():
         raise delivery.DeliveryError("set HEX_VST3_SDK to the pinned clean VST3 SDK checkout")
     signing = delivery.signing_configuration(json.loads((ROOT / "scripts/hex-test-build.json").read_bytes()))
-    scanner = optimized_scanner()
-    delivery.assert_plain_path(scanner)
-    scanner_hash = delivery.sha(scanner)
+    scanner = None
+    if not instance:
+        path = optimized_scanner()
+        delivery.assert_plain_path(path)
+        scanner = {"path": str(path), "sha256": delivery.sha(path)}
     key = hashlib.sha256(json.dumps(
-        [scanner_hash, native_digest, signing], sort_keys=True
+        [scanner and scanner["sha256"], native_digest, signing], sort_keys=True
     ).encode()).hexdigest()
     delivery.assert_plain_path(cache)
     cache.mkdir(parents=True, exist_ok=True)
@@ -77,41 +83,48 @@ def prepare() -> Path:
                 staging = Path(staging)
                 if not native.exists():
                     if delivery.run(["git", "status", "--porcelain"]):
-                        raise delivery.DeliveryError("prepare new vst3 discovery tools from a clean checkout first")
+                        raise delivery.DeliveryError("prepare new vst3 tools from a clean checkout first")
                     local = ROOT / "artifacts"
                     local.mkdir(exist_ok=True)
                     with tempfile.TemporaryDirectory(prefix="launch-native-", dir=local) as output:
-                        built = builder.build(sdk, Path(output) / "native", discovery_only=True)
+                        built = builder.build(sdk, Path(output) / "native",
+                                              discovery_only=not instance, instance_only=instance)
                         shutil.copytree(built.parent, staging / "native")
                     (staging / "native").rename(native)
                 receipt = native / "controlled-macos.json"
                 delivery.assert_plain_path(receipt)
                 source = json.loads(receipt.read_bytes()).get("source_commit", "")
                 if not isinstance(source, str) or re.fullmatch(r"[0-9a-f]{40}", source) is None:
-                    raise delivery.DeliveryError("cannot identify source for discovery")
+                    raise delivery.DeliveryError("cannot identify source for launch tools")
                 tools = staging / "tools" / "hex.app"
                 (tools / "Contents/Resources").mkdir(parents=True)
-                evidence = delivery.stage_discovery(tools, receipt, source, {
-                    "path": str(scanner), "sha256": scanner_hash,
-                }, signing)
+                if instance:
+                    evidence = {"vst3_instance": delivery.stage_instance(tools, receipt, source, signing)}
+                else:
+                    evidence = {"vst3_discovery": delivery.stage_discovery(
+                        tools, receipt, source, scanner, signing)}
                 delivery.write_json(tools / "Contents/Resources/test-build.json", {
                     "schema": 2, "profile": "release", "source": source,
-                    "signing": signing, "vst3_discovery": evidence,
+                    "signing": signing, **evidence,
                     "files": delivery.inventory(tools),
                 })
-                verify_tools(tools, signing)
+                verify_tools(tools, signing, instance)
                 tools.parent.rename(generation)
         else:
-            verify_tools(app, signing)
+            verify_tools(app, signing, instance)
     return app
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--instance", action="store_true")
+    options = parser.parse_args()
     try:
         with redirect_stdout(sys.stderr):
-            app = prepare()
+            app = prepare(options.instance)
         print(app)
     except (delivery.DeliveryError, OSError, ValueError, KeyError, TypeError,
             subprocess.SubprocessError) as error:
-        print(f"vst3 discovery unavailable: {error}", file=sys.stderr)
+        role = "instance" if options.instance else "discovery"
+        print(f"vst3 {role} unavailable: {error}", file=sys.stderr)
         raise SystemExit(1)

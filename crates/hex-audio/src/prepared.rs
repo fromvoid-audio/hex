@@ -10,6 +10,9 @@
 //! audio revision remain distinct until that acceptance. Queue acceptance, source readiness and
 //! physical disposal are separate facts; callback code must never finally destroy graphs, PCM or
 //! endpoints.
+//! Resident Clients stamp ordinary queued actions with the bound project generation. Compare it
+//! with the actual active graph before an action changes that graph. Same-document revisions
+//! share the binding. The existing output-wide priority Stop retains its independent cutoff.
 //!
 //! Ordinary computer keyboard inputs retain only this output's scalar activation clock. Control
 //! Stop revokes its reserved prefix before publishing the priority marker; callback consumption
@@ -27,6 +30,7 @@ use hex_engine::{
     playback::Playback,
 };
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
+use std::num::NonZeroU64;
 use std::sync::{
     Arc,
     atomic::{
@@ -238,6 +242,7 @@ impl AtomicRouteSlot {
 struct QueuedCommand {
     ticket: u64,
     action: PlaybackAction,
+    project_generation: Option<NonZeroU64>,
     sampler_edit_gate: u64,
     transport_epoch: u64,
 }
@@ -3904,6 +3909,18 @@ impl Callback {
             if !fault {
                 self.trace_command_dequeued(queued, cut);
             }
+            if !fault
+                && cut.stop_through.is_none_or(|stop| queued.ticket > stop)
+                && queued.project_generation.is_some_and(|generation| {
+                    self.recording_source()
+                        .is_none_or(|source| source.context.project_generation != generation.get())
+                })
+            {
+                let reason = PlaybackActionRejection::ProjectChanged;
+                self.status.publish_rejected_action(queued.ticket, reason);
+                *staged = Some((queued.ticket, action_outcomes::Outcome::Rejected(reason)));
+                continue;
+            }
             // Each command follows the audible end of an earlier fade.
             self.settle_transport_fade();
             if fault && sampler_edit::is_stop(queued.action) {
@@ -7460,6 +7477,7 @@ mod tests {
                 .push(QueuedCommand {
                     ticket,
                     action: PlaybackAction::Transport(PlaybackCommand::PlayFrom(45)),
+                    project_generation: None,
                     sampler_edit_gate: gate,
                     transport_epoch: epoch,
                 })
@@ -8817,6 +8835,174 @@ mod tests {
         control.request_shutdown();
         callback.begin_block();
         control.reclaim();
+    }
+
+    #[test]
+    #[cfg(feature = "allocation-probe")]
+    fn document_bound_client_rejects_commands_racing_a_successor_graph() {
+        use crate::native_callback_owner::{NativeRetirement, reserve_native_worker};
+        use hex_engine::{AudioSourceContext, LaunchQuantization, SessionPlaybackCommand};
+
+        let _serial = super::candidate_tests::serial();
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let mut reader = wire_action_outcomes(&mut control, &mut callback);
+        let old = AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 4,
+        };
+        let (old_graph, _, clip, _) = session_audio_graph();
+        control
+            .publish_unaccounted_pcm_obligation(
+                old_graph,
+                PublicationPolicy::InstallFreshRuntime,
+                1,
+                true,
+                false,
+                Some(old),
+            )
+            .unwrap();
+        callback.begin_block();
+        let root = control.native_candidate_root();
+        let (mut data, errors, terminals, mut client, mut publication) =
+            reserve_native_worker(control, callback, None);
+        let mut retirement = NativeRetirement::new(terminals, root);
+        client.activate();
+        client.bind_resident_transport(NonZeroU64::new(1).unwrap());
+
+        let control = publication.control().unwrap();
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        let new = AudioSourceContext {
+            project_generation: 2,
+            editor_revision: 1,
+        };
+        let (new_graph, _, new_clip, _) = session_audio_graph();
+        assert_eq!(clip, new_clip);
+        control
+            .publish_unaccounted_pcm_obligation(
+                new_graph,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+                2,
+                true,
+                false,
+                Some(new),
+            )
+            .unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        data.owner_mut().unwrap().run(|callback, _| {
+            callback.test_after_fresh_fence_validation = Some(Arc::clone(&barrier));
+        });
+        let actions = [
+            PlaybackAction::Transport(PlaybackCommand::PlayFrom(47)),
+            PlaybackAction::Transport(PlaybackCommand::Seek(61)),
+            PlaybackAction::LaunchAndPlay(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            }),
+        ];
+        let tickets = std::thread::scope(|scope| {
+            let callback = scope.spawn(|| {
+                allocation_counter::measure(|| {
+                    data.owner_mut()
+                        .unwrap()
+                        .run(|callback, _| callback.begin_block());
+                })
+            });
+            barrier.wait();
+            let tickets = actions.map(|action| client.action_with_ticket(action));
+            barrier.wait();
+            let count = callback.join().unwrap();
+            assert_eq!(
+                (
+                    count.count_total,
+                    count.bytes_total,
+                    count.count_current,
+                    count.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            tickets.map(Result::unwrap)
+        });
+        for ticket in tickets {
+            assert_eq!(
+                reader.try_take(),
+                Some(ActionOutcomeReceipt {
+                    ticket,
+                    outcome: ActionOutcome::Rejected(PlaybackActionRejection::ProjectChanged),
+                })
+            );
+        }
+        let status = client.status().unwrap();
+        assert_eq!(
+            status.rejected_action(),
+            Some((tickets[2], PlaybackActionRejection::ProjectChanged))
+        );
+        assert_eq!(status.recording_source().unwrap().context, new);
+        assert_eq!(status.position.load(Acquire), 0);
+        assert!(!status.playing.load(Acquire));
+        assert!(client.command_with_ticket(PlaybackCommand::Play).is_err());
+
+        client.bind_resident_transport(NonZeroU64::new(2).unwrap());
+        let control = publication.control().unwrap();
+        assert_eq!(control.reclaim(), 1);
+        let edited = AudioSourceContext {
+            editor_revision: 2,
+            ..new
+        };
+        let (edited_graph, _, _, _) = session_audio_graph();
+        control
+            .publish_unaccounted_pcm_obligation(
+                edited_graph,
+                PublicationPolicy::InstallFreshRuntime,
+                2,
+                true,
+                false,
+                Some(edited),
+            )
+            .unwrap();
+        let next = client
+            .command_with_ticket(PlaybackCommand::Seek(29))
+            .unwrap();
+        data.owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block());
+        assert_eq!(
+            reader.try_take(),
+            Some(ActionOutcomeReceipt {
+                ticket: next,
+                outcome: ActionOutcome::Applied
+            })
+        );
+        assert_eq!(
+            client.status().unwrap().recording_source().unwrap().context,
+            edited
+        );
+        assert_eq!(client.status().unwrap().position.load(Acquire), 29);
+        for _ in 0..COMMANDS {
+            client.command_with_ticket(PlaybackCommand::Play).unwrap();
+        }
+        assert!(client.command_with_ticket(PlaybackCommand::Play).is_err());
+        client.stop();
+        data.owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block());
+        assert!(!client.status().unwrap().playing.load(Acquire));
+        assert_eq!(client.status().unwrap().position.load(Acquire), 0);
+
+        client.close();
+        publication.close();
+        drop(data);
+        drop(errors);
+        assert!(
+            crate::lifecycle::test_dispose_backend(
+                &mut Some(()),
+                &mut false,
+                &mut false,
+                &mut retirement,
+                |_| Ok(())
+            )
+            .unwrap()
+        );
+        assert!(retirement.advance().unwrap());
     }
 
     #[test]

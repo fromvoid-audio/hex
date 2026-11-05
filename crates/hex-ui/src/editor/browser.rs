@@ -620,6 +620,7 @@ impl EditorView {
             .filter(|path| **path != self.browser.home && **path != self.browser.music)
             .cloned();
         let places = BrowserPlaces::new(additional).and_then(|mut places| {
+            places.vst3_scan_sources = self.browser.source_preferences.vst3_scan_sources.clone();
             for source in [
                 BrowserBuiltin::Music,
                 BrowserBuiltin::Home,
@@ -2764,6 +2765,14 @@ impl EditorView {
                     .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                     .child(theme::text(name)),
             );
+        Self::with_browser_device_drag(row, payload, cx)
+    }
+
+    fn with_browser_device_drag(
+        row: gpui::Stateful<Div>,
+        payload: Option<drag::NativeDeviceDrag>,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<Div> {
         let Some(payload) = payload else {
             return row;
         };

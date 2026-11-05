@@ -34,7 +34,7 @@
 //! and the local `/Library/Audio/Plug-Ins/VST3`. Missing roots are empty; invalid,
 //! linked root components and traversal errors refuse the batch before code runs.
 //! Traversal never enters bundles or follows encountered links; skipped links have a
-//! visible count. Bounds are two roots,4096 entries,1024 directories,8 levels of
+//! visible count. Bounds are three roots,4096 entries,1024 directories,8 levels of
 //! folder recursion and512 bundles, with4096-byte/64-component paths. Class/JSON/output limits remain fixed. Enumeration alone does not load vendor
 //! code or establish compatibility.
 //!
@@ -95,6 +95,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Component, Path, PathBuf},
+    sync::Arc,
 };
 
 pub const MAX_MODULES: usize = 512;
@@ -384,6 +385,8 @@ pub struct Row {
     pub name: String,
     pub vendor: String,
     pub status: String,
+    /// Current metadata for a draggable effect class. Native admission is separate.
+    pub effect: Option<Arc<EffectSelection>>,
 }
 /// Exact copied metadata for an explicit effect activation request. This is
 /// neither source admission nor permission to reuse a cached executable: the
@@ -427,7 +430,20 @@ impl Catalog {
             .iter()
             .find(|entry| entry.path == module)
             .ok_or("selected vst3 module is no longer in the catalog")?;
-        if entry.failure.is_some() || self.source_errors.contains_key(module) {
+        let (report, discovery) = self.effect_inventory(entry)?;
+        let class = discovery
+            .classes
+            .iter()
+            .find(|class| class.cid == cid)
+            .ok_or("selected vst3 class is no longer in the catalog")?;
+        Self::effect_selection(entry, report, class)
+    }
+
+    fn effect_inventory<'a>(
+        &self,
+        entry: &'a Entry,
+    ) -> Result<(&'a Report, &'a Discovery), String> {
+        if entry.failure.is_some() || self.source_errors.contains_key(&entry.path) {
             return Err("selected vst3 source is unavailable; rescan before insertion".into());
         }
         let report = entry
@@ -441,11 +457,14 @@ impl Catalog {
         if !discovery.cacheable() {
             return Err("selected vst3 inventory requires a rescan before insertion".into());
         }
-        let class = discovery
-            .classes
-            .iter()
-            .find(|class| class.cid == cid)
-            .ok_or("selected vst3 class is no longer in the catalog")?;
+        Ok((report, discovery))
+    }
+
+    fn effect_selection(
+        entry: &Entry,
+        report: &Report,
+        class: &hex_plugin_scan::Class,
+    ) -> Result<EffectSelection, String> {
         if class.category != "Audio Module Class"
             || !class
                 .subcategories
@@ -460,7 +479,7 @@ impl Catalog {
             .ok_or("selected vst3 executable is unavailable")?;
         Ok(EffectSelection {
             module: entry.path.clone(),
-            cid,
+            cid: class.cid,
             class_name: class.name.clone(),
             executable_relative_path: executable.relative_path.clone(),
             executable_sha256: executable.sha256.clone(),
@@ -509,6 +528,7 @@ impl Catalog {
                     rows.push(Row {
                         module: entry.path.clone(),
                         cid: None,
+                        effect: None,
                         name,
                         vendor: String::new(),
                         status: entry
@@ -521,6 +541,7 @@ impl Catalog {
             if let Some(report) = &entry.last_good
                 && let Some(discovery) = &report.discovery
             {
+                let effect_report = self.effect_inventory(entry).ok().map(|(report, _)| report);
                 for class in &discovery.classes {
                     if class.category != "Audio Module Class" {
                         continue;
@@ -538,6 +559,9 @@ impl Catalog {
                     {
                         continue;
                     }
+                    let effect = effect_report
+                        .and_then(|report| Self::effect_selection(entry, report, class).ok())
+                        .map(Arc::new);
                     rows.push(Row {
                         module: entry.path.clone(),
                         cid: Some(class.cid),
@@ -557,13 +581,14 @@ impl Catalog {
                                     format!("source unavailable · rescan required · {error} · ")
                                 },
                             );
-                            let action = if matches!(kind, "effect" | "instrument and effect") {
-                                "enter to insert · source validation required"
+                            let action = if effect.is_some() {
+                                "drag or enter to insert"
                             } else {
                                 "hosting unavailable"
                             };
                             format!("{source}{state}vst3 {kind} · {action}")
                         },
+                        effect,
                     });
                 }
             }
@@ -766,6 +791,8 @@ mod tests {
         assert_eq!(selected.executable_relative_path, "Contents/MacOS/Original");
         assert_eq!(selected.executable_sha256, "f".repeat(64));
         assert_eq!(selected.info_sha256, "c".repeat(64));
+        let rows = catalog.rows("");
+        assert_eq!(rows[1].effect.as_deref(), Some(&selected));
         assert_eq!(
             catalog
                 .select_effect(&first, [1; 16])
@@ -970,7 +997,7 @@ mod tests {
             assert_eq!(
                 loaded.rows("")[0].status,
                 if matches!(categories, "Fx|Delay" | "Fx|Instrument") {
-                    format!("vst3 {expected} · enter to insert · source validation required")
+                    format!("vst3 {expected} · drag or enter to insert")
                 } else {
                     format!("vst3 {expected} · hosting unavailable")
                 }
