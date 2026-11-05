@@ -200,8 +200,9 @@ fn stream_starvation_lights_compact_disk_overload_until_hold_expires(cx: &mut Te
     let status = Status::default();
     status.playing.store(true, Relaxed);
     let start = Instant::now();
-    let mut observe = |at: Instant| {
-        let frame = AudioFrame::capture(&status);
+    let mut observe = |status: &Status, source: u64, at: Instant| {
+        let mut frame = AudioFrame::capture(status);
+        frame.source = source;
         let redraw = editor.update(&mut visual, |view, cx| {
             let redraw = view.observe_audio_frame(Some(frame), false, at);
             cx.notify();
@@ -216,17 +217,33 @@ fn stream_starvation_lights_compact_disk_overload_until_hold_expires(cx: &mut Te
         );
         (redraw, lit)
     };
-    assert!(observe(start).1.is_none());
+    assert!(observe(&status, 1, start).1.is_none());
     status.stream_starved_callbacks.fetch_add(4, Relaxed);
-    let (redraw, lit) = observe(start);
+    let (redraw, lit) = observe(&status, 1, start);
     assert!(redraw);
     let lit = lit.expect("starvation lights the indicator");
     assert!(lit.left() >= slot.left() && lit.right() <= slot.right());
     // Still lit just before the hold expires; expiry is its own redraw.
     let hold = super::disk_overload::HOLD;
-    let (redraw, lit) = observe(start + hold - std::time::Duration::from_millis(1));
+    let (redraw, lit) = observe(
+        &status,
+        1,
+        start + hold - std::time::Duration::from_millis(1),
+    );
     assert!(!redraw && lit.is_some());
-    let (redraw, lit) = observe(start + hold);
+    let (redraw, lit) = observe(&status, 1, start + hold);
     assert!(redraw && lit.is_none());
-    editor.read_with(cx, |view, _| assert_eq!(view.disk_overload.count(), 4));
+
+    // The next output can already have a larger count at its first poll.
+    let replacement = Status::default();
+    replacement.playing.store(true, Relaxed);
+    replacement.stream_starved_callbacks.store(9, Relaxed);
+    let later = start + hold;
+    status.stream_starved_callbacks.fetch_add(1, Relaxed);
+    assert!(observe(&status, 1, later).1.is_some());
+    let (redraw, lit) = observe(&replacement, 2, later);
+    assert!(redraw && lit.is_none());
+    replacement.stream_starved_callbacks.fetch_add(1, Relaxed);
+    assert!(observe(&replacement, 2, later).1.is_some());
+    editor.read_with(cx, |view, _| assert_eq!(view.disk_overload.count(), 10));
 }

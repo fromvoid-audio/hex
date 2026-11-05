@@ -630,6 +630,11 @@ files while retaining their complete duration. single-file and bulk imports keep
 this behavior; a bulk drop remains one undo step. keep those files available for
 playback, save/reopen and export.
 
+the **disk** indicator lights when streamed data arrives too late for playback. hover
+over it to see how many playback callbacks were affected on the current output.
+it clears three seconds after the last reported increase. short fades ease the
+transition into and out of missing audio.
+
 on an arrangement audio clip, hover over the top edge between the trim corners
 and drag vertically to adjust clip gain. drag down to reduce or up to increase;
 hold **shift** for fine adjustments. the displayed db value previews the change;
