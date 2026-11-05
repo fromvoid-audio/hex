@@ -53,7 +53,14 @@ pub(crate) fn canonical_list(mut tags: Vec<TrackTag>) -> Result<Vec<TrackTag>, I
     }
     tags.sort_unstable();
     tags.dedup();
-    Ok(tags)
+    // A caller may supply a short Vec with arbitrarily large spare capacity.
+    // Retain only a fresh bounded list, not that external allocation envelope.
+    let mut canonical = Vec::new();
+    canonical
+        .try_reserve_exact(tags.len())
+        .map_err(|_| Invalid("could not reserve track tags"))?;
+    canonical.extend(tags);
+    Ok(canonical)
 }
 pub(crate) fn snapshot_list(values: Vec<String>) -> Result<Vec<TrackTag>, Invalid> {
     if values.len() > MAX_TRACK_TAGS {
@@ -84,6 +91,11 @@ mod tests {
         }
         assert!(TrackTag::new(&"a".repeat(33)).is_err());
         assert!(TrackTag::new(&"界".repeat(22)).is_err());
+        let mut overreserved = Vec::with_capacity(4096);
+        overreserved.push(TrackTag::new("drums").unwrap());
+        let bounded = canonical_list(overreserved).unwrap();
+        assert_eq!(bounded[0].as_str(), "drums");
+        assert!(bounded.capacity() <= MAX_TRACK_TAGS);
         for bad in [
             vec!["Drums".into()],
             vec!["drums".into(), "drums".into()],
