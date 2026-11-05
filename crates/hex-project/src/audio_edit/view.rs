@@ -1197,11 +1197,6 @@ pub(super) fn trim_placement(
         .audio_edit()
         .ok_or(Invalid("audio placement has no root"))?;
     let mut placement = edit.placement.ok_or(Invalid("audio placement missing"))?;
-    if placement.mode.leading_ticks() != 0 {
-        return Err(Invalid(
-            "leading musical one-shot trimming is not supported yet",
-        ));
-    }
     AudioViewProjection::new(clip, tempo)?;
     let old_start = edit.reference_start_raw().unwrap_or(i128::from(clip.start));
     let position = if edit.reference_start_raw().is_some() {
@@ -1212,12 +1207,14 @@ pub(super) fn trim_placement(
     let old_end = old_start
         .checked_add(i128::from(placement.outer_length.length()))
         .ok_or(Invalid("audio outer end overflow"))?;
+    let first_read = old_start + i128::from(placement.mode.leading_ticks());
+    let mut view_start = edit.view_start;
     let (new_start, new_length) = match edge {
         TrimEdge::Right => (
             old_start,
             position
                 .checked_sub(old_start)
-                .filter(|n| *n > 0)
+                .filter(|n| *n > i128::from(placement.mode.leading_ticks()))
                 .ok_or(Invalid("audio trim must retain positive length"))?,
         ),
         TrimEdge::Left => {
@@ -1225,13 +1222,25 @@ pub(super) fn trim_placement(
                 .checked_sub(position)
                 .filter(|n| *n > 0)
                 .ok_or(Invalid("audio trim must retain positive length"))?;
-            let phase = i128::from(placement.cycle_phase) + position - old_start;
+            let phase = i128::from(placement.cycle_phase) + position - first_read;
             let cycle = edit.view_end - edit.view_start;
             placement.cycle_phase = if placement.mode == AudioViewMode::Repeat {
                 phase.rem_euclid(i128::from(cycle)) as u64
+            } else if placement.mode.leading_ticks() > 0 && position < first_read {
+                let lead = u64::try_from(first_read - position)
+                    .map_err(|_| Invalid("audio trim lead exceeds range"))?;
+                placement.mode = AudioViewMode::OnceWithLead(lead);
+                placement.cycle_phase
             } else {
-                u64::try_from(phase)
-                    .map_err(|_| Invalid("once trim consumed offset exceeds range"))?
+                placement.mode = AudioViewMode::Once;
+                if phase < 0 && matches!(edit.domain.clock, AudioDomainClock::Beats(_)) {
+                    view_start = u64::try_from(i128::from(view_start) + phase)
+                        .map_err(|_| Invalid("once trim precedes its processing root"))?;
+                    0
+                } else {
+                    u64::try_from(phase)
+                        .map_err(|_| Invalid("once trim consumed offset exceeds range"))?
+                }
             };
             (position, length)
         }
@@ -1246,6 +1255,7 @@ pub(super) fn trim_placement(
     let next = result
         .audio_edit_mut()
         .ok_or(Invalid("audio placement has no root"))?;
+    next.view_start = view_start;
     next.placement = Some(placement);
     if edit.reference_start_raw().is_some() {
         next.set_reference_start_raw(Some(new_start))?;

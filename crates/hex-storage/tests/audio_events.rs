@@ -644,6 +644,13 @@ fn leading_musical_once_requires_its_saved_format_and_round_trips_complete_state
         })
         .unwrap();
     editor
+        .execute(Command::MoveClip {
+            clip,
+            track,
+            start: 24_000,
+        })
+        .unwrap();
+    editor
         .execute(Command::TrimClipEdge {
             clip,
             edge: TrimEdge::Left,
@@ -652,16 +659,20 @@ fn leading_musical_once_requires_its_saved_format_and_round_trips_complete_state
         .unwrap();
     let historical = assert_tagged_round_trip(editor.project(), track);
     let mut historical: serde_json::Value = serde_json::from_slice(&historical).unwrap();
-    let project = editor.project();
-    let leading = project
-        .clip(clip)
-        .unwrap()
-        .with_musical_leading_silence(12_000, project.tempo_map())
+    let cropped = editor.project().clone();
+    editor
+        .execute(Command::TrimClipEdge {
+            clip,
+            edge: TrimEdge::Left,
+            frame: 12_000,
+        })
         .unwrap();
-    let mut snapshot = project.snapshot();
-    let item = &mut snapshot.tracks[0].audio_clips_mut().unwrap()[0];
-    *item = leading.retained_snapshot();
-    let project = Project::from_snapshot(snapshot).unwrap();
+    let project = editor.project().clone();
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &cropped);
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &project);
+    let leading = project.clip(clip).unwrap();
     let bytes = hex_storage::encode(&project).unwrap();
     let reopened = hex_storage::decode(&bytes).unwrap();
     assert_eq!(reopened, project);
@@ -670,7 +681,7 @@ fn leading_musical_once_requires_its_saved_format_and_round_trips_complete_state
         document["version"],
         hex_storage::LEADING_AUDIO_ONCE_SCHEMA_VERSION
     );
-    let expected = AudioViewProjection::new(&leading, project.tempo_map())
+    let expected = AudioViewProjection::new(leading, project.tempo_map())
         .unwrap()
         .occurrence(0)
         .unwrap();
@@ -714,5 +725,77 @@ fn leading_musical_once_requires_its_saved_format_and_round_trips_complete_state
         let mut malformed = text.clone();
         malformed.replace_range(start..end, invalid);
         assert!(hex_storage::decode(malformed.as_bytes()).is_err());
+    }
+}
+
+#[test]
+fn silent_left_prefix_keeps_complete_state_through_history_and_current_storage() {
+    for once in [false, true] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Imported { track, clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "prefix".into(),
+                path: "prefix.wav".into(),
+                sample_rate: 48_000,
+                frames: 128,
+            })
+            .unwrap()
+        else {
+            panic!("import")
+        };
+        editor
+            .execute(Command::MoveClip {
+                clip,
+                track,
+                start: 4000,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetClipFadeEnvelope {
+                clip,
+                fade: hex_project::ClipFade::new(128, 0, 13, 17).unwrap(),
+            })
+            .unwrap();
+        if once {
+            editor
+                .execute(Command::ResizeAudioClipView {
+                    clip,
+                    operation: hex_project::AudioViewResizeOperation::CycleRange {
+                        start: 0,
+                        end: 96,
+                        looping: false,
+                    },
+                })
+                .unwrap();
+        }
+        let before = editor.project().clone();
+        editor
+            .execute(Command::TrimClipEdge {
+                clip,
+                edge: hex_project::TrimEdge::Left,
+                frame: 3500,
+            })
+            .unwrap();
+        let changed = editor.project().clone();
+        let bytes = hex_storage::encode(&changed).unwrap();
+        assert_eq!(hex_storage::decode(&bytes).unwrap(), changed);
+        assert_eq!(
+            changed
+                .clip(clip)
+                .unwrap()
+                .audio_edit()
+                .unwrap()
+                .domain
+                .fade_start,
+            500
+        );
+        assert_eq!(
+            changed.clip(clip).unwrap().audio_events().events[0].start,
+            500
+        );
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &before);
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &changed);
     }
 }
