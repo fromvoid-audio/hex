@@ -90,8 +90,8 @@ impl Hosting {
             max_construction_peak_data_bytes: peak,
         })
     }
-    /// Enable production hosting only from the qualified fixed running app.
-    /// No raw executable, environment, checkout or SDK fallback starts code.
+    /// Enable production hosting from the running app or independently
+    /// verified source-launch tools. Inspection precedes any helper startup.
     pub fn current_on_control() -> Result<Self, String> {
         Ok(Self::from_package(InstancePackage::current_on_control()?))
     }
@@ -100,9 +100,16 @@ impl Hosting {
     pub fn inspect_package_on_control(app: &Path) -> Result<Self, String> {
         Ok(Self::from_package(InstancePackage::inspect(app)?))
     }
+    /// Use the source-launch verifier with an explicit headless fixture app.
+    #[cfg(feature = "allocation-probe")]
+    pub fn inspect_source_launch_fixture_on_control(app: &Path) -> Result<Self, String> {
+        Ok(Self::from_package(InstancePackage::inspect_source_launch(
+            app,
+        )?))
+    }
     /// Nondefault headless integration control. Explicit original fixture
     /// receipts retain normal InstanceBuild validation; production discovery
-    /// never calls this or falls back from its fixed running-app package.
+    /// never calls this or falls back to an original bootstrap receipt.
     #[cfg(feature = "allocation-probe")]
     pub fn inspect_fixture_on_control(receipt: &Path) -> Result<Self, String> {
         Ok(Self {

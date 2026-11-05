@@ -140,8 +140,7 @@ impl EditorView {
                     Ok(catalog) => {
                         view.apply_plugin_catalog(catalog, cx);
                         view.browser.plugins.writable = true;
-                        view.browser.plugins.status =
-                            "plugin catalog restored · hosting unavailable".into();
+                        view.browser.plugins.status = "plugin catalog restored".into();
                     }
                     Err(error) => {
                         view.browser.plugins.writable = false;
