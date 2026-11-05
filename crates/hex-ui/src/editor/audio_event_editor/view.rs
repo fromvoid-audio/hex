@@ -76,7 +76,7 @@ pub(in crate::editor) fn view(
     let local = view.event_frame_window(&canonical_root);
     let root_window = view
         .event_root_window(&canonical_root)?
-        .shifted(i128::from(placement.map_or(0, |p| p.origin_shift())))?;
+        .shifted(placement.map_or(0, |p| p.frame_shift()))?;
     let project_window = view.event_project_window(&canonical_root)?;
     let viewport = project_window
         .visible_unsigned()
@@ -656,7 +656,7 @@ pub(in crate::editor) fn view(
                 Kind::Select
             } else if target == RangeSelectionTarget::Move && range_hit.is_some() {
                 if let Some((start, end)) = range_hit {
-                    if let Ok(limits) = clip.audio_event_range_placement_bounds(start, end) {
+                    if let Ok(limits) = state.project.audio_event_drag_bounds(clip_id, start, end) {
                         Kind::FreeRangeMove { start, end, limits }
                     } else {
                         Kind::RangeMove { start, end }
@@ -721,7 +721,10 @@ pub(in crate::editor) fn view(
                         value: f64::from(target.gain.millidb()),
                     }
                 } else if target == RangeSelectionTarget::Move {
-                    if let Ok(limits) = clip.audio_event_placement_bounds(hit.id) {
+                    if let Ok(limits) = state
+                        .project
+                        .audio_event_drag_bounds(clip_id, hit.start, hit.end)
+                    {
                         Kind::FreeMove { event: hit, limits }
                     } else {
                         Kind::Move(hit)

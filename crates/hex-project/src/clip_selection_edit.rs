@@ -464,6 +464,8 @@ impl Command {
             | Self::EditMidiNotesWithSourceExtent { clip, .. }
             | Self::DuplicateMidiSourceRange { clip, .. }
             | Self::UpdateMidiNotes { clip, .. }
+            | Self::UpdateMidiNotesWithSourceExtent { clip, .. }
+            | Self::UpdateMidiNotesWithSourcePrefix { clip, .. }
             | Self::RemoveMidiNotes { clip, .. } => ClipCommandScope::FocusedSource { clip: *clip },
             Self::ConvertMidiClipToAudio { clip, .. }
             | Self::SplitClip { clip, .. }
@@ -615,6 +617,7 @@ impl Command {
             | Self::ImportExistingAudio { .. }
             | Self::RemoveTrack(..)
             | Self::RemoveTracks(..)
+            | Self::SetTrackTags { .. }
             | Self::RenameTrack { .. }
             | Self::Gain { .. }
             | Self::SetTrackGains { .. }
