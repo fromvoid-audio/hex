@@ -10,43 +10,59 @@ pub(crate) struct GroupSource<'a> {
     pub audio: &'a Audio,
 }
 
+/// Shared selection law for semantic compilation and native storage quoting.
+pub(crate) fn sparse_group_plan(
+    clip: &hex_project::Clip,
+) -> Result<Option<(u64, usize, usize)>, Invalid> {
+    let Some(edit) = clip.audio_edit() else {
+        return Ok(None);
+    };
+    if edit.placement.is_some() || edit.content_view.is_some() {
+        return Ok(None);
+    }
+    let Some(events) = &edit.domain.events else {
+        return Ok(None);
+    };
+    let Some(anchor) = events.sources.first() else {
+        return Ok(None);
+    };
+    let extent = edit.domain.clock.length();
+    events.validate(extent)?;
+    let Some((frames, spans)) = crate::SparseFrameMap::packing_size(extent, &events.events)? else {
+        return Ok(None);
+    };
+    let projection = AudioViewProjection::new(clip, &anchor.tempo)?;
+    if projection.occurrence_count() != 1 {
+        return Ok(None);
+    }
+    let occurrence = projection.occurrence(0)?;
+    Ok((occurrence.destination_start == clip.start()
+        && occurrence.root_end.checked_sub(occurrence.root_start) == Some(clip.duration()))
+    .then_some((occurrence.root_start, frames, spans)))
+}
+
 impl AudioTransformPreparation {
-    /// The semantic Arrangement shares sparse one-shot roots with its waveform
-    /// worker. The separate native storage constructor still requests dense PCM.
+    /// Arrangement playback and worker peaks share the sparse frame law.
     pub(crate) fn compile_arrangement_group(
         &self,
         clip: &hex_project::Clip,
         sources: &[GroupSource<'_>],
     ) -> Result<Clip, Invalid> {
-        if let Some(edit) = clip.audio_edit()
-            && edit.placement.is_none()
-            && edit.content_view.is_none()
-            && let Some(events) = edit.domain.events.as_ref()
-            && let Some(anchor) = events.sources.first()
+        if let Some((offset, _, _)) = sparse_group_plan(clip)?
+            && let Some(edit) = clip.audio_edit()
+            && let Some(events) = &edit.domain.events
+            && let Some(layout) =
+                crate::SparseFrameMap::for_events(edit.domain.clock.length(), &events.events)?
         {
-            events.validate(edit.domain.clock.length())?;
-            let projection = AudioViewProjection::new(clip, &anchor.tempo)?;
-            if projection.occurrence_count() == 1 {
-                let occurrence = projection.occurrence(0)?;
-                if occurrence.destination_start == clip.start()
-                    && occurrence.root_end.checked_sub(occurrence.root_start)
-                        == Some(clip.duration())
-                    && let Some(layout) = crate::SparseFrameMap::for_events(
-                        edit.domain.clock.length(),
-                        &events.events,
-                    )?
-                {
-                    let audio = self.prepare_group_audio(clip, sources, true, Some(&layout))?;
-                    return Ok(Clip::sparse_region(
-                        audio,
-                        Arc::new(layout),
-                        clip.start(),
-                        clip.duration(),
-                        occurrence.root_start,
-                    )?
-                    .with_gain(clip.gain()));
-                }
-            }
+            let audio = self.prepare_group_audio(clip, sources, true, Some(&layout))?;
+            return Ok(Clip::sparse_region(
+                audio,
+                Arc::new(layout),
+                clip.start(),
+                clip.duration(),
+                offset,
+            )?
+            .with_gain(clip.gain()));
         }
         self.compile_group(clip, sources)
     }
