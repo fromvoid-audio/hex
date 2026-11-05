@@ -2,6 +2,7 @@
 use super::super::resident_preview::ResidentHarness;
 use super::*;
 use hex_project::{Command, RelativeTrackGains, TrackId};
+use hex_session::device_gesture::{GestureKey, GestureRequest, ParameterValue};
 
 enum GroupHarness {
     Resident(Box<ResidentHarness>),

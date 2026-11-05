@@ -108,6 +108,8 @@ impl Project {
         let mut changed = None;
         for (current, next) in tracks.iter().zip(&target.tracks) {
             let Track {
+                group_output_mutes,
+                tags,
                 kind,
                 parent_group,
                 color,
@@ -135,6 +137,8 @@ impl Project {
                 || parent_group != &next.parent_group
                 || color != &next.color
                 || id != &next.id
+                || tags != &next.tags
+                || group_output_mutes != &next.group_output_mutes
                 || name != &next.name
                 || automatic_name != &next.automatic_name
                 || gain != &next.gain

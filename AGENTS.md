@@ -118,6 +118,13 @@ user and contributor instructions only. research/ contains recorded reference
 observations, reproducible measurements and provenance, not implementation plans or task logs.
 Preserve licenses, raw evidence, private analyses, original media and user data.
 
+The user-requested `.engineering/` workspace is the narrow exception to the local
+backlog/checkpoint rule below. Read `.engineering/README.md` when continuing its
+mission. It retains the mission, recovery pointer, measured health and a small
+ranked index of Pulse work; live Pulse remains authoritative for issue state and
+acceptance, and source doc comments remain authoritative for technical contracts.
+Goal activation is manual; do not create scheduled tasks for this mission.
+
 ### User guide presentation
 
 Use the Ableton Live 12 reference manual supplied by the user

@@ -60,10 +60,17 @@ impl EditorView {
             .ok()?;
         self.event_frame_window(root).shifted(i128::from(first))
     }
-    pub(super) fn event_project_window(&self, root: &AudioClipEdit) -> Option<SignedFrameViewport> {
-        let clip = self.state.as_ref()?.project.clip(self.detail_clip_id()?)?;
+    pub(in crate::editor) fn event_project_window(
+        &self,
+        root: &AudioClipEdit,
+    ) -> Option<SignedFrameViewport> {
+        let state = self.state.as_ref()?;
+        let clip = state.project.clip(self.detail_clip_id()?)?;
+        let tempo = state.project.tempo_map();
+        let first = root.root_frame_at(editor_bounds(root).0, tempo).ok()?;
+        let grid_origin = root.root_frame_at(event_grid_origin(root), tempo).ok()?;
         self.event_frame_window(root)
-            .shifted(i128::from(clip.start()))
+            .shifted(i128::from(clip.start()) + i128::from(first) - i128::from(grid_origin))
     }
     pub(super) fn event_pointer_position(&self, x: f32, platform: bool) -> Option<u64> {
         let (_, root, _) = self.event_context()?;
@@ -113,7 +120,7 @@ impl EditorView {
         let state = self.state.as_ref()?;
         let tempo = state.project.tempo_map();
         let clip = state.project.clip(self.detail_clip_id()?)?;
-        let origin = root.root_frame_at(editor_bounds(root).0, tempo).ok()?;
+        let origin = root.root_frame_at(event_grid_origin(root), tempo).ok()?;
         let (a, b) = content_bounds(root);
         let first = root.root_frame_at(a, tempo).ok()?;
         let end = root.root_frame_at(b, tempo).ok()?;
@@ -129,7 +136,7 @@ impl EditorView {
         let state = self.state.as_ref()?;
         let clip = state.project.clip(self.detail_clip_id()?)?;
         let tempo = state.project.tempo_map();
-        let first = root.root_frame_at(editor_bounds(&root).0, tempo).ok()?;
+        let first = root.root_frame_at(event_grid_origin(&root), tempo).ok()?;
         let root_frame = root.root_frame_at(position, tempo).ok()?;
         let project_frame = i128::from(clip.start()) + i128::from(root_frame) - i128::from(first);
         let snapped = self

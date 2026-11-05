@@ -23,6 +23,11 @@ pub(super) fn retime(
     if numerator == denominator && numerator != 0 {
         return Ok(());
     }
+    if edit.domain.musical_event_source.is_some() {
+        return Err(Invalid(
+            "stretching a separated musical event source is unsupported",
+        ));
+    }
     let (_, old_frames, _, _) = edit.projected_domain(tempo)?;
     let old_fade = edit.domain.fade;
     let length = scale(edit.domain.clock.length(), numerator, denominator)?;

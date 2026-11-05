@@ -16,6 +16,10 @@ pub(super) struct Pending {
     pub(super) clipboard: Option<Clipboard>,
     pub(super) waveform: Option<waveform_preview::Preview>,
 }
+pub(in crate::editor) enum PlacementSelection {
+    Range((u64, u64)),
+    Event { id: u64, start: u64 },
+}
 #[derive(Clone, Copy)]
 struct Selection {
     cursor: u64,
@@ -51,6 +55,9 @@ impl EditorView {
                 }
             }
         };
+        if placement.is_some() && self.audio_event_editor.viewport.is_none() {
+            self.store_event_camera(self.event_frame_window(&root));
+        }
         self.advance_selection_intent();
         let before = Selection {
             cursor: self.audio_event_editor.cursor,
@@ -133,7 +140,7 @@ impl EditorView {
     pub(in crate::editor) fn audio_events_request_complete(
         &mut self,
         event: &Event,
-    ) -> Option<(u64, u64)> {
+    ) -> Option<PlacementSelection> {
         let p = self.audio_event_editor.pending.as_mut()?;
         match p.receipt.observe(
             self.project_generation,
@@ -154,7 +161,20 @@ impl EditorView {
                     && p.intent.is_some()
                     && p.intent == self.selection_intent_epoch
                 {
-                    return p.placement?.range(&p.operation);
+                    if let AudioEventEdit::Duplicate { event, start } = p.operation {
+                        // A negative destination becomes the new retained origin.
+                        let start = start.max(0) as u64;
+                        return p
+                            .preview
+                            .events
+                            .iter()
+                            .find(|item| item.start == start && item.id != event)
+                            .map(|item| PlacementSelection::Event { id: item.id, start });
+                    }
+                    return p
+                        .placement?
+                        .range(&p.operation)
+                        .map(PlacementSelection::Range);
                 }
             }
             Disposition::Invalidated => {
@@ -164,11 +184,24 @@ impl EditorView {
         None
     }
 
-    pub(in crate::editor) fn install_placed_audio_range(&mut self, range: (u64, u64)) {
+    pub(in crate::editor) fn install_audio_placement_selection(
+        &mut self,
+        selection: PlacementSelection,
+    ) {
         self.sync_audio_navigation();
-        self.audio_event_editor.range = Some(range);
-        self.audio_event_editor.cursor = range.0;
-        self.audio_event_editor.selected = None;
-        self.audio_event_editor.retained_selection = None;
+        let editor = &mut self.audio_event_editor;
+        match selection {
+            PlacementSelection::Range(range) => {
+                editor.range = Some(range);
+                editor.cursor = range.0;
+                editor.selected = None;
+            }
+            PlacementSelection::Event { id, start } => {
+                editor.range = None;
+                editor.cursor = start;
+                editor.selected = Some(id);
+            }
+        }
+        editor.retained_selection = None;
     }
 }

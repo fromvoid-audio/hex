@@ -21,6 +21,7 @@ impl Command {
                 | Self::DuplicateMidiSourceRange { .. }
                 | Self::UpdateMidiNote { .. }
                 | Self::UpdateMidiNotes { .. }
+                | Self::UpdateMidiNotesWithSourceExtent { .. }
                 | Self::SetMidiNotesActive { .. }
                 | Self::RemoveMidiNote(_)
                 | Self::RemoveMidiNotes { .. }
@@ -34,6 +35,7 @@ impl Command {
     /// in place so no-op detection is bounded and does not allocate before admission.
     pub fn prepare_sampler_midi_edit(&mut self, project: &Project) -> Result<bool, Invalid> {
         const MISSING: Invalid = Invalid("midi edit target is unavailable");
+        let grow_source = matches!(self, Self::UpdateMidiNotesWithSourceExtent { .. });
         match self {
             Self::SetMidiNotesActive {
                 clip,
@@ -112,7 +114,8 @@ impl Command {
                     old.velocity,
                 ) != (*start, *duration, *pitch, *channel, *velocity));
             }
-            Self::UpdateMidiNotes { clip, notes } => {
+            Self::UpdateMidiNotes { clip, notes }
+            | Self::UpdateMidiNotesWithSourceExtent { clip, notes } => {
                 if notes.is_empty() || notes.len() > crate::MAX_NOTES {
                     return Err(Invalid("invalid midi update batch size"));
                 }
@@ -121,14 +124,14 @@ impl Command {
                     return Err(Invalid("duplicate midi note update"));
                 }
                 let source = project.midi_source(*clip).ok_or(MISSING)?;
+                let length = if grow_source {
+                    crate::midi::extended_update_source_length(source.source_length(), notes)?
+                } else {
+                    source.source_length()
+                };
                 for n in notes.iter() {
                     crate::midi::validate_note(
-                        n.start,
-                        n.duration,
-                        source.source_length,
-                        n.pitch,
-                        n.channel,
-                        n.velocity,
+                        n.start, n.duration, length, n.pitch, n.channel, n.velocity,
                     )?;
                 }
                 let mut matched = 0;

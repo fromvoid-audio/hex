@@ -625,7 +625,7 @@ fn compile_project_inner<'a>(
                         };
                         sources.push(crate::audio_transform::GroupSource { root, asset, audio });
                     }
-                    Some(transforms.compile_group(clip, &sources)?)
+                    Some(transforms.compile_arrangement_group(clip, &sources)?)
                 } else {
                     let source = resolve_source(asset, snapshot.sample_rate())?;
                     transforms.compile_clip(snapshot, clip, asset, source)?
@@ -645,6 +645,7 @@ fn compile_project_inner<'a>(
                         audio: audio.clone(),
                         offset: compiled.source_offset as u64,
                         length: compiled.end - compiled.start,
+                        sparse: compiled.metadata.as_deref().and_then(|m| m.sparse.clone()),
                         repeat: compiled.looping.then(|| crate::PreparedAudioRepeat {
                             period: compiled.source_length as u64,
                             phase: compiled

@@ -34,6 +34,24 @@ impl Device {
     }
 }
 
+impl Project {
+    /// Control-side, history-free preview of an existing device-state edit.
+    /// Reuse the canonical command implementation on an isolated metadata copy;
+    /// this grants no media/runtime/source ownership or identity reservation.
+    /// Commands that change routing, identity or other model owners refuse.
+    pub fn preview_device_edit(&self, command: &Command) -> Result<Self, Invalid> {
+        if !matches!(
+            command,
+            Command::ReplaceDeviceState { .. } | Command::ManualDeviceEdit { .. }
+        ) {
+            return Err(Invalid("command has no device-state preview"));
+        }
+        let mut candidate = self.clone();
+        candidate.apply(command.clone())?;
+        Ok(candidate)
+    }
+}
+
 pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Created, Invalid> {
     match command {
         Command::InsertDevice {
@@ -578,6 +596,49 @@ mod tests {
             crate::Created::Device(id) => id,
             other => panic!("unexpected edit result: {other:?}"),
         }
+    }
+
+    #[test]
+    fn device_preview_matches_canonical_edit_without_history_or_identity_changes() {
+        let mut editor = crate::Editor::new(Project::new(48000).unwrap(), 16).unwrap();
+        let track = track_id(&mut editor, "preview");
+        let device = device_id(&mut editor, track);
+        let original = editor.project().clone();
+        let command = Command::ReplaceDeviceState {
+            device,
+            state: state(vec![4, 2]),
+        };
+        let preview = original.preview_device_edit(&command).unwrap();
+        assert_eq!(editor.project(), &original);
+        editor.execute(command).unwrap();
+        assert_eq!(editor.project(), &preview);
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &original);
+        assert!(
+            original
+                .preview_device_edit(&Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: state(vec![]),
+                })
+                .is_err()
+        );
+        assert!(
+            original
+                .preview_device_edit(&Command::Gain { track, gain: 0.25 })
+                .is_err()
+        );
+        let mut missing = original.clone();
+        missing.apply(Command::RemoveDevice(device)).unwrap();
+        assert!(
+            missing
+                .preview_device_edit(&Command::ReplaceDeviceState {
+                    device,
+                    state: state(vec![]),
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project(), &original);
     }
 
     #[test]

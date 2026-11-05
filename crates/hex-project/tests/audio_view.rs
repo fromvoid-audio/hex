@@ -2482,3 +2482,115 @@ fn reversed_frame_repeat_start_preserves_window_cycle_span_and_history() {
         assert_eq!(editor.project().snapshot(), after);
     }
 }
+
+#[test]
+fn leading_musical_once_keeps_the_cropped_read_across_a_tempo_change() {
+    for timing in ["live", "warped", "frozen"] {
+        let (mut editor, id) = beat_fixture_in(AudioViewMode::Once);
+        // The gate crosses the tempo point at beat 3, with the existing
+        // nonzero crop and phase placing the old read after that point.
+        let track = editor.project().tracks()[0].id();
+        let start = editor
+            .project()
+            .tempo_map()
+            .beat_to_frame(beat(4 * Q))
+            .unwrap();
+        editor
+            .execute(Command::MoveClip {
+                clip: id,
+                track,
+                start,
+            })
+            .unwrap();
+        if timing == "frozen" {
+            let mut snapshot = editor.project().snapshot();
+            let item = &mut snapshot.tracks[0].audio_clips_mut().unwrap()[0];
+            let edit = item.edit.as_mut().unwrap();
+            edit.timing = hex_project::AudioClipTiming::Frozen {
+                reference_start_raw: edit.reference_start_raw().unwrap(),
+                tempo: std::sync::Arc::new(editor.project().tempo_map().clone()),
+            };
+            editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
+            editor
+                .execute(Command::SetProjectTempo {
+                    tempo: Tempo::new(144_000_000).unwrap(),
+                })
+                .unwrap();
+        } else if timing == "warped" {
+            let settings = hex_project::default_audio_warp(
+                editor.project().clip(id).unwrap(),
+                editor.project().tempo_map(),
+                hex_project::WarpMode::RePitch,
+            )
+            .unwrap();
+            editor
+                .execute(Command::SetAudioClipWarp {
+                    clip: id,
+                    settings: Some(settings),
+                })
+                .unwrap();
+        }
+        let project = editor.project();
+        let tempo = project.tempo_map();
+        let clip = project.clip(id).unwrap();
+        let old = AudioViewProjection::new(clip, tempo).unwrap();
+        let occurrence = old.occurrence(0).unwrap();
+        assert!(
+            clip.with_musical_leading_silence(clip.start(), tempo)
+                .is_err()
+        );
+        assert!(clip.with_musical_leading_silence(u64::MAX, tempo).is_err());
+        for gate in [24_000, 0] {
+            let leading = clip.with_musical_leading_silence(gate, tempo).unwrap();
+            let projection = AudioViewProjection::new(&leading, tempo).unwrap();
+            assert_eq!(
+                projection.outer_frame_bounds(),
+                (gate, old.outer_frame_bounds().1)
+            );
+            assert_eq!(projection.occurrence_count(), 1);
+            let read = projection.occurrence(0).unwrap();
+            assert!(read.elapsed_start > 0);
+            assert_eq!(projection.root_position_for_frame(gate).unwrap(), None);
+            assert_eq!(
+                projection
+                    .root_ranges_for_frames(gate..read.destination_start)
+                    .unwrap(),
+                [None, None]
+            );
+            assert_eq!(
+                projection
+                    .root_position_for_frame(read.destination_start)
+                    .unwrap(),
+                old.root_position_for_frame(read.destination_start).unwrap()
+            );
+            assert_eq!(
+                projection
+                    .root_ranges_for_frames(gate..read.destination_end)
+                    .unwrap(),
+                old.root_ranges_for_frames(read.destination_start..read.destination_end)
+                    .unwrap()
+            );
+            assert_eq!(
+                hex_project::AudioViewOccurrence {
+                    elapsed_start: read.elapsed_start,
+                    elapsed_end: read.elapsed_start + occurrence.elapsed_end,
+                    ..occurrence
+                },
+                read
+            );
+            assert!(std::sync::Arc::ptr_eq(
+                &clip.audio_edit().unwrap().domain,
+                &leading.audio_edit().unwrap().domain
+            ));
+        }
+    }
+    let (editor, id) = frame_fixture(AudioViewMode::Once);
+    assert!(
+        editor
+            .project()
+            .clip(id)
+            .unwrap()
+            .with_musical_leading_silence(0, editor.project().tempo_map())
+            .is_err()
+    );
+}

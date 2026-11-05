@@ -21,6 +21,7 @@ enum Fault {
     NonfiniteRead,
     InvalidEdit,
     BlockDependent,
+    AlignedBypass,
 }
 struct Fixture(Fault);
 impl NativeDeviceMetadata for Fixture {
@@ -108,6 +109,9 @@ impl NativeDeviceDefinition for Fixture {
         _state: &NativeDeviceState,
         _context: &crate::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
+        if matches!(self.0, Fault::AlignedBypass) {
+            return Ok(Some(Box::new(AlignedBypassPrepared)));
+        }
         Ok(Some(Box::new(Prepared(matches!(
             self.0,
             Fault::BlockDependent
@@ -115,6 +119,33 @@ impl NativeDeviceDefinition for Fixture {
     }
 }
 struct Prepared(bool);
+
+// Only the host dry path is under test here; reuse the deterministic ordinary
+// processor to isolate the admitted fixed-latency bypass contract.
+struct AlignedBypassPrepared;
+impl PreparedNativeProcessor for AlignedBypassPrepared {
+    fn supports_latency_aligned_bypass(&self) -> bool {
+        true
+    }
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(11)
+    }
+    fn runtime_version(&self) -> u32 {
+        1
+    }
+    fn declared_runtime_bytes(&self) -> usize {
+        std::mem::size_of::<Runtime>()
+    }
+    fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
+        Prepared(false).create_runtime()
+    }
+}
+
+#[test]
+fn aligned_bypass_conformance_checks_the_exact_delayed_dry_contract() {
+    let fixture = Fixture(Fault::AlignedBypass);
+    check_effect(&fixture, &fixture.default_state().unwrap(), 48_000).unwrap();
+}
 
 struct AuxiliaryFixture;
 impl NativeDeviceMetadata for AuxiliaryFixture {

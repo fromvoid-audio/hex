@@ -2850,6 +2850,7 @@ version = "0.1.0"
 name = "hex-ui"
 version = "0.1.0"
 dependencies = [
+ "fastrand 2.5.0",
  "gpui",
  "hex-audio",
  "hex-devices",

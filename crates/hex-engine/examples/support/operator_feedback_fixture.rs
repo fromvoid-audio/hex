@@ -68,6 +68,8 @@ pub fn project_with_operators(
             });
         }
         track_snapshots.push(TrackSnapshot {
+            group_output_mutes: Vec::new(),
+            tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),

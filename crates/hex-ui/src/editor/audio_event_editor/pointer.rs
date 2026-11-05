@@ -13,7 +13,8 @@ impl Kind {
             Self::RangeMove { .. }
             | Self::FreeRangeMove { .. }
             | Self::Move(_)
-            | Self::FreeMove { .. } => CursorStyle::OpenHand,
+            | Self::FreeMove { .. }
+            | Self::Duplicate { .. } => CursorStyle::OpenHand,
             Self::Leading(_) => CursorStyle::ResizeLeftBracket,
             Self::Trailing(_) => CursorStyle::ResizeRightBracket,
             Self::Fade(fade) => fade.pointer_cursor(),

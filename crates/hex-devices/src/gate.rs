@@ -492,6 +492,10 @@ impl GateRuntime {
 }
 
 impl NativeProcessorRuntime for GateRuntime {
+    fn supports_detached_source_rejoin(&self) -> bool {
+        true
+    }
+
     fn process_block(
         &mut self,
         frames: &mut [StereoFrame],
