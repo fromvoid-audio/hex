@@ -5,12 +5,12 @@ use gpui::{
     StatefulInteractiveElement, Styled, Subscription, UniformListScrollHandle, Window,
     WindowBounds, WindowOptions, div, prelude::*, px, rgb, size, uniform_list,
 };
-use hex_diagnostics::reader::{LogFilter, LogSnapshot, read_session_page};
+use hex_diagnostics::reader::{LogFilter, LogLine, LogSnapshot, read_session_page};
 use hex_widgets::{TextInput, TextInputChanged, TextInputConfig, TextInputKind};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 const CATEGORIES: &[&str] = &[
@@ -36,6 +36,49 @@ const COPY_LIMIT: usize = 1024 * 1024;
 const COPY_CLIPPED: &str = "[excerpt clipped at 1 mib]\n";
 
 mod scrollbar;
+
+/// One action's owned filters, with a fixed inclusive relative-time window.
+/// Moving between pages never reanchors a range to that page's last event.
+struct ViewerFilter {
+    category: &'static str,
+    query: String,
+    window: &'static str,
+    since: Option<u128>,
+    until: Option<u128>,
+}
+impl ViewerFilter {
+    fn new(
+        category: &'static str,
+        query: String,
+        window: (&'static str, Option<u64>),
+        now: u128,
+    ) -> Self {
+        Self {
+            category,
+            query,
+            window: window.0,
+            since: window
+                .1
+                .map(|seconds| now.saturating_sub(Duration::from_secs(seconds).as_nanos())),
+            until: window.1.map(|_| now),
+        }
+    }
+    fn borrowed(&self) -> LogFilter<'_> {
+        LogFilter {
+            category: (self.category != "all").then_some(self.category),
+            text: (!self.query.is_empty()).then_some(self.query.as_str()),
+            since_unix_nanos: self.since,
+            until_unix_nanos: self.until,
+        }
+    }
+}
+
+struct FilteredCopy {
+    text: String,
+    matching_events: usize,
+    warnings: bool,
+    clipped: bool,
+}
 
 struct LogInputBindings;
 impl gpui::Global for LogInputBindings {}
@@ -197,6 +240,20 @@ impl Viewer {
         .detach();
         cx.notify();
     }
+    fn current_filter(&self, cx: &App) -> Result<ViewerFilter, String> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| {
+                "could not resolve log time range: system clock is before unix epoch".to_owned()
+            })?
+            .as_nanos();
+        Ok(ViewerFilter::new(
+            CATEGORIES[self.category],
+            self.query.read(cx).text().to_owned(),
+            WINDOWS[self.window],
+            now,
+        ))
+    }
     fn filter(&mut self, cx: &mut Context<Self>) {
         let Some(snapshot) = self.snapshot.clone() else {
             return;
@@ -212,25 +269,17 @@ impl Viewer {
             cx.notify();
             return;
         }
+        let request = match self.current_filter(cx) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status = error;
+                cx.notify();
+                return;
+            }
+        };
         self.filtering = true;
-        let category = CATEGORIES[self.category].to_owned();
-        let seconds = WINDOWS[self.window].1;
-        let query = self.query.read(cx).text().to_owned();
         let task = cx.background_executor().spawn(async move {
-            let latest = snapshot
-                .lines
-                .iter()
-                .filter_map(|line| line.event.as_ref().map(|e| e.unix_nanos))
-                .max();
-            let since = seconds.zip(latest).map(|(seconds, latest)| {
-                latest.saturating_sub(Duration::from_secs(seconds).as_nanos())
-            });
-            let filter = LogFilter {
-                category: (category != "all").then_some(category.as_str()),
-                text: (!query.is_empty()).then_some(query.as_str()),
-                since_unix_nanos: since,
-                until_unix_nanos: None,
-            };
+            let filter = request.borrowed();
             let rows = snapshot
                 .lines
                 .iter()
@@ -294,6 +343,44 @@ impl Viewer {
             self.reload(cx);
         }
     }
+    fn copy_all(&mut self, cx: &mut Context<Self>) {
+        if self.copying {
+            return;
+        }
+        let request = match self.current_filter(cx) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status = error;
+                cx.notify();
+                return;
+            }
+        };
+        let path = self.path.clone();
+        self.copying = true;
+        self.status = "reading all retained matching logs…".into();
+        let task = cx
+            .background_executor()
+            .spawn(async move { make_filtered_copy(&path, &request) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |view, cx| {
+                view.copying = false;
+                match result {
+                    Ok(copy) => {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copy.text.clone()));
+                        // GPUI's write API has no error return. Confirm the
+                        // bounded payload through its read API before success.
+                        let actual = cx.read_from_clipboard().and_then(|item| item.text());
+                        view.status = filtered_copy_status(&copy, actual.as_deref()).into();
+                    }
+                    Err(error) => view.status = format!("could not copy filtered logs: {error}"),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
     fn copy_selection(&mut self, cx: &mut Context<Self>) {
         if self.copying {
             return;
@@ -342,6 +429,52 @@ impl Viewer {
             });
         })
         .detach();
+    }
+}
+
+fn make_filtered_copy(path: &Path, request: &ViewerFilter) -> Result<FilteredCopy, String> {
+    let result = hex_diagnostics::reader::read_session_filtered(path, &request.borrowed())
+        .map_err(|error| error.to_string())?;
+    let since = request
+        .since
+        .map_or_else(|| "unbounded".into(), |value| value.to_string());
+    let until = request
+        .until
+        .map_or_else(|| "unbounded".into(), |value| value.to_string());
+    let time = format!(
+        "{}; inclusive unix_nanos {since}..{until}\nmatching event records: {}; omitted export entries: {}\nall retained pages; context/loss lines are kept regardless of event filters",
+        request.window, result.matching_events, result.omitted_lines
+    );
+    let rows: Vec<_> = (0..result.snapshot.lines.len()).collect();
+    let text = make_excerpt(
+        &result.snapshot,
+        &rows,
+        path,
+        request.category,
+        &time,
+        &request.query,
+        (0, rows.len().saturating_sub(1)),
+    );
+    let clipped = result.omitted_lines > 0 || text.ends_with(COPY_CLIPPED);
+    Ok(FilteredCopy {
+        text,
+        matching_events: result.matching_events,
+        warnings: result.snapshot.header.is_none() || !result.snapshot.warnings.is_empty(),
+        clipped,
+    })
+}
+
+fn filtered_copy_status(copy: &FilteredCopy, actual: Option<&str>) -> &'static str {
+    if actual != Some(copy.text.as_str()) {
+        "could not verify clipboard contents · try copying again"
+    } else if copy.clipped {
+        "filtered logs copied · incomplete at export limit · review warnings"
+    } else if copy.warnings {
+        "filtered logs copied with warnings · review before sharing"
+    } else if copy.matching_events == 0 {
+        "no matching events · available context copied"
+    } else {
+        "all retained matching logs copied · review before sharing"
     }
 }
 
@@ -436,6 +569,23 @@ fn list_sessions(active: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+/// Recorded classification only: message words never imply a severity. The
+/// reader assigns legacy events its documented info default. Untyped lines
+/// remain context; a writer loss record has its own explicit warning label.
+fn level_badge(line: &LogLine) -> (&'static str, hex_project::ElementColor) {
+    use hex_project::ElementColor;
+    match line.event.as_ref().map(|event| event.level.as_str()) {
+        Some("error") => ("error", ElementColor::Red),
+        Some("warn") => ("warn", ElementColor::Amber),
+        Some("info") => ("info", ElementColor::Blue),
+        Some("debug") => ("debug", ElementColor::Gray),
+        Some("trace") => ("trace", ElementColor::Gray),
+        Some(_) => ("other", ElementColor::Gray),
+        None if line.text.starts_with("diagnostics_loss ") => ("loss", ElementColor::Amber),
+        None => ("context", ElementColor::Gray),
+    }
+}
+
 impl Render for Viewer {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snapshot = self.snapshot.clone();
@@ -462,6 +612,28 @@ impl Render for Viewer {
                         let selected = selection
                             .as_ref()
                             .is_some_and(|range| range.contains(&index));
+                        let background = theme::color(if selected {
+                            theme::PaletteRole::Hover
+                        } else {
+                            theme::PaletteRole::Background
+                        });
+                        let foreground = theme::readable_text(
+                            background,
+                            theme::color(theme::PaletteRole::Text),
+                        );
+                        let secondary = theme::readable_text(
+                            background,
+                            theme::color(theme::PaletteRole::Muted),
+                        );
+                        let (level, color) = level_badge(line);
+                        let badge = theme::element_colors(color);
+                        let category: String = line
+                            .event
+                            .as_ref()
+                            .map_or("—", |event| event.category.as_str())
+                            .chars()
+                            .take(24)
+                            .collect();
                         Some(
                             div()
                                 .id(("log-line", index))
@@ -473,17 +645,39 @@ impl Render for Viewer {
                                 .gap(px(8.0))
                                 .px(px(8.0))
                                 .overflow_hidden()
-                                .bg(rgb(theme::color(if selected {
-                                    theme::PaletteRole::Hover
-                                } else {
-                                    theme::PaletteRole::Background
-                                })))
+                                .bg(rgb(background))
+                                .text_color(rgb(foreground))
                                 .child(
                                     div()
                                         .w(px(92.0))
                                         .flex_shrink_0()
-                                        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                                        .text_color(rgb(secondary))
                                         .child(theme::text(time)),
+                                )
+                                .child(
+                                    div()
+                                        .debug_selector(move || format!("log-level-{index}"))
+                                        .w(px(60.0))
+                                        .h(px(18.0))
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(2.0))
+                                        .bg(rgb(badge.accent))
+                                        .text_color(rgb(badge.accent_text))
+                                        .child(theme::text(level)),
+                                )
+                                .child(
+                                    div()
+                                        .debug_selector(move || format!("log-category-{index}"))
+                                        .w(px(80.0))
+                                        .flex_shrink_0()
+                                        .truncate()
+                                        .text_color(rgb(secondary))
+                                        .child(theme::text(hex_session::service::text::verbatim(
+                                            category,
+                                        ))),
                                 )
                                 .child(
                                     div()
@@ -590,6 +784,11 @@ impl Render for Viewer {
                     .child(
                         control("copy selection")
                             .on_click(cx.listener(|view, _, _, cx| view.copy_selection(cx))),
+                    )
+                    .child(
+                        control("copy all")
+                            .debug_selector(|| "log-copy-all".into())
+                            .on_click(cx.listener(|view, _, _, cx| view.copy_all(cx))),
                     )
                     .child(
                         control("bottom")
@@ -921,4 +1120,66 @@ mod tests {
         });
         std::fs::remove_dir_all(dir).unwrap();
     }
+
+    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
+    fn severity_badges_keep_rows_readable_and_copy_original_records(cx: &mut gpui::TestAppContext) {
+        let dir = std::env::temp_dir().join(format!("hex-viewer-levels-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session-400-1.log");
+        let mut content = "session_started log_schema=3 segment=0 build=fixture\n".to_owned();
+        for (index, level) in ["error", "warn", "info", "debug", "trace", "future"]
+            .iter()
+            .enumerate()
+        {
+            let sequence = index + 1;
+            content.push_str(&format!("event level={level} category=audio unix_nanos={sequence} elapsed_nanos={sequence} sequence={sequence} truncated=false message=\"original {level} Message\"\n"));
+        }
+        content.push_str("older untyped context\ndiagnostics_loss queue_full=1\n");
+        std::fs::write(&path, &content).unwrap();
+        let handle = cx.add_window(|_, cx| Viewer::new(path.clone(), cx));
+        cx.run_until_parked();
+        let viewer = handle.root(cx).unwrap();
+        let visual = &mut gpui::VisualTestContext::from_window(*handle, cx);
+        for width in [850.0, 1200.0] {
+            visual.simulate_resize(gpui::size(px(width), px(600.0)));
+            visual.run_until_parked();
+            for index in 0..9 {
+                let row = visual
+                    .debug_bounds(Box::leak(format!("log-row-{index}").into_boxed_str()))
+                    .unwrap();
+                let badge = visual
+                    .debug_bounds(Box::leak(format!("log-level-{index}").into_boxed_str()))
+                    .expect("every record has an explicit level or context label");
+                let category = visual
+                    .debug_bounds(Box::leak(format!("log-category-{index}").into_boxed_str()))
+                    .unwrap();
+                let message = visual
+                    .debug_bounds(Box::leak(format!("log-message-{index}").into_boxed_str()))
+                    .unwrap();
+                assert!(badge.left() >= row.left() && badge.bottom() <= row.bottom());
+                assert!(badge.right() <= category.left() && category.right() <= message.left());
+                assert!(message.right() <= row.right());
+                visual.simulate_click(row.center(), gpui::Modifiers::default());
+                visual.run_until_parked();
+                viewer.update(visual, |view, cx| view.copy_selection(cx));
+                visual.run_until_parked();
+                viewer.read_with(visual, |view, cx| {
+                    assert_eq!(view.selection, Some(index));
+                    let original = &view.snapshot.as_ref().unwrap().lines[index].text;
+                    assert_eq!(original, content.lines().nth(index).unwrap());
+                    let copied = cx.read_from_clipboard().unwrap().text().unwrap();
+                    assert!(
+                        copied.ends_with(&format!("{original}\n")),
+                        "copy keeps original case and structured fields"
+                    );
+                });
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
+
+#[cfg(test)]
+#[path = "log_viewer/copy_tests.rs"]
+mod copy_tests;
