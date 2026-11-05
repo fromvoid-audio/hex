@@ -365,6 +365,7 @@ public:
         if ([NSThread isMainThread] || !configured || !active || processing.load() || processing_fault.load() || quarantined.load()) return false;
         if (processing_thread != std::thread::id{} && processing_thread != std::this_thread::get_id()) return false;
         processing_thread = std::this_thread::get_id();
+        host->bind_processing_thread();
         if (processor->setProcessing(true) != kResultOk) { processing_fault.store(true); return false; }
         processing.store(true);
         return true;

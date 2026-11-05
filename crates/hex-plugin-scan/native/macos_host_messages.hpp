@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <pthread.h>
 
 namespace hex_instance {
 using namespace Steinberg;
@@ -24,10 +25,10 @@ template<typename Char> bool text_length(const Char* value,size_t maximum,size_t
     return false;
 }
 
-// Permanently constructed in the owning Host pool. Last release only returns a
-// slot and its Host lease; payload reset and reuse happen on main. There is no
-// allocation/free, lock, dispatch or foreign call on message release. Host retains
-// its control lease through instance retirement, including unresolved leftovers.
+// Permanently constructed in the owning Host pool. Each lease confines payload
+// access to its creating thread, including a synchronous receiver on that lane.
+// References can be released on any thread. Last release returns the slot and
+// its Host lease. Host retains its control lease through instance retirement.
 class HostMessage final : public IMessage, public IAttributeList {
     enum class Kind { Empty, Integer, Floating, Text, Binary };
     struct Attribute {
@@ -42,11 +43,13 @@ class HostMessage final : public IMessage, public IAttributeList {
     std::array<Attribute,HOST_ATTRIBUTE_COUNT> values{};
     std::atomic<uint32> references{0};
     FUnknown* owner=nullptr;
+    pthread_t payload_thread=nullptr;
     bool attributes_only=false, named=false;
     char message_id[HOST_IDENTIFIER_BYTES+1]{};
+    bool on_payload_thread() const { return pthread_equal(payload_thread,pthread_self()); }
     Attribute* find(AttrID id,bool create=false) {
         size_t length=0;
-        if (![NSThread isMainThread] || !text_length(id,HOST_IDENTIFIER_BYTES,length)) return nullptr;
+        if (!on_payload_thread() || !text_length(id,HOST_IDENTIFIER_BYTES,length)) return nullptr;
         Attribute* empty=nullptr;
         for (auto& value:values) {
             if (value.kind!=Kind::Empty && std::strcmp(value.id,id)==0) return &value;
@@ -57,13 +60,13 @@ class HostMessage final : public IMessage, public IAttributeList {
     }
 public:
     void bind(FUnknown* host) { owner=host; }
-    bool in_use() const { return references.load(std::memory_order_acquire)!=0; }
     bool acquire(bool attributes) {
-        if (![NSThread isMainThread] || in_use() || !owner) return false;
+        uint32 available=0;
+        if (!owner || !references.compare_exchange_strong(available,1,std::memory_order_acq_rel)) return false;
+        owner->addRef();
+        payload_thread=pthread_self();
         for (auto& value:values) value.kind=Kind::Empty;
         attributes_only=attributes; named=false; message_id[0]=0;
-        owner->addRef();
-        references.store(1,std::memory_order_release);
         return true;
     }
     uint32 PLUGIN_API addRef() override { return ++references; }
@@ -85,16 +88,16 @@ public:
         addRef(); return kResultOk;
     }
     FIDString PLUGIN_API getMessageID() override {
-        return [NSThread isMainThread] && named?message_id:nullptr;
+        return on_payload_thread() && named?message_id:nullptr;
     }
     void PLUGIN_API setMessageID(FIDString id) override {
-        if (![NSThread isMainThread]) return;
+        if (!on_payload_thread()) return;
         size_t length=0;
         named=text_length(id,HOST_IDENTIFIER_BYTES,length);
         if (named) std::memmove(message_id,id,length+1);
     }
     IAttributeList* PLUGIN_API getAttributes() override {
-        return [NSThread isMainThread]?static_cast<IAttributeList*>(this):nullptr;
+        return on_payload_thread()?static_cast<IAttributeList*>(this):nullptr;
     }
     tresult PLUGIN_API setInt(AttrID id,int64 number) override {
         auto* value=find(id,true); if (!value) return kResultFalse;
