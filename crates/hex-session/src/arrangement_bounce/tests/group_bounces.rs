@@ -309,7 +309,7 @@ fn group_range_refuses_sources_and_sidechain_keys_crossing_its_boundary() {
         .command(Command::InsertDevice {
             track: selected,
             before: None,
-            state: compressor,
+            state: compressor.clone(),
         })
         .unwrap()
     else {
@@ -341,4 +341,211 @@ fn group_range_refuses_sources_and_sidechain_keys_crossing_its_boundary() {
         .unwrap();
     let isolated = isolated(session.project(), &target, &plan[0], false).unwrap();
     assert_eq!(isolated.sidechains(), session.project().sidechains());
+
+    let Created::Device(external) = session
+        .command(Command::InsertDevice {
+            track: outside,
+            before: None,
+            state: compressor,
+        })
+        .unwrap()
+    else {
+        panic!("external compressor");
+    };
+    session
+        .command(Command::SetSidechain {
+            device: external,
+            source: Some(midi),
+        })
+        .unwrap();
+    assert!(
+        session
+            .project()
+            .plan_arrangement_bounce(&target, false)
+            .is_ok()
+    );
+    assert_eq!(
+        session
+            .project()
+            .plan_arrangement_bounce(&BounceTarget::Track(selected), true)
+            .unwrap_err()
+            .0,
+        "cannot mute group children used as external sidechain keys"
+    );
+}
+
+#[test]
+fn whole_group_prints_one_child_and_preserves_existing_descendants_and_console() {
+    let folder = Folder::new();
+    let (mut session, midi, midi_clip) = fixture_at_rate(8_000);
+    let audio = audio_track(&mut session, &folder, "audio", [0.3, -0.2]);
+    let muted = audio_track(&mut session, &folder, "muted", [0.8, 0.75]);
+    session
+        .command(Command::Mute {
+            track: muted,
+            muted: true,
+        })
+        .unwrap();
+    let inner = group(&mut session, &[midi, audio], "inner");
+    let selected = group(&mut session, &[inner, muted], "selected");
+    session
+        .command(Command::InsertDevice {
+            track: inner,
+            before: None,
+            state: overdrive(),
+        })
+        .unwrap();
+    session
+        .command(Command::InsertDevice {
+            track: selected,
+            before: None,
+            state: overdrive(),
+        })
+        .unwrap();
+    let Created::Scene(scene) = session
+        .command(Command::AddScene {
+            name: "independent".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene");
+    };
+    session
+        .command(Command::CopyArrangementMidiToSession {
+            source: midi_clip,
+            scene,
+        })
+        .unwrap();
+    let audio_clip = session.project().track(audio).unwrap().clips()[0].id();
+    session
+        .command(Command::CopyArrangementAudioClipToSession {
+            source: audio_clip,
+            scene,
+        })
+        .unwrap();
+
+    let target = BounceTarget::Track(selected);
+    session
+        .command(Command::ToggleSolo {
+            track: audio,
+            exclusive: false,
+        })
+        .unwrap();
+    assert_eq!(
+        session
+            .project()
+            .plan_arrangement_bounce(&target, true)
+            .unwrap_err()
+            .0,
+        "unsolo the group children before bouncing in place"
+    );
+    assert!(session.undo());
+    let plan = session
+        .project()
+        .plan_arrangement_bounce(&target, true)
+        .unwrap();
+    assert_eq!(plan.len(), 1, "child console cells are not printed");
+    assert_eq!(
+        (plan[0].track, plan[0].start, plan[0].end),
+        (selected, 4_000, 8_000)
+    );
+
+    let tap = aligned_tap(&session, 8_032);
+    assert!(
+        tap[8_000..].iter().flatten().any(|s| s.abs() > 1e-4),
+        "group effects have a real tail"
+    );
+    session
+        .command(Command::Gain {
+            track: selected,
+            gain: 0.6,
+        })
+        .unwrap();
+    session
+        .command(Command::Balance {
+            track: selected,
+            balance: 0.1,
+        })
+        .unwrap();
+    let live_before = aligned_tap(&session, 8_032);
+    let mut original = session.project().snapshot();
+    let control = hex_export::ExportControl::default();
+    assert!(control.cancel());
+    assert!(
+        session
+            .bounce_arrangement(target.clone(), true, &folder.0, &control, None)
+            .is_err()
+    );
+    assert_eq!(session.project().snapshot(), original);
+    let (Created::Clips { first, last }, _) = session
+        .bounce_arrangement(
+            target,
+            true,
+            &folder.0,
+            &hex_export::ExportControl::default(),
+            None,
+        )
+        .unwrap()
+    else {
+        panic!("whole group bounce");
+    };
+    assert_eq!(first, last);
+    let project = session.project();
+    let result = &project.tracks()[1];
+    assert_eq!(result.parent_group(), Some(selected));
+    assert_eq!(result.clips()[0].id(), first);
+    assert!(!result.muted() && result.devices().is_empty());
+    let group = project.track(selected).unwrap();
+    assert!(group.clips().is_empty() && group.devices().is_empty());
+    assert_eq!((group.gain(), group.balance()), (0.6, 0.1));
+    let clip = project.clip(first).unwrap();
+    assert_eq!(clip.start(), 4_000);
+    let samples = session.audio(clip.asset()).unwrap().frames();
+    assert!(
+        samples.len() > 4_032,
+        "bounded whole-track tail extends the material"
+    );
+    assert!(
+        samples[..4_032]
+            .iter()
+            .zip(&tap[4_000..])
+            .all(|(a, b)| (a[0] - b[0]).abs() <= 1e-7 && (a[1] - b[1]).abs() <= 1e-7)
+    );
+    let live_after = aligned_tap(&session, 8_032);
+    // The whole-track file starts at the earliest authored clip. Normal
+    // latency-compensated playback can have filter pre-ringing before it.
+    assert!(live_after[..4_000].iter().all(|frame| *frame == [0.0; 2]));
+    for (offset, (a, b)) in live_after[4_000..]
+        .iter()
+        .zip(&live_before[4_000..])
+        .enumerate()
+    {
+        let frame = 4_000 + offset;
+        assert!(
+            (a[0] - b[0]).abs() <= 1e-7 && (a[1] - b[1]).abs() <= 1e-7,
+            "original children are silent and printed devices run once, frame {frame}: {a:?} != {b:?}"
+        );
+    }
+
+    let adopted = project.snapshot();
+    assert_eq!(adopted.session, original.session);
+    assert_eq!(adopted.assets.len(), original.assets.len() + 1);
+    let mut originals_with_mutes = original.tracks[1..].to_vec();
+    for track in &mut originals_with_mutes {
+        track.muted = true;
+    }
+    assert_eq!(&adopted.tracks[2..], &originals_with_mutes);
+    assert!(session.undo());
+    let undone = session.project().snapshot();
+    assert!(undone.next_id > original.next_id);
+    original.next_id = undone.next_id;
+    assert_eq!(undone, original);
+    assert!(session.redo());
+    assert_eq!(session.project().snapshot(), adopted);
+    assert_eq!(
+        hex_storage::decode(&hex_storage::encode(session.project()).unwrap())
+            .unwrap()
+            .snapshot(),
+        adopted
+    );
 }
