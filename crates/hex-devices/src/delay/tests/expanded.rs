@@ -968,8 +968,12 @@ fn tail_split_applies_external_output_gain_at_the_requested_offset() {
         .unwrap();
     let mut old =
         split_test_chain_with_automation(&configured, true, Default::default(), automation.clone());
-    let mut next =
-        split_test_chain_with_automation(&configured, false, Default::default(), automation);
+    let mut next = split_test_chain_with_automation(
+        &configured,
+        false,
+        Default::default(),
+        automation.clone(),
+    );
     let mut split = next.prepare_tail_split_at(&old, 0).unwrap();
     old.begin_block();
     next.begin_block();
@@ -1024,6 +1028,49 @@ fn tail_split_applies_external_output_gain_at_the_requested_offset() {
     old.rollback_block();
     next.rollback_block();
     split.rollback_block();
+    for (old_bypassed, program) in [
+        (true, hex_lattice::PreparedParameterAutomation::default()),
+        (false, automation),
+    ] {
+        let mut old = split_test_chain_with_automation(
+            &configured,
+            old_bypassed,
+            Default::default(),
+            program.clone(),
+        );
+        let mut next = split_test_chain_with_automation(
+            &configured,
+            !old_bypassed,
+            Default::default(),
+            program,
+        );
+        let mut split = next.prepare_tail_split_at(&old, 0).unwrap();
+        old.begin_block();
+        next.begin_block();
+        split.begin_block().unwrap();
+        let mut a = [[7.0; 2]; 1];
+        let mut b = [[8.0; 2]; 1];
+        let mut observed = false;
+        assert!(
+            split
+                .process_with_controls(
+                    &mut old,
+                    &mut next,
+                    &[[1.0; 2]],
+                    &mut a,
+                    &mut b,
+                    11,
+                    None,
+                    None,
+                    Some(external),
+                    Some(&mut |_, _, _, _, _, _| observed = true),
+                )
+                .is_err()
+        );
+        assert_eq!(a, [[7.0; 2]; 1]);
+        assert_eq!(b, [[8.0; 2]; 1]);
+        assert!(!observed);
+    }
 }
 
 #[test]

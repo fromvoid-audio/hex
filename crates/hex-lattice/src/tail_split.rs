@@ -3,8 +3,7 @@
 //! This is a borrowed signal operation, not resource custody, graph admission,
 //! routing or an output-tail owner. The caller retains both chains and must
 //! begin, commit or roll back their block transactions together with this ramp.
-//! The caller must retain
-//! the exact old and new owners throughout the transition, and retain the old
+//! The caller must retain the exact old and new owners throughout the transition, and retain the old
 //! owner until its actual signal history has drained. Identity checks do not
 //! replace that custody contract or protect against a dropped owner's address
 //! being reused.
@@ -12,6 +11,7 @@ use crate::{
     DeviceContractError, NativeInstrumentClock, NativeRuntimeChain, OutputTail, RefuseForeign,
     StereoFrame,
 };
+use hex_lattice_contract::DeviceAutomationTarget::HostOutputGain;
 
 /// Borrowed pre/post-node observation of a combined tail-split signal.
 pub type TailSplitObserver<'a> = dyn for<'frames> FnMut(
@@ -167,8 +167,10 @@ impl TailSplit {
     }
 
     /// Process the successor using the normal validated input and automation
-    /// path. Observations describe the full input and summed audible output;
-    /// application receipts remain speculative until the caller commits.
+    /// path. Matching external windows require an enabled, prepared output
+    /// gain stage. Observations describe the full input and summed output.
+    /// A transient application is speculative; the enclosing render commits
+    /// the block and the output sink owns delivery confirmation.
     #[allow(clippy::too_many_arguments)]
     pub fn process_with_controls(
         &mut self,
@@ -235,6 +237,19 @@ impl TailSplit {
                 context.applied = None;
             }
             return Err(DeviceContractError::InvalidDescriptor);
+        }
+        if let Some(window) = external
+            && window.identity.owner() == self.owner
+            && window.identity.device_id() == self.device_id
+            && !window.values.targets().is_empty()
+            && (successor.bypassed
+                || !successor.automation.has_host_target(HostOutputGain)
+                || window.values.targets() != [HostOutputGain])
+        {
+            if let Some(context) = transient.as_deref_mut() {
+                context.applied = None;
+            }
+            return Err(DeviceContractError::UnsupportedProcessingClass);
         }
         if let Some(observer) = observer.as_mut() {
             observer(

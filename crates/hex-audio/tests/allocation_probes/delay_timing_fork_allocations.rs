@@ -222,8 +222,9 @@ fn delay_tail_split_control_and_observation_are_allocation_free() {
     old.set_metering(true);
     next.set_metering(true);
     let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 1).unwrap();
-    let operation =
-        NativeTransientOperation::Set(NativeTransientValue::HostOutputGain(HostGain::ZERO));
+    let operation = NativeTransientOperation::Set(NativeTransientValue::HostOutputGain(
+        HostGain::from_db(-6.0).unwrap(),
+    ));
     let mut context = NativeTransientProcessing::new(NativeTransientInput {
         identity,
         operation,
