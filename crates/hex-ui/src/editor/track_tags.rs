@@ -340,8 +340,7 @@ impl EditorView {
                     })
                     .into()
                 })
-                .child(label)
-                .child(overflow),
+                .children([label, overflow]),
         )
     }
     pub(super) fn track_tag_filter_control(
