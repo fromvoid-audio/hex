@@ -18,7 +18,26 @@ using namespace Steinberg;using namespace Steinberg::Vst;
 namespace {
 enum Failure : uint32_t { Configuration=1,Admission=2,ClassFailure=3,Setup=4,Presentation=5,Capture=6,
     Processing=7,ProtocolFailure=8,Cancelled=9,Teardown=10,HostControl=11,Unexpected=12,InstanceOpen=13,Restore=14,
-    Quiescence=15,Resume=16 };
+    Quiescence=15,Resume=16,SetupState=17,SetupConfiguration=18,SetupPrecision=19,
+    SetupTopology=20,SetupArrangementRefused=21,SetupArrangementMismatch=22,
+    SetupProcessing=23,SetupActivation=24 };
+// Keep existing frame shape and old stage codes. New setup reasons remain
+// ordinary refusal codes for an older supervisor.
+Failure setup_failure(hex_instance::ConfigurationResult result) {
+    using Result=hex_instance::ConfigurationResult;
+    switch(result) {
+        case Result::Prepared: return Setup;
+        case Result::InvalidState: return SetupState;
+        case Result::InvalidConfiguration: return SetupConfiguration;
+        case Result::UnsupportedPrecision: return SetupPrecision;
+        case Result::UnsupportedTopology: return SetupTopology;
+        case Result::ArrangementRefused: return SetupArrangementRefused;
+        case Result::ArrangementMismatch: return SetupArrangementMismatch;
+        case Result::SetupRefused: return SetupProcessing;
+        case Result::ActivationRefused: return SetupActivation;
+    }
+    return Setup;
+}
 struct Refusal {}; // Expected local/SDK return-code refusal, never an exception from foreign code.
 // Main-lane wait after a published failure: at most `milliseconds` per call,
 // never dispatching foreign callbacks. Returns true once the peer has closed
@@ -216,7 +235,10 @@ int main(int argc,char** argv) {
             setup.sample_rate=config->rate;setup.maximum_frames=config->maximum;
             setup.input_channels=config->inputs;setup.output_channels=config->outputs;
             setup.input_enabled=config->inputs!=0;
-            if(instance.configure(setup)!=hex_instance::ConfigurationResult::Prepared) throw Refusal{};
+            const auto configured=instance.configure(setup);
+            if(configured!=hex_instance::ConfigurationResult::Prepared) {
+                failure=setup_failure(configured);throw Refusal{};
+            }
             failure=HostControl;instance.dispatch_host_callbacks();
             if(instance.host_refusals()) throw Refusal{};
             auto latency=instance.reported_latency_on_control();

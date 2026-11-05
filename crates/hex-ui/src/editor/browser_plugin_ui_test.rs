@@ -112,6 +112,14 @@ fn browser_vst3_effect_double_click_reaches_worker_and_unavailable_terminal_reti
 fn unavailable_effect_activation(cx: &mut TestAppContext, pointer: bool) {
     cx.update(crate::editor::bind_editor_keys);
     let (handle, editor, track, directory, _) = browser_drag_fixture(cx);
+    let mut log = pointer.then(|| {
+        let log = hex_diagnostics::SessionLog::start(directory.0.join("vst3-diagnostics")).unwrap();
+        cx.update(|cx| {
+            crate::diagnostics::install_session_log(cx, Ok(log.handle()));
+            crate::diagnostics::install_action_diagnostics(cx, true);
+        });
+        log
+    });
     let module = directory.0.canonicalize().unwrap().join("Original.vst3");
     let mut catalog = original_plugin_catalog(module);
     let class = &mut catalog.entries[0]
@@ -203,6 +211,21 @@ fn unavailable_effect_activation(cx: &mut TestAppContext, pointer: bool) {
         );
         assert_eq!(view.worker_requests_pending, 0);
     });
+    if let Some(log) = log.as_mut() {
+        log.shutdown().unwrap();
+        let trace = std::fs::read_to_string(log.path()).unwrap();
+        let records: Vec<_> = trace
+            .lines()
+            .filter(|line| line.contains("vst3_load"))
+            .collect();
+        assert_eq!(records.len(), 2);
+        assert!(records[0].contains("stage=submitted"));
+        assert!(records[1].contains("stage=refused"));
+        for record in records {
+            assert!(record.contains("Original Processor") && record.contains("rate_hz=48000"));
+            assert!(!record.contains("Original.vst3"));
+        }
+    }
 }
 
 #[gpui::test]
