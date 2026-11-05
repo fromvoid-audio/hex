@@ -249,6 +249,47 @@ fn colliding_tempo_point_crops_the_audio_tail_like_a_global_tempo_edit() {
 }
 
 #[test]
+fn silent_left_extension_uses_arrangement_overwrite_only_after_preparation() {
+    let mut f = fixture();
+    f.editor
+        .execute(Command::MoveClip {
+            clip: f.original,
+            track: f.track,
+            start: 1500,
+        })
+        .unwrap();
+    let Created::Clip(peer) = f.editor.execute(audio(f.track, f.asset, 700, 500)).unwrap() else {
+        panic!("peer");
+    };
+    let before = f.editor.project().snapshot();
+    let trim = Command::TrimClipEdge {
+        clip: f.original,
+        edge: hex_project::TrimEdge::Left,
+        frame: 1000,
+    };
+    let refused = f.editor.execute_prepared::<(), Invalid>(trim.clone(), |_| {
+        Err(Invalid("fixture refused preparation"))
+    });
+    assert_eq!(refused.unwrap_err(), Invalid("fixture refused preparation"));
+    assert_eq!(f.editor.project().snapshot(), before);
+    f.editor.execute(trim).unwrap();
+    let edited = f.editor.project().clip(f.original).unwrap();
+    assert_eq!((edited.start(), edited.duration()), (1000, 1500));
+    assert_eq!(edited.audio_events().events[0].start, 500);
+    let retained = f.editor.project().clip(peer).unwrap();
+    assert_eq!(
+        (
+            retained.start(),
+            retained.duration(),
+            retained.source_length()
+        ),
+        (700, 300, 300)
+    );
+    assert!(f.editor.undo());
+    assert_eq!(f.editor.project().snapshot(), before);
+}
+
+#[test]
 fn audio_trim_fade_crop_and_repeat_resize_carve_only_the_newly_occupied_region() {
     use hex_project::{AudioViewResizeOperation, TrimEdge};
     for mode in 0..4 {

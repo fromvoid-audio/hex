@@ -7,8 +7,10 @@
 //! only render to new tracks. Audio grouping retains its separate pre-device
 //! contract. Whole-track intent covers all
 //! active Arrangement clips and every Console cell on one ordinary root track,
-//! independent of selection. Inactive Arrangement clips, hierarchy and external
-//! routing refuse; Console activation is retained on independently rendered cells.
+//! independent of selection. Whole-track hierarchy, inactive clips and external
+//! routing refuse. Group ranges print the selected subtree at its post-device
+//! tap and adopt one ordinary sibling. Console activation is retained on
+//! independently rendered cells.
 //! Clip and whole-track bakes retain the bounded release-tail policy. New-track
 //! clip bounces keep the selected span as the clip view; the tail stays in the
 //! rendered file beyond the view end.
@@ -89,6 +91,87 @@ pub struct BounceFile {
     pub path: PathBuf,
 }
 impl Project {
+    /// Contiguous source tree for one group submix. A shared native source
+    /// crossing the boundary has no isolated group signal in the current graph.
+    pub fn group_bounce_tracks(&self, group: TrackId) -> Result<&[crate::Track], Invalid> {
+        let hierarchy = self.track_hierarchy()?;
+        let range = hierarchy
+            .row(group)
+            .filter(|row| row.kind() == crate::TrackKind::Group)
+            .ok_or(Invalid("bounce group no longer exists"))?
+            .subtree_range();
+        let members = self
+            .tracks()
+            .get(range.clone())
+            .ok_or(Invalid("bounce group exceeds track inventory"))?;
+        let sources: BTreeSet<_> = members.iter().filter_map(crate::Track::source_id).collect();
+        if !sources.is_empty()
+            && self.tracks()[..range.start]
+                .iter()
+                .chain(&self.tracks()[range.end..])
+                .any(|track| {
+                    track
+                        .source_id()
+                        .is_some_and(|source| sources.contains(&source))
+                })
+        {
+            return Err(Invalid(
+                "cannot bounce a group with a shared source crossing its boundary",
+            ));
+        }
+        for route in self.sidechains() {
+            if members.iter().any(|track| {
+                track
+                    .devices()
+                    .iter()
+                    .any(|device| device.id() == route.device)
+            }) && !members.iter().any(|track| track.id() == route.source)
+            {
+                return Err(Invalid(
+                    "cannot bounce a group with an external sidechain key",
+                ));
+            }
+        }
+        Ok(members)
+    }
+
+    /// Reject unsupported adoption before a worker prepares or publishes files.
+    pub fn validate_bounce_adoption(
+        &self,
+        target: &BounceTarget,
+        in_place: bool,
+        adoption: BounceAdoption,
+    ) -> Result<(), Invalid> {
+        match adoption {
+            BounceAdoption::NewTracks => Ok(()),
+            BounceAdoption::NewTracksMutingSources
+                if !in_place
+                    && matches!(target, BounceTarget::Clips(_) | BounceTarget::Range(_)) =>
+            {
+                if let BounceTarget::Range(range) = target
+                    && range
+                        .tracks()
+                        .iter()
+                        .any(|&id| self.track(id).is_some_and(crate::Track::is_group))
+                {
+                    return Err(Invalid(
+                        "range bounce and mute does not support group output yet",
+                    ));
+                }
+                Ok(())
+            }
+            BounceAdoption::NewTracksMutingSources => Err(Invalid(
+                "bounce and mute requires selected clips or a time selection on new tracks",
+            )),
+            BounceAdoption::Drop(_) if !in_place && matches!(target, BounceTarget::Clips(_)) => {
+                Ok(())
+            }
+            BounceAdoption::Drop(_) => {
+                Err(Invalid("bounce drop requires dragged arrangement clips"))
+            }
+        }
+    }
+
     /// Validate a held-`b` clip drop before rendering: the same placement rules
     /// commit applies, so overlap and off-track drops refuse without a render.
     pub fn validate_bounce_drop(
@@ -248,6 +331,9 @@ impl Project {
                 if !range.tracks().contains(&track.id()) {
                     continue;
                 }
+                if track.is_group() {
+                    self.group_bounce_tracks(track.id())?;
+                }
                 start = range.start();
                 end = range.end();
             } else if clips.is_empty() {
@@ -296,20 +382,7 @@ pub(crate) fn commit(
     adoption: crate::BounceAdoption,
     files: Vec<BounceFile>,
 ) -> Result<Created, Invalid> {
-    match adoption {
-        BounceAdoption::NewTracks => {}
-        BounceAdoption::NewTracksMutingSources
-            if !in_place && matches!(target, BounceTarget::Clips(_) | BounceTarget::Range(_)) => {}
-        BounceAdoption::NewTracksMutingSources => {
-            return Err(Invalid(
-                "bounce and mute requires selected clips or a time selection on new tracks",
-            ));
-        }
-        BounceAdoption::Drop(_) if !in_place && matches!(target, BounceTarget::Clips(_)) => {}
-        BounceAdoption::Drop(_) => {
-            return Err(Invalid("bounce drop requires dragged arrangement clips"));
-        }
-    }
+    project.validate_bounce_adoption(&target, in_place, adoption)?;
     if let BounceTarget::AudioGroup { clips, range } = &target {
         if !in_place {
             return Err(Invalid("audio grouping replaces its selected clips"));
@@ -444,18 +517,28 @@ fn commit_planned(
             }
             (item.track, file.start)
         } else {
-            let index = project
-                .tracks
-                .iter()
-                .position(|t| t.id == item.track)
-                .ok_or(Invalid("bounce track changed"))?;
-            let before_track = project.tracks.get(index + 1).map(|t| t.id);
-            let Created::Track(id) = project.apply(Command::InsertTrack {
-                name: format!("{} bounce", original.name),
-                before_track,
-            })?
-            else {
-                return Err(Invalid("bounce track was not created"));
+            let name = format!("{} bounce", original.name);
+            let id = if original.is_group() {
+                let selection = crate::TrackSelectionIds::new(&[item.track])?;
+                let destination = project.track_destination_after_selection(&selection)?;
+                let index = project.track_hierarchy()?.insertion(destination)?;
+                let track = crate::edit::new_track(
+                    project,
+                    name,
+                    crate::TrackKind::Ordinary,
+                    destination.parent_group,
+                )?;
+                let id = track.id();
+                project.tracks.insert(index, track);
+                id
+            } else {
+                let index = project
+                    .tracks
+                    .iter()
+                    .position(|t| t.id == item.track)
+                    .ok_or(Invalid("bounce track changed"))?;
+                let before_track = project.tracks.get(index + 1).map(|t| t.id);
+                crate::edit::insert_track_before(project, name, before_track)?
             };
             let owner = project
                 .tracks

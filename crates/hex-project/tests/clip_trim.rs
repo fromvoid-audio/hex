@@ -109,7 +109,7 @@ fn loop_split_keeps_source_region_and_advances_phase_recursively() {
 }
 
 #[test]
-fn edge_trim_preserves_one_shot_silent_tail_and_clamps_to_legal_edges() {
+fn edge_trim_preserves_one_shot_silent_tail_and_pads_before_source() {
     let (mut editor, clip) = editor_with_clip(false, 10, 8, 4, 5, 20);
     editor
         .execute(Command::SetClipFades {
@@ -149,7 +149,11 @@ fn edge_trim_preserves_one_shot_silent_tail_and_clamps_to_legal_edges() {
     assert_eq!(trimmed.fade().span(), 10);
     assert_eq!(trimmed.fade().offset(), 0);
     let left_bound = prior.preview_edge_trim(TrimEdge::Left, 0, 20).unwrap();
-    assert_eq!((left_bound.start(), left_bound.source_offset()), (6, 0));
+    assert_eq!((left_bound.start(), left_bound.source_offset()), (0, 0));
+    assert_eq!(left_bound.duration(), 18);
+    let prefix_event = left_bound.audio_events().events[0];
+    assert_eq!((prefix_event.start, prefix_event.source_start), (6, 0));
+    assert_eq!(prefix_event.end, 18);
     let right_bound = trimmed
         .preview_edge_trim(TrimEdge::Right, u64::MAX, 20)
         .unwrap();
@@ -422,14 +426,7 @@ fn lower_fade_resize_uses_source_trim_preserves_upper_samples_and_one_step_histo
         for (edge, requested, expected_start, expected_duration, expected_in, expected_out) in [
             (TrimEdge::Left, 14, 14, 16, 6, 7),
             (TrimEdge::Right, 25, 10, 15, 8, 5),
-            (
-                TrimEdge::Left,
-                0,
-                if looping { 0 } else { 5 },
-                if looping { 30 } else { 25 },
-                if looping { 20 } else { 15 },
-                7,
-            ),
+            (TrimEdge::Left, 0, 0, 30, 20, 7),
             (
                 TrimEdge::Right,
                 u64::MAX,
@@ -459,18 +456,24 @@ fn lower_fade_resize_uses_source_trim_preserves_upper_samples_and_one_step_histo
                 (expected_start, expected_duration)
             );
             assert_eq!(
-                (changed.fade().fade_in(), changed.fade().fade_out()),
+                (
+                    changed.retained_fade().fade_in(),
+                    changed.retained_fade().fade_out()
+                ),
                 (expected_in, expected_out)
             );
             assert_eq!(
-                (changed.fade().in_curve(), changed.fade().out_curve()),
+                (
+                    changed.retained_fade().in_curve(),
+                    changed.retained_fade().out_curve()
+                ),
                 (700, -600)
             );
             match edge {
                 TrimEdge::Left => {
-                    assert_eq!(changed.fade().in_start(), 0);
+                    assert_eq!(changed.retained_fade().in_start(), 0);
                     assert_eq!(
-                        changed.fade().out_end_offset(),
+                        changed.retained_fade().out_end_offset(),
                         3.min(changed.duration() - 1)
                     );
                     if looping {
@@ -479,14 +482,18 @@ fn lower_fade_resize_uses_source_trim_preserves_upper_samples_and_one_step_histo
                             changed.source_phase(),
                             ((i128::from(changed.start()) - 10).rem_euclid(20)) as u64
                         );
+                    } else if changed.start() < 5 {
+                        assert_eq!((changed.source_offset(), changed.source_length()), (0, 25));
+                        let event = changed.audio_events().events[0];
+                        assert_eq!((event.start, event.source_start), (5, 0));
                     } else {
                         assert_eq!(changed.source_offset(), changed.start() - 5);
                         assert_eq!(changed.source_length(), 30 - changed.start());
                     }
                 }
                 TrimEdge::Right => {
-                    assert_eq!(changed.fade().out_end_offset(), 0);
-                    assert_eq!(changed.fade().in_start(), 2);
+                    assert_eq!(changed.retained_fade().out_end_offset(), 0);
+                    assert_eq!(changed.retained_fade().in_start(), 2);
                 }
             }
             let result = editor.project().clone();
