@@ -963,3 +963,48 @@ fn clip_loop_cycle_range_repeats_retained_pcm_without_changing_placement_or_hist
         assert_eq!(render(&redo), actual);
     }
 }
+
+#[test]
+fn accepted_sparse_root_peaks_keep_exact_samples_and_silence_at_distant_edges() {
+    use hex_project::AudioEventEdit;
+    let (mut session, clip, mut previous) = fixture();
+    for operation in [
+        AudioEventEdit::Split { at: 1_000 },
+        AudioEventEdit::Place {
+            event: 1,
+            start: 4_000_000,
+        },
+    ] {
+        previous = session
+            .command_prepared_revision(
+                Command::EditAudioEvents { clip, operation },
+                Some(&previous),
+            )
+            .unwrap()
+            .1;
+    }
+    let prepared = &previous.arrangement().audio_clip_views()[0];
+    assert!(prepared.sparse.is_some());
+    let views = session.audio_clip_waveforms.borrow();
+    let waveform = &views[&clip].waveform;
+    assert_eq!(waveform.source_frames, 4_001_000);
+    let exact = |a, b, budget| {
+        waveform
+            .bounded_exact_peaks_for_frames(a, b, budget)
+            .unwrap()
+    };
+    let zero = [waveform::Peak { min: 0.0, max: 0.0 }; 2];
+    assert_eq!(exact(20_000, 3_999_997, 0), zero);
+    let sample = prepared.audio.frames()[7_000];
+    assert_eq!(
+        exact(4_000_000, 4_000_001, 1),
+        sample.map(|s| waveform::Peak { min: s, max: s })
+    );
+    assert_eq!(
+        exact(3_999_997, 4_000_001, 1),
+        sample.map(|s| waveform::Peak {
+            min: s.min(0.0),
+            max: s.max(0.0)
+        })
+    );
+}
