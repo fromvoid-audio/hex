@@ -39,8 +39,8 @@ use hex_lattice_contract::{
 pub use hex_tuning::{TuningTable, Waveform as TuningWaveform};
 pub use meter::{DeviceMeter, DevicePeaks, DynamicsMeter};
 pub use owned_processor::{
-    OwnedProcessorRuntime, PreparedOwnedProcessorRuntime, PreparedProcessorFactory,
-    PreparedRuntimeDevice, PreparedRuntimeInstance,
+    MAX_RESERVED_BYPASS_FRAMES, OwnedProcessorRuntime, PreparedOwnedProcessorRuntime,
+    PreparedProcessorFactory, PreparedRuntimeDevice, PreparedRuntimeInstance,
 };
 pub use resources::{
     BorrowedDeviceResources, DevicePreparationContext, DeviceResourceIdentity, DeviceResourcePcm,
@@ -661,8 +661,11 @@ impl RuntimeEntry {
             self.supports_smoothed_bypass && old.supports_smoothed_bypass
         } else {
             self.algorithmic_latency_frames == old.algorithmic_latency_frames
-                && self.committed_aligned_dry.is_some()
-                && old.committed_aligned_dry.is_some()
+                && self
+                    .committed_aligned_dry
+                    .as_ref()
+                    .zip(old.committed_aligned_dry.as_ref())
+                    .is_some_and(|(new, old)| new.can_copy_from(old))
                 && self.runtime.can_inherit_from(&old.runtime)
         }
     }
@@ -1017,17 +1020,35 @@ impl NativeRuntimeChain {
                         PreparedProcessorFactory::Owned(value) => value.supports_smoothed_bypass(),
                         PreparedProcessorFactory::Foreign(_) => false,
                     });
-            let aligned_dry = if instance
+            let reserved_frames = instance
+                .definition
+                .as_ref()
+                .map(PreparedProcessorFactory::reserved_bypass_frames)
+                .transpose()?
+                .flatten();
+            let (committed_aligned_dry, scratch_aligned_dry) = if let Some(frames) = reserved_frames
+            {
+                (
+                    Some(bypass_ramp::AlignedDry::reserved(frames)?),
+                    Some(bypass_ramp::AlignedDry::reserved(frames)?),
+                )
+            } else if instance
                 .definition
                 .as_ref()
                 .is_some_and(PreparedProcessorFactory::supports_latency_aligned_bypass)
             {
-                Some(
-                    bypass_ramp::AlignedDry::new(latency)
-                        .ok_or(DeviceContractError::InvalidDescriptor)?,
+                (
+                    Some(
+                        bypass_ramp::AlignedDry::new(latency)
+                            .ok_or(DeviceContractError::InvalidDescriptor)?,
+                    ),
+                    Some(
+                        bypass_ramp::AlignedDry::new(latency)
+                            .ok_or(DeviceContractError::InvalidDescriptor)?,
+                    ),
                 )
             } else {
-                None
+                (None, None)
             };
             let runtime = RuntimeOwnership::prepare(instance.definition.as_ref())?;
             for &parameter in instance.automation.parameter_ids() {
@@ -1074,8 +1095,8 @@ impl NativeRuntimeChain {
                 supports_smoothed_bypass,
                 committed_bypass_ramp: bypass_ramp::BypassRamp::INACTIVE,
                 scratch_bypass_ramp: bypass_ramp::BypassRamp::INACTIVE,
-                committed_aligned_dry: aligned_dry,
-                scratch_aligned_dry: aligned_dry,
+                committed_aligned_dry,
+                scratch_aligned_dry,
                 runtime,
             });
         }
@@ -1396,7 +1417,8 @@ impl NativeRuntimeChain {
                     && candidate.automation == old.automation
                     && candidate.runtime.can_inherit_from(&old.runtime)
                     && candidate.runtime.can_retarget_from(&old.runtime);
-                let stable_processing_identity = candidate.owner == old.owner
+                let stable_processing_identity = Self::can_preserve_aligned_dry(candidate, old)
+                    && candidate.owner == old.owner
                     && candidate.device_id == old.device_id
                     && candidate.device_type == old.device_type
                     && candidate.runtime_version == old.runtime_version
@@ -1498,6 +1520,7 @@ impl NativeRuntimeChain {
                 entry.runtime.committed_is_quiescent()
                     && entry
                         .committed_aligned_dry
+                        .as_ref()
                         .is_none_or(bypass_ramp::AlignedDry::is_quiet)
             })
         })
@@ -1511,6 +1534,7 @@ impl NativeRuntimeChain {
                 entry.runtime.speculative_is_quiescent()
                     && entry
                         .scratch_aligned_dry
+                        .as_ref()
                         .is_none_or(bypass_ramp::AlignedDry::is_quiet)
             })
         })
@@ -1614,8 +1638,16 @@ impl NativeRuntimeChain {
                 && (!completed_foreign_only
                     || (matches!(&old.runtime, RuntimeOwnership::Foreign(_))
                         && old.runtime.committed_is_quiescent())))
-                || entry.runtime.can_inherit_from(&old.runtime)
+                || (entry.runtime.can_inherit_from(&old.runtime)
+                    && Self::can_preserve_aligned_dry(entry, old))
         })
+    }
+    fn can_preserve_aligned_dry(candidate: &RuntimeEntry, old: &RuntimeEntry) -> bool {
+        match (&candidate.committed_aligned_dry, &old.committed_aligned_dry) {
+            (Some(candidate), Some(old)) => candidate.can_copy_from(old) || old.is_quiet(),
+            (None, Some(old)) => old.is_quiet(),
+            _ => true,
+        }
     }
     fn same_runtime_identity(a: &RuntimeEntry, b: &RuntimeEntry) -> bool {
         a.owner == b.owner
@@ -1819,8 +1851,8 @@ impl NativeRuntimeChain {
                 && old.committed_aligned_dry.is_some()
                 && entry.algorithmic_latency_frames == old.algorithmic_latency_frames
             {
-                entry.committed_aligned_dry = old.committed_aligned_dry;
-                entry.scratch_aligned_dry = old.committed_aligned_dry;
+                bypass_ramp::copy_dry(&mut entry.committed_aligned_dry, &old.committed_aligned_dry);
+                bypass_ramp::copy_dry(&mut entry.scratch_aligned_dry, &old.committed_aligned_dry);
             }
             entry.committed_bypass_ramp = ramp;
             entry.scratch_bypass_ramp = ramp;
@@ -1843,7 +1875,7 @@ impl NativeRuntimeChain {
             entry.scratch_host_gains = entry.committed_host_gains;
             entry.scratch_matrix_ramp = entry.committed_matrix_ramp;
             entry.scratch_bypass_ramp = entry.committed_bypass_ramp;
-            entry.scratch_aligned_dry = entry.committed_aligned_dry;
+            bypass_ramp::copy_dry(&mut entry.scratch_aligned_dry, &entry.committed_aligned_dry);
             entry.runtime.begin();
         }
     }
@@ -2811,7 +2843,7 @@ impl NativeRuntimeChain {
             entry.committed_host_gains = entry.scratch_host_gains;
             entry.committed_matrix_ramp = entry.scratch_matrix_ramp;
             entry.committed_bypass_ramp = entry.scratch_bypass_ramp;
-            entry.committed_aligned_dry = entry.scratch_aligned_dry;
+            bypass_ramp::copy_dry(&mut entry.committed_aligned_dry, &entry.scratch_aligned_dry);
             entry.runtime.commit();
             let reading = entry.runtime.take_dynamics_meter();
             if let Some(reading) = reading.filter(|_| entry.metering && !entry.bypassed) {
@@ -2825,7 +2857,7 @@ impl NativeRuntimeChain {
             entry.scratch_host_gains = entry.committed_host_gains;
             entry.scratch_matrix_ramp = entry.committed_matrix_ramp;
             entry.scratch_bypass_ramp = entry.committed_bypass_ramp;
-            entry.scratch_aligned_dry = entry.committed_aligned_dry;
+            bypass_ramp::copy_dry(&mut entry.scratch_aligned_dry, &entry.committed_aligned_dry);
             entry.runtime.rollback();
         }
     }
@@ -2842,7 +2874,7 @@ impl NativeRuntimeChain {
             if let Some(history) = &mut entry.committed_aligned_dry {
                 history.reset();
             }
-            entry.scratch_aligned_dry = entry.committed_aligned_dry;
+            bypass_ramp::copy_dry(&mut entry.scratch_aligned_dry, &entry.committed_aligned_dry);
             entry.runtime.reset();
         }
     }

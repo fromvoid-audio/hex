@@ -7,9 +7,21 @@ use crate::{
 use hex_lattice_contract::{DeviceContractError, DeviceTypeId, NativeDeviceState};
 use std::{any::Any, sync::Arc};
 
+/// Maximum per-history dry reservation, in stereo frames. The pair is charged
+/// to the same aggregate native runtime budgets before construction.
+pub const MAX_RESERVED_BYPASS_FRAMES: u32 = 4096;
+
 /// Control-prepared owned transaction factory, independent of the legacy twin
 /// factory. Construction is fallible and finishes before audio publication.
 pub trait PreparedOwnedProcessorRuntime: Send + Sync {
+    /// Opt into warm, latency-aligned host bypass with an independently reserved
+    /// dry history pair. The exact configured delay must equal algorithmic
+    /// latency and lie in 1..=MAX_RESERVED_BYPASS_FRAMES. Processing/automation,
+    /// detector and finite-tail semantics must remain valid while bypassed.
+    /// No source/resource custody transfers; all default providers refuse.
+    fn reserved_bypass_latency_frames(&self) -> Option<u32> {
+        None
+    }
     /// Opt in when the host can smoothly mix dry and processed output during
     /// bypass changes while continuing this owner's existing signal history.
     fn supports_smoothed_bypass(&self) -> bool {
@@ -255,12 +267,38 @@ impl PreparedProcessorFactory {
             Self::Foreign(_) => 1,
         }
     }
+    /// Provider pair plus any explicitly reserved host dry pair. Inline host
+    /// history is charged in the entry itself. Compiler, bank and retained-tail
+    /// budgets all consume this one quote; providers still declare private DSP
+    /// storage independently for their actual runtime construction check.
     pub fn declared_pair_bytes(&self) -> Option<usize> {
-        match self {
+        let provider = match self {
             Self::Legacy(v) => v.declared_runtime_bytes().checked_mul(2),
             Self::Owned(v) => Some(v.declared_pair_bytes()),
-            Self::Foreign(_) => Some(0), // scalar declaration is already inline; host charges actual endpoints
+            Self::Foreign(_) => Some(0), // endpoint storage retains its host owner
+        }?;
+        let dry = match self.reserved_bypass_frames().ok()? {
+            Some(frames) => usize::try_from(frames)
+                .ok()?
+                .checked_mul(std::mem::size_of::<StereoFrame>())?
+                .checked_mul(2)?,
+            None => 0,
+        };
+        provider.checked_add(dry)
+    }
+    pub(crate) fn reserved_bypass_frames(&self) -> Result<Option<u32>, DeviceContractError> {
+        let Self::Owned(value) = self else {
+            return Ok(None);
+        };
+        let Some(frames) = value.reserved_bypass_latency_frames() else {
+            return Ok(None);
+        };
+        if !(1..=MAX_RESERVED_BYPASS_FRAMES).contains(&frames)
+            || value.algorithmic_latency_frames() != Some(frames)
+        {
+            return Err(DeviceContractError::InvalidDescriptor);
         }
+        Ok(Some(frames))
     }
     pub fn output_tail(&self) -> OutputTail {
         match self {
@@ -278,6 +316,9 @@ impl PreparedProcessorFactory {
     }
     pub(crate) fn supports_latency_aligned_bypass(&self) -> bool {
         matches!(self, Self::Legacy(value) if value.supports_latency_aligned_bypass())
+            || self
+                .reserved_bypass_frames()
+                .is_ok_and(|frames| frames.is_some())
     }
 
     /// Control-side legacy preview capability, when actually supported.
@@ -379,6 +420,65 @@ impl std::fmt::Debug for PreparedRuntimeInstance {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct ReservationQuote {
+        frames: Option<u32>,
+        latency: Option<u32>,
+    }
+    impl PreparedOwnedProcessorRuntime for ReservationQuote {
+        fn reserved_bypass_latency_frames(&self) -> Option<u32> {
+            self.frames
+        }
+        fn algorithmic_latency_frames(&self) -> Option<u32> {
+            self.latency
+        }
+        fn runtime_version(&self) -> u32 {
+            1
+        }
+        fn declared_pair_bytes(&self) -> usize {
+            17
+        }
+        fn output_tail(&self) -> OutputTail {
+            OutputTail::Finite { max_tail_frames: 0 }
+        }
+        fn create_runtime(&self) -> Result<Box<dyn OwnedProcessorRuntime>, DeviceContractError> {
+            Err(DeviceContractError::RuntimeAllocation)
+        }
+    }
+    #[test]
+    fn reserved_bypass_quote_refuses_unbounded_or_mismatched_latency() {
+        for (frames, latency) in [
+            (Some(0), Some(0)),
+            (
+                Some(MAX_RESERVED_BYPASS_FRAMES + 1),
+                Some(MAX_RESERVED_BYPASS_FRAMES + 1),
+            ),
+            (Some(12), None),
+            (Some(12), Some(13)),
+        ] {
+            let factory =
+                PreparedProcessorFactory::Owned(Arc::new(ReservationQuote { frames, latency }));
+            assert!(factory.declared_pair_bytes().is_none());
+            assert!(!factory.supports_latency_aligned_bypass());
+        }
+        for frames in [1, 16, 17, MAX_RESERVED_BYPASS_FRAMES] {
+            let factory = PreparedProcessorFactory::Owned(Arc::new(ReservationQuote {
+                frames: Some(frames),
+                latency: Some(frames),
+            }));
+            assert_eq!(
+                factory.declared_pair_bytes(),
+                Some(17 + 2 * frames as usize * std::mem::size_of::<StereoFrame>())
+            );
+            assert!(factory.supports_latency_aligned_bypass());
+        }
+        let default = PreparedProcessorFactory::Owned(Arc::new(ReservationQuote {
+            frames: None,
+            latency: Some(100),
+        }));
+        assert_eq!(default.declared_pair_bytes(), Some(17));
+        assert!(!default.supports_latency_aligned_bypass());
+    }
+
     struct Clock;
     impl NativeInstrumentClock for Clock {
         fn beat_at_offset(&self, offset: usize) -> Option<u64> {
