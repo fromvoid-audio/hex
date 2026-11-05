@@ -243,101 +243,144 @@ fn fixture_at_rate(
     (session, clip, revision)
 }
 
-#[test]
-fn global_bpm_admits_subframe_authored_markers_with_complete_prepared_history() {
+// Each rate/mode owns independent Sessions for all three tempos. Separate
+// cases let libtest balance the work without reducing the history/PCM matrix.
+mod subframe_tempo_history {
+    use super::*;
     use hex_project::{BeatTime, Tempo, WarpMarker, WarpMode, default_audio_warp};
-    for rate in [16_000, 44_100, 48_000] {
+
+    const TONES: WarpMode = WarpMode::Tones { grain_ms: 32 };
+    const BEATS: WarpMode = WarpMode::Beats {
+        preserve: hex_project::BeatsPreserve::Transients,
+        tail: hex_project::BeatsTail::Forward,
+        decay: 100,
+    };
+
+    fn check(rate: u32, mode: WarpMode) {
         for bpm in [30_000_000, 240_000_000, 480_000_000] {
-            for mode in [
-                WarpMode::RePitch,
-                WarpMode::Tones { grain_ms: 32 },
-                WarpMode::Beats {
-                    preserve: hex_project::BeatsPreserve::Transients,
-                    tail: hex_project::BeatsTail::Forward,
-                    decay: 100,
+            let (mut session, clip, previous) = fixture_at_rate(rate);
+            let length = u64::from(rate / 2);
+            let mut settings = default_audio_warp(
+                session.project().clip(clip).unwrap(),
+                session.project().tempo_map(),
+                mode,
+            )
+            .unwrap();
+            let tick = BeatTime::ONE.raw() / length;
+            settings.markers.insert(
+                1,
+                WarpMarker {
+                    source_frame: 1,
+                    beat: BeatTime::from_raw(tick),
                 },
-            ] {
-                let (mut session, clip, previous) = fixture_at_rate(rate);
-                let length = u64::from(rate / 2);
-                let mut settings = default_audio_warp(
-                    session.project().clip(clip).unwrap(),
-                    session.project().tempo_map(),
-                    mode,
+            );
+            settings.markers.insert(
+                2,
+                WarpMarker {
+                    source_frame: length - 1,
+                    beat: BeatTime::from_raw(BeatTime::ONE.raw() - tick),
+                },
+            );
+            let (_, previous) = session
+                .command_prepared_revision(
+                    Command::SetAudioClipWarp {
+                        clip,
+                        settings: Some(settings),
+                    },
+                    Some(&previous),
                 )
                 .unwrap();
-                let tick = BeatTime::ONE.raw() / length;
-                settings.markers.insert(
-                    1,
-                    WarpMarker {
-                        source_frame: 1,
-                        beat: BeatTime::from_raw(tick),
+            let before = session.project().clone();
+            let (_, changed) = session
+                .command_prepared_revision(
+                    Command::SetProjectTempo {
+                        tempo: Tempo::new(bpm).unwrap(),
                     },
-                );
-                settings.markers.insert(
-                    2,
-                    WarpMarker {
-                        source_frame: length - 1,
-                        beat: BeatTime::from_raw(BeatTime::ONE.raw() - tick),
-                    },
-                );
-                let (_, previous) = session
-                    .command_prepared_revision(
-                        Command::SetAudioClipWarp {
-                            clip,
-                            settings: Some(settings),
-                        },
-                        Some(&previous),
-                    )
-                    .unwrap();
-                let before = session.project().clone();
-                let (_, changed) = session
-                    .command_prepared_revision(
-                        Command::SetProjectTempo {
-                            tempo: Tempo::new(bpm).unwrap(),
-                        },
-                        Some(&previous),
-                    )
-                    .unwrap_or_else(|error| {
-                        panic!(
-                            "supported global bpm {bpm}, {mode:?} at {rate} must prepare: {error}"
-                        )
-                    });
-                let after = session.project().clone();
-                let output = after.tempo_map().beat_to_frame(BeatTime::ONE).unwrap();
-                assert_eq!(after.clip(clip).unwrap().duration(), output);
-                assert_eq!(
-                    after.clip(clip).unwrap().audio_edit().unwrap().domain,
-                    before.clip(clip).unwrap().audio_edit().unwrap().domain
-                );
-                let render = |revision: &hex_engine::PreparedRevision| {
-                    let mut renderer = hex_engine::Renderer::new(revision.arrangement());
-                    renderer.play();
-                    let mut out = vec![[0.0; 2]; output as usize];
-                    for chunk in out.chunks_mut(63) {
-                        renderer.render(chunk).unwrap();
-                    }
-                    assert!(out.iter().flatten().all(|sample| sample.is_finite()));
-                    assert!(out.iter().any(|frame| frame[0].abs() > 0.01));
-                    out
-                };
-                let pcm = render(&changed);
-                assert_eq!(
-                    render(&session.compile_prepared_revision(None).unwrap()),
-                    pcm
-                );
-                let undone = session
-                    .undo_prepared_revision(Some(&changed))
-                    .unwrap()
-                    .unwrap();
-                assert_eq!(session.project(), &before);
-                let redone = session
-                    .redo_prepared_revision(Some(&undone))
-                    .unwrap()
-                    .unwrap();
-                assert_eq!(session.project(), &after);
-                assert_eq!(render(&redone), pcm);
-            }
+                    Some(&previous),
+                )
+                .unwrap_or_else(|error| {
+                    panic!("supported global bpm {bpm}, {mode:?} at {rate} must prepare: {error}")
+                });
+            let after = session.project().clone();
+            let output = after.tempo_map().beat_to_frame(BeatTime::ONE).unwrap();
+            assert_eq!(after.clip(clip).unwrap().duration(), output);
+            assert_eq!(
+                after.clip(clip).unwrap().audio_edit().unwrap().domain,
+                before.clip(clip).unwrap().audio_edit().unwrap().domain
+            );
+            let render = |revision: &hex_engine::PreparedRevision| {
+                let mut renderer = hex_engine::Renderer::new(revision.arrangement());
+                renderer.play();
+                let mut out = vec![[0.0; 2]; output as usize];
+                for chunk in out.chunks_mut(63) {
+                    renderer.render(chunk).unwrap();
+                }
+                assert!(out.iter().flatten().all(|sample| sample.is_finite()));
+                assert!(out.iter().any(|frame| frame[0].abs() > 0.01));
+                out
+            };
+            let pcm = render(&changed);
+            assert_eq!(
+                render(&session.compile_prepared_revision(None).unwrap()),
+                pcm
+            );
+            let undone = session
+                .undo_prepared_revision(Some(&changed))
+                .unwrap()
+                .unwrap();
+            assert_eq!(session.project(), &before);
+            let redone = session
+                .redo_prepared_revision(Some(&undone))
+                .unwrap()
+                .unwrap();
+            assert_eq!(session.project(), &after);
+            assert_eq!(render(&redone), pcm);
         }
+    }
+
+    #[test]
+    fn repitch_16000_hz() {
+        check(16_000, WarpMode::RePitch);
+    }
+
+    #[test]
+    fn tones_16000_hz() {
+        check(16_000, TONES);
+    }
+
+    #[test]
+    fn beats_16000_hz() {
+        check(16_000, BEATS);
+    }
+
+    #[test]
+    fn repitch_44100_hz() {
+        check(44_100, WarpMode::RePitch);
+    }
+
+    #[test]
+    fn tones_44100_hz() {
+        check(44_100, TONES);
+    }
+
+    #[test]
+    fn beats_44100_hz() {
+        check(44_100, BEATS);
+    }
+
+    #[test]
+    fn repitch_48000_hz() {
+        check(48_000, WarpMode::RePitch);
+    }
+
+    #[test]
+    fn tones_48000_hz() {
+        check(48_000, TONES);
+    }
+
+    #[test]
+    fn beats_48000_hz() {
+        check(48_000, BEATS);
     }
 }
 #[test]
