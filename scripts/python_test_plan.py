@@ -29,7 +29,7 @@ REVIEWED_MODULES = frozenset({
     "test_stream_build_inputs", "test_terminal_progress", "test_ui_build_identity",
     # Viewer style fixtures exercise the standalone guard with temporary source;
     # changes to the guard itself still retain comprehensive discovery.
-    "test_ui_style_log_viewer",
+    "test_ui_style_log_viewer", "test_ui_style_browser_scrollbar",
     # Architecture fixtures exercise check-architecture.py policy/refusal logic;
     # that guard still runs for app source/doc edits. Policy/test edits fall back.
     "test_architecture",
