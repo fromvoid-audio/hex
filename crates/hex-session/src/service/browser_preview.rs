@@ -14,8 +14,9 @@
 //! Every job takes a cooperative cancellation flag. Decoding polls it every
 //! 16 KiB read and 65,536 PCM frames, conversion every 65,536 output frames and
 //! a waiter every [`LOADING_POLL`], so a superseded job stops within that
-//! bounded work and reports [`PreviewFailure::Cancelled`]. A cancelled or failed
-//! decode caches nothing.
+//! bounded work and reports [`PreviewFailure::Cancelled`]. Waveform peak scanning
+//! also polls at most every 65,536 frames, including for an already cached source.
+//! A cancelled or failed decode caches nothing.
 //!
 //! Does not own audition playback, publication to the audio callback or the
 //! browser's request sequencing; `hex-ui` decides which job is current.
@@ -23,7 +24,7 @@ use crate::resident_import::decode_resident_import_cancellable;
 use hex_engine::Audio;
 use hex_media::{
     ImportError, Limits, ResampleLimits, ResampleVersion, SourceFileIdentity,
-    waveform::{Waveform, summarize_peaks},
+    waveform::{Waveform, summarize_peaks_cancellable},
 };
 use std::{
     collections::VecDeque,
@@ -138,30 +139,7 @@ impl PreviewSources {
         cancel: &AtomicBool,
     ) -> Result<AudioPreview, PreviewFailure> {
         let source = self.source(path.as_ref(), cancel)?;
-        let source_frames = u64::try_from(source.frames().len())
-            .map_err(|_| PreviewFailure::Failed("source frame count exceeds range".into()))?;
-        let playback_frames = hex_project::converted_frame_count(
-            source_frames,
-            source.sample_rate(),
-            project_sample_rate,
-        )
-        .map_err(|error| PreviewFailure::Failed(error.0.into()))?;
-        // The same refusal audition conversion applies to its output buffer.
-        let playback_len = usize::try_from(playback_frames)
-            .ok()
-            .filter(|frames| *frames <= BROWSER_PREVIEW_FRAME_LIMIT)
-            .ok_or_else(|| {
-                PreviewFailure::from_import(ImportError::LimitExceeded("output frames"))
-            })?;
-        let peaks = summarize_peaks(&source, BROWSER_PREVIEW_BINS.min(playback_len))
-            .map_err(PreviewFailure::from_import)?;
-        let waveform =
-            Waveform::from_peaks(playback_len, peaks.bins).map_err(PreviewFailure::from_import)?;
-        Ok(AudioPreview {
-            playback_frames,
-            sample_rate: project_sample_rate,
-            waveform: Arc::new(waveform),
-        })
+        waveform_from_source(source, project_sample_rate, cancel)
     }
 
     /// Finite stereo PCM at the actual output rate for a browser one-shot.
@@ -242,6 +220,40 @@ impl PreviewSources {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+/// Post-decode waveform work shares the job's cancellation flag.
+fn waveform_from_source(
+    source: Audio,
+    project_sample_rate: u32,
+    cancel: &AtomicBool,
+) -> Result<AudioPreview, PreviewFailure> {
+    let source_frames = u64::try_from(source.frames().len())
+        .map_err(|_| PreviewFailure::Failed("source frame count exceeds range".into()))?;
+    let playback_frames = hex_project::converted_frame_count(
+        source_frames,
+        source.sample_rate(),
+        project_sample_rate,
+    )
+    .map_err(|error| PreviewFailure::Failed(error.0.into()))?;
+    // The same refusal audition conversion applies to its output buffer.
+    let playback_len = usize::try_from(playback_frames)
+        .ok()
+        .filter(|frames| *frames <= BROWSER_PREVIEW_FRAME_LIMIT)
+        .ok_or_else(|| PreviewFailure::from_import(ImportError::LimitExceeded("output frames")))?;
+    let peaks =
+        summarize_peaks_cancellable(&source, BROWSER_PREVIEW_BINS.min(playback_len), cancel)
+            .map_err(PreviewFailure::from_import)?;
+    let waveform =
+        Waveform::from_peaks(playback_len, peaks.bins).map_err(PreviewFailure::from_import)?;
+    if cancel.load(Ordering::Relaxed) {
+        return Err(PreviewFailure::Cancelled);
+    }
+    Ok(AudioPreview {
+        playback_frames,
+        sample_rate: project_sample_rate,
+        waveform: Arc::new(waveform),
+    })
 }
 
 impl Cache {
