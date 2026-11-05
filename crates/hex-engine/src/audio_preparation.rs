@@ -1422,17 +1422,16 @@ impl AudioPreparationCustody {
         resources: ConstructorResources<'_>,
     ) -> Result<u64, AudioStorageError> {
         let effects = resources.effects;
-        if let Some(input) = resources.native_input {
-            if crate::device_automation::native_parameter_input_target(
+        if let Some(input) = resources.native_input
+            && crate::device_automation::native_parameter_input_target(
                 project,
                 input.device(),
                 input.target(),
             )
             .map_err(|_| AudioStorageError::UnsupportedGraph)?
                 != input
-            {
-                return Err(AudioStorageError::SourceMismatch);
-            }
+        {
+            return Err(AudioStorageError::SourceMismatch);
         }
 
         let allow_sampler = resources.sampler.is_some();
@@ -1617,15 +1616,14 @@ impl AudioPreparationCustody {
                 {
                     return Err(AudioStorageError::SourceMismatch);
                 }
-                if let SourceKind::Streamed(meta) = &owner.kind {
-                    if meta.key().generation() != generation
+                if let SourceKind::Streamed(meta) = &owner.kind
+                    && (meta.key().generation() != generation
                         || meta.key().asset() != asset.id()
                         || meta.source_rate() != asset.source_sample_rate()
                         || meta.source_frames() != asset.source_frames()
-                        || meta.conversion_version() != asset.conversion_version()
-                    {
-                        return Err(AudioStorageError::SourceMismatch);
-                    }
+                        || meta.conversion_version() != asset.conversion_version())
+                {
+                    return Err(AudioStorageError::SourceMismatch);
                 }
                 let transformed = clip.audio_edit().is_some();
                 transformed::validate_sources(project, inputs, clip)?;

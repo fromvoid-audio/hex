@@ -216,12 +216,45 @@ fn gain_callback(mutable: bool, session: bool, solo_muted: bool) -> Result<(), B
             output, expected,
             "held voice must continue at its current frame, without restart"
         );
-        if gain == 0.0 {
-            assert!(output.iter().flatten().all(|v| *v == 0.0));
-        } else {
-            assert!(output.iter().flatten().any(|v| v.abs() > 1e-5));
-        }
+        assert!(output.iter().flatten().any(|v| v.abs() > 1e-5));
         control.reclaim();
+    }
+    // Let a final fade to zero finish, retaining the same allocation and
+    // callback/reference checks used for the rapid retargets above.
+    editor.execute(Command::Gain { track, gain: 0.0 })?;
+    let revision = prepare(&editor)?;
+    let mut next = Playback::try_from_prepared_with_session(Arc::clone(&revision))?;
+    next.try_inherit_runtime_from(&mut oracle)
+        .map_err(|e| format!("oracle inheritance: {e:?}"))?;
+    oracle = next;
+    control
+        .publish_with_policy_and_context_generation(
+            Playback::try_from_prepared_with_session(revision)?,
+            PublicationPolicy::InheritRuntime,
+            1,
+        )
+        .map_err(|_| "final publication")?;
+    for block in 0..2 {
+        let mut rendered = None;
+        let info = measure(|| {
+            callback.begin_block();
+            rendered = Some(callback.render(&mut output));
+        });
+        rendered.ok_or("missing render")??;
+        assert_eq!(
+            (
+                info.count_total,
+                info.bytes_total,
+                info.count_current,
+                info.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        oracle.render(&mut expected)?;
+        assert_eq!(output, expected);
+        if block == 1 {
+            assert!(output[112..].iter().flatten().all(|v| *v == 0.0));
+        }
     }
     Ok(())
 }

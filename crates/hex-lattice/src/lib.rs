@@ -19,6 +19,7 @@ mod matrix_ramp;
 mod meter;
 mod owned_processor;
 mod parameter_automation;
+mod tail_split;
 pub use foreign_processor::{
     ForeignProcessorNode, ForeignProcessors, PreparedForeignProcessor, RefuseForeign,
 };
@@ -28,6 +29,7 @@ pub use parameter_automation::{
     ParameterAutomationBlock, ParameterAutomationLane, ParameterAutomationPoint,
     PreparedParameterAutomation, PreparedParameterAutomationLane, PreparedParameterAutomationPoint,
 };
+pub use tail_split::TailSplit;
 mod resources;
 mod runtime_ownership;
 use hex_lattice_contract::{
@@ -977,9 +979,15 @@ impl NativeRuntimeChain {
             {
                 return Err(DeviceContractError::UnsupportedProcessingClass);
             }
-            let supports_smoothed_bypass = instance.definition.as_ref().is_none_or(|factory| {
-                matches!(factory, PreparedProcessorFactory::Legacy(value) if value.supports_smoothed_bypass())
-            });
+            let supports_smoothed_bypass =
+                instance
+                    .definition
+                    .as_ref()
+                    .is_none_or(|factory| match factory {
+                        PreparedProcessorFactory::Legacy(value) => value.supports_smoothed_bypass(),
+                        PreparedProcessorFactory::Owned(value) => value.supports_smoothed_bypass(),
+                        PreparedProcessorFactory::Foreign(_) => false,
+                    });
             let runtime = RuntimeOwnership::prepare(instance.definition.as_ref())?;
             for &parameter in instance.automation.parameter_ids() {
                 if instance.definition.as_ref().is_none_or(|factory| {
@@ -1310,7 +1318,9 @@ impl NativeRuntimeChain {
     /// candidate twins explicitly support retargeting from the old committed
     /// runtime, or when an unbypassed, unautomated memoryless entry changes
     /// only its static host matrix (the handoff then ramps it; see
-    /// `matrix_ramp`). Empty ranges and malformed ranges are refused.
+    /// `matrix_ramp`). A simultaneous bypass change also requires explicit
+    /// zero-latency bypass support, transferable history and unchanged host
+    /// gains, matrix and automation. Empty and malformed ranges are refused.
     pub fn can_retarget_parameters_from_range(
         &self,
         previous: &Self,
@@ -1333,6 +1343,19 @@ impl NativeRuntimeChain {
                     && !candidate.bypassed
                     && candidate.automation.is_empty()
                     && old.automation.is_empty();
+                let bypass_retarget = candidate.bypassed != old.bypassed
+                    && candidate.configuration.is_some()
+                    && old.configuration.is_some()
+                    && candidate.algorithmic_latency_frames == Some(0)
+                    && old.algorithmic_latency_frames == Some(0)
+                    && candidate.supports_smoothed_bypass
+                    && old.supports_smoothed_bypass
+                    && candidate.input_gain == old.input_gain
+                    && candidate.output_gain == old.output_gain
+                    && candidate.matrix == old.matrix
+                    && candidate.automation == old.automation
+                    && candidate.runtime.can_inherit_from(&old.runtime)
+                    && candidate.runtime.can_retarget_from(&old.runtime);
                 let stable_processing_identity = candidate.owner == old.owner
                     && candidate.device_id == old.device_id
                     && candidate.device_type == old.device_type
@@ -1341,7 +1364,7 @@ impl NativeRuntimeChain {
                     && candidate
                         .runtime
                         .foreign_configuration_matches(&old.runtime)
-                    && candidate.bypassed == old.bypassed
+                    && (candidate.bypassed == old.bypassed || bypass_retarget)
                     && (candidate.matrix == old.matrix
                         || static_matrix_retarget
                         || ((!candidate.automation.is_empty() || !old.automation.is_empty())
@@ -1556,6 +1579,50 @@ impl NativeRuntimeChain {
             && a.sample_rate == b.sample_rate
     }
 
+    /// Check whether one exact processor can seed a pristine successor with
+    /// timing/control state while its donor retains all signal history. This
+    /// does not transfer custody and unsupported providers refuse.
+    pub fn can_fork_timing_without_signal_history_at(&self, previous: &Self, index: usize) -> bool {
+        let Some((new, old)) = self.entries.get(index).zip(previous.entries.get(index)) else {
+            return false;
+        };
+        Self::same_runtime_identity(new, old)
+            && new.input_gain == old.input_gain
+            && new.output_gain == old.output_gain
+            && new.matrix == old.matrix
+            && new.automation == old.automation
+            && match (&new.configuration, &old.configuration) {
+                (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b) || a.processing_eq(b),
+                _ => false,
+            }
+            && new
+                .runtime
+                .can_fork_timing_without_signal_history_from(&old.runtime)
+    }
+
+    /// Seed the checked successor without moving or copying donor signal history.
+    /// Refusal leaves both runtime owners untouched; all work is bounded and
+    /// provider implementations must not allocate, block or destroy storage.
+    pub fn fork_timing_without_signal_history_at(
+        &mut self,
+        previous: &Self,
+        index: usize,
+    ) -> Result<(), DeviceContractError> {
+        if !self.can_fork_timing_without_signal_history_at(previous, index) {
+            return Err(DeviceContractError::InvalidDescriptor);
+        }
+        let Some((new, old)) = self.entries.get_mut(index).zip(previous.entries.get(index)) else {
+            return Err(DeviceContractError::InvalidDescriptor);
+        };
+        if !new
+            .runtime
+            .fork_timing_without_signal_history_from(&old.runtime)
+        {
+            return Err(DeviceContractError::InvalidDescriptor);
+        }
+        Ok(())
+    }
+
     /// Copy compatible histories to both twins after a successful preflight.
     /// Identity also includes the stable device type, runtime version and rate;
     /// persisted state versions may change while physical history is retained.
@@ -1686,7 +1753,10 @@ impl NativeRuntimeChain {
                         && entry.automation == old.automation
                         && match (&entry.configuration, &old.configuration) {
                             (Some(a), Some(b)) => {
-                                std::sync::Arc::ptr_eq(a, b) || a.processing_eq(b)
+                                std::sync::Arc::ptr_eq(a, b)
+                                    || a.processing_eq(b)
+                                    || (entry.runtime.can_inherit_from(&old.runtime)
+                                        && entry.runtime.can_retarget_from(&old.runtime))
                             }
                             _ => false,
                         } =>
@@ -3680,6 +3750,84 @@ mod tests {
         fn as_any(&self) -> &dyn StdAny {
             self
         }
+    }
+
+    struct BypassRetargetPrepared {
+        smooth: bool,
+        retarget: bool,
+        latency: u32,
+    }
+
+    impl PreparedNativeProcessor for BypassRetargetPrepared {
+        fn supports_smoothed_bypass(&self) -> bool {
+            self.smooth
+        }
+        fn runtime_version(&self) -> u32 {
+            1
+        }
+        fn declared_runtime_bytes(&self) -> usize {
+            std::mem::size_of::<RetargetRuntime>()
+        }
+        fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
+            Box::new(RetargetRuntime {
+                allow: self.retarget,
+            })
+        }
+        fn algorithmic_latency_frames(&self) -> Option<u32> {
+            Some(self.latency)
+        }
+    }
+
+    #[test]
+    fn combined_bypass_retarget_requires_both_capabilities_and_stable_host_contract() {
+        let kind = DeviceTypeId::from_static("test.bypass-retarget");
+        let chain = |payload, bypassed, smooth, retarget, latency, gain| {
+            let state = NativeDeviceState::new(kind, 1, vec![payload])
+                .unwrap()
+                .with_output_gain_db(gain)
+                .unwrap();
+            NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+                meter: Default::default(),
+                owner: ProcessorChainOwner::Track(1),
+                device_id: 3,
+                device_type: kind,
+                matrix: StereoMatrix::identity(),
+                bypassed,
+                sample_rate: 48_000,
+                configuration: Some(std::sync::Arc::new(state)),
+                definition: Some(std::sync::Arc::new(BypassRetargetPrepared {
+                    smooth,
+                    retarget,
+                    latency,
+                })),
+            }])
+            .unwrap()
+        };
+        let old = chain(1, false, true, true, 0, 0.0);
+        let mut unsupported = chain(1, true, true, true, 0, 0.0);
+        assert!(!unsupported.can_fork_timing_without_signal_history_at(&old, 0));
+        assert!(
+            unsupported
+                .fork_timing_without_signal_history_at(&old, 0)
+                .is_err()
+        );
+        let mut missing_configuration = chain(2, true, true, true, 0, 0.0);
+        missing_configuration.entries[0].configuration = None;
+        assert!(!missing_configuration.can_retarget_parameters_from_range(&old, 0..1));
+        assert!(chain(2, true, true, true, 0, 0.0).can_retarget_parameters_from_range(&old, 0..1));
+        let old_without_opt_in = chain(1, false, false, true, 0, 0.0);
+        assert!(
+            !chain(2, true, true, true, 0, 0.0)
+                .can_retarget_parameters_from_range(&old_without_opt_in, 0..1)
+        );
+        assert!(
+            !chain(2, true, false, true, 0, 0.0).can_retarget_parameters_from_range(&old, 0..1)
+        );
+        assert!(
+            !chain(2, true, true, false, 0, 0.0).can_retarget_parameters_from_range(&old, 0..1)
+        );
+        assert!(!chain(2, true, true, true, 1, 0.0).can_retarget_parameters_from_range(&old, 0..1));
+        assert!(!chain(2, true, true, true, 0, 6.0).can_retarget_parameters_from_range(&old, 0..1));
     }
 
     #[test]

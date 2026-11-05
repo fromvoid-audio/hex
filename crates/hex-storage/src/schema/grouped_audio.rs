@@ -246,34 +246,33 @@ fn decode_version(mut value: serde_json::Value, version: u64) -> Result<Project,
     if object.get("version").and_then(|v| v.as_u64()) != Some(version) {
         return Err(StorageError::Invalid("invalid grouped audio version"));
     }
-    if version == 41 {
-        if let Some(states) = object
+    if version == 41
+        && let Some(states) = object
             .get_mut("grouped_audio")
             .and_then(|v| v.as_array_mut())
-        {
-            for state in states {
-                let row = state
-                    .as_object_mut()
-                    .ok_or(StorageError::Invalid("invalid draft grouped41 row"))?;
-                let clip = row.remove("clip").ok_or(StorageError::Invalid(
-                    "draft grouped41 clip identity missing",
-                ))?;
-                if let Some(events) = row.get_mut("events").and_then(|v| v.as_array_mut()) {
-                    for event in events {
-                        if let Some(event) = event.as_object_mut() {
-                            if event.contains_key("fade") {
-                                return Err(StorageError::Invalid(
-                                    "draft grouped41 cannot contain event fade fields",
-                                ));
-                            }
-                            event.insert("fade".into(), serde_json::Value::Null);
+    {
+        for state in states {
+            let row = state
+                .as_object_mut()
+                .ok_or(StorageError::Invalid("invalid draft grouped41 row"))?;
+            let clip = row.remove("clip").ok_or(StorageError::Invalid(
+                "draft grouped41 clip identity missing",
+            ))?;
+            if let Some(events) = row.get_mut("events").and_then(|v| v.as_array_mut()) {
+                for event in events {
+                    if let Some(event) = event.as_object_mut() {
+                        if event.contains_key("fade") {
+                            return Err(StorageError::Invalid(
+                                "draft grouped41 cannot contain event fade fields",
+                            ));
                         }
+                        event.insert("fade".into(), serde_json::Value::Null);
                     }
                 }
-                let group = std::mem::take(row);
-                row.insert("clip".into(), clip);
-                row.insert("group".into(), serde_json::Value::Object(group));
             }
+            let group = std::mem::take(row);
+            row.insert("clip".into(), clip);
+            row.insert("group".into(), serde_json::Value::Object(group));
         }
     }
     let Inventory(states) = serde_json::from_value(

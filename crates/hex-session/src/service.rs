@@ -45,6 +45,7 @@ mod startup_failure_tests;
 pub use shutdown::{DROP_SHUTDOWN_BOUND, ShutdownError};
 mod streamed_export;
 pub use streamed_export::{StreamedExportRequest, StreamedExporter};
+mod publication_wait;
 mod resident_audio;
 mod resident_preview;
 mod resident_seek;
@@ -60,7 +61,8 @@ pub use audio_sink::{
     NativeSamplerRetryFacts, ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata,
     ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
     ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationMetadata,
-    ResidentPublicationPolicy, ResidentPublicationRefusal, ResidentRuntimeLoop, WorkerAudioSink,
+    ResidentPublicationPolicy, ResidentPublicationReadiness, ResidentPublicationRefusal,
+    ResidentRuntimeLoop, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -1176,8 +1178,9 @@ impl Service {
     }
 
     /// Compose the desktop audio adapter without opening a device on the caller.
-    /// The existing worker negotiates the actual rate before creating Session;
-    /// failed output setup retains canonical editing/saving in offline mode.
+    /// The adapter supplies the initial project rate without waiting for device
+    /// opening. Delayed results use its existing polling contract; failed output
+    /// setup retains canonical editing/saving in offline mode.
     pub fn with_audio_sink(
         history_capacity: usize,
         max_resident_frames: u64,
@@ -1570,13 +1573,11 @@ impl Service {
                 | hex_project::BounceTarget::AudioGroup { clips: ids, .. },
             ..
         } = &request
-        {
-            if ids.is_empty()
+            && (ids.is_empty()
                 || ids.len() > hex_project::MAX_CLIPS
-                || ids.capacity() > hex_project::MAX_CLIPS
-            {
-                return Err(SubmitError::Busy(request, BusyReason::InvalidBounceTarget));
-            }
+                || ids.capacity() > hex_project::MAX_CLIPS)
+        {
+            return Err(SubmitError::Busy(request, BusyReason::InvalidBounceTarget));
         }
         if matches!(&request, Request::ResidentArrangementSeek(_)) {
             if self.arrangement_seek.is_some() {
@@ -2494,6 +2495,34 @@ fn run_worker(
             control_lanes_pending(resident_seek.as_ref(), &export_lane)
         },
     ) {
+        let queued = if events.resident_publication_enabled()
+            && session.audio_mode() == DocumentAudioMode::Resident
+            && matches!(
+                &queued.request,
+                Request::Edit(
+                    Command::ToggleDeviceBypass { .. }
+                        | Command::SetDeviceBypass { .. }
+                        | Command::ReplaceDeviceState { .. }
+                ) | Request::DeviceGesture(
+                    GestureRequest::Change { .. }
+                        | GestureRequest::ChangePair { .. }
+                        | GestureRequest::ChangeSnapshot { .. }
+                        | GestureRequest::ChangeEqCreation { .. }
+                        | GestureRequest::Commit { .. }
+                        | GestureRequest::CommitPair { .. }
+                        | GestureRequest::CommitSnapshot { .. }
+                        | GestureRequest::CommitEqCreation { .. }
+                        | GestureRequest::Cancel { .. }
+                )
+            ) {
+            match events.defer_publication(queued) {
+                Some(queued) => queued,
+                None => continue,
+            }
+        } else {
+            queued
+        };
+        let publication_wait_failure = queued.publication_wait_failure;
         // Requests whose handler takes the stopped Arrangement lease first begin
         // it here; a live callback that has not answered parks the request and
         // returns this worker to its loop (see `stopped_arrangement`, #4544).
@@ -2530,7 +2559,11 @@ fn run_worker(
             queued
         };
         events.begin_diagnostics(&queued, project_generation, revision);
-        events.begin_request(&document_intent, queued.document_intent);
+        events.begin_request(
+            &document_intent,
+            queued.document_intent,
+            queued.publication_waited,
+        );
         let save_correlation = queued.save_correlation;
         let (request, mut import_decode) = truncated_import::admit(queued.request);
         let solo_request = matches!(
@@ -2557,13 +2590,12 @@ fn run_worker(
                 | Request::Open(_)
                 | Request::OpenWith { .. }
                 | Request::OpenWithAudioMode { .. }
-        ) {
-            if let Some(gain) = pending_sampler_parameter.take() {
-                gain.cancel().store(true, Ordering::Release);
-                sampler_edit_complete = Some(gain.request_id());
-                if let Some(audio) = events.sampler_edit_audio() {
-                    audio.cancel_sampler_edit();
-                }
+        ) && let Some(gain) = pending_sampler_parameter.take()
+        {
+            gain.cancel().store(true, Ordering::Release);
+            sampler_edit_complete = Some(gain.request_id());
+            if let Some(audio) = events.sampler_edit_audio() {
+                audio.cancel_sampler_edit();
             }
         }
         let mut midi_take_complete = match &request {
@@ -3183,6 +3215,9 @@ fn run_worker(
             .err(),
             _ => None,
         });
+        if barrier_failure.is_none() {
+            barrier_failure = publication_wait_failure.map(str::to_owned);
+        }
         if save_correlation.is_some_and(|identity| {
             identity.project_generation != project_generation || identity.revision != revision
         }) {
@@ -3469,6 +3504,24 @@ fn run_worker(
                 save_complete = true;
             }
         } else if let Some(reason) = barrier_failure {
+            if let Request::DeviceGesture(gesture) = &request {
+                gesture_request = true;
+                gesture_protocol_ack = true;
+                gesture_ack = Some(GestureAck {
+                    key: gesture.key(),
+                    phase: gesture.phase(),
+                    sequence: gesture.sequence(),
+                    accepted: false,
+                    preview_retained: matches!(
+                        gesture.phase(),
+                        crate::device_gesture::GesturePhase::Commit
+                            | crate::device_gesture::GesturePhase::Cancel
+                    ) && device_gesture
+                        .snapshot()
+                        .is_some_and(|active| active.key == gesture.key()),
+                    reason: Some(reason.clone()),
+                });
+            }
             sampler_edit_complete = match &request {
                 Request::SamplerEdit(edit) => Some(edit.request_id()),
                 _ => None,
@@ -6805,10 +6858,9 @@ fn run_worker(
                             Ok(playback) => {
                                 live_expression_complete = Some(Arc::clone(&input));
                                 if let Some(previous) = live_expression.replace(Arc::clone(&input))
+                                    && !Arc::ptr_eq(&previous, &input)
                                 {
-                                    if !Arc::ptr_eq(&previous, &input) {
-                                        previous.cancel();
-                                    }
+                                    previous.cancel();
                                 }
                                 keyboard_tuning_hint = playback.computer_keyboard_tuning_hint();
                                 computer_keyboard_playback = Some(playback);
@@ -6906,10 +6958,9 @@ fn run_worker(
                             Ok((project, prepared, playback, is_preview)) => {
                                 if let Some(previous) =
                                     audition_activation.replace(Arc::clone(&input))
+                                    && !Arc::ptr_eq(&previous, &input)
                                 {
-                                    if !Arc::ptr_eq(&previous, &input) {
-                                        previous.cancel();
-                                    }
+                                    previous.cancel();
                                 }
                                 computer_keyboard_playback = Some(playback);
                                 if is_preview {
@@ -7768,10 +7819,10 @@ fn run_worker(
         ) {
             return;
         }
-        if let Some(job) = export_job {
-            if let Err(event) = export_lane.submit(job) {
-                let _ = export_events.try_send(event);
-            }
+        if let Some(job) = export_job
+            && let Err(event) = export_lane.submit(job)
+        {
+            let _ = export_events.try_send(event);
         }
         if let Some(event) = export_completion {
             let _ = export_events.try_send(event);

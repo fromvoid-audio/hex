@@ -459,6 +459,14 @@ public:
     tresult PLUGIN_API setActive(TBool enabled) override {
         if (!enabled && fault==25) trace(7); // sensitivity: teardown after unknown startup
         if (!control() || !setup || processing) return kResultFalse;
+        if(observed.stops) {
+            if(fault>=100 && !module_event(enabled?'A':'D')) return kResultFalse;
+            if((fault==100 && !enabled) || (fault==101 && enabled)) { trace(24);return kResultFalse; }
+            if((fault==102 && !enabled) || (fault==103 && enabled)) {
+                trace(25);throw std::runtime_error("original SDK reactivation exception");
+            }
+            if(fault==99 && enabled && !active) { restored_latency=7;delay={};delay_cursor=0; }
+        }
         active=enabled;return kResultOk;
     }
     tresult PLUGIN_API setProcessing(TBool enabled) override {
@@ -655,9 +663,9 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     // The production helper never reads this environment variable.
     const auto* selected=std::getenv("HEX_ORIGINAL_INSTANCE_VARIANT");
     if (selected) {
-        const auto length=std::strlen(selected);if (!length || length>2) return false;
+        const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>98) return false;next_fault=value;
+        if (value>103) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

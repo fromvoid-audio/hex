@@ -624,12 +624,33 @@ impl SessionPlayback {
                             external,
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
-                    let override_gain = self
-                        .gain_recording_override
-                        .filter(|_| self.revision.gain_recording_track() == Some(route.id));
-                    let mixed = compensation
-                        .fader(track, index, override_gain, processed)
-                        .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                    let recording_track = self.revision.gain_recording_track() == Some(route.id);
+                    let override_gain = self.gain_recording_override.filter(|_| recording_track);
+                    let live_gain = if recording_track {
+                        compensation.fader_content_frame(index).and_then(|frame| {
+                            self.live_gain_scratch.next(
+                                track,
+                                frame,
+                                override_gain,
+                                self.revision.arrangement().sample_rate(),
+                            )
+                        })
+                    } else {
+                        None
+                    };
+                    let mix = compensation.fader_mix(track, index, live_gain);
+                    let mixed = if let Some(mix) = mix {
+                        let fader = &mut self.track_fader_scratch[index];
+                        let mix = if track.has_gain_automation() || override_gain.is_some() {
+                            fader.follow(mix.channel_gain());
+                            mix
+                        } else {
+                            mix.with_channel_gain(fader.next())
+                        };
+                        mix.apply_frame(processed)
+                    } else {
+                        [0.0; 2]
+                    };
                     // Retired tails retain their old post-fader output; they do
                     // not re-enter current authored sends or feeds.
                     let routed = if let Some(detached) = detached.as_ref() {

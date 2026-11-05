@@ -529,11 +529,11 @@ impl SessionPlayback {
             keyboard.set_expression(selected);
         }
         let mut observer = observer;
-        if let Some(compensation) = self.compensation.as_mut() {
-            if compensation.delays.begin_transaction().is_err() {
-                self.fail_midi_capture_render();
-                return Err(SessionPlaybackError::DeviceRuntime);
-            }
+        if let Some(compensation) = self.compensation.as_mut()
+            && compensation.delays.begin_transaction().is_err()
+        {
+            self.fail_midi_capture_render();
+            return Err(SessionPlaybackError::DeviceRuntime);
         }
         if let Some(keyboard) = &mut self.computer_keyboard {
             keyboard.begin_block();
@@ -553,6 +553,9 @@ impl SessionPlayback {
                 .flatten()
                 .any(|tail| tail.output_active && tail.return_id().is_some());
         let ordinary_monitor = !self.playing && !main_tails_only;
+        let track_count = self.routes.len();
+        self.track_fader_scratch[..track_count].copy_from_slice(&self.track_faders[..track_count]);
+        self.live_gain_scratch = self.live_gain;
         let result = if self.playing {
             self.render_playing(output, pages, &mut observer, &mut capture, sources, foreign)
         } else if main_tails_only {
@@ -599,19 +602,22 @@ impl SessionPlayback {
                 capture.invalidate();
             }
         } else {
-            if let Some(compensation) = self.compensation.as_mut() {
-                if compensation.delays.commit_transaction().is_err() {
-                    self.fail_midi_capture_render();
-                    if let Some(keyboard) = &mut self.computer_keyboard {
-                        keyboard.rollback();
-                    }
-                    for keyboard in &mut self.current_sampler_keyboards {
-                        keyboard.rollback();
-                    }
-                    output.fill([0.0; 2]);
-                    return Err(SessionPlaybackError::DeviceRuntime);
+            if let Some(compensation) = self.compensation.as_mut()
+                && compensation.delays.commit_transaction().is_err()
+            {
+                self.fail_midi_capture_render();
+                if let Some(keyboard) = &mut self.computer_keyboard {
+                    keyboard.rollback();
                 }
+                for keyboard in &mut self.current_sampler_keyboards {
+                    keyboard.rollback();
+                }
+                output.fill([0.0; 2]);
+                return Err(SessionPlaybackError::DeviceRuntime);
             }
+            self.track_faders[..track_count]
+                .copy_from_slice(&self.track_fader_scratch[..track_count]);
+            self.live_gain = self.live_gain_scratch;
             if ordinary_monitor {
                 // Main-only draining never staged these source/tail buffers.
                 std::mem::swap(&mut self.releases, &mut self.release_scratch);
@@ -813,11 +819,11 @@ impl SessionPlayback {
             if current_first_frame {
                 chunk_frames = chunk_frames.min(1);
             }
-            if let Some(next) = next_route {
-                if next > performance_frame {
-                    let until = usize::try_from(next - performance_frame).unwrap_or(usize::MAX);
-                    chunk_frames = chunk_frames.min(until);
-                }
+            if let Some(next) = next_route
+                && next > performance_frame
+            {
+                let until = usize::try_from(next - performance_frame).unwrap_or(usize::MAX);
+                chunk_frames = chunk_frames.min(until);
             }
             if let Some(region) = region {
                 let until_wrap = if arrangement_frame < region.start() {
@@ -1282,9 +1288,9 @@ impl SessionPlayback {
                 .get(index)
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
             let capture_id = OutputCaptureId::Track(self.route_scratch[index].id);
-            let recording_override = self.gain_recording_override.filter(|_| {
-                self.revision.gain_recording_track() == Some(self.route_scratch[index].id)
-            });
+            let recording_track =
+                self.revision.gain_recording_track() == Some(self.route_scratch[index].id);
+            let recording_override = self.gain_recording_override.filter(|_| recording_track);
             let stateful_effects = self
                 .device_chains
                 .get(index)
@@ -1304,14 +1310,19 @@ impl SessionPlayback {
                     .iter()
                     .any(|k| k.track() == self.route_scratch[index].id);
             let shared_source = revision.source_routing().is_shared(index);
+            let smoothing = self.track_fader_scratch[index].active()
+                && !track.has_gain_automation()
+                && recording_override.is_none();
             let buffered = shared_source
                 || live_target
                 || stateful_effects
                 || mutable_active
                 || !track.sends().is_empty()
                 || track.has_gain_automation()
+                || smoothing
                 || self.device_metering;
-            let ordered = shared_source || live_target || track.requires_ordered_processing();
+            let ordered =
+                shared_source || live_target || smoothing || track.requires_ordered_processing();
             let already_mixed = self.device_metering
                 && !ordered
                 && !stateful_effects
@@ -1370,7 +1381,7 @@ impl SessionPlayback {
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
-                            raw: live_target || shared_source,
+                            raw: live_target || shared_source || smoothing,
                             loop_fade,
                             timing: &timing,
                             table,
@@ -1433,7 +1444,7 @@ impl SessionPlayback {
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
-                            raw: live_target || shared_source,
+                            raw: live_target || shared_source || smoothing,
                             loop_fade,
                             timing: &timing,
                             table,
@@ -1669,16 +1680,33 @@ impl SessionPlayback {
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 }
                 for (frame_index, source) in render_output.iter_mut().enumerate() {
-                    let mix = if let Some(gain) = recording_override {
-                        track.recording_mix(gain)
-                    } else if track.has_gain_automation() {
-                        track.mix_at(
-                            arrangement_frame
-                                .checked_add(frame_index as u64)
-                                .ok_or(SessionPlaybackError::ArithmeticOverflow)?,
+                    let content_frame = arrangement_frame
+                        .checked_add(frame_index as u64)
+                        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                    let live_gain = if recording_track {
+                        self.live_gain_scratch.next(
+                            track,
+                            content_frame,
+                            recording_override,
+                            self.revision.arrangement().sample_rate(),
                         )
                     } else {
+                        None
+                    };
+                    let mix = if let Some(gain) = live_gain {
+                        track.recording_mix(gain)
+                    } else if track.has_gain_automation() {
+                        track.mix_at(content_frame)
+                    } else {
                         track.mix()
+                    };
+                    let mix = if track.has_gain_automation() || recording_override.is_some() {
+                        self.track_fader_scratch[index].follow(mix.channel_gain());
+                        mix
+                    } else if smoothing {
+                        mix.with_channel_gain(self.track_fader_scratch[index].next())
+                    } else {
+                        mix
                     };
                     let mix = if live_target {
                         mix.without_effects()
