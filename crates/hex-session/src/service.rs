@@ -683,6 +683,8 @@ pub enum Request {
     SamplerEdit(SamplerEdit),
     /// Worker-local continuation after a bounded native callback fence.
     ContinueSamplerEdit,
+    /// Patch the latest canonical device state. On resident output this waits
+    /// behind the current publication before preparing an edit of its own.
     SetDeviceParameter {
         device: hex_project::DeviceId,
         parameter: hex_lattice_contract::ParameterId,
@@ -2513,7 +2515,7 @@ fn run_worker(
                         | GestureRequest::CommitSnapshot { .. }
                         | GestureRequest::CommitEqCreation { .. }
                         | GestureRequest::Cancel { .. }
-                )
+                ) | Request::SetDeviceParameter { .. }
             ) {
             match events.defer_publication(queued) {
                 Some(queued) => queued,
@@ -3659,6 +3661,7 @@ fn run_worker(
                         && matches!(
                             gesture,
                             GestureRequest::Begin { .. }
+                                | GestureRequest::BeginTrackGains { .. }
                                 | GestureRequest::BeginSnapshot { .. }
                                 | GestureRequest::BeginEqCreation { .. }
                         ) {
@@ -5745,7 +5748,16 @@ fn run_worker(
                                 Ok((_, prepared)) if session.project() != &before_project => {
                                     unsaved = true;
                                     replacement_revision = Some(prepared);
-                                    status = Some("device parameter changed".into());
+                                    status = Some(
+                                        if events.resident_publication_enabled()
+                                            && session.audio_mode() == DocumentAudioMode::Resident
+                                        {
+                                            "resident edit accepted · waiting for audio"
+                                        } else {
+                                            "device parameter changed"
+                                        }
+                                        .into(),
+                                    );
                                 }
                                 Ok(_) => status = Some("no change".into()),
                                 Err(reason) => error = Some(hex_storage::text::lowercase_outside_verbatim(&reason.to_string())),

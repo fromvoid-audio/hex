@@ -5,7 +5,7 @@ use hex_session::device_gesture::{
     GestureKey, GestureRequest, GestureTarget, ParameterId, ParameterValue,
 };
 
-fn stereo_source(files: &Files) -> PathBuf {
+pub(super) fn stereo_source(files: &Files) -> PathBuf {
     let frames = 131_072_u32;
     let rate = 48_000_u32;
     let path = files.0.join("asymmetric-stereo.wav");

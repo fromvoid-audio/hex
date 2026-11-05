@@ -860,6 +860,13 @@ impl UtilityDefinition {
 }
 
 impl PreparedNativeProcessor for PreparedUtilityFilterRuntime {
+    fn supports_smoothed_bypass(&self) -> bool {
+        // Both static and automated zero-latency filters advance private history
+        // under bypass. The host can blend their complete output reversibly,
+        // without retaining a separately audible old filter suffix.
+        true
+    }
+
     fn parameter_automation_descriptor(
         &self,
         parameter: ParameterId,
@@ -1961,3 +1968,6 @@ mod tests {
 mod automation_tests;
 #[cfg(test)]
 mod width_ramp_tests;
+
+#[cfg(test)]
+mod bypass_tests;

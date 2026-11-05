@@ -95,6 +95,12 @@ impl PreparedReverb {
     }
 }
 impl PreparedNativeProcessor for PreparedReverb {
+    fn supports_smoothed_bypass(&self) -> bool {
+        // Zero latency and history advancement under bypass permit the host's
+        // reversible 5 ms blend without a second room or retained-tail owner.
+        true
+    }
+
     fn runtime_version(&self) -> u32 {
         3
     }
