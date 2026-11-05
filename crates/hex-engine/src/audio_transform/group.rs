@@ -143,7 +143,9 @@ impl AudioTransformPreparation {
             .ok_or(Invalid("grouped audio dependency missing"))?;
         let tempo = &anchor.root.tempo;
         let projection = AudioViewProjection::new(clip, tempo)?;
-        if clip.duration() > MAX_AUDIO_DOMAIN_FRAMES || projection.occurrence_count() > 8_192 {
+        if (packing.is_none() && clip.duration() > MAX_AUDIO_DOMAIN_FRAMES)
+            || projection.occurrence_count() > 8_192
+        {
             return Err(Invalid("grouped audio exceeds bounded placement work"));
         }
         // A single forward occurrence can be copied from its exact root

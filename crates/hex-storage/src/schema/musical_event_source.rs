@@ -1,7 +1,9 @@
 //! Schema70 gives musical events an independently retained source span.
 //! Schemas1–69 derive both clocks from the same root. An inventory beside
 //! schema69 identifies the arrangement clip and nested source path. The
-//! existing event codec still owns all event IDs, geometry and media.
+//! existing event codec still owns all event IDs, geometry and media. Schema71
+//! reuses this layout, allowing an empty musical inventory for extended frame
+//! roots. The top-level codec checks the schema-specific frame extent.
 use crate::{MUSICAL_EVENT_SOURCE_SCHEMA_VERSION, Project, SIDECHAIN_SCHEMA_VERSION, StorageError};
 use hex_project::{AudioClipEdit, BeatTime, MusicalEventSource, Snapshot, TrackContentSnapshot};
 use serde::{Deserialize, Serialize};
@@ -115,11 +117,9 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
     Ok(value)
 }
 
-pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
+pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError> {
     let mut value = super::audio_events::parse_unique(bytes)?;
-    if value.get("version").and_then(Value::as_u64)
-        != Some(MUSICAL_EVENT_SOURCE_SCHEMA_VERSION.into())
-    {
+    if value.get("version").and_then(Value::as_u64) != Some(version.into()) {
         return Err(StorageError::Invalid("invalid musical event source schema"));
     }
     let rows = value
@@ -128,10 +128,10 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         .ok_or(StorageError::Invalid(
             "musical event source inventory missing",
         ))?;
-    if rows
-        .as_array()
-        .is_none_or(|rows| rows.is_empty() || rows.len() > 2 * hex_project::MAX_CLIPS)
-    {
+    if rows.as_array().is_none_or(|rows| {
+        (rows.is_empty() && version == MUSICAL_EVENT_SOURCE_SCHEMA_VERSION)
+            || rows.len() > 2 * hex_project::MAX_CLIPS
+    }) {
         return Err(StorageError::Invalid(
             "invalid musical event source inventory",
         ));

@@ -37,7 +37,7 @@ fn render(callback: &mut prepared::Callback, output: &mut [Frame]) -> Result<(),
 #[test]
 fn moved_range_is_silent_outside_clip_then_revealed_with_original_pcm_without_callback_allocations()
 -> Result<(), Box<dyn Error>> {
-    const DESTINATION: u64 = 32_768;
+    const DESTINATION: u64 = hex_project::MAX_AUDIO_DOMAIN_FRAMES + 4096;
     for block in [1, 7, 64, 512] {
         let mut editor = Editor::new(Project::new(48_000)?, 8)?;
         let Created::Imported { clip, asset, .. } = editor.execute(Command::ImportAudioTrack {

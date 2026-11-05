@@ -550,7 +550,10 @@ fn sparse_native_arrangement_retains_only_event_pcm_and_recovers_source_bank() {
     }
     let mut prior_quote = None;
     let mut prior_retained = None;
-    for destination in [32_000, 4_000_000] {
+    for destination in [
+        32_000,
+        hex_project::MAX_AUDIO_DOMAIN_FRAMES as i64 + 4_000_000,
+    ] {
         let (project, mut bank, original) = fixture(false, false, 1);
         bank.reservation.handle_obligations = 64;
         let source_bank = bank.sources.as_ptr();
