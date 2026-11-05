@@ -324,7 +324,14 @@ public:
     uint32 PLUGIN_API release() override { return Processor::release(); }
     tresult PLUGIN_API queryInterface(const TUID iid,void** out) override {
         if (!out || !iid) return kInvalidArgument;
+        if ((fault==112 || fault==113) && same(iid,INLINE_UID_OF(IEditController))) {
+            *out=nullptr;return fault==112?kResultFalse:kResultOk;
+        }
+        if (fault==114 && same(iid,INLINE_UID_OF(IAudioProcessor))) {
+            *out=nullptr;return kResultFalse;
+        }
         if (same(iid,INLINE_UID_OF(IAudioPresentationLatency))) {
+            if (fault==112) { *out=nullptr;return kResultFalse; }
             *out=static_cast<IAudioPresentationLatency*>(this);addRef();return kResultOk;
         }
         return Processor::queryInterface(iid,out);
@@ -723,7 +730,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>111) return false;next_fault=value;
+        if (value>114) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

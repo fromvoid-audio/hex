@@ -44,9 +44,14 @@ class Instance final {
     std::thread::id processing_thread;
     std::atomic<bool> processing{false}, processing_fault{false}, quarantined{false};
 
+    // Some modules use kResultFalse to report an optional interface absent.
+    // A success with no object, or a failure with an object, is still malformed.
+    static bool interface_absent(tresult result,const FUnknown* object) {
+        return !object && (result==kNoInterface || result==kResultFalse);
+    }
     template<typename T> static bool optional(FUnknown* object, const TUID iid, T*& out) {
         const auto result = object->queryInterface(iid, reinterpret_cast<void**>(&out));
-        return (result == kResultOk && out) || (result == kNoInterface && !out);
+        return (result == kResultOk && out) || interface_absent(result,out);
     }
     static bool identity(FUnknown* left, FUnknown* right, bool& equal) {
         FUnknown* a = nullptr;
@@ -296,7 +301,7 @@ public:
             return std::nullopt;
         IAudioPresentationLatency* view=nullptr;
         const auto queried=component->queryInterface(INLINE_UID_OF(IAudioPresentationLatency),reinterpret_cast<void**>(&view));
-        if (queried==kNoInterface && !view) return false;
+        if (interface_absent(queried,view)) return false;
         const bool valid=queried==kResultOk && view;
         if (view) view->release();
         if (!valid) return std::nullopt;
@@ -307,7 +312,7 @@ public:
             return PresentationResult::InvalidState;
         IAudioPresentationLatency* view=nullptr;
         const auto queried=component->queryInterface(INLINE_UID_OF(IAudioPresentationLatency),reinterpret_cast<void**>(&view));
-        if (queried==kNoInterface && !view) return PresentationResult::Absent;
+        if (interface_absent(queried,view)) return PresentationResult::Absent;
         if (queried!=kResultOk || !view) { if (view) view->release();return PresentationResult::Refused; }
         const bool ok=(!configuration_.input_channels || view->setAudioPresentationLatencySamples(kInput,0,input)==kResultOk) &&
             view->setAudioPresentationLatencySamples(kOutput,0,output)==kResultOk;
