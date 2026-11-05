@@ -253,3 +253,35 @@ fn grouped_source_refuses_pitch_before_any_editor_source_read_changes() {
         .unwrap();
     assert_eq!(preview.original_waveform_frame(1, 150), Some(130));
 }
+
+#[test]
+fn legacy_source_larger_than_the_derived_domain_keeps_its_existing_editor_extent() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
+    let frames = crate::MAX_AUDIO_DOMAIN_FRAMES + 1;
+    let Created::Imported { clip, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "large original".into(),
+            path: "original.wav".into(),
+            sample_rate: 48_000,
+            frames,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    let original = editor.project().clip(clip).unwrap();
+    assert_eq!(original.duration(), frames);
+    assert!(original.audio_edit().is_none());
+    assert_eq!(
+        original.audio_event_placement_limit(),
+        None,
+        "free placement cannot reduce the camera envelope of a larger legacy source"
+    );
+    assert!(
+        editor
+            .project()
+            .preview_audio_event_placement(clip, 1, 1)
+            .is_err()
+    );
+    assert_eq!(editor.project().clip(clip).unwrap(), original);
+}

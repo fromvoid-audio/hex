@@ -176,6 +176,12 @@ impl Clip {
             .as_ref()
             .is_some_and(|e| !e.sources.is_empty());
         check_timeline(&root, grouped).ok()?;
+        // Legacy unprocessed clips can exceed the derived-root budget. Keep
+        // their existing camera and bounded edit path rather than truncating
+        // navigation to a smaller free-placement envelope.
+        if root.domain.clock.length() > MAX_AUDIO_DOMAIN_FRAMES {
+            return None;
+        }
         // The editor preview proves a fixed frame clock. Other legacy grouped
         // authoring forms retain their canonical command path, without exposing
         // an unproved live/musical or processing projection in the editor.
