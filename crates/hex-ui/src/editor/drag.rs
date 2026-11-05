@@ -110,12 +110,13 @@ pub(super) struct NativeDeviceDropTarget {
     pub(super) replace: Option<hex_project::DeviceId>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum NativeDeviceDragSource {
     Browser {
         class: hex_engine::NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
     },
+    PluginEffect(std::sync::Arc<hex_plugin_catalog::EffectSelection>),
     Existing {
         device: hex_project::DeviceId,
         class: hex_engine::NativeDeviceClass,
@@ -1021,7 +1022,10 @@ impl super::EditorView {
         self.arrangement_device_preview = None;
         self.retire_active_clip_drag();
         self.active_browser_audio_drag = None;
-        if matches!(drag.source, NativeDeviceDragSource::Browser { .. }) {
+        if matches!(
+            drag.source,
+            NativeDeviceDragSource::Browser { .. } | NativeDeviceDragSource::PluginEffect(_)
+        ) {
             // Make the native-device receiver visible as soon as a catalog drag
             // becomes active. Keep the selected track/clip untouched: a missing
             // target remains an empty device pane and the eventual drop can refuse.
@@ -1042,7 +1046,9 @@ impl super::EditorView {
             return false;
         }
         match drag.source {
-            NativeDeviceDragSource::Browser { .. } => true,
+            NativeDeviceDragSource::Browser { .. } | NativeDeviceDragSource::PluginEffect(_) => {
+                true
+            }
             NativeDeviceDragSource::Existing {
                 device,
                 class,

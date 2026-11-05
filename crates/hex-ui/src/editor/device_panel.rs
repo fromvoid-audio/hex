@@ -1459,6 +1459,11 @@ fn render_device_card_target(
                     class: NativeDeviceClass::Instrument,
                     ..
                 } => Some(front_target),
+                drag::NativeDeviceDragSource::PluginEffect(_)
+                    if inside && class == NativeDeviceClass::Instrument =>
+                {
+                    Some(right_target)
+                }
                 _ if inside && pointer < left + (right - left) / 2.0 => Some(left_target),
                 _ if inside => Some(right_target),
                 _ => None,
@@ -1473,7 +1478,16 @@ fn render_device_card_target(
         })
         .on_drop(
             cx.listener(move |view, payload: &drag::NativeDeviceDrag, window, cx| {
-                let target = payload.destination.get().unwrap_or(left_target);
+                let fallback = if class == NativeDeviceClass::Instrument
+                    && matches!(
+                        payload.source,
+                        drag::NativeDeviceDragSource::PluginEffect(_)
+                    ) {
+                    right_target
+                } else {
+                    left_target
+                };
+                let target = payload.destination.get().unwrap_or(fallback);
                 view.drop_native_device(payload, target, window, cx);
             }),
         )
@@ -2201,6 +2215,18 @@ impl EditorView {
                 class: NativeDeviceClass::Instrument,
                 ..
             } => Err("this effect chain accepts effects only".to_owned()),
+            drag::NativeDeviceDragSource::PluginEffect(ref selection) => {
+                let destination = match owner {
+                    EffectBusOwner::Main => hex_session::service::PluginEffectDestination::Main,
+                    EffectBusOwner::Return(id) => {
+                        hex_session::service::PluginEffectDestination::Return(id)
+                    }
+                };
+                self.clear_native_device_drag(drag);
+                self.insert_plugin_effect(selection, destination, before);
+                cx.notify();
+                return;
+            }
             drag::NativeDeviceDragSource::Existing { device, .. } => {
                 let devices = self
                     .state
@@ -2423,6 +2449,16 @@ impl EditorView {
         let source = match drag.source {
             drag::NativeDeviceDragSource::Browser { class, type_id } => {
                 NativeDeviceDropSource::Browser { class, type_id }
+            }
+            drag::NativeDeviceDragSource::PluginEffect(ref selection) => {
+                self.clear_native_device_drag(drag);
+                self.insert_plugin_effect(
+                    selection,
+                    hex_session::service::PluginEffectDestination::Track(drop_target.track),
+                    before,
+                );
+                cx.notify();
+                return;
             }
             drag::NativeDeviceDragSource::Existing {
                 device,
