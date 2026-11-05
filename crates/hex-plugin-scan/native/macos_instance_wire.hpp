@@ -150,9 +150,13 @@ inline Startup startup(int fd,const Config& config) {
 struct Presentation {
     uint32_t input=0,output=0;
 };
+struct PresentationPlan {
+    std::optional<Presentation> known;
+    bool allow_unknown=false;
+};
 // No SDK call occurs inside this parser. Unknown presentation is explicit and
 // carries no invented numeric values. All bounds/identity precede application.
-inline bool presentation(int fd,const Config& config,std::optional<Presentation>& result) {
+inline bool presentation(int fd,const Config& config,PresentationPlan& result) {
     try {
         std::array<uint8_t,12> header{};
         if(read_exact(fd,header.data(),header.size())!=1 || std::memcmp(header.data(),"HXVIPR01",8)) return false;
@@ -160,9 +164,10 @@ inline bool presentation(int fd,const Config& config,std::optional<Presentation>
         Reader in{Bytes(static_cast<size_t>(size)),0};
         if(read_exact(fd,in.bytes.data(),in.bytes.size())!=1 || in.number(2)!=1) return false;
         for(auto id:config.binding) if(in.number(8)!=id) return false;
-        const auto known=in.number(1);if(known>1) return false;
-        if(known) result=Presentation{static_cast<uint32_t>(in.number(4)),static_cast<uint32_t>(in.number(4))};
-        else result.reset();
+        const auto mode=in.number(1);if(mode>2) return false;
+        result={};
+        result.allow_unknown=mode==2;
+        if(mode==1) result.known=Presentation{static_cast<uint32_t>(in.number(4)),static_cast<uint32_t>(in.number(4))};
         return in.at==in.bytes.size();
     } catch(const std::runtime_error&) { return false; }
 }
@@ -180,7 +185,7 @@ struct Packet {
     uint64_t next_graph=0,next_epoch=0;
     uint64_t capture_operation=0;
     hex_instance::ControllerQuery parameter_query{};
-    std::optional<Presentation> resumed_presentation;
+    PresentationPlan resumed_presentation;
     // 0 EOF/cancellation, 1 PCM, 2 terminal, 3 quiesce, 4 resume,
     // 5 quiescent capture, 6 live capture start, 7 live capture poll, 8 stopped flush,
     // 9 edit receipts, 10 controller page start, 11 controller page poll,
@@ -208,11 +213,12 @@ struct Packet {
         frames=static_cast<uint16_t>(number(p+6,2));
         if(resume) {
             next_graph=number(p+48,8);next_epoch=number(p+56,8);
-            if(frames || p[10]>1 || next_graph<config.binding[2] || next_epoch<=config.binding[3]) return -1;
-            resumed_presentation.reset();
-            if(p[10]) {
+            if(frames || p[10]>2 || next_graph<config.binding[2] || next_epoch<=config.binding[3]) return -1;
+            resumed_presentation={};
+            resumed_presentation.allow_unknown=p[10]==2;
+            if(p[10]==1) {
                 if(read_exact(fd,p+header_size,8)!=1) return -1;
-                resumed_presentation=Presentation{static_cast<uint32_t>(number(p+header_size,4)),static_cast<uint32_t>(number(p+header_size+4,4))};
+                resumed_presentation.known=Presentation{static_cast<uint32_t>(number(p+header_size,4)),static_cast<uint32_t>(number(p+header_size+4,4))};
             }
             return 4;
         }

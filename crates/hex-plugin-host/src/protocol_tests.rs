@@ -409,6 +409,20 @@ fn facts_require_exact_source_format_and_interface_presence_and_do_not_acknowled
     assert_eq!(zero.len(), 12 + 43);
     assert_ne!(absent, zero);
     assert!(Ready::decode(&ready_body(&config), &config, None).is_err());
+    let unknown = presentation_request(config.binding, PresentationPlan::AllowUnknown).unwrap();
+    assert_eq!(unknown.len(), absent.len());
+    assert_ne!(unknown, absent);
+    let mut receipt = ready_body(&config);
+    receipt[70..72].copy_from_slice(&[2, 0]);
+    receipt.drain(72..80);
+    assert_eq!(
+        Ready::decode(&receipt, &config, PresentationPlan::AllowUnknown)
+            .unwrap()
+            .presentation,
+        Presentation::Unknown
+    );
+    assert!(Ready::decode(&receipt, &config, None).is_err());
+    assert!(Ready::decode(&receipt, &config, known()).is_err());
 }
 
 #[test]

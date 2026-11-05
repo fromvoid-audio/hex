@@ -398,18 +398,15 @@ impl Quiescent {
     pub fn resume_retained_on_control(
         mut self,
         next: Binding,
-        presentation: Option<PresentationLatency>,
+        presentation: impl Into<protocol::PresentationPlan>,
     ) -> std::result::Result<Prepared, PreparationFailure> {
+        let presentation = presentation.into();
         let result = (|| {
             self.instance.require_live_epoch()?;
             if self.instance.parameter_page.is_some() {
                 return Err(Error::Protocol("controller page is still pending"));
             }
-            if self.facts.presentation_available && presentation.is_none() {
-                return Err(Error::Protocol(
-                    "actual presentation contributions are unavailable",
-                ));
-            }
+            presentation.expected(self.facts.presentation_available)?;
             let request = protocol::resume_request(&self.instance.config, next, presentation)?;
             let mut config = self.instance.config.clone();
             config.binding = next;

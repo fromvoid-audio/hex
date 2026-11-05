@@ -488,21 +488,18 @@ impl Pending {
             .map_err(PreparationFailure::finish_on_control)
     }
     /// Completion errors retain the same actual child for Root's independent
-    /// cleanup observation. Failure cannot create a reusable prepared source.
+    /// cleanup observation. Callers can explicitly allow unknown presentation.
     pub fn complete_retained_on_control(
         mut self,
-        presentation: Option<PresentationLatency>,
+        presentation: impl Into<protocol::PresentationPlan>,
     ) -> std::result::Result<Prepared, PreparationFailure> {
+        let presentation = presentation.into();
         let token = self.lease.cancellation.clone();
         let result = (|| {
             token.check()?;
             self.source.unchanged()?;
             self.build.unchanged().map_err(Error::Validation)?;
-            if self.facts.presentation_available && presentation.is_none() {
-                return Err(Error::Protocol(
-                    "actual presentation contributions are unavailable",
-                ));
-            }
+            let expected = presentation.expected(self.facts.presentation_available)?;
             let until = end_after(self.limits.startup)?;
             let request = protocol::presentation_request(self.config.binding, presentation)?;
             self.lease
@@ -526,8 +523,7 @@ impl Pending {
             if ready.restored != self.facts.restored
                 || ready.algorithmic_latency_frames != self.facts.algorithmic_latency_frames
                 || ready.tail_frames != self.facts.tail_frames
-                || (ready.presentation == protocol::Presentation::Applied)
-                    != self.facts.presentation_available
+                || ready.presentation != expected
             {
                 return Err(Error::Protocol(
                     "prepared facts changed before final acknowledgement",
