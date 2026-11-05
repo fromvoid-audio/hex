@@ -61,6 +61,7 @@ mod track_header;
 mod track_header_device_drop;
 mod track_hierarchy_indent;
 mod track_meters;
+mod track_performance;
 mod workspace_view;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod workspace_view_ui_test;
@@ -383,6 +384,7 @@ actions!(
     [
         TogglePlay,
         ToggleBrowser,
+        ToggleTrackPerformance,
         SearchBrowser,
         CreateFadesOrSearch,
         ToggleSnapGrid,
@@ -890,6 +892,7 @@ pub(super) struct EditorView {
     playback_candidates: VecDeque<PlaybackCandidate>,
     audible_playback: Option<PlaybackCandidate>,
     track_meters: track_meters::State,
+    track_performance: track_performance::State,
     // One existing read-only view per transient protocol, never a prepared graph/resource set.
     resident_device_preview: Option<hex_session::service::DevicePreview>,
     resident_tuning_preview: Option<hex_session::service::TuningPreview>,
@@ -1656,6 +1659,7 @@ impl EditorView {
             playback_candidates: VecDeque::new(),
             audible_playback: None,
             track_meters: Default::default(),
+            track_performance: Default::default(),
             resident_device_preview: None,
             resident_tuning_preview: None,
             audio_admission: AudioAdmissionStatus::default(),

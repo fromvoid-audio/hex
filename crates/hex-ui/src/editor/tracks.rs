@@ -1887,6 +1887,9 @@ impl EditorView {
                 .items_center()
                 .gap(px(2.0))
                 .children([header_content.flex_1().min_w_0()])
+                .children(
+                    self.track_performance_indicator(hex_engine::OutputCaptureId::Track(track_id)),
+                )
                 .children([super::track_meters::render(
                     track_id,
                     self.track_meters.level(track_id),

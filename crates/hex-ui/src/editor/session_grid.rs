@@ -654,6 +654,9 @@ impl EditorView {
                                             .truncate()
                                             .child(theme::text(track.name().to_lowercase())),
                                     )
+                                    .children(self.track_performance_indicator(
+                                        hex_engine::OutputCaptureId::Track(track_id),
+                                    ))
                                     .children(self.track_tags_header(track, cx)),
                             )
                             .children(self.route_marker_for_track(

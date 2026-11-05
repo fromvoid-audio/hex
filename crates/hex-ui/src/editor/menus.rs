@@ -65,6 +65,13 @@ fn application_menus(recent_projects: &[PathBuf]) -> Vec<Menu> {
                 MenuItem::action(theme::text("save as…"), SaveAsProject),
             ],
         },
+        Menu {
+            name: theme::text("view"),
+            items: vec![MenuItem::action(
+                theme::text("track performance indicators"),
+                super::ToggleTrackPerformance,
+            )],
+        },
     ]
 }
 

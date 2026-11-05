@@ -67,6 +67,38 @@ pub struct PreparedPlaybackObservation {
 }
 
 impl PreparedPlaybackObservation {
+    /// Control-only opt-in for Track/Return render-work sampling. These are the
+    /// existing scalar endpoints, not new graph/processor/resource owners.
+    /// Only enable an observation correlated with the applied output/revision.
+    pub fn set_render_work_enabled(&self, enabled: bool) {
+        for (_, meter) in self.render_work_meters() {
+            meter.set_enabled(enabled);
+        }
+    }
+
+    /// Stable canonical identities for sampled local audio-thread work. A
+    /// missing sample is unknown/disabled, not zero. Main, detached historical
+    /// tails and other shared costs remain in the global callback meter.
+    pub fn render_work_meters(
+        &self,
+    ) -> impl Iterator<Item = (crate::OutputCaptureId, &hex_lattice::RenderWorkMeter)> {
+        self.activity
+            .tracks
+            .iter()
+            .map(|track| {
+                (
+                    crate::OutputCaptureId::Track(track.track),
+                    track.output_meter.render_work(),
+                )
+            })
+            .chain(self.returns.iter().map(|bus| {
+                (
+                    crate::OutputCaptureId::Return(bus.id),
+                    bus.meter.render_work(),
+                )
+            }))
+    }
+
     /// Finite requested construction storage before allocation, including the outer Arc header
     /// and conservative backing for shared meter endpoints. Actual capacities are checked after
     /// capture. This is control metadata accounting, not allocator/RSS or graph provenance.

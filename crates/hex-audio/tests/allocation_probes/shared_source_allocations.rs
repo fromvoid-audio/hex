@@ -97,6 +97,8 @@ fn compensated_shared_analytic_receiver_has_no_callback_allocations() -> Result<
     for frame in expected.chunks_mut(1) {
         reference.render(frame)?;
     }
+    let observation = hex_engine::PreparedPlaybackObservation::prepare_on_control(&revision)?;
+    observation.set_render_work_enabled(true);
     let (mut control, mut callback) = prepared::channel(48_000)?;
     control
         .publish(Playback::try_from_prepared_with_session(revision)?)
@@ -123,6 +125,11 @@ fn compensated_shared_analytic_receiver_has_no_callback_allocations() -> Result<
     );
     assert_eq!(output, expected);
     assert!(output.iter().flatten().any(|sample| *sample != 0.0));
+    assert!(
+        observation
+            .render_work_meters()
+            .any(|(_, meter)| meter.sample().is_some())
+    );
     control.stop();
     control.reclaim();
     Ok(())

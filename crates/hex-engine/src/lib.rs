@@ -165,7 +165,7 @@ impl PostNodeIdentity {
     }
 }
 
-pub use hex_lattice::{DeviceMeter, DevicePeaks, DynamicsMeter};
+pub use hex_lattice::{DeviceMeter, DevicePeaks, DynamicsMeter, RenderWorkSample};
 pub use native_device_view::{DEVICE_INPUT_GAIN, DEVICE_OUTPUT_GAIN};
 
 /// Borrowed stereo Main after master gain from a successful engine render.
