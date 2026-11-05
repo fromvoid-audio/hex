@@ -2,6 +2,8 @@
 
 #[path = "adaptive_grid_density.rs"]
 mod density;
+#[path = "signed_musical_time.rs"]
+pub(super) mod signed;
 pub(super) use density::AdaptiveGridDensity;
 
 use super::viewport::Viewport;

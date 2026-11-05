@@ -617,6 +617,7 @@ impl Command {
             | Self::RemoveTracks(..)
             | Self::RenameTrack { .. }
             | Self::Gain { .. }
+            | Self::SetTrackGains { .. }
             | Self::Balance { .. }
             | Self::MasterGain { .. }
             | Self::SetProjectTempo { .. }
