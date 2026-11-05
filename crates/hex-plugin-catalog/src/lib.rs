@@ -34,7 +34,7 @@
 //! and the local `/Library/Audio/Plug-Ins/VST3`. Missing roots are empty; invalid,
 //! linked root components and traversal errors refuse the batch before code runs.
 //! Traversal never enters bundles or follows encountered links; skipped links have a
-//! visible count. Bounds are two roots,4096 entries,1024 directories,8 levels of
+//! visible count. Bounds are three roots,4096 entries,1024 directories,8 levels of
 //! folder recursion and512 bundles, with4096-byte/64-component paths. Class/JSON/output limits remain fixed. Enumeration alone does not load vendor
 //! code or establish compatibility.
 //!
