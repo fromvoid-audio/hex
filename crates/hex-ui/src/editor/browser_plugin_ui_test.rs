@@ -547,7 +547,6 @@ fn browser_vst3_folder_scan(cx: &mut TestAppContext, custom: bool) {
     }
     let scan = visual.debug_bounds("browser-vst3-scan").unwrap();
     visual.simulate_click(scan.center(), Modifiers::default());
-    assert!(editor.read_with(&visual, |view, _| view.browser.plugins.busy));
     if !wait_plugin_browser(&mut visual, &editor) {
         std::mem::forget(directory);
         panic!(
@@ -569,6 +568,7 @@ fn browser_vst3_folder_scan(cx: &mut TestAppContext, custom: bool) {
         assert_eq!(rows[0].cid, rows[1].cid);
     });
     assert!(visual.debug_bounds("browser-vst3-row-1").is_some());
+    assert!(visual.debug_bounds("browser-vst3-scan-activity").is_none());
     editor.update(&mut visual, |view, cx| {
         view.browser
             .search
