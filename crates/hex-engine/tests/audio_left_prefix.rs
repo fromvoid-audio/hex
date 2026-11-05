@@ -261,3 +261,104 @@ fn prefix_preserves_plain_and_edited_pcm_and_rewinds_available_media_first() {
         }
     }
 }
+
+#[test]
+fn cropped_musical_once_reveals_retained_pcm_before_adding_silence() {
+    use hex_project::{AudioViewMode, Tempo, WarpMode};
+
+    for warped in [false, true] {
+        let (mut editor, clip) = fixture();
+        editor
+            .execute(Command::SetAudioClipMusical {
+                clip,
+                enabled: true,
+            })
+            .unwrap();
+        let seam = editor.project().tempo_map().frame_to_beat(4048).unwrap();
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: seam,
+                tempo: Tempo::new(160_000_000).unwrap(),
+            })
+            .unwrap();
+        if warped {
+            let warp = hex_project::default_audio_warp(
+                editor.project().clip(clip).unwrap(),
+                editor.project().tempo_map(),
+                WarpMode::RePitch,
+            )
+            .unwrap();
+            editor
+                .execute(Command::SetAudioClipWarp {
+                    clip,
+                    settings: Some(warp),
+                })
+                .unwrap();
+        }
+        let initial = editor.project().clip(clip).unwrap();
+        let end = initial.start() + initial.duration();
+        let initial_pcm = render(&editor, 64);
+        editor
+            .execute(Command::TrimClipEdge {
+                clip,
+                edge: TrimEdge::Left,
+                frame: 4024,
+            })
+            .unwrap();
+        let cropped = editor.project().clone();
+        let before = cropped.clip(clip).unwrap();
+        let preview = before
+            .preview_edge_trim_with_tempo(TrimEdge::Left, 3750, 128, cropped.tempo_map())
+            .unwrap();
+        editor
+            .execute(Command::TrimClipEdge {
+                clip,
+                edge: TrimEdge::Left,
+                frame: 3750,
+            })
+            .unwrap();
+        let changed = editor.project();
+        assert_eq!(changed.clip(clip), Some(&preview));
+        let view = AudioViewProjection::new(&preview, changed.tempo_map()).unwrap();
+        assert_eq!(view.outer_frame_bounds(), (3750, end));
+        assert_eq!(view.occurrence(0).unwrap().destination_start, 4000);
+        assert!(matches!(
+            preview.audio_edit().unwrap().placement.unwrap().mode,
+            AudioViewMode::OnceWithLead(_)
+        ));
+        for block in [7, 64] {
+            assert_eq!(render(&editor, block), initial_pcm);
+        }
+        let extended = editor.project().clone();
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &cropped);
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &extended);
+        if !warped {
+            editor
+                .execute(Command::SetAudioClipMusical {
+                    clip,
+                    enabled: false,
+                })
+                .unwrap();
+            assert_eq!(render(&editor, 7), initial_pcm);
+        }
+        for (frame, expected_start) in [(3800, 4000), (3700, 4000), (4000, 4000), (4024, 4024)] {
+            editor
+                .execute(Command::TrimClipEdge {
+                    clip,
+                    edge: TrimEdge::Left,
+                    frame,
+                })
+                .unwrap();
+            let project = editor.project();
+            let view =
+                AudioViewProjection::new(project.clip(clip).unwrap(), project.tempo_map()).unwrap();
+            assert_eq!(view.outer_frame_bounds(), (frame, end));
+            assert_eq!(
+                view.occurrence(0).unwrap().destination_start,
+                expected_start
+            );
+        }
+    }
+}

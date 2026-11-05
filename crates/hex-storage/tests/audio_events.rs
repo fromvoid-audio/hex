@@ -644,6 +644,13 @@ fn leading_musical_once_requires_its_saved_format_and_round_trips_complete_state
         })
         .unwrap();
     editor
+        .execute(Command::MoveClip {
+            clip,
+            track,
+            start: 24_000,
+        })
+        .unwrap();
+    editor
         .execute(Command::TrimClipEdge {
             clip,
             edge: TrimEdge::Left,
@@ -652,16 +659,20 @@ fn leading_musical_once_requires_its_saved_format_and_round_trips_complete_state
         .unwrap();
     let historical = assert_tagged_round_trip(editor.project(), track);
     let mut historical: serde_json::Value = serde_json::from_slice(&historical).unwrap();
-    let project = editor.project();
-    let leading = project
-        .clip(clip)
-        .unwrap()
-        .with_musical_leading_silence(12_000, project.tempo_map())
+    let cropped = editor.project().clone();
+    editor
+        .execute(Command::TrimClipEdge {
+            clip,
+            edge: TrimEdge::Left,
+            frame: 12_000,
+        })
         .unwrap();
-    let mut snapshot = project.snapshot();
-    let item = &mut snapshot.tracks[0].audio_clips_mut().unwrap()[0];
-    *item = leading.retained_snapshot();
-    let project = Project::from_snapshot(snapshot).unwrap();
+    let project = editor.project().clone();
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &cropped);
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &project);
+    let leading = project.clip(clip).unwrap();
     let bytes = hex_storage::encode(&project).unwrap();
     let reopened = hex_storage::decode(&bytes).unwrap();
     assert_eq!(reopened, project);
@@ -670,7 +681,7 @@ fn leading_musical_once_requires_its_saved_format_and_round_trips_complete_state
         document["version"],
         hex_storage::LEADING_AUDIO_ONCE_SCHEMA_VERSION
     );
-    let expected = AudioViewProjection::new(&leading, project.tempo_map())
+    let expected = AudioViewProjection::new(leading, project.tempo_map())
         .unwrap()
         .occurrence(0)
         .unwrap();

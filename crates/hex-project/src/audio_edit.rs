@@ -530,8 +530,11 @@ impl AudioClipEdit {
             i8::try_from(difference).map_err(|_| Invalid("audio placement residual overflow"))
         };
         self.placement_start_offset = residual(start, tempo.beat_to_frame(beat)?)?;
-        self.placement_end_offset =
-            residual(end, tempo.beat_to_frame(BeatTime::from_raw(beat_end))?)?;
+        self.placement_end_offset = if self.placement.is_some_and(|p| p.mode.leading_ticks() > 0) {
+            0
+        } else {
+            residual(end, tempo.beat_to_frame(BeatTime::from_raw(beat_end))?)?
+        };
         Ok(())
     }
     /// Retain a structurally moved musical span, keeping `candidate` when its
@@ -1259,11 +1262,15 @@ impl AudioClipEdit {
         if matches!(self.timing, AudioClipTiming::Frozen { .. }) {
             return Ok(());
         }
-        if self.reference_start_raw().is_some() && self.domain.events.is_some() {
+        if self.reference_start_raw().is_some()
+            && (self.domain.events.is_some()
+                || self.placement.is_some_and(|p| p.mode.leading_ticks() > 0))
+        {
             if self.domain.warp_enabled {
                 return Err(Invalid("disable warp before frame anchoring"));
             }
-            // Frame placement need not flatten a beat-domain event program.
+            // Frame placement need not flatten a beat-domain event program
+            // or a finite read with its own silent gate.
             // Freeze its complete processing clock just as global tempo edits
             // do for unwarped clips, preserving moved sources and retained fades.
             let reference_start_raw =

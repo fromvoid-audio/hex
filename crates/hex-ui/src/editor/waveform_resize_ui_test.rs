@@ -388,9 +388,24 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
 
 #[gpui::test]
 fn silent_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack(cx: &mut TestAppContext) {
+    check_silent_left_prefix_through_ack(cx, &[(false, false), (true, false), (true, true)], false);
+}
+
+#[gpui::test]
+fn musical_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack(
+    cx: &mut TestAppContext,
+) {
+    check_silent_left_prefix_through_ack(cx, &[(true, false)], true);
+}
+
+fn check_silent_left_prefix_through_ack(
+    cx: &mut TestAppContext,
+    cases: &[(bool, bool)],
+    musical: bool,
+) {
     use crate::editor::clip_drag_ui_test::{pump_move, trim_grab_point, upper_rail_owned_fixture};
     use hex_session::service::Request;
-    for (processed, once) in [(false, false), (true, false), (true, true)] {
+    for &(processed, once) in cases {
         let (_files, handle, editor) = upper_rail_owned_fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
         let (track, clip) = editor.read_with(&visual, |v, _| {
@@ -423,6 +438,15 @@ fn silent_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack(cx: &m
                     clip,
                     cents: 137
                 })))
+            });
+            pump_move(&editor, &mut visual);
+        }
+        if musical {
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(Command::SetAudioClipMusical {
+                    clip,
+                    enabled: true
+                })));
             });
             pump_move(&editor, &mut visual);
         }
@@ -517,9 +541,9 @@ fn silent_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack(cx: &m
                     assert!(Arc::ptr_eq(&waveforms[0].source, &source));
                     assert!(
                         waveforms[0].spans.iter().all(|s| *s > 1.0),
-                        "both leading silence and nonzero audio must be painted"
+                        "nonzero audio must stay visible after adding leading silence"
                     );
-                    if processed && !once {
+                    if processed && !once && !musical {
                         assert_eq!(waveforms[0].prepared, Some((48_000, 0)));
                     }
                 });
