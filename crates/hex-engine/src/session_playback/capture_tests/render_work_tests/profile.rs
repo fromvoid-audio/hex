@@ -5,7 +5,7 @@ use std::time::Instant;
 fn workload(compensated: bool) -> Project {
     let mut snapshot = audio_fixture_project(false, false, false).snapshot();
     let audio = snapshot.tracks[0].clone();
-    let midi = project(0.1, 0, 64 << 32).snapshot().tracks[0].clone();
+    let midi = project(0.1, 0, 8 << 32).snapshot().tracks[0].clone();
     snapshot.next_id = 20_000;
     snapshot.tracks.clear();
     for index in 0..100_u64 {
