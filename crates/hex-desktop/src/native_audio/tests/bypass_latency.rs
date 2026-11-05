@@ -191,121 +191,201 @@ fn live_eq_bypass_transition_keeps_output_continuous() {
 #[test]
 fn live_utility_filter_bypass_keeps_output_continuous() {
     let _native = native_fixture();
-    for owner in 0..3 {
-        let files = Files::new();
-        let mut h = ResidentHarness::with_frame_limit(131_072);
-        h.next();
-        let (mut applied, _) = h.applied(0);
-        let imported = h.run(Request::Import(files.wav(48_000, 65_536)));
-        (applied, _) = h.applied(applied);
-        let track = imported.state.project.tracks()[0].id();
-        let state = hex_engine::default_native_device_state_for_class(
-            hex_engine::NativeDeviceClass::Effect,
-            hex_engine::DeviceTypeId::from_static("hex.utility"),
-        )
-        .unwrap()
-        .with_output_gain_db(6.0)
-        .unwrap();
-        let state = hex_engine::patch_native_device_parameter(
-            &state,
-            hex_session::device_gesture::ParameterId::from_static(11),
-            hex_session::device_gesture::ParameterValue::Bool(true),
-        )
-        .unwrap();
-        let command = match owner {
-            0 => Command::InsertDevice {
-                track,
-                before: None,
-                state,
-            },
-            1 => {
-                let added = h.run(Request::Edit(Command::AddReturnTrack {
-                    name: "return".into(),
-                }));
-                (applied, _) = h.applied(applied);
-                let Some(Created::ReturnTrack(return_track)) = added.created else {
-                    panic!("return")
-                };
-                h.run(Request::Edit(Command::SetReturnSend {
-                    track,
-                    return_track,
-                    gain: 1.0,
-                }));
-                (applied, _) = h.applied(applied);
-                Command::InsertReturnDevice {
-                    return_track,
-                    before: None,
-                    state,
-                }
-            }
-            _ => Command::InsertMainDevice {
-                before: None,
-                state,
-            },
-        };
-        let inserted = h.run(Request::Edit(command));
-        let Some(Created::Device(device)) = inserted.created else {
-            panic!("utility device")
-        };
-        (applied, _) = h.applied(applied);
-        h.audio
-            .as_mut()
-            .unwrap()
-            .control
-            .command(PlaybackCommand::PlayFrom(0))
-            .unwrap();
-        for _ in 0..16 {
-            h.render();
+    for (dc, bass, muted, automated) in [
+        (true, false, false, false),
+        (false, true, false, false),
+        (true, true, false, true),
+        (true, true, true, true),
+    ] {
+        for owner in 0..3 {
+            check_filter_bypass(owner, dc, bass, muted, automated);
         }
-        let before = h.render()[63][0];
-        h.run(Request::Edit(Command::ToggleDeviceBypass { device }));
-        let after = h.render();
-        let revision = h
-            .audio
+    }
+}
+
+fn check_filter_bypass(owner: usize, dc: bool, bass: bool, muted: bool, automated: bool) {
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(super::utility_width::stereo_source(&files)));
+    (applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    let type_id = hex_engine::DeviceTypeId::from_static("hex.utility");
+    let mut state = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        type_id,
+    )
+    .unwrap()
+    .with_output_gain_db(6.0)
+    .unwrap();
+    let descriptors = hex_engine::native_device_descriptors(type_id).unwrap();
+    for (label, enabled) in [("dc remove", dc), ("bass mono", bass), ("mute", muted)] {
+        let parameter = descriptors.iter().find(|d| d.label == label).unwrap().id;
+        state = hex_engine::patch_native_device_parameter(
+            &state,
+            parameter,
+            hex_session::device_gesture::ParameterValue::Bool(enabled),
+        )
+        .unwrap();
+    }
+    let command = match owner {
+        0 => Command::InsertDevice {
+            track,
+            before: None,
+            state,
+        },
+        1 => {
+            let added = h.run(Request::Edit(Command::AddReturnTrack {
+                name: "return".into(),
+            }));
+            (applied, _) = h.applied(applied);
+            let Some(Created::ReturnTrack(return_track)) = added.created else {
+                panic!("return")
+            };
+            h.run(Request::Edit(Command::SetReturnSend {
+                track,
+                return_track,
+                gain: 1.0,
+            }));
+            (applied, _) = h.applied(applied);
+            Command::InsertReturnDevice {
+                return_track,
+                before: None,
+                state,
+            }
+        }
+        _ => Command::InsertMainDevice {
+            before: None,
+            state,
+        },
+    };
+    let inserted = h.run(Request::Edit(command));
+    let Some(Created::Device(device)) = inserted.created else {
+        panic!("utility")
+    };
+    (applied, _) = h.applied(applied);
+    if automated {
+        let balance = descriptors
+            .iter()
+            .find(|d| d.label == "balance")
+            .unwrap()
+            .id;
+        h.run(Request::Edit(Command::ReplaceDeviceAutomation {
+            device,
+            parameter: balance,
+            points: vec![hex_project::AutomationPoint {
+                beat: hex_project::BeatTime::ZERO,
+                value: hex_project::AutomationValue::new(0.5).unwrap(),
+                outgoing: hex_project::AutomationInterpolation::Linear,
+            }],
+        }));
+        (applied, _) = h.applied(applied);
+    }
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::PlayFrom(0))
+        .unwrap();
+    for _ in 0..16 {
+        h.render();
+    }
+    let smooth = |previous: [f32; 2], frames: &[[f32; 2]]| {
+        let mut previous = previous;
+        for frame in frames {
+            for lane in 0..2 {
+                assert!(
+                    (frame[lane] - previous[lane]).abs() < 0.003,
+                    "owner={owner} dc={dc} bass={bass} mute={muted} automated={automated}: {previous:?} -> {frame:?}"
+                );
+            }
+            previous = *frame;
+        }
+    };
+    let mut previous = h.render()[63];
+    for (request, bypassed) in [
+        (Request::Edit(Command::ToggleDeviceBypass { device }), true),
+        (Request::Undo, false),
+        (Request::Redo, true),
+    ] {
+        let frames = publish_filter_bypass(&mut h, &mut applied, request, device, bypassed);
+        smooth(previous, &frames);
+        previous = frames[63];
+    }
+    for _ in 0..4 {
+        let frames = h.render();
+        smooth(previous, &frames);
+        previous = frames[63];
+    }
+    let factor = if owner == 1 { 2.0 } else { 1.0 };
+    for (lane, dry) in [0.25, -0.125].into_iter().enumerate() {
+        assert!(
+            (previous[lane] - dry * factor).abs() < 1e-6,
+            "dry endpoint: {previous:?}"
+        );
+    }
+    let resumed = publish_filter_bypass(
+        &mut h,
+        &mut applied,
+        Request::Edit(Command::ToggleDeviceBypass { device }),
+        device,
+        false,
+    );
+    smooth(previous, &resumed);
+    previous = resumed[63];
+    for _ in 0..4 {
+        let frames = h.render();
+        smooth(previous, &frames);
+        previous = frames[63];
+    }
+    assert!(
+        (previous[0] - 0.25 * factor).abs() > 0.01,
+        "filter must resume active processing"
+    );
+}
+
+fn publish_filter_bypass(
+    h: &mut ResidentHarness,
+    applied: &mut u64,
+    request: Request,
+    device: hex_project::DeviceId,
+    bypassed: bool,
+) -> [[f32; 2]; 64] {
+    let event = h.run(request);
+    assert_eq!(
+        event.state.project.device(device).unwrap().bypassed(),
+        bypassed
+    );
+    // Keep the manually pumped callback stationary until the exact publication
+    // is staged. Each reversal therefore follows only 64 rendered ramp frames.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let revision = loop {
+        h.pump();
+        if let Some((revision, metadata)) = h.submitted.filter(|(revision, _)| *revision > *applied)
+            && metadata.context.editor_revision == event.state.revision
+        {
+            break revision;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "bypass publication was not staged"
+        );
+        std::thread::yield_now();
+    };
+    let frames = h.render();
+    assert_eq!(
+        h.audio
             .as_ref()
             .unwrap()
             .status()
             .unwrap()
             .applied_revision
-            .load(std::sync::atomic::Ordering::Acquire);
-        assert!(revision > applied, "bypass must reach the callback");
-        assert!(
-            (after[0][0] - before).abs() < 0.02,
-            "discontinuity: {before} -> {}",
-            after[0][0]
-        );
-        h.run(Request::Edit(Command::ToggleDeviceBypass { device }));
-        let reversed = h.render();
-        assert!(
-            (reversed[0][0] - after[63][0]).abs() < 0.02,
-            "rapid reversal jumps"
-        );
-        h.run(Request::Edit(Command::ToggleDeviceBypass { device }));
-        let reversed_again = h.render();
-        assert!(
-            (reversed_again[0][0] - reversed[63][0]).abs() < 0.02,
-            "second reversal jumps"
-        );
-        for _ in 0..4 {
-            h.render();
-        }
-        let dry = h.render()[63][0];
-        assert!((dry - if owner == 1 { 0.5 } else { 0.25 }).abs() < 1e-3);
-        h.run(Request::Edit(Command::ToggleDeviceBypass { device }));
-        let resumed = h.render();
-        assert!(
-            (resumed[0][0] - dry).abs() < 0.02,
-            "resume discontinuity: {dry} -> {}",
-            resumed[0][0]
-        );
-        for _ in 0..4 {
-            h.render();
-        }
-        assert!(
-            (h.render()[63][0] - dry).abs() > 0.01,
-            "filter returns to active processing"
-        );
-    }
+            .load(std::sync::atomic::Ordering::Acquire),
+        revision
+    );
+    *applied = revision;
+    frames
 }
 
 #[test]

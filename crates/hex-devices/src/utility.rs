@@ -1961,3 +1961,6 @@ mod tests {
 mod automation_tests;
 #[cfg(test)]
 mod width_ramp_tests;
+
+#[cfg(test)]
+mod bypass_tests;
