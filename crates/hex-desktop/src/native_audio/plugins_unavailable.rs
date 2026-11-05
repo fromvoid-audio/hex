@@ -39,6 +39,9 @@ impl Plugins {
     pub fn idle(&self) -> bool {
         true
     }
+    pub(super) fn can_retain_output_for_native_document(&self) -> bool {
+        true
+    }
     pub fn ready(&self) -> bool {
         true
     }

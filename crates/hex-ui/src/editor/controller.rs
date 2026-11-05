@@ -360,12 +360,17 @@ impl EditorView {
     /// Keep the held endpoint for the current generation when the worker kept
     /// that exact output; otherwise request a fresh one.
     fn apply_output_rebound(&mut self, output_identity: u64) {
-        if self
+        if let Some(audio) = self
             .audio
-            .as_ref()
-            .and_then(|a| a.control.output_identity())
-            == Some(output_identity)
+            .as_mut()
+            .filter(|audio| audio.control.output_identity() == Some(output_identity))
         {
+            if audio.mode == hex_session::DocumentAudioMode::Resident
+                && audio.control.worker_owns_graph_publication()
+                && let Some(generation) = std::num::NonZeroU64::new(self.project_generation)
+            {
+                audio.control.bind_resident_transport(generation);
+            }
             self.status = "audio ready".into();
             self.reconcile_publication_observation();
             return;

@@ -142,6 +142,7 @@ pub(super) struct NativeAudioSink {
     requested_rate: Option<u32>,
     open_without_bridge: bool,
     replacement_output: Option<document_output::ReplacementOutput>,
+    document_rebind: Option<document_output::Rebind>,
     restart_request: Option<u64>,
     /// A typed `RateMismatch` stays distinct so the UI can offer retry.
     open_error: Option<hex_audio::OutputOpenError>,
@@ -215,6 +216,7 @@ impl NativeAudioSink {
             requested_rate: None,
             open_without_bridge: false,
             replacement_output: None,
+            document_rebind: None,
             restart_request: None,
             open_error: None,
             initial_open_started: None,
@@ -245,6 +247,7 @@ impl NativeAudioSink {
         }
     }
     fn relinquish_output(&mut self) {
+        self.document_rebind = None;
         self.initial_open_started = None;
         if let Some(identity) = self.output_identity {
             self.relinquished_output_identity = Some(identity);
@@ -1370,8 +1373,10 @@ impl WorkerAudioSink for NativeAudioSink {
                 .take()
                 .is_none_or(|replacement| replacement.context != source.context())
             {
-                self.release_output_for_document(generation);
-                self.request_open(Some(source.sample_rate()), None);
+                if !self.begin_document_rebind(&source) {
+                    self.release_output_for_document(generation);
+                    self.request_open(Some(source.sample_rate()), None);
+                }
             } else {
                 // The incoming generation already owns a fresh installed graph.
                 self.resident.discard_obsolete_pending(source.context());
@@ -1558,6 +1563,7 @@ impl WorkerAudioSink for NativeAudioSink {
                 .unwrap_or(u64::MAX);
             self.output = Some(output);
         }
+        self.poll_document_rebind();
         self.flush_events();
     }
     /// Idle only with every poll-driven duty quiescent (#4574): no open,
@@ -1571,6 +1577,7 @@ impl WorkerAudioSink for NativeAudioSink {
             && self.opening.is_none()
             && self.open_error.is_none()
             && self.pending_open_event.is_none()
+            && self.document_rebind.is_none()
             && self.pending_observation.is_none()
             && self.pending_status_observation.is_none()
             && self.pending_route_event.is_none()
