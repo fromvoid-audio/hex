@@ -22,6 +22,9 @@ pub(super) struct Factory {
     pub(super) rate: u32,
 }
 impl PreparedOwnedProcessorRuntime for Factory {
+    fn supports_smoothed_bypass(&self) -> bool {
+        true
+    }
     fn runtime_version(&self) -> u32 {
         2
     }

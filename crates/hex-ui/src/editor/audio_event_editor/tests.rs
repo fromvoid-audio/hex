@@ -558,6 +558,32 @@ fn event_pointer_matches_arrangement_and_retains_move_and_trim_targets(cx: &mut 
 }
 
 #[gpui::test]
+fn x_deletes_the_focused_audio_event_range(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, _, clip) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let bounds = visual.debug_bounds("audio-events-waveform").unwrap();
+    let down = point(
+        bounds.origin.x + bounds.size.width * 0.25,
+        bounds.origin.y + px(10.0),
+    );
+    let up = point(bounds.origin.x + bounds.size.width * 0.75, down.y);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+    let range = editor.read_with(&visual, |view, _| view.audio_event_editor.range.unwrap());
+    editor.update(&mut visual, |view, _| view.close_prompt_open = true);
+    visual.simulate_keystrokes("x");
+    editor.read_with(&visual, |view, _| {
+        assert!(view.last_enqueued_edit.is_none())
+    });
+    editor.update(&mut visual, |view, _| view.close_prompt_open = false);
+    visual.simulate_keystrokes("x");
+    editor.read_with(&visual, |view, _| assert!(matches!(view.last_enqueued_edit, Some(Command::EditAudioEvents { clip: id, operation: AudioEventEdit::Delete { start, end } }) if id == clip && (start, end) == range)));
+}
+
+#[gpui::test]
 fn event_ruler_selection_grid_and_shortcuts_stay_inside_clip_editor(cx: &mut TestAppContext) {
     cx.update(super::super::bind_editor_keys);
     let (handle, editor, _, clip) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
@@ -1472,7 +1498,7 @@ fn audio_fit_selection_and_back_use_local_waveform_bounds_without_model_history(
             before
         );
     });
-    visual.simulate_keystrokes("x");
+    visual.simulate_keystrokes("v");
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.audio_event_editor.viewport, Some(prior))
     });
@@ -1482,7 +1508,7 @@ fn audio_fit_selection_and_back_use_local_waveform_bounds_without_model_history(
         cx.notify();
     });
     visual.run_until_parked();
-    visual.simulate_keystrokes("x");
+    visual.simulate_keystrokes("v");
     editor.read_with(&visual, |v, _| {
         assert!(v.audio_event_editor.fit_back.is_none())
     });
@@ -1492,7 +1518,7 @@ fn audio_fit_selection_and_back_use_local_waveform_bounds_without_model_history(
         cx.notify();
     });
     visual.run_until_parked();
-    visual.simulate_keystrokes("z x");
+    visual.simulate_keystrokes("z v");
     editor.read_with(&visual, |v, _| {
         assert!(
             v.audio_event_editor.viewport.is_none(),

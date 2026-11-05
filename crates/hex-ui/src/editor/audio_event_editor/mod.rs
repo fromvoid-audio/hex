@@ -568,13 +568,13 @@ impl EditorView {
         self.event_update_pointer(x, platform);
         if let Some(gesture) = self.audio_event_editor.gesture.take() {
             if let Kind::PlayStart { position } = gesture.kind {
-                if position != gesture.anchor {
-                    if let Some((clip, _, _)) = self.event_context() {
-                        self.commit_audio_clip_loop(
-                            clip,
-                            hex_project::AudioViewResizeOperation::PlayStart { position },
-                        );
-                    }
+                if position != gesture.anchor
+                    && let Some((clip, _, _)) = self.event_context()
+                {
+                    self.commit_audio_clip_loop(
+                        clip,
+                        hex_project::AudioViewResizeOperation::PlayStart { position },
+                    );
                 }
             } else if let Some(operation) = gesture.operation {
                 self.event_commit(operation);

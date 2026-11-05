@@ -201,6 +201,9 @@ impl Sections {
     pub(super) fn held(&self) -> bool {
         self.gesture.is_some()
     }
+    pub(super) fn pending(&self) -> bool {
+        self.pending.is_some()
+    }
     pub(super) fn naming(&self) -> bool {
         self.name.is_some()
     }
@@ -276,8 +279,10 @@ impl EditorView {
                         return;
                     }
                     if !view.focus.is_focused(window) {
+                        crate::diagnostics::record_section_capture(cx, "focus_cancel");
                         view.cancel_section_pointer();
                     } else if released.is_some() {
+                        crate::diagnostics::record_section_capture(cx, "release");
                         view.finish_section_pointer(
                             f32::from(position.x),
                             f32::from(position.y),
@@ -296,6 +301,7 @@ impl EditorView {
             move |_, cx| {
                 let _ = cancelled.update(cx, |view, cx| {
                     if view.sections.gesture.as_ref().is_some_and(matches) {
+                        crate::diagnostics::record_section_capture(cx, "cancel");
                         view.cancel_section_pointer();
                         cx.notify();
                     }
@@ -3049,6 +3055,66 @@ mod tests {
                 assert!(v.sections.selection.iter().all(|id| ids.contains(id)))
             });
         }
+    }
+
+    #[gpui::test]
+    fn lost_section_button_records_cancel_and_allows_loop_before_late_release(
+        cx: &mut TestAppContext,
+    ) {
+        let directory = std::env::temp_dir().join(format!(
+            "hex-section-loop-diagnostic-test-{}",
+            std::process::id()
+        ));
+        let mut log = hex_diagnostics::SessionLog::start(directory).unwrap();
+        cx.update(|cx| {
+            crate::diagnostics::install_session_log(cx, Ok(log.handle()));
+            crate::diagnostics::install_action_diagnostics(cx, true);
+        });
+        let (handle, editor, _) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let from = editor.read_with(cx, |v, _| position(v, 2));
+        visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("l");
+        editor.read_with(cx, |v, _| {
+            assert!(v.sections.held());
+            assert!(
+                v.last_enqueued_edit.is_none(),
+                "a real held gesture still blocks loop creation"
+            );
+        });
+        visual.simulate_mouse_move(point(px(1.0), px(1.0)), None, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(cx, |v, _| {
+            assert!(
+                !v.sections.held(),
+                "button loss cancels before any late release"
+            )
+        });
+        visual.simulate_keystrokes("l");
+        editor.read_with(cx, |v, _| {
+            assert!(matches!(
+                v.last_enqueued_edit,
+                Some(Command::SetLoopRegion { .. })
+            ))
+        });
+        editor.update(cx, |view, cx| {
+            let event = next(&view.service);
+            assert!(event.error.is_none());
+            view.receive(event);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let point = editor.read_with(cx, |view, _| position(view, 10));
+        visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        log.shutdown().unwrap();
+        let contents = std::fs::read_to_string(log.path()).unwrap();
+        assert!(contents.contains("section_held"));
+        assert!(contents.contains("stage=section_capture outcome=cancel"));
+        assert!(contents.contains("stage=section_capture outcome=release"));
     }
 
     #[gpui::test]

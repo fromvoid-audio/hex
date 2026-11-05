@@ -588,6 +588,10 @@ fn new_cancels_actual_draining_sampler_before_immediate_fresh_open_poll() {
     });
     assert!(h.observation.lock().unwrap().fresh_before_input_checked);
     h.open();
+    while !h.observation.lock().unwrap().fresh_replacement_hold_checked {
+        assert!(Instant::now() < end, "fresh-output policy was not checked");
+        std::thread::yield_now();
+    }
     assert_eq!(h.render(), [[0.0; 2]; 64]);
 }
 
@@ -923,7 +927,8 @@ fn rendered_sampler_save_open(
     visual.run_until_parked();
     let target_selector = Box::leak(format!("track-name-{}", track.value()).into_boxed_str());
     let other_selector = Box::leak(format!("track-name-{}", other.value()).into_boxed_str());
-    let other_selected = Box::leak(format!("selected-track-{}", other.value()).into_boxed_str());
+    let other_selected =
+        Box::leak(format!("selected-track-lane-{}", other.value()).into_boxed_str());
     let started = Instant::now();
     let end = started
         + if gain {

@@ -403,12 +403,11 @@ impl EditorView {
                                 worker::scan_folders(&catalog, &app, &roots, token)
                             }
                         };
-                        if let Some(catalog) = &mut update.catalog {
-                            if let Err(error) = catalog.refresh_sources() {
-                                update.catalog = None;
-                                update.status =
-                                    format!("plugin source inspection failed · {error}");
-                            }
+                        if let Some(catalog) = &mut update.catalog
+                            && let Err(error) = catalog.refresh_sources()
+                        {
+                            update.catalog = None;
+                            update.status = format!("plugin source inspection failed · {error}");
                         }
                         update
                     })
