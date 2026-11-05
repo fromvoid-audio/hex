@@ -16,12 +16,28 @@ impl State {
             self.start_grip = None;
         }
         if retained && let Some((first, _)) = self.frame_bounds {
-            let rebase = |v: Viewport| Viewport {
-                start: first.saturating_add(v.start).saturating_sub(bounds.0),
-                length: v.length,
+            let rebase = |view: Viewport, negative: u64| {
+                let start = i128::from(first) + i128::from(view.start)
+                    - i128::from(negative)
+                    - i128::from(bounds.0);
+                (
+                    Viewport {
+                        start: u64::try_from(start.max(0)).unwrap_or(u64::MAX),
+                        length: view.length,
+                    },
+                    u64::try_from((-start).max(0)).unwrap_or(u64::MAX),
+                )
             };
-            self.viewport = self.viewport.map(rebase);
-            self.fit_back = self.fit_back.map(|prior| prior.map(rebase));
+            if let Some(view) = self.viewport {
+                let (view, negative) = rebase(view, self.negative_pan);
+                self.viewport = Some(view);
+                self.negative_pan = negative;
+            }
+            if let Some(Some(view)) = self.fit_back {
+                let (view, negative) = rebase(view, self.fit_back_negative);
+                self.fit_back = Some(Some(view));
+                self.fit_back_negative = negative;
+            }
         }
         self.frame_bounds = Some(bounds);
         self.frame_domain = Some(root.domain.clone());
@@ -48,6 +64,34 @@ impl EditorView {
                 ..State::default()
             };
         }
+        let remember_coordinates = self.audio_event_editor.revision != revision
+            || self.audio_event_editor.frame_clip.is_none();
+        if self.audio_event_editor.revision != revision
+            && let Some(current) = self
+                .state
+                .as_ref()
+                .and_then(|state| state.project.clip(clip_id))
+            && let Some(previous) = self.audio_event_editor.frame_clip.as_ref()
+            && let Some(shift) = current.audio_event_coordinate_shift_from(previous)
+            && shift != 0
+        {
+            let length = root.domain.clock.length();
+            let shifted = |position: u64| {
+                (i128::from(position) + i128::from(shift)).clamp(0, i128::from(length)) as u64
+            };
+            let state = &mut self.audio_event_editor;
+            state.cursor = shifted(state.cursor);
+            state.range = state.range.and_then(|(a, b)| {
+                let (a, b) = (shifted(a), shifted(b));
+                (a < b).then_some((a, b))
+            });
+            state.canonical_start = state
+                .canonical_start
+                .map(|(raw, frame)| (shifted(raw), shifted(frame)));
+            state.start_grip = state
+                .start_grip
+                .map(|(raw, offset, length)| (shifted(raw), offset, length));
+        }
         if (self.audio_event_editor.revision != revision
             || self.audio_event_editor.frame_bounds.is_none())
             && let Some(tempo) = self.state.as_ref().map(|s| s.project.tempo_map())
@@ -67,40 +111,41 @@ impl EditorView {
                         .ok()??;
                     Some((position, root.root_frame_at(position, tempo).ok()?))
                 });
-                let state = &mut self.audio_event_editor;
-                // History can install a different live tempo projection. Keep
-                // its changed start visible without recording a second edit history.
-                if current != state.canonical_start
-                    && let (Some((_, old_frame)), Some((position, frame)), Some(view)) =
-                        (state.canonical_start, current, state.viewport.as_mut())
+                let window = self.event_frame_window(&root);
+                let old_start = self.audio_event_editor.canonical_start;
+                if current != old_start
+                    && let (Some((_, old_frame)), Some((position, frame))) = (old_start, current)
+                    && window
+                        .shifted(i128::from(first))
+                        .is_some_and(|view| view.contains(i128::from(old_frame)))
                 {
-                    let old_visible = old_frame >= first.saturating_add(view.start)
-                        && old_frame
-                            <= first.saturating_add(view.start).saturating_add(view.length);
-                    if old_visible {
-                        let local = frame.saturating_sub(first);
-                        view.start = if let Some((_, offset, length)) =
-                            state.start_grip.filter(|(point, _, _)| *point == position)
-                        {
-                            let offset = (u128::from(offset) * u128::from(view.length)
-                                / u128::from(length.max(1)))
-                            .min(u128::from(u64::MAX))
-                                as u64;
-                            local.saturating_sub(offset)
-                        } else if local < view.start {
-                            local
-                        } else if local > view.start.saturating_add(view.length) {
-                            local.saturating_sub(view.length)
-                        } else {
-                            view.start
-                        };
-                    }
+                    let local = i128::from(frame) - i128::from(first);
+                    let start = if let Some((_, offset, length)) = self
+                        .audio_event_editor
+                        .start_grip
+                        .filter(|(point, _, _)| *point == position)
+                    {
+                        let offset = (u128::from(offset) * u128::from(window.length)
+                            / u128::from(length.max(1)))
+                        .min(u128::from(u64::MAX)) as u64;
+                        local - i128::from(offset)
+                    } else if local < window.start {
+                        local
+                    } else if window.end().is_some_and(|end| local > end) {
+                        local - i128::from(window.length)
+                    } else {
+                        window.start
+                    };
+                    self.store_event_camera(SignedFrameViewport {
+                        start,
+                        length: window.length,
+                    });
                 }
-                state.canonical_start = current;
+                self.audio_event_editor.canonical_start = current;
             }
         }
         if self.audio_event_editor.revision != revision {
-            let (first, last) = editor_bounds(&root);
+            let (first, last) = content_bounds(&root);
             let state = &mut self.audio_event_editor;
             state.gesture = None;
             state.cursor = state.cursor.clamp(first, last);
@@ -112,18 +157,15 @@ impl EditorView {
             });
             state.revision = revision;
         }
+        if remember_coordinates {
+            self.audio_event_editor.frame_clip = self
+                .state
+                .as_ref()
+                .and_then(|state| state.project.clip(clip_id))
+                .cloned();
+        }
     }
-    fn audio_navigation_minimum(&self) -> u64 {
-        self.state
-            .as_ref()
-            .and_then(|s| {
-                hex_project::BeatTime::from_quarters(16)
-                    .ok()
-                    .and_then(|beat| s.project.tempo_map().beat_to_frame(beat).ok())
-            })
-            .unwrap_or(1)
-            .max(1)
-    }
+
     pub(super) fn event_navigation_limit(&self, root: &AudioClipEdit) -> u64 {
         let Some(state) = self.state.as_ref() else {
             return 0;
@@ -132,17 +174,13 @@ impl EditorView {
         let Some(first) = frame(editor_bounds(root).0) else {
             return 0;
         };
-        let Some(end) = frame(editor_bounds(root).1) else {
-            return 0;
-        };
         let placement = self
             .detail_clip_id()
             .and_then(|id| state.project.clip(id))
             .map_or(0, |c| c.start());
-        navigation_limit(end.saturating_sub(first), self.audio_navigation_minimum())
-            .min(u64::MAX - first)
-            .min(u64::MAX - placement)
+        (u64::MAX - first).min(u64::MAX - placement)
     }
+
     fn source_extent(&self) -> u64 {
         self.state
             .as_ref()
@@ -153,16 +191,12 @@ impl EditorView {
             })
             .map_or(0, |a| a.playback_frames())
     }
-    fn source_navigation_limit(&self) -> u64 {
-        navigation_limit(self.source_extent(), self.audio_navigation_minimum())
-    }
-    pub(in crate::editor) fn audio_source_viewport(&self) -> Viewport {
+    pub(in crate::editor) fn audio_source_viewport(&self) -> SignedFrameViewport {
         self.audio_event_editor
             .source_viewport
-            .unwrap_or(Viewport::fit(self.source_extent()))
-            .clamp(self.source_navigation_limit())
+            .unwrap_or_else(|| Viewport::fit(self.source_extent()).into())
     }
-    fn audio_navigation(&self) -> Option<(Viewport, u64, u64)> {
+    fn audio_navigation(&self) -> Option<(SignedFrameViewport, i128, i128, i128)> {
         if !self.event_context_current() {
             return None;
         }
@@ -170,29 +204,31 @@ impl EditorView {
             let clip = self.state.as_ref()?.project.clip(self.detail_clip_id()?)?;
             Some((
                 self.audio_source_viewport(),
-                self.source_navigation_limit(),
-                clip.source_offset().saturating_add(clip.source_phase()),
+                -i128::from(u64::MAX),
+                i128::from(u64::MAX),
+                i128::from(clip.source_offset().saturating_add(clip.source_phase())),
             ))
         } else {
             let (_, root, _) = self.event_context()?;
             let tempo = self.state.as_ref()?.project.tempo_map();
             let first = root.root_frame_at(editor_bounds(&root).0, tempo).ok()?;
-            let cursor = root
-                .root_frame_at(self.audio_event_editor.cursor, tempo)
-                .ok()?
-                .saturating_sub(first);
+            let cursor = i128::from(
+                root.root_frame_at(self.audio_event_editor.cursor, tempo)
+                    .ok()?,
+            ) - i128::from(first);
             Some((
-                self.event_viewport(&root),
-                self.event_navigation_limit(&root),
+                self.event_frame_window(&root),
+                -i128::from(u64::MAX),
+                i128::from(self.event_navigation_limit(&root)),
                 cursor,
             ))
         }
     }
-    fn set_audio_navigation(&mut self, viewport: Viewport) {
+    fn set_audio_navigation(&mut self, viewport: SignedFrameViewport) {
         if self.audio_event_editor.source_view {
             self.audio_event_editor.source_viewport = Some(viewport);
         } else {
-            self.audio_event_editor.viewport = Some(viewport);
+            self.store_event_camera(viewport);
         }
     }
     pub(super) fn audio_navigation_idle(&self) -> bool {
@@ -206,16 +242,21 @@ impl EditorView {
         if !self.audio_navigation_idle() {
             return;
         }
-        if let Some((viewport, limit, cursor)) = self.audio_navigation() {
-            self.set_audio_navigation(viewport.zoom(limit, cursor, inward));
+        if let Some((viewport, minimum, maximum, cursor)) = self.audio_navigation()
+            && let Some(viewport) = viewport.zoom(minimum, maximum, cursor, inward, false)
+        {
+            self.set_audio_navigation(viewport);
         }
     }
     pub(in crate::editor) fn event_pan(&mut self, right: bool) {
         if !self.audio_navigation_idle() {
             return;
         }
-        if let Some((viewport, limit, _)) = self.audio_navigation() {
-            self.set_audio_navigation(viewport.pan_half(limit, right));
+        if let Some((viewport, minimum, maximum, _)) = self.audio_navigation() {
+            let delta = i128::from((viewport.length / 2).max(1)) * if right { 1 } else { -1 };
+            if let Some(viewport) = viewport.pan(minimum, maximum, delta) {
+                self.set_audio_navigation(viewport);
+            }
         }
     }
     pub(in crate::editor) fn audio_fit_all(&mut self) {
@@ -226,6 +267,12 @@ impl EditorView {
             self.audio_event_editor.source_viewport = None;
         } else {
             self.audio_event_editor.viewport = None;
+            self.audio_event_editor.negative_pan = 0;
+            if let Some((_, root, _)) = self.event_context()
+                && content_bounds(&root) != editor_bounds(&root)
+            {
+                self.fit_audio_interval(content_bounds(&root), false);
+            }
         }
     }
     pub(super) fn source_fit(&mut self, back: bool) -> bool {
@@ -236,8 +283,7 @@ impl EditorView {
             let Some(prior) = self.audio_event_editor.source_fit_back.take() else {
                 return false;
             };
-            self.audio_event_editor.source_viewport =
-                prior.map(|v| v.clamp(self.source_navigation_limit()));
+            self.audio_event_editor.source_viewport = prior;
         } else {
             let Some(clip) = self
                 .state
@@ -257,6 +303,7 @@ impl EditorView {
             ) else {
                 return false;
             };
+            let next = SignedFrameViewport::from(next);
             if next == self.audio_source_viewport() {
                 return false;
             }
@@ -295,14 +342,17 @@ impl EditorView {
         if !dx.is_finite() || !dy.is_finite() || (dx == 0.0 && dy == 0.0) {
             return false;
         }
-        let Some((mut viewport, limit, _)) = self.audio_navigation() else {
+        let Some((mut viewport, minimum, maximum, _)) = self.audio_navigation() else {
             return false;
         };
         let fraction =
             ((f32::from(event.position.x) - f32::from(bounds.left())) / width).clamp(0.0, 1.0);
-        let anchor = viewport
+        let Some(anchor) = viewport
             .start
-            .saturating_add((viewport.length as f64 * f64::from(fraction)) as u64);
+            .checked_add((viewport.length as f64 * f64::from(fraction)) as i128)
+        else {
+            return false;
+        };
         let wheel = if source {
             &mut self.audio_event_editor.source_wheel
         } else {
@@ -314,31 +364,21 @@ impl EditorView {
                 break;
             }
             let inward = *wheel < 0.0;
-            viewport = viewport.zoom_at(limit, anchor, inward);
+            if let Some(next) = viewport.zoom(minimum, maximum, anchor, inward, true) {
+                viewport = next;
+            }
             *wheel += if inward { 80.0 } else { -80.0 };
         }
-        viewport = viewport.pan_by_frames(
-            limit,
+        let Some(viewport) = viewport.pan(
+            minimum,
+            maximum,
             (-f64::from(dx).clamp(-f64::from(width), f64::from(width)) * viewport.length as f64
                 / f64::from(width))
             .round() as i128,
-        );
+        ) else {
+            return false;
+        };
         self.set_audio_navigation(viewport);
         true
-    }
-}
-
-// Same finite envelope as the piano roll, with an explicitly converted minimum.
-fn navigation_limit(content: u64, minimum: u64) -> u64 {
-    content.saturating_mul(4).max(minimum)
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn navigation_envelope_handles_short_and_extreme_content() {
-        assert_eq!(super::navigation_limit(10, 100), 100);
-        assert_eq!(super::navigation_limit(100, 10), 400);
-        assert_eq!(super::navigation_limit(u64::MAX, 1), u64::MAX);
     }
 }
