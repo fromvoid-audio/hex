@@ -561,6 +561,7 @@ impl Command {
             | Self::ClearTrackGainEnvelope { .. }
             | Self::SetRouting(..)
             | Self::SetAudioFeed { .. }
+            | Self::SetSidechain { .. }
             | Self::SetMidiSource { .. }
             | Self::SetReturnFeed { .. }
             | Self::InsertMainDevice { .. }

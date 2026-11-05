@@ -615,7 +615,7 @@ impl PreparedMidiClipVolume {
         let phase = if before {
             if let Some((start, end)) = self.source.loop_range() {
                 let first = end.raw() - self.source.source_start().raw();
-                if raw >= first && (raw - first) % (end.raw() - start.raw()) == 0 {
+                if raw >= first && (raw - first).is_multiple_of(end.raw() - start.raw()) {
                     Some(end)
                 } else {
                     self.source.source_phase_at_elapsed(BeatTime::from_raw(raw))

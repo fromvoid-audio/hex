@@ -297,6 +297,11 @@ pub enum Command {
         destination: TrackId,
         gain: f32,
     },
+    /// Select a post-mixer key track. None returns to the internal detector.
+    SetSidechain {
+        device: DeviceId,
+        source: Option<TrackId>,
+    },
     /// Select authored MIDI from another track; None restores local MIDI.
     SetMidiSource {
         destination: TrackId,
@@ -2058,6 +2063,7 @@ impl Project {
                 destination,
                 gain,
             } => self.set_audio_feed(source, destination, gain),
+            Command::SetSidechain { device, source } => self.set_sidechain(device, source),
             Command::SetMidiSource {
                 destination,
                 source,

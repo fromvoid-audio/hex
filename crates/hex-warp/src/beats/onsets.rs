@@ -41,7 +41,7 @@ fn refine(
     let mut maximum = 0.0_f64;
     let mut sum = 0.0;
     for at in start..end {
-        if (at - start) % block == 0 {
+        if (at - start).is_multiple_of(block) {
             work.check(block * 16)?;
         }
         let x = innovation(input, at);
@@ -59,7 +59,7 @@ fn refine(
     // Earliest substantial change, not the frame center or a later peak in a
     // noisy attack. Both channels share this one physical onset decision.
     for at in start..end {
-        if (at - start) % block == 0 {
+        if (at - start).is_multiple_of(block) {
             work.check(block * 16)?;
         }
         if innovation(input, at) >= threshold {

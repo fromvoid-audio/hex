@@ -1829,22 +1829,42 @@ fn loop_worker_edit_is_dirty_undoable_compiled_and_saved_with_extended_view_hori
         )),
         Some((1, 3, true))
     );
+    // The worker must publish the returned canonical project. The engine owns
+    // loop DSP (including its end envelope); do not duplicate that law here.
+    let asset = looped
+        .state
+        .project
+        .assets()
+        .next()
+        .expect("imported asset")
+        .id();
+    let media = std::collections::BTreeMap::from([(
+        asset,
+        hex_engine::Audio::new(48_000, vec![[0.125; 2], [0.25; 2], [0.375; 2], [0.5; 2]])
+            .expect("known source"),
+    )]);
+    let revision = PreparedRevision::prepare(
+        &looped.state.project,
+        &media,
+        std::sync::Arc::new(hex_engine::SineTable::new()),
+        None,
+    )
+    .expect("canonical loop graph");
+    let mut canonical = Playback::try_from_prepared_with_session(std::sync::Arc::new(revision))
+        .expect("canonical playback");
+    canonical.apply(PlaybackCommand::Play);
+    let mut expected = [[0.0; 2]; 7];
+    canonical
+        .render(&mut expected)
+        .expect("canonical loop render");
     let mut playback = looped.playback.expect("compiled loop graph");
     playback.apply(PlaybackCommand::Play);
     let mut output = [[0.0; 2]; 7];
     playback.render(&mut output).expect("loop render");
-    assert_eq!(
-        output,
-        [
-            [0.125, 0.125],
-            [0.25, 0.25],
-            [0.375, 0.375],
-            [0.25, 0.25],
-            [0.375, 0.375],
-            [0.25, 0.25],
-            [0.375, 0.375],
-        ]
-    );
+    assert_eq!(output, expected);
+    assert_eq!(output[0], [0.125; 2]);
+    assert_eq!(output[1], [0.25; 2]);
+    assert_eq!(output[3], output[1], "worker retains the loop origin");
 
     service.submit(Request::Undo).expect("undo loop");
     let undone = next_event(&service);

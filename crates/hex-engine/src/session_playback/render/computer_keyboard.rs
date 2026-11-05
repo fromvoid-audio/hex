@@ -157,7 +157,7 @@ impl SessionPlayback {
                         .render_chunk(chunk, offset, capture, foreign)?;
                 }
                 self.compensation
-                    .as_ref()
+                    .as_mut()
                     .ok_or(SessionPlaybackError::DeviceRuntime)?
                     .process_main_with_foreign(
                         &mut self.main_chain,

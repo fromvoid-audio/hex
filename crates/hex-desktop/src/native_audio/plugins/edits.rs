@@ -220,6 +220,9 @@ impl Plugins {
             accepted: false,
             retiring: false,
             queued: false,
+            observes_latency: false,
+            #[cfg(all(test, feature = "allocation-probe"))]
+            observed_latency_receipt: false,
             #[cfg(all(test, feature = "allocation-probe"))]
             attempts: 0,
         });

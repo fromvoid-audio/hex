@@ -1160,6 +1160,11 @@ impl SessionPlayback {
                 }
             }
         }
+        let reenabled_release_receivers = shared_sources::reenabled_release_receivers(
+            self,
+            previous,
+            timing_changed || old_loop != new_loop,
+        )?;
         let source_handoff = SharedSourceHandoff::prepare(
             &self.revision,
             &self.mutable_instruments,
@@ -2130,7 +2135,15 @@ impl SessionPlayback {
                             .source_routing()
                             .receiver_index(new_index)
                             .is_none());
-                if (source_binding_changed || !old_track.instrument_config_matches(new_track))
+                let analytic_bypass_changed = shared_sources::shared_analytic_bypass_changed(
+                    &previous.revision,
+                    old_index,
+                    &self.revision,
+                    new_index,
+                );
+                if (source_binding_changed
+                    || analytic_bypass_changed
+                    || !old_track.instrument_config_matches(new_track))
                     && !previous
                         .revision
                         .track_retains_source_configuration(&self.revision, old_route.id)
@@ -3176,6 +3189,9 @@ impl SessionPlayback {
         }
         let mut reserved_tail_voices = self.release_scratch.len();
         for (slot, tail) in previous.tail_mutable_instruments.iter().enumerate() {
+            if reenabled_release_receivers[slot].is_some() {
+                continue;
+            }
             let Some(tail) = tail
                 .as_ref()
                 .filter(|tail| !tail.runtime.committed_is_quiescent())
@@ -4032,6 +4048,18 @@ impl SessionPlayback {
         // permanently consumes this candidate's single admission opportunity.
         self.candidate_admission_open = false;
 
+        for (slot, receiver) in reenabled_release_receivers.into_iter().enumerate() {
+            if let Some(index) = receiver {
+                let tail = previous.tail_mutable_instruments[slot]
+                    .as_ref()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                self.mutable_instruments[index]
+                    .as_mut()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?
+                    .inherit_from(&tail.runtime)
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+            }
+        }
         for (old_index, new_index) in analytic_import_new_for_old.iter().copied().enumerate() {
             if new_index == usize::MAX {
                 continue;

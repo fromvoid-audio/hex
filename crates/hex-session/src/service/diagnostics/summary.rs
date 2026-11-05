@@ -447,6 +447,9 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("set_audio_feed"; ["destination" => destination.value(), "gain" => gain]; omitted="source")
         }
+        Command::SetSidechain { device, source } => {
+            describe!("set_sidechain"; ["device" => device.value(), "source" => source.map(|id| id.value())]; omitted="")
+        }
         Command::SetMidiSource {
             destination,
             source,

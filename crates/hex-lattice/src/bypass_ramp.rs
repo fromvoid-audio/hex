@@ -1,4 +1,48 @@
-//! Transactional wet/dry transition for compatible zero-latency effect handoffs.
+//! Transactional wet/dry transition for compatible native effect handoffs.
+
+/// The small fixed-latency admission bound. Longer lookahead requires a
+/// separately budgeted history owner.
+const MAX_ALIGNED_DRY_FRAMES: usize = 16;
+
+/// Inline host history for untrimmed dry input, in the same frame domain as
+/// the processor. The chain keeps separate committed and speculative copies.
+#[derive(Clone, Copy)]
+pub(crate) struct AlignedDry {
+    frames: [[f32; 2]; MAX_ALIGNED_DRY_FRAMES],
+    len: usize,
+    next: usize,
+}
+
+impl AlignedDry {
+    pub(crate) fn new(latency: Option<u32>) -> Option<Self> {
+        let len = usize::try_from(latency?).ok()?;
+        (1..=MAX_ALIGNED_DRY_FRAMES).contains(&len).then_some(Self {
+            frames: [[0.0; 2]; MAX_ALIGNED_DRY_FRAMES],
+            len,
+            next: 0,
+        })
+    }
+
+    pub(crate) fn advance(&mut self, input: [f32; 2]) -> [f32; 2] {
+        let dry = std::mem::replace(&mut self.frames[self.next], input);
+        self.next += 1;
+        if self.next == self.len {
+            self.next = 0;
+        }
+        dry
+    }
+
+    pub(crate) fn is_quiet(self) -> bool {
+        self.frames[..self.len]
+            .iter()
+            .all(|frame| *frame == [0.0; 2])
+    }
+
+    pub(crate) fn reset(&mut self) {
+        self.frames.fill([0.0; 2]);
+        self.next = 0;
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct BypassRamp {
@@ -133,5 +177,130 @@ mod tests {
         assert!((after[0][0] - before[79][0]).abs() < 0.002);
         assert_eq!(after[239][0], 0.5);
         assert!(after.windows(2).all(|pair| pair[1][0] >= pair[0][0]));
+    }
+
+    struct AlignedFixture;
+    impl crate::PreparedNativeProcessor for AlignedFixture {
+        fn supports_latency_aligned_bypass(&self) -> bool {
+            true
+        }
+
+        fn runtime_version(&self) -> u32 {
+            1
+        }
+
+        fn declared_runtime_bytes(&self) -> usize {
+            std::mem::size_of::<AlignedFixtureRuntime>()
+        }
+
+        fn create_runtime(&self) -> Box<dyn crate::NativeProcessorRuntime> {
+            Box::new(AlignedFixtureRuntime(
+                super::AlignedDry::new(Some(4)).unwrap(),
+            ))
+        }
+
+        fn algorithmic_latency_frames(&self) -> Option<u32> {
+            Some(4)
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct AlignedFixtureRuntime(super::AlignedDry);
+    impl crate::NativeProcessorRuntime for AlignedFixtureRuntime {
+        fn process_block(
+            &mut self,
+            frames: &mut [crate::StereoFrame],
+            _resources: &dyn crate::DeviceResources,
+        ) {
+            for frame in frames {
+                *frame = self.0.advance(*frame).map(|sample| sample * 2.0);
+            }
+        }
+
+        fn reset(&mut self) {
+            self.0.reset();
+        }
+
+        fn is_quiescent(&self) -> bool {
+            self.0.is_quiet()
+        }
+
+        fn can_copy_history_from(&self, previous: &dyn crate::NativeProcessorRuntime) -> bool {
+            previous.as_any().is::<Self>()
+        }
+
+        fn copy_history_from(&mut self, previous: &dyn crate::NativeProcessorRuntime) {
+            if let Some(previous) = previous.as_any().downcast_ref::<Self>() {
+                *self = *previous;
+            }
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    fn aligned_chain(bypassed: bool) -> NativeRuntimeChain {
+        let kind = DeviceTypeId::from_static("test.bypass.aligned");
+        let prepared = PreparedProcessorInstance {
+            meter: Default::default(),
+            owner: ProcessorChainOwner::Track(1),
+            device_id: 7,
+            device_type: kind,
+            matrix: StereoMatrix::identity(),
+            bypassed,
+            sample_rate: 8_000,
+            configuration: Some(Arc::new(NativeDeviceState::new(kind, 1, vec![]).unwrap())),
+            definition: Some(Arc::new(AlignedFixture)),
+        };
+        assert_eq!(prepared.algorithmic_latency_frames(), Some(4));
+        let chain = NativeRuntimeChain::new(vec![prepared]).unwrap();
+        assert_eq!(
+            chain.algorithmic_latency_frames_for_entry(0).unwrap(),
+            Some(4)
+        );
+        chain
+    }
+
+    #[test]
+    fn aligned_bypass_preserves_delay_and_rollback_through_rapid_reversal() {
+        let samples: Vec<_> = (0..200).map(|n| [n as f32 / 256.0; 2]).collect();
+        let mut output = samples.clone();
+        let mut current = aligned_chain(false);
+        let switches = [
+            (16, 25, true, 1.0),
+            (25, 91, false, 0.775),
+            (91, 200, true, 1.0),
+        ];
+        current.begin_block();
+        current.process_block(&mut output[..16]).unwrap();
+        current.commit_block();
+        for (start, end, bypassed, from) in switches {
+            let mut next = aligned_chain(bypassed);
+            assert!(next.configuration_matches_range(&current, 0..1));
+            assert!(next.can_inherit_from(&current));
+            next.transfer_history_from(&mut current);
+            next.begin_block();
+            next.process_block(&mut [[-0.25; 2]; 11]).unwrap();
+            next.rollback_block();
+
+            for part in output[start..end].chunks_mut(53) {
+                next.begin_block();
+                next.process_block(part).unwrap();
+                next.commit_block();
+            }
+            let target = if bypassed { 0.0 } else { 1.0 };
+            for (offset, actual) in output[start..end].iter().enumerate() {
+                let wet = from + (target - from) * (offset + 1).min(40) as f32 / 40.0;
+                let expected = samples[start + offset - 4][0] * (1.0 + wet);
+                assert!(
+                    (actual[0] - expected).abs() < 1e-6,
+                    "frame {}",
+                    start + offset
+                );
+                assert_eq!(actual[0], actual[1]);
+            }
+            current = next;
+        }
     }
 }
