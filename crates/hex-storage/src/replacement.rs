@@ -53,6 +53,57 @@ pub struct ReplaceOutcome {
     pub metadata_warnings: Vec<MetadataWarning>,
 }
 
+/// Encoded snapshot bound to the target and token used for its compatibility
+/// check. Publishing consumes it and repeats the normal optimistic checks.
+pub struct PreparedReplacement<'a> {
+    target: &'a Path,
+    expected: &'a FileToken,
+    bytes: Vec<u8>,
+    requires_confirmation: bool,
+}
+
+/// Encode once and compare the actual output against an older reader's limit.
+/// This does not touch the target or its recovery files.
+pub fn prepare_replacement_within<'a>(
+    target: &'a Path,
+    expected: &'a FileToken,
+    project: &Project,
+    limit: usize,
+) -> Result<PreparedReplacement<'a>, StorageError> {
+    let bytes = encode(project)?;
+    let requires_confirmation = expected.requires_schema_upgrade_for(project)
+        || (expected.0.len() <= limit && bytes.len() > limit);
+    Ok(PreparedReplacement {
+        target,
+        expected,
+        bytes,
+        requires_confirmation,
+    })
+}
+
+impl PreparedReplacement<'_> {
+    /// Whether the caller must obtain consent before replacing this document.
+    pub fn requires_confirmation(&self) -> bool {
+        self.requires_confirmation
+    }
+
+    /// Publish this exact snapshot using the bound token and target. As with
+    /// [`replace_existing`], the caller is responsible for obtaining consent.
+    pub fn publish(self) -> Result<ReplaceOutcome, StorageError> {
+        replace_encoded_with_hooks(
+            self.target,
+            self.expected,
+            || Ok(self.bytes),
+            sync_parent,
+            sync_parent,
+            || Ok(()),
+            |source, destination| {
+                extended_attributes::copy(source, destination, extended_attributes::Limits::DEFAULT)
+            },
+        )
+    }
+}
+
 /// Return the deterministic hidden recovery sidecar path for a UTF-8 target name.
 pub fn recovery_path(target: impl AsRef<Path>) -> Result<PathBuf, StorageError> {
     let target = target.as_ref();
@@ -143,6 +194,26 @@ fn replace_with_hooks(
     before_project_rename: impl FnOnce() -> io::Result<()>,
     copy_metadata: impl FnOnce(&Path, &Path) -> Vec<MetadataWarning>,
 ) -> Result<ReplaceOutcome, StorageError> {
+    replace_encoded_with_hooks(
+        target,
+        expected,
+        || encode(project),
+        sync_recovery_directory,
+        sync_project_directory,
+        before_project_rename,
+        copy_metadata,
+    )
+}
+
+fn replace_encoded_with_hooks(
+    target: &Path,
+    expected: &FileToken,
+    encode_project: impl FnOnce() -> Result<Vec<u8>, StorageError>,
+    sync_recovery_directory: impl FnOnce(&Path) -> io::Result<()>,
+    sync_project_directory: impl FnOnce(&Path) -> io::Result<()>,
+    before_project_rename: impl FnOnce() -> io::Result<()>,
+    copy_metadata: impl FnOnce(&Path, &Path) -> Vec<MetadataWarning>,
+) -> Result<ReplaceOutcome, StorageError> {
     let basename = target_basename(target)?;
     let recovery = recovery_path(target)?;
     let target_permissions = check_target(target, expected)?;
@@ -157,7 +228,7 @@ fn replace_with_hooks(
             None
         }
     };
-    let new_bytes = encode(project)?;
+    let new_bytes = encode_project()?;
     let envelope = encode_envelope(&basename, &expected.0)?;
 
     let mut project_temp = prepare_temp(&parent, &new_bytes, Some(target_permissions.clone()))?;
@@ -638,6 +709,49 @@ mod tests {
         assert_eq!(recovered.token.0.as_ref(), token.0.as_ref());
         assert_eq!(recovered.recovery_path, outcome.recovery_path);
         assert_eq!(fs::read_dir(&directory.0).expect("list files").count(), 2);
+    }
+
+    #[test]
+    fn prepared_replacement_publishes_checked_snapshot_and_recovery() {
+        let directory = TestDir::new();
+        let target = directory.0.join("prepared.hex");
+        let previous = project(48_000);
+        let snapshot = project(44_100);
+        save_new(&target, &previous).unwrap();
+        let (_, token) = load_with_token(&target).unwrap();
+        let bytes = encode(&snapshot).unwrap();
+        let prepared =
+            prepare_replacement_within(&target, &token, &snapshot, bytes.len() - 1).unwrap();
+        assert_eq!(
+            prepared.requires_confirmation(),
+            token
+                .requires_save_confirmation_within(&snapshot, bytes.len() - 1)
+                .unwrap()
+        );
+        drop(snapshot);
+        let outcome = prepared.publish().unwrap();
+        assert_eq!(fs::read(&target).unwrap(), bytes);
+        outcome.token.check_unchanged(&target).unwrap();
+        assert_eq!(load_recovery(&target).unwrap().project, previous);
+    }
+
+    #[test]
+    fn prepared_replacement_refuses_changed_target_without_recovery() {
+        let directory = TestDir::new();
+        let target = directory.0.join("prepared-conflict.hex");
+        save_new(&target, &project(48_000)).unwrap();
+        let (_, token) = load_with_token(&target).unwrap();
+        let replacement = project(44_100);
+        let prepared =
+            prepare_replacement_within(&target, &token, &replacement, usize::MAX).unwrap();
+        let external = encode(&project(96_000)).unwrap();
+        fs::write(&target, &external).unwrap();
+        assert!(matches!(
+            prepared.publish(),
+            Err(StorageError::Conflict { .. })
+        ));
+        assert_eq!(fs::read(&target).unwrap(), external);
+        assert!(!recovery_path(&target).unwrap().exists());
     }
 
     #[test]

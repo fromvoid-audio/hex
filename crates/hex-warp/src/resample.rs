@@ -41,6 +41,48 @@ pub(super) struct Bandlimited {
     resampler: Resampler,
     taps: usize,
 }
+
+/// Render-local direct-mapped memoization of already evaluated input frames.
+/// The key is the full unwrapped source position; looping and gain still use
+/// `Input::frame` exactly once per miss. It never outlives this render.
+pub(super) struct FrameCache<'a> {
+    input: Input<'a>,
+    slots: Vec<Option<(i128, [f64; 2])>>,
+}
+
+impl<'a> FrameCache<'a> {
+    const SLOTS: usize = 128;
+
+    pub(super) fn minimum_bytes() -> usize {
+        std::mem::size_of::<Self>() + Self::SLOTS * std::mem::size_of::<Option<(i128, [f64; 2])>>()
+    }
+
+    pub(super) fn try_new(input: Input<'a>) -> Option<Self> {
+        let mut slots = Vec::new();
+        slots.try_reserve_exact(Self::SLOTS).ok()?;
+        slots.resize(Self::SLOTS, None);
+        Some(Self { input, slots })
+    }
+
+    pub(super) fn allocated_bytes(&self) -> Option<usize> {
+        self.slots
+            .capacity()
+            .checked_mul(std::mem::size_of::<Option<(i128, [f64; 2])>>())?
+            .checked_add(std::mem::size_of::<Self>())
+    }
+
+    fn frame(&mut self, position: i128) -> [f64; 2] {
+        let index = (position as u128 & (Self::SLOTS as u128 - 1)) as usize;
+        if let Some((key, value)) = self.slots[index]
+            && key == position
+        {
+            return value;
+        }
+        let value = self.input.frame(position);
+        self.slots[index] = Some((position, value));
+        value
+    }
+}
 impl Bandlimited {
     pub(super) fn new(rate: f64, work: &mut Work<'_>) -> Result<Self, Error> {
         let resampler = work.resampler;
@@ -156,8 +198,11 @@ impl Bandlimited {
     ) -> [f64; 2] {
         // A transient segment may not read the following attack through its
         // reconstruction filter, including during a tail wrap or reversal.
-        let frame =
-            |at: i128| input.frame(interval.map_or(at, |(start, end)| at.clamp(start, end)));
+        self.sample_with(position_q32, |at| {
+            input.frame(interval.map_or(at, |(start, end)| at.clamp(start, end)))
+        })
+    }
+    fn sample_with(&self, position_q32: i128, mut frame: impl FnMut(i128) -> [f64; 2]) -> [f64; 2] {
         let integer = position_q32.div_euclid(Q32);
         let fraction = position_q32.rem_euclid(Q32);
         if fraction == 0 && self.rate <= 1.0 {
@@ -193,6 +238,15 @@ impl Bandlimited {
     }
     pub(super) fn sample_float(&self, input: Input<'_>, position: f64) -> [f64; 2] {
         self.sample(input, (position * Q32 as f64).round() as i128)
+    }
+    pub(super) fn sample_float_cached(
+        &self,
+        position: f64,
+        cache: &mut FrameCache<'_>,
+    ) -> [f64; 2] {
+        self.sample_with((position * Q32 as f64).round() as i128, |at| {
+            cache.frame(at)
+        })
     }
     pub(super) fn sample_segment(
         &self,
@@ -252,4 +306,58 @@ fn bessel_i0(x: f64) -> f64 {
         }
     }
     sum
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+    use crate::GainPoint;
+
+    #[test]
+    fn cached_samples_match_uncached_for_loops_edges_collisions_and_envelopes() {
+        let frames: Vec<_> = (0..300)
+            .map(|i| [i as f32 / 300.0, -(i as f32) / 500.0])
+            .collect();
+        let envelope = [
+            GainPoint {
+                source_frame: 0,
+                gain_q16: 12000,
+            },
+            GainPoint {
+                source_frame: 200,
+                gain_q16: 90000,
+            },
+        ];
+        for resampler in [Resampler::V1, Resampler::V2] {
+            let mut cancel = || false;
+            let mut work = Work {
+                cancel: &mut cancel,
+                used: 0,
+                scratch: 0,
+                base_scratch: 0,
+                resampler,
+            };
+            let bank = Bandlimited::new(1.3, &mut work).unwrap();
+            for looping in [false, true] {
+                let input = Input {
+                    frames: &frames,
+                    sample_rate: 16000,
+                    region_start: 11,
+                    region_length: 270,
+                    phase: if looping { 17 } else { 0 },
+                    looping,
+                    envelope: &envelope,
+                };
+                let mut cache = FrameCache::try_new(input).unwrap();
+                for position in [-129.5, -1.25, 0.0, 1.75, 127.5, 255.5, 127.5, 269.75, 300.0] {
+                    let expected = bank.sample_float(input, position).map(f64::to_bits);
+                    assert_eq!(
+                        bank.sample_float_cached(position, &mut cache)
+                            .map(f64::to_bits),
+                        expected
+                    );
+                }
+            }
+        }
+    }
 }

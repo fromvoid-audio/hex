@@ -715,6 +715,73 @@ fn directed_clip_previews_share_the_total_waveform_leaf_budget() {
 }
 
 #[test]
+fn repeated_cycle_pyramids_share_the_waveform_cache_budget() {
+    let (session, first, _) = fixture();
+    let source = session.project().clip(first).unwrap();
+    let track = session.project().tracks()[0].id();
+    let asset = source.asset();
+    let mut editor = Editor::new(session.project().clone(), 1).unwrap();
+    let mut ids = vec![first];
+    for index in 1..129 {
+        let Created::Clip(id) = editor
+            .execute(Command::PlaceClip {
+                track,
+                asset,
+                start: index * 16_000,
+                duration: 8_000,
+                source_offset: 0,
+                source_length: 8_000,
+                looping: false,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        ids.push(id);
+    }
+    for id in ids {
+        let end = editor.project().clip(id).unwrap().start() + 16_000;
+        editor
+            .execute(Command::ResizeAudioClipView {
+                clip: id,
+                operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: end,
+                },
+            })
+            .unwrap();
+    }
+    let retained = std::cell::RefCell::new(BTreeMap::new());
+    prepare_with_waveforms(
+        editor.project(),
+        &session.media_bank(),
+        session.sine_table(),
+        None,
+        &session.audio_transforms,
+        &retained,
+    )
+    .unwrap();
+    let views = retained.borrow();
+    assert_eq!(views.len(), 129);
+    let bins: usize = views
+        .values()
+        .map(|view| {
+            assert!(view.waveform.is_repeated());
+            view.waveform.cached_leaf_count()
+                + view
+                    .preview_root
+                    .as_ref()
+                    .unwrap()
+                    .waveform
+                    .cached_leaf_count()
+        })
+        .sum();
+    assert!(
+        bins <= 262_144,
+        "repeated waveform pyramids exceeded their shared budget: {bins}"
+    );
+}
+
+#[test]
 fn time_range_group_prepares_identical_audio_and_roundtrips_complete_state() {
     for (start, end) in [(500, 4_500), (1_000, 11_000), (500, 11_000)] {
         let (mut session, first, previous) = fixture();
@@ -894,5 +961,186 @@ fn clip_loop_cycle_range_repeats_retained_pcm_without_changing_placement_or_hist
             .unwrap();
         assert_eq!(session.project().snapshot().tracks, saved.tracks);
         assert_eq!(render(&redo), actual);
+    }
+}
+
+#[test]
+fn accepted_sparse_root_peaks_keep_exact_samples_and_silence_at_distant_edges() {
+    use hex_project::AudioEventEdit;
+    let (mut session, clip, mut previous) = fixture();
+    for operation in [
+        AudioEventEdit::Split { at: 1_000 },
+        AudioEventEdit::Place {
+            event: 1,
+            start: 4_000_000,
+        },
+    ] {
+        previous = session
+            .command_prepared_revision(
+                Command::EditAudioEvents { clip, operation },
+                Some(&previous),
+            )
+            .unwrap()
+            .1;
+    }
+    let prepared = &previous.arrangement().audio_clip_views()[0];
+    assert!(prepared.sparse.is_some());
+    let views = session.audio_clip_waveforms.borrow();
+    let waveform = &views[&clip].waveform;
+    assert_eq!(waveform.source_frames, 4_001_000);
+    let exact = |a, b, budget| {
+        waveform
+            .bounded_exact_peaks_for_frames(a, b, budget)
+            .unwrap()
+    };
+    let zero = [waveform::Peak { min: 0.0, max: 0.0 }; 2];
+    assert_eq!(exact(20_000, 3_999_997, 0), zero);
+    let sample = prepared.audio.frames()[7_000];
+    assert_eq!(
+        exact(4_000_000, 4_000_001, 1),
+        sample.map(|s| waveform::Peak { min: s, max: s })
+    );
+    assert_eq!(
+        exact(3_999_997, 4_000_001, 1),
+        sample.map(|s| waveform::Peak {
+            min: s.min(0.0),
+            max: s.max(0.0)
+        })
+    );
+}
+
+#[test]
+fn long_frame_events_stay_outside_the_gate_until_trimmed_and_reopen_at_original_pcm() {
+    use hex_project::{AudioEventEdit, TrimEdge};
+    const DISTANCE: u64 = hex_project::MAX_AUDIO_DOMAIN_FRAMES + 10_000;
+    for edge in [TrimEdge::Left, TrimEdge::Right] {
+        let (mut session, clip, mut revision) = fixture();
+        let track = session.project().tracks()[0].id();
+        let placement = DISTANCE + 100;
+        revision = session
+            .command_prepared_revision(
+                Command::MoveClip {
+                    clip,
+                    track,
+                    start: placement,
+                },
+                Some(&revision),
+            )
+            .unwrap()
+            .1;
+        revision = session
+            .command_prepared_revision(
+                Command::EditAudioEvents {
+                    clip,
+                    operation: AudioEventEdit::Split { at: 1_000 },
+                },
+                Some(&revision),
+            )
+            .unwrap()
+            .1;
+        let before = session.project().clone();
+        let signed = match edge {
+            TrimEdge::Left => -(DISTANCE as i64),
+            TrimEdge::Right => DISTANCE as i64,
+        };
+        revision = session
+            .command_prepared_revision(
+                Command::EditAudioEvents {
+                    clip,
+                    operation: AudioEventEdit::Place {
+                        event: 1,
+                        start: signed,
+                    },
+                },
+                Some(&revision),
+            )
+            .unwrap()
+            .1;
+        let moved = session.project().clone();
+        let c = moved.clip(clip).unwrap();
+        assert_eq!((c.start(), c.duration()), (placement, 8_000));
+        let view = &revision.arrangement().audio_clip_views()[0];
+        assert!(view.sparse.is_some());
+        assert_eq!(view.audio.pcm_capacity_frames(), 8_000);
+        let destination = placement.checked_add_signed(signed).unwrap();
+        let read = |revision: &hex_engine::PreparedRevision, position| {
+            let mut renderer = hex_engine::Renderer::new(revision.arrangement());
+            renderer.seek(position);
+            renderer.play();
+            let mut output = [[0.0; 2]; 137];
+            for block in output.chunks_mut(31) {
+                renderer.render(block).unwrap();
+            }
+            output
+        };
+        assert_eq!(read(&revision, destination), [[0.0; 2]; 137]);
+
+        revision = session
+            .undo_prepared_revision(Some(&revision))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project(), &before);
+        revision = session
+            .redo_prepared_revision(Some(&revision))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project(), &moved);
+        let trim_frame = if edge == TrimEdge::Left {
+            destination
+        } else {
+            destination + 1_000
+        };
+        revision = session
+            .command_prepared_revision(
+                Command::TrimClipEdge {
+                    clip,
+                    edge,
+                    frame: trim_frame,
+                },
+                Some(&revision),
+            )
+            .unwrap()
+            .1;
+        let media = session.media_bank();
+        let asset = c.asset();
+        let original = &media.resident[&asset];
+        assert_eq!(read(&revision, destination), original.frames()[..137]);
+        let saved = hex_storage::encode(session.project()).unwrap();
+        assert_eq!(
+            hex_storage::schema_version_for(session.project()),
+            hex_storage::EXTENDED_FRAME_EVENTS_SCHEMA_VERSION
+        );
+        let opened = hex_storage::decode(&saved).unwrap();
+        assert_eq!(&opened, session.project());
+        let reopened = hex_engine::PreparedRevision::prepare(
+            &opened,
+            &media.resident,
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(read(&reopened, destination), original.frames()[..137]);
+
+        // Deactivating all events must not turn a long silent root into dense PCM.
+        let (_, silent) = session
+            .command_prepared_revision(
+                Command::EditAudioEvents {
+                    clip,
+                    operation: AudioEventEdit::SetActive {
+                        events: vec![1, 2],
+                        active: false,
+                    },
+                },
+                Some(&revision),
+            )
+            .unwrap();
+        assert_eq!(
+            silent.arrangement().audio_clip_views()[0]
+                .audio
+                .frames()
+                .len(),
+            1
+        );
+        assert_eq!(read(&silent, destination), [[0.0; 2]; 137]);
     }
 }

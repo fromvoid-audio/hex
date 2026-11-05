@@ -213,10 +213,28 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
 }
 
 pub(super) fn handoff(shape: &Shape) -> Result<SessionPlayback, crate::SessionPlaybackError> {
-    let mut previous = SessionPlayback::new(revision(shape, true, 100_000)).unwrap();
+    handoff_with(shape, revision(shape, true, 100_000), || {
+        revision(shape, false, 100)
+    })
+}
+
+pub(super) fn handoff_prepared(
+    shape: &Shape,
+    previous_revision: Arc<PreparedRevision>,
+    candidate_revision: Arc<PreparedRevision>,
+) -> Result<SessionPlayback, crate::SessionPlaybackError> {
+    handoff_with(shape, previous_revision, || candidate_revision)
+}
+
+fn handoff_with(
+    shape: &Shape,
+    previous_revision: Arc<PreparedRevision>,
+    candidate_revision: impl FnOnce() -> Arc<PreparedRevision>,
+) -> Result<SessionPlayback, crate::SessionPlaybackError> {
+    let mut previous = SessionPlayback::new(previous_revision).unwrap();
     previous.apply(SessionPlaybackCommand::Play).unwrap();
     previous.render(&mut [[0.0; 2]; 96]).unwrap();
-    let mut candidate = SessionPlayback::new(revision(shape, false, 100)).unwrap();
+    let mut candidate = SessionPlayback::new(candidate_revision()).unwrap();
     if let Err(error) = candidate.try_inherit_state_from(&mut previous) {
         eprintln!(
             "current handoff refusal: effects={} returns={} mutable={:?} track_pair_bytes={} return_pair_bytes={} instrument_pair_bytes={} error={error:?}",

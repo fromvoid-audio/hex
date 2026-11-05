@@ -7,6 +7,21 @@ pub(crate) fn command_for_snapshot(
     session: &Session,
     snapshot: GestureSnapshot,
 ) -> Result<Command, SessionError> {
+    if let Some(group) = snapshot.track_gains {
+        if snapshot.target
+            != (GestureTarget::TrackGains {
+                track: group.anchor(),
+            })
+            || snapshot.creation.is_some()
+            || snapshot.parameters.is_some()
+            || snapshot.secondary_value.is_some()
+        {
+            return Err(SessionError::Invalid("selected gain cohort target changed"));
+        }
+        return group
+            .command(session.project(), track_gain_value(snapshot.value)?)
+            .map_err(SessionError::from);
+    }
     if let Some(creation) = snapshot.creation {
         let GestureTarget::EqNodeCreation { device } = snapshot.target else {
             return Err(SessionError::Invalid("eq creation target changed"));
@@ -58,25 +73,13 @@ pub(crate) fn command_for_snapshot(
             return_track,
             gain: send_gain(snapshot.value)?,
         }),
-        GestureTarget::DeviceParameter { device, parameter } => {
-            let current = session
-                .project()
-                .device(device)
-                .ok_or(SessionError::Invalid("device no longer exists"))?;
-            let state = hex_engine::patch_native_device_parameter_for_class(
-                session.native_device_class(device)?,
-                current.state(),
-                parameter,
-                snapshot.value,
-            )?;
-            Ok(manual_device_edit(
-                session,
-                device,
-                state,
-                [parameter],
-                snapshot.manual_edit,
-            ))
-        }
+        GestureTarget::DeviceParameter { device, parameter } => device_parameter_command(
+            session.project(),
+            device,
+            parameter,
+            snapshot.value,
+            snapshot.manual_edit,
+        ),
         GestureTarget::DeviceParameterPair {
             device,
             first,
@@ -115,16 +118,54 @@ pub(crate) fn command_for_snapshot(
                 snapshot.manual_edit,
             ))
         }
-        GestureTarget::DeviceParameterSnapshot { .. } | GestureTarget::EqNodeCreation { .. } => {
+        GestureTarget::TrackGains { .. }
+        | GestureTarget::DeviceParameterSnapshot { .. }
+        | GestureTarget::EqNodeCreation { .. } => {
             Err(SessionError::Invalid("snapshot parameters are missing"))
         }
     }
+}
+
+/// Reconstruct the same single-parameter intent against an authoritative
+/// snapshot. This owns validated command construction, never source facts.
+pub(crate) fn device_parameter_command(
+    project: &Project,
+    device: DeviceId,
+    parameter: ParameterId,
+    value: ParameterValue,
+    manual_edit: bool,
+) -> Result<Command, SessionError> {
+    let current = project
+        .device(device)
+        .ok_or(SessionError::Invalid("device no longer exists"))?;
+    let state = hex_engine::patch_native_device_parameter_for_class(
+        Session::native_device_class_for_project(project, device)?,
+        current.state(),
+        parameter,
+        value,
+    )?;
+    Ok(manual_device_edit_for_project(
+        project,
+        device,
+        state,
+        [parameter],
+        manual_edit,
+    ))
 }
 
 /// One neutral manual-selection seam for keyed gestures and trusted direct edits.
 /// Unsupported/source-owned targets retain their ordinary base-state edit behavior.
 pub(crate) fn manual_device_edit(
     session: &Session,
+    device: DeviceId,
+    state: hex_lattice_contract::NativeDeviceState,
+    parameters: impl IntoIterator<Item = ParameterId>,
+    manual_edit: bool,
+) -> Command {
+    manual_device_edit_for_project(session.project(), device, state, parameters, manual_edit)
+}
+fn manual_device_edit_for_project(
+    project: &Project,
     device: DeviceId,
     state: hex_lattice_contract::NativeDeviceState,
     parameters: impl IntoIterator<Item = ParameterId>,
@@ -137,16 +178,11 @@ pub(crate) fn manual_device_edit(
         .into_iter()
         .map(automation_target)
         .filter(|target| {
-            session
-                .project()
+            project
                 .device(device)
                 .and_then(|device| device.automation_target(*target))
                 .is_some()
-                && hex_engine::project_device_automation_target_supported(
-                    session.project(),
-                    device,
-                    *target,
-                )
+                && hex_engine::project_device_automation_target_supported(project, device, *target)
         })
         .collect();
     targets.sort_unstable();

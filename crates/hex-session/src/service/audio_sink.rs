@@ -35,6 +35,10 @@ impl<'a> ResidentEffectPreparation<'a> {
     pub fn restoring_plugin_state(&self) -> bool {
         self.restoring_plugin_state
     }
+    /// Whether the saved document needs the fixed-quantum plugin output profile.
+    pub fn requires_plugin_profile(&self) -> bool {
+        requires_plugin_profile(self.project)
+    }
     pub fn visit_plugin_effects(
         &self,
         mut visit: impl FnMut(
@@ -44,9 +48,7 @@ impl<'a> ResidentEffectPreparation<'a> {
         ) -> Result<(), String>,
     ) -> Result<(), String> {
         let mut chain = |owner, devices: &'a [hex_project::Device]| {
-            for device in devices.iter().filter(|d| {
-                d.state().type_id() == hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
-            }) {
+            for device in devices.iter().filter(|d| is_plugin_effect(d)) {
                 visit(owner, device.id().value(), device.state())?;
             }
             Ok(())
@@ -68,6 +70,20 @@ impl<'a> ResidentEffectPreparation<'a> {
             self.project.main_devices(),
         )
     }
+}
+
+fn is_plugin_effect(device: &hex_project::Device) -> bool {
+    device.state().type_id() == hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
+}
+
+pub(super) fn requires_plugin_profile(project: &Project) -> bool {
+    project
+        .tracks()
+        .iter()
+        .flat_map(|track| track.devices())
+        .chain(project.return_tracks().iter().flat_map(|bus| bus.devices()))
+        .chain(project.main_devices())
+        .any(is_plugin_effect)
 }
 
 /// Scalar identity for one worker-private ordinary resident graph. Neither preview correlation
@@ -102,6 +118,35 @@ pub struct ResidentRuntimeLoop {
     pub source_context: Option<hex_engine::AudioSourceContext>,
     pub section_loop: Option<hex_project::LoopRegion>,
 }
+/// Read-only, output-bound observation of the one admitted resident graph.
+/// This is not a publication receipt, lease, or permission to mutate a graph.
+/// `publication_in_flight` is a snapshot of the publication reservation, not
+/// an admission guarantee: other owners and subsequent races can still refuse.
+/// Applied or refused revisions can be visible before that reservation clears.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResidentPublicationReadiness {
+    NoOutput,
+    Idle {
+        output_identity: u64,
+        applied_revision: u64,
+        publication_in_flight: bool,
+    },
+    Pending {
+        submission: ResidentRuntimeLoop,
+        applied_revision: u64,
+        publication_in_flight: bool,
+    },
+    Applied {
+        submission: ResidentRuntimeLoop,
+        publication_in_flight: bool,
+    },
+    Refused {
+        submission: ResidentRuntimeLoop,
+        applied_revision: u64,
+        publication_in_flight: bool,
+    },
+}
+
 /// One callback-observed source and transport witness under the arrangement gate.
 #[derive(Clone, Copy, Debug)]
 pub struct ArrangementEditPosition {
@@ -144,10 +189,12 @@ pub enum ResidentPublicationPolicy {
     /// Only the same-context fresh-output plugin continuation may replace its
     /// admitted unpublished graph after actual native/endpoint readiness.
     RestorePluginState,
-    /// New/Open only: admit one exact pending owner before canonical generation replacement.
-    /// Acceptance is OfflineRetained; existing teardown/open then queues it on the fresh output.
-    /// This never converts ordinary queue pressure into offline acceptance.
-    ReplaceDocument,
+    /// New/Open only: admit the exact successor before canonical replacement.
+    /// Matching rates may retain the graph for the existing deferred reopen.
+    /// A rate mismatch requires a fresh output and graph installation before adoption.
+    ReplaceDocument {
+        requires_plugin_profile: bool,
+    },
     FreshIfUnchanged(ResidentFreshRuntimeFence),
     SectionWhenReady {
         fence: ResidentFreshRuntimeFence,
@@ -327,6 +374,11 @@ pub trait WorkerAudioSink: Send {
     fn resident_publication_enabled(&self) -> bool {
         false
     }
+    /// Observe the exact resident publication without granting graph custody.
+    /// The default denotes an output that does not support resident graphs.
+    fn resident_publication_readiness(&mut self) -> ResidentPublicationReadiness {
+        ResidentPublicationReadiness::NoOutput
+    }
     /// Actual output/source/revision-bound loop, never the saved loop marker.
     /// None means no active ordinary output; offline edits remain available.
     /// A witness may become stale during preparation and must be revalidated by
@@ -398,6 +450,13 @@ pub trait WorkerAudioSink: Send {
             admit,
         )
     }
+    /// Finish an already submitted document replacement before the canonical swap.
+    /// A host that opened a private candidate output must observe its exact
+    /// installation or retire that candidate on refusal. Offline retention
+    /// and hosts without a private output have no additional terminal to wait for.
+    fn finish_resident_document_replacement(&mut self) -> Result<(), String> {
+        Ok(())
+    }
     /// Retry an already admitted offline candidate only while the canonical worker lends the
     /// current source/export/control union. Pending custody is not released by cancellation/ACK.
     fn poll_resident_pending(
@@ -407,9 +466,11 @@ pub trait WorkerAudioSink: Send {
         ) -> Result<(), String>,
     ) {
     }
-    /// Negotiate the initial device rate on the lifecycle lane. An error leaves
-    /// editing available at the explicit offline rate of 48000 Hz. Observe the
-    /// shutdown flag while awaiting that lane; never wait for a UI response.
+    /// Start audio without waiting for device opening and return the initial
+    /// canonical project rate. Polling owns delayed completion and errors; an
+    /// opened output must honor this rate without retiming intervening edits.
+    /// An immediate failure leaves editing available at 48000 Hz. Observe
+    /// shutdown before starting; never await a device or UI response here.
     fn initialize(&mut self, shutdown: &AtomicBool) -> Result<u32, String>;
     /// Called before the corresponding canonical event can block on UI delivery.
     /// On generation replacement relinquish the previous publication/output
@@ -419,6 +480,10 @@ pub trait WorkerAudioSink: Send {
     /// from its actual canonical source and validated gesture. Metadata only;
     /// acceptance is not callback application or new source admission.
     fn verified_track_gain_source(&mut self, _source: Arc<VerifiedTrackGainSource>) {}
+    /// Worker-derived native-effect metadata, anchored to the canonical source.
+    /// A consumer uses its existing reserved builder; this grants no source,
+    /// output or callback owner. Offline/default sinks retain model editing.
+    fn verified_device_parameter_source(&mut self, _source: Arc<VerifiedDeviceParameterSource>) {}
     /// Synchronous private canonical/original PCM input; no borrow may survive.
     fn native_sampler_input(&mut self, _input: NativeSamplerInput<'_>) {}
     /// A bounded stopped Arrangement handshake, shared by structural edits and
@@ -553,9 +618,11 @@ pub(super) struct WorkerEvents {
     // Last delivered actor observation, not another editable gesture model.
     // It proves ownership when a terminal (including a retired refusal) arrives.
     last_verified_gain: Option<(crate::device_gesture::GestureKey, u64)>,
+    last_verified_device: Option<(crate::device_gesture::GestureKey, u64)>,
     startup_error: Option<String>,
     // At most one request parked on the stopped Arrangement lease (#4544).
     stopped_fence: super::stopped_arrangement::Fence,
+    publication_wait: Option<super::publication_wait::Wait>,
     // Consecutive request-wait iterations with no pending work (#4574).
     idle_polls: u32,
 }
@@ -608,13 +675,17 @@ impl WorkerEvents {
         &mut self,
         document_intent: &Arc<std::sync::atomic::AtomicU64>,
         expected_intent: u64,
+        publication_waited: bool,
     ) {
         if let Some(audio) = self.audio.as_mut() {
-            audio.begin_request(RequestCancellation::new(
-                Arc::clone(&self.shutdown),
-                Arc::clone(document_intent),
-                expected_intent,
-            ));
+            audio.begin_request(
+                RequestCancellation::new(
+                    Arc::clone(&self.shutdown),
+                    Arc::clone(document_intent),
+                    expected_intent,
+                )
+                .after_publication_wait(publication_waited),
+            );
         }
     }
     pub(super) fn ordinary_source_reservation(&self) -> Option<crate::SourcePlanReservation> {
@@ -665,8 +736,10 @@ impl WorkerEvents {
             audio,
             last_context: None,
             last_verified_gain: None,
+            last_verified_device: None,
             startup_error: None,
             stopped_fence: Default::default(),
+            publication_wait: None,
             idle_polls: 0,
         }
     }
@@ -777,12 +850,30 @@ impl WorkerEvents {
                 })
             }
         }
+        match VerifiedDeviceParameterSource::capture(&event, self.last_verified_device) {
+            Ok(Some(source)) => {
+                self.last_verified_device = source
+                    .preview_identity()
+                    .map(|identity| (identity.key, identity.sequence));
+                if let Some(audio) = self.audio.as_mut() {
+                    audio.verified_device_parameter_source(Arc::new(source));
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                event.error = Some(match event.error.take() {
+                    Some(previous) => format!("{previous}; {error}"),
+                    None => error.to_string(),
+                });
+            }
+        }
         self.last_verified_gain = event
             .active_device_gesture
             .filter(|active| {
                 matches!(
                     active.target,
                     crate::device_gesture::GestureTarget::TrackGain { .. }
+                        | crate::device_gesture::GestureTarget::TrackGains { .. }
                 ) && event
                     .state
                     .canonical_audio_source
@@ -845,6 +936,26 @@ impl WorkerEvents {
             // Control-side event backpressure retains this exact event. It does
             // not strand native returns or require dropping a canonical ACK.
             thread::sleep(Duration::from_millis(5));
+        }
+    }
+    /// Park one edit ahead of the FIFO while the current publication settles.
+    pub(super) fn defer_publication(&mut self, queued: QueuedRequest) -> Option<QueuedRequest> {
+        // A request that just completed its wait must dispatch without re-parking.
+        if queued.publication_wait_failure.is_some() {
+            return Some(queued);
+        }
+        let readiness = self
+            .audio
+            .as_mut()
+            .map_or(ResidentPublicationReadiness::NoOutput, |audio| {
+                audio.resident_publication_readiness()
+            });
+        match super::publication_wait::Wait::begin(queued, readiness) {
+            Ok(wait) => {
+                self.publication_wait = Some(wait);
+                None
+            }
+            Err(queued) => Some(queued),
         }
     }
     /// Begin the stopped Arrangement lease for a request that fences first;
@@ -921,6 +1032,28 @@ impl WorkerEvents {
             && let Some(request) = self.next_request_while_fenced(requests, document_intent)
         {
             return Some(request);
+        }
+        while let Some(wait) = self.publication_wait.take() {
+            if self.shutdown.load(Ordering::Acquire) {
+                return None;
+            }
+            self.poll();
+            control_poll(
+                self.audio
+                    .as_mut()
+                    .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+            );
+            let readiness = self
+                .audio
+                .as_mut()
+                .map_or(ResidentPublicationReadiness::NoOutput, |audio| {
+                    audio.resident_publication_readiness()
+                });
+            match wait.poll(readiness, document_intent.load(Ordering::Acquire)) {
+                Ok(request) => return Some(request),
+                Err(wait) => self.publication_wait = Some(wait),
+            }
+            thread::sleep(super::publication_wait::POLL);
         }
         control_poll(
             self.audio

@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "updated_date": "2026-11-05",
+  "phase": "bootstrap_baseline_recorded",
+  "mission": "goal.md",
+  "goal_activation": "pending_user_manual_activation",
+  "scheduler": "none_user_requested_manual_goal",
+  "checkpoint_issue": "https://pulse.iocore.dev/#/issues/4989",
+  "checkpoint_pr": "https://github.com/PORTALSURFER/hex/pull/2076",
+  "branch": "pulse/task-4989-g1-8fa969f58189",
+  "baseline_source": "4b7309c4fd930ef4c51eadb0cb7408fd5c2b5ac0",
+  "upstream_base": "7712eb87a2ef900dc4be8c98a3c8c26db5c09280",
+  "evidence": "measurements.jsonl",
+  "next_action": "Inspect live bootstrap PR state, then continue the empty-shard regression and fix in Pulse 4990 / PR 2077; reconcile any already merged result first.",
+  "next_issue": "https://pulse.iocore.dev/#/issues/4990",
+  "next_pr": "https://github.com/PORTALSURFER/hex/pull/2077",
+  "limits": [
+    "Snapshot only; reconcile Git and live Pulse before recovery.",
+    "Raw ignored artifact logs are executor-local; essential results also belong in canonical PRs/Pulse.",
+    "Focused Linux checks do not qualify native macOS or full-workspace health."
+  ]
+}

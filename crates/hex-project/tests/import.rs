@@ -341,6 +341,7 @@ fn moving_audio_clip_to_new_hybrid_track_preserves_identity_and_is_one_undo_step
 
     let Created::Track(inserted) = editor
         .execute(Command::MoveClipToNewTrack {
+            initial_gain: None,
             clip,
             name: "track 3".into(),
             before_track: Some(anchor),
@@ -446,6 +447,7 @@ fn failed_audio_clip_insert_move_preserves_ids_order_and_redo() {
     editor.undo();
     let before = editor.project().clone();
     let invalid = editor.execute(Command::MoveClipToNewTrack {
+        initial_gain: None,
         clip,
         name: "new".into(),
         before_track: Some(missing_anchor),

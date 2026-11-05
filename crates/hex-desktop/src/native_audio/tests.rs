@@ -1,9 +1,16 @@
 //! Output completion alone is substituted. Session, verified readers, source
 //! domains, graph preparation, publication and callback are production paths.
 use super::*;
+mod bypass_latency;
+mod delay_bypass;
+mod document_output;
 mod limiter;
+mod limiter_bypass;
+mod manual_host_gain;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod plugins;
 mod recovery;
+mod release_custody;
 mod resident_authoring;
 mod resident_bounce;
 mod resident_eq_creation;
@@ -15,12 +22,21 @@ mod resident_reverb;
 mod resident_routes;
 mod resident_sections;
 mod resident_streamed_bounce;
+mod reverb_bypass;
 mod sampler;
 mod section_benchmark;
+mod solo_latency;
+mod startup;
 mod stream_export;
+mod touch_recording;
 mod track_clipboard;
 mod track_reorder;
 mod transport_loop;
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+mod unavailable_plugins;
+mod utility_width;
+mod verified_device_preview;
+pub(super) mod verified_gain;
 mod worker_idle;
 use hex_audio::worker_fixture::HeadlessBackend;
 use hex_engine::PlaybackCommand;
@@ -73,6 +89,8 @@ pub(super) struct Observation {
         hex_engine::AudioCandidateIdentity,
         hex_engine::AudioCandidateIdentity,
     )>,
+    received_verified_device: Option<Arc<hex_session::service::VerifiedDeviceParameterSource>>,
+    replay_verified_device: Option<Arc<hex_session::service::VerifiedDeviceParameterSource>>,
     pub(super) received_verified_gain: Option<Arc<hex_session::service::VerifiedTrackGainSource>>,
     pub(super) replay_verified_gain: Option<Arc<hex_session::service::VerifiedTrackGainSource>>,
     fail_gain_open: bool,
@@ -85,6 +103,7 @@ pub(super) struct Observation {
     blocked: Option<AudioSourceContext>,
     fresh_before_input: Option<(EditorAudio, Arc<Mutex<Option<HeadlessBackend>>>)>,
     fresh_before_input_checked: bool,
+    fresh_replacement_hold_checked: bool,
     latest: Option<(AudioSourceContext, AudioCandidateDomainToken, usize)>,
     command_ready: Option<(AudioSourceContext, u64)>,
     change_source_after_capture: Option<PathBuf>,
@@ -163,11 +182,12 @@ fn rendered_current_rejects_old_endpoint_with_reused_applied_revision() {
     );
 }
 
-// A read-only test observer around the actual sink, not an alternate source,
-// graph, publication or ownership path.
-pub(super) struct ObservedSink {
+// A test observer with explicit initial project-rate configuration around the
+// actual sink, not an alternate source, graph, publication or ownership path.
+struct ObservedSink {
     inner: NativeAudioSink,
     observation: Arc<Mutex<Observation>>,
+    initial_rate: Option<u32>,
 }
 impl ObservedSink {
     /// These fixtures exercise the legacy Client bridge and closed sampler candidate lifecycle.
@@ -175,14 +195,22 @@ impl ObservedSink {
     /// production-default coverage uses ResidentHarness and rendered fixtures unchanged.
     fn legacy(mut inner: NativeAudioSink, observation: Arc<Mutex<Observation>>) -> Self {
         inner.worker_owned_resident_graphs = false;
-        Self { inner, observation }
+        Self {
+            inner,
+            observation,
+            initial_rate: None,
+        }
     }
-    pub(super) fn rendered(inner: NativeAudioSink, observation: Arc<Mutex<Observation>>) -> Self {
+    fn rendered(inner: NativeAudioSink, observation: Arc<Mutex<Observation>>) -> Self {
         assert!(
             inner.resident_publication_enabled(),
             "actual production default"
         );
-        Self { inner, observation }
+        Self {
+            inner,
+            observation,
+            initial_rate: None,
+        }
     }
     fn record_resident_submission(&mut self) {
         self.observation
@@ -253,6 +281,11 @@ impl WorkerAudioSink for ObservedSink {
     fn resident_publication_enabled(&self) -> bool {
         self.inner.resident_publication_enabled()
     }
+    fn resident_publication_readiness(
+        &mut self,
+    ) -> hex_session::service::ResidentPublicationReadiness {
+        self.inner.resident_publication_readiness()
+    }
     fn resident_admission(
         &self,
     ) -> [hex_engine::native_device_resources::DeviceResourceAdmission<'_>; 3] {
@@ -306,7 +339,12 @@ impl WorkerAudioSink for ObservedSink {
         self.record_resident_submission();
     }
     fn initialize(&mut self, shutdown: &AtomicBool) -> Result<u32, String> {
-        self.inner.initialize(shutdown)
+        let rate = self.inner.initialize(shutdown)?;
+        // Exercise explicit alternative project rates independently of a
+        // device's delayed completion, preserving the downsample fixtures.
+        let rate = self.initial_rate.unwrap_or(rate);
+        self.inner.requested_rate = Some(rate);
+        Ok(rate)
     }
     fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>) {
         if source
@@ -338,22 +376,14 @@ impl WorkerAudioSink for ObservedSink {
             drop(audio);
             backend.lock().unwrap().take();
             self.inner.canonical_changed(source);
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while self.inner.output.is_none() {
-                self.inner.poll_open();
-                assert!(
-                    Instant::now() < deadline,
-                    "fresh output did not complete before input"
-                );
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            self.inner.poll_open();
             assert!(
                 self.inner.sampler.is_none(),
                 "old sampler must cancel before output opening"
             );
-            assert_eq!(
-                self.inner.output_hold.retained_bytes,
-                self.inner.policy.as_ref().unwrap().legacy_hold_bytes
+            assert!(
+                self.inner.output.is_none() && self.inner.pending_release_event.is_some(),
+                "a pre-input poll must wait for release delivery"
             );
             self.observation.lock().unwrap().fresh_before_input_checked = true;
             return;
@@ -366,6 +396,14 @@ impl WorkerAudioSink for ObservedSink {
     ) {
         self.inner.verified_track_gain_source(Arc::clone(&source));
         self.observation.lock().unwrap().received_verified_gain = Some(source);
+    }
+    fn verified_device_parameter_source(
+        &mut self,
+        source: Arc<hex_session::service::VerifiedDeviceParameterSource>,
+    ) {
+        self.inner
+            .verified_device_parameter_source(Arc::clone(&source));
+        self.observation.lock().unwrap().received_verified_device = Some(source);
     }
     fn native_sampler_input(&mut self, input: hex_session::service::NativeSamplerInput<'_>) {
         self.inner.native_sampler_input(input);
@@ -480,6 +518,15 @@ impl WorkerAudioSink for ObservedSink {
         self.inner.restart_audio(generation, request)
     }
     fn poll(&mut self) {
+        let device = self
+            .observation
+            .lock()
+            .unwrap()
+            .replay_verified_device
+            .take();
+        if let Some(source) = device {
+            self.inner.verified_device_parameter_source(source);
+        }
         let replay = self.observation.lock().unwrap().replay_verified_gain.take();
         if let Some(source) = replay {
             self.inner.verified_track_gain_source(source);
@@ -496,6 +543,19 @@ impl WorkerAudioSink for ObservedSink {
             );
         }
         self.inner.poll();
+        if self.inner.output.is_some() {
+            let mut observation = self.observation.lock().unwrap();
+            if observation.fresh_before_input_checked && !observation.fresh_replacement_hold_checked
+            {
+                // The ordinary poll opens only after the UI can receive release.
+                // Retain the original fresh-output memory-policy assertion.
+                assert_eq!(
+                    self.inner.output_hold.retained_bytes,
+                    self.inner.policy.as_ref().unwrap().legacy_hold_bytes
+                );
+                observation.fresh_replacement_hold_checked = true;
+            }
+        }
         self.record_resident_submission();
         if let Some(context) = self.inner.last_context
             && let Some(domain) = self
@@ -535,21 +595,30 @@ impl Files {
         Self(path)
     }
     pub(super) fn wav(&self, rate: u32, frames: u32) -> PathBuf {
-        let path = self.0.join("mixed-rate.wav");
+        self.constant_wav("mixed-rate.wav", rate, frames, &[8192])
+    }
+    fn constant_wav(&self, name: &str, rate: u32, frames: u32, samples: &[i16]) -> PathBuf {
+        assert!((1..=2).contains(&samples.len()));
+        let channels = u16::try_from(samples.len()).unwrap();
+        let frame_bytes = u32::from(channels) * 2;
+        let data_bytes = frames.checked_mul(frame_bytes).unwrap();
+        let path = self.0.join(name);
         let mut bytes = Vec::from(*b"RIFF");
-        bytes.extend_from_slice(&(36 + frames * 2).to_le_bytes());
+        bytes.extend_from_slice(&(36 + data_bytes).to_le_bytes());
         bytes.extend_from_slice(b"WAVEfmt ");
         bytes.extend_from_slice(&16u32.to_le_bytes());
         bytes.extend_from_slice(&1u16.to_le_bytes());
-        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&channels.to_le_bytes());
         bytes.extend_from_slice(&rate.to_le_bytes());
-        bytes.extend_from_slice(&(rate * 2).to_le_bytes());
-        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&rate.checked_mul(frame_bytes).unwrap().to_le_bytes());
+        bytes.extend_from_slice(&(frame_bytes as u16).to_le_bytes());
         bytes.extend_from_slice(&16u16.to_le_bytes());
         bytes.extend_from_slice(b"data");
-        bytes.extend_from_slice(&(frames * 2).to_le_bytes());
+        bytes.extend_from_slice(&data_bytes.to_le_bytes());
         for _ in 0..frames {
-            bytes.extend_from_slice(&8192i16.to_le_bytes());
+            for sample in samples {
+                bytes.extend_from_slice(&sample.to_le_bytes());
+            }
         }
         fs::write(&path, bytes).unwrap();
         path
@@ -563,20 +632,20 @@ impl Drop for Files {
 
 /// Pre-window consumer with one actual endpoint and one latest read-only observation.
 /// Superseded projection destruction is control-only; neither row owns a native resource set.
-pub(super) struct RenderedSetup {
+struct RenderedSetup {
     sender: SyncSender<EditorAudioEvent>,
     opened: Option<EditorAudioEvent>,
     observation: Option<EditorAudioEvent>,
 }
 pub(super) struct Harness {
-    pub(super) rendered_setup: Option<RenderedSetup>,
+    rendered_setup: Option<RenderedSetup>,
     pub(super) service: Option<Service>,
     pub(super) events: mpsc::Receiver<EditorAudioEvent>,
     pub(super) backend: Arc<Mutex<Option<HeadlessBackend>>>,
     pub(super) audio: Option<EditorAudio>,
     pub(super) context: Option<AudioSourceContext>,
     pub(super) observation: Arc<Mutex<Observation>>,
-    pub(super) wait: Duration,
+    wait: Duration,
 }
 impl Harness {
     fn new() -> Self {
@@ -611,13 +680,9 @@ impl Harness {
             }
         }));
         let observation = Arc::new(Mutex::new(Observation::default()));
-        let service = Service::with_audio_sink(
-            16,
-            0,
-            None,
-            Box::new(ObservedSink::legacy(sink, Arc::clone(&observation))),
-        )
-        .unwrap();
+        let mut observed = ObservedSink::legacy(sink, Arc::clone(&observation));
+        observed.initial_rate = Some(default_rate);
+        let service = Service::with_audio_sink(16, 0, None, Box::new(observed)).unwrap();
         Self {
             rendered_setup: None,
             service: Some(service),
@@ -878,13 +943,7 @@ fn unavailable_output_keeps_canonical_editing_and_saving_available(retained_fail
         }
     };
     let initial = next();
-    assert!(
-        initial
-            .error
-            .as_ref()
-            .unwrap()
-            .contains("audio unavailable")
-    );
+    assert!(initial.error.is_none());
     assert!(matches!(
         audio_events.recv_timeout(Duration::from_secs(1)).unwrap(),
         EditorAudioEvent::Unavailable {
@@ -905,6 +964,72 @@ fn unavailable_output_keeps_canonical_editing_and_saving_available(retained_fail
     service.submit(Request::SaveNew(path.clone())).unwrap();
     assert!(next().error.is_none());
     assert!(path.is_file());
+}
+
+#[test]
+fn initial_open_shutdown_wins_over_expired_deadline() {
+    let _native = native_fixture();
+    let (events, _audio_events) = mpsc::sync_channel(1);
+    let mut sink = NativeAudioSink::new(events);
+    sink.lifecycle_status = Some(|| None);
+    sink.output_factory = Some(Box::new(|_| {
+        panic!("cancelled startup must not open audio")
+    }));
+    sink.startup_open_deadline = Duration::ZERO;
+    assert_eq!(
+        sink.initialize(&AtomicBool::new(true)),
+        Err("audio startup cancelled".into())
+    );
+}
+
+#[test]
+fn hung_initial_open_times_out_to_offline_editing() {
+    let _native = native_fixture();
+    let (events, audio_events) = mpsc::sync_channel(1);
+    let mut sink = NativeAudioSink::new(events);
+    sink.lifecycle_status = Some(|| None);
+    sink.output_factory = Some(Box::new(|_| Ok(None)));
+    sink.startup_open_deadline = Duration::from_millis(50);
+    let service = Service::with_audio_sink_and_native_reservation(
+        32,
+        0,
+        None,
+        Box::new(sink),
+        AudioPolicy::new().unwrap().resident_native,
+    )
+    .unwrap();
+    let next = || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(event) = service.try_event() {
+                return event;
+            }
+            assert!(Instant::now() < deadline, "initial state never arrived");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    let initial = next();
+    assert!(
+        initial.error.is_none(),
+        "opening must not delay initial state"
+    );
+    assert_eq!(initial.state.project.sample_rate(), 48_000);
+    assert!(matches!(
+        audio_events.recv_timeout(Duration::from_secs(1)).unwrap(),
+        EditorAudioEvent::Unavailable {
+            restart_request: None,
+            error,
+            ..
+        } if error.to_string().contains("did not open in time")
+    ));
+    service
+        .submit(Request::Edit(hex_project::Command::MasterGain {
+            gain: 0.5,
+        }))
+        .unwrap();
+    let edited = next();
+    assert!(edited.error.is_none());
+    assert!(edited.state.revision > initial.state.revision);
 }
 
 #[test]

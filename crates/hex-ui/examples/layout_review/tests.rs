@@ -516,7 +516,9 @@ fn eq_catalog_uses_shared_live_geometry_controls_and_registered_response_without
             .any(|point| (point[0] - center).abs() < 1.0e-6),
         "the narrow node center must be sampled"
     );
-    assert!(before.analyzer.is_none() && before.input_analyzer.is_none());
+    assert!(before.analyzer.is_some());
+    assert!(before.input_analyzer.is_some());
+    assert!(before.analyzer_peak.is_some());
     let field = visual.debug_bounds("fixture-eq-numeric-2-value").unwrap();
     visual.simulate_click(field.center(), Modifiers::default());
     visual.simulate_keystrokes("cmd-a");
@@ -531,6 +533,9 @@ fn eq_catalog_uses_shared_live_geometry_controls_and_registered_response_without
         after.primary, before.primary,
         "real registered response follows the shared numeric control"
     );
+    assert_eq!(after.analyzer, before.analyzer);
+    assert_eq!(after.input_analyzer, before.input_analyzer);
+    assert_eq!(after.analyzer_peak, before.analyzer_peak);
     let choice = visual.debug_bounds("fixture-eq-selector-1").unwrap();
     visual.simulate_click(choice.center(), Modifiers::default());
     visual.run_until_parked();

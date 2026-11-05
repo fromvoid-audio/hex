@@ -95,6 +95,7 @@ pub use audio_only_inputs::{
 pub mod native_device_resources;
 mod owned_shared;
 mod pcm_arc;
+mod sparse_audio;
 pub use midi_preview::persistent::{AudioPreviewCapacity, AudioPreviewMetadata};
 pub use native_device_view::{
     NativeDeviceCatalogEntry, NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView,
@@ -106,6 +107,7 @@ pub use native_device_view::{
     sampler_parameter_active_on_control, sampler_parameter_value_on_control,
     sampler_replacement_template_on_control, validate_sampler_replacement_on_control,
 };
+pub use sparse_audio::SparseFrameMap;
 
 mod device_automation;
 mod native_parameter_input;
@@ -122,11 +124,12 @@ pub use gain_envelope::{
 };
 mod clip_index;
 mod loop_seam;
-pub(crate) use loop_seam::LoopSeam;
 mod stream_miss_fade;
 pub use stream_miss_fade::{STREAM_MISS_FADE_VOICES, StreamMissFades};
 mod return_feed_plan;
 mod signal_graph;
+#[cfg(feature = "instrument-test-support")]
+pub use signal_graph::PrintedBranchProbe;
 mod stream_demand;
 pub use stream_demand::{
     StreamChunkWindow, StreamPageExtent, StreamResourceExtent, visit_scalar_page_range,
@@ -247,12 +250,12 @@ pub(crate) fn render_streamed_page_span_captured(
     let mut voice = fades.map(|fades| fades.voice(source.key(), source_frame));
     for (offset, destination) in destination.iter_mut().take(available).enumerate() {
         let mut sample = frames[page_offset + offset];
-        if let Some((fade, fade_start)) = fade {
-            if let Some(frame) = timeline_frame.checked_add(offset as u64) {
-                let gain = fade.gain_at(frame.saturating_sub(fade_start));
-                sample[0] *= gain;
-                sample[1] *= gain;
-            }
+        if let Some((fade, fade_start)) = fade
+            && let Some(frame) = timeline_frame.checked_add(offset as u64)
+        {
+            let gain = fade.gain_at(frame.saturating_sub(fade_start));
+            sample[0] *= gain;
+            sample[1] *= gain;
         }
         if clip_gain != 1.0 {
             sample[0] *= clip_gain;
@@ -568,6 +571,7 @@ struct ClipMetadata {
     source_phase: u64,
     fade: Option<hex_project::ClipFade>,
     streamed: Option<Arc<StreamedSourceMetadata>>,
+    sparse: Option<Arc<SparseFrameMap>>,
 }
 impl Clip {
     /// The frame range outside which this clip never renders.
@@ -647,6 +651,7 @@ impl Clip {
                 source_phase: 0,
                 fade: Some(fade),
                 streamed: None,
+                sparse: None,
             }))
         };
         Ok(Self {
@@ -672,6 +677,7 @@ impl Clip {
             if phase == 0
                 && metadata.fade.is_none()
                 && metadata.streamed.is_none()
+                && metadata.sparse.is_none()
                 && metadata.gain == 1.0
             {
                 self.metadata = None;
@@ -682,6 +688,7 @@ impl Clip {
                 source_phase: phase,
                 fade: None,
                 streamed: None,
+                sparse: None,
             }));
         }
         Ok(self)
@@ -695,6 +702,7 @@ impl Clip {
                 && metadata.source_phase == 0
                 && metadata.fade.is_none()
                 && metadata.streamed.is_none()
+                && metadata.sparse.is_none()
             {
                 self.metadata = None;
             }
@@ -704,9 +712,50 @@ impl Clip {
                 source_phase: 0,
                 fade: None,
                 streamed: None,
+                sparse: None,
             }));
         }
         self
+    }
+
+    fn sparse_region(
+        audio: Audio,
+        sparse: Arc<SparseFrameMap>,
+        start: u64,
+        duration: u64,
+        source_offset: u64,
+    ) -> Result<Self, Invalid> {
+        let end = start
+            .checked_add(duration)
+            .ok_or(Invalid("clip end overflow"))?;
+        let offset =
+            usize::try_from(source_offset).map_err(|_| Invalid("sparse audio offset overflow"))?;
+        let length =
+            usize::try_from(duration).map_err(|_| Invalid("sparse audio duration overflow"))?;
+        if length == 0
+            || offset
+                .checked_add(length)
+                .is_none_or(|end| end > sparse.extent())
+            || audio.frames().len() != sparse.packed_len()
+        {
+            return Err(Invalid("clip region exceeds sparse audio"));
+        }
+        Ok(Self {
+            active: true,
+            audio: Some(audio),
+            start,
+            end,
+            looping: false,
+            source_offset: offset,
+            source_length: length,
+            metadata: Some(Box::new(ClipMetadata {
+                gain: 1.0,
+                source_phase: 0,
+                fade: None,
+                streamed: None,
+                sparse: Some(sparse),
+            })),
+        })
     }
 
     fn at(&self, position: u64, source_phase: u64) -> Frame {
@@ -734,7 +783,13 @@ impl Clip {
             }
         };
         self.audio.as_ref().map_or([0.0; 2], |audio| {
-            audio.frames[self.source_offset + source_offset as usize]
+            let index = self.source_offset + source_offset as usize;
+            if let Some(map) = self.metadata.as_ref().and_then(|m| m.sparse.as_ref()) {
+                return map
+                    .packed_index(index)
+                    .map_or([0.0; 2], |i| audio.frames[i]);
+            }
+            audio.frames[index]
         })
     }
 
@@ -857,6 +912,7 @@ impl Clip {
                 source_phase: 0,
                 fade: (!fade.is_neutral()).then_some(fade),
                 streamed: Some(source),
+                sparse: None,
             })),
         })
     }
@@ -1052,6 +1108,11 @@ impl PreparedTrackMix {
 
     pub fn channel_gain(self) -> Frame {
         self.channel_gain
+    }
+
+    pub(crate) fn with_channel_gain(mut self, gain: Frame) -> Self {
+        self.channel_gain = gain;
+        self
     }
 
     pub fn muted(self) -> bool {
@@ -1494,6 +1555,19 @@ impl Track {
             .as_ref()
             .map_or(self.mix, |envelope| envelope.mix_at(frame))
     }
+    pub(crate) fn gain_touch_target_at(&self, frame: u64) -> Option<gain_envelope::TouchTarget> {
+        self.gain_envelope.as_ref()?.touch_target_at(frame)
+    }
+    pub(crate) fn base_gain_at(&self, frame: u64) -> Option<f32> {
+        self.gain_envelope
+            .as_ref()
+            .map(|envelope| envelope.base_value_at(frame))
+    }
+    pub(crate) fn read_gain_at(&self, frame: u64) -> Option<f32> {
+        self.gain_envelope
+            .as_ref()
+            .map(|envelope| envelope.value_at(frame))
+    }
     pub fn mix(&self) -> PreparedTrackMix {
         self.mix
     }
@@ -1665,6 +1739,7 @@ impl Track {
         capture: &mut [Frame],
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
         timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
+        loop_fade: Option<loop_seam::LoopEndFade>,
     ) -> Result<(), Invalid> {
         self.require_volume_timing(timing)?;
         let end_frame = start_frame
@@ -1676,7 +1751,42 @@ impl Track {
             return Err(Invalid("capture length mismatch"));
         }
         if !self.source_mix.muted {
-            self.render_audio_range_captured(start_frame, end_frame, output, pages, Some(capture));
+            if let Some(fade) = loop_fade.filter(|fade| fade.intersects(start_frame, output.len()))
+            {
+                if output.len() > 256 {
+                    return Err(Invalid("captured source range exceeds render chunk"));
+                }
+                let mut audio = [[0.0; 2]; 256];
+                let mut audio_capture = [[0.0; 2]; 256];
+                let count = output.len();
+                self.render_audio_range_captured(
+                    start_frame,
+                    end_frame,
+                    &mut audio[..count],
+                    pages,
+                    Some(&mut audio_capture[..count]),
+                );
+                fade.apply(start_frame, &mut audio[..count]);
+                fade.apply(start_frame, &mut audio_capture[..count]);
+                for ((out, captured), (sample, tap)) in output
+                    .iter_mut()
+                    .zip(capture.iter_mut())
+                    .zip(audio.iter().zip(audio_capture.iter()))
+                {
+                    out[0] += sample[0];
+                    out[1] += sample[1];
+                    captured[0] += tap[0];
+                    captured[1] += tap[1];
+                }
+            } else {
+                self.render_audio_range_captured(
+                    start_frame,
+                    end_frame,
+                    output,
+                    pages,
+                    Some(capture),
+                );
+            }
             self.render_instrument_range_with_suppressions(
                 (start_frame, end_frame),
                 output,
@@ -2012,6 +2122,25 @@ impl Track {
         let source_phase = metadata.map_or(0, |metadata| metadata.source_phase);
         let clip_gain = metadata.map_or(1.0, |metadata| metadata.gain);
         let fade = metadata.and_then(|metadata| metadata.fade.as_ref());
+        if let Some(map) = metadata.and_then(|metadata| metadata.sparse.as_ref())
+            && let Some(audio) = clip.audio.as_ref()
+        {
+            let first = clip.source_offset + (span_start - clip.start) as usize;
+            map.visit(first..first + output_end - output_start, |root, packed| {
+                let from = output_start + (root.start - first);
+                for (offset, sample) in audio.frames()[packed].iter().copied().enumerate() {
+                    let index = from + offset;
+                    source_mix.add_captured(
+                        &mut output[index],
+                        sample.map(|channel| channel * clip_gain),
+                        capture
+                            .as_deref_mut()
+                            .and_then(|frames| frames.get_mut(index)),
+                    );
+                }
+            });
+            return;
+        }
         if fade.is_none()
             && clip_gain == 1.0
             && capture.is_none()
@@ -2282,6 +2411,8 @@ pub struct PreparedAudioClipView {
     pub offset: u64,
     pub length: u64,
     pub repeat: Option<PreparedAudioRepeat>,
+    /// Maps logical root frames to packed PCM for a non-repeating source.
+    pub sparse: Option<Arc<SparseFrameMap>>,
 }
 
 /// Loop geometry of a prepared clip that plays a shared root instead of outer PCM.

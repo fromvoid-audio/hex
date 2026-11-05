@@ -147,6 +147,7 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
 
     let full_project = Project::from_legacy_snapshot(Snapshot {
         automatic_track_names: Vec::new(),
+        retained_source_paths: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
@@ -155,6 +156,7 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
+        sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
         next_id: 3 + MAX_CLIPS as u64,
@@ -168,6 +170,7 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
             conversion_version: 0,
         }],
         tracks: vec![TrackSnapshot {
+            tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),
@@ -251,6 +254,7 @@ fn missing_clip_split_is_transactional() {
 fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
     let project = Project::from_legacy_snapshot(Snapshot {
         automatic_track_names: Vec::new(),
+        retained_source_paths: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
@@ -259,6 +263,7 @@ fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
+        sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
         next_id: u64::MAX,
@@ -272,6 +277,7 @@ fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
             conversion_version: 0,
         }],
         tracks: vec![TrackSnapshot {
+            tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),

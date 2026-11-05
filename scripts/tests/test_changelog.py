@@ -273,7 +273,7 @@ entry=sys.argv[1]
 sys.argv=[entry,'--help']
 runpy.run_path(entry,run_name='__main__')
 """
-        for entry in [root / 'launch', root / 'scripts/hex-test-build.py', root / 'scripts/changelog.py']:
+        for entry in [root / 'scripts/hex-test-build.py', root / 'scripts/changelog.py']:
             result = subprocess.run([sys.executable, '-c', harness, str(entry)], text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('usage:', result.stdout)

@@ -1291,3 +1291,125 @@ fn historical_layout_admission_has_no_blanket_document_byte_ceiling() {
     historical.resize(LEGACY_READER_DOCUMENT_BYTES + 1, b' ');
     assert_eq!(decode(&historical).unwrap(), project);
 }
+
+#[test]
+fn compressor_sidechain_roundtrips_and_requires_schema_upgrade_consent() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(source) = editor
+        .execute(Command::AddTrack { name: "key".into() })
+        .unwrap()
+    else {
+        panic!("source")
+    };
+    let Created::Device(device) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: NativeDeviceState::new(
+                DeviceTypeId::from_static("hex.compressor"),
+                3,
+                vec![0; 32],
+            )
+            .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("compressor")
+    };
+    let original = editor.project().clone();
+    let dir = std::env::temp_dir().join(format!("hex-sidechain-schema-{}", std::process::id()));
+    fs::create_dir(&dir).unwrap();
+    let legacy = dir.join("legacy.hex");
+    save_new(&legacy, &original).unwrap();
+    let (reopened, token) = hex_storage::load_with_token(&legacy).unwrap();
+    assert_eq!(reopened, original);
+    assert!(reopened.sidechains().is_empty());
+    editor
+        .execute(Command::SetSidechain {
+            device,
+            source: Some(source),
+        })
+        .unwrap();
+    let routed = editor.project();
+    assert!(token.requires_save_confirmation(routed).unwrap());
+    assert!(hex_storage::encode_schema22(routed).is_err());
+    assert_eq!(
+        hex_storage::schema_version_for(routed),
+        hex_storage::SIDECHAIN_SCHEMA_VERSION
+    );
+    let path = dir.join("sidechain.hex");
+    save_new(&path, routed).unwrap();
+    assert_eq!(load(&path).unwrap(), *routed);
+
+    let document: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let mut invalid = document.clone();
+    invalid["sidechains"][0]["source"] = u64::MAX.into();
+    assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
+    let mut invalid = document.clone();
+    invalid["sidechains"][0]["tap"] = "unknown".into();
+    assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
+    let mut invalid = document;
+    let repeated = invalid["sidechains"][0].clone();
+    invalid["sidechains"].as_array_mut().unwrap().push(repeated);
+    assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn track_tags_upgrade_schema69_preserve_complete_state_and_original_bytes() {
+    let mut editor = Editor::new(project(), 16).unwrap();
+    let track = editor.project().tracks()[0].id();
+    let Created::Device(device) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: NativeDeviceState::new(
+                DeviceTypeId::from_static("hex.compressor"),
+                3,
+                vec![0; 32],
+            )
+            .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("compressor")
+    };
+    editor
+        .execute(Command::SetSidechain {
+            device,
+            source: Some(track),
+        })
+        .unwrap();
+    let original = editor.project().clone();
+    let dir = std::env::temp_dir().join(format!(
+        "hex-track-tags-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).unwrap();
+    let old = dir.join("schema69.hex");
+    save_new(&old, &original).unwrap();
+    let bytes = fs::read(&old).unwrap();
+    let (reopened, token) = hex_storage::load_with_token(&old).unwrap();
+    assert_eq!(reopened, original);
+    assert_eq!(hex_storage::schema_version_for(&reopened), 69);
+    editor
+        .execute(Command::SetTrackTags {
+            track,
+            tags: vec![
+                hex_project::TrackTag::new("drums").unwrap(),
+                hex_project::TrackTag::new("lowend").unwrap(),
+            ],
+        })
+        .unwrap();
+    assert!(token.requires_save_confirmation(editor.project()).unwrap());
+    let new = dir.join("schema72.hex");
+    save_new(&new, editor.project()).unwrap();
+    assert_eq!(load(&new).unwrap(), *editor.project());
+    assert_eq!(fs::read(&old).unwrap(), bytes);
+    assert_eq!(load(&old).unwrap(), original);
+    fs::remove_file(new).unwrap();
+    fs::remove_file(old).unwrap();
+    fs::remove_dir(dir).unwrap();
+}

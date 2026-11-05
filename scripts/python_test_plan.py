@@ -27,6 +27,9 @@ REVIEWED_MODULES = frozenset({
     # Rust edits do not affect them. Tooling/docs/config edits remain full checks.
     "test_hex_release", "test_manual",
     "test_stream_build_inputs", "test_terminal_progress", "test_ui_build_identity",
+    # Viewer style fixtures exercise the standalone guard with temporary source;
+    # changes to the guard itself still retain comprehensive discovery.
+    "test_ui_style_log_viewer",
     # Architecture fixtures exercise check-architecture.py policy/refusal logic;
     # that guard still runs for app source/doc edits. Policy/test edits fall back.
     "test_architecture",
@@ -55,8 +58,8 @@ SHARED_TESTS = (
     "test_ci_plan.ScopeTests.test_requested_zero_match_and_all_skipped_refuse_but_metadata_needs_no_rust",
     "test_ci_plan.CacheIdentityTests.test_source_changes_stay_incremental_but_dependency_config_mode_and_membership_do_not",
 )
-# Preserve discovery's module names: lifecycle tests import test_local_ci and
-# test_launch as shared fixture modules. Package-qualified aliases load them twice.
+# Preserve discovery's module names: lifecycle tests import test_local_ci as a
+# shared fixture module. Package-qualified aliases load it twice.
 UNITTEST_BOOTSTRAP = (
     "import sys, unittest; sys.path.insert(0, 'scripts/tests'); "
     "unittest.main(module=None)"
@@ -92,6 +95,8 @@ def select(profile: str, paths: list[str], inventory: list[dict],
     retains ordinary Rust classification and all its reverse-dependency checks.
     Native opt-ins come from the invoking environment (or an explicit test map);
     their presence and comprehensive selection are recorded in the resolved plan.
+    Health narrows only exclusively owned tooling; mixed or unowned inputs
+    retain comprehensive Python coverage.
     """
     modules = sorted(set(modules))
 
@@ -100,7 +105,7 @@ def select(profile: str, paths: list[str], inventory: list[dict],
                 "excluded_groups": [], "test_selectors": modules,
                 "reasons": [reason]}
 
-    if profile != "merge":
+    if profile not in {"merge", "health"}:
         return comprehensive("explicit audit/release or non-merge profile retains full Python coverage")
     if not paths:
         return {"mode": "none", "selected_groups": [], "excluded_groups": modules,
@@ -121,6 +126,8 @@ def select(profile: str, paths: list[str], inventory: list[dict],
                 "test_selectors": selectors,
                 "reasons": ["tooling owner boundary: each changed script's own test module plus shared "
                             "invariants (user policy, 1 November 2026): " + ", ".join(owned)]}
+    if profile == "health":
+        return comprehensive("health inputs are not exclusively reviewed tooling owners")
     categories = set()
     for path in paths:
         if not path.endswith(".rs") or path.endswith("/build.rs"):

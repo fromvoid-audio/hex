@@ -464,6 +464,8 @@ impl Command {
             | Self::EditMidiNotesWithSourceExtent { clip, .. }
             | Self::DuplicateMidiSourceRange { clip, .. }
             | Self::UpdateMidiNotes { clip, .. }
+            | Self::UpdateMidiNotesWithSourceExtent { clip, .. }
+            | Self::UpdateMidiNotesWithSourcePrefix { clip, .. }
             | Self::RemoveMidiNotes { clip, .. } => ClipCommandScope::FocusedSource { clip: *clip },
             Self::ConvertMidiClipToAudio { clip, .. }
             | Self::SplitClip { clip, .. }
@@ -523,6 +525,8 @@ impl Command {
             | Self::GroupClips(_)
             | Self::DuplicateClips(_)
             | Self::DuplicateAliasClips(_)
+            | Self::DuplicateAliasClipsAt { .. }
+            | Self::DuplicateAliasClipToNewTrack { .. }
             | Self::MakeClipsUnique(_)
             | Self::ApplyClipSettingsToAliases(_)
             | Self::DuplicateSessionCell { .. }
@@ -548,6 +552,7 @@ impl Command {
             | Self::SetTrackColor { .. }
             | Self::InsertTrackWithDevice { .. }
             | Self::InsertDefaultTrackWithDevice { .. }
+            | Self::InsertDefaultTrackWithDeviceAndGain { .. }
             | Self::SpliceGainTouch { .. }
             | Self::SpliceGainTouchBatch { .. }
             | Self::ReplaceTrackGainEnvelope { .. }
@@ -557,6 +562,7 @@ impl Command {
             | Self::ClearTrackGainEnvelope { .. }
             | Self::SetRouting(..)
             | Self::SetAudioFeed { .. }
+            | Self::SetSidechain { .. }
             | Self::SetMidiSource { .. }
             | Self::SetReturnFeed { .. }
             | Self::InsertMainDevice { .. }
@@ -576,9 +582,11 @@ impl Command {
             | Self::ReplaceDeviceState { .. }
             | Self::ReplaceDeviceStateWithIdentityReservation { .. }
             | Self::SetDeviceBypass { .. }
+            | Self::ToggleDeviceBypass { .. }
             | Self::CompareDevice { .. }
             | Self::ReplaceDeviceComparison { .. }
             | Self::AddReturnTrack { .. }
+            | Self::AddReturnTrackWithGain { .. }
             | Self::RemoveReturnTrack(..)
             | Self::RenameReturnTrack { .. }
             | Self::ReturnGain { .. }
@@ -593,6 +601,7 @@ impl Command {
             | Self::AddTrack { .. }
             | Self::InsertTrack { .. }
             | Self::InsertDefaultTrack { .. }
+            | Self::InsertDefaultTrackWithGain { .. }
             | Self::MoveTrackBefore { .. }
             | Self::MoveTracksBefore { .. }
             | Self::PasteTracks { .. }
@@ -608,8 +617,10 @@ impl Command {
             | Self::ImportExistingAudio { .. }
             | Self::RemoveTrack(..)
             | Self::RemoveTracks(..)
+            | Self::SetTrackTags { .. }
             | Self::RenameTrack { .. }
             | Self::Gain { .. }
+            | Self::SetTrackGains { .. }
             | Self::Balance { .. }
             | Self::MasterGain { .. }
             | Self::SetProjectTempo { .. }

@@ -297,6 +297,11 @@ impl ClaimedAudioCandidateRuntime {
             playback.invalidate_native_parameter_input();
         }
     }
+    pub fn finish_native_parameter_input(&mut self) {
+        if let Some(playback) = self.current_playback_mut() {
+            playback.finish_native_parameter_input();
+        }
+    }
     pub fn take_native_parameter_application(
         &mut self,
     ) -> Option<crate::NativeParameterApplication> {
@@ -327,6 +332,13 @@ impl ClaimedAudioCandidateRuntime {
             return false;
         };
         playback.clear_gain_recording_override();
+        true
+    }
+    pub fn release_gain_recording_override(&mut self) -> bool {
+        let Some(playback) = self.current_playback_mut() else {
+            return false;
+        };
+        playback.release_gain_recording_override();
         true
     }
     pub fn gain_recording_clock(&self, track: u64) -> Option<(u64, u64, u64)> {

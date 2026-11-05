@@ -9,7 +9,9 @@
 //! are bounded to +/-16, recursive storage to +/-32, with a 1e-20 numerical floor.
 //!
 //! Fast/slow/none smoothing means 20 ms/100 ms/one sample. Stop, seek and rate
-//! changes reset; loop wraps continue. Bypass advances private history. Freeze
+//! changes reset; loop wraps continue. Bypass advances private history. Compatible
+//! live bypass edits use the host's reversible 5 ms wet/dry blend and keep one
+//! room owner; removal retains the separate tail policy below. Freeze
 //! ramps feedback to unity; flat neutralizes decay shaping, cut suppresses new
 //! excitation. Frozen rooms declare Unbounded tails under the existing host
 //! policy: removed frozen tails persist until Stop, using bounded tail banks

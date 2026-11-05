@@ -813,7 +813,7 @@ pub(super) struct PreparedDocumentReplacement {
     pub(super) sources: Option<hex_engine::native_device_resources::ControlSamplerSources>,
     pub(super) resident: Option<Snapshot>,
 }
-/// The candidate Session is complete before final pending acceptance. The caller subsequently
+/// Prepare and admit the exact candidate before changing canonical state. The caller
 /// performs only fixed moves into its canonical/document slots, then emits generation replacement.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn prepare_document_replacement(
@@ -838,7 +838,7 @@ pub(super) fn prepare_document_replacement(
         && let Some(sink) = events.resident_audio()
     {
         let resident = candidate
-            .retain_resident_document_replacement(old, context, sink, admission, current)
+            .prepare_resident_document_replacement(old, context, sink, admission, current)
             .map_err(|e| e.to_string())?;
         return Ok(PreparedDocumentReplacement {
             prepared: Arc::clone(&resident.prepared),
@@ -1072,14 +1072,15 @@ pub(super) fn import_file(
     session: &mut Session,
     path: PathBuf,
     destination: AudioBatchDestination,
-    overwrite: bool,
+    options: crate::import_batch::AudioImportOptions,
     context: hex_engine::AudioSourceContext,
     sink: &mut dyn WorkerAudioSink,
     admission: sampler_export::Admission<'_>,
     current: &mut Option<Snapshot>,
     decode: &mut super::truncated_import::ImportDecode,
 ) -> Result<Arc<PreparedRevision>, SessionError> {
-    if !overwrite
+    options.validate()?;
+    if !options.overwrite
         && let AudioBatchDestination::Console(crate::import_batch::ConsoleDestination::Cell {
             track,
             scene,
@@ -1105,7 +1106,7 @@ pub(super) fn import_file(
                 destination,
                 &expected,
                 current.as_ref().map(|snapshot| snapshot.prepared.as_ref()),
-                overwrite,
+                options,
                 || Ok(()),
                 |input, admit| {
                     let snapshot =
@@ -1141,10 +1142,7 @@ pub(super) fn import_file(
         destination,
         &expected,
         current.as_ref().map(|snapshot| snapshot.prepared.as_ref()),
-        crate::import_batch::AudioImportOptions {
-            overwrite,
-            ..Default::default()
-        },
+        options,
         || Ok(()),
         |input, admit| {
             let snapshot =
@@ -1605,9 +1603,9 @@ impl Session {
         })
     }
     /// Prepare the complete candidate before its reserved Session swap. Every predecessor owner,
-    /// including unused originals/media, remains admitted through final pending acceptance. No
-    /// old monitor client is attached to a new document merely because its TrackId is reused.
-    pub(super) fn retain_resident_document_replacement(
+    /// including unused originals/media, remains admitted through the replacement attempt.
+    /// No old monitor client is attached to a new document merely because its TrackId is reused.
+    pub(super) fn prepare_resident_document_replacement(
         &self,
         old: &Session,
         context: hex_engine::AudioSourceContext,
@@ -1659,10 +1657,13 @@ impl Session {
             self.project(),
             sink,
             metadata,
-            ResidentPublicationPolicy::ReplaceDocument,
+            ResidentPublicationPolicy::ReplaceDocument {
+                requires_plugin_profile: super::audio_sink::requires_plugin_profile(self.project()),
+            },
         )?;
-        // No cancellation/refusal after the sink accepted the complete pending owner. The caller
-        // performs only fixed canonical/document moves and existing generation teardown next.
+        sink.finish_resident_document_replacement()
+            .map_err(SessionError::NativeAudio)?;
+        // The caller now performs only fixed canonical/document moves.
         Ok(snapshot)
     }
 
@@ -3537,6 +3538,7 @@ pub(super) mod tests {
         let mut current = Some(current);
         let mut preview = None;
         let draft = crate::device_gesture::GestureSnapshot {
+            track_gains: None,
             touched_parameters: crate::device_gesture::TouchedParameters::default(),
             manual_edit: false,
             key: crate::device_gesture::GestureKey {
