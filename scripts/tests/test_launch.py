@@ -1,4 +1,5 @@
 """Exercise the launcher using fixture-owned git and cargo commands."""
+import importlib.util
 import os
 from pathlib import Path
 import shutil
@@ -9,6 +10,39 @@ import unittest
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "launch"
 RUNNER = Path("scripts/run-desktop.sh")
+
+
+class NativeLaunchSourceTests(unittest.TestCase):
+    def test_untracked_files_stay_out_of_native_build_and_tracked_edits_refuse(self):
+        spec = importlib.util.spec_from_file_location(
+            "prepare_launch_discovery", REPO / "scripts/prepare-launch-discovery.py")
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        with tempfile.TemporaryDirectory() as temp:
+            checkout, staging = Path(temp) / "checkout", Path(temp) / "staging"
+            checkout.mkdir()
+            staging.mkdir()
+
+            def git(*args, root=checkout):
+                return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
+
+            git("init", "--quiet")
+            tracked = checkout / "native.cpp"
+            tracked.write_text("original\n")
+            git("add", tracked.name)
+            git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                "commit", "--quiet", "-m", "Original")
+            self.assertEqual(launcher.native_source_checkout(checkout, staging), checkout)
+            untracked = checkout / "research-note.md"
+            untracked.write_text("unpublished\n")
+            source = launcher.native_source_checkout(checkout, staging)
+            self.assertEqual(git("rev-parse", "HEAD", root=source), git("rev-parse", "HEAD"))
+            self.assertEqual(git("status", "--porcelain", root=source), "")
+            self.assertFalse((source / untracked.name).exists())
+            self.assertEqual(untracked.read_text(), "unpublished\n")
+            tracked.write_text("changed\n")
+            with self.assertRaisesRegex(launcher.delivery.DeliveryError, "unmodified tracked files"):
+                launcher.native_source_checkout(checkout, staging)
 
 
 class LaunchTests(unittest.TestCase):
