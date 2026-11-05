@@ -65,6 +65,34 @@ impl Project {
         }
     }
 
+    /// Tracks that can supply a new key without closing a path back from the
+    /// destination. Use the same authored graph as validation and replace the
+    /// current key instead of considering it an additional route.
+    pub fn eligible_sidechain_sources(&self, device: DeviceId) -> Result<Vec<TrackId>, Invalid> {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let destination = self.sidechain_destination(device)?;
+        let mut outgoing = BTreeMap::<_, Vec<_>>::new();
+        for (from, to) in self.playable_audio_edges(Some(device))? {
+            outgoing.entry(from).or_default().push(to);
+        }
+        let mut reachable = BTreeSet::new();
+        let mut pending = vec![destination];
+        while let Some(owner) = pending.pop() {
+            if reachable.insert(owner)
+                && let Some(children) = outgoing.get(&owner)
+            {
+                pending.extend(children.iter().copied());
+            }
+        }
+        Ok(self
+            .tracks()
+            .iter()
+            .map(crate::Track::id)
+            .filter(|track| !reachable.contains(&RoutingOwner::Track(*track)))
+            .collect())
+    }
+
     pub(crate) fn set_sidechain(
         &mut self,
         device: DeviceId,
