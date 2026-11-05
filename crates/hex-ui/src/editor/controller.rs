@@ -1835,6 +1835,16 @@ impl EditorView {
                 self.play_intent
                     .reconcile_receipt(receipt.ticket, actual_playing);
                 self.recovery.observe_receipt(receipt);
+                if matches!(
+                    self.latency_rebuild,
+                    Some(super::audio_admission::LatencyRebuild::Fading { ticket, .. })
+                        if ticket == receipt.ticket
+                ) && !matches!(receipt.outcome, hex_audio::prepared::ActionOutcome::Applied)
+                {
+                    self.latency_rebuild = None;
+                    visible_change |=
+                        replace_status(&mut self.status, "latency rebuild stop was interrupted");
+                }
                 if self.pending_metronome_ticket == Some(receipt.ticket) {
                     self.pending_metronome_ticket = None;
                     visible_change = true;
@@ -1893,6 +1903,12 @@ impl EditorView {
                 }
             }
             if outcome_failure.is_some() {
+                if matches!(
+                    self.latency_rebuild,
+                    Some(super::audio_admission::LatencyRebuild::Fading { .. })
+                ) {
+                    self.latency_rebuild = None;
+                }
                 if !action_errors.is_empty() {
                     action_errors.push_str(" · ");
                 }
@@ -4192,6 +4208,9 @@ impl EditorView {
         }
         let (project, output) = match rebuild {
             LatencyRebuild::Waiting { project, output }
+            | LatencyRebuild::Fading {
+                project, output, ..
+            }
             | LatencyRebuild::Restoring {
                 project, output, ..
             } => (project, output),
@@ -4300,10 +4319,63 @@ impl EditorView {
                     return false;
                 }
                 let frame = status.position.load(Acquire);
-                self.stop();
-                if self.stopped_playback_restore
-                    == Some(super::audio_admission::StoppedPlaybackRestore::Preparing)
+                let Some(audio) = self.audio.as_mut() else {
+                    return false;
+                };
+                let action = PlaybackAction::Transport(PlaybackCommand::Stop);
+                let admitted = if let Some(trace) = &self.transport_trace {
+                    trace.attempt(audio, action)
+                } else {
+                    audio.control.action_with_ticket(action)
+                };
+                let Ok(ticket) = admitted else {
+                    // Backpressure leaves the exact rebuild waiting.
+                    return false;
+                };
+                self.invalidate_prepared_seek();
+                self.latency_rebuild = Some(LatencyRebuild::Fading {
+                    project,
+                    output,
+                    frame,
+                    ticket,
+                });
+                self.status = "fading playback before rebuilding audio".into();
+                true
+            }
+            LatencyRebuild::Fading { frame, ticket, .. } => {
+                let Some(status) = self.audio.as_ref().and_then(|audio| audio.status()) else {
+                    self.latency_rebuild = None;
+                    return false;
+                };
+                if status.device_fault.load(Acquire)
+                    || status.render_fault.load(Acquire)
+                    || status
+                        .rejected_action()
+                        .is_some_and(|(rejected, _)| rejected == ticket)
                 {
+                    self.latency_rebuild = None;
+                    return replace_status(
+                        &mut self.status,
+                        "latency rebuild stop was interrupted",
+                    );
+                }
+                // Consumption only starts the fade. The callback keeps
+                // reporting playing until the queued Stop actually settles.
+                if audio_command_prefix(status, self.document_audio_mode) < ticket
+                    || status.playing.load(Acquire)
+                    || self.edit_pending()
+                    || self.update_preparing()
+                    || self.stopped_playback_restore.is_some()
+                {
+                    return false;
+                }
+                self.latency_rebuild = None;
+                self.clear_latency_waiting();
+                if self.applied_project_revision == Some(project.revision) {
+                    self.queue_audio_command(PlaybackCommand::PlayFrom(frame));
+                } else if self.enqueue(Request::RestoreStoppedPlayback) {
+                    self.stopped_playback_restore =
+                        Some(super::audio_admission::StoppedPlaybackRestore::Preparing);
                     self.latency_rebuild = Some(LatencyRebuild::Restoring {
                         project,
                         output,
@@ -4311,6 +4383,7 @@ impl EditorView {
                     });
                     self.status =
                         "rebuilding audio · effect tails will reset · playback will resume".into();
+                    self.error = None;
                 }
                 true
             }
