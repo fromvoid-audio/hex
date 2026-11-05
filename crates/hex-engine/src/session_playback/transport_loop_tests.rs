@@ -1617,3 +1617,180 @@ fn live_loop_edit_during_a_held_arrangement_note_restarts_at_the_cursor() {
         );
     }
 }
+
+#[test]
+fn live_loop_edit_away_from_wrap_keeps_held_note_output_continuous() {
+    let project = transport_loop_project(false);
+    let mut editor = hex_project::Editor::new(project.clone(), 8).expect("editor");
+    editor
+        .execute(hex_project::Command::SetLoopRegion {
+            start: 24_000,
+            end: 120_000,
+            enabled: true,
+        })
+        .expect("canonical loop edit");
+    let changed = editor.project();
+    let mut active = SessionPlayback::new(prepare_mutable(&project)).expect("old loop");
+    let mut reference = SessionPlayback::new(prepare_mutable(&project)).expect("reference loop");
+    for playback in [&mut active, &mut reference] {
+        playback.apply(SessionPlaybackCommand::Play).expect("play");
+    }
+    let mut prefix = vec![[0.0; 2]; 30_000];
+    let mut reference_prefix = prefix.clone();
+    active.render(&mut prefix).expect("render to edit");
+    reference
+        .render(&mut reference_prefix)
+        .expect("render reference");
+    assert_eq!(prefix, reference_prefix);
+    assert!(
+        active.mutable_instruments[0]
+            .as_ref()
+            .expect("mutable runtime")
+            .proofs()
+            .any(|proof| !proof.note_off_sent)
+    );
+
+    let proofs = active.mutable_instruments[0]
+        .as_ref()
+        .unwrap()
+        .proofs()
+        .collect::<Vec<_>>();
+    let mut successor = SessionPlayback::new(prepare_mutable(changed)).expect("new loop");
+    successor
+        .try_inherit_state_from(&mut active)
+        .expect("strict handoff proves continuity");
+    assert_eq!(
+        successor.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .proofs()
+            .collect::<Vec<_>>(),
+        proofs
+    );
+    let mut actual = [[0.0; 2]; 256];
+    let mut expected = actual;
+    successor.render(&mut actual).expect("render successor");
+    reference
+        .render(&mut expected)
+        .expect("render uninterrupted");
+    let max_difference = actual
+        .iter()
+        .flatten()
+        .zip(expected.iter().flatten())
+        .map(|(actual, expected)| (actual - expected).abs())
+        .fold(0.0_f32, f32::max);
+    assert_eq!(max_difference, 0.0, "loop edit changed held-note output");
+
+    // Compare through NoteOff and tail expiry, before either transport wraps.
+    let mut actual = vec![[0.0; 2]; 72_017 - 30_256];
+    let mut expected = actual.clone();
+    for (actual, expected) in actual.chunks_mut(17).zip(expected.chunks_mut(17)) {
+        successor.render(actual).unwrap();
+        reference.render(expected).unwrap();
+    }
+    assert_eq!(actual, expected);
+    assert!(
+        successor.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .proofs()
+            .next()
+            .is_none()
+    );
+
+    // After expiry, the next wrap must follow the new loop, including a new
+    // occurrence, rather than retaining the predecessor's transport program.
+    let mut new_reference = SessionPlayback::new(prepare_mutable(changed)).unwrap();
+    new_reference.apply(SessionPlaybackCommand::Play).unwrap();
+    new_reference.render(&mut vec![[0.0; 2]; 72_017]).unwrap();
+    let mut actual = vec![[0.0; 2]; 145_000 - 72_017];
+    let mut expected = actual.clone();
+    for (actual, expected) in actual.chunks_mut(127).zip(expected.chunks_mut(127)) {
+        successor.render(actual).unwrap();
+        new_reference.render(expected).unwrap();
+    }
+    assert_eq!(actual, expected);
+    assert_eq!(successor.arrangement_loop_pass, 1);
+}
+
+#[test]
+fn canonical_loop_edit_rejects_gate_tail_boundary_and_anchor_without_consuming_donor() {
+    for (end, anchored) in [
+        (71_999, false),
+        (72_000, false),
+        (72_016, false),
+        (120_000, true),
+    ] {
+        let project = transport_loop_project(false);
+        let mut editor = hex_project::Editor::new(project.clone(), 8).unwrap();
+        editor
+            .execute(hex_project::Command::SetLoopRegion {
+                start: 24_000,
+                end,
+                enabled: true,
+            })
+            .unwrap();
+        let mut active = SessionPlayback::new(prepare_mutable(&project)).unwrap();
+        let mut reference = SessionPlayback::new(prepare_mutable(&project)).unwrap();
+        for playback in [&mut active, &mut reference] {
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            playback.render(&mut vec![[0.0; 2]; 30_000]).unwrap();
+        }
+        if anchored {
+            let beat = active.timing_view().frame_to_beat(30_000).unwrap();
+            active.anchor = Some(crate::prepared_tempo::SessionClockAnchor {
+                cut_frame: 30_000,
+                old_beat: beat,
+                new_beat: beat,
+            });
+        }
+        let mut candidate = SessionPlayback::new(prepare_mutable(editor.project())).unwrap();
+        assert_eq!(
+            candidate.try_inherit_state_from(&mut active),
+            Err(SessionPlaybackError::MutableInstrumentLoopBoundsActive)
+        );
+        let mut actual = [[0.0; 2]; 256];
+        let mut expected = actual;
+        active.render(&mut actual).unwrap();
+        reference.render(&mut expected).unwrap();
+        assert_eq!(
+            actual, expected,
+            "refusal preserves donor for end={end}, anchor={anchored}"
+        );
+    }
+}
+
+#[test]
+fn canonical_loop_enable_disable_preserves_held_gate() {
+    for enabled in [false, true] {
+        let mut editor = hex_project::Editor::new(transport_loop_project(false), 8).unwrap();
+        editor
+            .execute(hex_project::Command::SetLoopRegion {
+                start: 48_000,
+                end: 96_000,
+                enabled: !enabled,
+            })
+            .unwrap();
+        let old = editor.project().clone();
+        editor
+            .execute(hex_project::Command::SetLoopRegion {
+                start: 24_000,
+                end: 120_000,
+                enabled,
+            })
+            .unwrap();
+        let mut active = SessionPlayback::new(prepare_mutable(&old)).unwrap();
+        let mut reference = SessionPlayback::new(prepare_mutable(&old)).unwrap();
+        for playback in [&mut active, &mut reference] {
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            playback.render(&mut vec![[0.0; 2]; 30_000]).unwrap();
+        }
+        let mut candidate = SessionPlayback::new(prepare_mutable(editor.project())).unwrap();
+        candidate.try_inherit_state_live_from(&mut active).unwrap();
+        let mut actual = [[0.0; 2]; 256];
+        let mut expected = actual;
+        candidate.render(&mut actual).unwrap();
+        reference.render(&mut expected).unwrap();
+        assert_eq!(actual, expected);
+    }
+}

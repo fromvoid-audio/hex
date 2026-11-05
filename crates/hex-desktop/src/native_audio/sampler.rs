@@ -115,9 +115,10 @@ impl NativeAudioSink {
             })
         };
         if self.worker_owned_resident_graphs
-            && self.desired.as_ref().is_none_or(|source| {
-                source.audio_mode() == hex_session::DocumentAudioMode::Resident
-            })
+            && (self.replacement_output.is_some()
+                || self.desired.as_ref().is_none_or(|source| {
+                    source.audio_mode() == hex_session::DocumentAudioMode::Resident
+                }))
         {
             // The actual fresh Lease has already closed the old teardown frontier. Configure
             // generic graph ownership before either initial publication or Client exposure;
@@ -136,7 +137,7 @@ impl NativeAudioSink {
                             policy.resident_native.storage,
                         )
                         .map_err(str::to_owned)?;
-                    let domains = if self.plugins.wants_profile() {
+                    let domains = if self.plugins.wants_profile() && !self.open_without_bridge {
                         policy.plugins.domains(policy.ordinary_domains)?
                     } else {
                         policy.ordinary_domains
@@ -148,7 +149,9 @@ impl NativeAudioSink {
                             policy.ordinary_stream_metadata_bytes,
                         )
                         .map_err(str::to_owned)?;
-                    if let Err(error) = self.plugins.configure(control, policy.plugins) {
+                    if !self.open_without_bridge
+                        && let Err(error) = self.plugins.configure(control, policy.plugins)
+                    {
                         self.plugins.refuse_profile(error);
                     }
                     Ok(())

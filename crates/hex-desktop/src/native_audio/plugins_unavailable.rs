@@ -54,6 +54,13 @@ impl Plugins {
     }
     pub fn finish(&mut self, _: &Arc<PluginEffectControl>, _: bool) {}
     pub fn poll(&mut self, _: &mut WorkerPreparedOutput, _: Option<AudioSourceContext>) {}
+    pub fn poll_latency_restart(
+        &mut self,
+        _: &mut WorkerPreparedOutput,
+        _: AudioSourceContext,
+    ) -> Option<hex_audio::prepared::AppliedAudioSource> {
+        None
+    }
     pub fn preparing_edit(&self, _: AudioSourceContext) -> bool {
         false
     }

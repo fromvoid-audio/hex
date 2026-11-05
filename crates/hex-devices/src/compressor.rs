@@ -1,11 +1,12 @@
 //! Original zero-lookahead, stereo-linked feed-forward dynamics processor.
 
 use hex_lattice::{
-    NativeDeviceDefinition, NativeProcessorRuntime, OutputTail, PreparedNativeProcessor,
-    StereoFrame, StereoMatrix,
+    NativeDeviceDefinition, NativeInstrumentClock, NativeParameterAutomation,
+    NativeProcessorRuntime, OutputTail, PreparedNativeProcessor, StereoAuxiliaryBlock, StereoFrame,
+    StereoMatrix,
 };
 use hex_lattice_contract::{
-    DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
+    AuxiliaryInput, DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
     ParameterDescriptor, ParameterId, ParameterKind, ParameterPresentation, ParameterValue,
 };
 use std::any::Any;
@@ -268,6 +269,9 @@ impl NativeDeviceMetadata for CompressorDefinition {
     fn state_version(&self) -> u32 {
         COMPRESSOR_STATE_VERSION
     }
+    fn auxiliary_input(&self) -> AuxiliaryInput {
+        AuxiliaryInput::Stereo
+    }
     fn descriptors(&self) -> &'static [ParameterDescriptor] {
         DESCRIPTORS
     }
@@ -449,15 +453,16 @@ impl CompressorRuntime {
         self.mix_remaining = 0;
     }
 
-    fn process_frame(&mut self, frame: &mut StereoFrame) {
+    fn process_frame(&mut self, frame: &mut StereoFrame, key: StereoFrame, bypassed: bool) {
         let left = f64::from(frame[0]);
         let right = f64::from(frame[1]);
         if !left.is_finite() || !right.is_finite() {
             return;
         }
-        let peak = left.abs().max(right.abs());
+        let [key_left, key_right] = key.map(f64::from);
+        let peak = key_left.abs().max(key_right.abs());
         // Independent mean-square histories stay warm even while Peak is selected.
-        for (energy, input) in self.energy.iter_mut().zip([left, right]) {
+        for (energy, input) in self.energy.iter_mut().zip([key_left, key_right]) {
             *energy = self.rms_alpha * *energy + (1.0 - self.rms_alpha) * input * input;
             if *energy < RMS_ENERGY_FLOOR {
                 *energy = 0.0;
@@ -501,7 +506,6 @@ impl CompressorRuntime {
         );
         let target_gain_db = reduction_db + f64::from(self.settings.makeup_db);
         self.gain_db = self.gain_alpha * self.gain_db + (1.0 - self.gain_alpha) * target_gain_db;
-        let gain = 10.0_f64.powf(self.gain_db / 20.0);
         // A finite 5 ms ramp reaches exact endpoints, independently of block
         // partitions. Detector/gain history advances even at fully dry output.
         if self.mix_remaining > 0 {
@@ -512,11 +516,15 @@ impl CompressorRuntime {
                 self.mix = f64::from(self.settings.dry_wet);
             }
         }
+        if bypassed || self.mix == 0.0 {
+            return;
+        }
+        let gain = 10.0_f64.powf(self.gain_db / 20.0);
         if self.mix == 1.0 {
             // Preserve the original fully-wet operation order and rounding.
             frame[0] = (left * gain) as f32;
             frame[1] = (right * gain) as f32;
-        } else if self.mix != 0.0 {
+        } else {
             frame[0] = (left * (1.0 - self.mix) + left * gain * self.mix) as f32;
             frame[1] = (right * (1.0 - self.mix) + right * gain * self.mix) as f32;
         }
@@ -524,13 +532,32 @@ impl CompressorRuntime {
 }
 
 impl NativeProcessorRuntime for CompressorRuntime {
+    fn process_block_with_auxiliary(
+        &mut self,
+        block: StereoAuxiliaryBlock<'_>,
+        _clock: Option<&dyn NativeInstrumentClock>,
+        automation: Option<&dyn NativeParameterAutomation>,
+        bypassed: bool,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        if automation.is_some() {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
+        let (main, key) = block.into_parts();
+        for (frame, key) in main.iter_mut().zip(key) {
+            let key = key.map(|sample| if sample.is_finite() { sample } else { 0.0 });
+            self.process_frame(frame, key, bypassed);
+        }
+        Ok(())
+    }
+
     fn process_block(
         &mut self,
         frames: &mut [StereoFrame],
         _resources: &dyn hex_lattice::DeviceResources,
     ) {
         for frame in frames {
-            self.process_frame(frame);
+            self.process_frame(frame, *frame, false);
         }
     }
     fn process_bypassed_block(
@@ -539,9 +566,7 @@ impl NativeProcessorRuntime for CompressorRuntime {
         _resources: &dyn hex_lattice::DeviceResources,
     ) {
         for frame in frames {
-            let input = *frame;
-            self.process_frame(frame);
-            *frame = input;
+            self.process_frame(frame, *frame, true);
         }
     }
     fn reset(&mut self) {
