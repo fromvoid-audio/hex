@@ -35,14 +35,18 @@ inline bool valid_configuration(const ProcessingConfiguration& c) {
 inline SpeakerArrangement arrangement(int32 channels) {
     return channels==1?SpeakerArr::kMono:SpeakerArr::kStereo;
 }
-inline bool main_bus(IComponent* component,BusDirection direction,int32 channels,bool exact) {
-    const auto expected=channels?1:0;
-    if (component->getBusCount(kAudio,direction)!=expected) return false;
-    if (!expected) return true;
-    BusInfo info{};
-    return component->getBusInfo(kAudio,direction,0,info)==kResultOk && info.mediaType==kAudio &&
-        info.direction==direction && info.busType==kMain && info.channelCount>0 && info.channelCount<=64 &&
-        !(info.flags&BusInfo::kIsControlVoltage) && (!exact || info.channelCount==channels);
+inline bool audio_bus_info(IComponent* component,BusDirection direction,int32 index,BusType type,BusInfo& info) {
+    return component->getBusInfo(kAudio,direction,index,info)==kResultOk && info.mediaType==kAudio &&
+        info.direction==direction && info.busType==type && info.channelCount>0 && info.channelCount<=64 &&
+        !(info.flags&BusInfo::kIsControlVoltage);
+}
+// Only one trailing auxiliary input is supported, and it is never routed.
+inline bool audio_buses(IComponent* component,BusDirection direction,int32 count,int32 channels,bool exact) {
+    if (count!=(channels?1:0) && !(direction==kInput && channels && count==2)) return false;
+    if (!count) return true;
+    BusInfo main{},aux{};
+    return audio_bus_info(component,direction,0,kMain,main) && (!exact || main.channelCount==channels) &&
+        (count==1 || audio_bus_info(component,direction,1,kAux,aux));
 }
 inline bool bus_buffers(AudioBusBuffers* buses,int32 count,int32 channels,bool enabled) {
     if (!channels) return count==0;
