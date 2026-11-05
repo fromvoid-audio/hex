@@ -441,6 +441,10 @@ impl UtilityFilterProcessor {
 }
 
 impl NativeProcessorRuntime for UtilityFilterProcessor {
+    fn supports_manual_host_matrix_retarget(&self) -> bool {
+        self.automation.is_none()
+    }
+
     fn supports_parameter_automation(&self, parameter: hex_lattice_contract::ParameterId) -> bool {
         self.automation
             .is_some_and(|automation| automation.supports(parameter))

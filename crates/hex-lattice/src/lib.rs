@@ -247,6 +247,12 @@ pub enum OutputTail {
 /// admission. Prepared automation normally succeeds; malformed borrowed delivery
 /// or a derived-control failure returns through the host's existing rollback.
 pub trait NativeProcessorRuntime: StdAny + Send {
+    /// Opt in when the host can ramp changed input matrix coefficients while
+    /// the processor retains its committed history and authored settings.
+    fn supports_manual_host_matrix_retarget(&self) -> bool {
+        false
+    }
+
     /// Opt in when processing a source release without an external clock,
     /// auxiliary input or automation is equivalent to ordinary processing,
     /// and ordinary history copy resumes that exact signal history.
@@ -1477,12 +1483,19 @@ impl NativeRuntimeChain {
             .all(|(candidate, old)| {
                 // Static host coefficients ramp independently of processor
                 // history. A stateful provider still has to admit the retarget.
+                let stateful_matrix_retarget =
+                    matches!(
+                        &candidate.runtime,
+                        RuntimeOwnership::Legacy { primary, scratch }
+                            if primary.supports_manual_host_matrix_retarget()
+                                && scratch.supports_manual_host_matrix_retarget()
+                    ) && candidate.runtime.can_inherit_from(&old.runtime)
+                        && candidate.runtime.can_retarget_from(&old.runtime);
                 let static_matrix_retarget = !candidate.bypassed
                     && candidate.automation.is_empty()
                     && old.automation.is_empty()
                     && ((!candidate.runtime.is_stateful() && !old.runtime.is_stateful())
-                        || (candidate.runtime.can_inherit_from(&old.runtime)
-                            && candidate.runtime.can_retarget_from(&old.runtime)));
+                        || stateful_matrix_retarget);
                 let bypass_retarget = candidate.bypassed != old.bypassed
                     && candidate.configuration.is_some()
                     && old.configuration.is_some()
