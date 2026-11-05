@@ -2862,10 +2862,10 @@ impl EditorView {
                         .min(super::midi_scene::zoom_limit(source_length))
                         .max(1),
                 );
-                self.piano_beat_start = i128::from(super::midi_scene::clamp_start(
+                self.piano_beat_start = super::midi_scene::clamp_start(
                     self.piano_beat_start,
                     self.piano_beat_span.raw(),
-                ));
+                );
                 let valid = clip.notes().iter().map(|note| note.id());
                 match self.midi_selection.retain_valid(valid) {
                     Ok(true) => {

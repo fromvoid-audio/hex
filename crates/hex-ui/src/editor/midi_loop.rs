@@ -132,8 +132,8 @@ impl EditorView {
             .flex_1()
             .min_w_0()
             .children(super::super::timeline_strip::loop_range(
-                ((i128::from(values.loop_start) - i128::from(start)) as f64) / span.max(1) as f64,
-                ((i128::from(values.loop_end) - i128::from(start)) as f64) / span.max(1) as f64,
+                ((i128::from(values.loop_start) - start) as f64) / span.max(1) as f64,
+                ((i128::from(values.loop_end) - start) as f64) / span.max(1) as f64,
                 values.looping,
                 ["midi-loop-start-marker", "midi-loop-end-marker"],
             ))

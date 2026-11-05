@@ -103,6 +103,7 @@ fn negative_moves_keep_released_geometry_and_translate_origin_only_on_success(
         let down = position(&editor, &mut visual, 0.75, 60);
         let roll = visual.debug_bounds("midi-note-roll").unwrap();
         let end = down - point((roll.size.width - px(2.0)) / 4.0, px(0.0));
+        let before_bodies = bodies(&editor, &mut visual);
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
         visual.run_until_parked();
@@ -118,6 +119,19 @@ fn negative_moves_keep_released_geometry_and_translate_origin_only_on_success(
             }
             assert_eq!(v.state.as_ref().unwrap().project.as_ref(), &before);
         });
+        visual.simulate_keystrokes("escape");
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        repaint(&editor, &mut visual);
+        assert_eq!(bodies(&editor, &mut visual), before_bodies);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.as_ref(), &before);
+            assert!(!v.edit_pending());
+            assert!(v.pending_midi_drag.is_none());
+            assert_eq!(v.piano_beat_start, -i128::from(beat(1, 1).raw()));
+        });
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+        visual.run_until_parked();
         let held_bodies = bodies(&editor, &mut visual);
         let held_grid = grid_lines(&mut visual);
         editor.update(&mut visual, |v, _| {

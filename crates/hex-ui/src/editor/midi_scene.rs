@@ -213,7 +213,7 @@ impl MidiScene {
                     x: x as f32,
                     y: row as f32 / f32::from(key.pitch_rows),
                     width: width as f32,
-                    leading_edge_visible: i128::from(start) >= key.beat_start,
+                    leading_edge_visible: start >= key.beat_start,
                     trailing_edge_visible: end <= view_end,
                 };
                 let index = visible.len();

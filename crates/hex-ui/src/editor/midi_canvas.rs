@@ -1763,11 +1763,11 @@ impl EditorView {
             .raw()
             .max((BeatTime::ONE.raw() / 16).max(1));
         let current = self.piano_beat_start;
-        self.piano_beat_start = i128::from(if right {
+        self.piano_beat_start = if right {
             super::midi_scene::clamp_start(current.saturating_add(i128::from(span / 2)), span)
         } else {
             super::midi_scene::clamp_start(current.saturating_sub(i128::from(span / 2)), span)
-        });
+        };
     }
 
     pub(super) fn cycle_midi_grid(&mut self) {
@@ -1853,7 +1853,7 @@ impl EditorView {
             return false;
         }
         self.cancel_midi_note_gesture();
-        self.piano_beat_start = i128::from(next.0);
+        self.piano_beat_start = next.0;
         self.piano_beat_span = BeatTime::from_raw(next.1);
         true
     }
@@ -1870,10 +1870,8 @@ impl EditorView {
             BeatTime::ONE.raw(),
             inward,
         ));
-        self.piano_beat_start = i128::from(super::midi_scene::clamp_start(
-            self.piano_beat_start,
-            self.piano_beat_span.raw(),
-        ));
+        self.piano_beat_start =
+            super::midi_scene::clamp_start(self.piano_beat_start, self.piano_beat_span.raw());
     }
 
     /// Modifier events belong to the focused editor dispatch path. A listener

@@ -251,7 +251,7 @@ impl EditorView {
             return true;
         };
         let changed = next.start != self.piano_beat_start || next.low != self.piano_pitch_low;
-        self.piano_beat_start = i128::from(next.start);
+        self.piano_beat_start = next.start;
         self.piano_pitch_low = next.low;
         changed
     }

@@ -350,10 +350,8 @@ impl GroupGesture {
         } else {
             midi_drag::effective_grid(self.grid, invert_snap)
         };
-        let desired_delta = midi_drag::quantize_delta(
-            i128::from(pointer_beat) - i128::from(self.pointer_beat),
-            grid,
-        );
+        let desired_delta =
+            midi_drag::quantize_delta(pointer_beat - i128::from(self.pointer_beat), grid);
         let (desired_delta, source_prefix) = if self.kind == HitKind::Move && !self.copy {
             let first = self
                 .originals

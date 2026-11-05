@@ -115,7 +115,7 @@ impl EditorView {
         // Viewport-bound gesture state is retired, as for every other navigation.
         self.cancel_midi_note_gesture();
         self.piano_pitch_low = low;
-        self.piano_beat_start = i128::from(start);
+        self.piano_beat_start = start;
         true
     }
 }

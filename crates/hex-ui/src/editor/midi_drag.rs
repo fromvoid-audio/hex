@@ -363,12 +363,7 @@ pub(super) fn update_with_modifier(
     } else {
         effective_grid(gesture.grid, invert_snap)
     };
-    let delta_from = |anchor| {
-        quantize_delta(
-            i128::from(pointer_beat_raw) - i128::from(anchor),
-            effective_grid,
-        )
-    };
+    let delta_from = |anchor| quantize_delta(pointer_beat_raw - i128::from(anchor), effective_grid);
     let mut source_prefix = 0;
     let candidate = match gesture.kind {
         GestureKind::Move {
