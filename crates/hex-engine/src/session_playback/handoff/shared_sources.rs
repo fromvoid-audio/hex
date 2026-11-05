@@ -1421,6 +1421,108 @@ mod tests {
     }
 
     #[test]
+    fn live_sampler_long_release_survives_reenable_without_reusing_input_ids() {
+        on_control(|| {
+            use crate::computer_keyboard::ComputerKeyboardInput;
+            use crate::playback::PlaybackCommand;
+            for key_up in ["before-disable", "while-disabled", "after-reenable"] {
+                let mut f = fixture();
+                let instrument = f
+                    .editor
+                    .project()
+                    .track(f.receiver)
+                    .unwrap()
+                    .instrument()
+                    .unwrap();
+                let device = instrument.id();
+                let mut state =
+                    hex_devices::sampler::state::SamplerState::from_native(instrument.state())
+                        .unwrap();
+                state.envelope.release_seconds = 0.1;
+                let state = state
+                    .to_native()
+                    .unwrap()
+                    .with_asset_references(instrument.state().asset_references().to_vec())
+                    .unwrap();
+                f.editor
+                    .execute(Command::ReplaceDeviceState { device, state })
+                    .unwrap();
+                let input = Arc::new(ComputerKeyboardInput::default());
+                let oracle_input = Arc::new(ComputerKeyboardInput::default());
+                for keys in [&input, &oracle_input] {
+                    keys.set_key(0, Some((60, 127, 1))).unwrap();
+                }
+                let (mut actual, _) = live_playback(&f, &input);
+                let (mut oracle, _) = live_playback(&f, &oracle_input);
+                actual.apply(PlaybackCommand::PlayFrom(5000));
+                oracle.apply(PlaybackCommand::PlayFrom(5000));
+                let compare = |actual: &mut crate::playback::Playback,
+                               oracle: &mut crate::playback::Playback,
+                               frames: usize,
+                               phase: &str| {
+                    let mut a = vec![[0.0; 2]; frames];
+                    let mut b = a.clone();
+                    actual.render(&mut a).unwrap();
+                    oracle.render(&mut b).unwrap();
+                    assert_eq!(a, b, "{key_up}: {phase}");
+                };
+                compare(&mut actual, &mut oracle, 129, "held prefix");
+                if key_up == "before-disable" {
+                    input.set_key(0, None).unwrap();
+                    oracle_input.set_key(0, None).unwrap();
+                    compare(&mut actual, &mut oracle, 13, "physical release");
+                } else {
+                    oracle_input.set_key(0, None).unwrap();
+                }
+                f.editor
+                    .execute(Command::SetDeviceBypass {
+                        device,
+                        bypassed: true,
+                    })
+                    .unwrap();
+                let (mut disabled, _) = live_playback(&f, &input);
+                disabled
+                    .try_inherit_runtime_in_control_context(&mut actual, Some(19), Some(19))
+                    .unwrap();
+                compare(&mut disabled, &mut oracle, 32, "disable release");
+                if key_up == "while-disabled" {
+                    input.set_key(0, None).unwrap();
+                }
+                compare(&mut disabled, &mut oracle, 7, "disabled key up");
+                f.editor
+                    .execute(Command::SetDeviceBypass {
+                        device,
+                        bypassed: false,
+                    })
+                    .unwrap();
+                let (mut enabled, _) = live_playback(&f, &input);
+                enabled
+                    .try_inherit_runtime_in_control_context(&mut disabled, Some(19), Some(19))
+                    .unwrap();
+                compare(&mut enabled, &mut oracle, 13, "reenable release");
+                for keys in [&input, &oracle_input] {
+                    keys.set_key(1, Some((67, 127, 2))).unwrap();
+                }
+                compare(&mut enabled, &mut oracle, 13, "new physical key");
+                input.set_key(0, None).unwrap();
+                compare(
+                    &mut enabled,
+                    &mut oracle,
+                    13,
+                    "old key up cannot cut the new key",
+                );
+                for keys in [&input, &oracle_input] {
+                    keys.set_key(1, None).unwrap();
+                }
+                compare(&mut enabled, &mut oracle, 900, "all released");
+                let mut silence = [[1.0; 2]; 32];
+                enabled.render(&mut silence).unwrap();
+                assert_eq!(silence, [[0.0; 2]; 32]);
+            }
+        });
+    }
+
+    #[test]
     fn shared_operator_class_adoption_preserves_live_generation_and_real_key_off() {
         on_control(|| {
             use crate::playback::PlaybackCommand;
