@@ -373,7 +373,7 @@ fn auxiliary_stage_delivers_independent_pcm_and_rolls_back_with_the_chain() {
                 &mut |_, _, _, _, _, _| {},
             )
             .unwrap();
-        // A later stage refusal rolls back the successful key on this block.
+        // A later refusal lets the host discard the successful key on this block.
         let block =
             crate::StereoAuxiliaryBlock::new(&mut main, Some(&key), &mut silence, 4).unwrap();
         assert_eq!(
@@ -389,6 +389,7 @@ fn auxiliary_stage_delivers_independent_pcm_and_rolls_back_with_the_chain() {
             ),
             Err(DeviceContractError::InvalidDescriptor)
         );
+        chain.rollback_block();
         let crate::RuntimeOwnership::Legacy { primary, scratch } = &chain.entries[0].runtime else {
             panic!("auxiliary fixture runtime")
         };

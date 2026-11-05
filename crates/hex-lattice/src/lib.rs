@@ -2134,6 +2134,7 @@ impl NativeRuntimeChain {
     /// Run one exact effect stage with its admitted key in the ordinary
     /// begin/commit/rollback transaction. Main and key are borrowed only for
     /// this call. A stereo key requires a stateful native identity-matrix stage.
+    /// The caller rolls back the complete block on any stage refusal.
     #[allow(clippy::too_many_arguments)]
     pub fn process_auxiliary_stage(
         &mut self,
@@ -2153,10 +2154,9 @@ impl NativeRuntimeChain {
             &[StereoFrame],
         ),
     ) -> Result<(), DeviceContractError> {
-        let Some(end) = stage.checked_add(1) else {
-            self.rollback_block();
-            return Err(DeviceContractError::InvalidDescriptor);
-        };
+        let end = stage
+            .checked_add(1)
+            .ok_or(DeviceContractError::InvalidDescriptor)?;
         let (main, key) = block.into_parts();
         self.process_tapped(
             stage..end,
