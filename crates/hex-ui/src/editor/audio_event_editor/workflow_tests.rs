@@ -929,6 +929,172 @@ fn focus_events(visual: &mut VisualTestContext) {
     visual.run_until_parked();
 }
 #[gpui::test]
+fn whole_event_duplicate_key_selects_each_independent_copy(cx: &mut TestAppContext) {
+    let (_files, mut visual, editor, clip) = open(cx);
+    focus_events(&mut visual);
+    editor.update(&mut visual, |view, _| {
+        view.audio_event_editor.range = None;
+        view.audio_event_editor.selected = Some(1);
+    });
+    let before = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.clone()
+    });
+    let length = before.clip(clip).unwrap().duration();
+    for expected_id in [2, 3] {
+        visual.simulate_keystrokes("d");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            let current = project.clip(clip).unwrap();
+            let events = current.audio_events();
+            assert_eq!(events.events.len(), expected_id as usize);
+            assert_eq!(current.duration(), length);
+            assert_eq!(view.audio_event_editor.selected, Some(expected_id));
+            for (index, event) in events.events.iter().enumerate() {
+                assert_eq!(event.id, index as u64 + 1);
+                assert_eq!(
+                    (event.start, event.end),
+                    (index as u64 * length, (index as u64 + 1) * length)
+                );
+                assert_eq!(event.source_start, 0);
+            }
+        });
+    }
+}
+
+#[gpui::test]
+fn option_drag_copies_audio_with_exact_release_history_and_saved_source(cx: &mut TestAppContext) {
+    use hex_project::{AudioEventFade, ClipFade, ClipGain};
+
+    let (files, mut visual, editor, clip) = open(cx);
+    let length = editor.read_with(&visual, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .clip(clip)
+            .unwrap()
+            .duration()
+    });
+    let span = length / 4;
+    for operation in [
+        AudioEventEdit::Delete {
+            start: span,
+            end: length,
+        },
+        AudioEventEdit::SetGain {
+            event: 1,
+            gain: ClipGain::new(-4500).unwrap(),
+        },
+        AudioEventEdit::SetFade {
+            event: 1,
+            fade: Some(AudioEventFade::new(0, ClipFade::new(span, 0, 20, 20).unwrap()).unwrap()),
+        },
+    ] {
+        edit(&mut visual, &editor, clip, operation);
+    }
+    editor.update(&mut visual, |view, cx| {
+        view.audio_event_editor.grid = SnapGrid::Off;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let (before, pcm, source_path) = editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        let audio = project.clip(clip).unwrap();
+        (
+            project.clone(),
+            render_accepted_event(view, clip),
+            project.asset(audio.asset()).unwrap().path().to_owned(),
+        )
+    });
+    let source_bytes = std::fs::read(&source_path).unwrap();
+    let lane = visual.debug_bounds("audio-events-waveform").unwrap();
+    let original = visual.debug_bounds("audio-event-1").unwrap();
+    let down = point(original.center().x, original.top() + px(8.0));
+    let destination = point(down.x + lane.size.width * 0.5, down.y);
+    let option = Modifiers {
+        alt: true,
+        ..Modifiers::default()
+    };
+
+    // Revisiting an overlapping drop invalidates the earlier valid preview.
+    visual.simulate_mouse_down(down, MouseButton::Left, option);
+    visual.simulate_mouse_move(destination, Some(MouseButton::Left), option);
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("audio-event-2").is_some());
+    let overlap = point(down.x + px(8.0), down.y);
+    visual.simulate_mouse_move(overlap, Some(MouseButton::Left), option);
+    visual.simulate_mouse_up(overlap, MouseButton::Left, option);
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("audio-event-2").is_none());
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.edit_pending());
+        assert_eq!(view.state.as_ref().unwrap().project, before);
+    });
+
+    visual.simulate_mouse_down(down, MouseButton::Left, option);
+    visual.simulate_mouse_move(destination, Some(MouseButton::Left), option);
+    visual.run_until_parked();
+    let held = visual.debug_bounds("audio-event-2").unwrap();
+    assert_eq!(visual.debug_bounds("audio-event-1"), Some(original));
+    assert!(visual.debug_bounds("audio-event-waveform-2").is_some());
+    visual.simulate_mouse_up(destination, MouseButton::Left, option);
+    repaint(&mut visual, &editor);
+    assert_eq!(visual.debug_bounds("audio-event-2"), Some(held));
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, before)
+    });
+    pump(&editor, &mut visual);
+    assert_eq!(visual.debug_bounds("audio-event-2"), Some(held));
+    let after = editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        let events = state.project.clip(clip).unwrap().audio_events();
+        let source = events.events[0];
+        let copy = events.events[1];
+        assert_eq!(view.audio_event_editor.selected, Some(copy.id));
+        assert_eq!(
+            (
+                copy.source,
+                copy.source_start,
+                copy.length(),
+                copy.gain,
+                copy.fade
+            ),
+            (
+                source.source,
+                source.source_start,
+                source.length(),
+                source.gain,
+                source.fade
+            )
+        );
+        let rendered = render_accepted_event(view, clip);
+        assert_eq!(&rendered[..span as usize], &pcm[..span as usize]);
+        assert_eq!(
+            &rendered[copy.start as usize..copy.end as usize],
+            &pcm[..span as usize]
+        );
+        state.project.clone()
+    });
+    for (request, expected) in [(Request::Undo, before), (Request::Redo, after.clone())] {
+        editor.update(&mut visual, |view, _| assert!(view.enqueue(request)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project, expected)
+        });
+    }
+    let path = files.root().join("event-option-copy.hex");
+    for request in [Request::SaveNew(path.clone()), Request::Open(path)] {
+        editor.update(&mut visual, |view, _| assert!(view.enqueue(request)));
+        pump(&editor, &mut visual);
+    }
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, after)
+    });
+    assert_eq!(std::fs::read(source_path).unwrap(), source_bytes);
+}
+
+#[gpui::test]
 fn event_content_hover_reveals_only_its_fade_handles_and_preserves_capture(
     cx: &mut TestAppContext,
 ) {

@@ -189,6 +189,10 @@ enum Kind {
         limits: (i64, i64),
     },
     Move(AudioEvent),
+    Duplicate {
+        event: AudioEvent,
+        limits: Option<(i64, i64)>,
+    },
     FreeMove {
         event: AudioEvent,
         limits: (i64, i64),
@@ -695,10 +699,16 @@ impl EditorView {
                     destination,
                 });
             }
-            Kind::FreeMove { .. } | Kind::FreeRangeMove { .. } => {
-                self.update_free_event_placement(&mut gesture, x, platform)
-            }
-            Kind::Move(event) => {
+            Kind::FreeMove { .. }
+            | Kind::FreeRangeMove { .. }
+            | Kind::Duplicate {
+                limits: Some(_), ..
+            } => self.update_free_event_placement(&mut gesture, x, platform),
+            Kind::Move(event)
+            | Kind::Duplicate {
+                event,
+                limits: None,
+            } => {
                 let candidate =
                     (i128::from(event.start) + i128::from(raw) - i128::from(gesture.anchor)).clamp(
                         i128::from(content_bounds(&root).0),
@@ -719,10 +729,19 @@ impl EditorView {
                             .saturating_sub(event.length())
                             .max(content_bounds(&root).0),
                     );
-                gesture.operation = Some(AudioEventEdit::Move {
-                    event: event.id,
-                    start,
-                });
+                gesture.operation = if matches!(gesture.kind, Kind::Duplicate { .. }) {
+                    i64::try_from(start)
+                        .ok()
+                        .map(|start| AudioEventEdit::Duplicate {
+                            event: event.id,
+                            start,
+                        })
+                } else {
+                    Some(AudioEventEdit::Move {
+                        event: event.id,
+                        start,
+                    })
+                };
             }
             Kind::Leading(event) => {
                 let start =
@@ -842,6 +861,36 @@ impl EditorView {
             self.audio_event_editor.range = Some((editor_bounds(&root).0, editor_bounds(&root).1));
             self.audio_event_editor.cursor = editor_bounds(&root).0;
         }
+    }
+    fn duplicate_selected_event(&mut self) {
+        let Some(selected) = self.audio_event_editor.selected else {
+            return;
+        };
+        let Some((clip, _, _)) = self.event_context() else {
+            return;
+        };
+        let Some(source) = self
+            .state
+            .as_ref()
+            .and_then(|state| state.project.clip(clip))
+        else {
+            return;
+        };
+        let Some(event) = source
+            .editable_audio_events()
+            .ok()
+            .and_then(|events| events.events.into_iter().find(|event| event.id == selected))
+        else {
+            return;
+        };
+        let Ok(start) = i64::try_from(event.end) else {
+            self.error = Some("audio event duplicate exceeds its timeline".into());
+            return;
+        };
+        self.event_commit(AudioEventEdit::Duplicate {
+            event: event.id,
+            start,
+        });
     }
     fn event_duplicate(&mut self) {
         let Some((start, end)) = self.event_range() else {

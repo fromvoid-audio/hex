@@ -745,6 +745,14 @@ pub(in crate::editor) fn view(
                         last_y: f32::from(event.position.y),
                         value: f64::from(target.gain.millidb()),
                     }
+                } else if target == RangeSelectionTarget::Move && event.modifiers.alt {
+                    Kind::Duplicate {
+                        event: hit,
+                        limits: state
+                            .project
+                            .audio_event_drag_bounds(clip_id, hit.start, hit.end)
+                            .ok(),
+                    }
                 } else if target == RangeSelectionTarget::Move {
                     if let Ok(limits) = state
                         .project
@@ -1028,6 +1036,13 @@ pub(in crate::editor) fn view(
             cx.stop_propagation();
             cx.notify();
         }))
+        .on_action(
+            cx.trace(|view, _: &super::super::DuplicateAudioEvent, _, cx| {
+                view.duplicate_selected_event();
+                cx.stop_propagation();
+                cx.notify();
+            }),
+        )
         .on_action(cx.trace(|view, _: &super::super::DuplicateClip, _, cx| {
             view.event_duplicate();
             cx.stop_propagation();
