@@ -20,6 +20,8 @@ mod matrix_ramp;
 mod meter;
 mod owned_processor;
 mod parameter_automation;
+#[cfg(test)]
+mod static_processing_tests;
 mod tail_split;
 pub use foreign_processor::{
     ForeignProcessorNode, ForeignProcessors, PreparedForeignProcessor, RefuseForeign,
@@ -1336,6 +1338,30 @@ impl NativeRuntimeChain {
     /// Total owned runtime payload, counting legacy twins exactly once each.
     pub const fn declared_pair_bytes(&self) -> usize {
         self.declared_pair_bytes
+    }
+
+    /// Whether two complete chains perform the same static processing without
+    /// signal, automation or unfinished host-ramp history. This observes only
+    /// committed state; callers retain transport/source and ownership proofs.
+    /// Stateful/foreign providers and armed transient/automation programs refuse.
+    /// No resource is copied, adopted or retired by this query.
+    pub fn static_processing_matches(&self, other: &Self) -> bool {
+        let static_entry = |entry: &RuntimeEntry| {
+            matches!(entry.runtime, RuntimeOwnership::Memoryless)
+                && entry.automation.is_empty()
+                && !entry.committed_matrix_ramp.is_active()
+                && !entry.committed_bypass_ramp.is_active()
+                && entry.committed_host_gains == [entry.input_gain, entry.output_gain]
+        };
+        self.len() == other.len()
+            && self.configuration_matches_range(other, 0..self.len())
+            && self
+                .entries
+                .iter()
+                .zip(&other.entries)
+                .all(|(left, right)| {
+                    left.bypassed == right.bypassed && static_entry(left) && static_entry(right)
+                })
     }
 
     /// Whether a same-position range has exact immutable processor
