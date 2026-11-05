@@ -60,7 +60,6 @@ impl Project {
             && root.domain.pitch_cents == 0
             && root.domain.source_gain.is_empty()
             && root.domain.fade.is_neutral()
-            && root.domain.source_phase == 0
         {
             let before = original.editable_audio_events()?;
             let after = candidate.audio_events();
@@ -167,6 +166,8 @@ impl Clip {
             || after.domain.fade != before.domain.fade
             || after.domain.source_offset != before.domain.source_offset
             || after.domain.source_length != before.domain.source_length
+            || after.domain.looping != before.domain.looping
+            || after.domain.source_phase != before.domain.source_phase
             || i128::from(after.view_start) - i128::from(before.view_start) != shift
             || i128::from(after.view_end) - i128::from(before.view_end) != shift
         {

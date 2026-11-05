@@ -196,12 +196,12 @@ fn free_event_extreme_pointer_reversal_and_escape_leave_canonical_material_untou
         v.state.as_ref().unwrap().project.clone()
     });
     visual.run_until_parked();
-    let bounds = visual.debug_bounds("audio-event-1").unwrap();
+    let bounds = visual.debug_bounds("audio-event-2").unwrap();
     let lane = visual.debug_bounds("audio-events-waveform").unwrap();
     let down = point(bounds.center().x, bounds.top() + px(8.0));
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(
-        point(px(1_000_000_000.0), down.y),
+        point(px(f32::MAX), down.y),
         MouseButton::Left,
         Modifiers::default(),
     );
@@ -227,7 +227,7 @@ fn free_event_extreme_pointer_reversal_and_escape_leave_canonical_material_untou
         Modifiers::default(),
     );
     visual.run_until_parked();
-    let moved = visual.debug_bounds("audio-event-1").unwrap();
+    let moved = visual.debug_bounds("audio-event-2").unwrap();
     assert!(
         (f32::from(moved.left() - bounds.left() - lane.size.width * 0.5)).abs() < 2.0,
         "reversal must derive from the original pointer and event"
@@ -240,7 +240,7 @@ fn free_event_extreme_pointer_reversal_and_escape_leave_canonical_material_untou
         assert!(v.audio_event_editor.pending.is_none());
         assert_eq!(v.worker_requests_pending, 0);
     });
-    assert_eq!(visual.debug_bounds("audio-event-1").unwrap(), bounds);
+    assert_eq!(visual.debug_bounds("audio-event-2").unwrap(), bounds);
 }
 
 #[gpui::test]

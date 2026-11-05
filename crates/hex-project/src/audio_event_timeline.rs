@@ -1,4 +1,4 @@
-//! Free audio event placement on a frame-fixed grouped timeline.
+//! Free audio event placement on a frame-fixed timeline.
 //!
 //! A grouped container's events read independently retained roots by finite
 //! output frame, so its frame clock is only a placement extent. Placing an event
@@ -8,9 +8,12 @@
 //!
 //! An ungrouped one-shot frame root (no warp, pitch, source gain, loop, musical
 //! placement or directed view) first becomes a grouped container whose single
-//! retained root is that root's complete source read. Each event keeps its
-//! identity, interval, source frame, fade, gain and activation. Other roots
-//! refuse explicitly. The timeline stays within [`MAX_AUDIO_DOMAIN_FRAMES`].
+//! retained root is that root's complete source read. A raw frame source loop
+//! instead retains its existing source window and phase. Its read at any given
+//! source frame is independent of destination extent, so only the event
+//! destinations translate. Looping supplies event source samples and the
+//! unchanged Arrangement window gates their output. Other roots refuse
+//! explicitly. The timeline stays within [`MAX_AUDIO_DOMAIN_FRAMES`].
 use crate::{
     AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioEventEdit, AudioEvents, Clip, ClipFade,
     ClipGain, ClipId, Invalid, Project,
@@ -37,7 +40,7 @@ pub(crate) fn prepare(
     start: i64,
 ) -> Result<Clip, Invalid> {
     let original = project.clip(clip).ok_or(Invalid("clip no longer exists"))?;
-    let (mut edit, mut events) = grouped_timeline(project, original)?;
+    let (mut edit, mut events) = placement_timeline(project, original)?;
     let length = edit.domain.clock.length();
     let moved = events
         .events
@@ -97,16 +100,15 @@ pub(crate) fn prepare(
     Ok(candidate)
 }
 
-// The grouped edit and its editable (view-carved) events, converting an
-// eligible ungrouped frame root without changing its rendered samples.
-fn grouped_timeline(
+// The editable (view-carved) events keep their original source clock.
+fn placement_timeline(
     project: &Project,
     clip: &Clip,
 ) -> Result<(AudioClipEdit, AudioEvents), Invalid> {
     let mut edit = clip.audio_event_root();
     let mut events = clip.editable_audio_events()?;
     check_timeline(&edit, !events.sources.is_empty())?;
-    if !events.sources.is_empty() {
+    if !events.sources.is_empty() || edit.domain.looping {
         return Ok((edit, events));
     }
     let domain = &edit.domain;
@@ -152,14 +154,12 @@ fn check_timeline(edit: &AudioClipEdit, grouped: bool) -> Result<(), Invalid> {
             || domain.warp_enabled
             || domain.pitch_cents != 0
             || !domain.source_gain.is_empty()
-            || domain.looping
-            || domain.source_phase != 0
             || edit.content_view.is_some()
             || edit.placement.is_some()
             || edit.processing_projection.is_some()
         {
             return Err(Invalid(
-                "free audio event placement needs an unwarped, unpitched one-shot frame clip",
+                "free audio event placement needs an unwarped, unpitched frame clip",
             ));
         }
     }
@@ -190,8 +190,6 @@ impl Clip {
             || root.domain.warp_enabled
             || root.domain.pitch_cents != 0
             || !root.domain.source_gain.is_empty()
-            || root.domain.looping
-            || root.domain.source_phase != 0
         {
             return None;
         }

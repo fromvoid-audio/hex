@@ -159,3 +159,84 @@ fn negative_event_placement_retains_pcm_and_reveals_it_at_the_same_song_time_on_
         }
     }
 }
+
+#[test]
+fn placed_events_keep_their_original_source_loop_phase_without_repeating_outside_the_gate() {
+    let (mut editor, clip) = imported();
+    let track = editor.project().tracks()[0].id();
+    for command in [
+        Command::MoveClip {
+            clip,
+            track,
+            start: 200,
+        },
+        Command::SetClipLooping {
+            clip,
+            looping: true,
+        },
+        Command::SetClipSourcePhase { clip, phase: 65 },
+        Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Split { at: 40 },
+        },
+        Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Split { at: 70 },
+        },
+        Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Place {
+                event: 3,
+                start: 130,
+            },
+        },
+        Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Place {
+                event: 1,
+                start: -40,
+            },
+        },
+    ] {
+        editor.execute(command).unwrap();
+    }
+    let placed = editor.project().clip(clip).unwrap();
+    assert_eq!(
+        (
+            placed.start(),
+            placed.duration(),
+            placed.looping(),
+            placed.source_phase()
+        ),
+        (200, 100, true, 65)
+    );
+    let expected = |output_frame: u64| {
+        let v = value((output_frame + 65) % SOURCE);
+        [v, -v]
+    };
+    for block in [1, 7, 64, 512] {
+        for (frame, sample) in render(&editor, 400, block).into_iter().enumerate() {
+            let expected = match frame as u64 {
+                frame @ 240..270 => expected(frame - 200),
+                _ => [0.0; 2],
+            };
+            assert_eq!(sample, expected, "block {block} frame {frame}");
+        }
+    }
+    for (edge, frame) in [(TrimEdge::Left, 160), (TrimEdge::Right, 360)] {
+        editor
+            .execute(Command::TrimClipEdge { clip, edge, frame })
+            .unwrap();
+    }
+    for block in [1, 7, 64, 512] {
+        for (frame, sample) in render(&editor, 400, block).into_iter().enumerate() {
+            let expected = match frame as u64 {
+                frame @ 160..200 => expected(frame - 160),
+                frame @ 240..270 => expected(frame - 200),
+                frame @ 330..360 => expected(frame - 260),
+                _ => [0.0; 2],
+            };
+            assert_eq!(sample, expected, "block {block} frame {frame}");
+        }
+    }
+}

@@ -101,43 +101,57 @@ fn gain_fade_identity_and_unsupported_roots_do_not_borrow_unproved_peaks() {
                 .is_err()
         );
     }
-    editor
-        .execute(Command::SetClipLooping {
-            clip,
-            looping: true,
-        })
-        .unwrap();
-    assert!(
-        editor
-            .project()
-            .preview_audio_event_placement(clip, 1, 130)
-            .is_err()
-    );
 }
 
 #[test]
-fn musical_root_retains_ordinary_editing_without_admitting_free_editor_placement() {
-    let (mut editor, clip) = fixture();
-    editor
-        .execute(Command::SetAudioClipMusical {
-            clip,
-            enabled: true,
-        })
-        .unwrap();
-    assert_eq!(
+fn musical_and_warped_roots_keep_bounded_moves_and_refuse_free_placement() {
+    for warped in [false, true] {
+        let (mut editor, clip) = fixture();
+        let command = if warped {
+            let project = editor.project();
+            Command::SetAudioClipWarp {
+                clip,
+                settings: Some(
+                    crate::default_audio_warp(
+                        project.clip(clip).unwrap(),
+                        project.tempo_map(),
+                        crate::WarpMode::RePitch,
+                    )
+                    .unwrap(),
+                ),
+            }
+        } else {
+            Command::SetAudioClipMusical {
+                clip,
+                enabled: true,
+            }
+        };
+        editor.execute(command).unwrap();
+        let before = editor.project().clone();
+        assert_eq!(
+            before.clip(clip).unwrap().audio_event_placement_limit(),
+            None
+        );
+        assert!(before.preview_audio_event_placement(clip, 1, 130).is_err());
+        assert!(
+            editor
+                .execute(Command::EditAudioEvents {
+                    clip,
+                    operation: AudioEventEdit::Place {
+                        event: 1,
+                        start: -25
+                    },
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project(), &before);
         editor
-            .project()
-            .clip(clip)
-            .unwrap()
-            .audio_event_placement_limit(),
-        None
-    );
-    assert!(
-        editor
-            .project()
-            .preview_audio_event_placement(clip, 1, 130)
-            .is_err()
-    );
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::Move { event: 1, start: 1 },
+            })
+            .unwrap();
+    }
 }
 
 #[test]

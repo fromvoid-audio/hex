@@ -269,7 +269,7 @@ impl EditorView {
             self.audio_event_editor.viewport = None;
             self.audio_event_editor.negative_pan = 0;
             if let Some((_, root, _)) = self.event_context()
-                && content_bounds(&root).0 < editor_bounds(&root).0
+                && content_bounds(&root) != editor_bounds(&root)
             {
                 self.fit_audio_interval(content_bounds(&root), false);
             }

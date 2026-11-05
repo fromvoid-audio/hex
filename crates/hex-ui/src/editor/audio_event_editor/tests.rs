@@ -1695,14 +1695,23 @@ fn wheel_navigation_anchors_pointer_and_keeps_tabs_independent(cx: &mut TestAppC
         assert!(v.event_fit_selection(false));
         assert!(v.event_fit_selection(true));
         assert_eq!(v.audio_source_viewport().start, -132_000);
-        v.event_pan(true);
-        v.event_pan(true);
-        v.event_pan(true);
-        v.event_pan(true);
-        assert!(v.audio_source_viewport().start >= 96_000);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("audio-source-visible-waveform")
+            .is_none()
+    );
+    assert!(visual.debug_bounds("source-start-marker").is_none());
+    editor.update(&mut visual, |v, cx| {
+        for _ in 0..12 {
+            v.event_pan(true);
+        }
+        assert!(v.audio_source_viewport().start > 96_000 * 4);
         assert!(v.event_fit_selection(false));
         assert!(v.event_fit_selection(true));
-        assert!(v.audio_source_viewport().start >= 96_000);
+        assert!(v.audio_source_viewport().start > 96_000 * 4);
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         assert!(v.last_enqueued_edit.is_none());
         cx.notify();

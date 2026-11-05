@@ -32,7 +32,7 @@ pub(super) use view::view;
 
 /// Placed cycles expose the complete retained root while loop markers move.
 /// Frame containers also expose material after the Arrangement window ends;
-/// their left bound stays at the view origin of the unsigned camera. These
+/// their camera origin stays at the Arrangement window start. These
 /// display bounds never extend the Arrangement window or alter playback.
 /// Units remain the root's declared AudioDomainClock.
 pub(in crate::editor) fn editor_bounds(root: &AudioClipEdit) -> (u64, u64) {
@@ -49,15 +49,16 @@ pub(in crate::editor) fn editor_bounds(root: &AudioClipEdit) -> (u64, u64) {
         (root.view_start, root.view_end)
     }
 }
-/// Retained frame containers expose all material; view-origin and playback
-/// window remain separate. Other clock families retain their existing bounds.
+/// Grouped events and fixed-frame source loops expose their retained material
+/// independently of the Arrangement window.
 fn content_bounds(root: &AudioClipEdit) -> (u64, u64) {
-    if root
-        .domain
-        .events
-        .as_ref()
-        .is_some_and(|events| !events.sources.is_empty())
-    {
+    if root.domain.events.as_ref().is_some_and(|events| {
+        !events.sources.is_empty()
+            || (root.domain.looping
+                && matches!(root.timing, hex_project::AudioClipTiming::Frames)
+                && root.placement.is_none()
+                && root.content_view.is_none())
+    }) {
         (0, root.domain.clock.length())
     } else {
         editor_bounds(root)

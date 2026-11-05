@@ -145,8 +145,9 @@ impl EditorView {
         let viewport = self.event_frame_window(&root);
         let delta = ((f64::from(x) - f64::from(gesture.origin_x)) * viewport.length as f64 / width)
             .round() as i128;
-        let raw =
-            (i128::from(event.start) + delta).clamp(i128::from(first), i128::from(last)) as i64;
+        let raw = i128::from(event.start)
+            .saturating_add(delta)
+            .clamp(i128::from(first), i128::from(last)) as i64;
         let start = self
             .free_event_snap(&root, raw, platform)
             .unwrap_or(raw)
