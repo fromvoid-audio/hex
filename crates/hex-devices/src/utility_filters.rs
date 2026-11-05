@@ -348,20 +348,28 @@ impl UtilityFilterProcessor {
     }
 
     pub fn process_frame(&mut self, input: StereoFrame) -> StereoFrame {
-        let input = self
-            .automation
-            .as_ref()
-            .map_or(input, |automation| automation.matrix.apply(input));
-        let gain = if let Some(ramp) = self.mute_ramp.as_mut() {
+        if let Some(ramp) = self.mute_ramp.as_mut() {
             let gain = ramp.advance();
             if ramp.finished() {
                 self.mute_ramp = None;
             }
-            gain
+            let output = self.process_frame_at_mute(input, gain == 0.0);
+            if gain == 0.0 || gain == 1.0 {
+                output
+            } else {
+                output.map(|sample| sample * gain)
+            }
         } else {
-            f32::from(!self.prepared.output_muted)
-        };
-        let input = if gain == 0.0 { [0.0; 2] } else { input };
+            self.process_frame_at_mute(input, self.prepared.output_muted)
+        }
+    }
+
+    fn process_frame_at_mute(&mut self, input: StereoFrame, muted: bool) -> StereoFrame {
+        let input = self
+            .automation
+            .as_ref()
+            .map_or(input, |automation| automation.matrix.apply(input));
+        let input = if muted { [0.0; 2] } else { input };
         let mut signal = [f64::from(input[0]), f64::from(input[1])];
         // Modes which this revision can enable retain their dormant histories.
         // A skipped mode is explicitly invalidated so a later revision starts it
@@ -411,18 +419,19 @@ impl UtilityFilterProcessor {
         } else {
             [(mid + side) as f32, (mid - side) as f32]
         };
-        if gain == 1.0 {
-            output
-        } else if gain == 0.0 {
-            [0.0; 2]
-        } else {
-            output.map(|sample| sample * gain)
-        }
+        if muted { [0.0; 2] } else { output }
     }
 
     pub fn process_block(&mut self, frames: &mut [StereoFrame]) {
-        for frame in frames {
-            *frame = self.process_frame(*frame);
+        if self.mute_ramp.is_some() {
+            for frame in frames {
+                *frame = self.process_frame(*frame);
+            }
+        } else {
+            let muted = self.prepared.output_muted;
+            for frame in frames {
+                *frame = self.process_frame_at_mute(*frame, muted);
+            }
         }
     }
 
