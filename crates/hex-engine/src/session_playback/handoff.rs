@@ -4317,6 +4317,16 @@ impl SessionPlayback {
                 }
             }
         }
+        // The bypassed track saw no instrument signal. Its ordinary history
+        // transfer above cannot supply the detached suffix's committed state.
+        for (slot, receiver) in reenabled_release_receivers.into_iter().enumerate() {
+            if let Some(index) = receiver {
+                let tail = previous.tail_groups[slot]
+                    .as_mut()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                self.device_chains[index].transfer_history_from(tail);
+            }
+        }
         return_tail_plan.apply_carry(
             &mut self.return_effect_tails,
             &mut previous.return_effect_tails,
