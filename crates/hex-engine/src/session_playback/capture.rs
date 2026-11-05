@@ -1,4 +1,7 @@
 //! Bounded control plans and borrowed, transactional canonical output buffers.
+#[cfg(feature = "instrument-test-support")]
+pub(super) mod window_probe;
+
 use super::{SessionPlayback, SessionPlaybackError};
 use crate::{Frame, PreparedRevision};
 use hex_project::{ReturnId, TrackId};
