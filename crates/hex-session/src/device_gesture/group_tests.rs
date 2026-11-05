@@ -237,3 +237,76 @@ fn group_client_coalesces_scalar_values_and_reserves_one_terminal_without_losing
         std::mem::size_of::<RelativeTrackGains>()
     );
 }
+
+#[test]
+fn control_queue_storage_is_reported_with_the_existing_fixed_capacities() {
+    println!(
+        "worker control request={} event={} request_fifo_payload={} event_fifo_payload={}",
+        std::mem::size_of::<crate::service::Request>(),
+        std::mem::size_of::<crate::service::Event>(),
+        32 * std::mem::size_of::<crate::service::Request>(),
+        2 * std::mem::size_of::<crate::service::Event>()
+    );
+}
+
+#[test]
+#[ignore = "manual release-profile control/repaint timing; no physical callback budget claim"]
+fn profile_group_gain_control_and_visible_queries() {
+    use std::{hint::black_box, time::Instant};
+    let mut project = hex_project::Project::new(48_000).unwrap();
+    let mut ids = Vec::new();
+    for _ in 0..hex_project::MAX_TRACKS {
+        let hex_project::Created::Track(id) = project
+            .apply(Command::AddTrack {
+                name: "gain".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        ids.push(id);
+    }
+    let group = RelativeTrackGains::capture(&project, ids[0], &ids).unwrap();
+    for grouped in [false, true] {
+        let mut client = GestureClient::default();
+        if grouped {
+            client.begin_track_gains(0, group).unwrap();
+        } else {
+            client
+                .begin(
+                    0,
+                    GestureTarget::TrackGain { track: ids[0] },
+                    ParameterValue::Float(1.0),
+                )
+                .unwrap();
+        }
+        let mut durations = Vec::with_capacity(4096);
+        for index in 0..(1024 + 4096) {
+            let start = Instant::now();
+            client
+                .change(ParameterValue::Float(if index % 2 == 0 {
+                    0.5
+                } else {
+                    1.0
+                }))
+                .unwrap();
+            for &id in &ids {
+                black_box(client.preview_track_gain(black_box(0), black_box(id)));
+            }
+            black_box(client.next_request());
+            if index >= 1024 {
+                durations.push(start.elapsed().as_nanos());
+            }
+        }
+        durations.sort_unstable();
+        println!(
+            "grouped={grouped} visible_queries={} warmup=1024 measured={} ns mean={} p50={} p99={} max={}",
+            ids.len(),
+            durations.len(),
+            durations.iter().sum::<u128>() / durations.len() as u128,
+            durations[durations.len() / 2],
+            durations[durations.len() * 99 / 100],
+            durations.last().unwrap()
+        );
+    }
+}

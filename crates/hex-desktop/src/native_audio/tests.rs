@@ -571,21 +571,30 @@ impl Files {
         Self(path)
     }
     fn wav(&self, rate: u32, frames: u32) -> PathBuf {
-        let path = self.0.join("mixed-rate.wav");
+        self.constant_wav("mixed-rate.wav", rate, frames, &[8192])
+    }
+    fn constant_wav(&self, name: &str, rate: u32, frames: u32, samples: &[i16]) -> PathBuf {
+        assert!((1..=2).contains(&samples.len()));
+        let channels = u16::try_from(samples.len()).unwrap();
+        let frame_bytes = u32::from(channels) * 2;
+        let data_bytes = frames.checked_mul(frame_bytes).unwrap();
+        let path = self.0.join(name);
         let mut bytes = Vec::from(*b"RIFF");
-        bytes.extend_from_slice(&(36 + frames * 2).to_le_bytes());
+        bytes.extend_from_slice(&(36 + data_bytes).to_le_bytes());
         bytes.extend_from_slice(b"WAVEfmt ");
         bytes.extend_from_slice(&16u32.to_le_bytes());
         bytes.extend_from_slice(&1u16.to_le_bytes());
-        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&channels.to_le_bytes());
         bytes.extend_from_slice(&rate.to_le_bytes());
-        bytes.extend_from_slice(&(rate * 2).to_le_bytes());
-        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&rate.checked_mul(frame_bytes).unwrap().to_le_bytes());
+        bytes.extend_from_slice(&(frame_bytes as u16).to_le_bytes());
         bytes.extend_from_slice(&16u16.to_le_bytes());
         bytes.extend_from_slice(b"data");
-        bytes.extend_from_slice(&(frames * 2).to_le_bytes());
+        bytes.extend_from_slice(&data_bytes.to_le_bytes());
         for _ in 0..frames {
-            bytes.extend_from_slice(&8192i16.to_le_bytes());
+            for sample in samples {
+                bytes.extend_from_slice(&sample.to_le_bytes());
+            }
         }
         fs::write(&path, bytes).unwrap();
         path

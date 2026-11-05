@@ -140,6 +140,7 @@ impl VerifiedTrackGainSource {
 
 #[cfg(test)]
 mod tests {
+    mod group;
     use super::*;
     use std::{
         sync::{Mutex, mpsc},

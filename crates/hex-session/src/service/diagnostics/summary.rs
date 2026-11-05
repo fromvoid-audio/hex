@@ -1720,7 +1720,7 @@ pub(super) fn gesture(value: &crate::device_gesture::GestureRequest) -> Descript
             describe!("commit_pair"; ["key_generation" => key.generation, "key_token" => key.token, "sequence" => sequence, "manual_edit" => manual_edit, "value_first" => Parameter(&value.first), "value_second" => Parameter(&value.second)]; omitted="")
         }
         crate::device_gesture::GestureRequest::BeginTrackGains { key, group } => {
-            describe!("begin_track_gains"; ["generation" => key.generation, "token" => key.token, "anchor" => group.anchor().value(), "tracks_count" => group.len()]; omitted="gains")
+            describe!("begin_track_gains"; ["key_generation" => key.generation, "key_token" => key.token, "anchor" => group.anchor().value(), "tracks_count" => group.len()]; omitted="gains")
         }
         crate::device_gesture::GestureRequest::BeginSnapshot {
             key,

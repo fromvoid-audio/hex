@@ -136,6 +136,10 @@ pub struct ParameterPairValue {
     pub second: ParameterValue,
 }
 
+// The largest payload is a bounded 256-track control Begin (3,088 bytes).
+// Copy retains the existing coalescer/retry/terminal ownership without another
+// heap owner. The 32-slot worker FIFO bounds storage; callbacks never see it.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GestureRequest {
     BeginTrackGains {
