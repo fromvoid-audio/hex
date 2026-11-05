@@ -210,10 +210,12 @@ public:
     tresult PLUGIN_API getParameterInfo(int32 index,ParameterInfo& info) override {
         if (!control() || !context || index<0 || index>=inventory_size) return kInvalidArgument;
         ++restoration.info_reads;info={};info.id=parameter_id(fault);info.defaultNormalizedValue=fault==81?1.0/3.0:(fault==82?0.0:0.25);
-        if(index) {
+        // Keep the low gain ID last to exercise SDK page order separately
+        // from the host's sorted processing lookup.
+        if(inventory_size>1 && index<inventory_size-1) {
             const auto* shape=std::getenv("HEX_ORIGINAL_PARAMETER_INVENTORY");
-            if(index!=inventory_size-1 || !shape || std::strcmp(shape,"duplicate"))
-                info.id=static_cast<ParamID>(1000+index);
+            if(index!=inventory_size-2 || !shape || std::strcmp(shape,"duplicate"))
+                info.id=static_cast<ParamID>(1001+index);
             info.flags=ParameterInfo::kIsReadOnly;
             const char16_t name[]=u"observed";
             std::memcpy(info.title,name,sizeof(name));std::memcpy(info.shortTitle,name,sizeof(name));
