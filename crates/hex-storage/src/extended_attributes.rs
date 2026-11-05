@@ -121,14 +121,13 @@ mod platform {
                 }),
             }
         }
-        if copied_any {
-            if let Err(source) = File::open(destination).and_then(|file| file.sync_all()) {
-                warnings.push(MetadataWarning {
-                    attribute: None,
-                    operation: "synchronize copied file attributes",
-                    source,
-                });
-            }
+        if copied_any && let Err(source) = File::open(destination).and_then(|file| file.sync_all())
+        {
+            warnings.push(MetadataWarning {
+                attribute: None,
+                operation: "synchronize copied file attributes",
+                source,
+            });
         }
         warnings
     }

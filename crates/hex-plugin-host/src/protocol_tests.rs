@@ -531,6 +531,47 @@ fn epoch_body(config: &Configuration, sequence: u64) -> Vec<u8> {
     body
 }
 #[test]
+fn reactivation_binds_source_completed_prefix_and_unique_operation() {
+    let config = config();
+    let request = reactivate(&config, 3, 2).unwrap();
+    assert_eq!(&request[..4], b"HXVA");
+    assert_eq!(
+        &request[48..],
+        &[
+            3_u64.to_le_bytes(),
+            24_u64.to_le_bytes(),
+            2_u64.to_le_bytes()
+        ]
+        .concat()
+    );
+    assert!(reactivate(&config, 3, 0).is_err());
+    assert!(reactivate(&config, u64::MAX, 2).is_err());
+    let mut body = epoch_body(&config, 3);
+    body.extend(2_u64.to_le_bytes());
+    assert_eq!(
+        reactivated_facts(&body, &config, 3, 2)
+            .unwrap()
+            .algorithmic_latency_frames,
+        3
+    );
+    for end in 0..body.len() {
+        assert!(reactivated_facts(&body[..end], &config, 3, 2).is_err());
+    }
+    for offset in [0, 32, 48, 80, 112, 120, 134, 135, 138, 146, 154] {
+        let mut bad = body.clone();
+        bad[offset] ^= 128;
+        assert!(
+            reactivated_facts(&bad, &config, 3, 2).is_err(),
+            "offset {offset}"
+        );
+    }
+    assert!(reactivated_facts(&body, &config, 2, 2).is_err());
+    assert!(reactivated_facts(&body, &config, 3, 1).is_err());
+    assert!(reactivated_facts(&body, &config, 3, 0).is_err());
+    body.push(0);
+    assert!(reactivated_facts(&body, &config, 3, 2).is_err());
+}
+#[test]
 fn epoch_acknowledgements_bind_exact_source_prefix_facts_and_presentation() {
     let mut config = config();
     let body = epoch_body(&config, 3);

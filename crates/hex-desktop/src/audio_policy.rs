@@ -22,13 +22,16 @@ pub(super) struct AudioPolicy {
 /// Actual Root construction validates this reserved pool before client exposure.
 #[derive(Clone, Copy)]
 pub(super) struct PluginPolicy {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub capacity: usize,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub source: hex_audio::NativeSourceDataReservation,
     pub retained: usize,
     pub peak: usize,
 }
 pub(super) const PLUGIN_CONTROL_DATA_BYTES: usize = 128 * 1024;
 impl PluginPolicy {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn new() -> Result<Self, String> {
         let capacity = 16;
         let source = hex_audio::plugin_effects::Hosting::source_data_reservation()?;
@@ -40,6 +43,15 @@ impl PluginPolicy {
             source,
             retained,
             peak,
+        })
+    }
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    fn new() -> Result<Self, String> {
+        // No native source bank exists on this target. Ordinary graph/source
+        // reservations retain their existing owners and limits.
+        Ok(Self {
+            retained: 0,
+            peak: 0,
         })
     }
     pub fn domains(

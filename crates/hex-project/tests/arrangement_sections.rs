@@ -160,10 +160,8 @@ fn section_drag_copies_use_stable_destinations_fresh_identity_and_one_history_st
             assert_eq!((marker.start(), marker.end()), (b(range.0), b(range.1)));
         }
         let copied = editor.project().arrangement_section(copy).unwrap();
-        assert_eq!(
-            (copied.name(), copied.color()),
-            (original.name(), original.color())
-        );
+        assert_eq!(copied.name(), original.name());
+        assert!(ElementColor::ALL.contains(&copied.color()));
         let shape = |markers: &[hex_project::ArrangementSection]| {
             markers
                 .iter()
@@ -1123,7 +1121,7 @@ fn duplication_copies_midi_gain_touch_tempo_and_meter_with_fresh_identities() {
         copy.name(),
         e.project().arrangement_section(section_id).unwrap().name()
     );
-    assert_eq!(
+    assert_ne!(
         copy.color(),
         e.project().arrangement_section(section_id).unwrap().color()
     );
@@ -2156,8 +2154,18 @@ fn repeated_duplicates_at_a_fractional_tempo_keep_musical_audio_editable() {
     let first = section(&mut e, "a", 0, 3);
     section(&mut e, "b", 3, 8);
     for round in 0..12 {
-        e.execute(Command::DuplicateArrangementSection(first))
-            .unwrap_or_else(|error| panic!("round {round} first: {error:?}"));
+        let Created::ArrangementSection(copy) = e
+            .execute(Command::DuplicateArrangementSection(first))
+            .unwrap_or_else(|error| panic!("round {round} first: {error:?}"))
+        else {
+            panic!("copy identity")
+        };
+        // Explicit recoloring remains independent of the duplication color draw.
+        e.execute(Command::SetArrangementSectionColor {
+            section: copy,
+            color: ElementColor::Cyan,
+        })
+        .unwrap();
         let ending_at_clip = e
             .project()
             .arrangement_sections()
@@ -2169,8 +2177,17 @@ fn repeated_duplicates_at_a_fractional_tempo_keep_musical_audio_editable() {
             })
             .map(|s| s.id());
         if let Some(section) = ending_at_clip {
-            e.execute(Command::DuplicateArrangementSection(section))
-                .unwrap_or_else(|error| panic!("round {round} fence: {error:?}"));
+            let Created::ArrangementSection(copy) = e
+                .execute(Command::DuplicateArrangementSection(section))
+                .unwrap_or_else(|error| panic!("round {round} fence: {error:?}"))
+            else {
+                panic!("copy identity")
+            };
+            e.execute(Command::SetArrangementSectionColor {
+                section: copy,
+                color: ElementColor::Cyan,
+            })
+            .unwrap();
         }
         assert_eq!(
             e.project().tempo_map().points().len(),

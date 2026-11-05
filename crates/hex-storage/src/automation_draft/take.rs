@@ -415,13 +415,12 @@ impl ClockMapping {
         }
         let region =
             region.filter(|region| first.loop_pass > 0 || first.content_frame < region.end());
-        if let Some(region) = region {
-            if !region.enabled()
+        if let Some(region) = region
+            && (!region.enabled()
                 || first.content_frame >= region.end()
-                || (first.loop_pass > 0 && first.content_frame < region.start())
-            {
-                return Err("captured loop origin is invalid".into());
-            }
+                || (first.loop_pass > 0 && first.content_frame < region.start()))
+        {
+            return Err("captured loop origin is invalid".into());
         }
         let mapping = Self { first, end, region };
         if mapping.clock_at(end.performance_frame)? != end {

@@ -48,56 +48,55 @@ impl EditorView {
                 ..State::default()
             };
         }
-        if self.audio_event_editor.revision != revision
-            || self.audio_event_editor.frame_bounds.is_none()
+        if (self.audio_event_editor.revision != revision
+            || self.audio_event_editor.frame_bounds.is_none())
+            && let Some(tempo) = self.state.as_ref().map(|s| s.project.tempo_map())
         {
-            if let Some(tempo) = self.state.as_ref().map(|s| s.project.tempo_map()) {
-                let (first, end) = editor_bounds(&root);
-                if let (Ok(first), Ok(end)) = (
-                    root.root_frame_at(first, tempo),
-                    root.root_frame_at(end, tempo),
-                ) {
-                    self.audio_event_editor
-                        .install_frame_space(&root, (first, end));
-                    let current = self.state.as_ref().and_then(|s| {
-                        let clip = s.project.clip(clip_id)?;
-                        let position = hex_project::AudioViewProjection::new(clip, tempo)
-                            .ok()?
-                            .play_start_position()
-                            .ok()??;
-                        Some((position, root.root_frame_at(position, tempo).ok()?))
-                    });
-                    let state = &mut self.audio_event_editor;
-                    // History can install a different live tempo projection. Keep
-                    // its changed start visible without recording a second edit history.
-                    if current != state.canonical_start
-                        && let (Some((_, old_frame)), Some((position, frame)), Some(view)) =
-                            (state.canonical_start, current, state.viewport.as_mut())
-                    {
-                        let old_visible = old_frame >= first.saturating_add(view.start)
-                            && old_frame
-                                <= first.saturating_add(view.start).saturating_add(view.length);
-                        if old_visible {
-                            let local = frame.saturating_sub(first);
-                            view.start = if let Some((_, offset, length)) =
-                                state.start_grip.filter(|(point, _, _)| *point == position)
-                            {
-                                let offset = (u128::from(offset) * u128::from(view.length)
-                                    / u128::from(length.max(1)))
-                                .min(u128::from(u64::MAX))
-                                    as u64;
-                                local.saturating_sub(offset)
-                            } else if local < view.start {
-                                local
-                            } else if local > view.start.saturating_add(view.length) {
-                                local.saturating_sub(view.length)
-                            } else {
-                                view.start
-                            };
-                        }
+            let (first, end) = editor_bounds(&root);
+            if let (Ok(first), Ok(end)) = (
+                root.root_frame_at(first, tempo),
+                root.root_frame_at(end, tempo),
+            ) {
+                self.audio_event_editor
+                    .install_frame_space(&root, (first, end));
+                let current = self.state.as_ref().and_then(|s| {
+                    let clip = s.project.clip(clip_id)?;
+                    let position = hex_project::AudioViewProjection::new(clip, tempo)
+                        .ok()?
+                        .play_start_position()
+                        .ok()??;
+                    Some((position, root.root_frame_at(position, tempo).ok()?))
+                });
+                let state = &mut self.audio_event_editor;
+                // History can install a different live tempo projection. Keep
+                // its changed start visible without recording a second edit history.
+                if current != state.canonical_start
+                    && let (Some((_, old_frame)), Some((position, frame)), Some(view)) =
+                        (state.canonical_start, current, state.viewport.as_mut())
+                {
+                    let old_visible = old_frame >= first.saturating_add(view.start)
+                        && old_frame
+                            <= first.saturating_add(view.start).saturating_add(view.length);
+                    if old_visible {
+                        let local = frame.saturating_sub(first);
+                        view.start = if let Some((_, offset, length)) =
+                            state.start_grip.filter(|(point, _, _)| *point == position)
+                        {
+                            let offset = (u128::from(offset) * u128::from(view.length)
+                                / u128::from(length.max(1)))
+                            .min(u128::from(u64::MAX))
+                                as u64;
+                            local.saturating_sub(offset)
+                        } else if local < view.start {
+                            local
+                        } else if local > view.start.saturating_add(view.length) {
+                            local.saturating_sub(view.length)
+                        } else {
+                            view.start
+                        };
                     }
-                    state.canonical_start = current;
                 }
+                state.canonical_start = current;
             }
         }
         if self.audio_event_editor.revision != revision {

@@ -358,12 +358,12 @@ impl Sample {
         self.bars.update(cx, |b, cx| b.cancel(cx));
         // Restore synchronously before replacing entities/subscriptions on theme
         // changes. Cancel notifications may arrive after that replacement.
-        if self.response.cancel() {
-            if let Err(e) = self.graph.update(cx, |g, cx| {
+        if self.response.cancel()
+            && let Err(e) = self.graph.update(cx, |g, cx| {
                 g.set_model(self.response.model.clone(), theme::control_style(), cx)
-            }) {
-                self.status = e.into();
-            }
+            })
+        {
+            self.status = e.into();
         }
         let can_create = self.enabled && self.response.can_create();
         self.graph

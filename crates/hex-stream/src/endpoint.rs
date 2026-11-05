@@ -369,10 +369,10 @@ impl Endpoint {
             return false;
         }
         for key in keys {
-            if let Some(index) = self.cache_lookup(*key) {
-                if let CacheSlot::Occupied { pinned, .. } = &mut self.cache[index] {
-                    *pinned |= 8;
-                }
+            if let Some(index) = self.cache_lookup(*key)
+                && let CacheSlot::Occupied { pinned, .. } = &mut self.cache[index]
+            {
+                *pinned |= 8;
             }
         }
         true
@@ -749,13 +749,13 @@ impl MediaPages for Endpoint {
             source: key.into(),
             page_index,
         };
-        if let Some(slot) = self.cache_lookup(key) {
-            if let CacheSlot::Occupied { page, .. } = &self.cache[slot] {
-                return Some(BorrowedMediaPage {
-                    page_index,
-                    frames: &page.frames[..page.valid_frames],
-                });
-            }
+        if let Some(slot) = self.cache_lookup(key)
+            && let CacheSlot::Occupied { page, .. } = &self.cache[slot]
+        {
+            return Some(BorrowedMediaPage {
+                page_index,
+                frames: &page.frames[..page.valid_frames],
+            });
         }
         self.misses = self.misses.saturating_add(1);
         None
@@ -783,15 +783,15 @@ impl MediaPages for Endpoint {
             source: key.into(),
             page_index,
         };
-        if let Some(slot) = self.cache_lookup(resource) {
-            if let CacheSlot::Occupied { page, .. } = &self.cache[slot] {
-                return Some(BorrowedScalarPage {
-                    key,
-                    page_index,
-                    values: &page.scalar_values[..page.valid_frames],
-                    coverage: &page.scalar_coverage[..page.valid_frames.div_ceil(64)],
-                });
-            }
+        if let Some(slot) = self.cache_lookup(resource)
+            && let CacheSlot::Occupied { page, .. } = &self.cache[slot]
+        {
+            return Some(BorrowedScalarPage {
+                key,
+                page_index,
+                values: &page.scalar_values[..page.valid_frames],
+                coverage: &page.scalar_coverage[..page.valid_frames.div_ceil(64)],
+            });
         }
         self.misses = self.misses.saturating_add(1);
         None

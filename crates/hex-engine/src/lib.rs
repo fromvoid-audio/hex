@@ -121,12 +121,13 @@ pub use gain_envelope::{
     MAX_PREPARED_GAIN_BYTES, MAX_PREPARED_GAIN_KNOTS,
 };
 mod clip_index;
-#[cfg(test)]
 mod loop_seam;
 mod stream_miss_fade;
 pub use stream_miss_fade::{STREAM_MISS_FADE_VOICES, StreamMissFades};
 mod return_feed_plan;
 mod signal_graph;
+#[cfg(feature = "instrument-test-support")]
+pub use signal_graph::PrintedBranchProbe;
 mod stream_demand;
 pub use stream_demand::{
     StreamChunkWindow, StreamPageExtent, StreamResourceExtent, visit_scalar_page_range,
@@ -247,12 +248,12 @@ pub(crate) fn render_streamed_page_span_captured(
     let mut voice = fades.map(|fades| fades.voice(source.key(), source_frame));
     for (offset, destination) in destination.iter_mut().take(available).enumerate() {
         let mut sample = frames[page_offset + offset];
-        if let Some((fade, fade_start)) = fade {
-            if let Some(frame) = timeline_frame.checked_add(offset as u64) {
-                let gain = fade.gain_at(frame.saturating_sub(fade_start));
-                sample[0] *= gain;
-                sample[1] *= gain;
-            }
+        if let Some((fade, fade_start)) = fade
+            && let Some(frame) = timeline_frame.checked_add(offset as u64)
+        {
+            let gain = fade.gain_at(frame.saturating_sub(fade_start));
+            sample[0] *= gain;
+            sample[1] *= gain;
         }
         if clip_gain != 1.0 {
             sample[0] *= clip_gain;
@@ -1054,6 +1055,11 @@ impl PreparedTrackMix {
         self.channel_gain
     }
 
+    pub(crate) fn with_channel_gain(mut self, gain: Frame) -> Self {
+        self.channel_gain = gain;
+        self
+    }
+
     pub fn muted(self) -> bool {
         self.muted
     }
@@ -1494,6 +1500,19 @@ impl Track {
             .as_ref()
             .map_or(self.mix, |envelope| envelope.mix_at(frame))
     }
+    pub(crate) fn gain_touch_target_at(&self, frame: u64) -> Option<gain_envelope::TouchTarget> {
+        self.gain_envelope.as_ref()?.touch_target_at(frame)
+    }
+    pub(crate) fn base_gain_at(&self, frame: u64) -> Option<f32> {
+        self.gain_envelope
+            .as_ref()
+            .map(|envelope| envelope.base_value_at(frame))
+    }
+    pub(crate) fn read_gain_at(&self, frame: u64) -> Option<f32> {
+        self.gain_envelope
+            .as_ref()
+            .map(|envelope| envelope.value_at(frame))
+    }
     pub fn mix(&self) -> PreparedTrackMix {
         self.mix
     }
@@ -1665,6 +1684,7 @@ impl Track {
         capture: &mut [Frame],
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
         timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
+        loop_fade: Option<loop_seam::LoopEndFade>,
     ) -> Result<(), Invalid> {
         self.require_volume_timing(timing)?;
         let end_frame = start_frame
@@ -1676,7 +1696,42 @@ impl Track {
             return Err(Invalid("capture length mismatch"));
         }
         if !self.source_mix.muted {
-            self.render_audio_range_captured(start_frame, end_frame, output, pages, Some(capture));
+            if let Some(fade) = loop_fade.filter(|fade| fade.intersects(start_frame, output.len()))
+            {
+                if output.len() > 256 {
+                    return Err(Invalid("captured source range exceeds render chunk"));
+                }
+                let mut audio = [[0.0; 2]; 256];
+                let mut audio_capture = [[0.0; 2]; 256];
+                let count = output.len();
+                self.render_audio_range_captured(
+                    start_frame,
+                    end_frame,
+                    &mut audio[..count],
+                    pages,
+                    Some(&mut audio_capture[..count]),
+                );
+                fade.apply(start_frame, &mut audio[..count]);
+                fade.apply(start_frame, &mut audio_capture[..count]);
+                for ((out, captured), (sample, tap)) in output
+                    .iter_mut()
+                    .zip(capture.iter_mut())
+                    .zip(audio.iter().zip(audio_capture.iter()))
+                {
+                    out[0] += sample[0];
+                    out[1] += sample[1];
+                    captured[0] += tap[0];
+                    captured[1] += tap[1];
+                }
+            } else {
+                self.render_audio_range_captured(
+                    start_frame,
+                    end_frame,
+                    output,
+                    pages,
+                    Some(capture),
+                );
+            }
             self.render_instrument_range_with_suppressions(
                 (start_frame, end_frame),
                 output,

@@ -1,11 +1,11 @@
-//! Prepared callback preserves authored Arrangement audio across loop wraps.
+//! Prepared callback applies the loop-end envelope without allocation.
 use super::*;
 use hex_engine::{Audio, PreparedRevision, SineTable};
 use hex_project::{Command, Created, Editor, Project};
 use std::collections::BTreeMap;
 
 #[test]
-fn loop_wrap_preserves_pcm_without_callback_allocations() {
+fn loop_end_fades_without_callback_allocations() {
     const RATE: u32 = 48_000;
     const START: usize = 41;
     const END: usize = 642;
@@ -29,9 +29,7 @@ fn loop_wrap_preserves_pcm_without_callback_allocations() {
             enabled: true,
         })
         .unwrap();
-    let samples: Vec<Frame> = (0..1_024)
-        .map(|frame| if frame < 341 { [0.5, -0.25] } else { [0.0; 2] })
-        .collect();
+    let samples = vec![[0.5, -0.25]; 1_024];
     let media = BTreeMap::from([(asset, Audio::new(RATE, samples.clone()).unwrap())]);
     let revision = Arc::new(
         PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
@@ -64,7 +62,14 @@ fn loop_wrap_preserves_pcm_without_callback_allocations() {
         } else {
             START + (frame - END) % (END - START)
         };
-        assert_eq!(*actual, samples[source], "frame {frame}");
+        let remaining = END - source;
+        let gain = if remaining <= 128 {
+            (remaining - 1) as f32 / 127.0
+        } else {
+            1.0
+        };
+        let expected = [samples[source][0] * gain, samples[source][1] * gain];
+        assert_eq!(*actual, expected, "frame {frame}");
     }
     control.request_shutdown();
     callback.begin_block();
