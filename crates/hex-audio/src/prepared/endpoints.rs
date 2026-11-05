@@ -9,6 +9,7 @@ pub struct Client {
     pub(super) retired_receipts: Option<Arc<retired_scalar_receipts::Mailbox>>,
     action_outcomes: Option<ActionOutcomeReader>,
     worker_owned_publication: bool,
+    project_generation: Option<NonZeroU64>,
 }
 pub struct WorkerControl {
     endpoint: Guard<PublicationControl>,
@@ -95,6 +96,7 @@ impl Control {
                 retired_receipts: Some(retired_receipts),
                 action_outcomes: None,
                 worker_owned_publication: false,
+                project_generation: None,
             },
             WorkerControl { endpoint },
             EndpointTerminals {
@@ -170,6 +172,13 @@ impl Client {
     /// ordinary. Reading this snapshot never locks or grants graph/resource ownership.
     pub fn worker_owns_graph_publication(&self) -> bool {
         self.worker_owned_publication
+    }
+    /// Bind queued actions to one Resident document on this output. The
+    /// desktop binds a delivered worker-owned Client. A retained Client may
+    /// change its binding after its successor graph is observed. Priority
+    /// Stop remains an output-wide operation with its own cutoff.
+    pub fn bind_resident_transport(&mut self, generation: NonZeroU64) {
+        self.project_generation = Some(generation);
     }
     pub(crate) fn guard(&self) -> &Guard<ClientEndpoints> {
         &self.endpoints
@@ -273,7 +282,10 @@ impl Client {
             &mut endpoints.action_admission,
             &mut endpoints.command_ticket,
             &endpoints.status,
-            endpoints.status.submitted_revision.load(Acquire),
+            CommandSource {
+                revision: endpoints.status.submitted_revision.load(Acquire),
+                project_generation: self.project_generation,
+            },
             &mut endpoints.processor_audition,
             action,
         )
@@ -716,12 +728,17 @@ impl ClientEndpoints {
         Arc::ptr_eq(&self.status, status)
     }
 }
+struct CommandSource {
+    revision: u64,
+    project_generation: Option<NonZeroU64>,
+}
+
 fn enqueue_action(
     commands: &mut Producer<QueuedCommand>,
     admission: &mut Option<action_outcomes::Admission>,
     ticket: &mut u64,
     status: &Status,
-    revision: u64,
+    source: CommandSource,
     audition: &mut processor_audition::ProcessorAuditionTargetControl,
     action: PlaybackAction,
 ) -> Result<u64, PlaybackAction> {
@@ -734,7 +751,12 @@ fn enqueue_action(
     }
     if status.closing.load(Acquire)
         || (status.device_fault.load(Acquire) && !sampler_edit::is_stop(action))
-        || revision == 0
+        || source.revision == 0
+        || source.project_generation.is_some_and(|generation| {
+            status
+                .recording_source()
+                .is_some_and(|active| active.context.project_generation != generation.get())
+        })
     {
         return Err(action);
     }
@@ -749,6 +771,7 @@ fn enqueue_action(
     if let Err(PushError::Full(queued)) = commands.push(QueuedCommand {
         ticket: next,
         action,
+        project_generation: source.project_generation,
         sampler_edit_gate,
         transport_epoch,
     }) {
@@ -777,7 +800,10 @@ pub(super) fn legacy_enqueue(
         &mut control.action_admission,
         &mut control.command_ticket,
         &control.publication.status,
-        control.publication.revision,
+        CommandSource {
+            revision: control.publication.revision,
+            project_generation: None,
+        },
         &mut control.processor_audition,
         action,
     )
