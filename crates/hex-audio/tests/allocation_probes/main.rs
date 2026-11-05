@@ -16,6 +16,7 @@ mod main_chain_allocations;
 mod manual_host_gain_allocations;
 
 mod midi_once_allocations;
+mod midi_source_prefix;
 mod operator_filter_proof_allocations;
 mod operator_fixed_allocations;
 mod pitch_multiplier_allocations;

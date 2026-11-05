@@ -1158,6 +1158,22 @@ pub enum Command {
         clip: ClipId,
         notes: Vec<MidiNoteUpdate>,
     },
+    /// Update stable note identities, growing only the source extent to their
+    /// requested ends. Arrangement placement and playback/loop markers stay
+    /// fixed; ordinary UpdateMidiNotes retains its strict source boundary.
+    UpdateMidiNotesWithSourceExtent {
+        clip: ClipId,
+        notes: Vec<MidiNoteUpdate>,
+    },
+    /// Translate an Arrangement MIDI source by a positive prefix, then apply
+    /// stable note updates in the rebased storage coordinates. At least one
+    /// requested onset must be inside the new prefix. Placement, direction and
+    /// elapsed windows stay fixed, including those of linked clips.
+    UpdateMidiNotesWithSourcePrefix {
+        clip: ClipId,
+        prefix: crate::BeatTime,
+        notes: Vec<MidiNoteUpdate>,
+    },
     /// Atomically enable or disable existing notes without changing their geometry.
     SetMidiNotesActive {
         clip: ClipId,
@@ -2168,6 +2184,7 @@ impl Project {
             | Command::DuplicateMidiSourceRange { .. }
             | Command::UpdateMidiNote { .. }
             | Command::UpdateMidiNotes { .. }
+            | Command::UpdateMidiNotesWithSourceExtent { .. }
             | Command::SetMidiNotesActive { .. }
             | Command::RemoveMidiNote(_)
             | Command::RemoveMidiNotes { .. }
@@ -2643,6 +2660,11 @@ impl Project {
             Command::EditClips { clips, edit } => {
                 crate::clip_selection_edit::apply(self, clips, edit)
             }
+            Command::UpdateMidiNotesWithSourcePrefix {
+                clip,
+                prefix,
+                notes,
+            } => crate::midi_source_prefix::apply(self, clip, prefix, notes),
             Command::RenameClip { clip, name } => crate::clip_name::rename(self, clip, name),
             Command::SetTrackTags { track, tags } => {
                 let tags = crate::track_tags::canonical_list(tags)?;

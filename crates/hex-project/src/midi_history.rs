@@ -325,6 +325,18 @@ impl Plan {
                     },
                 }
             }
+            Command::UpdateMidiNotesWithSourceExtent { clip, notes } => Kind::Notes {
+                volume_range: None,
+                location: location(*clip)?,
+                source_length: Some(crate::midi::extended_update_source_length(
+                    source.midi_source(*clip).ok_or(MISSING)?.source_length(),
+                    notes,
+                )?),
+                edit: Notes::OverwriteUpdate {
+                    only: None,
+                    removed: 0,
+                },
+            },
             Command::UpdateMidiNotes { clip, .. } => Kind::Notes {
                 volume_range: None,
                 location: location(*clip)?,

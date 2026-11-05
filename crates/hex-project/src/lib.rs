@@ -158,6 +158,7 @@ mod midi;
 mod midi_batch;
 mod midi_note_overwrite;
 mod midi_playback;
+mod midi_source_prefix;
 mod midi_source_range;
 mod midi_stretch;
 pub use midi_stretch::MidiClipStretch;
@@ -196,7 +197,7 @@ pub use import_existing::ExistingAudioPlacement;
 pub use instrument_history::{InstrumentAssetHistoryDelta, InstrumentHistoryDelta};
 pub use midi::{
     MidiClip, MidiClipTrim, MidiContent, MidiNote, MidiOneShotBoundary, MidiSource,
-    MidiSourceIdentity, TrackContent,
+    MidiSourceIdentity, MidiSourceWeakIdentity, TrackContent,
 };
 mod midi_loop_resize;
 pub use midi_loop_resize::{MidiClipLoopResize, MidiViewResizeOperation};

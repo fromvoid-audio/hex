@@ -69,7 +69,7 @@ pub(in crate::editor) fn fixture(
                 v.selected_clip = Some(clip);
                 v.clip_view_open = true;
                 v.piano_beat_span = BeatTime::from_quarters(4).unwrap();
-                v.piano_beat_start = BeatTime::ZERO;
+                v.piano_beat_start = 0;
                 v.midi_focus.focus(window);
                 cx.notify();
             });
