@@ -399,3 +399,557 @@ fn utility_bypass_publication_reaches_next_pumped_callback() {
         times[19]
     );
 }
+
+#[test]
+fn eq_edit_then_bypass_reaches_the_actual_callback_smoothly() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    h.next();
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 65_536)));
+    (applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    let mut eq = hex_engine::eq::EqState {
+        output_gain: 2.0,
+        ..Default::default()
+    };
+    eq.add(
+        hex_engine::eq::Node::new(hex_engine::eq::NodeId::new(1).unwrap(), 1_000.0, 6.0, 0)
+            .unwrap(),
+    )
+    .unwrap();
+    let inserted = h.run(Request::Edit(Command::InsertDevice {
+        track,
+        before: None,
+        state: eq.encode().unwrap(),
+    }));
+    let Some(Created::Device(device)) = inserted.created else {
+        panic!("eq device")
+    };
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::PlayFrom(0))
+        .unwrap();
+    for _ in 0..16 {
+        h.render();
+    }
+    h.render();
+    eq.output_gain = 3.0;
+    h.run(Request::Edit(Command::ReplaceDeviceState {
+        device,
+        state: eq.encode().unwrap(),
+    }));
+    (applied, _) = h.applied(applied);
+    for _ in 0..4 {
+        h.render();
+    }
+    let before = h.render()[63][0];
+    let final_event = h.run(Request::Edit(Command::ToggleDeviceBypass { device }));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let (next, metadata) = loop {
+        h.pump();
+        if let Some((next, metadata)) = h.submitted.filter(|(next, metadata)| {
+            *next > applied && metadata.context.editor_revision == final_event.state.revision
+        }) {
+            break (next, metadata);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "bypass publication was not staged"
+        );
+        std::thread::yield_now();
+    };
+    let after = h.render();
+    assert_eq!(metadata.context.editor_revision, final_event.state.revision);
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(std::sync::atomic::Ordering::Acquire),
+        next
+    );
+    assert!(
+        (after[0][0] - before).abs() < 0.02,
+        "edit then bypass jumped: {before} -> {}",
+        after[0][0]
+    );
+    for _ in 0..4 {
+        h.render();
+    }
+    assert!((h.render()[63][0] - 0.25).abs() < 1e-3);
+}
+
+#[test]
+fn publication_observation_tracks_worker_callback_admission_and_application() {
+    use hex_session::service::{ResidentPublicationReadiness, ResidentRuntimeLoop};
+    use std::sync::atomic::Ordering::Acquire;
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    h.next();
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 65_536)));
+    (applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    let state = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_engine::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap();
+    h.run(Request::Edit(Command::InsertDevice {
+        track,
+        before: None,
+        state,
+    }));
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while h.submitted.is_none_or(|(revision, _)| revision <= applied) {
+        h.pump();
+        assert!(std::time::Instant::now() < end, "publication not submitted");
+        std::thread::yield_now();
+    }
+    let (revision, metadata) = h.submitted.unwrap();
+    let audio = h.audio.as_ref().unwrap();
+    let submission = ResidentRuntimeLoop {
+        output_identity: audio.control.output_identity().unwrap(),
+        audio_revision: revision,
+        source_context: Some(metadata.context),
+        section_loop: None,
+    };
+    let observe = |h: &ResidentHarness| {
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        super::super::resident::classify_publication(
+            submission.output_identity,
+            status.applied_revision.load(Acquire),
+            status.rejected_revision().map(|(revision, _)| revision),
+            status.publication_in_flight(),
+            Some(submission),
+        )
+    };
+    assert_eq!(
+        observe(&h),
+        ResidentPublicationReadiness::Pending {
+            submission,
+            applied_revision: applied,
+            publication_in_flight: true,
+        }
+    );
+    h.render();
+    assert_eq!(
+        observe(&h),
+        ResidentPublicationReadiness::Applied {
+            submission,
+            publication_in_flight: false,
+        }
+    );
+}
+
+#[test]
+fn eq_bypass_waits_for_inflight_parameter_publication() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    h.next();
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 65_536)));
+    (applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    let mut eq = hex_engine::eq::EqState {
+        output_gain: 2.0,
+        ..Default::default()
+    };
+    let inserted = h.run(Request::Edit(Command::InsertDevice {
+        track,
+        before: None,
+        state: eq.encode().unwrap(),
+    }));
+    let Some(Created::Device(device)) = inserted.created else {
+        panic!("eq device")
+    };
+    (applied, _) = h.applied(applied);
+    eq.output_gain = 3.0;
+    h.run(Request::Edit(Command::ReplaceDeviceState {
+        device,
+        state: eq.encode().unwrap(),
+    }));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h.submitted.is_none_or(|(revision, _)| revision <= applied) {
+        h.pump();
+        assert!(
+            Instant::now() < deadline,
+            "parameter publication was not staged"
+        );
+        std::thread::yield_now();
+    }
+    let parameter_revision = h.submitted.unwrap().0;
+    h.service
+        .submit(Request::Edit(Command::ToggleDeviceBypass { device }))
+        .unwrap();
+    let wait = Instant::now() + Duration::from_millis(100);
+    let mut terminal = None;
+    while Instant::now() < wait {
+        h.pump();
+        if let Ok(event) = h.service.try_event()
+            && event.request_complete
+        {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            terminal = Some(event);
+            break;
+        }
+        std::thread::yield_now();
+    }
+    h.render();
+    let event = terminal.unwrap_or_else(|| h.next());
+    assert!(event.error.is_none(), "{:?}", event.error);
+    assert!(event.state.project.device(device).unwrap().bypassed());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h
+        .submitted
+        .is_none_or(|(revision, _)| revision <= parameter_revision)
+    {
+        h.pump();
+        assert!(
+            Instant::now() < deadline,
+            "bypass publication was not staged"
+        );
+        std::thread::yield_now();
+    }
+    let bypass_revision = h.submitted.unwrap().0;
+    h.service
+        .submit(Request::Edit(Command::ToggleDeviceBypass { device }))
+        .unwrap();
+    h.render();
+    let reversed = h.next();
+    assert!(reversed.error.is_none(), "{:?}", reversed.error);
+    assert!(!reversed.state.project.device(device).unwrap().bypassed());
+    let (next, metadata) = h.applied(bypass_revision);
+    assert_eq!(metadata.context.editor_revision, reversed.state.revision);
+    assert!(next > bypass_revision);
+}
+
+#[test]
+fn stop_remains_effective_while_a_device_edit_waits() {
+    use std::sync::atomic::Ordering::Acquire;
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    h.next();
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 65_536)));
+    (applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    let mut eq = hex_engine::eq::EqState {
+        output_gain: 2.0,
+        ..Default::default()
+    };
+    let inserted = h.run(Request::Edit(Command::InsertDevice {
+        track,
+        before: None,
+        state: eq.encode().unwrap(),
+    }));
+    let Some(Created::Device(device)) = inserted.created else {
+        panic!("eq device")
+    };
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::PlayFrom(0))
+        .unwrap();
+    for _ in 0..8 {
+        h.render();
+    }
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(Acquire)
+    );
+    eq.output_gain = 3.0;
+    h.run(Request::Edit(Command::ReplaceDeviceState {
+        device,
+        state: eq.encode().unwrap(),
+    }));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h.submitted.is_none_or(|(revision, _)| revision <= applied) {
+        h.pump();
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    h.service
+        .submit(Request::Edit(Command::ToggleDeviceBypass { device }))
+        .unwrap();
+    let wait = Instant::now() + Duration::from_millis(50);
+    while Instant::now() < wait {
+        if let Ok(event) = h.service.try_event()
+            && event.request_complete
+        {
+            panic!("device request unexpectedly completed: {:?}", event.error);
+        }
+        std::thread::yield_now();
+    }
+    for _ in 0..32 {
+        h.service
+            .submit(Request::Edit(Command::ToggleDeviceBypass { device }))
+            .unwrap();
+    }
+    assert!(matches!(
+        h.service
+            .submit(Request::Edit(Command::ToggleDeviceBypass { device })),
+        Err(hex_session::service::SubmitError::Full(_))
+    ));
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Stop)
+        .unwrap();
+    for _ in 0..8 {
+        h.render();
+    }
+    assert!(
+        !h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(Acquire)
+    );
+}
+
+#[test]
+fn parked_device_edit_cancels_if_document_changes_before_admission() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    h.next();
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 65_536)));
+    (applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    let mut eq = hex_engine::eq::EqState {
+        output_gain: 2.0,
+        ..Default::default()
+    };
+    let inserted = h.run(Request::Edit(Command::InsertDevice {
+        track,
+        before: None,
+        state: eq.encode().unwrap(),
+    }));
+    let Some(Created::Device(device)) = inserted.created else {
+        panic!("eq device")
+    };
+    (applied, _) = h.applied(applied);
+    eq.output_gain = 3.0;
+    h.run(Request::Edit(Command::ReplaceDeviceState {
+        device,
+        state: eq.encode().unwrap(),
+    }));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h.submitted.is_none_or(|(revision, _)| revision <= applied) {
+        h.pump();
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    h.service
+        .submit(Request::Edit(Command::ToggleDeviceBypass { device }))
+        .unwrap();
+    // Ensure the worker has time to park before the callback applies the predecessor.
+    let wait = Instant::now() + Duration::from_millis(50);
+    while Instant::now() < wait {
+        if let Ok(event) = h.service.try_event()
+            && event.request_complete
+        {
+            panic!("early terminal: {:?}", event.error);
+        }
+        std::thread::yield_now();
+    }
+    let (entered, resume, _) = h.probe_next_native_publication();
+    h.render();
+    entered
+        .recv_timeout(Duration::from_secs(2))
+        .expect("edit reached pre-admission gate");
+    h.service
+        .submit(Request::NewWithAudioMode {
+            mode: hex_session::DocumentAudioMode::Resident,
+            reservation: None,
+        })
+        .unwrap();
+    resume.send(()).unwrap();
+    let edit = h.next();
+    assert!(
+        edit.error
+            .as_deref()
+            .is_some_and(|error| error.contains("cancel")),
+        "{:?}",
+        edit.error
+    );
+    assert!(!edit.state.project.device(device).unwrap().bypassed());
+    let replacement = h.next();
+    assert!(replacement.error.is_none(), "{:?}", replacement.error);
+    assert!(replacement.project_replaced);
+}
+
+#[test]
+fn consecutive_device_gesture_changes_reach_the_resident_callback() {
+    gesture_publication_case(true);
+}
+
+#[test]
+fn stalled_gesture_cancel_retains_the_preview_and_can_be_retried() {
+    gesture_publication_case(false);
+}
+
+fn gesture_publication_case(commit: bool) {
+    use hex_session::device_gesture::{
+        GestureKey, GestureRequest, GestureTarget, ParameterId, ParameterValue,
+    };
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    h.next();
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 65_536)));
+    (applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    let state = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_engine::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap();
+    let inserted = h.run(Request::Edit(Command::InsertDevice {
+        track,
+        before: None,
+        state,
+    }));
+    let Some(Created::Device(device)) = inserted.created else {
+        panic!("utility device")
+    };
+    (applied, _) = h.applied(applied);
+    let key = GestureKey {
+        generation: 0,
+        token: 1,
+    };
+    let begun = h.run(Request::DeviceGesture(GestureRequest::Begin {
+        key,
+        target: GestureTarget::DeviceParameter {
+            device,
+            parameter: ParameterId::new(1).unwrap(),
+        },
+    }));
+    assert!(begun.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
+    let first = h.run(Request::DeviceGesture(GestureRequest::Change {
+        key,
+        sequence: 1,
+        value: ParameterValue::Float(1.5),
+    }));
+    assert!(first.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h.submitted.is_none_or(|(revision, _)| revision <= applied) {
+        h.pump();
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    let first_revision = h.submitted.unwrap().0;
+    h.service
+        .submit(Request::DeviceGesture(GestureRequest::Change {
+            key,
+            sequence: 2,
+            value: ParameterValue::Float(2.0),
+        }))
+        .unwrap();
+    let wait = Instant::now() + Duration::from_millis(100);
+    let mut terminal = None;
+    while Instant::now() < wait {
+        h.pump();
+        if let Ok(event) = h.service.try_event()
+            && event.gesture_ack.is_some()
+        {
+            terminal = Some(event);
+            break;
+        }
+        std::thread::yield_now();
+    }
+    h.render();
+    let changed = terminal.unwrap_or_else(|| h.next());
+    assert!(
+        changed.gesture_ack.as_ref().is_some_and(|ack| ack.accepted),
+        "{:?}",
+        changed.gesture_ack
+    );
+    let (second_revision, metadata) = h.applied(first_revision);
+    assert_eq!(metadata.device_preview.unwrap().sequence, 2);
+    let third = h.run(Request::DeviceGesture(GestureRequest::Change {
+        key,
+        sequence: 3,
+        value: ParameterValue::Float(2.5),
+    }));
+    assert!(third.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h
+        .submitted
+        .is_none_or(|(revision, _)| revision <= second_revision)
+    {
+        h.pump();
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    let third_revision = h.submitted.unwrap().0;
+    let terminal = if commit {
+        GestureRequest::Commit {
+            key,
+            sequence: 4,
+            manual_edit: true,
+            value: ParameterValue::Float(2.5),
+        }
+    } else {
+        GestureRequest::Cancel { key }
+    };
+    h.service.submit(Request::DeviceGesture(terminal)).unwrap();
+    let refused = h.next();
+    assert!(
+        refused.gesture_ack.as_ref().is_some_and(|ack| {
+            ack.key == key
+                && ack.sequence == if commit { 4 } else { 0 }
+                && !ack.accepted
+                && ack.preview_retained
+        }),
+        "{:?}",
+        refused.gesture_ack
+    );
+    assert!(
+        refused
+            .active_device_gesture
+            .is_some_and(|snapshot| snapshot.key == key && snapshot.sequence == 3)
+    );
+    h.render();
+    let committed = h.run(Request::DeviceGesture(terminal));
+    assert!(
+        committed
+            .gesture_ack
+            .as_ref()
+            .is_some_and(|ack| ack.accepted)
+    );
+    let (_, metadata) = h.applied(third_revision);
+    assert_eq!(metadata.context.editor_revision, committed.state.revision);
+    assert_eq!(
+        hex_engine::native_device_parameter(
+            committed.state.project.device(device).unwrap().state(),
+            ParameterId::new(1).unwrap(),
+        )
+        .unwrap(),
+        ParameterValue::Float(if commit { 2.5 } else { 1.0 })
+    );
+}

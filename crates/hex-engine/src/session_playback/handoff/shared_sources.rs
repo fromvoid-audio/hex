@@ -491,11 +491,11 @@ pub(super) fn plan_release_audio_owner(
     if !source_track.instrument_bypassed {
         release.clip_gain *= f64::from(source_track.instrument_output_gain);
     }
-    release.mix = gain_recording::effective_mix(
+    release.mix = gain_recording::detached_mix(
+        previous,
         &previous.revision.arrangement().tracks()[old_receiver],
+        old_receiver,
         previous.arrangement_frame,
-        previous.revision.gain_recording_track(),
-        previous.gain_recording_override,
     );
     Ok(ReleaseAudioPlan {
         current_receiver: None,

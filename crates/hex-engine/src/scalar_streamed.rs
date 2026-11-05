@@ -230,7 +230,7 @@ pub fn read_scalar_values<P: MediaPages + ?Sized>(
             {
                 return Err(Invalid("automation page identity or extent changed"));
             }
-            if expected % 64 != 0
+            if !expected.is_multiple_of(64)
                 && page
                     .coverage
                     .last()

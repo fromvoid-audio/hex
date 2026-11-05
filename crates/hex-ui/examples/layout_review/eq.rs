@@ -229,10 +229,10 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
         let entity = cx.new(|cx| Toggle::from_config(cx, config));
         subscriptions.push(
             cx.subscribe(&entity, move |view, _, event: &ToggleChanged, cx| {
-                if index == 0 {
-                    if let Some(fixture) = view.fixtures.get_mut(&Entry::Eq) {
-                        discrete_event(fixture, DiscreteEdit::Enabled(event.checked));
-                    }
+                if index == 0
+                    && let Some(fixture) = view.fixtures.get_mut(&Entry::Eq)
+                {
+                    discrete_event(fixture, DiscreteEdit::Enabled(event.checked));
                 }
                 if (1..=5).contains(&index) && event.checked && !view.finish_drafts(cx) {
                     if let Some(fixture) = view.fixtures.get(&Entry::Eq) {
@@ -248,45 +248,44 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
                     cx.notify();
                     return;
                 }
-                if (1..=5).contains(&index) {
-                    if let Some(fixture) = view.fixtures.get_mut(&Entry::Eq) {
-                        if defer_action(fixture, PendingAction::Bank(index, event.checked)) {
+                if (1..=5).contains(&index)
+                    && let Some(fixture) = view.fixtures.get_mut(&Entry::Eq)
+                    && defer_action(fixture, PendingAction::Bank(index, event.checked))
+                {
+                    cx.notify();
+                    return;
+                }
+                if (1..=5).contains(&index)
+                    && let Some(fixture) = view.fixtures.get_mut(&Entry::Eq)
+                {
+                    if event.checked {
+                        if let Err(error) = select_bank(fixture, (index - 1) as u8, cx) {
+                            view.error = Some(error);
+                            let bank = fixture
+                                .eq_local
+                                .as_ref()
+                                .map_or(0, |local| usize::from(local.bank));
+                            for other in 1..=5 {
+                                fixture.toggles[other].update(cx, |toggle, cx| {
+                                    toggle.set_checked(other == bank + 1, cx)
+                                });
+                            }
                             cx.notify();
                             return;
                         }
-                    }
-                }
-                if (1..=5).contains(&index) {
-                    if let Some(fixture) = view.fixtures.get_mut(&Entry::Eq) {
-                        if event.checked {
-                            if let Err(error) = select_bank(fixture, (index - 1) as u8, cx) {
-                                view.error = Some(error);
-                                let bank = fixture
-                                    .eq_local
-                                    .as_ref()
-                                    .map_or(0, |local| usize::from(local.bank));
-                                for other in 1..=5 {
-                                    fixture.toggles[other].update(cx, |toggle, cx| {
-                                        toggle.set_checked(other == bank + 1, cx)
-                                    });
-                                }
-                                cx.notify();
-                                return;
+                        for other in 1..=5 {
+                            if other != index {
+                                fixture.toggles[other]
+                                    .update(cx, |toggle, cx| toggle.set_checked(false, cx));
                             }
-                            for other in 1..=5 {
-                                if other != index {
-                                    fixture.toggles[other]
-                                        .update(cx, |toggle, cx| toggle.set_checked(false, cx));
-                                }
-                            }
-                        } else if fixture
-                            .eq_local
-                            .as_ref()
-                            .is_some_and(|local| usize::from(local.bank) + 1 == index)
-                        {
-                            fixture.toggles[index]
-                                .update(cx, |toggle, cx| toggle.set_checked(true, cx));
                         }
+                    } else if fixture
+                        .eq_local
+                        .as_ref()
+                        .is_some_and(|local| usize::from(local.bank) + 1 == index)
+                    {
+                        fixture.toggles[index]
+                            .update(cx, |toggle, cx| toggle.set_checked(true, cx));
                     }
                 }
                 cx.notify();
@@ -432,10 +431,10 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
         eq_local: Some(Local::new()?),
         discrete_height: 14.0,
     };
-    if let Some(state) = current(&fixture, cx) {
-        if let Some(local) = fixture.eq_local.as_mut() {
-            local.state = state;
-        }
+    if let Some(state) = current(&fixture, cx)
+        && let Some(local) = fixture.eq_local.as_mut()
+    {
+        local.state = state;
     }
     Ok(fixture)
 }

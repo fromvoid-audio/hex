@@ -12,10 +12,15 @@ use gpui::{
 
 gpui::actions!(hex_response_graph, [RemoveNode, CancelPointer]);
 
-/// Install opt-in graph Backspace and held-pointer Escape bindings.
+/// Install opt-in graph deletion and held-pointer Escape bindings.
 pub fn bind_response_graph_keys(cx: &mut App) {
     cx.bind_keys([
         gpui::KeyBinding::new("backspace", RemoveNode, Some("hex_response_graph_remove")),
+        gpui::KeyBinding::new(
+            "x",
+            RemoveNode,
+            Some("hex_response_graph_remove && !hex_text_editing && !hex_text_input"),
+        ),
         gpui::KeyBinding::new("escape", CancelPointer, Some("hex_response_graph_remove")),
     ]);
 }
@@ -996,7 +1001,9 @@ impl ResponseGraph {
     ) {
         if self.backspace_removal
             && self.focus.is_focused(window)
-            && event.keystroke.key == "backspace"
+            && (event.keystroke.key == "backspace"
+                || (event.keystroke.key == "x"
+                    && event.keystroke.modifiers == Modifiers::default()))
         {
             // A focused empty/pending graph must not forward deletion to its
             // editor's track/clip action. Numeric/text siblings own their keys.

@@ -1042,6 +1042,7 @@ fn same_shell(
         routing,
         audio_feeds,
         midi_routes,
+        sidechains,
         import_provenance,
         sample_rate,
         next_id: _,
@@ -1104,6 +1105,7 @@ fn same_shell(
         || routing != &b.routing
         || audio_feeds != &b.audio_feeds
         || midi_routes != &b.midi_routes
+        || sidechains != &b.sidechains
         || import_provenance != &b.import_provenance
         || sample_rate != &b.sample_rate
         || assets != &b.assets

@@ -83,7 +83,7 @@ const fn id(value: u32) -> ParameterId {
 pub(super) fn shell_operator_for_numeric_parameter(parameter: ParameterId) -> Option<usize> {
     let value = parameter.value();
     match value {
-        1..=12 if value % 3 != 0 => Some(((value - 1) / 3) as usize),
+        1..=12 if !value.is_multiple_of(3) => Some(((value - 1) / 3) as usize),
         63..=73 if (value - 63) % 3 != 2 => Some(((value - 63) / 3) as usize),
         _ => None,
     }
