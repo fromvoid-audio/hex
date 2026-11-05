@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "updated_date": "2026-11-05",
-  "phase": "document_output_scope_verified_pending_current_base_qualification",
+  "phase": "document_output_scope_verified_pending_integration",
   "mission": "goal.md",
   "goal_activation": "adopted_from_user_goal_instruction",
   "scheduler": "none_user_requested_manual_goal",
@@ -9,7 +9,7 @@
   "checkpoint_pr": "https://github.com/PORTALSURFER/hex/pull/2081",
   "branch": "pulse/task-4997-g1-39b4a09844ce",
   "baseline_source": "4b7309c4fd930ef4c51eadb0cb7408fd5c2b5ac0",
-  "upstream_base": "bd8edb0bd0dc064b2b2b5eb8af4cbfe543a545bb",
+  "upstream_base": "eacde280e9b3109fdf606e73bb3ea13ff939b4f2",
   "evidence": "measurements.jsonl",
   "next_action": "Reconcile live PR 2081 merge and its final current-base evidence first, then refresh Pulse and select one ready improvement. The private-project CPU report 4965 needs a matched Mac/project baseline; respect existing holds and user review.",
   "limits": [
@@ -17,7 +17,7 @@
     "Raw ignored artifact logs are executor-local; essential results also belong in canonical PRs/Pulse.",
     "Focused Linux checks do not qualify native macOS or full-workspace health."
   ],
-  "last_verified_source": "1f860e4d8a1efbe14b00006e135cc5c01d6f0947",
+  "last_verified_source": "ed3860de1447fff72a2ace4f2414aa8a28421c91",
   "native_goal_status": "unverified_control_socket_unavailable",
   "user_goal_prompt_sha256": "9e52b1a4d3d02366259163988bd9abc61f283cb543384209d4da53b682e999d6"
 }

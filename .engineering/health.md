@@ -68,3 +68,13 @@ Both strict desktop Clippy configurations, six source guards and 30 shared selec
 tests passed. The cold baseline build took 13m31s, separate from test time.
 Raw commands, inventories, per-case logs and binary hashes are retained under
 `artifacts/engineering-cycle-4997/`; the canonical PR retains essential results.
+
+Current-base revalidation at `ed3860de1447fff72a2ace4f2414aa8a28421c91` over
+`bd8edb0bd0dc064b2b2b5eb8af4cbfe543a545bb` also passes: the four cases took
+0.1528/0.0726/0.0706/0.0073 s including launch; both strict Clippy configurations
+and desktop formatting passed again. The actual Rust-shard command discovers and
+runs exactly the two moved tests successfully. Its policy initialization emits
+Linux ALSA device-unavailable diagnostics; the substituted output/callback oracles
+pass, without physical-device acceptance. A later upstream addition changes only
+an unrelated hex-audio integration-test file; relevant executable inputs are
+unchanged and this evidence is retained explicitly, not labelled a new full run.
