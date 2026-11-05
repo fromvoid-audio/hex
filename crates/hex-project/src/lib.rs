@@ -49,6 +49,8 @@ mod retained_audio;
 pub use retained_audio::MAX_RETAINED_AUDIO_DEPTH;
 mod track_groups;
 mod track_name;
+mod track_tags;
+pub use track_tags::{MAX_TRACK_TAG_BYTES, MAX_TRACK_TAG_CHARS, MAX_TRACK_TAGS, TrackTag};
 mod track_order;
 pub use audio_events::{
     AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS, RetainedAudioRoot,
@@ -156,6 +158,7 @@ mod midi;
 mod midi_batch;
 mod midi_note_overwrite;
 mod midi_playback;
+mod midi_source_prefix;
 mod midi_source_range;
 mod midi_stretch;
 pub use midi_stretch::MidiClipStretch;
@@ -194,7 +197,7 @@ pub use import_existing::ExistingAudioPlacement;
 pub use instrument_history::{InstrumentAssetHistoryDelta, InstrumentHistoryDelta};
 pub use midi::{
     MidiClip, MidiClipTrim, MidiContent, MidiNote, MidiOneShotBoundary, MidiSource,
-    MidiSourceIdentity, TrackContent,
+    MidiSourceIdentity, MidiSourceWeakIdentity, TrackContent,
 };
 mod midi_loop_resize;
 pub use midi_loop_resize::{MidiClipLoopResize, MidiViewResizeOperation};
@@ -522,6 +525,7 @@ impl Clip {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Track {
+    pub(crate) tags: Vec<TrackTag>,
     pub(crate) kind: TrackKind,
     pub(crate) parent_group: Option<TrackId>,
     pub(crate) color: crate::ElementColor,

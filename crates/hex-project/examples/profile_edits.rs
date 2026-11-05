@@ -30,6 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             next_id += 1;
         }
         tracks.push(TrackSnapshot {
+            tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),

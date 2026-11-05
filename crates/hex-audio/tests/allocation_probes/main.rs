@@ -16,6 +16,7 @@ mod main_chain_allocations;
 mod manual_host_gain_allocations;
 
 mod midi_once_allocations;
+mod midi_source_prefix;
 mod operator_filter_proof_allocations;
 mod operator_fixed_allocations;
 mod pitch_multiplier_allocations;
@@ -31,5 +32,6 @@ mod streamed_loop_seam;
 mod streamed_publication_boundary;
 mod touch_playback_allocations;
 mod track_gain_allocations;
+mod track_tag_allocations;
 mod vector_global_allocations;
 mod warp_preview_metadata_cost;

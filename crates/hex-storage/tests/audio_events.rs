@@ -528,6 +528,7 @@ fn musical_event_source_schema_preserves_cropped_and_nested_event_spans() {
             }
             assert!(hex_storage::decode(&serde_json::to_vec(&malformed).unwrap()).is_err());
         }
+        assert_tagged_round_trip(editor.project(), track);
     }
 }
 
@@ -535,7 +536,7 @@ fn musical_event_source_schema_preserves_cropped_and_nested_event_spans() {
 fn extended_frame_roots_require_schema71_and_refuse_malformed_extents() {
     use hex_project::{MAX_AUDIO_DOMAIN_FRAMES, MAX_SPARSE_AUDIO_TIMELINE_FRAMES};
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
-    let Created::Imported { clip, .. } = editor
+    let Created::Imported { clip, track, .. } = editor
         .execute(Command::ImportAudioTrack {
             name: "audio".into(),
             path: "audio.wav".into(),
@@ -572,6 +573,12 @@ fn extended_frame_roots_require_schema71_and_refuse_malformed_extents() {
         value["version"],
         hex_storage::EXTENDED_FRAME_EVENTS_SCHEMA_VERSION
     );
+    let tagged = assert_tagged_round_trip(editor.project(), track);
+    let mut tagged: serde_json::Value = serde_json::from_slice(&tagged).unwrap();
+    tagged["extended_frame_geometry"][clip.value().to_string()]["length"] =
+        (MAX_SPARSE_AUDIO_TIMELINE_FRAMES + 1).into();
+    assert!(hex_storage::decode(&serde_json::to_vec(&tagged).unwrap()).is_err());
+
     let mut mislabeled = value.clone();
     mislabeled["version"] = hex_storage::SIDECHAIN_SCHEMA_VERSION.into();
     mislabeled
@@ -590,4 +597,20 @@ fn extended_frame_roots_require_schema71_and_refuse_malformed_extents() {
     assert!(extent.as_u64().unwrap() > MAX_AUDIO_DOMAIN_FRAMES);
     *extent = (MAX_SPARSE_AUDIO_TIMELINE_FRAMES + 1).into();
     assert!(hex_storage::decode(&serde_json::to_vec(&malformed).unwrap()).is_err());
+}
+
+fn assert_tagged_round_trip(project: &Project, track: hex_project::TrackId) -> Vec<u8> {
+    let mut editor = Editor::new(project.clone(), 4).unwrap();
+    editor
+        .execute(Command::SetTrackTags {
+            track,
+            tags: vec![hex_project::TrackTag::new("events").unwrap()],
+        })
+        .unwrap();
+    let tagged = editor.project();
+    let bytes = hex_storage::encode(tagged).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(value["version"], hex_storage::TRACK_TAGS_SCHEMA_VERSION);
+    assert_eq!(hex_storage::decode(&bytes).unwrap(), *tagged);
+    bytes
 }

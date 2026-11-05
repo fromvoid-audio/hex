@@ -3179,14 +3179,58 @@ fn browser_audition_strip_is_one_bounded_row(cx: &mut TestAppContext) {
         let waveform = visual
             .debug_bounds("browser-audition-waveform")
             .expect("tiny waveform");
+        let volume = visual
+            .debug_bounds("browser-audition-volume")
+            .expect("volume slider");
         assert_eq!(row.size.height, px(22.0));
         assert!(row.top() >= preview.top() && row.bottom() <= preview.bottom());
         assert!(auto.right() <= transport.left() && transport.right() <= waveform.left());
-        assert!(auto.left() >= row.left() && waveform.right() <= row.right());
-        for control in [auto, transport, waveform] {
+        assert!(waveform.right() <= volume.left());
+        assert_eq!(volume.right(), row.right());
+        assert!(auto.left() >= row.left());
+        for control in [auto, transport, waveform, volume] {
             assert!(control.top() >= row.top() && control.bottom() <= row.bottom());
         }
     }
+}
+
+#[gpui::test]
+fn browser_audition_volume_drag_preserves_playback_position_and_selection_level(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+    std::fs::write(directory.0.join("next.wav"), mono_pcm_wav(16)).unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |view, cx| {
+        view.browser.auto_audition = false;
+        view.refresh_browser_tree(cx);
+        view.browser.playback_fraction = 0.25;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let volume = visual.debug_bounds("browser-audition-volume").unwrap();
+    let down = volume.center();
+    let quieter = down + point(px(0.0), px(11.0));
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(quieter, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_mouse_up(quieter, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.browser.audition_gain, 0.5);
+        assert_eq!(view.browser.playback_generation, 0);
+        assert_eq!(view.browser.playback_fraction, 0.25);
+        assert!(!view.browser.audition_gain_dragging);
+    });
+
+    let next = visual.debug_bounds("browser-entry-1").unwrap().center();
+    visual.simulate_mouse_down(next, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(next, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.browser.selected_index, 1);
+        assert_eq!(view.browser.audition_gain, 0.5);
+        assert_eq!(view.browser.playback_generation, 0);
+    });
 }
 
 #[gpui::test]

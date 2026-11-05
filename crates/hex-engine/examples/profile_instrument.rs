@@ -85,6 +85,7 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
             })
             .collect();
         tracks.push(TrackSnapshot {
+            tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),

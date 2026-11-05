@@ -2318,6 +2318,7 @@ impl EditorView {
         self.section_request_complete(&event);
         self.track_reorder_complete(&event);
         self.midi_drag_request_complete(&event);
+        self.advance_midi_origin_view(&event);
         self.fade_request_complete(&event);
         self.clip_gain_complete(&event);
         self.gain_request_complete(&event);
@@ -2664,7 +2665,7 @@ impl EditorView {
             if let Ok(mut cache) = self.waveform_geometry_cache.try_borrow_mut() {
                 cache.clear();
             }
-            self.piano_beat_start = hex_project::BeatTime::ZERO;
+            self.piano_beat_start = 0;
             self.piano_beat_span =
                 hex_project::BeatTime::from_raw(4 * hex_project::BeatTime::ONE.raw());
             self.project_generation = self.project_generation.saturating_add(1);
@@ -2841,7 +2842,7 @@ impl EditorView {
                 self.cancel_midi_note_gesture();
                 self.midi_hit_cycle = None;
                 self.midi_selection.clear();
-                self.piano_beat_start = hex_project::BeatTime::ZERO;
+                self.piano_beat_start = 0;
                 if let Some(length) = self
                     .detail_clip_id()
                     .and_then(|clip| state.project.midi_source(clip))
@@ -2865,12 +2866,10 @@ impl EditorView {
                         .min(super::midi_scene::zoom_limit(source_length))
                         .max(1),
                 );
-                self.piano_beat_start =
-                    hex_project::BeatTime::from_raw(super::midi_scene::clamp_start(
-                        self.piano_beat_start.raw(),
-                        source_length,
-                        self.piano_beat_span.raw(),
-                    ));
+                self.piano_beat_start = super::midi_scene::clamp_start(
+                    self.piano_beat_start,
+                    self.piano_beat_span.raw(),
+                );
                 let valid = clip.notes().iter().map(|note| note.id());
                 match self.midi_selection.retain_valid(valid) {
                     Ok(true) => {
@@ -2957,7 +2956,7 @@ impl EditorView {
                 self.selected_track = Some(track);
                 self.selected_clip = Some(clip);
                 self.clip_selection.only(track, clip);
-                self.piano_beat_start = hex_project::BeatTime::ZERO;
+                self.piano_beat_start = 0;
                 self.midi_hit_cycle = None;
                 self.midi_selection.clear();
             }

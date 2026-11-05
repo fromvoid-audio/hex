@@ -78,13 +78,15 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = EXTENDED_FRAME_EVENTS_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = TRACK_TAGS_SCHEMA_VERSION;
 
 /// Schema70 stores an independent original source span for signed musical event placement.
 pub const MUSICAL_EVENT_SOURCE_SCHEMA_VERSION: u32 = 70;
 /// Schema71 extends the accepted frame extent for sparse one-shot Arrangement
 /// event roots. Historical schemas keep the original dense extent contract.
 pub const EXTENDED_FRAME_EVENTS_SCHEMA_VERSION: u32 = 71;
+/// Schema72 adds canonical track tag assignments to the complete event layout.
+pub const TRACK_TAGS_SCHEMA_VERSION: u32 = 72;
 
 fn contains_extended_frame_events(project: &Project) -> bool {
     project
@@ -100,6 +102,7 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 }
 
 /// Schema [`encode`] writes for `project`:
+/// [`TRACK_TAGS_SCHEMA_VERSION`] when track tags are present,
 /// [`EXTENDED_FRAME_EVENTS_SCHEMA_VERSION`] for an extended frame-event root,
 /// [`MUSICAL_EVENT_SOURCE_SCHEMA_VERSION`] for an independent musical event source,
 /// [`SIDECHAIN_SCHEMA_VERSION`] when an authored sidechain is present,
@@ -111,7 +114,9 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// [`SINC_V2_SCHEMA_VERSION`] when it contains sinc v2 media, otherwise
 /// [`CURRENT_SCHEMA_VERSION`].
 pub fn schema_version_for(project: &Project) -> u32 {
-    if contains_extended_frame_events(project) {
+    if schema::track_tags::contains(project) {
+        TRACK_TAGS_SCHEMA_VERSION
+    } else if contains_extended_frame_events(project) {
         EXTENDED_FRAME_EVENTS_SCHEMA_VERSION
     } else if schema::musical_event_source::contains(project) {
         MUSICAL_EVENT_SOURCE_SCHEMA_VERSION
@@ -297,12 +302,14 @@ impl From<serde_json::Error> for StorageError {
 /// receiver path makes it schema68; absent paths migrate as ordinary bindings.
 /// A Compressor sidechain makes it schema69; older projects open disconnected.
 /// An independent musical event source makes it schema70. A frame-event root
-/// beyond the dense processing limit makes it schema71.
+/// beyond the dense processing limit makes it schema71. Tags make it schema72.
 /// Schema59 is reserved and explicitly refused.
 /// There is no blanket byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    if contains_extended_frame_events(project) {
+    if schema::track_tags::contains(project) {
+        encode_document(&schema::track_tags::encode(project)?)
+    } else if contains_extended_frame_events(project) {
         let mut value = schema::musical_event_source::encode(project)?;
         value["version"] = EXTENDED_FRAME_EVENTS_SCHEMA_VERSION.into();
         encode_document(&value)
@@ -338,6 +345,9 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    if schema::track_tags::contains(project) {
+        return Err(StorageError::Invalid("older schema cannot save track tags"));
+    }
     if contains_extended_frame_events(project) {
         return Err(StorageError::Invalid(
             "older schema cannot save an extended frame event root",
@@ -521,12 +531,11 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
+        TRACK_TAGS_SCHEMA_VERSION => schema::track_tags::decode(bytes),
         EXTENDED_FRAME_EVENTS_SCHEMA_VERSION => {
             schema::musical_event_source::decode(bytes, EXTENDED_FRAME_EVENTS_SCHEMA_VERSION)
         }
-        MUSICAL_EVENT_SOURCE_SCHEMA_VERSION => {
-            schema::musical_event_source::decode(bytes, MUSICAL_EVENT_SOURCE_SCHEMA_VERSION)
-        }
+        MUSICAL_EVENT_SOURCE_SCHEMA_VERSION => schema::track_tags::decode_schema70(bytes),
         SIDECHAIN_SCHEMA_VERSION => schema::sidechain::decode(bytes),
         RETAINED_RECEIVER_SCHEMA_VERSION => schema::retained_receiver::decode(bytes),
         DEVICE_STATE_SCHEMA_VERSION => schema::sampler_crossfade::decode(bytes),
@@ -573,8 +582,9 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery",
         )),
     }?;
-    if contains_extended_frame_events(&project)
-        != (header.version == EXTENDED_FRAME_EVENTS_SCHEMA_VERSION)
+    if header.version != TRACK_TAGS_SCHEMA_VERSION
+        && contains_extended_frame_events(&project)
+            != (header.version == EXTENDED_FRAME_EVENTS_SCHEMA_VERSION)
     {
         return Err(StorageError::Invalid(
             "project schema disagrees with extended frame event roots; original file unchanged",
