@@ -616,7 +616,13 @@ impl<'a> AudioViewProjection<'a> {
         )?;
         let root_frame_length = u64::try_from(root_last - root_frame_origin)
             .map_err(|_| Invalid("audio root frame span is invalid"))?;
-        if root_frame_length == 0 || root_frame_length > MAX_AUDIO_DOMAIN_FRAMES {
+        if root_frame_length == 0
+            || (root_frame_length > MAX_AUDIO_DOMAIN_FRAMES
+                && !self
+                    .clip
+                    .audio_edit()
+                    .is_some_and(|edit| edit.accepts_projected_extent(root_frame_length)))
+        {
             return Err(Invalid(
                 "full audio root exceeds its frame limit or is empty",
             ));

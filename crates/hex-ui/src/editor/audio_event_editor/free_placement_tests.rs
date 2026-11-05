@@ -160,7 +160,7 @@ fn frame_event_drag_beyond_clip_end_keeps_waveform_release_history_and_saved_mat
             viewport.start > duration * 4,
             "camera should not stop at four clip lengths"
         );
-        assert!(viewport.end().unwrap() <= hex_project::MAX_AUDIO_DOMAIN_FRAMES);
+        assert!(viewport.end().unwrap() <= hex_project::MAX_SPARSE_AUDIO_TIMELINE_FRAMES);
         assert_eq!(v.state.as_ref().unwrap().project, after);
         cx.notify();
     });
@@ -216,7 +216,7 @@ fn free_event_extreme_pointer_reversal_and_escape_leave_canonical_material_untou
             .unwrap();
         assert_eq!(
             query.clip().audio_event_root().domain.clock.length(),
-            hex_project::MAX_AUDIO_DOMAIN_FRAMES
+            hex_project::MAX_SPARSE_AUDIO_TIMELINE_FRAMES
         );
         assert_eq!(v.state.as_ref().unwrap().project, before);
         assert!(v.audio_event_editor.pending.is_none());
@@ -478,4 +478,328 @@ fn frame_event_drag_before_clip_zero_preserves_camera_waveform_history_and_saved
         assert_eq!(v.state.as_ref().unwrap().project, after);
         cx.notify();
     });
+}
+
+#[gpui::test]
+fn signed_range_drag_keeps_waveform_and_selection_through_release_and_history(
+    cx: &mut TestAppContext,
+) {
+    let (files, mut visual, editor, clip) = open(cx);
+    let duration = editor.read_with(&visual, |v, _| v.event_context().unwrap().1.view_end);
+    edit(
+        &mut visual,
+        &editor,
+        clip,
+        AudioEventEdit::Split { at: duration / 4 },
+    );
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());
+    for direction in [-0.25, 0.4] {
+        editor.update(&mut visual, |v, cx| {
+            v.audio_event_editor.grid = SnapGrid::Off;
+            v.store_event_camera(SignedFrameViewport {
+                start: -i128::from(duration),
+                length: duration * 3,
+            });
+            v.audio_event_editor.range = Some((0, duration / 4));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let lane = visual.debug_bounds("audio-events-waveform").unwrap();
+        let down = visual
+            .debug_bounds("audio-event-range-handle")
+            .unwrap()
+            .center();
+        let moved = point(down.x + lane.size.width * direction, down.y);
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        editor.read_with(&visual, |v, _| {
+            assert!(matches!(
+                v.audio_event_editor.gesture.as_ref().map(|g| g.kind),
+                Some(Kind::FreeRangeMove { .. })
+            ));
+        });
+        visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("audio-event-waveform-1").is_some());
+        visual.simulate_keystrokes("escape");
+        visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            assert!(v.audio_event_editor.pending.is_none());
+            assert_eq!(v.state.as_ref().unwrap().project, before);
+        });
+
+        editor.update(&mut visual, |v, cx| {
+            v.audio_event_editor.range = Some((0, duration / 4));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let held = visual.debug_bounds("audio-event-1").unwrap();
+        let selection = visual.debug_bounds("audio-event-range-handle").unwrap();
+        assert!((selection.center().x - moved.x).abs() < px(2.0));
+        visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+        for _ in 0..3 {
+            editor.update(&mut visual, |_, cx| cx.notify());
+            visual.run_until_parked();
+            assert_eq!(visual.debug_bounds("audio-event-1"), Some(held));
+            assert_eq!(
+                visual.debug_bounds("audio-event-range-handle"),
+                Some(selection)
+            );
+            assert!(visual.debug_bounds("audio-event-waveform-1").is_some());
+        }
+        pump(&editor, &mut visual);
+        assert_eq!(visual.debug_bounds("audio-event-1"), Some(held));
+        assert_eq!(
+            visual.debug_bounds("audio-event-range-handle"),
+            Some(selection)
+        );
+        let after = editor.read_with(&visual, |v, _| {
+            let project = &v.state.as_ref().unwrap().project;
+            let c = project.clip(clip).unwrap();
+            assert_eq!(c.duration(), duration);
+            let events = c.audio_events();
+            let event = events.events.iter().find(|e| e.id == 1).unwrap();
+            assert_eq!(event.source_start, 0);
+            assert_eq!(v.audio_event_editor.range, Some((event.start, event.end)));
+            project.clone()
+        });
+        editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project, before)
+        });
+        editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project, after)
+        });
+        if direction > 0.0 {
+            let path = files.root().join("signed-range.hex");
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::SaveNew(path.clone())))
+            });
+            pump(&editor, &mut visual);
+            editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Open(path))));
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(v.state.as_ref().unwrap().project, after)
+            });
+        } else {
+            editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+            pump(&editor, &mut visual);
+        }
+    }
+}
+
+#[gpui::test]
+fn finite_frame_drag_preserves_the_cycle_markers_and_root_waveform(cx: &mut TestAppContext) {
+    use hex_project::{AudioViewResizeOperation, Command};
+    let (files, mut visual, editor, clip) = open(cx);
+    let duration = editor.read_with(&visual, |v, _| v.event_context().unwrap().1.view_end);
+    edit(
+        &mut visual,
+        &editor,
+        clip,
+        AudioEventEdit::Split { at: duration / 8 },
+    );
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::CycleRange {
+                start: duration / 4,
+                end: duration * 3 / 4,
+                looping: true,
+            },
+        })));
+    });
+    pump(&editor, &mut visual);
+    let before = editor.update(&mut visual, |v, cx| {
+        v.audio_event_editor.grid = SnapGrid::Off;
+        v.store_event_camera(SignedFrameViewport {
+            start: -i128::from(duration),
+            length: duration * 3,
+        });
+        cx.notify();
+        v.state.as_ref().unwrap().project.clone()
+    });
+    visual.run_until_parked();
+    let lane = visual.debug_bounds("audio-events-waveform").unwrap();
+    let original = visual.debug_bounds("audio-event-1").unwrap();
+    let marker = visual.debug_bounds("audio-play-start-marker").unwrap();
+    let down = point(original.center().x, original.top() + px(8.0));
+    let moved = point(down.x - lane.size.width * 0.25, down.y);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let held = visual.debug_bounds("audio-event-1").unwrap();
+    assert!((held.center().x - moved.x).abs() < px(2.0));
+    assert!(visual.debug_bounds("audio-event-waveform-1").is_some());
+    assert_eq!(visual.debug_bounds("audio-play-start-marker"), Some(marker));
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds("audio-event-1"), Some(held));
+        assert_eq!(visual.debug_bounds("audio-play-start-marker"), Some(marker));
+        assert!(visual.debug_bounds("audio-event-waveform-1").is_some());
+    }
+    pump(&editor, &mut visual);
+    assert_eq!(visual.debug_bounds("audio-event-1"), Some(held));
+    assert_eq!(visual.debug_bounds("audio-play-start-marker"), Some(marker));
+    assert!(visual.debug_bounds("audio-event-waveform-1").is_some());
+    let after = editor.read_with(&visual, |v, _| {
+        let project = &v.state.as_ref().unwrap().project;
+        let c = project.clip(clip).unwrap();
+        let prior = before.clip(clip).unwrap();
+        assert_eq!((c.start(), c.duration()), (prior.start(), prior.duration()));
+        assert_eq!(
+            c.audio_event_root().placement,
+            prior.audio_event_root().placement
+        );
+        assert_eq!(c.audio_events().events[0].start, 0);
+        project.clone()
+    });
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project, before)
+    });
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
+    pump(&editor, &mut visual);
+    let path = files.root().join("placed-finite.hex");
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::SaveNew(path.clone())))
+    });
+    pump(&editor, &mut visual);
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Open(path))));
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project, after)
+    });
+}
+
+#[gpui::test]
+fn warped_event_drag_snaps_on_both_sides_and_keeps_the_waveform_through_ack(
+    cx: &mut TestAppContext,
+) {
+    use hex_project::{BeatTime, Command, Tempo, WarpMode};
+    let (files, mut visual, editor, clip) = open(cx);
+    let settings = editor.read_with(&visual, |v, _| {
+        let project = &v.state.as_ref().unwrap().project;
+        hex_project::default_audio_warp(
+            project.clip(clip).unwrap(),
+            project.tempo_map(),
+            WarpMode::RePitch,
+        )
+        .unwrap()
+    });
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings)
+        })));
+    });
+    pump(&editor, &mut visual);
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::SetTempoPoint {
+            beat: BeatTime::from_quarters(1).unwrap(),
+            tempo: Tempo::new(160_000_000).unwrap(),
+        })));
+    });
+    pump(&editor, &mut visual);
+    let (root, duration) = editor.read_with(&visual, |v, _| {
+        let c = v.state.as_ref().unwrap().project.clip(clip).unwrap();
+        (c.audio_event_root(), c.duration())
+    });
+    edit(
+        &mut visual,
+        &editor,
+        clip,
+        AudioEventEdit::Split {
+            at: root.domain.clock.length() / 4,
+        },
+    );
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());
+    for direction in [-0.26, 0.44] {
+        editor.update(&mut visual, |v, cx| {
+            v.audio_event_editor.grid = SnapGrid::Quarter;
+            v.store_event_camera(SignedFrameViewport {
+                start: -i128::from(duration),
+                length: duration * 3,
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let lane = visual.debug_bounds("audio-events-waveform").unwrap();
+        let original = visual.debug_bounds("audio-event-1").unwrap();
+        let marker = visual.debug_bounds("audio-play-start-marker").unwrap();
+        let down = point(original.center().x, original.top() + px(8.0));
+        let moved = point(down.x + lane.size.width * direction, down.y);
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let held = visual.debug_bounds("audio-event-1").unwrap();
+        assert!(if direction < 0.0 {
+            held.right() < original.left()
+        } else {
+            held.left() > original.right()
+        });
+        assert!(visual.debug_bounds("audio-event-waveform-1").is_some());
+        assert_eq!(visual.debug_bounds("audio-play-start-marker"), Some(marker));
+        editor.read_with(&visual, |v, _| {
+            let Some(AudioEventEdit::Place { start, .. }) = v
+                .audio_event_editor
+                .gesture
+                .as_ref()
+                .and_then(|g| g.operation.as_ref())
+            else {
+                panic!("signed placement")
+            };
+            assert_eq!(start.unsigned_abs() % BeatTime::ONE.raw(), 0);
+        });
+        visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+        for _ in 0..3 {
+            editor.update(&mut visual, |_, cx| cx.notify());
+            visual.run_until_parked();
+            assert_eq!(visual.debug_bounds("audio-event-1"), Some(held));
+            assert_eq!(visual.debug_bounds("audio-play-start-marker"), Some(marker));
+            assert!(visual.debug_bounds("audio-event-waveform-1").is_some());
+        }
+        pump(&editor, &mut visual);
+        assert_eq!(visual.debug_bounds("audio-event-1"), Some(held));
+        assert_eq!(visual.debug_bounds("audio-play-start-marker"), Some(marker));
+        let after = editor.read_with(&visual, |v, _| {
+            let project = &v.state.as_ref().unwrap().project;
+            let c = project.clip(clip).unwrap();
+            let previous = before.clip(clip).unwrap();
+            assert_eq!(
+                (c.start(), c.duration()),
+                (previous.start(), previous.duration())
+            );
+            assert!(c.audio_event_root().domain.musical_event_source.is_some());
+            project.clone()
+        });
+        editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project, before)
+        });
+        if direction > 0.0 {
+            editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
+            pump(&editor, &mut visual);
+            let path = files.root().join("signed-musical-editor.hex");
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::SaveNew(path.clone())))
+            });
+            pump(&editor, &mut visual);
+            editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Open(path))));
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(v.state.as_ref().unwrap().project, after)
+            });
+        }
+    }
 }

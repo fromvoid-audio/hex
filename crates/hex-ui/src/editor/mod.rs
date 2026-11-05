@@ -143,9 +143,11 @@ mod midi_group_drag;
 mod midi_marquee;
 mod midi_note_copy;
 mod midi_note_overwrite;
+mod midi_origin_view;
 mod midi_pan;
 mod midi_pitch_zoom;
 mod midi_recording;
+mod midi_viewport_grid;
 mod missing_media;
 mod track_defaults;
 mod user_errors;
@@ -236,6 +238,7 @@ mod track_reorder;
 mod track_reorder_ui_test;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_selection_ui_test;
+mod track_tags;
 mod tracks;
 mod transport;
 mod trim;
@@ -815,6 +818,7 @@ pub(super) struct EditorView {
     sections: arrangement_sections::Sections,
     section_autoplay: bool,
     track_name: track_name::TrackNameState,
+    track_tags: track_tags::State,
     pub(in crate::editor) mode: EditorMode,
     pub(in crate::editor) selected_scene: Option<SceneId>,
     pub(in crate::editor) selected_cell: Option<(TrackId, SceneId)>,
@@ -826,6 +830,7 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_note_gesture: Option<midi_drag::NoteGesture>,
     pub(in crate::editor) midi_group_gesture: Option<midi_group_drag::GroupGesture>,
     pending_midi_drag: Option<midi_pending_drag::Pending>,
+    midi_origin_history: midi_origin_view::State,
     pub(in crate::editor) midi_creation: Option<midi_creation::Creation>,
     pub(in crate::editor) midi_stroke: Option<midi_stroke::MidiStroke>,
     pub(in crate::editor) midi_draw_mode: bool,
@@ -852,7 +857,7 @@ pub(super) struct EditorView {
     piano_pitch_wheel_accum: f32,
     poll_cadence: poll_cadence::PollCadence,
     piano_pitch_scroll_accum: f32,
-    pub(in crate::editor) piano_beat_start: hex_project::BeatTime,
+    pub(in crate::editor) piano_beat_start: i128,
     pub(in crate::editor) piano_beat_span: hex_project::BeatTime,
     pub(in crate::editor) piano_pitch_low: u8,
     piano_pitch_rows: u8,
@@ -1581,6 +1586,7 @@ impl EditorView {
             sections: arrangement_sections::Sections::default(),
             section_autoplay: false,
             track_name: track_name::TrackNameState::default(),
+            track_tags: track_tags::State::default(),
             mode: EditorMode::Arrangement,
             selected_scene: None,
             selected_cell: None,
@@ -1592,6 +1598,7 @@ impl EditorView {
             midi_note_gesture: None,
             midi_group_gesture: None,
             pending_midi_drag: None,
+            midi_origin_history: midi_origin_view::State::default(),
             midi_creation: None,
             midi_stroke: None,
             midi_draw_mode: false,
@@ -1615,7 +1622,7 @@ impl EditorView {
             piano_pitch_wheel_accum: 0.0,
             poll_cadence,
             piano_pitch_scroll_accum: 0.0,
-            piano_beat_start: hex_project::BeatTime::ZERO,
+            piano_beat_start: 0,
             piano_beat_span: hex_project::BeatTime::from_quarters(4)
                 .unwrap_or(hex_project::BeatTime::ONE),
             piano_pitch_low: 48,
@@ -2184,7 +2191,7 @@ impl EditorView {
         self.midi_hit_cycle = None;
         self.midi_scene_cache.clear();
         self.midi_selection.clear();
-        self.piano_beat_start = hex_project::BeatTime::ZERO;
+        self.piano_beat_start = 0;
         if let Some(length) = self
             .state
             .as_ref()

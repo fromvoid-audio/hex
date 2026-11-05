@@ -230,6 +230,12 @@ impl RuntimeMut<'_> {
             Self::Eligible(p) => p.invalidate_native_parameter_input(),
         }
     }
+    pub(super) fn finish_native_parameter_input(&mut self) {
+        match self {
+            Self::Legacy(p) => p.finish_native_parameter_input(),
+            Self::Eligible(p) => p.finish_native_parameter_input(),
+        }
+    }
     pub(super) fn take_native_parameter_application(
         &mut self,
     ) -> Option<hex_engine::NativeParameterApplication> {
