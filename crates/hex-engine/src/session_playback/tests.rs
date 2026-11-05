@@ -2095,11 +2095,15 @@ fn detached_arrangement_effect_suffix_renders_after_its_source_ends() {
         ),
         expected
     );
-    // Bypass detaches the old output settings.
-    assert_eq!(
-        transition_output(Arc::clone(&old_revision), prepare(&bypassed_project), true),
-        expected
-    );
+    // Bypass fades this same residual owner to dry (the source has ended).
+    // It must not detach an independently audible, indefinitely retained suffix.
+    let bypassed = transition_output(Arc::clone(&old_revision), prepare(&bypassed_project), false);
+    for (index, (actual, reference)) in bypassed.iter().zip(expected).enumerate() {
+        let wet = 1.0 - (index + 1).min(240) as f32 / 240.0;
+        for channel in 0..2 {
+            assert!((actual[channel] - reference[channel] * wet).abs() < 1e-6);
+        }
+    }
     // A compatible runtime inherits filter history for outgoing residual audio
     // without also copying that old-configuration history into the new chain.
     assert_eq!(
@@ -2124,12 +2128,12 @@ fn detached_arrangement_effect_suffix_renders_after_its_source_ends() {
         }
     }
 
-    // A device replacement mid-ramp freezes the old suffix at the gain that
+    // Device removal mid-ramp freezes the old suffix at the gain that
     // actually reached the output, rather than jumping to the target.
     let mut zero_snapshot = old_project.snapshot();
     zero_snapshot.tracks[0].gain = 0.0;
     let zero = legacy_project_from_snapshot(zero_snapshot.clone()).unwrap();
-    zero_snapshot.tracks[0].devices[0].bypassed = true;
+    zero_snapshot.tracks[0].devices.clear();
     let detached = legacy_project_from_snapshot(zero_snapshot).unwrap();
     let mut previous = start_old(old_revision);
     let mut fading = SessionPlayback::new(prepare(&zero)).unwrap();
@@ -13746,6 +13750,8 @@ fn analytic_clip_volume_survives_track_stop_and_removed_track_handoffs() {
 mod delay_tests;
 #[path = "reverb_bypass_tests.rs"]
 mod reverb_bypass_tests;
+#[path = "utility_bypass_tests.rs"]
+mod utility_bypass_tests;
 
 #[test]
 fn console_audio_loop_intro_repeats_across_partitions_handoff_and_stop() {
