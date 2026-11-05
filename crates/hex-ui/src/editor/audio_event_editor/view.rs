@@ -281,6 +281,67 @@ pub(in crate::editor) fn view(
                     .cursor(gpui::CursorStyle::ResizeRightBracket),
             );
         }
+        let retained_gain = view
+            .audio_event_editor
+            .retained_selection
+            .as_ref()
+            .filter(|(path, _)| {
+                view.audio_event_editor.selected == Some(event_id)
+                    && path.first() == Some(&event.source)
+            })
+            .and_then(|(path, id)| {
+                preview
+                    .sources
+                    .iter()
+                    .find(|source| Some(&source.id) == path.first())
+                    .and_then(|source| super::retained_events(&source.clip, &path[1..]))
+                    .and_then(|events| events.events.into_iter().find(|inner| inner.id == *id))
+            })
+            .map(|inner| inner.gain);
+        let display_gain = retained_gain.unwrap_or(event.gain);
+        if matches!(operation, Some(AudioEventEdit::SetGain { event: id, .. }) if *id == event_id)
+            || (retained_gain.is_some()
+                && matches!(operation, Some(AudioEventEdit::SetRetainedGain { .. })))
+        {
+            element = element.child(
+                div()
+                    .debug_selector(move || format!("audio-event-gain-value-{event_id}"))
+                    .absolute()
+                    .top(px(5.0))
+                    .right(px(7.0))
+                    .text_xs()
+                    .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+                    .child(theme::text(format!(
+                        "{:+.1} db",
+                        f64::from(display_gain.millidb()) / 1000.0
+                    ))),
+            );
+        }
+        if !view.audio_event_editor.fade_key_held && !view.time_selection_key_held {
+            let gain = display_gain.millidb();
+            element = element.child(
+                div()
+                    .id(("audio-event-gain", event_id))
+                    .debug_selector(move || format!("audio-event-gain-{event_id}"))
+                    .absolute()
+                    .top_0()
+                    .left(px(7.0))
+                    .right(px(7.0))
+                    .h(px(4.0))
+                    .cursor(gpui::CursorStyle::ResizeUpDown)
+                    .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Secondary))))
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| super::super::waveform::ClipTooltip {
+                            kind: crate::tooltips::Kind::control("event gain"),
+                            name: format!(
+                                "gain {:+.1} db · drag down to reduce · shift for fine",
+                                f64::from(gain) / 1000.0
+                            ),
+                        })
+                        .into()
+                    }),
+            );
+        }
         element = element.children(view.event_fade_elements(
             &root,
             *event,
@@ -342,7 +403,7 @@ pub(in crate::editor) fn view(
                     .bottom_0()
                     .left(relative(frame_to_x(a)))
                     .w(relative((b - a) as f32 / local.length.max(1) as f32))
-                    .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                    .bg(rgb(theme::time_selection_fill()))
                     .opacity(theme::TIME_SELECTION_OPACITY)
                     .child(
                         div()
@@ -530,6 +591,32 @@ pub(in crate::editor) fn view(
                     && (offset - x(hit.end)).abs() <= 6.0
                 {
                     Kind::Trailing(hit)
+                } else if !view.audio_event_editor.fade_key_held
+                    && (EVENT_RULER_HEIGHT..EVENT_RULER_HEIGHT + 5.0).contains(&local_y)
+                {
+                    let target = if let Some((path, id)) = view
+                        .audio_event_editor
+                        .retained_selection
+                        .as_ref()
+                        .filter(|(path, _)| {
+                            path.first() == Some(&hit.source)
+                                && view.audio_event_editor.selected == Some(hit.id)
+                        }) {
+                        let Some(inner) = super::retained_events(clip, path).and_then(|events| {
+                            events.events.into_iter().find(|event| event.id == *id)
+                        }) else {
+                            return;
+                        };
+                        inner
+                    } else {
+                        hit
+                    };
+                    Kind::Gain {
+                        event: target,
+                        origin_y: f32::from(event.position.y),
+                        last_y: f32::from(event.position.y),
+                        value: f64::from(target.gain.millidb()),
+                    }
                 } else if target == RangeSelectionTarget::Move {
                     Kind::Move(hit)
                 } else {
@@ -541,7 +628,18 @@ pub(in crate::editor) fn view(
             if !view.capture_audio_event_pointer(kind, window, cx) {
                 return;
             }
-            view.audio_event_editor.retained_selection = None;
+            if !matches!(kind, Kind::Gain { .. })
+                || view.audio_event_editor.selected != hit.map(|event| event.id)
+                || view
+                    .audio_event_editor
+                    .retained_selection
+                    .as_ref()
+                    .is_some_and(|(path, _)| {
+                        hit.is_none_or(|event| path.first() != Some(&event.source))
+                    })
+            {
+                view.audio_event_editor.retained_selection = None;
+            }
             if matches!(kind, Kind::Select) {
                 view.audio_event_editor.range = Some((position, position));
                 view.audio_event_editor.selected = None;
@@ -833,7 +931,9 @@ pub(in crate::editor) fn view(
             }),
         )
         .on_action(cx.trace(|view, _: &super::super::DeleteClip, _, cx| {
-            view.event_delete();
+            if !view.selection_delete_blocked() {
+                view.event_delete();
+            }
             cx.stop_propagation();
             cx.notify();
         }))

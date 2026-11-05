@@ -109,9 +109,9 @@ fn degenerate_columns_floor_and_nonfinite_input_stay_bounded() {
 fn overlap_budget_keeps_each_layer_nonzero_without_opaque_mud() {
     for n in 1..=MAX_LAYERS {
         let a = fill_alpha(n);
-        assert!(a > 0.0 && a <= 0.14);
-        assert!(n as f32 * a <= 0.240001);
-        assert!(1.0 - (1.0 - a).powi(n as i32) < 0.25);
+        assert!(a > 0.0 && a <= 0.2);
+        assert!(n as f32 * a <= 0.320001);
+        assert!(1.0 - (1.0 - a).powi(n as i32) < 0.33);
     }
 }
 const STYLE: ControlStyle = ControlStyle {
@@ -129,9 +129,17 @@ const STYLE: ControlStyle = ControlStyle {
     focus_marker: 0xaaaaaa,
     dial_rail: 0,
     hover: 0x555555,
+    selection: 0x3350a0,
+    invalid: 0xff554c,
     font_size: 9.0,
     text_case: crate::TextCase::Preserve,
 };
+fn peak_points() -> Vec<[f32; 2]> {
+    points()
+        .into_iter()
+        .map(|[x, y]| [x, (y + 0.1).min(1.0)])
+        .collect()
+}
 fn points() -> Vec<[f32; 2]> {
     vec![[0.0, 0.0], [0.3, 0.2], [0.6, 0.8], [1.0, 0.0]]
 }
@@ -186,6 +194,7 @@ fn production_eq_and_global_submit_the_same_clipped_fill_and_trace_system(cx: &m
                             secondary: vec![[0.0, 0.5], [1.0, 0.5]],
                             analyzer: Some(points()),
                             input_analyzer: Some(points()),
+                            analyzer_peak: Some(peak_points()),
                             nodes: vec![ResponseGraphNode {
                                 id: 1,
                                 position: [0.6, 0.5],
@@ -213,10 +222,12 @@ fn production_eq_and_global_submit_the_same_clipped_fill_and_trace_system(cx: &m
             let layers = SpectrumPlotLayers::new(vec![
                 SpectrumPlotLayer {
                     points: points(),
+                    peak: None,
                     color: 0xff6655,
                 },
                 SpectrumPlotLayer {
                     points: points(),
+                    peak: Some(peak_points()),
                     color: 0x55ddff,
                 },
             ])
@@ -257,7 +268,7 @@ fn production_eq_and_global_submit_the_same_clipped_fill_and_trace_system(cx: &m
             continue;
         }
         if width <= 14.0 {
-            assert_eq!(records.len(), 4, "only global plot retains positive width");
+            assert_eq!(records.len(), 5, "only global plot retains positive width");
             continue;
         }
         assert!(
@@ -265,21 +276,30 @@ fn production_eq_and_global_submit_the_same_clipped_fill_and_trace_system(cx: &m
             "actual EQ/global production painters must reach the shared fill system"
         );
         assert_eq!(
-            records.len() % 8,
+            records.len() % 10,
             0,
-            "two fills+two traces per measured owner; neutral graph adds none"
+            "two fills, one output peak and two traces per owner; neutral graph adds none"
         );
-        let last = &records[records.len() - 8..];
+        let last = &records[records.len() - 10..];
         write_svg(last, width);
         node_position = Some(map_point(last[0].plot, [0.6, 0.5]));
-        for owner in last.chunks(4) {
+        for owner in last.chunks(5) {
             assert_eq!(
                 owner.iter().map(|r| r.pass).collect::<Vec<_>>(),
-                vec![Pass::Fill, Pass::Fill, Pass::Trace, Pass::Trace]
+                vec![Pass::Fill, Pass::Fill, Pass::Peak, Pass::Trace, Pass::Trace]
             );
             assert_eq!(
                 owner.iter().map(|r| r.color).collect::<Vec<_>>(),
-                vec![0xff6655, 0x55ddff, 0xff6655, 0x55ddff]
+                vec![0xff6655, 0x55ddff, 0x55ddff, 0xff6655, 0x55ddff]
+            );
+            assert_eq!(
+                owner.iter().map(|r| r.stroke_width).collect::<Vec<_>>()[3..],
+                [SECONDARY_TRACE_WIDTH, PRIMARY_TRACE_WIDTH],
+                "output and master traces are the prominent stroke"
+            );
+            assert!(
+                matches!(owner[2].commands.first(), Some(Command::Move(p)) if *p == peak_points()[0]),
+                "the peak pass strokes the held-peak curve, not the level curve"
             );
             for r in owner {
                 assert_eq!(r.plot, r.mask);
@@ -288,7 +308,7 @@ fn production_eq_and_global_submit_the_same_clipped_fill_and_trace_system(cx: &m
             }
         }
         assert!(
-            last[0].plot.top() < last[4].plot.top(),
+            last[0].plot.top() < last[5].plot.top(),
             "both independent real plot rectangles recorded"
         );
     }
@@ -348,6 +368,7 @@ fn production_eq_and_global_submit_the_same_clipped_fill_and_trace_system(cx: &m
                         secondary: vec![[0.0, 0.5], [1.0, 0.5]],
                         analyzer: None,
                         input_analyzer: None,
+                        analyzer_peak: None,
                         nodes: Vec::new(),
                     },
                     STYLE,
@@ -390,6 +411,7 @@ fn write_svg(records: &[Record], width: f32) {
         write!(svg,"<defs><clipPath id='clip{i}'><rect x='{}' y='{}' width='{}' height='{}'/></clipPath><linearGradient id='fill{i}' x1='0' y1='0' x2='0' y2='1'><stop stop-color='#{:06x}' stop-opacity='{}'/><stop offset='1' stop-color='#{:06x}' stop-opacity='0'/></linearGradient></defs>",f32::from(p.origin.x),f32::from(p.origin.y),f32::from(p.size.width),f32::from(p.size.height),r.color,r.alpha,r.color).unwrap();
         match r.pass {
             Pass::Fill=>write!(svg,"<path clip-path='url(#clip{i})' d='{d}' fill='url(#fill{i})'/>"),
+            Pass::Peak=>write!(svg,"<path clip-path='url(#clip{i})' d='{d}' fill='none' stroke='#{:06x}' stroke-opacity='{PEAK_OPACITY}' stroke-width='{}'/>",r.color,f32::from(PEAK_WIDTH)),
             Pass::Trace=>write!(svg,"<path clip-path='url(#clip{i})' d='{d}' fill='none' stroke='#{:06x}' stroke-width='{}'/>",r.color,f32::from(r.stroke_width)),
         }.unwrap();
     }
@@ -430,10 +452,12 @@ fn production_active_fill_budget_ignores_silent_and_invalid_layers(cx: &mut Test
     visual.run_until_parked();
     let active = SpectrumPlotLayer {
         points: points(),
+        peak: None,
         color: 0xff6655,
     };
     let floor = SpectrumPlotLayer {
         points: vec![[0.0, 0.0], [1.0, 0.0]],
+        peak: None,
         color: 0x55ddff,
     };
     let invalid = SpectrumPlotLayer {
@@ -479,7 +503,7 @@ fn production_active_fill_budget_ignores_silent_and_invalid_layers(cx: &mut Test
         );
         assert_eq!(fills.len() % active_count, 0);
         for fill in fills {
-            let expected = if active_count == 1 { 0.14 } else { 0.12 };
+            let expected = fill_alpha(active_count);
             assert_eq!(
                 fill.alpha, expected,
                 "{case}: only valid nonfloor spectra spend the fill budget"
@@ -514,6 +538,7 @@ impl Render for RawBudgetFixture {
                         bounds,
                         layers.iter().map(|(points, color, stroke_width)| Layer {
                             points,
+                            peak: None,
                             color: *color,
                             stroke_width: *stroke_width,
                         }),
@@ -577,11 +602,24 @@ fn shared_fill_budget_skips_malformed_layers_without_bypassing_total_input_cap(
                 assert_eq!(record.pass, Pass::Fill);
                 assert_eq!(record.color, 0xff6655);
                 assert_eq!(
-                    record.alpha, 0.14,
+                    record.alpha,
+                    fill_alpha(1),
                     "malformed/floor layers cannot spend ink"
                 );
                 assert_eq!(record.mask, record.plot);
             }
         }
+    }
+}
+
+#[test]
+fn empty_and_single_point_layers_never_panic() {
+    for pass in [Pass::Fill, Pass::Peak, Pass::Trace] {
+        let mut emitted = 0;
+        commands(&[], pass, |_| emitted += 1);
+        assert_eq!(emitted, 0);
+        let mut single = Vec::new();
+        commands(&[[1.0, 2.0]], pass, |command| single.push(command));
+        assert!(matches!(single.first(), Some(Command::Move([1.0, 2.0]))));
     }
 }

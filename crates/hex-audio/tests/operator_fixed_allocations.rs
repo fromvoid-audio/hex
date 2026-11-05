@@ -341,6 +341,10 @@ fn operator_modulation_with_volume(
                 BeatTime::from_quarters(8)?,
             )?,
         })?;
+        editor.execute(Command::SetMidiClipGain {
+            clip,
+            gain: hex_project::ClipGain::new(24_000)?,
+        })?;
     }
     let mut revision = Arc::new(PreparedRevision::prepare(
         editor.project(),

@@ -7,10 +7,7 @@ use crate::editor::{
 use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
 use hex_project::{BeatTime, Command, MidiNoteInsert};
 use hex_session::service::{Event, Service};
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::sync::Arc;
 fn beat(n: u64) -> BeatTime {
     BeatTime::from_quarters(n).unwrap()
 }
@@ -68,13 +65,16 @@ fn drag(visual: &mut VisualTestContext, from: f32, to: f32) {
     visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
 }
 pub(super) fn next(service: &Service) -> Event {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
             return event;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "next: hang guard expired"
+        );
         std::thread::yield_now();
     }
 }
@@ -229,6 +229,92 @@ fn marker_drag_at_nonzero_arrangement_placement_acks_once_and_preserves_other_st
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before.0)
+    });
+    visual.simulate_keystrokes("cmd-shift-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
+    });
+    assert_eq!(
+        roundtrip(&editor, &mut visual, &environment).snapshot(),
+        after
+    );
+}
+#[gpui::test]
+fn one_shot_marker_drag_moves_the_arrangement_region_and_keeps_notes_at_their_song_beats(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, environment, clip) = fixture(cx);
+    for command in [
+        Command::MoveMidiClip {
+            clip,
+            track: editor.read_with(&visual, |v, _| v.selected_track.unwrap()),
+            start: beat(8),
+        },
+        Command::AddMidiNotes {
+            clip,
+            notes: [(0, 60), (2, 64)]
+                .map(|(start, pitch)| MidiNoteInsert {
+                    active: true,
+                    start: beat(start),
+                    duration: beat(1),
+                    pitch,
+                    channel: 0,
+                    velocity: 90,
+                })
+                .to_vec(),
+        },
+    ] {
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(command)))
+        });
+        pump(&editor, &mut visual);
+    }
+    let song_frame = |v: &EditorView, pitch: u8| {
+        let project = &v.state.as_ref().unwrap().project;
+        hex_engine::midi_compile::midi_events(project)
+            .unwrap()
+            .iter()
+            .find(|event| event.pitch == pitch)
+            .map(|event| event.frame)
+    };
+    let (before, note) = editor.read_with(&visual, |v, _| {
+        (
+            v.state.as_ref().unwrap().project.snapshot(),
+            song_frame(v, 64),
+        )
+    });
+    drag(&mut visual, 0.0, 0.5);
+    pump(&editor, &mut visual);
+    let after = editor.read_with(&visual, |v, _| {
+        let state = v.state.as_ref().unwrap();
+        let arrangement = state.project.midi_clip(clip).unwrap();
+        assert_eq!(arrangement.source_start(), beat(2));
+        assert_eq!(
+            (arrangement.start(), arrangement.arrangement_length()),
+            (beat(10), beat(2)),
+            "the region starts at the marker and keeps its end"
+        );
+        assert_eq!(song_frame(v, 64), note, "the note keeps its song time");
+        assert_eq!(
+            song_frame(v, 60),
+            None,
+            "material before the marker is outside"
+        );
+        assert!(matches!(
+            v.last_enqueued_edit,
+            Some(Command::ResizeMidiClipView {
+                operation: hex_project::MidiViewResizeOperation::PlayStart { .. },
+                ..
+            })
+        ));
+        state.project.snapshot()
+    });
+    assert_marker(&mut visual, 0.5);
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
     });
     visual.simulate_keystrokes("cmd-shift-z");
     pump(&editor, &mut visual);

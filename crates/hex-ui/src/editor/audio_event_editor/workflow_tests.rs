@@ -101,7 +101,7 @@ fn refused_cut_keeps_previous_clipboard_and_restores_range_after_real_terminal(
         v.state.as_ref().unwrap().project.snapshot()
     });
     visual.simulate_keystrokes("cmd-x");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     let terminal = loop {
         if let Ok(event) = editor.read_with(&visual, |v, _| v.service.try_event()) {
             if event.request_complete {
@@ -120,9 +120,10 @@ fn refused_cut_keeps_previous_clipboard_and_restores_range_after_real_terminal(
         "derived root must exceed its budget"
     );
     let error = format!("{:?}", terminal.error);
+    // #4145 names the bounded transform domain and its recovery path.
     assert!(
-        error.contains("budget") || error.contains("limit") || error.contains("memory"),
-        "expected bounded preparation refusal: {error}"
+        error.contains("support clips up to") && error.contains("trim or split the clip first"),
+        "expected bounded transform-domain refusal: {error}"
     );
     for _ in 0..3 {
         repaint(&mut visual, &editor);
@@ -152,6 +153,56 @@ fn refused_cut_keeps_previous_clipboard_and_restores_range_after_real_terminal(
             !v.state.as_ref().unwrap().can_undo,
             "refusal adds no history"
         );
+        assert!(v.error.is_some());
+    });
+    // The same oversized source refuses event gain during preparation. Its
+    // released value remains displayed until the real terminal arrives.
+    editor.update(&mut visual, |v, cx| {
+        v.audio_event_editor.range = None;
+        v.error = None;
+        cx.notify();
+    });
+    repaint(&mut visual, &editor);
+    let grip = visual.debug_bounds("audio-event-gain-1").unwrap().center();
+    let moved = point(grip.x, grip.y + px(20.0));
+    visual.simulate_mouse_down(grip, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    let deadline = crate::test_wait::hang_deadline();
+    let terminal = loop {
+        if let Ok(event) = editor.read_with(&visual, |v, _| v.service.try_event()) {
+            if event.request_complete {
+                break event;
+            }
+            editor.update(&mut visual, |v, cx| {
+                v.receive(event);
+                cx.notify();
+            });
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "real event gain terminal"
+        );
+        std::thread::yield_now();
+    };
+    assert!(terminal.error.is_some());
+    for _ in 0..3 {
+        repaint(&mut visual, &editor);
+        assert!(visual.debug_bounds("audio-event-gain-value-1").is_some());
+        editor.read_with(&visual, |v, _| {
+            assert!(v.audio_event_editor.pending.is_some());
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        });
+    }
+    editor.update(&mut visual, |v, cx| {
+        v.receive(terminal);
+        cx.notify();
+    });
+    repaint(&mut visual, &editor);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.audio_event_editor.pending.is_none());
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        assert!(!v.state.as_ref().unwrap().can_undo);
         assert!(v.error.is_some());
     });
     assert_eq!(std::fs::read(original_path).unwrap(), original_bytes);
@@ -253,7 +304,8 @@ fn event_overlap_accent_covers_only_replaced_audio_and_survives_release(cx: &mut
         v.audio_event_editor.grid = SnapGrid::Off
     });
     let body = visual.debug_bounds("audio-events-waveform").unwrap();
-    let down = point(body.left() + body.size.width * 0.125, body.top() + px(26.0));
+    // The top five pixels now own event gain; move from the remaining rail.
+    let down = point(body.left() + body.size.width * 0.125, body.top() + px(32.0));
     let up = point(body.left() + body.size.width * 0.375, down.y);
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
@@ -624,7 +676,7 @@ fn check_event_move_release(cx: &mut TestAppContext, outside: bool) {
         Arc::clone(&v.state.as_ref().unwrap().project)
     });
     let b = visual.debug_bounds("audio-events-waveform").unwrap();
-    let down = point(b.left() + b.size.width * 0.125, b.top() + px(26.0));
+    let down = point(b.left() + b.size.width * 0.125, b.top() + px(32.0));
     let up = point(b.left() + b.size.width * 0.5, down.y);
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
@@ -1300,7 +1352,8 @@ fn event_fade_single_sample_can_author_both_ends_after_zoom(cx: &mut TestAppCont
             .events[0]
             .fade
             .unwrap();
-        assert_eq!((fade.shape().fade_in(), fade.shape().fade_out()), (1, 1));
+        // Top handles push each other: the fade in takes the single sample.
+        assert_eq!((fade.shape().fade_in(), fade.shape().fade_out()), (1, 0));
     });
     fade_key(&mut visual, false);
     assert!(visual.debug_bounds("audio-event-fade-in-top-1").is_some());

@@ -102,11 +102,7 @@ impl EditorView {
         if self.edit_pending() {
             return;
         }
-        let count = self.state.as_ref().map_or(0, |s| s.project.tracks().len());
-        self.enqueue(Request::Edit(Command::InsertTrack {
-            name: format!("track {}", count + 1),
-            before_track: self.new_track_insertion_anchor(),
-        }));
+        self.insert_default_track(self.new_track_insertion_anchor());
     }
 
     pub(super) fn add_midi_clip(&mut self) {

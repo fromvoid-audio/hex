@@ -115,6 +115,7 @@ impl EditorView {
             }
         };
         if self.enqueue(request) {
+            self.stop_browser_preview_for_drop();
             self.audio_batch = Some(control);
             self.audio_batch_progress = None;
             self.error = None;
@@ -162,13 +163,24 @@ impl EditorView {
                 && self.tuning.client.snapshot().is_none();
             self.retire_console_clip_drag(drag);
             if valid {
-                self.enqueue(Request::CopyArrangementClipToConsoleTrack {
+                let gain = match self.track_defaults.captured_gain() {
+                    Ok(gain) => gain,
+                    Err(error) => {
+                        self.error = Some(error.into());
+                        cx.notify();
+                        return;
+                    }
+                };
+                if self.enqueue(Request::CopyArrangementClipToConsoleTrack {
+                    initial_gain: Some(gain),
                     project_generation: drag.project_generation,
                     revision: drag.revision,
                     source: drag.clip,
                     before_track,
                     scene,
-                });
+                }) {
+                    self.error = None;
+                }
             } else {
                 self.error = Some(if unsupported_source {
                     "processed arrangement audio cannot yet copy to console · keep it in arrangement"

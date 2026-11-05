@@ -93,6 +93,47 @@ fn group_fixture() -> (
 }
 
 #[test]
+fn retained_event_gain_matches_edit_before_group_and_undo() {
+    let (mut editor, ids, media) = group_fixture();
+    let mut reference = Editor::new(editor.project().clone(), 32).unwrap();
+    let context = isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16);
+    let gain = hex_project::ClipGain::new(-6000).unwrap();
+    reference
+        .execute(Command::EditAudioEvents {
+            clip: ids[0],
+            operation: hex_project::AudioEventEdit::SetGain { event: 1, gain },
+        })
+        .unwrap();
+    reference.execute(Command::GroupClips(ids.clone())).unwrap();
+    let expected = render(&prepare(&reference, &media, &context), 0, 16000, 127);
+    let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group")
+    };
+    let baseline = render(&prepare(&editor, &media, &context), 0, 16000, 127);
+    let source = editor.project().clip(group).unwrap().audio_events().events[0].source;
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: group,
+            operation: hex_project::AudioEventEdit::SetRetainedGain {
+                sources: vec![source],
+                event: 1,
+                gain,
+            },
+        })
+        .unwrap();
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16000, 257),
+        expected
+    );
+    assert_ne!(expected, baseline);
+    assert!(editor.undo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16000, 64),
+        baseline
+    );
+}
+
+#[test]
 fn retained_source_event_can_be_reactivated_without_losing_processing() {
     let (mut editor, ids, media) = group_fixture();
     let context = isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16);
@@ -1005,7 +1046,7 @@ fn grouped_child_and_event_fades_keep_source_phase_through_move_and_history() {
 }
 
 #[test]
-fn thousand_pasted_frame_groups_share_one_rendered_sample_and_keep_history_pcm() {
+fn thousand_group_instances_share_one_rendered_sample_and_keep_history_pcm() {
     let (mut editor, ids, media) = group_fixture();
     let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
         panic!("group");
@@ -1017,32 +1058,57 @@ fn thousand_pasted_frame_groups_share_one_rendered_sample_and_keep_history_pcm()
     let expected = render(&original, 0, 15_000, 127);
     let track = editor.project().tracks()[0].id();
     let clipboard = Arc::new(editor.project().capture_clips(&[group]).unwrap());
-    for index in 1..=1_000_u64 {
-        editor
-            .execute(Command::PasteClips {
-                clipboard: Arc::clone(&clipboard),
-                track,
-                frame: index * 15_000,
-                insert: false,
-            })
-            .unwrap();
-        if index == 1 || index == 1_000 {
-            let prepared = prepare(&editor, &media, &context);
-            assert_eq!(
-                context.retained_pcm_bytes(),
-                pcm_bytes,
-                "copying a frame group must retain references, not new destination-sized PCM"
-            );
-            assert!(
-                prepared
-                    .arrangement()
-                    .audio_clip_views()
-                    .iter()
-                    .all(|view| view.audio.shares_pcm_with(&audio))
-            );
-            assert_eq!(render(&prepared, index * 15_000, 15_000, 63), expected);
-        }
+    // Check a real paste before constructing the large population.
+    let paste = |index: u64| Command::PasteClips {
+        clipboard: Arc::clone(&clipboard),
+        track,
+        frame: index * 15_000,
+        insert: false,
+    };
+    editor.execute(paste(1)).unwrap();
+    let first = prepare(&editor, &media, &context);
+    assert_eq!(context.retained_pcm_bytes(), pcm_bytes);
+    assert!(
+        first
+            .arrangement()
+            .audio_clip_views()
+            .iter()
+            .all(|view| view.audio.shares_pcm_with(&audio))
+    );
+    assert_eq!(render(&first, 15_000, 15_000, 63), expected);
+    // Populate from the actual pasted instance; the last paste stays a real
+    // editor command so history still removes and restores precisely that copy.
+    let mut snapshot = editor.project().snapshot();
+    let copied = snapshot.tracks[0]
+        .audio_clips_mut()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    for index in 2..1_000_u64 {
+        let mut instance = copied.clone();
+        instance.id = snapshot.next_id;
+        snapshot.next_id += 1;
+        instance.start = index * 15_000;
+        snapshot.tracks[0].audio_clips_mut().unwrap().push(instance);
     }
+    editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
+    editor.execute(paste(1_000)).unwrap();
+    let prepared = prepare(&editor, &media, &context);
+    assert_eq!(prepared.arrangement().audio_clip_views().len(), 1_001);
+    assert_eq!(
+        context.retained_pcm_bytes(),
+        pcm_bytes,
+        "copying a frame group must retain references, not new destination-sized PCM"
+    );
+    assert!(
+        prepared
+            .arrangement()
+            .audio_clip_views()
+            .iter()
+            .all(|view| view.audio.shares_pcm_with(&audio))
+    );
+    assert_eq!(render(&prepared, 15_000_000, 15_000, 63), expected);
     assert!(editor.undo());
     let undone = prepare(&editor, &media, &context);
     assert!(
@@ -1054,4 +1120,74 @@ fn thousand_pasted_frame_groups_share_one_rendered_sample_and_keep_history_pcm()
     let redone = prepare(&editor, &media, &context);
     assert_eq!(render(&redone, 15_000_000, 15_000, 257), expected);
     assert_eq!(context.retained_pcm_bytes(), pcm_bytes);
+}
+
+#[test]
+fn split_and_copied_repeating_group_pieces_share_one_composite_root() {
+    let (mut editor, ids, media) = group_fixture();
+    let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group");
+    };
+    let mut snapshot = editor.project().snapshot();
+    let row = snapshot.tracks[0]
+        .audio_clips_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|row| row.id == group.value())
+        .unwrap();
+    let edit = row.edit.as_mut().unwrap();
+    edit.view_start = 2_000;
+    edit.view_end = 9_000;
+    edit.placement = Some(hex_project::AudioViewPlacement {
+        mode: hex_project::AudioViewMode::Repeat,
+        outer_length: AudioDomainClock::Frames(40_000),
+        cycle_phase: 1_500,
+    });
+    row.duration = 40_000;
+    row.fade = hex_project::ClipFade::neutral(row.duration).unwrap();
+    let start = row.start;
+    let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
+    let context = isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16);
+    let unsplit = prepare(&editor, &media, &context);
+    let expected = render(&unsplit, start, 40_000, 127);
+    assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
+    let root = unsplit.arrangement().audio_clip_views()[0].audio.clone();
+    // The composite root plus its pitched child render; no outer placement PCM.
+    let retained = context.retained_pcm_bytes();
+    assert!(retained < 40_000 * std::mem::size_of::<crate::Frame>());
+    let Created::Clip(tail) = editor
+        .execute(Command::SplitClip {
+            clip: group,
+            frame: start + 23_456,
+        })
+        .unwrap()
+    else {
+        panic!("split")
+    };
+    let track = editor.project().tracks()[0].id();
+    let clipboard = Arc::new(editor.project().capture_clips(&[tail]).unwrap());
+    for copy in 0..8 {
+        editor
+            .execute(Command::PasteClips {
+                clipboard: Arc::clone(&clipboard),
+                track,
+                frame: start + 40_000 + copy * 16_544,
+                insert: false,
+            })
+            .unwrap();
+    }
+    let copied = prepare(&editor, &media, &context);
+    assert!(
+        copied
+            .arrangement()
+            .audio_clip_views()
+            .iter()
+            .all(|view| view.audio.shares_pcm_with(&root))
+    );
+    assert_eq!(context.retained_pcm_bytes(), retained);
+    assert_eq!(render(&copied, start, 40_000, 257), expected);
+    assert_eq!(
+        render(&copied, start + 40_000 + 7 * 16_544, 16_544, 31),
+        expected[23_456..]
+    );
 }

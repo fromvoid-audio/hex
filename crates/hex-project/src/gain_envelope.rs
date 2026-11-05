@@ -138,14 +138,12 @@ impl Project {
         let index = points
             .binary_search_by_key(&from, |point| point.beat)
             .map_err(|_| Invalid("gain point no longer exists"))?;
-        if from != to && points.binary_search_by_key(&to, |point| point.beat).is_ok() {
-            return Err(Invalid("gain point destination is occupied"));
-        }
         let mut point = points.remove(index);
         point.beat = to;
-        let index = points
-            .binary_search_by_key(&to, |point| point.beat)
-            .unwrap_err();
+        let index = match points.binary_search_by_key(&to, |point| point.beat) {
+            Ok(_) => return Err(Invalid("gain point destination is occupied")),
+            Err(index) => index,
+        };
         points.insert(index, point);
         self.replace_gain_envelope(track, points)
     }

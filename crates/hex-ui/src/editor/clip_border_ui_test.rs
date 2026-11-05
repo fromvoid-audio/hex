@@ -77,6 +77,11 @@ fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
         cx.notify();
     });
     visual.run_until_parked();
+    // Inject after the editor loads its stored theme; a non-black role
+    // proves every unselected outline reads the palette.
+    let _outline = theme::inject_test_clip_outline(0x2a4b6c);
+    editor.update(&mut visual, |_, cx| cx.notify());
+    visual.run_until_parked();
     let selectors = clips
         .iter()
         .map(|(id, prefix)| {
@@ -144,7 +149,7 @@ fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
                 gpui::Hsla::from(gpui::rgb(if selected {
                     theme::color(theme::PaletteRole::Primary)
                 } else {
-                    0x000000
+                    theme::color(theme::PaletteRole::ClipOutline)
                 })),
                 "{id:?} selected border"
             );
@@ -257,13 +262,16 @@ fn bottom_border_fixture(cx: &mut TestAppContext) -> BorderFixture {
     use gpui::AppContext;
     use hex_session::service::{Event, Request, Service};
     fn next(service: &Service) -> Event {
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let until = crate::test_wait::hang_deadline();
         loop {
             if let Ok(event) = service.try_event() {
                 assert!(event.error.is_none(), "{:?}", event.error);
                 return event;
             }
-            assert!(std::time::Instant::now() < until);
+            assert!(
+                std::time::Instant::now() < until,
+                "next: hang guard expired"
+            );
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
     }
@@ -347,6 +355,11 @@ fn all_four_clip_edges_paint_above_actual_row_separator_without_geometry_changes
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, _| window.activate_window());
     visual.run_until_parked();
+    // Inject after the editor loads its stored theme; a non-black role
+    // proves every unselected outline reads the palette.
+    let _outline = theme::inject_test_clip_outline(0x2a4b6c);
+    editor.update(&mut visual, |_, cx| cx.notify());
+    visual.run_until_parked();
     let original = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     let lane_selector = Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
     let separator_selector =
@@ -418,7 +431,7 @@ fn all_four_clip_edges_paint_above_actual_row_separator_without_geometry_changes
                     gpui::rgb(if selected {
                         theme::color(theme::PaletteRole::Primary)
                     } else {
-                        0x000000
+                        theme::color(theme::PaletteRole::ClipOutline)
                     })
                     .into()
                 );
@@ -558,7 +571,7 @@ fn all_four_clip_edges_paint_above_actual_row_separator_without_geometry_changes
 }
 
 #[gpui::test]
-fn selected_track_header_outline_is_complete_and_color_strip_stays_distinct(
+fn selected_track_header_has_no_selection_outline_and_color_strip_stays_distinct(
     cx: &mut TestAppContext,
 ) {
     let (_files, handle, editor) = super::clip_drag_ui_test::upper_rail_owned_fixture(cx);
@@ -585,27 +598,7 @@ fn selected_track_header_outline_is_complete_and_color_strip_stays_distinct(
         visual.simulate_click(target, Modifiers::default());
         visual.run_until_parked();
         let outline = Box::leak(format!("track-selection-outline-{}", id.value()).into_boxed_str());
-        let outline_bounds = visual
-            .debug_bounds(outline)
-            .expect("selected header outline");
-        assert_eq!(
-            outline_bounds.origin,
-            bounds.origin + gpui::point(gpui::px(1.), gpui::px(1.))
-        );
-        assert_eq!(
-            outline_bounds.size,
-            bounds.size - gpui::size(gpui::px(2.), gpui::px(2.))
-        );
-        let (stroke, widths, _) = visual.rendered_border(outline).unwrap();
-        let zero = gpui::ScaledPixels::default();
-        assert!(
-            widths.top > zero && widths.bottom > zero && widths.left > zero && widths.right > zero,
-            "selected header needs all four painted edges: {widths:?}"
-        );
-        assert_eq!(
-            stroke,
-            gpui::rgb(theme::color(theme::PaletteRole::Primary)).into()
-        );
+        assert!(visual.debug_bounds(outline).is_none());
         assert_eq!(
             visual.debug_bounds(header).unwrap(),
             bounds,
@@ -616,13 +609,6 @@ fn selected_track_header_outline_is_complete_and_color_strip_stays_distinct(
         assert_eq!(
             visual.rendered_background(strip).unwrap(),
             gpui::rgb(theme::element_colors(color).accent).into()
-        );
-        let outline_layers = visual.rendered_quad_paint_layers(outline, true);
-        let strip_layers = visual.rendered_quad_paint_layers(strip, false);
-        assert!(
-            outline_layers.iter().map(|(order, _)| order).max()
-                > strip_layers.iter().map(|(order, _)| order).max(),
-            "selection is painted above assigned color, not behind it"
         );
         editor.read_with(&visual, |view, _| {
             assert_eq!(view.selected_track, Some(id));

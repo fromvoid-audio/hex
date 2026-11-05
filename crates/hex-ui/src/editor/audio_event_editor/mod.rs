@@ -103,12 +103,23 @@ pub(super) struct Gesture {
 #[derive(Clone, Copy)]
 enum Kind {
     Select,
-    PlayStart { position: u64 },
-    RangeMove { start: u64, end: u64 },
+    PlayStart {
+        position: u64,
+    },
+    RangeMove {
+        start: u64,
+        end: u64,
+    },
     Move(AudioEvent),
     Leading(AudioEvent),
     Trailing(AudioEvent),
     Fade(fades::FadeGesture),
+    Gain {
+        event: AudioEvent,
+        origin_y: f32,
+        last_y: f32,
+        value: f64,
+    },
 }
 
 impl EditorView {
@@ -557,18 +568,62 @@ impl EditorView {
         self.event_update_pointer(x, platform);
         if let Some(gesture) = self.audio_event_editor.gesture.take() {
             if let Kind::PlayStart { position } = gesture.kind {
-                if position != gesture.anchor {
-                    if let Some((clip, _, _)) = self.event_context() {
-                        self.commit_audio_clip_loop(
-                            clip,
-                            hex_project::AudioViewResizeOperation::PlayStart { position },
-                        );
-                    }
+                if position != gesture.anchor
+                    && let Some((clip, _, _)) = self.event_context()
+                {
+                    self.commit_audio_clip_loop(
+                        clip,
+                        hex_project::AudioViewResizeOperation::PlayStart { position },
+                    );
                 }
             } else if let Some(operation) = gesture.operation {
                 self.event_commit(operation);
             }
         }
+    }
+    fn event_update_gain(&mut self, y: f32, fine: bool) {
+        if !y.is_finite() || !self.event_context_current() || self.edit_pending() {
+            self.audio_event_editor.gesture = None;
+            return;
+        }
+        let Some(gesture) = self.audio_event_editor.gesture.as_mut() else {
+            return;
+        };
+        let Kind::Gain {
+            event,
+            origin_y,
+            last_y,
+            value,
+        } = &mut gesture.kind
+        else {
+            return;
+        };
+        *value = (*value + (f64::from(*last_y) - f64::from(y)) * if fine { 10.0 } else { 100.0 })
+            .clamp(
+                f64::from(hex_project::ClipGain::MIN_MILLIDB),
+                f64::from(hex_project::ClipGain::MAX_MILLIDB),
+            );
+        *last_y = y;
+        gesture.moved |= (y - *origin_y).abs() >= 1.0;
+        let millidb = if gesture.moved {
+            value.round() as i32
+        } else {
+            event.gain.millidb()
+        };
+        gesture.operation = hex_project::ClipGain::new(millidb)
+            .ok()
+            .filter(|gain| *gain != event.gain)
+            .map(|gain| match &self.audio_event_editor.retained_selection {
+                Some((sources, id)) if *id == event.id => AudioEventEdit::SetRetainedGain {
+                    sources: sources.clone(),
+                    event: event.id,
+                    gain,
+                },
+                _ => AudioEventEdit::SetGain {
+                    event: event.id,
+                    gain,
+                },
+            });
     }
     fn event_update_pointer(&mut self, x: f32, platform: bool) {
         if let Some(Kind::Fade(fade)) = self.audio_event_editor.gesture.as_ref().map(|g| g.kind) {
@@ -675,7 +730,7 @@ impl EditorView {
                     end: event.end,
                 });
             }
-            Kind::Fade(_) => return,
+            Kind::Fade(_) | Kind::Gain { .. } => return,
             Kind::Trailing(event) => {
                 let end =
                     position.clamp(event.start + 1, editor_bounds(&root).1.max(event.start + 1));

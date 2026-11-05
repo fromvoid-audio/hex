@@ -73,8 +73,11 @@ fn events_roundtrip_and_strict_complete_overlay_rejects_loss_and_bad_references(
     assert!(hex_storage::decode(duplicate.as_bytes()).is_err());
 }
 
+/// Dense per-clip event inventories survive encode/decode exactly. Documents
+/// above the former 8 MiB reader limit are covered once, through save, replace,
+/// recovery and journal, by `tests/provenance.rs`.
 #[test]
-fn dense_event_serialization_roundtrips_above_the_former_document_limit() {
+fn dense_event_serialization_roundtrips_without_loss() {
     let mut editor = Editor::new(Project::new(48000).unwrap(), 8).unwrap();
     let Created::Imported { clip, .. } = editor
         .execute(Command::ImportAudioTrack {
@@ -95,6 +98,7 @@ fn dense_event_serialization_roundtrips_above_the_former_document_limit() {
             events: (0..1024)
                 .map(|i| hex_project::AudioEvent {
                     active: true,
+                    gain: hex_project::ClipGain::UNITY,
                     source: 0,
                     id: i + 1,
                     start: i * 2,
@@ -112,7 +116,7 @@ fn dense_event_serialization_roundtrips_above_the_former_document_limit() {
     };
     let mut template = audio_clips[0].clone();
     template.edit = Some(root);
-    *audio_clips = (0..256)
+    *audio_clips = (0..16)
         .map(|i| {
             let mut clip = template.clone();
             clip.id = 1000 + i;
@@ -123,7 +127,6 @@ fn dense_event_serialization_roundtrips_above_the_former_document_limit() {
     snapshot.next_id = 2000;
     let project = Project::from_snapshot(snapshot).unwrap();
     let bytes = hex_storage::encode(&project).unwrap();
-    assert!(bytes.len() > hex_storage::LEGACY_READER_DOCUMENT_BYTES);
     assert_eq!(hex_storage::decode(&bytes).unwrap(), project);
 }
 
@@ -305,5 +308,46 @@ fn non_affine_event_clock_refusal_is_atomic_and_global_tempo_recovers_without_un
     assert_eq!(
         hex_storage::decode(&hex_storage::encode(editor.project()).unwrap()).unwrap(),
         *editor.project()
+    );
+}
+
+#[test]
+fn freely_placed_events_roundtrip_on_their_grouped_timeline() {
+    let mut editor = Editor::new(Project::new(48000).unwrap(), 16).unwrap();
+    let Created::Imported { clip, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "audio".into(),
+            path: "audio.wav".into(),
+            sample_rate: 48000,
+            frames: 100,
+        })
+        .unwrap()
+    else {
+        panic!("fixture")
+    };
+    for operation in [
+        AudioEventEdit::Split { at: 40 },
+        AudioEventEdit::Place {
+            event: 2,
+            start: 130,
+        },
+        AudioEventEdit::Place {
+            event: 1,
+            start: -25,
+        },
+    ] {
+        editor
+            .execute(Command::EditAudioEvents { clip, operation })
+            .unwrap();
+    }
+    let project = editor.project();
+    let edit = project.clip(clip).unwrap().audio_edit().unwrap();
+    assert_eq!((edit.view_start, edit.domain.clock.length()), (25, 215));
+    let saved = hex_storage::encode(project).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+    assert_eq!(value["version"], hex_storage::CURRENT_SCHEMA_VERSION);
+    assert_eq!(
+        hex_storage::decode(&saved).unwrap().snapshot(),
+        project.snapshot()
     );
 }

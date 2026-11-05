@@ -2,6 +2,27 @@ use crate::{decode, encode, load, load_with_token, save_new};
 use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot};
 use hex_project::{Command, Created, Editor, Project, default_instrument_state};
 
+/// Historical schemas could describe only identity and sinc v1 conversion, so
+/// a document derived from the current fixture records its v2 rows as v1.
+fn historical_conversions(document: &mut serde_json::Value) {
+    for asset in document["assets"].as_array_mut().unwrap() {
+        if asset["conversion_version"] == hex_project::SINC_CONVERSION_V2 {
+            asset["conversion_version"] = hex_project::SINC_CONVERSION_V1.into();
+        }
+    }
+}
+
+/// The same project as a historical file would have recorded it.
+fn with_v1_conversions(project: &Project) -> Project {
+    let mut snapshot = project.snapshot();
+    for asset in &mut snapshot.assets {
+        if asset.conversion_version == hex_project::SINC_CONVERSION_V2 {
+            asset.conversion_version = hex_project::SINC_CONVERSION_V1;
+        }
+    }
+    Project::from_snapshot(snapshot).unwrap()
+}
+
 fn fixture() -> Project {
     let mut editor = Editor::new(Project::new(48000).unwrap(), 8).unwrap();
     let Created::Asset(asset) = editor
@@ -106,7 +127,7 @@ fn current_source_roundtrip_preserves_complete_chain_host_metadata_comparison_an
     let bytes = encode(&project).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["version"],
-        crate::CURRENT_SCHEMA_VERSION
+        crate::schema_version_for(&project)
     );
     assert_eq!(decode(&bytes).unwrap(), project);
     let mut schema46: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -127,6 +148,9 @@ fn current_source_roundtrip_preserves_complete_chain_host_metadata_comparison_an
         "inactive_midi_notes",
         "inactive_audio_events",
         "nested_audio",
+        "audio_event_gains",
+        "midi_clip_gains",
+        "automatic_track_names",
     ] {
         assert!(
             schema46
@@ -140,6 +164,7 @@ fn current_source_roundtrip_preserves_complete_chain_host_metadata_comparison_an
         );
     }
     schema46["version"] = 46.into();
+    historical_conversions(&mut schema46);
     for source in schema46["native_sources"].as_array_mut().unwrap() {
         source.as_object_mut().unwrap().remove("receiver");
     }
@@ -155,7 +180,7 @@ fn current_source_roundtrip_preserves_complete_chain_host_metadata_comparison_an
     );
     assert_eq!(
         decode(&serde_json::to_vec(&schema46).unwrap()).unwrap(),
-        project,
+        with_v1_conversions(&project),
         "schema46 retains its in-memory migration path"
     );
     assert_eq!(project.tracks()[0].devices().len(), 2);
@@ -561,6 +586,9 @@ fn schema49_shared_source_roundtrips_and_schema46_migration_is_single_binding_on
         "inactive_midi_notes",
         "inactive_audio_events",
         "nested_audio",
+        "audio_event_gains",
+        "midi_clip_gains",
+        "automatic_track_names",
     ] {
         assert!(
             old46
@@ -574,6 +602,7 @@ fn schema49_shared_source_roundtrips_and_schema46_migration_is_single_binding_on
         );
     }
     old46["version"] = 46.into();
+    historical_conversions(&mut old46);
     old46
         .as_object_mut()
         .unwrap()

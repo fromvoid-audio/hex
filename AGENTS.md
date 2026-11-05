@@ -6,6 +6,13 @@ Arrangement and Session workflows, audio/MIDI behavior, editing, recording,
 automation, routing, and project fidelity, while improving architecture,
 responsiveness, and measured performance.
 
+Hex's project-specific instructions and established conventions take precedence
+over the Google Rust Style Guide wherever they conflict.
+When implementing an issue, improve observed Rust style-guide deviations in the
+code being changed when the adjustment is small, coherent, and preserves behavior
+and Hex's contracts. Include appropriate verification; avoid unrelated or broad
+style-only refactors. Record substantial improvements separately in Pulse.
+
 ## Saved-project compatibility policy
 
 Hex is active alpha software. Saved projects must remain openable through explicit,
@@ -90,6 +97,12 @@ contracts beside their source owners; do not invent a parallel architecture spec
 Enforce boundaries through Rust visibility, types, dependency checks and contract
 tests. The architecture guard checks declared crate edges and doc headings; it
 does not prove module isolation or runtime correctness.
+
+Continually strengthen cohesive system boundaries with explicit ownership and
+testable contracts as work exposes a concrete need. Keep dependencies contained so
+changes can be verified at the owning boundary and its affected consumers without
+unnecessary broad testing. Do not introduce speculative abstractions or assume a
+boundary provides isolation without evidence; broaden checks when impact is unclear.
 
 Internal devices use existing host APIs. A missing capability requires an explicit,
 bounded host-contract change with checks for affected consumers; do not reach into
@@ -197,6 +210,11 @@ full disks with a useful error and a defined recovery path.
    snapshot churn, duplicate assertions and slow exhaustive matrices without a
    demonstrated risk. Preserve meaningful boundary, lifecycle and malformed-input
    coverage; suite size alone is not a quality measure.
+   Continually improve tests touched by issue work: remove demonstrated duplication,
+   simplify fixtures and reduce measured runtime while retaining effective regression
+   coverage. Verify the retained tests still exercise the intended behavior and report
+   meaningful timing evidence for performance-driven cleanup. Keep unrelated or
+   substantial test-suite work separate; never weaken coverage merely to run faster.
 6. **Keep GPUI thin and inspect it visually.** Separate UI display state from
    authoritative audio/project state. Draw cached waveform summaries and visible
    content; do not traverse/render a whole project every frame. Consolidate design
@@ -256,6 +274,21 @@ checks. Record the scope, exact source/base, commands, results and omissions wit
 reasons in the canonical PR. A small diff or passing mock alone does not establish
 isolation; tests do not mathematically guarantee unrelated code.
 
+Owner boundaries carry merge verification (user decision, 1 November 2026). A
+merge runs the test suites of the packages that own the change, plus reviewed
+runtime consumers with no Cargo edge. Every Cargo consumer must still compile and
+lint, but consumer test suites are not rerun. Rely on the owner's boundary tests
+to guarantee behaviour downstream. When a consumer later breaks, the defect is a
+missing owner boundary test: add the regression at the owner instead of widening
+merge checks. Within an owner crate, merges test only the changed modules'
+own test subtrees (a module without tests falls back to its nearest tested
+ancestor), so give each module its own boundary tests and split large modules
+along their responsibilities. Keep each merge's test setup and execution,
+excluding build time, under one minute. `scripts/local-ci.py --profile merge` reports this
+budget as a warning, not a merge failure (user decision, 1 November 2026; see
+`docs/local-ci.md`). Merge when every other check is green. A recurring
+over-budget owner suite is a test-design bug: record it in Pulse.
+
 Broaden only for a documented concrete impact or unresolved risk. Explain unknown
 selection, then resolve it by inspecting owners/consumers or conservatively check
 the uncertain area. Never silently count an unknown omission as covered. Neither
@@ -303,6 +336,38 @@ computer-use testing in parallel with their work. Automated source tests remain
 the agent's responsibility. For persistence/recording, test
 round trips, missing assets, interrupted writes, and recoverable failures. Never
 substitute automated checks for manual acceptance they cannot establish.
+
+### User-run checks in Pulse
+
+User-run acceptance and reproduction checks live in the owning issue's Pulse
+review checklist. On 30 October 2026 every check in the former shared file
+`/Users/portalsurfer/dev/hex/artifacts/USER-TESTS.md` was migrated there with its
+checked state; that file is a historical migration source only. Do not add to it
+or create another local checklist. Pulse remains the authority for issue status,
+scope and dependencies.
+
+After a focused PR passes its required checks and its merge is authenticated, add
+the applicable user-run checks to its issue as review checklist items, then mark it
+`ready_for_review`; Pulse requires at least one item before a review state. Add one
+item per `review_checklist_change`, each with a fresh revision, and change the
+checklist and the status in separate updates. Write each item as a single
+independently completable, observable check. Split distinct outcomes so the user
+can record partial progress. Record the context needed to run the checks (qualified
+running build/source, prerequisites, limits) as an issue note. Explicitly
+requested reproduction may be added before a fix is merged; identify its actual
+status. Include applicable checks already in review without resetting their issue
+state. Do not invent manual product checks for an internal-only change; give it one
+reviewer item such as "Review merged PR #N diff and its recorded verification
+evidence". Neither a disk installation nor a headless test proves native
+acceptance. Keep the items aligned with the finite delivery checklist in
+`docs/test-builds.md`.
+
+The user ticks completed items in Pulse and personally marks the issue done after
+all its items are complete. Do not tick, edit or remove a user's item, mark an issue
+done because items are ticked, or infer acceptance from a merge. Read the issue's
+current checklist and revision before every change and reconcile concurrent edits.
+Do not use checklist items as a second source of implementation tasks, status
+changes or project requirements.
 
 Inspect the final diff when Git exists; otherwise review the changed files against
 known starting content. Preserve unrelated work. Update technical contracts in the
@@ -438,8 +503,9 @@ are unavailable, report the limitation and keep a clearly labeled temporary
 plan in chat; do not silently switch trackers or claim that unsaved tickets were
 created.
 
-Pulse is the sole planning and issue authority. Do not create or maintain local
-TODO files, task/status lists, request queues or parallel milestone backlogs. Put
+Pulse is the sole planning and issue authority, including user-run review
+checklists. Do not create or maintain local TODO files, checklists,
+task/status lists, request queues or parallel milestone backlogs. Put
 new requirements, dependencies, priorities, acceptance criteria, next actions and
 progress in the corresponding live Pulse tickets and goals. Do not append task
 chronologies to repository documents as a substitute. If Pulse is unavailable,

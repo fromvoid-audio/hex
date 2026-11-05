@@ -5,7 +5,7 @@ use hex_project::{BeatTime, Command, Created};
 
 #[test]
 fn resident_open_after_new_accepts_before_obsolete_observation_delivery() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_event_capacity(8192, Arc::new(AtomicBool::new(true)), 1);
     assert!(h.next().error.is_none());
@@ -96,6 +96,15 @@ fn finish_replacement(h: &mut ResidentHarness, event: &Event, old_output: u64) -
     // both actual headless carriers and the old Client, then wait for the real exclusive Lease.
     h.release_relinquished_output();
     h.wait_fresh_output(old_output);
+    // The worker named the retired endpoint before opening the fresh one.
+    let generation = event
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .context()
+        .project_generation;
+    assert_eq!(h.released.last(), Some(&(generation, old_output)));
     assert!(
         h.audio
             .as_ref()
@@ -120,7 +129,7 @@ fn finish_replacement(h: &mut ResidentHarness, event: &Event, old_output: u64) -
 
 #[test]
 fn resident_new_saved_open_and_journal_recovery_replay_exact_original_with_atomic_refusal() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(32_768);
     assert!(h.next().error.is_none());
@@ -339,20 +348,21 @@ fn resident_new_saved_open_and_journal_recovery_replay_exact_original_with_atomi
 
 #[test]
 fn resident_offline_source_replay_surfaces_refusal_and_restart_keeps_exact_extent() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let gate = Arc::new(AtomicBool::new(false));
     // Exact original extent: current/captured/retired configuration handles must deduplicate
     // the same physical bank, rather than charging another 8192 frames during output teardown.
     let mut h = ResidentHarness::with_open_gate(8192, Arc::clone(&gate));
     let initial = h.next();
-    assert!(
-        initial
-            .error
-            .as_ref()
-            .unwrap()
-            .contains("fixture output unavailable")
-    );
+    assert!(initial.error.is_none());
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while h.unavailable.is_empty() {
+        h.pump();
+        assert!(Instant::now() < deadline, "open refusal was not delivered");
+        std::thread::yield_now();
+    }
+    assert!(h.unavailable[0].contains("fixture output unavailable"));
     let added = h.run(Request::Edit(Command::AddMidiTrack {
         name: "sampler".into(),
     }));
@@ -480,7 +490,7 @@ fn resident_offline_source_replay_surfaces_refusal_and_restart_keeps_exact_exten
 
 #[test]
 fn resident_pending_survives_refused_verified_transition_and_retires_on_accepted_mode_change() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let gate = Arc::new(AtomicBool::new(false));
     let mut h = ResidentHarness::with_open_gate(8192, Arc::clone(&gate));
@@ -578,7 +588,7 @@ fn resident_pending_survives_refused_verified_transition_and_retires_on_accepted
 fn production_default_verified_gestures_rebase_barriers_and_restore_use_verified_protocol() {
     use hex_session::device_gesture::{GestureKey, GestureRequest, GestureTarget, ParameterValue};
     use hex_session::tuning_gesture::{TuningGestureKey, TuningGestureRequest};
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::new();
     assert!(h.next().error.is_none());
@@ -652,13 +662,23 @@ fn production_default_verified_gestures_rebase_barriers_and_restore_use_verified
         .control
         .command(PlaybackCommand::Play)
         .unwrap();
+    // A changed static device matrix ramps over `rate.div_ceil(200)` frames
+    // (Pulse #4101); 8 blocks of 64 frames cover that ramp up to 96 kHz.
     let assert_pcm = |h: &mut ResidentHarness, sample: f32| {
         let deadline = Instant::now() + Duration::from_secs(10);
+        let mut ramp_blocks = 0;
         loop {
             let pcm = h.render();
             if pcm.iter().flatten().any(|value| *value != 0.0) {
-                assert_eq!(pcm, [[sample; 2]; 64]);
-                return;
+                if pcm == [[sample; 2]; 64] {
+                    return;
+                }
+                ramp_blocks += 1;
+                assert!(
+                    ramp_blocks <= 8,
+                    "output did not settle at {sample}: {pcm:?}"
+                );
+                continue;
             }
             // Verified source identity/admission ACK precedes asynchronous page readiness.
             assert!(
@@ -801,7 +821,7 @@ fn production_default_verified_gestures_rebase_barriers_and_restore_use_verified
 
 #[test]
 fn ordinary_default_drop_grows_beyond_pcm_allowance_and_reaches_real_native_publication() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let first_path = files.wav(48_000, 4);
     let second_path = files.0.join("second.wav");
@@ -1025,8 +1045,8 @@ fn ordinary_default_drop_grows_beyond_pcm_allowance_and_reaches_real_native_publ
 }
 
 #[test]
-fn ordinary_file_backed_seek_reconstructs_history_and_publishes_exact_native_pcm() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+fn ordinary_file_backed_seek_publishes_exact_native_pcm() {
+    let _native = native_fixture();
     for (sampler, section) in [(false, false), (true, false), (true, true)] {
         ordinary_file_seek_case(sampler, section);
     }
@@ -1166,7 +1186,7 @@ fn ordinary_file_seek_case(sampler: bool, section: bool) {
 
 #[test]
 fn ordinary_mixed_original_sampler_and_file_sources_save_reopen_without_decoding_file_pcm() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let sampler_files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(16_384);
@@ -1273,4 +1293,55 @@ fn ordinary_mixed_original_sampler_and_file_sources_save_reopen_without_decoding
         );
         std::thread::yield_now();
     }
+}
+
+#[test]
+fn resident_offline_media_opens_silent_and_relinks_in_place_with_undo() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(32_768);
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let source = files.wav(48_000, 8_192);
+    let imported = h.run(Request::Import(source.clone()));
+    let asset = imported.state.project.assets().next().unwrap().id();
+    h.applied(applied);
+    let path = files.0.join("offline.hex");
+    h.run(Request::SaveNew(path.clone()));
+    let moved = files.0.join("moved.wav");
+    std::fs::rename(&source, &moved).unwrap();
+
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let opened = h.run(Request::Open(path));
+    assert!(opened.state.project.asset_offline(asset));
+    let applied = finish_replacement(&mut h, &opened, old_output);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(hex_engine::playback::PlaybackCommand::Play)
+        .unwrap();
+    assert_eq!(h.render(), [[0.0; 2]; 64], "offline clips are silent");
+
+    let relinked = h.run(Request::RelinkMedia(std::collections::BTreeMap::from([(
+        asset,
+        moved.clone(),
+    )])));
+    assert!(!relinked.state.project.asset_offline(asset));
+    assert_eq!(relinked.state.project.asset(asset).unwrap().path(), moved);
+    let (applied, metadata) = h.applied(applied);
+    assert_eq!(metadata.context.editor_revision, relinked.state.revision);
+    assert!(
+        h.render().iter().any(|frame| *frame != [0.0; 2]),
+        "relinked media plays once admitted"
+    );
+
+    let undone = h.run(Request::Undo);
+    assert!(undone.state.project.asset_offline(asset));
+    h.applied(applied);
+    assert_eq!(
+        h.render(),
+        [[0.0; 2]; 64],
+        "undo returns the clip to silence"
+    );
 }

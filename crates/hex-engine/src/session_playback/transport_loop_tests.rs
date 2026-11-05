@@ -4,7 +4,7 @@ use super::*;
 const Q: u64 = 1_u64 << 32;
 
 #[test]
-fn paused_audio_loop_change_with_limiter_preserves_samples_and_clock() {
+fn audio_loop_change_with_limiter_preserves_samples_and_clock() {
     use hex_lattice_contract::NativeDeviceMetadata;
     let mut snapshot = audio_project(0, 32, 4).snapshot();
     for asset in &mut snapshot.assets {
@@ -61,16 +61,33 @@ fn paused_audio_loop_change_with_limiter_preserves_samples_and_clock() {
         )
     };
     let loop_revision = prepare(&looped);
+    // A loop edit while playing inside the new region continues exactly as if
+    // that loop had always been set: same wrap, samples and clocks.
     let mut live = SessionPlayback::new(prepare(&linear)).unwrap();
-    live.apply(SessionPlaybackCommand::Play).unwrap();
-    live.render(&mut [[0.0; 2]; 600]).unwrap();
+    let mut live_oracle = SessionPlayback::new(Arc::clone(&loop_revision)).unwrap();
+    for runtime in [&mut live, &mut live_oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut [[0.0; 2]; 600]).unwrap();
+    }
     let mut live_candidate = SessionPlayback::new(Arc::clone(&loop_revision)).unwrap();
-    assert!(matches!(
-        live_candidate.try_inherit_state_from(&mut live),
-        Err(SessionPlaybackError::Arrangement(
-            "compensated timing changed · stop transport before applying this revision"
-        ))
-    ));
+    live_candidate.try_inherit_state_from(&mut live).unwrap();
+    let mut live_actual = vec![[0.0; 2]; 6000];
+    let mut live_expected = live_actual.clone();
+    for chunk in live_actual.chunks_mut(127) {
+        live_candidate.render(chunk).unwrap();
+    }
+    for chunk in live_expected.chunks_mut(127) {
+        live_oracle.render(chunk).unwrap();
+    }
+    assert_eq!(
+        live_candidate.arrangement_frame(),
+        live_oracle.arrangement_frame()
+    );
+    assert_eq!(
+        live_candidate.performance_frame(),
+        live_oracle.performance_frame()
+    );
+    assert_eq!(live_actual, live_expected);
     let mut tempo_snapshot = linear.snapshot();
     tempo_snapshot.tempo_points = vec![TempoPoint::new(
         BeatTime::ZERO,
@@ -82,12 +99,35 @@ fn paused_audio_loop_change_with_limiter_preserves_samples_and_clock() {
     paused.render(&mut [[0.0; 2]; 600]).unwrap();
     paused.apply(SessionPlaybackCommand::Pause).unwrap();
     let mut tempo_candidate = SessionPlayback::new(prepare(&tempo_changed)).unwrap();
-    assert!(matches!(
+    // Strict planner refusal; the live path restarts instead (Pulse #3774).
+    assert_eq!(
         tempo_candidate.try_inherit_state_from(&mut paused),
         Err(SessionPlaybackError::Arrangement(
-            "compensated timing changed · stop transport before applying this revision"
+            super::handoff::COMPENSATED_TIMING_CHANGED
         ))
-    ));
+    );
+    // Live: paused or playing, the cursor keeps its beat under the new map
+    // (Pulse #4118); playing, audio restarts as Play-from at that beat.
+    assert_eq!(paused.arrangement_frame(), 600);
+    let mut tempo_live = SessionPlayback::new(prepare(&tempo_changed)).unwrap();
+    tempo_live.try_inherit_state_live_from(&mut paused).unwrap();
+    assert!(!tempo_live.playing());
+    assert_eq!(tempo_live.arrangement_frame(), 800);
+    let mut running = SessionPlayback::new(prepare(&linear)).unwrap();
+    running.apply(SessionPlaybackCommand::Play).unwrap();
+    running.render(&mut [[0.0; 2]; 600]).unwrap();
+    let mut relocated = SessionPlayback::new(prepare(&tempo_changed)).unwrap();
+    relocated.try_inherit_state_live_from(&mut running).unwrap();
+    assert!(relocated.playing());
+    // 120 -> 90 bpm: frame 600 (1/40 beat) lands at frame 800 under 90 bpm.
+    assert_eq!(relocated.arrangement_frame(), 800);
+    let mut relocated_oracle = SessionPlayback::new(prepare(&tempo_changed)).unwrap();
+    relocated_oracle.play_from(800).unwrap();
+    let mut relocated_actual = vec![[0.0; 2]; 2048];
+    let mut relocated_expected = relocated_actual.clone();
+    relocated.render(&mut relocated_actual).unwrap();
+    relocated_oracle.render(&mut relocated_expected).unwrap();
+    assert_eq!(relocated_actual, relocated_expected);
     let mut donor = SessionPlayback::new(prepare(&linear)).unwrap();
     let mut oracle = SessionPlayback::new(Arc::clone(&loop_revision)).unwrap();
     for runtime in [&mut donor, &mut oracle] {
@@ -141,13 +181,26 @@ fn paused_loop_change_with_limiter_refuses_active_instrument_tail_without_corrup
         runtime.apply(SessionPlaybackCommand::Pause).unwrap();
         runtime.render(&mut [[0.0; 2]; 64]).unwrap();
     }
-    let mut candidate = SessionPlayback::new(loop_revision).unwrap();
-    assert!(matches!(
+    let mut candidate = SessionPlayback::new(Arc::clone(&loop_revision)).unwrap();
+    // Strict planner refusal; the live path restarts instead (Pulse #3774).
+    assert_eq!(
         candidate.try_inherit_state_from(&mut donor),
         Err(SessionPlaybackError::Arrangement(
-            "compensated processor tails require stopping transport before changing the chain"
+            super::handoff::COMPENSATED_TAILS_CHANGED
         ))
-    ));
+    );
+    // The live path applies the loop edit at the paused cursor on a separate
+    // donor, leaving this test's donor untouched for the checks below.
+    let mut live_donor = SessionPlayback::new(revision(&linear, Arc::clone(&table))).unwrap();
+    live_donor.apply(SessionPlaybackCommand::Play).unwrap();
+    live_donor.render(&mut [[0.0; 2]; 600]).unwrap();
+    live_donor.apply(SessionPlaybackCommand::Pause).unwrap();
+    live_donor.render(&mut [[0.0; 2]; 64]).unwrap();
+    let cursor = live_donor.arrangement_frame();
+    let mut live = SessionPlayback::new(loop_revision).unwrap();
+    live.try_inherit_state_live_from(&mut live_donor).unwrap();
+    assert!(!live.playing());
+    assert_eq!(live.arrangement_frame(), cursor);
     for runtime in [&mut donor, &mut oracle] {
         runtime.apply(SessionPlaybackCommand::Play).unwrap();
     }
@@ -163,6 +216,48 @@ fn paused_loop_change_with_limiter_refuses_active_instrument_tail_without_corrup
     assert_eq!(donor.performance_frame(), oracle.performance_frame());
     assert_eq!(actual, expected);
     assert!(actual.iter().flatten().any(|value| value.abs() > 0.001));
+}
+
+#[test]
+fn loop_edited_behind_a_wrapped_cursor_continues_linearly() {
+    let source = crate::Audio::new(48_000, vec![[0.25, 0.25]; 32]).unwrap();
+    let media = audio_media(&audio_project(0, 32, 4), &source, &source);
+    let looped = |start, end| {
+        let mut snapshot = audio_project(0, 32, 4).snapshot();
+        snapshot.loop_region = Some(LoopRegion::new(start, end, true).unwrap());
+        Arc::new(
+            PreparedRevision::prepare(
+                &legacy_project_from_snapshot(snapshot).unwrap(),
+                &media,
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let mut active = SessionPlayback::new(looped(0, 2048)).unwrap();
+    active.apply(SessionPlaybackCommand::Play).unwrap();
+    active.render(&mut [[0.0; 2]; 3072]).unwrap();
+    assert_eq!(
+        (active.arrangement_frame(), active.arrangement_loop_pass),
+        (1024, 1)
+    );
+
+    let mut behind = SessionPlayback::new(looped(0, 512)).unwrap();
+    behind.try_inherit_state_from(&mut active).unwrap();
+    behind.render(&mut [[0.0; 2]; 1000]).unwrap();
+    assert_eq!(
+        behind.arrangement_frame(),
+        2024,
+        "no jump back into the new loop"
+    );
+    assert_eq!(behind.performance_frame(), 4072);
+
+    let mut ahead = SessionPlayback::new(looped(4096, 4608)).unwrap();
+    ahead.try_inherit_state_from(&mut behind).unwrap();
+    ahead.render(&mut [[0.0; 2]; 3000]).unwrap();
+    assert_eq!(ahead.arrangement_frame(), 4096 + (5024 - 4608));
+    assert_eq!(ahead.arrangement_loop_pass, 2);
 }
 
 #[test]
@@ -413,6 +508,7 @@ fn shared_source_transport_loop_admits_one_aggregate_voice_and_release_envelope(
                 factory.max_release_tail_frames(),
                 factory.max_events_per_block(),
                 factory.max_active_occurrences(),
+                false,
             ),
             Ok(44),
             "each contributor stays below the 64 voice limit"
@@ -500,6 +596,22 @@ fn combined_loop_expanded_oracle_project() -> Project {
     snapshot.next_id = first_note_id + 11;
     snapshot.loop_region = None;
     legacy_project_from_snapshot(snapshot).expect("valid expanded combined-loop oracle")
+}
+
+#[test]
+fn transport_wrap_matches_authored_pcm_at_fixed_callback_sizes() {
+    let mut source_loop = arrangement_loop_project().snapshot();
+    source_loop.loop_region = Some(LoopRegion::new(30_000, 78_000, true).unwrap());
+    let source_loop = legacy_project_from_snapshot(source_loop).unwrap();
+    let expanded = combined_loop_expanded_oracle_project();
+    // Include the first wrap and its freshly chased gate, with the reference
+    // generated from independently authored linear occurrences.
+    let expected = render_transport_project(&expanded, 80_000, &[256]);
+    assert!(expected.iter().flatten().any(|sample| *sample != 0.0));
+    for block in [1, 17, 64, 128, 256, 512] {
+        let actual = render_transport_project(&source_loop, expected.len(), &[block]);
+        assert_eq!(actual, expected, "block size {block}");
+    }
 }
 
 #[test]
@@ -753,6 +865,51 @@ fn mutable_transport_wrap_chases_as_fresh_attack_without_first_entry_duplicate()
 }
 
 #[test]
+fn interactive_start_one_frame_before_wrap_matches_authored_attack_and_note_off() {
+    let looped = transport_loop_project(false);
+    let revision = prepare_mutable(&looped);
+    let mut snapshot = transport_loop_project(true).snapshot();
+    let (TrackContentSnapshot::Hybrid { midi_clips, .. }
+    | TrackContentSnapshot::Instrument(midi_clips)) = &mut snapshot.tracks[0].content
+    else {
+        panic!("fixture Arrangement MIDI clip")
+    };
+    let note = &mut midi_clips[0].notes[0];
+    note.start_raw = beat_raw_for_frames(1);
+    note.duration_raw = Q;
+    midi_clips[0].notes.truncate(1);
+    let oracle = legacy_project_from_snapshot(snapshot).expect("valid linear oracle");
+    let expected = render_transport_project(&oracle, 24_065, &[256]);
+    assert_eq!(expected[0], [0.0; 2]);
+    assert!(
+        expected[1..24_001]
+            .iter()
+            .flatten()
+            .any(|sample| *sample != 0.0)
+    );
+    assert!(
+        expected[24_041..]
+            .iter()
+            .flatten()
+            .all(|sample| *sample == 0.0)
+    );
+
+    for block in [1, 17, 64, 128, 256, 512] {
+        let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        playback.play_from(95_999).unwrap();
+        playback.render(&mut []).unwrap();
+        assert_eq!(playback.arrangement_frame(), 95_999);
+        let mut actual = vec![[0.0; 2]; expected.len()];
+        for chunk in actual.chunks_mut(block) {
+            playback.render(chunk).unwrap();
+        }
+        assert_eq!(actual, expected, "block size {block}");
+        assert_eq!(playback.arrangement_frame(), 72_064);
+        assert_eq!(playback.performance_frame(), 120_064);
+    }
+}
+
+#[test]
 fn mutable_transport_density_allows_empty_short_loops_and_rejects_dense_short_loops() {
     let mut empty = transport_loop_project(false).snapshot();
     empty.loop_region = Some(LoopRegion::new(0, 1, true).expect("valid one-frame loop"));
@@ -862,12 +1019,42 @@ fn mutable_transport_admission_respects_lower_device_event_and_voice_limits() {
         .expect("fixture transport loop");
 
     assert_eq!(
-        super::transport_loop_admission::admit_track(track, region, 16, 1, 64),
+        super::transport_loop_admission::admit_track(track, region, 16, 1, 64, false),
         Err(SessionPlaybackError::MutableInstrumentLoopDensity)
     );
     assert_eq!(
-        super::transport_loop_admission::admit_track(track, region, 16, 256, 1),
+        super::transport_loop_admission::admit_track(track, region, 16, 256, 1, false),
         Err(SessionPlaybackError::MutableInstrumentLoopDensity)
+    );
+    assert_eq!(
+        super::transport_loop_admission::admit_track(track, region, 16, 256, 1, true),
+        Err(SessionPlaybackError::MutableInstrumentLoopDensity),
+        "two held voices exceed one stealing voice too"
+    );
+}
+
+#[test]
+fn stealing_transport_loop_admission_bounds_held_voices_not_seam_releases() {
+    // The single chased loop note releases for longer than its silent gap,
+    // so each wrap's fresh chase overlaps the previous release.
+    let revision = prepare_mutable(&transport_loop_project(false));
+    let track = &revision.arrangement().tracks()[0];
+    let region = revision
+        .arrangement()
+        .loop_region()
+        .expect("fixture transport loop");
+    let admit = |voices, steals| {
+        super::transport_loop_admission::admit_track(track, region, 30_000, 256, voices, steals)
+    };
+    assert_eq!(admit(64, false), Ok(2), "releases cross the seam");
+    assert_eq!(
+        admit(1, false),
+        Err(SessionPlaybackError::MutableInstrumentLoopDensity)
+    );
+    assert_eq!(
+        admit(1, true),
+        Ok(2),
+        "only one voice is ever held; the envelope keeps the release"
     );
 }
 
@@ -1063,6 +1250,150 @@ fn mutable_transport_handoff_ignores_pre_loop_release_only_candidate() {
 }
 
 #[test]
+fn resident_session_batch_loop_overflow_preserves_pending_launch_for_retry() {
+    let mut fixture = crate::signal_graph::tests::fixture(&[&[7], &[], &[], &[]], 32);
+    fixture
+        .editor
+        .execute(Command::SetLoopRegion {
+            start: 4,
+            end: 24,
+            enabled: true,
+        })
+        .unwrap();
+    let Created::Scene(scene) = fixture
+        .editor
+        .execute(Command::AddScene {
+            name: "scene".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    for &track in &fixture.tracks {
+        let asset = fixture.editor.project().track(track).unwrap().clips()[0].asset();
+        fixture
+            .editor
+            .execute(Command::CreateSessionAudioClip {
+                track,
+                scene,
+                name: "clip".into(),
+                asset,
+                source_start: 0,
+                source_end: 32,
+            })
+            .unwrap();
+    }
+    let revision = crate::signal_graph::tests::prepare(&fixture).unwrap();
+    let mut failed = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut reference = SessionPlayback::new(revision).unwrap();
+    for runtime in [&mut failed, &mut reference] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime
+            .apply(SessionPlaybackCommand::LaunchScene {
+                scene,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        runtime.arrangement_frame = 23;
+        runtime.performance_frame = 23;
+        runtime.arrangement_loop_pass = u64::MAX;
+    }
+    let mut rejected = [[7.0; 2]; 2];
+    assert_eq!(
+        failed.render(&mut rejected),
+        Err(SessionPlaybackError::ArithmeticOverflow)
+    );
+    assert_eq!(rejected, [[0.0; 2]; 2]);
+    assert_eq!(
+        (
+            failed.performance_frame,
+            failed.arrangement_frame,
+            failed.arrangement_loop_pass
+        ),
+        (23, 23, u64::MAX)
+    );
+    failed.arrangement_loop_pass = 0;
+    reference.arrangement_loop_pass = 0;
+    let mut actual = [[0.0; 2]; 16];
+    let mut expected = [[0.0; 2]; 16];
+    failed.render(&mut actual).unwrap();
+    reference.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+    assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
+    for &track in &fixture.tracks {
+        assert_eq!(failed.owner(track), reference.owner(track));
+    }
+    assert_eq!(
+        (
+            failed.performance_frame,
+            failed.arrangement_frame,
+            failed.arrangement_loop_pass
+        ),
+        (
+            reference.performance_frame,
+            reference.arrangement_frame,
+            reference.arrangement_loop_pass
+        )
+    );
+}
+
+#[test]
+fn resident_batch_loop_overflow_rolls_back_before_retry() {
+    let mut fixture = crate::signal_graph::tests::fixture(&[&[7]], 32);
+    fixture
+        .editor
+        .execute(Command::SetLoopRegion {
+            start: 4,
+            end: 24,
+            enabled: true,
+        })
+        .unwrap();
+    let revision = crate::signal_graph::tests::prepare(&fixture).unwrap();
+    let mut failed = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut reference = SessionPlayback::new(revision).unwrap();
+    for runtime in [&mut failed, &mut reference] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        assert_eq!(runtime.resident_source_scratch.len(), 1);
+        runtime.arrangement_frame = 23;
+        runtime.performance_frame = 23;
+        runtime.arrangement_loop_pass = u64::MAX;
+    }
+    let mut rejected = [[7.0; 2]; 2];
+    assert_eq!(
+        failed.render(&mut rejected),
+        Err(SessionPlaybackError::ArithmeticOverflow)
+    );
+    assert_eq!(rejected, [[0.0; 2]; 2]);
+    assert_eq!(
+        (
+            failed.performance_frame,
+            failed.arrangement_frame,
+            failed.arrangement_loop_pass
+        ),
+        (23, 23, u64::MAX)
+    );
+    failed.arrangement_loop_pass = 0;
+    reference.arrangement_loop_pass = 0;
+    let mut actual = [[0.0; 2]; 16];
+    let mut expected = [[0.0; 2]; 16];
+    failed.render(&mut actual).unwrap();
+    reference.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(
+        (
+            failed.performance_frame,
+            failed.arrangement_frame,
+            failed.arrangement_loop_pass
+        ),
+        (
+            reference.performance_frame,
+            reference.arrangement_frame,
+            reference.arrangement_loop_pass
+        )
+    );
+}
+
+#[test]
 fn mutable_transport_pass_overflow_rolls_back_block_and_clock_for_retry() {
     let revision = prepare_mutable(&transport_loop_project(false));
     let mut failed = SessionPlayback::new(Arc::clone(&revision)).expect("admitted transport loop");
@@ -1169,21 +1500,40 @@ fn mutable_transport_wrap_pass_and_live_gate_survive_revision_handoff() {
     let changed_tempo = legacy_project_from_snapshot(changed_tempo).expect("valid tempo edit");
     let mut tempo_candidate = SessionPlayback::new(prepare_mutable(&changed_tempo))
         .expect("tempo-edited loop density admitted");
-    assert_eq!(
-        tempo_candidate.try_inherit_state_from(&mut tempo_active),
-        Err(SessionPlaybackError::MutableInstrumentActive),
-        "tempo edit must refuse while a chased loop gate is active"
+    // Pulse #4117: the tempo edit no longer refuses. The chased loop gate is
+    // released at the cut, keeping the same occurrence, and the remapped
+    // pre-cut onset is suppressed rather than chased again.
+    let chased = tempo_active.mutable_instruments[0]
+        .as_ref()
+        .expect("mutable runtime")
+        .proofs()
+        .find(|proof| proof.signature.key().loop_pass == 1 && !proof.note_off_sent)
+        .expect("chased loop gate")
+        .id;
+    tempo_candidate
+        .try_inherit_state_from(&mut tempo_active)
+        .expect("tempo edit keeps the chased loop gate's beat");
+    let proofs = |playback: &SessionPlayback| {
+        playback.mutable_instruments[0]
+            .as_ref()
+            .expect("carried mutable runtime")
+            .proofs()
+            .collect::<Vec<_>>()
+    };
+    let cut = tempo_candidate.performance_frame();
+    assert!(
+        proofs(&tempo_candidate)
+            .iter()
+            .any(|proof| proof.id == chased && proof.gate_end_frame == cut)
     );
-    assert_eq!(tempo_active.arrangement_loop_pass, 1);
-    let mut after_refusal = [[0.0; 2]; 128];
-    let mut uninterrupted = [[0.0; 2]; 128];
-    tempo_active
-        .render(&mut after_refusal)
-        .expect("old loop continues after tempo refusal");
-    tempo_reference
-        .render(&mut uninterrupted)
-        .expect("uninterrupted loop reference");
-    assert_eq!(after_refusal, uninterrupted);
+    tempo_candidate
+        .render(&mut [[0.0; 2]; 128])
+        .expect("render after the tempo edit");
+    assert!(
+        proofs(&tempo_candidate)
+            .iter()
+            .all(|proof| proof.id == chased && proof.note_off_sent)
+    );
     let mut successor = SessionPlayback::new(prepare_mutable(&project)).expect("same loop");
     successor
         .try_inherit_state_from(&mut active)
@@ -1196,4 +1546,74 @@ fn mutable_transport_wrap_pass_and_live_gate_survive_revision_handoff() {
         .render(&mut expected)
         .expect("render uninterrupted oracle");
     assert_eq!(actual, expected);
+}
+
+/// Pulse #3731: a loop edit while an Arrangement mutable-instrument note is
+/// sounding was refused, so playback kept the old loop. The strict planner
+/// still refuses (above); the live publication restarts audio at the cursor.
+/// With the cursor inside, before or after the new loop and at different
+/// block sizes, the result equals a fresh Play-from at that cursor: the held
+/// note is chased once, with no stuck or duplicated voice.
+#[test]
+fn live_loop_edit_during_a_held_arrangement_note_restarts_at_the_cursor() {
+    let project = transport_loop_project(false);
+    // The held note spans 24_000..72_000; the edit lands at frame 30_000.
+    // Cursor inside, before and after the new loop, each at its own block size.
+    for (start, end, block) in [
+        (24_000, 120_000, 7),
+        (36_000, 144_000, 64),
+        (0, 27_000, 509),
+    ] {
+        let mut changed = project.snapshot();
+        changed.loop_region = Some(LoopRegion::new(start, end, true).expect("new loop"));
+        let changed = legacy_project_from_snapshot(changed).expect("valid new bounds");
+        let mut active = SessionPlayback::new(prepare_mutable(&project)).expect("old loop");
+        active
+            .apply(SessionPlaybackCommand::Play)
+            .expect("start transport");
+        active
+            .render(&mut vec![[0.0; 2]; 30_000])
+            .expect("render into the held note");
+        assert!(
+            active.mutable_instruments[0]
+                .as_ref()
+                .expect("mutable runtime")
+                .proofs()
+                .any(|proof| !proof.note_off_sent),
+            "the note is held at the edit"
+        );
+        let revision = prepare_mutable(&changed);
+        let mut candidate = SessionPlayback::new(Arc::clone(&revision)).expect("new loop");
+        candidate
+            .try_inherit_state_live_from(&mut active)
+            .expect("live loop edit applies");
+        let context = format!("loop {start}..{end}, block {block}");
+        assert!(candidate.playing(), "{context}");
+        assert_eq!(candidate.arrangement_frame(), 30_000, "{context}");
+        assert_eq!(
+            candidate.loop_region(),
+            Some(LoopRegion::new(start, end, true).expect("new loop")),
+            "{context}"
+        );
+        let mut oracle = SessionPlayback::new(revision).expect("oracle");
+        oracle.play_from(30_000).expect("oracle play-from");
+        // Through the held note's end (72_000) and past each new loop edge.
+        let mut actual = vec![[0.0; 2]; 43_000];
+        let mut expected = actual.clone();
+        for (actual, expected) in actual.chunks_mut(block).zip(expected.chunks_mut(block)) {
+            candidate.render(actual).expect("render after edit");
+            oracle.render(expected).expect("render oracle");
+        }
+        assert!(
+            actual == expected,
+            "restart equals play-from at the cursor; {context}"
+        );
+        assert!(
+            actual[..block]
+                .iter()
+                .flatten()
+                .any(|sample| *sample != 0.0),
+            "the held note is chased; {context}"
+        );
+    }
 }

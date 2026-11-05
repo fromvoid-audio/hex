@@ -13,6 +13,10 @@ use std::{
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod capture;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod controller;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use controller::{NativeWorkerControllerProgress, NativeWorkerControllerQuery};
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod edits;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod parameters;
@@ -21,6 +25,9 @@ pub use parameters::{MAX_OBSERVED_PARAMETERS, NativeParameterValue, NativeParame
 mod storage;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use capture::{NativeWorkerCapture, NativeWorkerCaptureProgress};
+/// Non-terminal helper refusal carried by [`NativeWorkerCaptureProgress::Refused`].
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use hex_plugin_host::protocol::StateCaptureRefusal;
 
 // Original completion allocation, shared only by joining control and worker.
 // The callback never sees the capture mailbox or takes its mutex.
@@ -32,6 +39,8 @@ struct Signal {
     capture_requested: std::sync::atomic::AtomicBool,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     edits_requested: std::sync::atomic::AtomicBool,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    controller_requested: std::sync::atomic::AtomicBool,
 }
 impl Signal {
     fn new() -> Self {
@@ -43,6 +52,8 @@ impl Signal {
             capture_requested: std::sync::atomic::AtomicBool::new(false),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             edits_requested: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            controller_requested: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -70,6 +81,10 @@ struct State {
     parameters: parameters::Work,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     edits: edits::Work,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    controller: controller::Work,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    control_turn: u8,
 }
 impl State {
     fn prepare_transport(&mut self) -> Result<(), Fault> {
@@ -222,6 +237,10 @@ fn spawn_processor_with(
         parameters: parameters::Work::default(),
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         edits: edits::Work::default(),
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        controller: controller::Work::default(),
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        control_turn: 0,
     });
     let storage = storage::reserved_backing(&guard, &completed);
     let join = spawn(guard, published);
@@ -331,19 +350,7 @@ fn transport_runner_with_setup(
                 break;
             }
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            if let Err(error) = if published.edits_requested.load(Acquire)
-                && state.capture.between_polls()
-            {
-                // Drain bounded receipts between capture's timed polls so
-                // GUI backpressure cannot starve that same capture.
-                state.advance_parameter_edits(&published)
-            } else if published.capture_requested.load(Acquire) || state.capture.is_in_flight() {
-                // Save capture keeps priority and at most one native control
-                // exchange runs per worker iteration.
-                state.advance_capture(&published)
-            } else {
-                state.advance_parameter_edits(&published)
-            } {
+            if let Err(error) = state.advance_native_control(&published) {
                 let refused = matches!(error, hex_plugin_host::Error::Cancelled);
                 state.native_error = Some(error);
                 state.worker.revoke();
@@ -470,14 +477,14 @@ impl NativeWorker {
                 .map(|fault| hex_plugin_host::Error::Protocol(fault.message()))
         });
         if let Some(error) = failure {
-            if let Some(Processor::Native(instance)) = state.processor.as_mut() {
-                if let Err(custody) = instance.cancel_and_reap_on_control() {
-                    return Err(hex_plugin_host::Error::Preparation {
-                        cause: Box::new(error),
-                        exit: None,
-                        custody_error: Some(Box::new(custody)),
-                    });
-                }
+            if let Some(Processor::Native(instance)) = state.processor.as_mut()
+                && let Err(custody) = instance.cancel_and_reap_on_control()
+            {
+                return Err(hex_plugin_host::Error::Preparation {
+                    cause: Box::new(error),
+                    exit: None,
+                    custody_error: Some(Box::new(custody)),
+                });
             }
             return Err(error);
         }
@@ -519,9 +526,9 @@ impl NativeWorker {
             .native_error
             .take()
             .or_else(|| joined.err().map(|fault| Error::Protocol(fault.message())));
-        if failure.is_none() && state.capture.is_in_flight() {
-            // Retirement explicitly cancels this original outstanding capture;
-            // never send normal SDK Stop while main still owns its streams.
+        if failure.is_none() && (state.capture.is_in_flight() || state.controller.is_in_flight()) {
+            // Retirement explicitly cancels the outstanding original request;
+            // never send normal SDK Stop while the main lane owns it.
             failure = Some(Error::Cancelled);
         }
         let Some(Processor::Native(instance)) = state.processor.as_mut() else {

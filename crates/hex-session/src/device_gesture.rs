@@ -332,7 +332,10 @@ impl GestureClient {
             ParameterValue::Float(0.0),
         )?;
         self.origin_parameters = Some(initial);
-        self.active.as_mut().unwrap().parameters = Some(initial);
+        self.active
+            .as_mut()
+            .ok_or("device snapshot gesture did not begin")?
+            .parameters = Some(initial);
         self.pending_begin = Some(GestureRequest::BeginSnapshot {
             key,
             device,
@@ -1248,7 +1251,9 @@ impl GestureMachine {
         match result {
             Ok(()) => outcome.ack.accepted = true,
             Err(error) => {
-                outcome.ack.reason = Some(error.to_string().to_lowercase());
+                outcome.ack.reason = Some(hex_storage::text::lowercase_outside_verbatim(
+                    &error.to_string(),
+                ));
                 // Native terminal refusal keeps the actual accepted overlay. The legacy
                 // adapter retains its existing retirement behavior; stale keys own neither.
                 if retain_terminal
@@ -1418,7 +1423,10 @@ impl GestureMachine {
                     .ok_or(SessionError::Invalid(
                         "gesture preview produced no revision",
                     ))?;
-                    let current = self.active.as_mut().unwrap();
+                    let current = self
+                        .active
+                        .as_mut()
+                        .ok_or(SessionError::Invalid("gesture ended during preview"))?;
                     current.snapshot.manual_edit = !touched.is_empty();
                     current.snapshot.touched_parameters = touched;
                     current.snapshot.sequence = sequence;
@@ -1870,7 +1878,9 @@ impl GestureMachine {
                     previous,
                     generation,
                 );
-                result.ack.reason = Some(error.to_string().to_lowercase());
+                result.ack.reason = Some(hex_storage::text::lowercase_outside_verbatim(
+                    &error.to_string(),
+                ));
                 Some(result)
             }
         }

@@ -147,8 +147,9 @@ impl SessionPlayback {
                     offset,
                     observer,
                     capture,
-                    None,
+                    sources,
                     foreign,
+                    None,
                     None,
                 )?;
                 if drain_edit_tails {
@@ -303,7 +304,15 @@ impl SessionPlayback {
                         .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 }
                 for (frame_index, frame) in frames.iter_mut().enumerate() {
-                    let mixed = track.mix_at(self.arrangement_frame).apply_frame(*frame);
+                    let mix = track.mix_at(self.arrangement_frame);
+                    let fader = &mut self.track_fader_scratch[index];
+                    let mix = if track.has_gain_automation() {
+                        fader.follow(mix.channel_gain());
+                        mix
+                    } else {
+                        mix.with_channel_gain(fader.next())
+                    };
+                    let mixed = mix.apply_frame(*frame);
                     *frame = mixed;
                     chunk[frame_index][0] += mixed[0];
                     chunk[frame_index][1] += mixed[1];
@@ -333,7 +342,7 @@ impl SessionPlayback {
                 self.return_effect_tails
                     .render_chunk(chunk, offset, capture, foreign)?;
             }
-            self.render_detached_tails(self.performance_frame, chunk, offset, capture)?;
+            self.render_detached_tails(self.performance_frame, chunk, offset, capture, None)?;
             self.advance_paused_analytic_releases(count)?;
             offset = end;
         }

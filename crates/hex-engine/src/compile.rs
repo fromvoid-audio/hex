@@ -476,9 +476,6 @@ fn compile_project_inner<'a>(
     samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
     native_input: Option<crate::device_automation::NativeParameterInputTarget>,
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
-    if snapshot.has_group_tracks() {
-        return Err(Invalid("group track playback is not prepared"));
-    }
     // #2740 supplies the pitch-aware runtime. Refuse until then rather than
     // accepting a saved tuned project and silently playing equal temperament.
     crate::device_automation::validate_project_with_registry(snapshot, registry)?;
@@ -528,7 +525,8 @@ fn compile_project_inner<'a>(
     let source_instruments =
         prepare_source_instruments(snapshot, instrument_registry, &shared_contexts, samplers)?;
     let mut audio_clip_views = Vec::new();
-    let any_soloed = snapshot.tracks().iter().any(|track| track.soloed());
+    let solo = crate::TrackSoloSelection::prepare(snapshot);
+    let any_soloed = solo.any;
     let mut tracks = Vec::new();
     tracks
         .try_reserve_exact(snapshot.tracks().len())
@@ -601,6 +599,15 @@ fn compile_project_inner<'a>(
                 let asset = snapshot
                     .asset(clip.asset())
                     .ok_or(Invalid("project asset missing"))?;
+                // Offline media (missing at open) compiles to no playback: the clip
+                // stays in the project and renders silence with no callback work.
+                if snapshot.asset_offline(asset.id())
+                    || clip
+                        .retained_audio_roots()
+                        .any(|root| snapshot.asset_offline(root.clip.asset()))
+                {
+                    return Ok(None);
+                }
                 let mut compiled = if let Some(events) = clip.audio_edit()
                     .and_then(|edit| edit.domain.events.as_ref())
                     .filter(|events| !events.sources.is_empty())
@@ -638,6 +645,13 @@ fn compile_project_inner<'a>(
                         audio: audio.clone(),
                         offset: compiled.source_offset as u64,
                         length: compiled.end - compiled.start,
+                        repeat: compiled.looping.then(|| crate::PreparedAudioRepeat {
+                            period: compiled.source_length as u64,
+                            phase: compiled
+                                .metadata
+                                .as_deref()
+                                .map_or(0, |metadata| metadata.source_phase),
+                        }),
                     });
                 }
                 Ok::<_, Invalid>(compiled)
@@ -646,18 +660,20 @@ fn compile_project_inner<'a>(
             .into_iter()
             .flatten()
             .collect();
-        let input_muted = crate::effective_track_mute(track, any_soloed);
-        let shared_source = track
-            .source_id()
-            .filter(|source| snapshot.source_contributors(*source).count() > 1);
+        let input_muted = solo.muted(track_index, track)?;
+        let shared_source = track.source_id().filter(|source| {
+            snapshot.source_contributors(*source).count() > 1
+                || snapshot
+                    .native_source(*source)
+                    .and_then(|definition| definition.receiver())
+                    .and_then(|receiver| snapshot.track(receiver))
+                    .is_some_and(hex_project::Track::retained_source_path)
+        });
         let muted = if track.receives_source_audio()
             && let Some(source) = shared_source
         {
             (track.muted() && !track.soloed())
-                || (any_soloed
-                    && !snapshot
-                        .source_contributors(source)
-                        .any(|contributor| contributor.soloed()))
+                || (any_soloed && !solo.source_selected(snapshot, source)?)
         } else {
             input_muted
         };
@@ -768,7 +784,10 @@ fn compile_project_inner<'a>(
             )?
             .with_track_id(track.id())
             .with_source_audio_receiver(track.receives_source_audio())
-            .with_source_mix_scope(local_content_enabled, local_content_enabled)
+            .with_source_mix_scope(
+                local_content_enabled && !track.retained_source_path(),
+                local_content_enabled,
+            )
             .with_source_binding(
                 track.source_id(),
                 track

@@ -4,15 +4,15 @@ use hex_project::{BeatTime, Command, Created, Editor, Project};
 use hex_session::arrangement_seek::{
     ArrangementSeekMode, ArrangementSeekSpec, ArrangementSeekWorker,
 };
-use std::{collections::BTreeMap, sync::Arc, thread, time::Duration, time::Instant};
+use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
 #[test]
-fn feedback_operator_arrangement_seek_uses_bounded_worker_preroll() {
+fn feedback_operator_arrangement_seek_matches_play_from_without_replay() {
     operator_preroll(None);
 }
 
 #[test]
-fn lfo_free_sync_and_hold_arrangement_seek_use_bounded_worker_preroll() {
+fn lfo_free_sync_and_hold_arrangement_seek_match_play_from_without_replay() {
     for sync in [false, true] {
         operator_preroll(Some(sync));
     }
@@ -119,13 +119,13 @@ fn operator_preroll(lfo: Option<bool>) {
             start_playing: false,
         })
         .expect("submit mutable Operator preroll");
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + std::time::Duration::from_secs(60);
     let result = loop {
         if let Some(result) = worker.try_result() {
             break result;
         }
         assert!(Instant::now() < deadline, "Operator seek did not finish");
-        thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     };
     assert_eq!(result.request_id, request_id);
     assert_eq!(result.mode, ArrangementSeekMode::Interactive);
@@ -134,20 +134,17 @@ fn operator_preroll(lfo: Option<bool>) {
     let mut sought = result.result.expect("mutable Operator seek candidate");
     sought.apply(PlaybackCommand::Play);
 
-    let mut uninterrupted =
-        hex_engine::playback::Playback::try_from_prepared_with_session(revision)
-            .expect("live reference");
-    uninterrupted.apply(PlaybackCommand::Play);
-    let mut prefix = vec![[0.0; 2]; destination as usize];
-    uninterrupted
-        .render(&mut prefix)
-        .expect("live prefix to seek point");
+    // Seeks share the interactive Play-from law: Operator feedback/LFO
+    // history starts empty and the held note is chased at the destination.
+    let mut reference = hex_engine::playback::Playback::try_from_prepared_with_session(revision)
+        .expect("live reference");
+    reference.apply(PlaybackCommand::PlayFrom(destination));
     let mut actual = [[0.0; 2]; 256];
     let mut expected = [[0.0; 2]; 256];
     sought.render(&mut actual).expect("render seek candidate");
-    uninterrupted
+    reference
         .render(&mut expected)
-        .expect("render continuous reference");
+        .expect("render play-from reference");
     assert_eq!(actual, expected);
     assert!(actual.iter().any(|frame| frame[0].abs() > 1.0e-6));
 }

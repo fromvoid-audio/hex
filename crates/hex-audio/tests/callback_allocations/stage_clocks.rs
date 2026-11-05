@@ -2,6 +2,7 @@
 //! The oracle uses content indices and the authored gain law, without a renderer
 //! or envelope clock. Setup, oracle construction and reclamation are off callback.
 use super::*;
+use hex_lattice::{NativeDeviceDefinition, NativeDeviceRegistry, NativeInstrumentRegistry};
 use hex_lattice_contract::{DeviceAutomationTarget, HostGain};
 use hex_project::{
     AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
@@ -63,11 +64,16 @@ fn limiter_output_gain_uses_delayed_content_clock_without_callback_allocations()
             .collect::<Result<Vec<_>, hex_project::Invalid>>()?,
     })?;
     let media = BTreeMap::from([(asset, Audio::new(RATE, vec![SOURCE; SOURCE_FRAMES])?)]);
-    let revision = Arc::new(PreparedRevision::prepare(
+    let definitions: [&dyn NativeDeviceDefinition; 1] = [&hex_devices::limiter::DEFINITION];
+    let effects = NativeDeviceRegistry::new(&definitions)?;
+    let instruments = NativeInstrumentRegistry::new(&[])?;
+    let revision = Arc::new(PreparedRevision::prepare_with_test_registries(
         editor.project(),
         &media,
         Arc::new(SineTable::new()),
         None,
+        &effects,
+        &instruments,
     )?);
     assert_eq!(revision.arrangement().main_latency_frames(), LATENCY as u32);
     // Below the Limiter ceiling, each output sample is exactly the original
@@ -85,6 +91,8 @@ fn limiter_output_gain_uses_delayed_content_clock_without_callback_allocations()
             SOURCE.map(|sample| sample * gain)
         }
     });
+    let expected_base: [Frame; OUTPUT_FRAMES] =
+        std::array::from_fn(|frame| if frame < LATENCY { [0.0; 2] } else { SOURCE });
     let (mut control, mut callback) = prepared::channel(RATE)?;
     control
         .publish(Playback::try_from_prepared_with_session(revision)?)
@@ -112,11 +120,13 @@ fn limiter_output_gain_uses_delayed_content_clock_without_callback_allocations()
                 target: DeviceAutomationTarget::HostOutputGain,
                 selection,
             })?;
-            let replacement = Arc::new(PreparedRevision::prepare(
+            let replacement = Arc::new(PreparedRevision::prepare_with_test_registries(
                 editor.project(),
                 &media,
                 Arc::new(SineTable::new()),
                 None,
+                &effects,
+                &instruments,
             )?);
             control
                 .publish(Playback::try_from_prepared_with_session(replacement)?)
@@ -139,14 +149,7 @@ fn limiter_output_gain_uses_delayed_content_clock_without_callback_allocations()
                 let length = length.min(OUTPUT_FRAMES - from);
                 measured_block(&mut callback, &mut output[..length]);
                 if selection == AutomationReadSelection::Base {
-                    for (offset, frame) in output[..length].iter().enumerate() {
-                        let oracle = if from + offset < LATENCY {
-                            [0.0; 2]
-                        } else {
-                            SOURCE
-                        };
-                        compare_output(std::slice::from_ref(frame), std::slice::from_ref(&oracle));
-                    }
+                    compare_output(&output[..length], &expected_base[from..from + length]);
                 } else {
                     compare_output(&output[..length], &expected[from..from + length]);
                 }

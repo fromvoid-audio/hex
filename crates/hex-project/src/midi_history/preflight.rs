@@ -25,6 +25,7 @@ impl Command {
                 | Self::RemoveMidiNote(_)
                 | Self::RemoveMidiNotes { .. }
                 | Self::ReplaceMidiClipVolume { .. }
+                | Self::SetMidiClipGain { .. }
                 | Self::SetMidiClipSource { .. }
                 | Self::SetSessionMidiClipSource { .. }
         )
@@ -63,7 +64,11 @@ impl Command {
             Self::ReplaceMidiClipVolume { clip, volume } => {
                 let source = project.midi_source(*clip).ok_or(MISSING)?;
                 volume.validate_source_length(source.source_length())?;
-                return Ok(project.midi_clip_volume(*clip).ok_or(MISSING)? != volume);
+                let original = project.midi_clip_volume(*clip).ok_or(MISSING)?;
+                return Ok(original != &volume.clone().with_clip_gain(original.clip_gain()));
+            }
+            Self::SetMidiClipGain { clip, gain } => {
+                return Ok(project.midi_clip_volume(*clip).ok_or(MISSING)?.clip_gain() != *gain);
             }
             Self::ClearSessionCell { track, scene }
                 if project.session_cell(*track, *scene).is_none() =>

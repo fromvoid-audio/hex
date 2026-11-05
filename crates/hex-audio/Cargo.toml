@@ -8,6 +8,7 @@ publish.workspace = true
 [features]
 # Instrumented headless tests only; never referenced by production code.
 allocation-probe = ["hex-engine/instrument-test-support", "hex-plugin-host/allocation-probe"]
+stream-test-support = ["hex-stream/test-support"]
 
 [dependencies]
 hex-plugin-host = { path = "../hex-plugin-host" }
@@ -42,3 +43,7 @@ allocation-counter = "=0.8.1"
 
 [lints]
 workspace = true
+
+[[example]]
+name = "profile_stream_callback"
+required-features = ["allocation-probe"]

@@ -6,6 +6,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+// An arbitrary caller-intent check has no wakeup descriptor. Cap each idle
+// control-side poll timeout at 10 ms so intent is revisited without extending
+// the original deadline. This adds up to 100 timer wakeups per second; OS
+// scheduling may delay them and readiness or signals may wake the poll sooner.
+const CHECK_INTERVAL: Duration = Duration::from_millis(10);
+
 pub(crate) struct Packet {
     pub bytes: [u8; protocol::PACKET_LIMIT],
     pub len: usize,
@@ -101,10 +107,14 @@ impl Channel {
                         b"HXVIFA03",
                         b"HXVIRD04",
                         b"HXVIQF02",
+                        b"HXVIAR01",
                         b"HXVIRR02",
                         b"HXVICS01",
+                        &protocol::CAPTURE_REFUSAL_MAGIC,
                         b"HXVIFL01",
                         b"HXVIGE01",
+                        b"HXVIGE02",
+                        b"HXVIMD01",
                         b"HXVLCA01",
                         b"HXVIER01",
                         b"HXVITR01",
@@ -170,7 +180,7 @@ impl Channel {
         }
     }
     fn wait(&self, flags: rustix::event::PollFlags, until: Instant) -> Result<()> {
-        let duration = remaining(until)?;
+        let duration = remaining(until)?.min(CHECK_INTERVAL);
         let timeout = rustix::event::Timespec {
             tv_sec: duration
                 .as_secs()
@@ -216,6 +226,97 @@ fn remaining(until: Instant) -> Result<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+
+    fn cancellation_while_blocked(write: bool) {
+        let (mut stream, peer) = UnixStream::pair().unwrap();
+        if write {
+            stream.set_nonblocking(true).unwrap();
+            let bytes = [0_u8; 8192];
+            let mut full = false;
+            for _ in 0..512 {
+                match stream.write(&bytes) {
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        full = true;
+                        break;
+                    }
+                    Err(error) => panic!("fill socket: {error}"),
+                }
+            }
+            assert!(full, "bounded fixture must fill the socket");
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = Arc::clone(&cancelled);
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut channel = Channel::new(stream).unwrap();
+            let mut first = true;
+            let mut check = || {
+                if worker_cancelled.load(Ordering::Acquire) {
+                    return Err(Error::Cancelled);
+                }
+                if first {
+                    first = false;
+                    ready_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                }
+                Ok(())
+            };
+            let until = end_after(Duration::from_secs(2)).unwrap();
+            let result = if write {
+                channel.send(&[1], until, &mut check)
+            } else {
+                channel.read(&mut Packet::new(), until, &mut check)
+            };
+            result_tx
+                .send(matches!(result, Err(Error::Cancelled)))
+                .unwrap();
+        });
+        ready_rx.recv_timeout(Duration::from_millis(250)).unwrap();
+        cancelled.store(true, Ordering::Release);
+        release_tx.send(()).unwrap();
+        let prompt = result_rx.recv_timeout(Duration::from_millis(200));
+        // Wake the old full-deadline implementation before joining on failure.
+        drop(peer);
+        worker.join().unwrap();
+        assert_eq!(
+            prompt.ok(),
+            Some(true),
+            "cancellation must interrupt an idle socket wait"
+        );
+    }
+
+    #[test]
+    fn caller_cancellation_interrupts_idle_read() {
+        cancellation_while_blocked(false);
+    }
+
+    #[test]
+    fn caller_cancellation_interrupts_backpressured_write() {
+        cancellation_while_blocked(true);
+    }
+
+    #[test]
+    fn idle_read_keeps_its_original_deadline() {
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        let mut channel = Channel::new(stream).unwrap();
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(40);
+        let result = channel.read(&mut Packet::new(), deadline, &mut || Ok(()));
+        assert!(matches!(result, Err(Error::Timeout)));
+        assert!(
+            Instant::now() >= deadline,
+            "poll slices must not shorten the deadline"
+        );
+    }
+
     #[test]
     fn parameter_packet_framing_consumes_exact_payload_without_eating_the_successor() {
         use crate::transport::{Block, Events, ParameterPoint, Parameters};

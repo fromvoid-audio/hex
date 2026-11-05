@@ -73,32 +73,40 @@ pub(super) fn bind_keys(cx: &mut App) {
             RemoveHeaderTracks,
             Some("hex_track_header && !hex_text_editing"),
         ),
+        KeyBinding::new(
+            "x",
+            RemoveHeaderTracks,
+            Some("hex_track_header && !hex_text_editing && !hex_text_input"),
+        ),
+        // Forward-delete owns the same header deletion; it must not fall
+        // through to the editor's clip deletion.
+        KeyBinding::new(
+            "delete",
+            RemoveHeaderTracks,
+            Some("hex_track_header && !hex_text_editing"),
+        ),
         KeyBinding::new("enter", CommitTrackName, Some("hex_track_name")),
         KeyBinding::new("escape", CancelTrackName, Some("hex_track_name")),
     ]);
 }
 impl EditorView {
-    /// Only a selected ordinary-track header may own keyboard track deletion.
+    /// A selected track header in either view owns keyboard track deletion.
     pub(super) fn remove_header_tracks(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
-        if !self.track_header_focused(window) {
+        let Some(Target::Track(focused)) = self.focused_header_target(window) else {
             return false;
-        }
-        let focused = self
-            .track_name
-            .focuses
-            .iter()
-            .find_map(|(target, focus)| match target {
-                Target::Track(id) if focus.is_focused(window) => Some(*id),
-                _ => None,
-            });
+        };
         let tracks = self.selected_track_ids();
-        if tracks.is_empty() || !focused.is_some_and(|id| tracks.contains(&id)) {
+        if tracks.is_empty() || !tracks.contains(&focused) {
+            return true;
+        }
+        if self.selection_delete_blocked() {
             return true;
         }
         if self.edit_pending()
             || self.track_name.is_editing()
             || self.clip_name_edit.is_some()
             || self.track_resize_active()
+            || self.track_reorder_active()
             || self.active_clip_drag.is_some()
             || self.active_trim_drag.is_some()
             || self.active_midi_trim_drag.is_some()
@@ -405,7 +413,7 @@ mod tests {
         visual.run_until_parked();
     }
     fn next(service: &hex_session::service::Service) -> hex_session::service::Event {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             if let Ok(event) = service.try_event() {
                 assert!(event.error.is_none(), "{:?}", event.error);

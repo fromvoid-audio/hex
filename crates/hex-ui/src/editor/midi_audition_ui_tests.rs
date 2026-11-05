@@ -226,7 +226,7 @@ fn physical_keys_defer_the_latest_selection_and_stale_preparation_or_focus_canno
         assert_eq!(v.tick_midi_audition(), Some(true));
         let input = Arc::clone(v.computer_keyboard.input.as_ref().unwrap());
         let request = v.computer_keyboard.request_id;
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let until = crate::test_wait::hang_deadline();
         let event = loop {
             if let Ok(event) = v.service.try_event() {
                 assert_eq!(event.computer_keyboard_complete, Some(request));
@@ -234,7 +234,7 @@ fn physical_keys_defer_the_latest_selection_and_stale_preparation_or_focus_canno
                 assert!(event.playback.is_some(), "real preparation must succeed");
                 break event;
             }
-            assert!(std::time::Instant::now() < until);
+            assert!(std::time::Instant::now() < until, "physical_keys_defer_the_latest_selection_and_stale_preparation_or_focus_cannot_trigger: hang guard expired");
             std::thread::yield_now();
         };
         for key in 0..17 {

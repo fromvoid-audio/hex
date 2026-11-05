@@ -182,72 +182,82 @@ fn limiter_standard_soft_clip_true_peak_and_ms_callbacks_allocate_nothing() {
     );
     assert!(revision.arrangement().main_latency_frames() > 0);
 
-    let mut oracle = Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
-    oracle.apply(PlaybackCommand::Play);
+    // The oracle and callback independently render the same full signal.
+    // A test-only control channel delivers the same revision after block 24;
+    // no waiting or oracle allocation occurs inside a callback measurement.
     let (mut control, mut callback) = prepared::channel(48_000).unwrap();
     control
         .publish(Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap())
         .unwrap();
     control.command(PlaybackCommand::Play).unwrap();
-
-    let mut expected = [[0.0; 2]; 128];
-    let mut actual = [[0.0; 2]; 128];
-    for _ in 0..24 {
-        oracle.render(&mut expected).unwrap();
-        assert_zero(measure(|| {
-            callback.begin_block();
-            callback.render(&mut actual).unwrap();
-        }));
-        assert_eq!(actual, expected);
-    }
-
-    // Queue a same-latency parameter revision while the callback is running.
-    // Provider state, candidate playback and publication storage are all built
-    // before measurement; callback adoption and full Limiter processing remain
-    // inside the measured call.
-    let current = editor.project().device(track_device).unwrap().state();
-    let changed = parameter(
-        current,
-        hex_devices::limiter::parameter::GAIN,
-        ParameterValue::Float(1.0),
-    );
-    editor
-        .execute(Command::ReplaceDeviceState {
-            device: track_device,
-            state: changed,
-        })
-        .unwrap();
-    let next_revision = Arc::new(
-        PreparedRevision::prepare(
-            editor.project(),
-            &media,
-            Arc::clone(&table),
-            Some(revision.session()),
-        )
-        .unwrap(),
-    );
-    let mut next_oracle =
-        Playback::try_from_prepared_with_session(Arc::clone(&next_revision)).unwrap();
-    next_oracle
-        .try_inherit_runtime_from(&mut oracle)
-        .expect("Limiter parameter revision preserves compatible history");
-    control
-        .publish(Playback::try_from_prepared_with_session(Arc::clone(&next_revision)).unwrap())
-        .unwrap();
-    for _ in 0..8 {
-        next_oracle.render(&mut expected).unwrap();
-        assert_zero(measure(|| {
-            callback.begin_block();
-            callback.render(&mut actual).unwrap();
-        }));
-        assert_eq!(actual, expected);
-    }
+    let (expected, actual, next_revision) = std::thread::scope(|scope| {
+        let initial = Arc::clone(&revision);
+        let (next_tx, next_rx) = std::sync::mpsc::sync_channel(1);
+        let oracle = scope.spawn(move || {
+            let mut oracle = Playback::try_from_prepared_with_session(initial).unwrap();
+            oracle.apply(PlaybackCommand::Play);
+            let mut blocks = vec![[[0.0; 2]; 128]; 32];
+            for output in &mut blocks[..24] {
+                oracle.render(output).unwrap();
+            }
+            let next = next_rx.recv().unwrap();
+            let mut next_oracle = Playback::try_from_prepared_with_session(next).unwrap();
+            next_oracle
+                .try_inherit_runtime_from(&mut oracle)
+                .expect("Limiter parameter revision preserves compatible history");
+            for output in &mut blocks[24..] {
+                next_oracle.render(output).unwrap();
+            }
+            blocks
+        });
+        let mut blocks = vec![[[0.0; 2]; 128]; 32];
+        for output in &mut blocks[..24] {
+            assert_zero(measure(|| {
+                callback.begin_block();
+                callback.render(output).unwrap();
+            }));
+        }
+        let current = editor.project().device(track_device).unwrap().state();
+        let changed = parameter(
+            current,
+            hex_devices::limiter::parameter::GAIN,
+            ParameterValue::Float(1.0),
+        );
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device: track_device,
+                state: changed,
+            })
+            .unwrap();
+        let next_revision = Arc::new(
+            PreparedRevision::prepare(
+                editor.project(),
+                &media,
+                Arc::clone(&table),
+                Some(revision.session()),
+            )
+            .unwrap(),
+        );
+        next_tx.send(Arc::clone(&next_revision)).unwrap();
+        control
+            .publish(Playback::try_from_prepared_with_session(Arc::clone(&next_revision)).unwrap())
+            .unwrap();
+        for output in &mut blocks[24..] {
+            assert_zero(measure(|| {
+                callback.begin_block();
+                callback.render(output).unwrap();
+            }));
+        }
+        (oracle.join().unwrap(), blocks, next_revision)
+    });
+    assert_eq!(actual, expected);
     assert!(
         control.reclaim() > 0,
         "retired graph returns to the control owner"
     );
 
     control.request_shutdown();
+    let mut actual = [[0.0; 2]; 128];
     assert_zero(measure(|| {
         callback.begin_block();
         callback.render(&mut actual).unwrap();

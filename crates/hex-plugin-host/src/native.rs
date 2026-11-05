@@ -3,6 +3,7 @@
 mod edits;
 mod epoch;
 mod live_capture;
+mod parameter_page;
 pub use epoch::Quiescent;
 mod preparation_failure;
 pub use preparation_failure::{PreparationDisposal, PreparationFailure};
@@ -190,6 +191,8 @@ pub struct Prepared {
     edit_query_sequence: u64,
     last_edit_sequence: u64,
     last_edit_frame: u64,
+    parameter_page: Option<parameter_page::PendingPage>,
+    parameter_page_sequence: u64,
 }
 /// Source-bound configured component awaiting actual graph presentation facts.
 /// No processing/state capture or canonical/audio acceptance has occurred. Keep
@@ -562,6 +565,8 @@ impl Pending {
             edit_query_sequence: 0,
             last_edit_sequence: 0,
             last_edit_frame: 0,
+            parameter_page: None,
+            parameter_page_sequence: 0,
         })
     }
 }
@@ -628,6 +633,7 @@ impl Prepared {
     }
     fn exchange(&mut self, block: Block) -> Result<Block> {
         self.check_live_capture_deadline()?;
+        self.check_parameter_page_deadline()?;
         self.config.validate_block(&block, self.sequence)?;
         let next = self
             .sequence
@@ -657,6 +663,9 @@ impl Prepared {
         Ok(output)
     }
     pub fn stop_and_reap_on_control(&mut self) -> Result<Retirement> {
+        if self.parameter_page.is_some() {
+            return Err(Error::Protocol("controller page is still pending"));
+        }
         if self.live_capture.is_some() {
             return Err(Error::Protocol("native capture is still pending"));
         }

@@ -19,7 +19,9 @@ widgets = (
     # Clip name components normalize labels or render a native text-input entity.
     'self.clip_name_label(', 'self.clip_name_header(', 'self.track_name_label(', 'edit.input.clone())',
     # Waveform body wrappers contain view elements; preview titles normalize text.
-    'clip_waveform_body(', 'self.clip_name_preview_header(',
+    'clip_waveform_body(', 'super::tracks::clip_waveform_body(', 'self.clip_name_preview_header(',
+    # Fitted MIDI note columns paint one text-free canvas rectangle each.
+    'super::midi_thumbnail::note_column(',
     # Timeline boundary shell contains a previously constructed view and paint edges.
     'clip_boundary_shell(',
     # Loop body wrappers contain native views; marker glyphs use theme::text.
@@ -92,7 +94,7 @@ widgets = (
     'boundary::cursor_action(', 'boundary::handle(', 'source_adjust_button(', 'gain_adjust_button(', 'session_audio_loop_button(',
     'field_row(', 'loop_row(', 'time_ruler(', 'source_marker(', 'source_column)',
     'source_row(', 'details)', 'waveform_panel)', 'canvas_region)', 'roll_area)',
-    'status_slot(', 'super::waveform::waveform_view_cached(',
+    'status_slot(', 'disk_overload_slot(', 'super::waveform::waveform_view_cached(',
     'super::waveform::waveform_source_segment_view_cached(',
     'super::waveform::waveform_source_segment_gain_view_cached(',
     'toolbar)', 'control)', 'element)', 'controls)', 'clip_view)', 'step_button(', 'control_button(',
@@ -138,8 +140,8 @@ widgets = (
     'gate_column(',
     # Device-chain navigator is a typed view component; labels use theme::text.
     'super::device_panel::bottom_bar(', 'overview)',
-    # Shared host meter strip supplies lowercase tooltip text through theme::text.
-    'gain_meters::render(', 'super::gain_meters::render(',
+    # The passive post-device stereo meter supplies lowercase tooltip text through theme::text.
+    'device_meter::render(', 'super::device_meter::render(', 'hex_widgets::stereo_peak_meter(',
     # Typed routing/recording components normalize their labels at the boundary.
     'self.routing_controls(', 'gain_row(', 'sources)', 'super::waveform::button(',
     # Retained recording controls route all captions through theme::text internally.
@@ -186,6 +188,15 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
         ) or (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/return_tracks.rs'
             and suffix.startswith(('self.return_volume(', 'gain_control)'))
+        ) or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/mixer.rs'
+            and suffix.startswith(('super::track_meters::render(', 'toggle_button_with_style('))
+        )
+        # Track meters compose a text-free shared gauge and its rendered fixture.
+        # Tooltip text still passes through MiniTooltip's theme::text boundary.
+        header_mixer_component = header_mixer_component or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/track_meters.rs'
+            and suffix.startswith(('meter)', 'render_meter('))
         )
         # Clip-detail bindings return shared widgets; their labels pass through
         # theme::text in the owning component, never raw .child text.
@@ -193,11 +204,12 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/arrangement_audio_panel.rs'
             and suffix.startswith(('controls::number(', 'controls::toggle('))
         )
-        # Console column boundaries return typed, text-free drop surfaces.
+        # Console column and reorder boundaries return text-free surfaces or canvases.
         console_column_component = (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/session_grid.rs'
             and suffix.startswith(('self.console_column_edge(',
-                                   'self.console_column_surface(', 'tail)'))
+                                   'self.console_column_surface(', 'self.console_reorder_layer(',
+                                   'self.track_reorder_events(', 'tail)'))
         )
         # Reverb's grouped panel passes bound controls and provider plot data;
         # titles and numeric/toggle labels normalize through theme::text.
@@ -207,6 +219,17 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
                                    'contour)', 'early)', 'diffusion)', 'chorus)',
                                    'top)', 'bottom)', 'smooth)', 'density)', 'freeze)', 'high)', 'low)'))
         )
+        # Browser place icons are text-free SVG components; their accessible
+        # labels are checked separately at the existing theme::text boundary.
+        browser_vector_component = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/browser/layout.rs'
+            and suffix.startswith(('gpui::svg()', 'browser_vector_icon('))
+        )
+        # Playback vector controls and their SVG child contain no text.
+        transport_vector_component = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/transport.rs'
+            and suffix.startswith(('self.vector_icon(', 'gpui::svg()'))
+        )
         # Limiter slots are bound controls or a shared text-free meter widget.
         # Every caption remains independently checked at theme::text.
         limiter_component = (
@@ -215,7 +238,21 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
                                    'maximize_control)', 'threshold)', 'display)', 'mode)',
                                    'lookahead)', 'routing)', 'release)', 'auto)'))
         )
-        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not limiter_component:
+        # Device chain insertion gaps are text-free hit targets beside each device.
+        device_insertion_component = (
+            path.relative_to(ROOT).as_posix() in (
+                'crates/hex-ui/src/editor/device_panel.rs',
+                'crates/hex-ui/src/editor/device_panel/return_drag.rs',
+            )
+            and suffix.startswith('insertion_gap(')
+        )
+        # The log viewer displays source bytes and native filenames verbatim;
+        # query/list are typed GPUI components; log_scrollbar is text-free.
+        log_viewer_source = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/log_viewer.rs'
+            and suffix.startswith(('display)', 'session)', 'detail)', 'status)', 'self.query.clone())', 'list)', 'self.log_scrollbar('))
+        )
+        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not transport_vector_component and not limiter_component and not device_insertion_component and not log_viewer_source:
             line = source.count('\n', 0, match.start()) + 1
             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):

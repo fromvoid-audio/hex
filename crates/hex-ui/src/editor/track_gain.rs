@@ -23,6 +23,16 @@ pub(super) struct Controls {
 }
 
 impl Controls {
+    /// Keep an unfinished numeric draft attached to its original track when
+    /// the Console selection changes before the draft can be completed.
+    pub(super) fn pending_track_gain(&self, generation: u64, cx: &gpui::App) -> Option<TrackId> {
+        if self.generation != generation {
+            return None;
+        }
+        self.bindings
+            .iter()
+            .find_map(|(id, binding)| binding.entity.read(cx).is_interacting().then_some(*id))
+    }
     /// Read-only admission check; drafts remain with their numeric owners.
     /// Unlike finalization, it does not collect bindings or commit values.
     pub(super) fn has_pending_draft(&self, cx: &gpui::App) -> bool {
@@ -86,7 +96,7 @@ fn automated(track: &Track) -> bool {
     !track.gain_envelope().is_empty() || !track.gain_lane().spans().is_empty()
 }
 
-fn retire_stale(view: &mut EditorView, cx: &mut Context<EditorView>) {
+pub(super) fn retire_stale(view: &mut EditorView, cx: &mut Context<EditorView>) {
     let Some(state) = view.state.as_ref() else {
         return;
     };

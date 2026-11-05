@@ -14,6 +14,43 @@ pub(super) enum NativeEpochRuntimeTarget {
 }
 
 impl PublicationControl {
+    /// Query actual SDK controller metadata through the original Root effect
+    /// or loan worker. Busy/preparing/quiescent/closing sources refuse without
+    /// replacing them. Normally stopped transport uses its joined original
+    /// worker. An admitted token is returned even if close races admission;
+    /// the caller retains it until its exact terminal or worker release. A
+    /// token does not imply that the source remains open. Neither admission nor
+    /// copied metadata grants edit authority.
+    pub fn begin_native_source_controller_query_on_control(
+        &mut self,
+        binding: Binding,
+        query: hex_plugin_host::protocol::ParameterPageQuery,
+    ) -> Result<crate::plugin_worker::NativeWorkerControllerQuery, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native controller output is closing");
+        }
+        self.candidate_root
+            .begin_native_controller_query(binding, query)
+    }
+    /// Consume only the exact source/worker query terminal. Recheck the owning
+    /// document/device context before using these copied observations in UI.
+    /// Source revocation wins over a late result; close suppresses delivery.
+    pub fn poll_native_source_controller_query_on_control(
+        &mut self,
+        binding: Binding,
+        request: &crate::plugin_worker::NativeWorkerControllerQuery,
+    ) -> Result<crate::plugin_worker::NativeWorkerControllerProgress, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native controller output is closing");
+        }
+        let result = self
+            .candidate_root
+            .poll_native_controller_query(binding, request)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native controller output is closing");
+        }
+        Ok(result)
+    }
     /// Request/read ordered native controller callbacks through the actual
     /// original effect or loan control. None is pending; Some consumes at most
     /// eight receipts. Call regularly while observing an editor: bounded full
@@ -32,6 +69,17 @@ impl PublicationControl {
             return Err("native edit output is closing");
         }
         Ok(result)
+    }
+    /// Observe the exact live worker's edit receipts and uncovered latency
+    /// restart. Opt in only when the consumer can restore the stopped source.
+    pub fn poll_native_source_recovery_edits_on_control(
+        &mut self,
+        binding: Binding,
+    ) -> Result<Option<hex_plugin_host::protocol::RecoveryEdits>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native edit output is closing");
+        }
+        self.candidate_root.native_source_recovery_edits(binding)
     }
     /// Inspect latest processor parameter values through the actual original
     /// Root-held effect or its unique loan control. Wrong/closed/revoked sources
@@ -277,6 +325,36 @@ impl PublicationControl {
         }
         self.candidate_root
             .quiesce_native_source_preparation(previous, graph)
+    }
+    /// Reactivate this exact renewed reservation's stopped component and
+    /// replace its facts before planning presentation and completing the epoch.
+    /// May reset effect history. Some returns fresh facts, None retains a
+    /// failed native owner for disposal, and Err refuses admission or close.
+    /// The caller must rebuild compensation before publishing the successor.
+    /// This operation runs only on control after actual graph and endpoint return.
+    pub fn reactivate_native_source_on_control(
+        &mut self,
+        binding: Binding,
+    ) -> Result<Option<hex_plugin_host::protocol::Facts>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native reactivation output is closing");
+        }
+        let result = self.candidate_root.reactivate_native_source(binding)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native reactivation output is closing");
+        }
+        Ok(result)
+    }
+    /// Settle latency restarts on this exact stopped source reservation
+    /// before completing its new epoch and preparing compensation.
+    pub fn settle_native_latency_on_control(
+        &mut self,
+        binding: Binding,
+    ) -> Result<Option<hex_plugin_host::protocol::Facts>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native reactivation output is closing");
+        }
+        self.candidate_root.settle_native_latency(binding)
     }
     /// Capture the original quiescent owner after actual graph/endpoint return.
     /// `binding` names Root's renewed reservation; the helper still acknowledges

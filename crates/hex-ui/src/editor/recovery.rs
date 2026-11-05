@@ -9,7 +9,6 @@ mod tests;
 
 impl EditorView {
     pub(super) fn recover_audio(&mut self) {
-        self.invalidate_prepared_seek();
         if self.close_prompt_open
             || self.opening_project
             || self.save_dialog_open
@@ -22,7 +21,16 @@ impl EditorView {
             self.error = Some("project is still loading".into());
             return;
         };
-        let position = self.cursor_position();
+        if self.seek_pending() && self.recovery.generation().is_none() {
+            self.error =
+                Some("seek pending · wait for audio or press stop before restarting".into());
+            return;
+        }
+        self.invalidate_prepared_seek();
+        let position = self.recovery.position().unwrap_or_else(|| {
+            self.audio_status()
+                .map_or(self.offline_cursor, |status| status.recovery_position())
+        });
         let generation = match self.recovery.begin(position) {
             Ok(generation) => generation,
             Err(message) => {
@@ -31,15 +39,55 @@ impl EditorView {
             }
         };
         self.offline_cursor = position;
-        self.retire_audio_preserving_gain_take();
+        if !self.retire_audio_preserving_gain_take() {
+            self.recovery.fail();
+            return;
+        }
         self.clear_audio_accounting();
         if self.restart_audio_for_current_document() {
             self.pending_recovery_generation = Some(generation);
             self.status = "restarting audio output".into();
             self.error = None;
         } else {
-            self.fail_audio_recovery("audio restart request was not admitted".into());
+            self.fail_audio_recovery("audio restart request was not admitted");
         }
+    }
+
+    /// Moves a changed default output route (#4131) through the same recovery
+    /// as restart audio: the cursor is kept and the graph restored, and
+    /// playback stays stopped. Waits without an error while a dialog, load,
+    /// pending seek, restart or recovery is active; drops the request when
+    /// the named output is no longer current.
+    pub(super) fn follow_output_route(&mut self) -> bool {
+        let Some(identity) = self.route_follow else {
+            return false;
+        };
+        if self
+            .audio
+            .as_ref()
+            .and_then(|audio| audio.control.output_identity())
+            != Some(identity)
+        {
+            self.route_follow = None;
+            return false;
+        }
+        if self.close_prompt_open
+            || self.opening_project
+            || self.save_dialog_open
+            || self.export_dialog_open
+            || self.state.is_none()
+            || self.seek_pending()
+            || self.recovery.generation().is_some()
+            || self.pending_restart_request.is_some()
+        {
+            return false;
+        }
+        self.route_follow = None;
+        self.recover_audio();
+        if self.pending_recovery_generation.is_some() {
+            self.status = "audio output changed · reopening".into();
+        }
+        true
     }
 
     pub(super) fn poll_audio_recovery(&mut self) -> bool {
@@ -49,6 +97,14 @@ impl EditorView {
     pub(super) fn finish_audio_recovery_tick(&mut self) -> bool {
         if self.recovery.generation().is_none() {
             return false;
+        }
+        let reliable = self
+            .audio
+            .as_ref()
+            .is_some_and(|audio| audio.control.has_action_outcomes());
+        if reliable && self.recovery.seek_failed() {
+            self.fail_audio_recovery("recovered cursor request was not applied · retry available");
+            return true;
         }
         let graph_is_current = self
             .state
@@ -62,9 +118,7 @@ impl EditorView {
                 status.device_fault.load(Relaxed) || status.render_fault.load(Relaxed)
             });
         if failed {
-            self.fail_audio_recovery(
-                "audio output failed during recovery · retry available".into(),
-            );
+            self.fail_audio_recovery("audio output failed during recovery · retry available");
             return true;
         }
         if let Some(position) = self.recovery.seek_needed(graph_is_current) {
@@ -106,9 +160,7 @@ impl EditorView {
                 .is_some_and(|(rejected, _)| rejected == revision)
                 && status.applied_revision.load(Acquire) < revision
         }) {
-            self.fail_audio_recovery(
-                "recovered cursor publication was rejected · retry available".into(),
-            );
+            self.fail_audio_recovery("recovered cursor publication was rejected · retry available");
             return true;
         }
         let position = status.position.load(Relaxed);
@@ -136,6 +188,9 @@ impl EditorView {
                 position,
                 playing,
             )
+        } else if reliable {
+            self.recovery
+                .complete_exact(graph_is_current, position, playing)
         } else {
             self.recovery.complete(
                 graph_is_current,
@@ -158,15 +213,22 @@ impl EditorView {
         false
     }
 
-    pub(super) fn fail_audio_recovery(&mut self, error: String) {
+    pub(super) fn fail_audio_recovery(&mut self, error: impl Into<hex_audio::OutputOpenError>) {
+        let error = error.into();
         self.offline_cursor = self.cursor_position();
         self.recovery.fail();
         self.retire_audio_preserving_gain_take();
         self.pending_recovery_generation = None;
         self.pending_restart_request = None;
         self.clear_audio_accounting();
+        if error.rate_mismatch().is_some() {
+            let message = super::audio_unavailable::unavailable_message(&error);
+            self.status = message.clone();
+            self.error = Some(message.into());
+            return;
+        }
         self.status = "audio unavailable · editing and saving remain available".into();
-        self.error = Some(error.into());
+        self.error = Some(error.to_string().into());
     }
 
     fn clear_audio_accounting(&mut self) {
@@ -192,10 +254,67 @@ impl EditorView {
         self.session_capability_message = None;
     }
 
+    /// Scheduled cursor: the frame edits, insertion, zoom anchors and transport
+    /// commands act on.
     pub(super) fn cursor_position(&self) -> u64 {
-        self.recovery.position().unwrap_or_else(|| {
-            self.audio_status()
-                .map_or(self.offline_cursor, |status| status.position.load(Relaxed))
+        cursor_frame(
+            self.recovery.position(),
+            self.audio_status(),
+            self.offline_cursor,
+            Cursor::Scheduled,
+        )
+    }
+
+    /// Display-only playhead: the frame now leaving Main output, which trails
+    /// the scheduled cursor by the graph's Main latency.
+    pub(super) fn audible_cursor_position(&self) -> u64 {
+        cursor_frame(
+            self.recovery.position(),
+            self.audio_status(),
+            self.offline_cursor,
+            Cursor::Audible,
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Cursor {
+    Scheduled,
+    Audible,
+}
+
+/// A pending recovery position wins, then the live callback status, then the
+/// offline cursor.
+fn cursor_frame(
+    recovery: Option<u64>,
+    status: Option<&hex_audio::prepared::Status>,
+    offline: u64,
+    cursor: Cursor,
+) -> u64 {
+    recovery.unwrap_or_else(|| {
+        status.map_or(offline, |status| match cursor {
+            Cursor::Scheduled => status.position.load(Relaxed),
+            Cursor::Audible => status.audible_position.load(Relaxed),
         })
+    })
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::{Cursor, cursor_frame};
+    use std::sync::atomic::Ordering::Relaxed;
+
+    #[test]
+    fn playhead_shows_the_audible_frame_while_edits_use_the_scheduled_one() {
+        let status = hex_audio::prepared::Status::default();
+        status.position.store(960, Relaxed);
+        status.audible_position.store(672, Relaxed);
+        assert_eq!(cursor_frame(None, Some(&status), 0, Cursor::Audible), 672);
+        assert_eq!(cursor_frame(None, Some(&status), 0, Cursor::Scheduled), 960);
+        // Recovery and offline cursors are not latency-shifted.
+        for cursor in [Cursor::Audible, Cursor::Scheduled] {
+            assert_eq!(cursor_frame(Some(48), Some(&status), 0, cursor), 48);
+            assert_eq!(cursor_frame(None, None, 96, cursor), 96);
+        }
     }
 }

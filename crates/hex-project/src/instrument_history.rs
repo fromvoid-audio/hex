@@ -66,6 +66,7 @@ impl Project {
             routing,
             audio_feeds,
             midi_routes,
+            sidechains,
             import_provenance,
             sample_rate,
             next_id,
@@ -78,14 +79,17 @@ impl Project {
             main_devices,
             tempo_map,
             meter_map,
+            offline_assets,
         } = self;
         if aliases != &target.aliases
+            || offline_assets != &target.offline_assets
             || native_sources.len() != target.native_sources.len()
             || arrangement_sections != &target.arrangement_sections
             || tuning != &target.tuning
             || routing != &target.routing
             || audio_feeds != &target.audio_feeds
             || midi_routes != &target.midi_routes
+            || sidechains != &target.sidechains
             || import_provenance != &target.import_provenance
             || sample_rate != &target.sample_rate
             || target.next_id > *next_id
@@ -110,12 +114,14 @@ impl Project {
                 gain_lane,
                 id,
                 name,
+                automatic_name,
                 gain,
                 balance,
                 muted,
                 soloed,
                 devices,
                 instrument,
+                retained_source_path,
                 instrument_position,
                 content,
                 sends,
@@ -130,11 +136,13 @@ impl Project {
                 || color != &next.color
                 || id != &next.id
                 || name != &next.name
+                || automatic_name != &next.automatic_name
                 || gain != &next.gain
                 || balance != &next.balance
                 || muted != &next.muted
                 || soloed != &next.soloed
                 || devices != &next.devices
+                || retained_source_path != &next.retained_source_path
                 || instrument_position != &next.instrument_position
                 || content != &next.content
                 || sends != &next.sends
@@ -336,7 +344,7 @@ mod tests {
             current.tracks[0].gain_lane.recording_epoch = 9;
             target.tracks[0].gain_lane.recording_epoch = 2;
             assert!(current.instrument_history_delta(&target).is_some());
-            for case in 0..10 {
+            for case in 0..11 {
                 let mut next = target.clone();
                 match case {
                     0 => next.next_id = current.next_id + 1,
@@ -363,6 +371,7 @@ mod tests {
                     7 => next.master_gain = 0.5,
                     8 => next.tracks[0].instrument_position = Some(1),
                     9 => next.tracks.push(next.tracks[0].clone()),
+                    10 => next.tracks[0].retained_source_path = true,
                     _ => panic!("case"),
                 }
                 assert!(

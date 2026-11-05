@@ -88,9 +88,7 @@ impl RendererRuntime {
                                 &mut None,
                             )?;
                             let mixed = compensation.fader(track, index, None, processed)?;
-                            let main =
-                                compensation.edge(compensation.graph.tracks[index].main, mixed)?;
-                            compensation.main[index] = main;
+                            compensation.route_track_output(index, mixed)?;
                             for feed_index in 0..compensation.graph.tracks[index].audio_feeds.len()
                             {
                                 let feed =

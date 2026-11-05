@@ -84,6 +84,39 @@ impl PreparedMutableTrackRevision {
     fn arrangement_sources_match(&self, other: &Self) -> bool {
         self.arrangement_midi_sources == other.arrangement_midi_sources
     }
+
+    /// The same beat-anchored sources, ignoring the frame each clip ends at.
+    /// Only an edited base tempo map may move those frames (Pulse #4117).
+    fn arrangement_sources_match_retimed(&self, other: &Self) -> bool {
+        self.arrangement_midi_sources.len() == other.arrangement_midi_sources.len()
+            && self
+                .arrangement_midi_sources
+                .iter()
+                .zip(&other.arrangement_midi_sources)
+                .all(|(old, new)| old.same_beats(new))
+    }
+}
+
+impl PreparedArrangementMidiSource {
+    fn same_beats(&self, other: &Self) -> bool {
+        let Self {
+            content_view,
+            active,
+            playback_offset,
+            id,
+            start,
+            length,
+            end_frame: _,
+            source,
+        } = self;
+        *content_view == other.content_view
+            && *active == other.active
+            && *playback_offset == other.playback_offset
+            && *id == other.id
+            && *start == other.start
+            && *length == other.length
+            && *source == other.source
+    }
 }
 
 static NEXT_TUNING_FAMILY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -127,6 +160,46 @@ impl std::fmt::Debug for PreparedRevision {
 }
 
 impl PreparedRevision {
+    #[cfg(test)]
+    pub(crate) fn test_install_retained_receiver(
+        &mut self,
+        canonical: &Project,
+        track: TrackId,
+    ) -> Result<(), Invalid> {
+        let mut arrangement = self.arrangement().as_ref().clone();
+        let index = arrangement
+            .tracks
+            .iter()
+            .position(|row| row.canonical_track_id() == Some(track))
+            .ok_or(Invalid("receiver track is missing"))?;
+        arrangement.tracks[index].source_input_enabled = false;
+        arrangement.tracks[index].instrument_output_gain = 0.5;
+        self.source_routing
+            .test_exclude_receiver_contribution(index)?;
+        let graph =
+            crate::signal_graph::SignalGraph::test_printed_branch(&arrangement, canonical, index)?;
+        arrangement.main_output_latency_frames = crate::main_chain::output_latency(
+            graph.main_latency(),
+            &arrangement.main_device_chain,
+        )?;
+        arrangement.signal_graph = Some(graph);
+        for row in &mut arrangement.tracks {
+            row.source_mix = crate::PreparedTrackMix::identity();
+        }
+        self.arrangement = crate::owned_shared::OwnedShared::new_owned(arrangement);
+        Ok(())
+    }
+    #[cfg(test)]
+    pub(crate) fn test_install_group_graph(&mut self, canonical: &Project) {
+        let mut arrangement = self.arrangement().as_ref().clone();
+        arrangement.signal_graph =
+            crate::signal_graph::SignalGraph::prepare(&arrangement, &[], canonical).unwrap();
+        for track in &mut arrangement.tracks {
+            track.source_mix = crate::PreparedTrackMix::identity();
+        }
+        self.arrangement = crate::owned_shared::OwnedShared::new_owned(arrangement);
+    }
+
     pub fn prepare(
         project: &Project,
         media: &BTreeMap<AssetId, crate::Audio>,
@@ -1251,6 +1324,25 @@ impl PreparedRevision {
             == other.arrangement.shared_contexts().tuning_identity()
             && old.topology_matches(new)
             && old.arrangement_sources_match(new)
+    }
+
+    /// `mutable_arrangement_track_matches` across an edited base tempo map:
+    /// the same topology and beat-anchored sources, whose frames may move.
+    pub(crate) fn mutable_arrangement_track_matches_retimed(
+        &self,
+        other: &Self,
+        track: TrackId,
+    ) -> bool {
+        let Some(old) = self.mutable_track_revision(track) else {
+            return false;
+        };
+        let Some(new) = other.mutable_track_revision(track) else {
+            return false;
+        };
+        self.arrangement.shared_contexts().tuning_identity()
+            == other.arrangement.shared_contexts().tuning_identity()
+            && old.topology_matches(new)
+            && old.arrangement_sources_match_retimed(new)
     }
 
     pub(crate) fn mutable_arrangement_retarget_matches(

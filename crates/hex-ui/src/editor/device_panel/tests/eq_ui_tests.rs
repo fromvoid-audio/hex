@@ -31,6 +31,15 @@ fn fixture(legacy: bool) -> (Service, Arc<ViewState>, TrackId, DeviceId) {
     let device = state.project.track(track).unwrap().devices()[0].id();
     (service, state, track, device)
 }
+/// Option on a blank press keeps the held create-and-shape gesture; a plain
+/// blank press creates and only a shift blank drag draws the marquee.
+const OPTION_CREATE: Modifiers = Modifiers {
+    control: false,
+    alt: true,
+    shift: false,
+    platform: false,
+    function: false,
+};
 fn read(view: &EditorView, device: DeviceId) -> EqState {
     EqState::decode(
         view.state
@@ -150,6 +159,15 @@ fn assert_action_label_fits(
 
 #[gpui::test]
 fn eq_backspace_removes_only_the_focused_band_and_preserves_history(cx: &mut TestAppContext) {
+    eq_remove_key_history(cx, "backspace");
+}
+
+#[gpui::test]
+fn eq_x_removes_only_the_focused_band_and_preserves_history(cx: &mut TestAppContext) {
+    eq_remove_key_history(cx, "x");
+}
+
+fn eq_remove_key_history(cx: &mut TestAppContext, key: &str) {
     cx.update(super::super::super::bind_editor_keys);
     cx.update(hex_widgets::bind_numeric_control_keys);
     let (service, state, track, device) = fixture(false);
@@ -169,7 +187,7 @@ fn eq_backspace_removes_only_the_focused_band_and_preserves_history(cx: &mut Tes
     let position = plot(&mut visual, device, 0.5, 0.5);
     visual.simulate_click(position, Modifiers::default());
     visual.run_until_parked();
-    visual.simulate_keystrokes("backspace");
+    visual.simulate_keystrokes(key);
     pump_until(&editor, cx, |view| {
         settled(view)
             && (view.state.as_ref().unwrap().project.track(track).is_none()
@@ -187,7 +205,7 @@ fn eq_backspace_removes_only_the_focused_band_and_preserves_history(cx: &mut Tes
             "node removal atomically removes its automation"
         );
     });
-    visual.simulate_keystrokes("backspace");
+    visual.simulate_keystrokes(key);
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert!(
@@ -536,7 +554,7 @@ fn creation_history_and_round_trip(cx: &mut TestAppContext, owner: CreationOwner
             "actual {hint} creation indicator before press"
         );
         let moved = plot(&mut visual, device, 0.6, 0.7);
-        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
         visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
         visual.run_until_parked();
         assert!(
@@ -705,7 +723,7 @@ fn creation_cancellation(cx: &mut TestAppContext, origin: [f32; 2]) {
     let start = plot(&mut visual, device, origin[0], origin[1]);
     let moved = plot(&mut visual, device, 0.4, 0.7);
     for cancellation in 0..3 {
-        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
         visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
         match cancellation {
             0 => visual.simulate_keystrokes("escape"),
@@ -729,7 +747,7 @@ fn creation_cancellation(cx: &mut TestAppContext, origin: [f32; 2]) {
         });
     }
     // Other in-flight UI work cannot discard a creation's reserved terminal.
-    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
     editor.update(cx, |view, _| view.worker_requests_pending = 1);
     visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
@@ -746,7 +764,7 @@ fn creation_cancellation(cx: &mut TestAppContext, origin: [f32; 2]) {
     initial_next = editor.read_with(cx, |view, _| {
         view.state.as_ref().unwrap().project.next_identity()
     });
-    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
     visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
     // A canonical edit during the held preview invalidates its expected state.
     editor.update(cx, |v, _| {
@@ -791,7 +809,7 @@ fn eq_creation_outside_release_clamps_and_allocator_or_project_change_cancels(
         .debug_bounds(selector("eq-response", device))
         .unwrap();
     let outside = point(bounds.right() + px(12.0), bounds.center().y);
-    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
     visual.simulate_mouse_move(outside, Some(MouseButton::Left), Modifiers::default());
     visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
     pump_until(&editor, cx, |v| {
@@ -803,7 +821,7 @@ fn eq_creation_outside_release_clamps_and_allocator_or_project_change_cancels(
         assert!((state.nodes[0].frequency_hz - 20000.0).abs() < 0.1);
     });
     visual.run_until_parked();
-    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
     // The EQ source is unchanged, but another identity reservation invalidates
     // the provisional ID. It must never be rebased onto a replacement ID.
     editor.update(cx, |v, _| {
@@ -818,7 +836,7 @@ fn eq_creation_outside_release_clamps_and_allocator_or_project_change_cancels(
     visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     assert_eq!(editor.read_with(cx, |v, _| read(v, device).nodes.len()), 1);
-    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
     editor.update(cx, |v, cx| {
         v.project_generation += 1;
         cx.notify();
@@ -1012,6 +1030,9 @@ pub(in crate::editor) mod graph_layout_tests;
 
 #[path = "eq_node_gesture_tests.rs"]
 mod node_gesture_tests;
+
+#[path = "eq_marquee_tests.rs"]
+mod marquee_tests;
 
 #[gpui::test]
 fn eq_node_controls_stay_bound_without_a_local_automation_editor(cx: &mut TestAppContext) {

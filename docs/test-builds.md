@@ -9,24 +9,17 @@ Supply optimized exact-source builds for user testing. Save and quit hex first;
 never force-quit, discard unsaved projects or claim replacing a file reloads a
 running process. Preserve projects, media, preferences and historical artifacts.
 
-## Update and open
+## Run from source
 
 ```sh
-./launch          # fetch/fast-forward clean main, optimized build/install/open
-./launch --test   # add full exact-source local CI
-./launch --open   # verify/open installed app only
-./launch --help
+./launch                    # git pull, then cargo run -r
+./launch --diagnostics=off  # forward arguments to hex
 ```
 
-Normal update refuses dirty/non-main/ahead/divergent source and running installed
-or raw desktop processes. Without `--test`, it records source-only verification
-and tests as not run. `--open` does not update or build.
-
-`--force-restart` is a separate explicit destructive opt-in: it can terminate the
-verified development app after normal quit fails. Never infer that authorization
-from a build request. `--recover-release-target` handles supported recreated or
-pending targets without terminating hex; read its exact diagnostic and help first.
-Do not edit release ownership markers or delete uncertain installation custody.
+The launcher runs in the checkout containing it. It stops on a failed pull and
+forwards all arguments to the release binary. It does not install an app bundle,
+run local CI, or terminate an existing process. Git and Cargo use their normal
+configuration, including `CARGO_TARGET_DIR` when set.
 
 ## Qualified user-test delivery
 
@@ -48,6 +41,14 @@ sh scripts/bundle-macos.sh \
   --checklist artifacts/USER-TEST.md
 ```
 
+Use the open Pulse review-checklist items of the issues in the candidate as the
+source of applicable pending interaction and listening checks. Prepare the
+candidate's finite checklist snapshot from those items, with exact build
+provenance and explicit scope, write it to the ignored `artifacts/USER-TEST.md`
+and supply it to `--checklist`. The snapshot is a read-only copy for the build;
+the user ticks each item in Pulse and marks the issue done after all its items
+are complete. See `AGENTS.md` for the full contract.
+
 Use `sh scripts/bundle-macos.sh --help` for supported options. Only an explicitly
 requested development delivery may use `--dev-profile` with its resolved scoped
 merge report; identify it as scoped development evidence, not full qualification.
@@ -59,6 +60,24 @@ machine-specific path; do not create revision-named copies. Packaging builds
 `cargo build --release -p hex-desktop --locked`, uses the configured Developer ID
 certificate/team and preserves original notices. Missing signing identity or
 failed verification refuses publication without an ad-hoc fallback.
+
+For explicit preparation without replacing a running app, the same qualified
+command accepts `--prepare-only`. It requires full exact-source CI and writes a
+verified candidate into the target-bound `.hex-pending-update` store beside the
+configured app. It does not install or launch that candidate; the ordinary
+launcher does not consume it. An update-capable installed test build shows an
+available update and offers `install update on quit` or `save and restart for
+update` in the hex menu. The first waits for a confirmed normal close; the second
+waits for the selected project save and requests one restart after installation.
+Cancelling, a failed save, or a changed project leaves the app running. A changed
+candidate detected before quit also leaves the app running; if the final check
+after quit refuses, reopen the existing app and retry. If an older installed build does not offer these actions, save and quit
+it and use the supported installer once before using the deferred handoff.
+Failure before pending publication preserves the installed app and the previous
+candidate. Interrupted publication uses the existing installer recovery. Avoid
+starting a build or CI while recording: preparation is not evidence of audio
+deadline safety. A restart request is not proof that the new process launched;
+check its build identity and the displayed update status separately.
 
 For explicit VST3 helper packaging, build the pinned clean SDK inputs with
 `crates/hex-plugin-scan/native/macos_bootstrap.py build --help`. The
@@ -77,3 +96,13 @@ cover a merge only when its complete tree is identical. Disk installation,
 launch and native acceptance are separate facts. A cleanup failure is incomplete
 delivery even if the new app is present; preserve diagnostics and retry only via
 the supported installer. Do not fabricate a successful receipt or collect old apps.
+
+After an interrupted installation, save and quit hex normally before retrying
+the same `scripts/bundle-macos.sh` command. The installer checks its temporary
+custody first: it restores the previous app if publication did not complete or
+the new app fails verification, and finishes cleanup if the published app verifies.
+It refuses ambiguous custody, a legacy journal, unexpected files, or a running
+app; preserve those paths and the diagnostic for inspection rather than moving
+or deleting them. Recovery alone does not publish a new adjacent receipt. Check
+the final command result, installed app identity, and receipt before reporting
+delivery; obtain fresh exact-source CI if the candidate or its inputs changed.

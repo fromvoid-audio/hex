@@ -3,6 +3,7 @@
 #pragma once
 #include "macos_state_stream.hpp"
 #include "macos_parameters.hpp"
+#include "macos_parameter_page.hpp"
 #include <array>
 #include <cerrno>
 #include <cmath>
@@ -175,12 +176,15 @@ struct Packet {
     std::array<uint8_t,header_size+max_frames*8+hex_instance::PARAMETER_POINT_COUNT*16> bytes{};
     std::array<hex_instance::ParameterPoint,hex_instance::PARAMETER_POINT_COUNT> parameters{};
     size_t parameter_count=0;
-    uint16_t frames=0;bool stop=false;
+    uint16_t frames=0;bool stop=false,observe_latency=false;
     uint64_t next_graph=0,next_epoch=0;
     uint64_t capture_operation=0;
+    hex_instance::ControllerQuery parameter_query{};
     std::optional<Presentation> resumed_presentation;
     // 0 EOF/cancellation, 1 PCM, 2 terminal, 3 quiesce, 4 resume,
-    // 5 quiescent capture, 6 live capture start, 7 live capture poll, 8 stopped flush, 9 edit receipts, -1 malformed.
+    // 5 quiescent capture, 6 live capture start, 7 live capture poll, 8 stopped flush,
+    // 9 edit receipts, 10 controller page start, 11 controller page poll,
+    // 12 explicit stopped component reactivation, -1 malformed.
     // Only the serialized processing lane reads these requests. Resume changes
     // no source/format facts, and is legal only in an acknowledged quiescence.
     int read(int fd,const Config& config,uint64_t sequence,uint64_t frame) {
@@ -189,11 +193,14 @@ struct Packet {
         stop=!std::memcmp(p,"HXVE",4);
         const bool quiesce=!std::memcmp(p,"HXVQ",4),resume=!std::memcmp(p,"HXVR",4),capture=!std::memcmp(p,"HXVC",4);
         const bool edit_query=!std::memcmp(p,"HXVG",4);
+        const bool reactivate=!std::memcmp(p,"HXVA",4);
+        const bool page_start=!std::memcmp(p,"HXVM",4),page_poll=!std::memcmp(p,"HXVN",4);
         const bool live_start=!std::memcmp(p,"HXVL",4),live_poll=!std::memcmp(p,"HXVP",4);
         const bool pcm=!std::memcmp(p,"HXVB",4),flush=!std::memcmp(p,"HXVF",4);
         const auto version=number(p+4,2);
-        if((!stop && !quiesce && !resume && !capture && !live_start && !live_poll && !pcm && !flush && !edit_query) ||
-            ((pcm || flush)?(version!=1 && version!=2):version!=1) || number(p+8,2)) return -1;
+        observe_latency=edit_query && version==2;
+        if((!stop && !quiesce && !resume && !capture && !live_start && !live_poll && !pcm && !flush && !edit_query && !page_start && !page_poll && !reactivate) ||
+            ((pcm || flush || edit_query)?(version!=1 && version!=2):version!=1) || number(p+8,2)) return -1;
         parameter_count=(pcm || flush) && version==2?static_cast<size_t>(number(p+10,2)):0;
         if(parameter_count>parameters.size()) return -1;
         for(size_t n=resume?11:((pcm || flush) && version==2?12:10);n<16;++n) if(p[n]) return -1;
@@ -212,14 +219,26 @@ struct Packet {
         if(number(p+48,8)!=sequence || number(p+56,8)!=frame) return -1;
         if(stop) return frames? -1:2;
         if(quiesce) return frames? -1:3;
+        if(page_start || page_poll) {
+            if(frames || read_exact(fd,p+header_size,287)!=1) return -1;
+            capture_operation=number(p+header_size,8);
+            parameter_query.first=static_cast<uint16_t>(number(p+header_size+8,2));
+            parameter_query.revision=number(p+header_size+10,8);
+            parameter_query.kind=p[header_size+18];
+            parameter_query.id=static_cast<uint32_t>(number(p+header_size+19,4));
+            parameter_query.bits=number(p+header_size+23,8);
+            for(size_t n=0;n<128;++n) parameter_query.text[n]=static_cast<Steinberg::Vst::TChar>(number(p+header_size+31+n*2,2));
+            if(!capture_operation || !hex_instance::valid_controller_query(parameter_query)) return -1;
+            return page_start?10:11;
+        }
         if(flush) {
             if(version!=2 || frames || read_exact(fd,p+header_size,8+parameter_count*16)!=1) return -1;
             capture_operation=number(p+header_size,8);
             return capture_operation && parse_parameters(p+header_size+8,1)?8:-1;
         }
-        if(capture || live_start || live_poll || edit_query) {
+        if(capture || live_start || live_poll || edit_query || reactivate) {
             if(frames || read_exact(fd,p+header_size,8)!=1) return -1;
-            capture_operation=number(p+header_size,8);return capture_operation?(edit_query?9:(live_start?6:(live_poll?7:5))):-1;
+            capture_operation=number(p+header_size,8);return capture_operation?(reactivate?12:(edit_query?9:(live_start?6:(live_poll?7:5)))):-1;
         }
         if(!frames || frames>config.maximum || frame>std::numeric_limits<uint64_t>::max()-frames || sequence==std::numeric_limits<uint64_t>::max()) return -1;
         if(read_exact(fd,p+header_size,frames*8+parameter_count*16)!=1) return -1;

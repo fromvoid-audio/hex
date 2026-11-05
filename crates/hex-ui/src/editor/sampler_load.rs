@@ -50,6 +50,16 @@ impl EditorView {
             })
     }
     pub(super) fn first_sampler_target(&self, path: PathBuf) -> Result<Target, &'static str> {
+        let track = self
+            .selected_track
+            .ok_or("select a midi track before loading a sampler")?;
+        self.sampler_target_on_track(track, path)
+    }
+    fn sampler_target_on_track(
+        &self,
+        track: TrackId,
+        path: PathBuf,
+    ) -> Result<Target, &'static str> {
         if self.edit_pending() {
             return Err("wait for the pending edit before loading a sampler");
         }
@@ -57,9 +67,9 @@ impl EditorView {
             return Err("sampler loading requires a resident project");
         }
         let state = self.state.as_ref().ok_or("project is still loading")?;
-        let track = self
-            .selected_track
-            .and_then(|id| state.project.track(id))
+        let track = state
+            .project
+            .track(track)
             .ok_or("select a midi track before loading a sampler")?;
         let replacement = if let Some(device) = track.instrument() {
             hex_engine::validate_sampler_replacement_on_control(device.state())
@@ -157,6 +167,66 @@ impl EditorView {
             }],
         });
         cx.notify();
+    }
+    /// Releases a browser sample over one sampler card. The drop names its
+    /// own track and instrument, so it never depends on the selected track.
+    pub(super) fn drop_browser_sample_on_sampler(
+        &mut self,
+        drag: &drag::BrowserAudioDrag,
+        track: TrackId,
+        device: hex_project::DeviceId,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self
+            .active_browser_audio_drag
+            .as_ref()
+            .is_some_and(|active| Rc::ptr_eq(&active.destination, &drag.destination))
+            && !self.opening_project
+            && !self.close_prompt_open
+            && self.browser.scan_generation() == drag.browser_generation
+            && drag.project_generation == self.project_generation
+            && self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.revision == drag.revision);
+        // Retire the exact UI payload first; the load request owns the rest.
+        self.clear_browser_audio_drag(drag);
+        if !current {
+            self.error = Some("sample drop canceled · project changed".into());
+            cx.notify();
+            return;
+        }
+        if self.sampler_load.pending.is_some() || self.sampler_replacement_pending_id().is_some() {
+            self.error = Some("sampler load is already pending".into());
+            cx.notify();
+            return;
+        }
+        if !device_panel::finalize_controls(self, cx) {
+            return;
+        }
+        match self.sampler_target_on_track(track, drag.path.clone()) {
+            Ok(target)
+                if target
+                    .replacement
+                    .as_ref()
+                    .is_some_and(|(id, _)| *id == device) =>
+            {
+                self.load_first_sampler(target, cx);
+                if self.sampler_load.pending.is_some()
+                    || self.sampler_replacement_pending_id().is_some()
+                {
+                    self.stop_browser_preview_for_drop();
+                }
+            }
+            Ok(_) => {
+                self.error = Some("sample drop canceled · sampler changed".into());
+                cx.notify();
+            }
+            Err(reason) => {
+                self.error = Some(reason.into());
+                cx.notify();
+            }
+        }
     }
     pub(super) fn load_first_sampler(&mut self, target: Target, cx: &mut Context<Self>) {
         if self.sampler_load.pending.is_some() {

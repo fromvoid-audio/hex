@@ -2,6 +2,7 @@
 use super::*;
 use crate::plugin_worker::native_tests::original_instance;
 use std::{fs, path::PathBuf, process::Command};
+mod controller;
 mod stopped;
 
 fn fixture_child(fault: u32, name: &str) -> bool {
@@ -42,6 +43,47 @@ fn fixture_child(fault: u32, name: &str) -> bool {
     );
     true
 }
+#[test]
+fn helper_refusal_completes_only_its_operation_and_frees_the_mailbox() {
+    let mut slot = Slot {
+        ordinal: 4,
+        phase: Phase::Requested,
+        ..Slot::default()
+    };
+    assert!(slot.take_terminal().is_none(), "requested is still pending");
+    // A stale ordinal never completes the current operation.
+    assert!(
+        slot.complete(3, Err(StateCaptureRefusal::StillChanging))
+            .is_err()
+    );
+    slot.complete(4, Err(StateCaptureRefusal::StillChanging))
+        .unwrap();
+    assert!(matches!(
+        slot.take_terminal(),
+        Some(Err(StateCaptureRefusal::StillChanging))
+    ));
+    assert!(slot.phase == Phase::Idle && slot.refusal.is_none());
+    assert!(
+        slot.take_terminal().is_none(),
+        "a terminal is consumed once"
+    );
+    // The freed mailbox admits the next operation and carries real bytes.
+    slot.ordinal = 5;
+    slot.phase = Phase::Requested;
+    let mut payload = Payload {
+        len: 2,
+        ..Payload::default()
+    };
+    payload.bytes[..2].copy_from_slice(&[7, 9]);
+    slot.complete(5, Ok(payload)).unwrap();
+    let Some(Ok(captured)) = slot.take_terminal() else {
+        panic!("captured bytes")
+    };
+    assert_eq!(&captured.bytes[..captured.len], &[7, 9]);
+    // Completing an idle slot is a protocol fault, not a silent overwrite.
+    assert!(slot.complete(5, Ok(payload)).is_err());
+}
+
 fn trace_path() -> PathBuf {
     PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_TRACE").unwrap())
 }
@@ -208,6 +250,7 @@ fn complete(owner: &mut NativeWorker, request: &NativeWorkerCapture) -> NativeDe
         match owner.poll_state_capture_on_control(request).unwrap() {
             NativeWorkerCaptureProgress::Captured(state) => return state,
             NativeWorkerCaptureProgress::Failed => panic!("capture failed"),
+            NativeWorkerCaptureProgress::Refused(refusal) => panic!("capture refused: {refusal}"),
             NativeWorkerCaptureProgress::Pending => {
                 assert!(Instant::now() < until);
                 thread::yield_now();
@@ -397,6 +440,9 @@ fn actual_worker_capture_failure_retains_original_error_and_native_reap() {
                 thread::yield_now();
             }
             NativeWorkerCaptureProgress::Captured(_) => panic!("SDK refusal cannot produce state"),
+            NativeWorkerCaptureProgress::Refused(refusal) => {
+                panic!("SDK refusal is not a helper refusal: {refusal}")
+            }
         }
     }
     let retired = owner.retire_on_control().unwrap();

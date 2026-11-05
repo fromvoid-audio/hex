@@ -81,12 +81,15 @@ static void arm_main_thread_tail(){static thread_local MainThreadTail tail;tail.
 const TUID restore_controller_id={0x48,0x45,0x58,0x43,1,2,3,4,5,6,7,8,9,10,11,12};
 // Original one-parameter SDK fixtures preserve the same opaque state shape.
 // Distinct variants exercise actual metadata and processing, not host guesses.
-static ParamID parameter_id(int variant) { return variant==80 || variant==89?0u:7u; }
+static ParamID parameter_id(int variant) { return variant==80 || variant==89 || variant==92?0u:7u; }
 static double parameter_value(int variant,double value) {
     if(variant==81) return std::round(value*3.0)/3.0;
     if(variant==82) return value>=0.5?1.0:0.0;
     return value;
 }
+// The latency fixture invokes one additional restart synchronously during
+// activation. Its controller owns this borrowed handler on the main lane.
+IComponentHandler* latency_handler=nullptr;
 class RestoreController final : public IEditController {
     std::atomic<uint32> refs{1};
     const int fault=next_fault;
@@ -99,6 +102,10 @@ class RestoreController final : public IEditController {
         const auto* release=std::getenv("HEX_ORIGINAL_INSTANCE_RELEASE");
         if(!self || self->edits_sent || !release || std::strlen(release)>4096 || ::access(release,F_OK)!=0) return;
         self->edits_sent=true;CFRunLoopTimerInvalidate(self->edit_timer);
+        if(self->fault==105) {
+            self->handler->restartComponent(kLatencyChanged);
+            return;
+        }
         const auto id=parameter_id(self->fault);
         if(self->fault==86) self->handler->performEdit(id,0.75);
         else {
@@ -134,7 +141,8 @@ public:
     tresult PLUGIN_API setComponentHandler(IComponentHandler* value) override {
         if (!control() || !context || (value && handler)) return kResultFalse;
         if(value)value->addRef();if(handler)handler->release();handler=value;
-        if(value && fault>=85 && fault<=89) {
+        if(fault==104 || fault==105) latency_handler=handler;
+        if(value && ((fault>=85 && fault<=89) || fault==105)) {
             CFRunLoopTimerContext timer_context{};timer_context.info=this;
             edit_timer=CFRunLoopTimerCreate(nullptr,CFAbsoluteTimeGetCurrent(),0.001,0,0,edit_tick,&timer_context);
             if(!edit_timer) return kResultFalse;
@@ -174,6 +182,9 @@ public:
     tresult PLUGIN_API getState(IBStream* stream) override {
         if (!control() || !context || !handler || !stream) return kResultFalse;
         ++restoration.controller_get;
+        if(fault==96 && restoration.controller_get==2) {
+            std::array<unsigned char,5000> huge{};return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
+        }
         // Original sensitivity fixture: an edit admitted during a live SDK
         // state read must not let that pre-edit component snapshot escape.
         if(fault==90 && restoration.controller_get>1 && !edits_sent) {
@@ -190,7 +201,8 @@ public:
     tresult PLUGIN_API getParameterInfo(int32 index,ParameterInfo& info) override {
         if (!control() || !context || index) return kInvalidArgument;
         ++restoration.info_reads;info={};info.id=parameter_id(fault);info.defaultNormalizedValue=fault==81?1.0/3.0:(fault==82?0.0:0.25);
-        if(fault==80 || fault==81 || fault==82) info.flags=ParameterInfo::kCanAutomate;
+        if(fault==80 || fault==81 || fault==82 || fault==91 || fault==92) info.flags=ParameterInfo::kCanAutomate;
+        if(fault==91 || fault==92) {const char16_t unit[]=u"ratio";std::memcpy(info.units,unit,sizeof(unit));}
         if(fault==81) info.stepCount=3;
         if(fault==82) {info.stepCount=1;info.flags|=ParameterInfo::kIsBypass;}
         if(fault==83 || fault==84 || fault==88) info.flags=ParameterInfo::kIsReadOnly;
@@ -203,15 +215,56 @@ public:
         if(fault==57)fault_hang(19);
         return fault==56?std::numeric_limits<double>::quiet_NaN():component_gain/4.0;
     }
-    tresult PLUGIN_API getParamStringByValue(ParamID,ParamValue,String128) override { return kNotImplemented; }
-    tresult PLUGIN_API getParamValueByString(ParamID,TChar*,ParamValue&) override { return kNotImplemented; }
-    ParamValue PLUGIN_API normalizedParamToPlain(ParamID,ParamValue value) override { return value; }
-    ParamValue PLUGIN_API plainParamToNormalized(ParamID,ParamValue value) override { return value; }
+    tresult PLUGIN_API getParamStringByValue(ParamID id,ParamValue value,String128 text) override {
+        if(fault!=91 && fault!=92 && fault!=93) return kNotImplemented;
+        if(!control() || !context || id!=parameter_id(fault) || !std::isfinite(value) || value<0 || value>1) return kInvalidArgument;
+        // Only the explicit controller-page query invokes formatting. Holding
+        // this foreign main-lane getter must not hold the PCM worker or permit
+        // stop/unload beneath its live SDK frame.
+        if(fault==93) fault_hang(26);
+        char formatted[32]{};
+        if(value==0.25) std::strcpy(formatted,"unity");
+        else if(value==0.5) std::strcpy(formatted,"double");
+        else std::snprintf(formatted,sizeof(formatted),"%.3f x",value*4.0);
+        std::memset(text,0,sizeof(String128));
+        for(size_t n=0;n<std::strlen(formatted);++n) text[n]=static_cast<TChar>(formatted[n]);
+        return kResultOk;
+    }
+    tresult PLUGIN_API getParamValueByString(ParamID id,TChar* text,ParamValue& value) override {
+        if(fault!=91 && fault!=92 && fault!=94) return kNotImplemented;
+        if(!control() || !context || id!=parameter_id(fault) || !text) return kInvalidArgument;
+        if(fault==94) {value=std::numeric_limits<double>::quiet_NaN();return kResultOk;}
+        char input[32]{};size_t n=0;
+        for(;n<31 && text[n];++n) {if(text[n]>127) return kResultFalse;input[n]=static_cast<char>(text[n]);}
+        if(text[n]) return kResultFalse;
+        if(!std::strcmp(input,"unity")) value=0.25;
+        else if(!std::strcmp(input,"double")) value=0.5;
+        else {
+            char* end=nullptr;const auto plain=std::strtod(input,&end);
+            if(end==input || !end || std::strcmp(end," x") || !std::isfinite(plain) || plain<0 || plain>4) return kResultFalse;
+            value=plain/4.0;
+        }
+        return kResultOk;
+    }
+    ParamValue PLUGIN_API normalizedParamToPlain(ParamID id,ParamValue value) override {
+        if(fault!=91 && fault!=92) return value;
+        if(!control() || !context || id!=parameter_id(fault)) {++observed.violations;return std::numeric_limits<double>::quiet_NaN();}
+        return value*4.0;
+    }
+    ParamValue PLUGIN_API plainParamToNormalized(ParamID id,ParamValue value) override {
+        if(fault!=91 && fault!=92) return value;
+        if(!control() || !context || id!=parameter_id(fault)) {++observed.violations;return std::numeric_limits<double>::quiet_NaN();}
+        return value/4.0;
+    }
     tresult PLUGIN_API setParamNormalized(ParamID id,ParamValue value) override {
         if(!control() || !context || !handler || id!=parameter_id(fault) || !std::isfinite(value) || value<0 || value>1)
             return kInvalidArgument;
         if(fault==76 && observed.flushes.load()) return kResultFalse;
         component_gain=static_cast<float>(parameter_value(fault,value)*4.0);
+        if(fault==104 && observed.blocks) {
+            const auto extra=value==0.25?kIoChanged:kParamValuesChanged;
+            handler->restartComponent(kLatencyChanged|extra);
+        }
         restoration.controller_gain=bits(component_gain);trace(21);return kResultOk;
     }
     IPlugView* PLUGIN_API createView(FIDString) override { return nullptr; }
@@ -221,6 +274,7 @@ class ProcessingProcessor final : public Processor,public IAudioPresentationLate
     bool initialized=false, arranged=false, setup=false, active=false;
     std::atomic<bool> processing{false};
     bool input=false,output=false,thread_bound=false;
+    bool activation_restart_sent=false;
     int32 inputs=2,outputs=2,maximum=0,precision=kSample32;
     std::atomic<int32> block{0};
     double sample_rate=0;
@@ -307,6 +361,19 @@ public:
         ++restoration.component_get;
         // Original current-state capture fault controls leave startup valid.
         if(restoration.component_get>1) {
+            if(fault==95 && restoration.component_get==2) {
+                std::array<unsigned char,5000> huge{};return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
+            }
+            if(fault==97 && restoration.component_get==2) {
+                std::array<unsigned char,5000> huge{};
+                stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
+                stream->seek(-1,IBStream::kIBSeekSet,nullptr);return kResultOk;
+            }
+            if(fault==98 && restoration.component_get==2) {
+                std::array<unsigned char,5000> huge{};
+                stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
+                return kInternalError;
+            }
             if(fault==69) return kResultFalse;
             if(fault==70) throw std::runtime_error("original SDK current capture exception");
             if(fault==71) fault_hang(22);
@@ -405,6 +472,20 @@ public:
     tresult PLUGIN_API setActive(TBool enabled) override {
         if (!enabled && fault==25) trace(7); // sensitivity: teardown after unknown startup
         if (!control() || !setup || processing) return kResultFalse;
+        if(observed.stops) {
+            if(fault>=100 && fault<=103 && !module_event(enabled?'A':'D')) return kResultFalse;
+            if((fault==100 && !enabled) || (fault==101 && enabled)) { trace(24);return kResultFalse; }
+            if((fault==102 && !enabled) || (fault==103 && enabled)) {
+                trace(25);throw std::runtime_error("original SDK reactivation exception");
+            }
+            if((fault==99 || fault==104 || fault==105) && enabled && !active) {
+                restored_latency=7;delay={};delay_cursor=0;
+                if((fault==104 || fault==105) && !activation_restart_sent && latency_handler) {
+                    activation_restart_sent=true;
+                    latency_handler->restartComponent(kLatencyChanged);
+                }
+            }
+        }
         active=enabled;return kResultOk;
     }
     tresult PLUGIN_API setProcessing(TBool enabled) override {
@@ -601,9 +682,9 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     // The production helper never reads this environment variable.
     const auto* selected=std::getenv("HEX_ORIGINAL_INSTANCE_VARIANT");
     if (selected) {
-        const auto length=std::strlen(selected);if (!length || length>2) return false;
+        const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>90) return false;next_fault=value;
+        if (value>105) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

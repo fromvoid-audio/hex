@@ -111,6 +111,91 @@ fn main_history_publication_render_and_shutdown_have_no_callback_allocations_or_
     assert!(Arc::strong_count(&next) >= 1);
 }
 
+#[test]
+fn latency_delayed_metronome_mix_handoff_and_stop_allocate_and_drop_nothing() {
+    use hex_engine::PlaybackAction;
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Imported { asset, .. } = editor
+        .execute(Command::ImportPreparedAudioTrack {
+            name: "click".into(),
+            path: "memory/main-click.wav".into(),
+            source_sample_rate: 48_000,
+            source_frames: 256,
+            playback_frames: 256,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        })
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    let definition = &hex_devices::limiter::DEFINITION;
+    let state = definition
+        .patch_parameter(
+            &definition.default_state().unwrap(),
+            hex_devices::limiter::parameter::LOOKAHEAD,
+            ParameterValue::Choice(2),
+        )
+        .unwrap();
+    editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state,
+        })
+        .unwrap();
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![[0.0; 2]; 256]).unwrap())]);
+    let table = Arc::new(SineTable::new());
+    let revision = Arc::new(
+        PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None).unwrap(),
+    );
+    assert_eq!(revision.arrangement().main_latency_frames(), 288);
+    let (mut control, mut callback) = prepared::channel(48_000).unwrap();
+    control
+        .publish(Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap())
+        .unwrap();
+    control
+        .action_with_ticket(PlaybackAction::SetMetronome(true))
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    // The beat-0 click enters the delay ring and starts sounding at frame 288.
+    let mut output = [[0.0; 2]; 512];
+    zero(measure(|| {
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+    }));
+    assert!(output[..288].iter().all(|frame| *frame == [0.0; 2]));
+    assert!(output[288][0] > 0.1, "delayed accented click");
+    // A compatible revision copies the in-flight ring without allocating.
+    editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
+    let next = Arc::new(PreparedRevision::prepare(editor.project(), &media, table, None).unwrap());
+    control
+        .publish(Playback::try_from_prepared_with_session(Arc::clone(&next)).unwrap())
+        .unwrap();
+    zero(measure(|| {
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+    }));
+    assert!(control.reclaim() > 0, "old owners retire on control side");
+    // Stop clears the dirty ring once; stopped blocks then do no ring work.
+    control.command(PlaybackCommand::Stop).unwrap();
+    for _ in 0..2 {
+        zero(measure(|| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        }));
+    }
+    assert!(output.iter().all(|frame| *frame == [0.0; 2]));
+    assert!(control.status.rejected_action().is_none());
+    control.request_shutdown();
+    zero(measure(|| {
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+    }));
+    control.reclaim();
+    assert!(Arc::strong_count(&revision) >= 1);
+    assert!(Arc::strong_count(&next) >= 1);
+}
+
 #[path = "../../hex-engine/examples/support/latency_fixture.rs"]
 mod latency_fixture;
 

@@ -10,10 +10,7 @@ use gpui::{
 };
 use hex_project::{BeatTime, ClipId, Command, MidiNoteInsert};
 use hex_session::service::{Event, Request, Service};
-use std::{
-    path::Path,
-    time::{Duration, Instant},
-};
+use std::{path::Path, time::Instant};
 
 fn setup(
     cx: &mut TestAppContext,
@@ -336,13 +333,16 @@ fn velocity_resize_collapse_and_wheel_keep_note_space_and_time_alignment(cx: &mu
     });
 }
 fn next(service: &Service) -> Event {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
             return event;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "next: hang guard expired"
+        );
         std::thread::yield_now();
     }
 }
@@ -576,10 +576,9 @@ fn lane_at(
     )
 }
 fn painted_time_in_lane(visual: &mut VisualTestContext) {
-    let color: gpui::Background =
-        gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Secondary)))
-            .opacity(theme::TIME_SELECTION_OPACITY)
-            .into();
+    let color: gpui::Background = gpui::Hsla::from(rgb(theme::time_selection_fill()))
+        .opacity(theme::TIME_SELECTION_OPACITY)
+        .into();
     assert!(
         visual
             .rendered_filled_quads("midi-velocity-lane")

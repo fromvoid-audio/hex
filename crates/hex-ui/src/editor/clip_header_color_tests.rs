@@ -4,10 +4,7 @@ use crate::theme;
 use gpui::{AppContext, Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext};
 use hex_project::{BeatTime, ClipFlavor, ClipId, Command, Created, ElementColor, TrackId};
 use hex_session::service::{Event, Request, Service};
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Duration};
 
 struct Fixture {
     _environment: Arc<Environment>,
@@ -18,13 +15,16 @@ struct Fixture {
     midi: ClipId,
 }
 fn next(service: &Service) -> Event {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
             return event;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "next: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
@@ -141,7 +141,7 @@ fn click(v: &mut VisualTestContext, clip: ClipId, modifiers: Modifiers) {
     v.run_until_parked();
 }
 fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(&mut *visual, |v, cx| {
             if v.tick(cx) {
@@ -153,7 +153,10 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
             visual.run_until_parked();
             return;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "pump: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
@@ -248,6 +251,19 @@ fn clip_titles_paint_inherited_flavor_colors_through_selection_and_recolor(
                     gpui::Background::from(gpui::rgb(expected)),
                     "actual audio/MIDI body and title consume the same shared fill"
                 );
+                let (divider_color, divider_widths, _) = visual.rendered_border(header).unwrap();
+                assert!(divider_widths.bottom > gpui::ScaledPixels::default());
+                assert!(
+                    divider_widths.bottom
+                        <= gpui::ScaledPixels::from(
+                            visual.update(|window, _| window.scale_factor())
+                        )
+                );
+                assert_eq!(divider_widths.top, gpui::ScaledPixels::default());
+                assert_eq!(divider_widths.left, gpui::ScaledPixels::default());
+                assert_eq!(divider_widths.right, gpui::ScaledPixels::default());
+                let ink = theme::readable_text(expected, theme::color(theme::PaletteRole::Text));
+                assert_eq!(divider_color, gpui::rgba((ink << 8) | 0x70).into());
                 assert_eq!(
                     visual.debug_bounds(header).unwrap(),
                     bounds[i],
@@ -263,7 +279,7 @@ fn clip_titles_paint_inherited_flavor_colors_through_selection_and_recolor(
                     gpui::Hsla::from(gpui::rgb(if select {
                         theme::color(theme::PaletteRole::Primary)
                     } else {
-                        0x000000
+                        theme::color(theme::PaletteRole::ClipOutline)
                     })),
                     "selection outline remains independent"
                 );

@@ -6,7 +6,10 @@ use std::sync::atomic::AtomicU64;
 
 pub(super) struct QueuedRequest {
     pub request: Request,
+    pub(super) publication_wait_failure: Option<&'static str>,
+    pub(super) publication_waited: bool,
     pub document_intent: u64,
+    pub save_correlation: Option<super::SaveCorrelation>,
     pub diagnostic: Option<super::diagnostics::DiagnosticRequest>,
     pub diagnostic_origin: super::diagnostics::DiagnosticOrigin,
 }
@@ -14,7 +17,10 @@ impl QueuedRequest {
     pub(super) fn continuation(request: Request, intent: &AtomicU64) -> Self {
         Self {
             request,
+            publication_wait_failure: None,
+            publication_waited: false,
             document_intent: intent.load(Ordering::Acquire),
+            save_correlation: None,
             diagnostic: None,
             diagnostic_origin: super::diagnostics::DiagnosticOrigin::Continuation,
         }
@@ -29,6 +35,7 @@ pub struct RequestCancellation {
     shutdown: Arc<AtomicBool>,
     document_intent: Arc<AtomicU64>,
     expected_intent: u64,
+    publication_waited: bool,
 }
 impl RequestCancellation {
     pub(super) fn new(
@@ -40,7 +47,16 @@ impl RequestCancellation {
             shutdown,
             document_intent,
             expected_intent,
+            publication_waited: false,
         }
+    }
+    pub(super) fn after_publication_wait(mut self, waited: bool) -> Self {
+        self.publication_waited = waited;
+        self
+    }
+    /// Whether this request must recheck document intent at graph admission.
+    pub fn requires_publication_admission_check(&self) -> bool {
+        self.publication_waited
     }
     pub fn is_cancelled(&self) -> bool {
         self.shutdown.load(Ordering::Acquire)
@@ -75,6 +91,16 @@ impl Sender {
         request: Request,
         diagnostic: Option<super::diagnostics::DiagnosticRequest>,
     ) -> Result<(), SubmitError> {
+        self.submit_traced_save(request, diagnostic, None)
+    }
+
+    #[allow(clippy::result_large_err)] // Exact request custody is unchanged by save metadata.
+    pub(super) fn submit_traced_save(
+        &self,
+        request: Request,
+        diagnostic: Option<super::diagnostics::DiagnosticRequest>,
+        save_correlation: Option<super::SaveCorrelation>,
+    ) -> Result<(), SubmitError> {
         let replaces_document = matches!(
             request,
             Request::NewWithAudioMode { .. }
@@ -86,7 +112,10 @@ impl Sender {
         let intent = self.document_intent.load(Ordering::Acquire);
         let next = if replaces_document {
             let Some(next) = intent.checked_add(1) else {
-                return Err(SubmitError::Busy(request));
+                return Err(SubmitError::Busy(
+                    request,
+                    super::BusyReason::DocumentIntentExhausted,
+                ));
             };
             Some(next)
         } else {
@@ -94,7 +123,10 @@ impl Sender {
         };
         match self.channel.try_send(QueuedRequest {
             request,
+            publication_wait_failure: None,
+            publication_waited: false,
             document_intent: intent,
+            save_correlation,
             diagnostic,
             diagnostic_origin: super::diagnostics::DiagnosticOrigin::Submitted,
         }) {
@@ -116,6 +148,28 @@ impl Sender {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn correlated_save_uses_existing_bounded_fifo_and_retains_identity() {
+        let (channel, receiver) = mpsc::sync_channel(1);
+        let intent = Arc::new(AtomicU64::new(0));
+        let sender = Sender::new(channel, intent);
+        let correlation = SaveCorrelation {
+            request_id: 7,
+            project_generation: 2,
+            revision: 9,
+        };
+        sender
+            .submit_traced_save(Request::SaveCurrent, None, Some(correlation))
+            .unwrap();
+        assert!(matches!(
+            sender.submit_traced_save(Request::SaveCurrent, None, Some(correlation)),
+            Err(SubmitError::Full(Request::SaveCurrent))
+        ));
+        let queued = receiver.recv().unwrap();
+        assert!(matches!(queued.request, Request::SaveCurrent));
+        assert_eq!(queued.save_correlation, Some(correlation));
+    }
 
     #[test]
     fn accepted_document_intent_cancels_earlier_work_without_reordering_fifo() {

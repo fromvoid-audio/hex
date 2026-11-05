@@ -932,7 +932,7 @@ fn device_comparison_review_enqueue_cancels_published_seek_before_callback(
         )
         .unwrap(),
     );
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     let (mut output, mut backend) = loop {
         match hex_audio::worker_fixture::open(48_000) {
             Ok(output) => break output,
@@ -1175,9 +1175,24 @@ fn device_comparison_review_metadata_keeps_actual_callback_graph_and_worker_arc(
             PublicationPolicy::InheritRuntime,
         )
         .unwrap();
+    // The changed static matrix ramps over `rate.div_ceil(200)` frames
+    // (240 at 48 kHz, Pulse #4101), so the first block is still in transit.
     callback.begin_block();
     callback.render(&mut actual).unwrap();
     oracle.render(&mut expected).unwrap();
+    assert!(
+        actual
+            .iter()
+            .flatten()
+            .zip(expected.iter().flatten())
+            .any(|(a, e)| (a - e * 0.25).abs() > 1e-6),
+        "the gain edit ramps instead of stepping"
+    );
+    for _ in 0..2 {
+        callback.begin_block();
+        callback.render(&mut actual).unwrap();
+        oracle.render(&mut expected).unwrap();
+    }
     for (a, e) in actual.iter().flatten().zip(expected.iter().flatten()) {
         assert!((a - e * 0.25).abs() < 1e-6);
     }
@@ -1208,7 +1223,8 @@ fn device_comparison_review_metadata_keeps_actual_callback_graph_and_worker_arc(
     callback.render(&mut actual).unwrap();
     oracle.render(&mut expected).unwrap();
     assert_eq!(control.status.applied_revision.load(Acquire), applied);
-    assert_eq!(control.status.position.load(Acquire), 512);
+    // Two extra 128-frame blocks let the gain edit's matrix ramp settle.
+    assert_eq!(control.status.position.load(Acquire), 768);
     for (a, e) in actual.iter().flatten().zip(expected.iter().flatten()) {
         assert!((a - e * 0.25).abs() < 1e-6);
     }
@@ -1295,7 +1311,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
         .prepared_revision()
         .unwrap()
         .clone();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     let (mut output, mut backend) = loop {
         match hex_audio::worker_fixture::open(48_000) {
             Ok(output) => break output,

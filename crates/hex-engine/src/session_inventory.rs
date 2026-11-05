@@ -20,6 +20,13 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use crate::compile::{PreparedAudioSourceRef, resolve_prepared, resolve_resident};
 
+fn requires_shared_source_admission(
+    receiver: Option<TrackId>,
+    contributors: impl IntoIterator<Item = TrackId>,
+) -> bool {
+    receiver.is_some_and(|receiver| contributors.into_iter().any(|track| track != receiver))
+}
+
 struct PreparedTrackInstrumentConfig {
     track: TrackId,
     config: Option<Arc<dyn PreparedNativeInstrument>>,
@@ -211,13 +218,12 @@ impl PreparedSessionAudioClip {
     /// Constant-work source mapping; loops reduce elapsed before addition so a
     /// long-running cell cannot overflow or walk every intervening cycle.
     pub(crate) fn source_frame(&self, elapsed: u64) -> Option<u64> {
-        match self.loop_range {
-            Some(range) => range.frame_at(self.source_start, elapsed),
-            None => self
-                .source_start
-                .checked_add(elapsed)
-                .filter(|frame| *frame < self.source_end),
-        }
+        hex_project::session_audio_source_frame(
+            self.source_start,
+            self.source_end,
+            self.loop_range,
+            elapsed,
+        )
     }
     pub(crate) fn playback_end(&self) -> u64 {
         self.loop_range.map_or(self.source_end, |range| range.end())
@@ -1162,7 +1168,12 @@ impl PreparedSessionInventory {
             .iter()
             .filter(|source| source.receiver().is_some())
         {
-            if project.source_contributors(source.id()).count() < 2 {
+            if !requires_shared_source_admission(
+                source.receiver(),
+                project
+                    .source_contributors(source.id())
+                    .map(|track| track.id()),
+            ) {
                 continue;
             }
             let mut source_work = SessionWorkEnvelope::default();
@@ -1518,7 +1529,12 @@ impl PreparedSessionInventory {
             .iter()
             .filter(|source| source.receiver().is_some() && !source.instrument().bypassed())
         {
-            if canonical.source_contributors(source.id()).count() < 2 {
+            if !requires_shared_source_admission(
+                source.receiver(),
+                canonical
+                    .source_contributors(source.id())
+                    .map(|track| track.id()),
+            ) {
                 continue;
             }
             let limits = self
@@ -1757,7 +1773,13 @@ fn template_error(error: MidiTemplateError) -> crate::Invalid {
         MidiTemplateError::Allocation => {
             crate::Invalid("could not reserve Session MIDI template storage")
         }
-        _ => crate::Invalid("Session MIDI source failed template admission"),
+        MidiTemplateError::GateTooShortForAdmission => crate::Invalid(
+            "session midi note gate is too short to guarantee one frame at the admitted tempo; lengthen the note or reduce tempo",
+        ),
+        MidiTemplateError::LoopPeriodTooShortForAdmission => crate::Invalid(
+            "session midi loop is too short to guarantee one frame at the admitted tempo; lengthen the loop or reduce tempo",
+        ),
+        _ => crate::Invalid(error.diagnostic_message()),
     }
 }
 
@@ -1826,6 +1848,27 @@ mod tests {
                 velocity: 100,
             })
             .expect("add MIDI note");
+    }
+
+    #[test]
+    fn remote_single_contributor_requires_shared_source_admission() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let receiver = add_track(&mut editor, "receiver");
+        let contributor = add_track(&mut editor, "contributor");
+        assert!(!requires_shared_source_admission(Some(receiver), []));
+        assert!(!requires_shared_source_admission(
+            Some(receiver),
+            [receiver]
+        ));
+        assert!(requires_shared_source_admission(
+            Some(receiver),
+            [contributor]
+        ));
+        assert!(requires_shared_source_admission(
+            Some(receiver),
+            [receiver, contributor]
+        ));
+        assert!(!requires_shared_source_admission(None, [contributor]));
     }
 
     #[test]

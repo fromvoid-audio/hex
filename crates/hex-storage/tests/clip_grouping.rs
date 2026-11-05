@@ -218,6 +218,40 @@ fn nested_audio_aliases_roundtrip_and_reject_conflicting_member_projection() {
             fade_out: 30,
         })
         .unwrap();
+    let (path, inner_event) = {
+        let roots = editor
+            .project()
+            .clip(outer)
+            .unwrap()
+            .editable_audio_events()
+            .unwrap();
+        let parent = roots
+            .sources
+            .iter()
+            .find(|root| {
+                !root
+                    .clip
+                    .editable_audio_events()
+                    .unwrap()
+                    .sources
+                    .is_empty()
+            })
+            .unwrap();
+        let nested = parent.clip.editable_audio_events().unwrap();
+        let child = &nested.sources[0];
+        let inner = child.clip.editable_audio_events().unwrap().events[0].id;
+        (vec![parent.id, child.id], inner)
+    };
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: outer,
+            operation: AudioEventEdit::SetRetainedGain {
+                sources: path,
+                event: inner_event,
+                gain: hex_project::ClipGain::new(-6_000).unwrap(),
+            },
+        })
+        .unwrap();
     let original = editor.project().snapshot();
     let encoded = encode(editor.project()).unwrap();
     let loaded = decode(&encoded).unwrap();
@@ -255,6 +289,7 @@ fn nested_audio_aliases_roundtrip_and_reject_conflicting_member_projection() {
     std::fs::remove_dir(dir).unwrap();
     let mut value: Value = serde_json::from_slice(&encoded).unwrap();
     assert_eq!(value["alias_sources"].as_array().unwrap().len(), 1);
+    assert_eq!(value["audio_event_gains"].as_array().unwrap().len(), 1);
     let row = value["nested_audio"]
         .as_array_mut()
         .unwrap()
@@ -281,6 +316,21 @@ fn previous_event_activation_schema_migrates_without_nested_sources() {
     editor.execute(Command::GroupClips(ids)).unwrap();
     let mut value: Value = serde_json::from_slice(&encode(editor.project()).unwrap()).unwrap();
     value.as_object_mut().unwrap().remove("nested_audio");
+    assert_eq!(
+        value.as_object_mut().unwrap().remove("audio_event_gains"),
+        Some(serde_json::json!([]))
+    );
+    assert_eq!(
+        value.as_object_mut().unwrap().remove("midi_clip_gains"),
+        Some(serde_json::json!([]))
+    );
+    assert_eq!(
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("automatic_track_names"),
+        Some(serde_json::json!([]))
+    );
     value["version"] = 57.into();
     assert_eq!(decode(&bytes(&value)).unwrap(), *editor.project());
 }
@@ -551,7 +601,8 @@ fn grouped_and_retained_child_fades_roundtrip_with_independent_captured_tempo() 
     .unwrap();
     let data = encode(e.project()).unwrap();
     let value: Value = serde_json::from_slice(&data).unwrap();
-    assert_eq!(value["version"], hex_storage::CURRENT_SCHEMA_VERSION);
+    // Its retained musical roots render with the v2 warp resampler.
+    assert_eq!(value["version"], hex_storage::WARP_RESAMPLER_SCHEMA_VERSION);
     assert_eq!(
         value["grouped_audio"][0]["group"]["sources"][0]["document"]["version"],
         42

@@ -244,7 +244,7 @@ fn earlier_terminal_and_refusal_without_legacy_duplicate_flag_retire_only_owned_
         assert_eq!(v.worker_requests_pending, 2);
     });
     let receive = |editor: &Entity<EditorView>, visual: &mut VisualTestContext| {
-        let until = Instant::now() + Duration::from_secs(10);
+        let until = crate::test_wait::hang_deadline();
         loop {
             let event = editor.read_with(&*visual, |v, _| v.service.try_event().ok());
             if let Some(event) = event {

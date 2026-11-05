@@ -66,7 +66,7 @@ fn actor_fixture_in_mode(
     use hex_project::Created;
     use hex_session::service::{Request, Service};
     fn receive(service: &Service) -> hex_session::service::Event {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             if let Ok(event) = service.try_event() {
                 return event;
@@ -152,7 +152,7 @@ fn actor_fixture_in_mode(
 }
 
 fn pump(editor: &Entity<EditorView>, cx: &mut TestAppContext, done: impl Fn(&EditorView) -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         editor.update(cx, |view, cx| {
             view.tick(cx);
@@ -1018,7 +1018,7 @@ fn header_fixture_real_catalog_retains_one_root_after_view_and_caller_drop(
     assert!(gate.root_present_during_save.load(Ordering::Relaxed));
     visual.update(|_, _| {});
     assert!(weak.upgrade().is_none());
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     while root.exists() {
         assert!(
             std::time::Instant::now() < deadline,
@@ -1433,4 +1433,427 @@ fn unrelated_gain_does_not_dim_audio_detail_controls(cx: &mut TestAppContext) {
             "duplication terminal flashes unchanged audio controls"
         );
     }
+}
+
+#[gpui::test]
+fn console_selected_group_uses_shared_gain_gesture_and_meter(cx: &mut TestAppContext) {
+    use hex_project::TrackSelectionIds;
+    use hex_session::service::Request;
+    let (_browser, mut visual, editor, [track, other]) = actor_fixture(cx);
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::GroupTracks {
+            tracks: TrackSelectionIds::new(&[track]).unwrap(),
+            name: "group".into(),
+        })))
+    });
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0 && view.state.as_ref().unwrap().project.has_group_tracks()
+    });
+    let group = editor.read_with(cx, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .tracks()
+            .iter()
+            .find(|track| track.is_group())
+            .unwrap()
+            .id()
+    });
+    editor.update(cx, |view, cx| {
+        view.set_mode(super::super::EditorMode::Session);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let header = visual
+        .debug_bounds(Box::leak(
+            format!("session-track-{}", group.value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
+    visual.simulate_mouse_down(header, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(header, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("console-track-meter-{}", group.value()).into_boxed_str()
+            ))
+            .is_some()
+    );
+    editor.update(cx, |view, cx| {
+        view.track_meters.set_test_level(group, 0.8);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("track-output-meter-{}-fill", group.value()).into_boxed_str()
+            ))
+            .unwrap()
+            .size
+            .height
+            > px(1.0)
+    );
+    let rail = visual
+        .debug_bounds(Box::leak(
+            format!("track-volume-{}-slider", group.value()).into_boxed_str(),
+        ))
+        .expect("selected Console group gain");
+    let revision = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().revision);
+    let start = point(rail.left() + px(10.0), rail.center().y);
+    let end = point(start.x, start.y - px(24.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    pump(&editor, cx, |view| {
+        view.device_gesture.snapshot().is_some() && view.worker_requests_pending == 0
+    });
+    let held = editor.read_with(cx, |view, _| {
+        let hex_session::device_gesture::ParameterValue::Float(value) =
+            view.device_gesture.snapshot().unwrap().value
+        else {
+            panic!("gain")
+        };
+        assert!(value > 1.0);
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(group)
+                .unwrap()
+                .gain(),
+            1.0
+        );
+        value
+    });
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    let other_header = visual
+        .debug_bounds(Box::leak(
+            format!("session-track-{}", other.value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
+    visual.simulate_mouse_down(other_header, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(other_header, MouseButton::Left, Modifiers::default());
+    for _ in 0..3 {
+        editor.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("console-track-gain-owner").is_some());
+        editor.read_with(cx, |view, cx| {
+            assert_eq!(view.selected_track, Some(other));
+            assert!(
+                (view
+                    .track_gain_controls
+                    .bindings
+                    .get(&group)
+                    .unwrap()
+                    .entity
+                    .read(cx)
+                    .value()
+                    - f64::from(held))
+                .abs()
+                    < 0.000001
+            )
+        });
+    }
+    pump(&editor, cx, |view| {
+        view.device_gesture.snapshot().is_none() && view.worker_requests_pending == 0
+    });
+    editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(state.revision, revision + 1);
+        assert_eq!(state.project.track(group).unwrap().gain(), held);
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(group)
+                .unwrap()
+                .gain()
+                == 1.0
+    });
+    let header = visual
+        .debug_bounds(Box::leak(
+            format!("session-track-{}", other.value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
+    visual.simulate_mouse_down(header, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(header, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("console-track-meter-{}", group.value()).into_boxed_str()
+            ))
+            .is_none()
+    );
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("console-track-meter-{}", other.value()).into_boxed_str()
+            ))
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("track-volume-{}-slider", other.value()).into_boxed_str()
+            ))
+            .is_some()
+    );
+    editor.update(cx, |view, _| {
+        assert!(
+            view.enqueue(Request::Edit(Command::ReplaceTrackGainEnvelope {
+                track: other,
+                points: vec![hex_project::GainPoint {
+                    incoming_gain: None,
+                    beat: hex_project::BeatTime::ZERO,
+                    gain: 0.8,
+                    outgoing: hex_project::GainInterpolation::Step
+                }],
+            }))
+        )
+    });
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && !view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(other)
+                .unwrap()
+                .gain_envelope()
+                .is_empty()
+    });
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("track-volume-auto-{}", other.value()).into_boxed_str()
+            ))
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("track-volume-{}-slider", other.value()).into_boxed_str()
+            ))
+            .is_none()
+    );
+}
+
+#[gpui::test]
+fn console_gain_draft_stays_visible_when_selection_changes(cx: &mut TestAppContext) {
+    let (_browser, mut visual, editor, [track, other]) = actor_fixture(cx);
+    editor.update(cx, |view, cx| {
+        view.set_mode(super::super::EditorMode::Session);
+        view.selected_track = Some(track);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let field_id = Box::leak(format!("track-volume-{}-value", track.value()).into_boxed_str());
+    let field = visual.debug_bounds(field_id).unwrap().center();
+    visual.simulate_mouse_down(field, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(field, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("+100 db");
+    let other_header = visual
+        .debug_bounds(Box::leak(
+            format!("session-track-{}", other.value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
+    visual.simulate_mouse_down(other_header, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(other_header, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
+        assert_eq!(view.selected_track, Some(other));
+        assert!(
+            view.track_gain_controls
+                .bindings
+                .get(&track)
+                .unwrap()
+                .entity
+                .read(cx)
+                .is_editing()
+        );
+    });
+    assert!(
+        visual.debug_bounds(field_id).is_some(),
+        "the old track's draft must stay visible"
+    );
+    assert!(visual.debug_bounds("console-track-gain-owner").is_some());
+    let field = visual.debug_bounds(field_id).unwrap().center();
+    visual.simulate_mouse_down(field, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(field, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(field_id).is_none());
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("track-volume-{}-slider", other.value()).into_boxed_str()
+            ))
+            .is_some()
+    );
+}
+
+#[gpui::test]
+fn console_gain_draft_retires_when_source_tracks_are_removed(cx: &mut TestAppContext) {
+    use hex_session::service::Request;
+    let (_browser, mut visual, editor, [track, other]) = actor_fixture(cx);
+    editor.update(cx, |view, cx| {
+        view.set_mode(super::super::EditorMode::Session);
+        view.selected_track = Some(track);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let field = visual
+        .debug_bounds(Box::leak(
+            format!("track-volume-{}-value", track.value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
+    visual.simulate_mouse_down(field, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(field, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("+100 db");
+    editor.update(cx, |view, _| {
+        view.service
+            .submit(Request::Edit(Command::RemoveTracks(vec![track, other])))
+            .unwrap()
+    });
+    pump(&editor, cx, |view| {
+        view.state.as_ref().unwrap().project.tracks().is_empty()
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            !view.track_gain_controls.bindings.contains_key(&track),
+            "removed track must not retain a numeric draft"
+        )
+    });
+    assert!(visual.debug_bounds("console-track-gain-owner").is_none());
+}
+
+#[gpui::test]
+fn console_track_activator_and_solo_use_canonical_commands(cx: &mut TestAppContext) {
+    use hex_project::TrackSelectionIds;
+    use hex_session::service::Request;
+    let (_browser, mut visual, editor, [track, other]) = actor_fixture(cx);
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::GroupTracks {
+            tracks: TrackSelectionIds::new(&[track]).unwrap(),
+            name: "group".into(),
+        })))
+    });
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0 && view.state.as_ref().unwrap().project.has_group_tracks()
+    });
+    let group = editor.read_with(cx, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .tracks()
+            .iter()
+            .find(|t| t.is_group())
+            .unwrap()
+            .id()
+    });
+    editor.update(cx, |view, cx| {
+        view.set_mode(super::super::EditorMode::Session);
+        view.selected_track = Some(group);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let mute = visual
+        .debug_bounds("console-track-mute")
+        .expect("console activator")
+        .center();
+    visual.simulate_mouse_down(mute, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(mute, MouseButton::Left, Modifiers::default());
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(group)
+                .unwrap()
+                .muted()
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && !view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(group)
+                .unwrap()
+                .muted()
+    });
+    let solo = visual
+        .debug_bounds("console-track-solo")
+        .expect("console solo")
+        .center();
+    visual.simulate_mouse_down(solo, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(solo, MouseButton::Left, Modifiers::default());
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(group)
+                .unwrap()
+                .soloed()
+    });
+    editor.update(cx, |view, cx| {
+        view.selected_track = Some(other);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let solo = visual.debug_bounds("console-track-solo").unwrap().center();
+    let modifiers = Modifiers {
+        platform: true,
+        ..Modifiers::default()
+    };
+    visual.simulate_mouse_down(solo, MouseButton::Left, modifiers);
+    visual.simulate_mouse_up(solo, MouseButton::Left, modifiers);
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(other)
+                .unwrap()
+                .soloed()
+    });
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(group)
+                .unwrap()
+                .soloed()
+        )
+    });
 }

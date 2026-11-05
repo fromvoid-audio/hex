@@ -353,6 +353,59 @@ fn native_input_reserves_cancel_under_full_normal_pressure_and_retires_each_cred
 }
 
 #[test]
+fn render_fault_aborts_a_racing_native_parameter_gesture() {
+    let (mut control, mut callback, target) = fixture(false);
+    control
+        .native_parameter_input
+        .begin(target, value(0.5))
+        .unwrap();
+    control
+        .status
+        .render_fault
+        .store(true, std::sync::atomic::Ordering::Release);
+    let mut source = [[0.0; 2]; 8];
+    let _ = render(&mut callback, &mut source);
+    assert!(matches!(
+        control.native_parameter_input.try_receipt(),
+        Some(Receipt::Superseded { .. })
+    ));
+    assert!(matches!(
+        control.native_parameter_input.try_receipt(),
+        Some(Receipt::Aborted {
+            reason: AbortReason::OutputFailed,
+            ..
+        })
+    ));
+    shutdown(&mut control, &mut callback);
+}
+
+#[test]
+fn device_error_aborts_a_queued_native_parameter_gesture() {
+    let (mut control, mut callback, target) = fixture(false);
+    control
+        .native_parameter_input
+        .begin(target, value(0.5))
+        .unwrap();
+    control
+        .status
+        .device_fault
+        .store(true, std::sync::atomic::Ordering::Release);
+    counted(|| callback.begin_block());
+    assert!(matches!(
+        control.native_parameter_input.try_receipt(),
+        Some(Receipt::Superseded { .. })
+    ));
+    assert!(matches!(
+        control.native_parameter_input.try_receipt(),
+        Some(Receipt::Aborted {
+            reason: AbortReason::OutputFailed,
+            ..
+        })
+    ));
+    shutdown(&mut control, &mut callback);
+}
+
+#[test]
 fn native_input_successful_release_observes_actual_restoration_and_failure_never_applies() {
     let (mut control, mut callback, target) = fixture(false);
     control
@@ -497,9 +550,15 @@ fn stopped_native_begin_release_aborts_once_and_releases_publication_admission()
     let (mut control, mut callback, mut target) = fixture(false);
     control.command(hex_engine::PlaybackCommand::Stop).unwrap();
     let mut source = [[0.0; 2]; 1];
-    let rendered = render(&mut callback, &mut source);
-    assert!(rendered.is_ok());
-    assert!(write(&mut callback, &mut source, &rendered, 2));
+    // A queued Stop renders its 128-frame fade before it stops (#4151).
+    for _ in 0..256 {
+        let rendered = render(&mut callback, &mut source);
+        assert!(rendered.is_ok());
+        assert!(write(&mut callback, &mut source, &rendered, 2));
+        if !control.status.playing.load(Acquire) {
+            break;
+        }
+    }
     assert!(!control.status.playing.load(Acquire));
     target.transport_epoch = control.status.transport_epoch.load(Acquire);
     control

@@ -1,6 +1,17 @@
 //! # Purpose
-//! Render fixed-block PCM16 Arrangement exports and bounded float32 source
-//! bounces, with explicit publication and ordinary prepared runtime custody.
+//! Render fixed-block Arrangement and stem exports in a selected
+//! [`ExportFormat`] (dithered PCM16 by default, packed PCM24 or float32), and
+//! bounded float32 source bounces and resident source publication, with explicit
+//! publication and ordinary prepared runtime custody.
+//!
+//! PCM16 and PCM24 files use the canonical 44-byte header (16-byte `fmt `,
+//! format tag 1).
+//! Float32 files use `WAVE_FORMAT_IEEE_FLOAT` (tag 3) with the 18-byte `fmt `
+//! chunk (`cbSize` = 0) and the `fact` chunk the RIFF specification requires for
+//! non-PCM data, giving a 58-byte header. Integer exports count samples beyond
+//! full scale that quantisation clamps; see [`ExportReport::clipped_samples`].
+//! PCM16 quantisation applies deterministic TPDF dither and keeps exact digital
+//! silence at zero; see the private `dither` module.
 //!
 //! # Dependencies
 //! Uses hex-engine and the standard library; callers supply the exact prepared revision and
@@ -25,19 +36,31 @@ use std::{
 };
 
 const FRAMES_PER_BLOCK: usize = 256;
+/// Byte length of the stereo PCM16 WAV header written by Arrangement and stem export.
+pub const PCM16_WAV_HEADER_BYTES: u64 = 44;
+/// Byte length of the stereo float32 WAV header (18-byte `fmt `, `fact`, `data`)
+/// written by bounces and resident source publication.
+pub const FLOAT32_WAV_HEADER_BYTES: u64 = 58;
 const IO_BUFFER_BYTES: usize = 8 * 1024;
 const MAX_TEMP_ATTEMPTS: usize = 16;
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 mod bounce;
 mod controlled;
+mod dither;
+mod format;
 pub use bounce::{
-    MAX_ARRANGEMENT_BOUNCE_TAIL_SECONDS, render_arrangement_bounce_new, render_bounce_new,
+    MAX_ARRANGEMENT_BOUNCE_TAIL_SECONDS, render_arrangement_bounce_new,
+    render_arrangement_bounce_with_pages, render_bounce_new,
     render_bounce_new_with_device_resources,
 };
+pub use format::ExportFormat;
 mod pages;
 pub use pages::PreparedExportPages;
+mod resident_source;
+pub use resident_source::publish_resident_source_new;
 mod publication;
+mod stale_temporary;
 mod stems;
 pub use controlled::{
     ExportControl, ExportProgress, ExportSignal, render_prepared_controlled,
@@ -49,6 +72,7 @@ pub use controlled::{
     render_prepared_with_policy,
 };
 pub use publication::{OverwriteConsent, Publication};
+pub use stale_temporary::StaleTemporaries;
 pub use stems::{Stem, render_stems_new, render_stems_new_with_device_resources};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -57,9 +81,16 @@ pub struct ExportReport {
     pub sample_rate: u32,
     pub frames: u64,
     pub data_bytes: u32,
+    /// Individual channel samples outside [-1.0, 1.0] that integer (PCM16)
+    /// quantisation clamped to full scale. Float32 output preserves overs
+    /// unclamped and always reports zero.
+    pub clipped_samples: u64,
     /// Reserved for exceptional publication recovery; successful overwrite
     /// removes the displaced file and returns no backup path.
     pub recovery_path: Option<PathBuf>,
+    /// Abandoned `.hex-export-*.tmp` files swept from the destination
+    /// directory before staging; failures never block the export.
+    pub stale_temporaries: StaleTemporaries,
 }
 
 #[derive(Debug)]
@@ -225,7 +256,7 @@ pub fn render_prepared_new(
 /// Ordinary registered-resource export with the default source-length/startup-latency trimming
 /// policy. Nonzero stateful starts reconstruct bounded history before that same trim. The caller
 /// pins and admits the exact resource set for this synchronous control operation; no live input
-/// or Session route history is captured. Controlled ranges intentionally retain causal startup.
+/// or Session route history is captured. Controlled Main ranges use the same latency discard.
 /// Use the existing export worker's 8 MiB control stack for stateful construction.
 pub fn render_prepared_new_with_device_resources(
     path: &Path,
@@ -327,23 +358,9 @@ fn publish<R: BlockRenderer>(
         start,
         frames,
         publication,
-        WavEncoding::Pcm16,
+        ExportFormat::Pcm16,
         prepare_renderer,
     )
-}
-
-#[derive(Clone, Copy)]
-enum WavEncoding {
-    Pcm16,
-    Float32,
-}
-impl WavEncoding {
-    fn frame_bytes(self) -> u32 {
-        match self {
-            Self::Pcm16 => 4,
-            Self::Float32 => 8,
-        }
-    }
 }
 
 fn publish_encoded<R: BlockRenderer>(
@@ -352,7 +369,7 @@ fn publish_encoded<R: BlockRenderer>(
     start: u64,
     frames: u64,
     publication: &Publication,
-    encoding: WavEncoding,
+    encoding: ExportFormat,
     prepare_renderer: impl FnOnce() -> Result<R, ExportError>,
 ) -> Result<ExportReport, ExportError> {
     if sample_rate == 0 {
@@ -364,7 +381,7 @@ fn publish_encoded<R: BlockRenderer>(
     let data_bytes = frames
         .checked_mul(u64::from(encoding.frame_bytes()))
         .and_then(|bytes| u32::try_from(bytes).ok())
-        .filter(|bytes| *bytes <= u32::MAX - 36)
+        .filter(|bytes| *bytes <= u32::MAX - encoding.riff_overhead())
         .ok_or(ExportError::Invalid("wav exceeds the RIFF size limit"))?;
     let byte_rate = sample_rate
         .checked_mul(encoding.frame_bytes())
@@ -373,8 +390,8 @@ fn publish_encoded<R: BlockRenderer>(
         return Err(ExportError::Invalid("destination has no file name"));
     }
 
-    // Refuse a known collision before rendering; the hard link remains the
-    // authoritative race-safe create-new check at publication.
+    // Refuse a known collision before rendering; create-new publication remains
+    // the authoritative race-safe check (see `publication::publish_new`).
     if let Publication::Replace(consent) = publication {
         consent.validate(path)?;
     } else {
@@ -397,34 +414,43 @@ fn publish_encoded<R: BlockRenderer>(
             }
         }
     }
+    let stale_temporaries = stale_temporary::sweep(path);
     let (file, temporary_path) = create_temporary(path)?;
+    // Held until this function returns, so a concurrent sweep keeps the file.
+    let _ownership = stale_temporary::hold(&file);
     let write_result = prepare_renderer().and_then(|mut renderer| {
-        write_wav(
+        let clipped = write_wav(
             file,
             sample_rate,
+            start,
             frames,
             data_bytes,
             byte_rate,
             &mut renderer,
             encoding,
         )?;
-        renderer.before_publication()
+        renderer.before_publication()?;
+        Ok(clipped)
     });
-    if let Err(error) = write_result {
-        let _ = fs::remove_file(&temporary_path);
-        return Err(error);
-    }
+    let clipped_samples = match write_result {
+        Ok(clipped) => clipped,
+        Err(error) => {
+            let _ = fs::remove_file(&temporary_path);
+            return Err(error);
+        }
+    };
 
-    match publication {
-        Publication::CreateNew => {
-            if let Err(source) = fs::hard_link(&temporary_path, path) {
+    let staging_remains = match publication {
+        Publication::CreateNew => match publication::publish_new(&temporary_path, path) {
+            Ok(published) => published.staging_remains(),
+            Err(source) => {
                 let _ = fs::remove_file(&temporary_path);
                 return Err(ExportError::Io {
                     operation: "publish the wav without replacing the destination",
                     source,
                 });
             }
-        }
+        },
         Publication::Replace(consent) => {
             if let Err(error) = publication::replace_staged(&temporary_path, path, consent, || {}) {
                 if !matches!(error, ExportError::PublicationConflict { .. }) {
@@ -432,13 +458,17 @@ fn publish_encoded<R: BlockRenderer>(
                 }
                 return Err(error);
             }
+            true
         }
-    }
+    };
 
     // After a confirmed successful exchange this removes the displaced old
     // export. It is not retained as a routine backup. On a race, the earlier
     // error preserves unexpected displaced data instead of deleting it.
-    let cleanup_error = fs::remove_file(&temporary_path).err();
+    // An exclusive-rename publication already consumed the staging name.
+    let cleanup_error = staging_remains
+        .then(|| fs::remove_file(&temporary_path).err())
+        .flatten();
     #[cfg(unix)]
     let sync_error = sync_parent_directory(path).err();
     #[cfg(not(unix))]
@@ -467,7 +497,9 @@ fn publish_encoded<R: BlockRenderer>(
         sample_rate,
         frames,
         data_bytes,
+        clipped_samples,
         recovery_path: None,
+        stale_temporaries,
     })
 }
 
@@ -477,7 +509,7 @@ fn create_temporary(destination: &Path) -> Result<(File, PathBuf), ExportError> 
     for _ in 0..MAX_TEMP_ATTEMPTS {
         let identifier = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
         // Keep temporary names short even near the final filename length limit.
-        let temporary_name = format!(".hex-export-{}-{identifier}.tmp", std::process::id());
+        let temporary_name = stale_temporary::name(std::process::id(), identifier);
         let temporary_path = parent.join(temporary_name);
         match OpenOptions::new()
             .write(true)
@@ -507,40 +539,45 @@ fn create_temporary(destination: &Path) -> Result<(File, PathBuf), ExportError> 
     })
 }
 
+/// Write the header and every rendered frame; returns the clipped-sample count.
+/// `start` is the timeline frame of the first written frame; PCM16 dither is
+/// anchored to it so a range export matches the same slice of a longer one.
+#[allow(clippy::too_many_arguments)] // Private writer: header fields plus range and encoding.
 fn write_wav(
     file: File,
     sample_rate: u32,
+    start: u64,
     frames: u64,
     data_bytes: u32,
     byte_rate: u32,
     renderer: &mut impl BlockRenderer,
-    encoding: WavEncoding,
-) -> Result<(), ExportError> {
+    encoding: ExportFormat,
+) -> Result<u64, ExportError> {
     let mut writer = BufWriter::with_capacity(IO_BUFFER_BYTES, file);
     write_header_encoded(&mut writer, sample_rate, data_bytes, byte_rate, encoding)?;
+    let mut clipped = 0_u64;
+    let quantiser = dither::Pcm16Quantiser::main();
+    let mut sample_bytes = [0_u8; format::MAX_FRAME_BYTES / 2];
+    let mut position = start;
 
     let mut block = [[0.0; 2]; FRAMES_PER_BLOCK];
     let mut remaining = frames;
     while remaining > 0 {
         let count = remaining.min(FRAMES_PER_BLOCK as u64) as usize;
         renderer.render_block(&mut block[..count])?;
-        for frame in &block[..count] {
-            for sample in frame {
+        for (frame, at) in block[..count].iter().zip(position..) {
+            for (channel, sample) in frame.iter().enumerate() {
                 if !sample.is_finite() {
                     return Err(ExportError::Invalid("render produced a non-finite sample"));
                 }
-                match encoding {
-                    WavEncoding::Pcm16 => {
-                        let pcm = (sample.clamp(-1.0, 1.0) * 32767.0).round() as i16;
-                        write_all(&mut writer, &pcm.to_le_bytes(), "write PCM samples")?;
-                    }
-                    WavEncoding::Float32 => {
-                        write_all(&mut writer, &sample.to_le_bytes(), "write float samples")?
-                    }
-                }
+                let bytes = &mut sample_bytes[..encoding.sample_bytes() as usize];
+                let over = format::encode_sample(encoding, quantiser, *sample, at, channel, bytes);
+                clipped += u64::from(over);
+                write_all(&mut writer, bytes, "write samples")?;
             }
         }
         remaining -= count as u64;
+        position = position.wrapping_add(count as u64);
     }
     writer.flush().map_err(|source| ExportError::Io {
         operation: "flush the temporary wav",
@@ -552,7 +589,8 @@ fn write_wav(
         .map_err(|source| ExportError::Io {
             operation: "synchronize the temporary wav",
             source,
-        })
+        })?;
+    Ok(clipped)
 }
 
 fn write_all(
@@ -574,42 +612,48 @@ fn sync_parent_directory(path: &Path) -> io::Result<()> {
     File::open(parent)?.sync_all()
 }
 
-fn write_header(
-    writer: &mut impl Write,
-    rate: u32,
-    data_bytes: u32,
-    byte_rate: u32,
-) -> Result<(), ExportError> {
-    write_header_encoded(writer, rate, data_bytes, byte_rate, WavEncoding::Pcm16)
-}
-
 fn write_header_encoded(
     writer: &mut impl Write,
     rate: u32,
     data_bytes: u32,
     byte_rate: u32,
-    encoding: WavEncoding,
+    encoding: ExportFormat,
 ) -> Result<(), ExportError> {
-    let mut header = [0_u8; 44];
+    // Callers bound `data_bytes` by `u32::MAX - riff_overhead`.
+    let riff_bytes = encoding.riff_overhead() + data_bytes;
+    let block_align = encoding.frame_bytes() as u16;
+    let bits_per_sample = encoding.sample_bytes() as u16 * 8;
+    let mut header = [0_u8; FLOAT32_WAV_HEADER_BYTES as usize];
     header[..4].copy_from_slice(b"RIFF");
-    header[4..8].copy_from_slice(&(36 + data_bytes).to_le_bytes());
+    header[4..8].copy_from_slice(&riff_bytes.to_le_bytes());
     header[8..16].copy_from_slice(b"WAVEfmt ");
-    header[16..20].copy_from_slice(&16_u32.to_le_bytes());
-    header[20..22].copy_from_slice(
-        &(match encoding {
-            WavEncoding::Pcm16 => 1_u16,
-            WavEncoding::Float32 => 3,
-        })
-        .to_le_bytes(),
-    );
+    let fmt_bytes: u32 = if encoding.is_integer() { 16 } else { 18 };
+    let format_tag = encoding.format_tag();
+    header[16..20].copy_from_slice(&fmt_bytes.to_le_bytes());
+    header[20..22].copy_from_slice(&format_tag.to_le_bytes());
     header[22..24].copy_from_slice(&2_u16.to_le_bytes());
     header[24..28].copy_from_slice(&rate.to_le_bytes());
     header[28..32].copy_from_slice(&byte_rate.to_le_bytes());
-    header[32..34].copy_from_slice(&(encoding.frame_bytes() as u16).to_le_bytes());
-    header[34..36].copy_from_slice(&((encoding.frame_bytes() * 4) as u16).to_le_bytes());
-    header[36..40].copy_from_slice(b"data");
-    header[40..44].copy_from_slice(&data_bytes.to_le_bytes());
-    write_all(writer, &header, "write the WAV header")
+    header[32..34].copy_from_slice(&block_align.to_le_bytes());
+    header[34..36].copy_from_slice(&bits_per_sample.to_le_bytes());
+    let data_chunk = match encoding {
+        ExportFormat::Pcm16 | ExportFormat::Pcm24 => 36,
+        ExportFormat::Float32 => {
+            // cbSize = 0, then the fact chunk's per-channel sample-frame count.
+            header[36..38].copy_from_slice(&0_u16.to_le_bytes());
+            header[38..46].copy_from_slice(b"fact\x04\0\0\0");
+            let frames = data_bytes / encoding.frame_bytes();
+            header[46..50].copy_from_slice(&frames.to_le_bytes());
+            50
+        }
+    };
+    header[data_chunk..data_chunk + 4].copy_from_slice(b"data");
+    header[data_chunk + 4..data_chunk + 8].copy_from_slice(&data_bytes.to_le_bytes());
+    write_all(
+        writer,
+        &header[..encoding.header_bytes() as usize],
+        "write the WAV header",
+    )
 }
 
 #[cfg(test)]
@@ -639,14 +683,33 @@ mod tests {
     }
 
     fn project(frames: Vec<Frame>, gain: f32) -> Project {
+        let duration = frames.len() as u64;
         let audio = Audio::new(48_000, frames).expect("audio");
-        let clip = Clip::new(audio, 0, 2, false).expect("clip");
+        let clip = Clip::new(audio, 0, duration, false).expect("clip");
         let track = Track::new(vec![clip], gain, false).expect("track");
         Project::new(48_000, vec![track]).expect("project")
     }
 
     fn read_u32(bytes: &[u8], offset: usize) -> u32 {
         u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("four bytes"))
+    }
+
+    fn pcm_samples(data: &[u8]) -> Vec<i16> {
+        data.chunks_exact(2)
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+            .collect()
+    }
+
+    /// Dithered PCM16 lands within one LSB of plain rounding.
+    fn assert_within_one_lsb(data: &[u8], expected: &[i16]) {
+        let actual = pcm_samples(data);
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert!(
+                (i32::from(*actual) - i32::from(*expected)).abs() <= 1,
+                "{actual} not within one lsb of {expected}"
+            );
+        }
     }
 
     #[test]
@@ -671,20 +734,210 @@ mod tests {
         assert_eq!(read_u32(&bytes, 28), 192_000);
         assert_eq!(&bytes[36..40], b"data");
         assert_eq!(read_u32(&bytes, 40), 4);
-        assert_eq!(&bytes[44..], &[0xff, 0x7f, 0x01, 0x80]);
+        assert_within_one_lsb(&bytes[44..], &[32_767, -32_767]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_sweeps_an_abandoned_temporary_and_reports_it() {
+        let dir = TestDir::new();
+        let abandoned = dir
+            .0
+            .join(stale_temporary::name(std::process::id().wrapping_add(1), 9));
+        fs::write(&abandoned, b"interrupted render").unwrap();
+        let path = dir.0.join("swept.wav");
+        let report = render_new(&path, &project(vec![[0.5, -0.5]; 2], 1.0), 0, 2).unwrap();
+        assert_eq!(
+            report.stale_temporaries,
+            StaleTemporaries {
+                removed: 1,
+                failed: 0
+            }
+        );
+        assert!(!abandoned.exists());
+        assert!(path.exists());
+        let leftovers = fs::read_dir(&dir.0)
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".hex-export-")
+            })
+            .count();
+        assert_eq!(leftovers, 0, "the export removes its own temporary too");
     }
 
     #[test]
-    fn preserves_existing_pcm_rounding_and_clipping() {
+    fn dithers_pcm_within_one_lsb_and_still_counts_clipping() {
         let dir = TestDir::new();
         let path = dir.0.join("conversion.wav");
         let project = project(vec![[0.5, -0.5], [2.0, -2.0]], 1.0);
-        render_new(&path, &project, 0, 2).expect("export");
+        let report = render_new(&path, &project, 0, 2).expect("export");
         let bytes = fs::read(path).expect("read export");
-        assert_eq!(
-            &bytes[44..],
-            &[0x00, 0x40, 0x00, 0xc0, 0xff, 0x7f, 0x01, 0x80]
-        );
+        assert_within_one_lsb(&bytes[44..], &[16_384, -16_384, 32_767, -32_767]);
+        assert_eq!(report.clipped_samples, 2, "both channels of the over clip");
+    }
+
+    #[test]
+    fn repeated_pcm16_exports_of_one_render_are_byte_identical() {
+        let dir = TestDir::new();
+        let frames: Vec<Frame> = (0..2_000)
+            .map(|n| {
+                let s = 1.0e-4 * (n as f32 * 0.05).sin();
+                [s, -s]
+            })
+            .collect();
+        let project = project(frames, 1.0);
+        let first = dir.0.join("first.wav");
+        let second = dir.0.join("second.wav");
+        render_new(&first, &project, 0, 2_000).expect("first export");
+        render_new(&second, &project, 0, 2_000).expect("second export");
+        let first = fs::read(first).expect("read first");
+        assert_eq!(first, fs::read(second).expect("read second"));
+        assert!(pcm_samples(&first[44..]).iter().any(|s| *s != 0));
+    }
+
+    #[test]
+    fn pcm16_digital_silence_stays_exact_zero() {
+        let dir = TestDir::new();
+        let path = dir.0.join("silence.wav");
+        render_new(&path, &project(vec![[0.0, 0.0]; 2], 1.0), 0, 2).expect("export");
+        let bytes = fs::read(path).expect("read export");
+        assert!(bytes[44..].iter().all(|byte| *byte == 0));
+    }
+
+    struct Constant(Frame);
+    impl BlockRenderer for Constant {
+        fn render_block(&mut self, frames: &mut [Frame]) -> Result<(), ExportError> {
+            frames.fill(self.0);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn float32_header_is_conformant_ieee_float_with_fact_and_keeps_overs() {
+        let dir = TestDir::new();
+        let path = dir.0.join("float.wav");
+        let report = publish_encoded(
+            &path,
+            44_100,
+            0,
+            3,
+            &Publication::CreateNew,
+            ExportFormat::Float32,
+            || Ok(Constant([1.5, -0.25])),
+        )
+        .expect("float export");
+        assert_eq!(report.data_bytes, 24);
+        assert_eq!(report.clipped_samples, 0, "float output does not clip");
+        let bytes = fs::read(&path).expect("read float export");
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"RIFF");
+        expected.extend_from_slice(&(50_u32 + 24).to_le_bytes());
+        expected.extend_from_slice(b"WAVEfmt ");
+        expected.extend_from_slice(&18_u32.to_le_bytes());
+        expected.extend_from_slice(&3_u16.to_le_bytes()); // WAVE_FORMAT_IEEE_FLOAT
+        expected.extend_from_slice(&2_u16.to_le_bytes());
+        expected.extend_from_slice(&44_100_u32.to_le_bytes());
+        expected.extend_from_slice(&(44_100_u32 * 8).to_le_bytes());
+        expected.extend_from_slice(&8_u16.to_le_bytes());
+        expected.extend_from_slice(&32_u16.to_le_bytes());
+        expected.extend_from_slice(&0_u16.to_le_bytes()); // cbSize
+        expected.extend_from_slice(b"fact");
+        expected.extend_from_slice(&4_u32.to_le_bytes());
+        expected.extend_from_slice(&3_u32.to_le_bytes());
+        expected.extend_from_slice(b"data");
+        expected.extend_from_slice(&24_u32.to_le_bytes());
+        assert_eq!(expected.len() as u64, FLOAT32_WAV_HEADER_BYTES);
+        for _ in 0..3 {
+            expected.extend_from_slice(&1.5_f32.to_le_bytes());
+            expected.extend_from_slice(&(-0.25_f32).to_le_bytes());
+        }
+        assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn pcm24_header_is_packed_integer_pcm_and_counts_clamped_overs() {
+        let dir = TestDir::new();
+        let path = dir.0.join("pcm24.wav");
+        let report = publish_encoded(
+            &path,
+            44_100,
+            0,
+            2,
+            &Publication::CreateNew,
+            ExportFormat::Pcm24,
+            || Ok(Constant([1.5, -0.25])),
+        )
+        .expect("pcm24 export");
+        assert_eq!(report.data_bytes, 12);
+        assert_eq!(report.clipped_samples, 2, "one clamped left over per frame");
+        let bytes = fs::read(&path).expect("read pcm24 export");
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"RIFF");
+        expected.extend_from_slice(&(36_u32 + 12).to_le_bytes());
+        expected.extend_from_slice(b"WAVEfmt ");
+        expected.extend_from_slice(&16_u32.to_le_bytes());
+        expected.extend_from_slice(&1_u16.to_le_bytes()); // WAVE_FORMAT_PCM
+        expected.extend_from_slice(&2_u16.to_le_bytes());
+        expected.extend_from_slice(&44_100_u32.to_le_bytes());
+        expected.extend_from_slice(&(44_100_u32 * 6).to_le_bytes());
+        expected.extend_from_slice(&6_u16.to_le_bytes());
+        expected.extend_from_slice(&24_u16.to_le_bytes());
+        expected.extend_from_slice(b"data");
+        expected.extend_from_slice(&12_u32.to_le_bytes());
+        assert_eq!(expected.len() as u64, PCM16_WAV_HEADER_BYTES);
+        // 8_388_607 full scale, then -0.25 * 8_388_607 = -2_097_151.75 -> -2_097_152.
+        for _ in 0..2 {
+            expected.extend_from_slice(&8_388_607_i32.to_le_bytes()[..3]);
+            expected.extend_from_slice(&(-2_097_152_i32).to_le_bytes()[..3]);
+        }
+        assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn empty_float32_export_is_a_valid_header_with_zero_fact_frames() {
+        let dir = TestDir::new();
+        let path = dir.0.join("empty-float.wav");
+        publish_encoded(
+            &path,
+            48_000,
+            0,
+            0,
+            &Publication::CreateNew,
+            ExportFormat::Float32,
+            || Ok(Constant([0.0; 2])),
+        )
+        .expect("empty float export");
+        let bytes = fs::read(&path).expect("read empty float export");
+        assert_eq!(bytes.len() as u64, FLOAT32_WAV_HEADER_BYTES);
+        assert_eq!(read_u32(&bytes, 4), 50);
+        assert_eq!(read_u32(&bytes, 46), 0);
+        assert_eq!(read_u32(&bytes, 54), 0);
+    }
+
+    #[test]
+    fn float32_riff_limit_accounts_for_the_larger_header() {
+        let dir = TestDir::new();
+        let path = dir.0.join("huge-float.wav");
+        // One frame past the largest float payload whose RIFF size still fits u32.
+        let frames = u64::from((u32::MAX - 50) / 8) + 1;
+        assert!(matches!(
+            publish_encoded(
+                &path,
+                48_000,
+                0,
+                frames,
+                &Publication::CreateNew,
+                ExportFormat::Float32,
+                || Ok(Constant([0.0; 2])),
+            ),
+            Err(ExportError::Invalid("wav exceeds the RIFF size limit"))
+        ));
+        assert_eq!(fs::read_dir(&dir.0).expect("list directory").count(), 0);
     }
 
     #[test]
@@ -783,6 +1036,57 @@ mod tests {
     }
 
     #[test]
+    fn render_failure_after_complete_blocks_preserves_destination_and_removes_staging() {
+        struct FailingRenderer {
+            calls: std::rc::Rc<std::cell::Cell<usize>>,
+        }
+        impl BlockRenderer for FailingRenderer {
+            fn render_block(&mut self, frames: &mut [Frame]) -> Result<(), ExportError> {
+                let calls = self.calls.get() + 1;
+                self.calls.set(calls);
+                if calls == 3 {
+                    return Err(ExportError::Invalid("injected render failure"));
+                }
+                frames.fill([0.25, -0.25]);
+                Ok(())
+            }
+        }
+
+        for replace in [false, true] {
+            let dir = TestDir::new();
+            let path = dir.0.join("output.wav");
+            if replace {
+                fs::write(&path, b"prior recording").unwrap();
+            }
+            let consent = Publication::confirmed_save(&path).unwrap();
+            let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+            let result = publish(
+                &path,
+                48_000,
+                0,
+                (3 * FRAMES_PER_BLOCK) as u64,
+                &consent,
+                || {
+                    Ok(FailingRenderer {
+                        calls: calls.clone(),
+                    })
+                },
+            );
+            assert!(matches!(
+                result,
+                Err(ExportError::Invalid("injected render failure"))
+            ));
+            assert_eq!(calls.get(), 3);
+            if replace {
+                assert_eq!(fs::read(&path).unwrap(), b"prior recording");
+            } else {
+                assert!(!path.exists());
+            }
+            assert_eq!(fs::read_dir(&dir.0).unwrap().count(), usize::from(replace));
+        }
+    }
+
+    #[test]
     fn cancellation_after_staging_cleans_temporary_and_late_collision_preserves_new_destination() {
         struct BoundaryRenderer {
             collision: Option<PathBuf>,
@@ -836,6 +1140,64 @@ mod tests {
         assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn file_size_limit_removes_incomplete_stage_and_preserves_destination() {
+        const CHILD: &str = "HEX_EXPORT_FILE_LIMIT_CHILD";
+        if let Some(mode) = std::env::var_os(CHILD) {
+            struct Silence;
+            impl BlockRenderer for Silence {
+                fn render_block(&mut self, frames: &mut [Frame]) -> Result<(), ExportError> {
+                    frames.fill([0.0; 2]);
+                    Ok(())
+                }
+            }
+            let dir = TestDir::new();
+            let target = dir.0.join("output.wav");
+            let publication = if mode == "replace" {
+                fs::write(&target, b"prior recording").unwrap();
+                Publication::confirmed_save(&target).unwrap()
+            } else {
+                Publication::CreateNew
+            };
+            let error =
+                publish(&target, 48_000, 0, 4096, &publication, || Ok(Silence)).unwrap_err();
+            assert!(matches!(error, ExportError::Io { source, .. }
+                if source.kind() == io::ErrorKind::FileTooLarge));
+            if mode == "replace" {
+                assert_eq!(fs::read(&target).unwrap(), b"prior recording");
+                assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+            } else {
+                assert!(!target.exists());
+                assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 0);
+            }
+            return;
+        }
+
+        for mode in ["new", "replace"] {
+            // The child inherits the limit and ignored SIGXFSZ; no process-wide
+            // limit or signal handler is changed in the parent test runner.
+            let output = std::process::Command::new("/bin/sh")
+                .args(["-c", "ulimit -f 1; trap '' XFSZ; exec \"$@\"", "_"])
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tests::file_size_limit_removes_incomplete_stage_and_preserves_destination",
+                    "--nocapture",
+                ])
+                .env(CHILD, mode)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{mode} child failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        }
+    }
+
     #[test]
     fn destination_write_errors_explain_read_only_and_permission_failures() {
         for (kind, expected) in [
@@ -887,6 +1249,56 @@ mod tests {
         );
         assert_eq!(fs::read(stage).unwrap(), b"external changed recording");
         assert_eq!(fs::read(target).unwrap(), b"new staged export");
+    }
+
+    /// Regression for #4201: exFAT/FAT/SMB volumes refuse hard links, which
+    /// used to fail every create-new wav export.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn wav_export_publishes_on_volumes_without_hard_links_and_never_replaces() {
+        use publication::simulate::{Volume, volume};
+        let source = project(vec![[0.5, -0.5]; 2], 1.0);
+        let reference_dir = TestDir::new();
+        let reference = reference_dir.0.join("reference.wav");
+        render_new(&reference, &source, 0, 2).unwrap();
+        let expected = fs::read(&reference).unwrap();
+        for capability in [
+            Volume::NoHardLinks(rustix::io::Errno::NOTSUP.raw_os_error()),
+            Volume::NoHardLinks(rustix::io::Errno::PERM.raw_os_error()),
+            Volume::NoAtomicCreate,
+        ] {
+            let dir = TestDir::new();
+            let _volume = volume(capability);
+            let path = dir.0.join("usb.wav");
+            render_new(&path, &source, 0, 2).expect("export without hard links");
+            assert_eq!(fs::read(&path).unwrap(), expected);
+            // Only the export remains: no staging leftovers.
+            assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+
+            let staging = dir.0.join("staging");
+            fs::write(&staging, b"newer").unwrap();
+            let error = publication::publish_new(&staging, &path).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+            assert_eq!(fs::read(&path).unwrap(), expected);
+            assert_eq!(fs::read(&staging).unwrap(), b"newer");
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn other_link_failures_pass_through_without_fallback() {
+        use publication::simulate::{Volume, volume};
+        for errno in [rustix::io::Errno::ACCESS, rustix::io::Errno::NOSPC] {
+            let dir = TestDir::new();
+            let _volume = volume(Volume::NoHardLinks(errno.raw_os_error()));
+            let path = dir.0.join("refused.wav");
+            let error = render_new(&path, &project(vec![[0.5, -0.5]; 2], 1.0), 0, 2)
+                .expect_err("link failure is reported");
+            assert!(
+                matches!(&error, ExportError::Io { source, .. } if source.raw_os_error() == Some(errno.raw_os_error()))
+            );
+            assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 0);
+        }
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

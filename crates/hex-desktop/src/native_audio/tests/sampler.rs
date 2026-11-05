@@ -13,6 +13,21 @@ use super::*;
 mod keyboard;
 use hex_project::{BeatTime, Command, Created};
 
+/// The sampler's prepared ~2 ms declick release floor at this fixture's
+/// 16 kHz output (#4087): no note-off releases in fewer frames.
+const RELEASE_FLOOR_FRAMES: usize = 32;
+
+/// Release level `steps` frames after a note-off whose prepared release is
+/// `max(authored, RELEASE_FLOOR_FRAMES)` frames.
+fn floored_release_level(steps: usize, authored: usize) -> f32 {
+    let release = authored.max(RELEASE_FLOOR_FRAMES);
+    if steps >= release {
+        0.0
+    } else {
+        1.0 - steps as f32 / release as f32
+    }
+}
+
 impl Harness {
     fn resident_sampler(frame_limit: u64) -> Self {
         Self::sampler_fixture(frame_limit, false)
@@ -31,13 +46,15 @@ impl Harness {
             if slot.is_some() {
                 return Ok(None);
             }
-            match hex_audio::worker_fixture::open(rate.unwrap_or(16000)) {
+            match hex_audio::worker_fixture::open_with_reliable_action_outcomes(
+                rate.unwrap_or(16000),
+            ) {
                 Ok((output, callback)) => {
                     *slot = Some(callback);
                     Ok(Some(output))
                 }
                 Err(e) if e == "audio output is open or still shutting down" => Ok(None),
-                Err(e) => Err(e),
+                Err(e) => Err(e.into()),
             }
         }));
         let observation = Arc::new(Mutex::new(Observation::default()));
@@ -242,17 +259,13 @@ fn service_sampler_original_wav_reaches_real_fresh_native_current_with_tuning_st
             .command(PlaybackCommand::Play)
             .unwrap();
         let output = h.render();
-        let left = if short_gate {
-            vec![0.125]
-        } else if tuned {
+        let left = if tuned {
             vec![0.125, 0.5, -0.125, 0.0]
         } else {
             vec![0.125, 0.3125, 0.5, 0.1875, -0.125, -0.0625, 0.0]
         };
         let right = if stereo {
-            if short_gate {
-                vec![-0.25]
-            } else if tuned {
+            if tuned {
                 vec![-0.25, 0.0, 0.25, 0.0]
             } else {
                 vec![-0.25, -0.125, 0.0, 0.125, 0.25, 0.125, 0.0]
@@ -262,7 +275,14 @@ fn service_sampler_original_wav_reaches_real_fresh_native_current_with_tuning_st
         };
         let mut expected = [[0.0; 2]; 64];
         for (index, (l, r)) in left.into_iter().zip(right).enumerate() {
-            expected[index] = [l, r];
+            // The short gate ends after frame 0; the prepared declick floor
+            // then ramps the rest of the one-shot down instead of cutting it.
+            let level = if short_gate && index > 0 {
+                floored_release_level(index - 1, 0)
+            } else {
+                1.0
+            };
+            expected[index] = [l * level, r * level];
         }
         for (a, b) in output.iter().zip(expected) {
             for i in 0..2 {
@@ -299,6 +319,7 @@ fn service_sampler_original_wav_reaches_real_fresh_native_current_with_tuning_st
             start: 0,
             frames: Some(12),
             signal: hex_session::service::ExportSignal::Main,
+            format: hex_export::ExportFormat::Pcm16,
             overwrite: false,
             control: hex_export_control(),
         });
@@ -331,7 +352,14 @@ fn service_sampler_original_wav_reaches_real_fresh_native_current_with_tuning_st
             .iter()
             .map(|f| [(f[0] * 32768.0) as i16, (f[1] * 32768.0) as i16])
             .collect::<Vec<_>>();
-        assert_eq!(pcm, literal);
+        // PCM16 export applies ±1 LSB TPDF dither.
+        assert_eq!(pcm.len(), literal.len());
+        for (actual, expected) in pcm.iter().flatten().zip(literal.iter().flatten()) {
+            assert!(
+                (i32::from(*actual) - i32::from(*expected)).abs() <= 1,
+                "{pcm:?} vs {literal:?}"
+            );
+        }
         assert_eq!(
             h.render(),
             [[0.0; 2]; 64],
@@ -445,7 +473,7 @@ fn sampler_fresh_output_failure_cleans_unpublished_copy_and_allows_new_context_r
         if slot.is_some() {
             return Ok(None);
         }
-        match hex_audio::worker_fixture::open(rate.unwrap_or(16000)) {
+        match hex_audio::worker_fixture::open_with_reliable_action_outcomes(rate.unwrap_or(16000)) {
             Ok((output, callback)) => {
                 opens += 1;
                 if opens == 2 {
@@ -457,7 +485,7 @@ fn sampler_fresh_output_failure_cleans_unpublished_copy_and_allows_new_context_r
                 Ok(Some(output))
             }
             Err(e) if e == "audio output is open or still shutting down" => Ok(None),
-            Err(e) => Err(e),
+            Err(e) => Err(e.into()),
         }
     }));
     let observation = Arc::new(Mutex::new(Observation::default()));
@@ -492,7 +520,7 @@ fn sampler_fresh_output_failure_cleans_unpublished_copy_and_allows_new_context_r
                 h.backend.lock().unwrap().take();
             }
             Ok(EditorAudioEvent::Unavailable { error, .. }) => {
-                assert_eq!(error, "injected fresh output failure");
+                assert_eq!(error.to_string(), "injected fresh output failure");
                 break;
             }
             Ok(EditorAudioEvent::Opened { .. }) => {
@@ -560,6 +588,10 @@ fn new_cancels_actual_draining_sampler_before_immediate_fresh_open_poll() {
     });
     assert!(h.observation.lock().unwrap().fresh_before_input_checked);
     h.open();
+    while !h.observation.lock().unwrap().fresh_replacement_hold_checked {
+        assert!(Instant::now() < end, "fresh-output policy was not checked");
+        std::thread::yield_now();
+    }
     assert_eq!(h.render(), [[0.0; 2]; 64]);
 }
 
@@ -895,7 +927,8 @@ fn rendered_sampler_save_open(
     visual.run_until_parked();
     let target_selector = Box::leak(format!("track-name-{}", track.value()).into_boxed_str());
     let other_selector = Box::leak(format!("track-name-{}", other.value()).into_boxed_str());
-    let other_selected = Box::leak(format!("selected-track-{}", other.value()).into_boxed_str());
+    let other_selected =
+        Box::leak(format!("selected-track-lane-{}", other.value()).into_boxed_str());
     let started = Instant::now();
     let end = started
         + if gain {
@@ -1235,7 +1268,8 @@ fn rendered_sampler_save_open(
                 );
             }
             ControlsFixture::Scalar => {
-                controls::exercise(cx, &mut visual, &mut h, window, end, track, &saved)
+                let step = h.wait;
+                controls::exercise(cx, &mut visual, &mut h, window, step, track, &saved)
             }
             ControlsFixture::TriggerOneShot | ControlsFixture::TriggerSlice => {
                 envelope::trigger_release(cx, &mut visual, &mut h, track, &open_path);
@@ -1660,4 +1694,111 @@ fn catalog_empty_sampler_fills_same_device_and_reaches_native_current_from_ordin
     assert_eq!(output, expected);
     h.audio.as_ref().unwrap().control.stop();
     assert_eq!(h.render(), [[0.0; 2]; 64]);
+}
+
+#[test]
+fn sampler_bypass_keeps_held_note_continuous_in_the_actual_callback() {
+    use super::resident_preview::ResidentHarness;
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    h.next();
+    let (mut applied, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "sampler".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("track")
+    };
+    (applied, _) = h.applied(applied);
+    let loaded = h.run(Request::LoadFirstSampler {
+        request_id: 99,
+        project_generation: 0,
+        revision: added.state.revision,
+        track,
+        empty_sampler: None,
+        path: files.wav(48_000, 65_536),
+        cancel: Arc::new(AtomicBool::new(false)),
+    });
+    let device = loaded
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    (applied, _) = h.applied(applied);
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::ONE,
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("clip")
+    };
+    (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::ONE,
+        pitch: 60,
+        channel: 0,
+        velocity: 127,
+    }));
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::PlayFrom(0))
+        .unwrap();
+    for _ in 0..16 {
+        h.render();
+    }
+    let before = h.render();
+    assert!(before[63][0].abs() > 0.01, "held note must be audible");
+    let toggled = h.run(Request::Edit(Command::ToggleDeviceBypass { device }));
+    assert!(toggled.error.is_none());
+    let after = h.render();
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(std::sync::atomic::Ordering::Acquire)
+            > applied,
+        "bypass must reach the callback"
+    );
+    assert!(
+        (after[0][0] - before[63][0]).abs() < 0.01,
+        "sampler bypass: {:?} -> {:?}",
+        before[63],
+        after[0]
+    );
+    let bypass_revision = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .applied_revision
+        .load(std::sync::atomic::Ordering::Acquire);
+    let enabled = h.run(Request::Edit(Command::ToggleDeviceBypass { device }));
+    assert!(enabled.error.is_none(), "{:?}", enabled.error);
+    let resumed = h.render();
+    assert!(
+        (resumed[0][0] - after[63][0]).abs() < 0.01,
+        "sampler reenable: {:?} -> {:?}",
+        after[63],
+        resumed[0]
+    );
+    h.applied(bypass_revision);
+    let settled = h.render();
+    assert!(
+        settled.iter().flatten().all(|sample| sample.abs() < 1e-6),
+        "reenable must not retrigger the held note: {settled:?}"
+    );
 }

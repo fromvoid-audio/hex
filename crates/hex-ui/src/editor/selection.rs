@@ -146,13 +146,31 @@ impl super::EditorView {
         let Some(state) = self.state.as_ref() else {
             return;
         };
+        // Additive ranges retain explicit hidden members, while new range
+        // members are limited to visible Console columns.
+        let previous =
+            (self.mode == super::EditorMode::Session && modifiers.shift && modifiers.platform)
+                .then(|| self.track_selection.ids.clone());
         if self
             .track_selection
             .select(&state.project, track, modifiers.shift, modifiers.platform)
         {
+            if modifiers.shift && self.mode == super::EditorMode::Session {
+                let visible: std::collections::BTreeSet<_> = self
+                    .arrangement_focus
+                    .projection
+                    .console_indices
+                    .iter()
+                    .filter_map(|index| state.project.tracks().get(*index).map(|track| track.id()))
+                    .collect();
+                self.track_selection.ids.retain(|id| {
+                    visible.contains(id) || previous.as_ref().is_some_and(|ids| ids.contains(id))
+                });
+            }
             if modifiers.shift
                 && self.mode == super::EditorMode::Arrangement
-                && self.arrangement_focus.enabled
+                && (self.arrangement_focus.projection.enabled
+                    || self.arrangement_focus.projection.filtering())
             {
                 let ids = self
                     .track_selection

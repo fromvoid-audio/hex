@@ -8,11 +8,11 @@ impl Drop for BrowserRoot {
 }
 // Match the existing exclusive output lease for these private headless fixtures.
 // No global environment/settings mutation, backend redesign or lease bypass.
+/// The process-wide headless output's single test serializer. A second,
+/// independent mutex let its holders open or retire the output concurrently
+/// with `serial_output` holders, stalling retirement (Pulse #3857).
 pub(in crate::editor) fn status_fixture_guard() -> std::sync::MutexGuard<'static, ()> {
-    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    SERIAL
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    hex_audio::worker_fixture::serial_output()
 }
 pub(super) fn headless_status_output() -> (
     hex_audio::WorkerPreparedOutput,
@@ -20,7 +20,7 @@ pub(super) fn headless_status_output() -> (
 ) {
     // Drop retires the previous headless carriers on the existing lifecycle
     // worker. Wait only for that bounded teardown, never open an OS backend.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         match hex_audio::worker_fixture::open(48_000) {
             Ok(output) => return output,
@@ -44,12 +44,19 @@ pub(super) fn bounded_window(
 ) -> (gpui::AnyWindowHandle, gpui::Entity<EditorView>, BrowserRoot) {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    let root = BrowserRoot(std::env::temp_dir().join(format!(
-        "hex-eq-layout-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    )));
-    std::fs::create_dir(&root.0).unwrap();
+    // A reused PID can meet a leftover directory; take the next free name.
+    let root = loop {
+        let path = std::env::temp_dir().join(format!(
+            "hex-eq-layout-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        match std::fs::create_dir(&path) {
+            Ok(()) => break BrowserRoot(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!("create eq layout root: {error}"),
+        }
+    };
     std::fs::create_dir(root.0.join("samples")).unwrap();
     #[cfg(target_os = "macos")]
     cx.use_native_text_system()

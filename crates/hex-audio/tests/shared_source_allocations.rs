@@ -31,6 +31,104 @@ fn playback(
     playback.prepare_computer_keyboard(project, track, input)?;
     Ok(playback)
 }
+
+#[test]
+fn compensated_shared_analytic_receiver_has_no_callback_allocations() -> Result<(), Box<dyn Error>>
+{
+    let mut editor = Editor::new(Project::new(48_000)?, 16)?;
+    let state = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        hex_devices::SINE_INSTRUMENT_TYPE_ID,
+    )?;
+    let Created::NativeSource(source) = editor.execute(Command::CreateNativeSource {
+        name: "shared".into(),
+        devices: vec![state],
+        instrument_index: 0,
+    })?
+    else {
+        return Err("source".into());
+    };
+    let mut tracks = Vec::new();
+    for pitch in [60, 67] {
+        let Created::Track(track) = editor.execute(Command::AddMidiTrack {
+            name: "midi".into(),
+        })?
+        else {
+            return Err("track".into());
+        };
+        editor.execute(Command::BindTrackSource {
+            track,
+            source: Some(source),
+        })?;
+        let Created::Clip(clip) = editor.execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(4)?,
+        })?
+        else {
+            return Err("clip".into());
+        };
+        editor.execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch,
+            velocity: 96,
+            channel: 0,
+        })?;
+        tracks.push(track);
+    }
+    editor.execute(Command::SetNativeSourceReceiver {
+        source,
+        track: Some(tracks[0]),
+    })?;
+    let limiter = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+    )?;
+    editor.execute(Command::InsertDevice {
+        track: tracks[0],
+        before: None,
+        state: limiter,
+    })?;
+    let revision = prepared(editor.project())?;
+    let mut reference = hex_engine::SessionPlayback::new(Arc::clone(&revision))?;
+    reference.apply(hex_engine::SessionPlaybackCommand::Play)?;
+    let mut expected = [[0.0; 2]; 512];
+    for frame in expected.chunks_mut(1) {
+        reference.render(frame)?;
+    }
+    let (mut control, mut callback) = prepared::channel(48_000)?;
+    control
+        .publish(Playback::try_from_prepared_with_session(revision)?)
+        .map_err(|error| error.reason)?;
+    control
+        .command(PlaybackCommand::Play)
+        .map_err(|_| "command queue full")?;
+    let mut output = [[0.0; 2]; 512];
+    let mut result = None;
+    let stats = allocation_counter::measure(|| {
+        callback.begin_block();
+        result = Some(callback.render(&mut output));
+        callback.finish_gain_recording_quantum(true);
+    });
+    result.ok_or("render missing")??;
+    assert_eq!(
+        (
+            stats.count_total,
+            stats.bytes_total,
+            stats.count_current,
+            stats.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(output, expected);
+    assert!(output.iter().flatten().any(|sample| *sample != 0.0));
+    control.stop();
+    control.reclaim();
+    Ok(())
+}
+
 #[test]
 fn shared_mutable_receiver_handoff_pause_and_live_off_allocate_and_free_nothing_in_callback()
 -> Result<(), Box<dyn Error>> {
@@ -189,13 +287,21 @@ fn shared_source_callback(analytic: bool) -> Result<(), Box<dyn Error>> {
             (0, 0, 0, 0),
             "step {step}: {stats:?}"
         );
-        if step < 4 {
+        // Step 3 unbinds the source under a held live key. Its history cannot
+        // transfer, so the live handoff restarts audio (Pulse #3784) and the
+        // held voice is cut until the key is pressed again; it must still be
+        // applied, not refused, and allocate nothing.
+        if step < 3 {
             assert!(
                 output
                     .iter()
                     .flatten()
-                    .any(|sample| sample.abs() > 0.000_001)
+                    .any(|sample| sample.abs() > 0.000_001),
+                "step {step}"
             );
+        }
+        if step == 3 {
+            assert!(control.status.rejected_revision().is_none());
         }
         if step == 5 {
             assert_eq!(output, [[0.0; 2]; 257]);

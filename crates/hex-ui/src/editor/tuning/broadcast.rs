@@ -35,10 +35,10 @@ impl Broadcast {
         }
     }
     fn disable(&mut self) {
-        if let (Some(handle), Some(owner)) = (&self.handle, self.owner.take()) {
-            if let Err(error) = handle.disable(owner) {
-                self.error = Some(error.to_string());
-            }
+        if let (Some(handle), Some(owner)) = (&self.handle, self.owner.take())
+            && let Err(error) = handle.disable(owner)
+        {
+            self.error = Some(error.to_string());
         }
         self.sent = None;
     }
@@ -123,10 +123,10 @@ impl Broadcast {
         }
     }
     fn retry(&mut self) {
-        if let (Some(handle), Some(owner)) = (&self.handle, self.owner) {
-            if let Err(error) = handle.retry(owner) {
-                self.error = Some(error.to_string());
-            }
+        if let (Some(handle), Some(owner)) = (&self.handle, self.owner)
+            && let Err(error) = handle.retry(owner)
+        {
+            self.error = Some(error.to_string());
         }
     }
     fn status(&self) -> String {
@@ -231,13 +231,16 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         let snapshot = loop {
             let snapshot = handle.snapshot().unwrap();
             if matches!(snapshot.state, State::Unavailable(_)) {
                 break snapshot;
             }
-            assert!(std::time::Instant::now() < deadline);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "review_final_native_mts_errors_are_lowercase_at_the_ui_boundary: hang guard expired"
+            );
             std::thread::sleep(std::time::Duration::from_millis(2));
         };
         let State::Unavailable(error) = snapshot.state else {
@@ -265,7 +268,7 @@ mod tests {
         use hex_session::service::{Request, Service};
         use hex_session::tuning_gesture::TuningGestureRequest;
         fn next(service: &Service) -> hex_session::service::Event {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = crate::test_wait::hang_deadline();
             loop {
                 match service.try_event() {
                     Ok(event) => return event,

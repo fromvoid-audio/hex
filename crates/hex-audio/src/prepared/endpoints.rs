@@ -7,6 +7,7 @@ use crate::native_callback_owner::{Guard, Terminal, reserve};
 pub struct Client {
     pub(super) endpoints: Guard<ClientEndpoints>,
     pub(super) retired_receipts: Option<Arc<retired_scalar_receipts::Mailbox>>,
+    action_outcomes: Option<ActionOutcomeReader>,
     worker_owned_publication: bool,
 }
 pub struct WorkerControl {
@@ -14,6 +15,7 @@ pub struct WorkerControl {
 }
 pub(crate) struct ClientEndpoints {
     diagnostics: audio_diagnostics::TraceReader,
+    action_admission: Option<action_outcomes::Admission>,
     pub(super) output_identity: u64,
     pub(super) sample_preview: crate::sample_preview::Control,
     pub(super) resident_forwarding: Arc<resident_forwarding::ResidentForwarding>,
@@ -32,6 +34,7 @@ pub(crate) struct ClientEndpoints {
 }
 pub(crate) struct EndpointTerminals {
     pub(crate) receipts: retired_scalar_receipts::ReceiptPublisher,
+    pub(crate) action_failure: Option<action_outcomes::FailureSignal>,
     pub(crate) client: Terminal<ClientEndpoints>,
     pub(crate) publication: Terminal<PublicationControl>,
 }
@@ -42,6 +45,7 @@ impl Control {
     ) -> (Client, WorkerControl, EndpointTerminals) {
         let Self {
             diagnostics,
+            action_admission,
             sample_preview,
             commands,
             spectrum_target,
@@ -62,8 +66,12 @@ impl Control {
             .unwrap_or_else(resident_forwarding::ResidentForwarding::new);
         publication.resident_forwarding = Some(Arc::clone(&resident_forwarding));
         let (retired_receipts, receipts) = retired_scalar_receipts::channel();
+        let action_failure = action_admission
+            .as_ref()
+            .map(action_outcomes::Admission::failure_signal);
         let (endpoints, client) = reserve(ClientEndpoints {
             diagnostics,
+            action_admission,
             output_identity,
             sample_preview,
             resident_forwarding,
@@ -85,11 +93,13 @@ impl Control {
             Client {
                 endpoints,
                 retired_receipts: Some(retired_receipts),
+                action_outcomes: None,
                 worker_owned_publication: false,
             },
             WorkerControl { endpoint },
             EndpointTerminals {
                 receipts,
+                action_failure,
                 client,
                 publication,
             },
@@ -185,6 +195,31 @@ impl Client {
     pub fn output_identity(&self) -> Option<u64> {
         self.endpoints.owner_ref().map(|e| e.output_identity)
     }
+    /// Attach only this output's unique reader. Refusal returns the original
+    /// reader unchanged; the control owner must drain it before retirement.
+    pub fn attach_action_outcomes(
+        &mut self,
+        reader: ActionOutcomeReader,
+    ) -> Result<(), ActionOutcomeReader> {
+        if self.action_outcomes.is_some()
+            || self.output_identity() != Some(reader.output_identity())
+        {
+            return Err(reader);
+        }
+        self.action_outcomes = Some(reader);
+        Ok(())
+    }
+    pub fn action_outcomes_mut(&mut self) -> Option<&mut ActionOutcomeReader> {
+        self.action_outcomes.as_mut()
+    }
+    pub fn has_action_outcomes(&self) -> bool {
+        self.action_outcomes.is_some()
+    }
+    /// Transfer the observer before dropping this client when retirement must
+    /// continue to report terminals after the endpoint has been closed.
+    pub fn take_action_outcomes(&mut self) -> Option<ActionOutcomeReader> {
+        self.action_outcomes.take()
+    }
     pub fn capture_fresh_runtime_fence(&self) -> Option<FreshRuntimeFence> {
         capture_runtime_fence(self.status()?)
     }
@@ -235,6 +270,7 @@ impl Client {
         }
         enqueue_action(
             &mut endpoints.commands,
+            &mut endpoints.action_admission,
             &mut endpoints.command_ticket,
             &endpoints.status,
             endpoints.status.submitted_revision.load(Acquire),
@@ -523,13 +559,28 @@ impl Client {
     /// Fresh independent pairs, filtered by this endpoint's exact desired tokens,
     /// generation, rate and publication floors. The bounded cache lives on control.
     pub fn spectrum_latest_pairs(&mut self) -> Vec<crate::spectrum_worker::PublishedSpectra> {
+        let mut pairs = Vec::new();
+        self.spectrum_latest_pairs_into(&mut pairs);
+        pairs
+    }
+    /// Replace `out` with the latest fresh pairs, reusing its capacity. A
+    /// closed output or absent reader leaves it empty.
+    pub fn spectrum_latest_pairs_into(
+        &mut self,
+        out: &mut Vec<crate::spectrum_worker::PublishedSpectra>,
+    ) {
+        out.clear();
         let Some(endpoints) = self.endpoints.owner_mut() else {
-            return Vec::new();
+            return;
         };
         let Some(reader) = endpoints.spectrum_reader.as_mut() else {
-            return Vec::new();
+            return;
         };
-        reader.try_latest_pairs_at(Instant::now(), endpoints.spectrum_target.desired_targets())
+        reader.try_latest_pairs_into(
+            Instant::now(),
+            endpoints.spectrum_target.desired_targets(),
+            out,
+        );
     }
     pub fn spectrum_select(
         &mut self,
@@ -616,6 +667,20 @@ impl Drop for Client {
     }
 }
 impl ClientEndpoints {
+    pub(crate) fn has_action_admission(&self) -> bool {
+        self.action_admission.is_some()
+    }
+    pub(crate) fn action_admission_identity(&self) -> Option<usize> {
+        self.action_admission
+            .as_ref()
+            .map(action_outcomes::Admission::identity)
+    }
+    pub(super) fn take_action_admission(&mut self) -> Option<action_outcomes::Admission> {
+        self.action_admission.take()
+    }
+    pub(super) fn restore_action_admission(&mut self, admission: action_outcomes::Admission) {
+        self.action_admission = Some(admission);
+    }
     fn stop(&self) {
         self.midi_recording.finish();
         self.status.keyboard_activation.revoke_reserved_prefix();
@@ -645,29 +710,45 @@ impl ClientEndpoints {
 }
 fn enqueue_action(
     commands: &mut Producer<QueuedCommand>,
+    admission: &mut Option<action_outcomes::Admission>,
     ticket: &mut u64,
     status: &Status,
     revision: u64,
     audition: &mut processor_audition::ProcessorAuditionTargetControl,
     action: PlaybackAction,
 ) -> Result<u64, PlaybackAction> {
+    // Stamp before admission so a command racing a fault is fenced even if
+    // the output installs a replacement before the callback consumes it.
+    let transport_epoch = status.transport_epoch.load(Acquire);
     let sampler_edit_gate = status.sampler_edit.gate();
     if sampler_edit_gate & 1 != 0 && !sampler_edit::is_stop(action) {
         return Err(action);
     }
-    if status.closing.load(Acquire) || revision == 0 {
+    if status.closing.load(Acquire)
+        || (status.device_fault.load(Acquire) && !sampler_edit::is_stop(action))
+        || revision == 0
+    {
         return Err(action);
     }
     let Some(next) = ticket.checked_add(1).filter(|ticket| *ticket != u64::MAX) else {
         return Err(action);
     };
-    commands
-        .push(QueuedCommand {
-            ticket: next,
-            action,
-            sampler_edit_gate,
-        })
-        .map_err(|PushError::Full(q)| q.action)?;
+    if let Some(admission) = admission.as_mut()
+        && !admission.reserve(next)
+    {
+        return Err(action);
+    }
+    if let Err(PushError::Full(queued)) = commands.push(QueuedCommand {
+        ticket: next,
+        action,
+        sampler_edit_gate,
+        transport_epoch,
+    }) {
+        if let Some(admission) = admission.as_mut() {
+            admission.rollback(next);
+        }
+        return Err(queued.action);
+    }
     *ticket = next;
     status.admitted_ticket.store(next, Release);
     if matches!(action, PlaybackAction::Transport(PlaybackCommand::Stop)) {
@@ -685,6 +766,7 @@ pub(super) fn legacy_enqueue(
 ) -> Result<u64, PlaybackAction> {
     enqueue_action(
         &mut control.commands,
+        &mut control.action_admission,
         &mut control.command_ticket,
         &control.publication.status,
         control.publication.revision,

@@ -171,17 +171,17 @@ impl EditorView {
         match self.service.submit(Request::DeviceGesture(gesture)) {
             Ok(()) => {
                 self.device_gesture.mark_submitted();
-                self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
+                self.worker_submitted();
                 true
             }
             Err(SubmitError::Full(_)) => false,
-            Err(SubmitError::Busy(_)) => {
+            Err(SubmitError::Busy(_, reason)) => {
                 self.device_gesture.reset();
                 self.device_gesture_barriers.clear();
                 self.effect_bus_barrier.custody = None;
                 self.retire_tuning_library_device_terminal();
                 self.refuse_deferred_tuning_writes();
-                self.error = Some("an export is already pending".into());
+                self.error = Some(super::user_errors::busy(reason).into());
                 true
             }
             Err(SubmitError::Closed(_)) => {
@@ -273,6 +273,9 @@ impl EditorView {
     }
 
     pub(super) fn enqueue_device_barrier(&mut self, request: Request) -> bool {
+        if let Some(admitted) = self.submit_update_save(&request) {
+            return admitted;
+        }
         if self.device_gesture.snapshot().is_none() {
             return self.enqueue(request);
         }
@@ -569,6 +572,7 @@ mod tests {
                 frames: Some(256),
                 signal: hex_session::service::ExportSignal::Main,
                 control: control.clone(),
+                format: hex_session::service::ExportFormat::Pcm16,
                 overwrite: false,
             },
             Request::Undo,

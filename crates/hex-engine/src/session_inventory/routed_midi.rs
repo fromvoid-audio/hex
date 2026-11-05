@@ -111,7 +111,7 @@ pub(super) fn prepare_clip(
 ) -> Result<PreparedSessionMidiClip, crate::Invalid> {
     let source_identity = clip.source_identity();
     let mutable_limits = config.mutable_limits;
-    if !clip.volume().points().is_empty()
+    if !clip.volume().is_unity()
         && mutable_limits.is_some_and(|limits| !limits.supports_clip_volume)
     {
         return Err(crate::Invalid(
