@@ -280,17 +280,27 @@ fn bypass_advances_the_same_filter_history_as_active_processing() {
         (false, true, false),
         (true, true, true),
     ] {
-        let config = prepared(dc, bass, false).with_output_mute(mute);
+        let config = prepared(dc, bass, false);
         let mut active = UtilityFilterProcessor::new(config);
         let mut bypassed = UtilityFilterProcessor::new(config);
         let input: Vec<_> = (0..257)
             .map(|i| [((i as f32) * 0.17).sin() * 0.6, 0.2])
             .collect();
+        // Prime a residual that must keep decaying during mute and bypass.
+        for processor in [&mut active, &mut bypassed] {
+            let mut warmup = input.clone();
+            processor.process_block(&mut warmup);
+            assert!(!processor.is_quiescent());
+            processor.reconfigure(config.with_output_mute(mute));
+        }
         let mut wet = input.clone();
         let mut dry = input.clone();
         active.process_block(&mut wet);
         bypassed.process_bypassed_block(&mut dry, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         assert_eq!(dry, input);
+        // Unmute before comparing PCM so mute cannot conceal stale history.
+        active.reconfigure(config);
+        bypassed.reconfigure(config);
         let mut after_active = [[0.2, -0.3]; 64];
         let mut after_bypass = after_active;
         active.process_block(&mut after_active);
