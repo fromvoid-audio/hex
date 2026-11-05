@@ -98,7 +98,7 @@ fn fixture(files: &Files) -> PathBuf {
 
 fn profile(plugins: usize) {
     let _native = native_fixture();
-    assert!(!cfg!(debug_assertions), "run this profile with --release");
+    require_release();
     let block: usize = std::env::var("HEX_PLAYBACK_PROFILE_BLOCK")
         .unwrap_or_else(|_| "256".into())
         .parse()
@@ -237,4 +237,9 @@ fn profile(plugins: usize) {
     // The callback and native workers retire through the harness after the
     // profiling borrow ends. No worker is waited on during timed rendering.
     drop(slot);
+}
+
+fn require_release() {
+    #[cfg(debug_assertions)]
+    panic!("run this profile with --release");
 }
