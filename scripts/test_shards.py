@@ -10,6 +10,9 @@ round-robin into `--exact` sets (optionally only names containing a
 directory and environment, and each shard prints its own `test result` line so
 the local runner keeps counting real passes. Doctests are not run; use only for
 packages without them or keep a separate `cargo test --doc` step.
+
+An empty selection fails by default. `--allow-empty` is reserved for callers
+that verify test coverage across multiple configurations themselves.
 """
 from __future__ import annotations
 
@@ -57,6 +60,8 @@ def partition(names: list[str], shards: int) -> list[list[str]]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--shards", type=int, required=True)
+    parser.add_argument("--allow-empty", action="store_true",
+                        help="allow no matches when the caller verifies aggregate coverage")
     parser.add_argument("--filter", action="append", default=[],
                         help="keep only tests whose name contains this substring (repeatable)")
     parser.add_argument("--skip", action="append", default=[],
@@ -76,6 +81,10 @@ def main(argv: list[str] | None = None) -> int:
         names = [name for name in names if not any(s in name for s in arguments.skip)]
         for index, group in enumerate(partition(names, arguments.shards)):
             jobs.append((f"{Path(binary['executable']).name} shard {index + 1}", binary, group))
+
+    if not jobs:
+        print("no tests matched the selection", file=sys.stderr)
+        return 0 if arguments.allow_empty else 1
 
     def run(job):
         label, binary, group = job

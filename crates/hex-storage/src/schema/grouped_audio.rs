@@ -62,6 +62,18 @@ struct Row {
 fn required_group<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<State>, D::Error> {
     Option::deserialize(d)
 }
+/// Schema71 saves extended coordinates alongside the grouped inventory.
+/// The historical base decoder sees a bounded, source-free carrier. Restore
+/// the exact crop and fade origin together with its group, before validation.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExtendedFrameGeometry {
+    length: u64,
+    view_start: u64,
+    view_end: u64,
+    fade_start: u64,
+}
+
 #[derive(Deserialize)]
 struct Inventory(#[serde(deserialize_with = "bounded_inventory")] Vec<Row>);
 fn bounded_inventory<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Row>, D::Error> {
@@ -167,6 +179,7 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
     Project::from_legacy_snapshot(project.snapshot()).map_err(invalid)?;
     let mut snapshot = project.snapshot();
     let mut inventory = Vec::new();
+    let mut extended = BTreeMap::new();
     for track in &mut snapshot.tracks {
         let clips = track.audio_clips_mut().map_err(invalid)?;
         for clip in clips {
@@ -205,7 +218,27 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
                     sources: roots,
                 }),
             });
-            Arc::make_mut(&mut edit.domain).events = None;
+            let domain = Arc::make_mut(&mut edit.domain);
+            domain.events = None;
+            if let hex_project::AudioDomainClock::Frames(length) = domain.clock
+                && length > hex_project::MAX_AUDIO_DOMAIN_FRAMES
+            {
+                extended.insert(
+                    clip.id,
+                    ExtendedFrameGeometry {
+                        length,
+                        view_start: edit.view_start,
+                        view_end: edit.view_end,
+                        fade_start: domain.fade_start,
+                    },
+                );
+                clip.duration = clip.duration.min(hex_project::MAX_AUDIO_DOMAIN_FRAMES);
+                edit.view_start = 0;
+                edit.view_end = clip.duration;
+                domain.fade_start = 0;
+                domain.clock =
+                    hex_project::AudioDomainClock::Frames(hex_project::MAX_AUDIO_DOMAIN_FRAMES);
+            }
         }
     }
     let legacy = Project::from_legacy_snapshot(snapshot).map_err(invalid)?;
@@ -214,6 +247,16 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid grouped audio envelope"))?;
     object.insert("version".into(), 43.into());
+    if !extended.is_empty() {
+        let rows: BTreeMap<_, _> = inventory
+            .iter()
+            .map(|row| (row.clip, extended.remove(&row.clip)))
+            .collect();
+        object.insert(
+            "extended_frame_geometry".into(),
+            serde_json::to_value(rows)?,
+        );
+    }
     object.insert("grouped_audio".into(), serde_json::to_value(inventory)?);
     Ok(value)
 }
@@ -280,6 +323,29 @@ fn decode_version(mut value: serde_json::Value, version: u64) -> Result<Project,
             .remove("grouped_audio")
             .ok_or(StorageError::Invalid("grouped audio inventory missing"))?,
     )?;
+    let mut extended = if let Some(rows) = object.remove("extended_frame_geometry") {
+        if version != 43
+            || rows
+                .as_object()
+                .is_none_or(|rows| rows.len() != states.len())
+        {
+            return Err(StorageError::Invalid(
+                "invalid extended frame geometry inventory",
+            ));
+        }
+        let rows: BTreeMap<u64, Option<ExtendedFrameGeometry>> = serde_json::from_value(rows)?;
+        if !rows.values().any(Option::is_some)
+            || rows.values().flatten().any(|geometry| {
+                geometry.length <= hex_project::MAX_AUDIO_DOMAIN_FRAMES
+                    || geometry.length > hex_project::MAX_SPARSE_AUDIO_TIMELINE_FRAMES
+            })
+        {
+            return Err(StorageError::Invalid("invalid extended frame geometry"));
+        }
+        Some(rows)
+    } else {
+        None
+    };
     object.insert(
         "version".into(),
         if version == 43 { 42.into() } else { 40.into() },
@@ -317,7 +383,18 @@ fn decode_version(mut value: serde_json::Value, version: u64) -> Result<Project,
                 None if version == 41 => None,
                 None => return Err(StorageError::Invalid("grouped audio clip row is missing")),
             };
+            let geometry = if let Some(rows) = &mut extended {
+                rows.remove(&clip.id)
+                    .ok_or(StorageError::Invalid("extended frame geometry row missing"))?
+            } else {
+                None
+            };
             let Some(state) = group else {
+                if geometry.is_some() {
+                    return Err(StorageError::Invalid(
+                        "extended frame geometry needs grouped audio",
+                    ));
+                }
                 continue;
             };
             let edit = clip.edit.as_mut().ok_or(StorageError::Invalid(
@@ -377,7 +454,31 @@ fn decode_version(mut value: serde_json::Value, version: u64) -> Result<Project,
                         .map_err(invalid)?,
                 );
             }
-            Arc::make_mut(&mut edit.domain).events = Some(Arc::new(AudioEvents {
+            let domain = Arc::make_mut(&mut edit.domain);
+            if let Some(geometry) = geometry {
+                let duration = geometry
+                    .view_end
+                    .checked_sub(geometry.view_start)
+                    .filter(|duration| *duration > 0)
+                    .ok_or(StorageError::Invalid("invalid extended frame crop"))?;
+                if domain.clock
+                    != hex_project::AudioDomainClock::Frames(hex_project::MAX_AUDIO_DOMAIN_FRAMES)
+                    || domain.fade_start != 0
+                    || edit.view_start != 0
+                    || edit.view_end != duration.min(hex_project::MAX_AUDIO_DOMAIN_FRAMES)
+                    || clip.duration != edit.view_end
+                {
+                    return Err(StorageError::Invalid(
+                        "extended frame carrier does not match its crop",
+                    ));
+                }
+                clip.duration = duration;
+                domain.clock = hex_project::AudioDomainClock::Frames(geometry.length);
+                domain.fade_start = geometry.fade_start;
+                edit.view_start = geometry.view_start;
+                edit.view_end = geometry.view_end;
+            }
+            domain.events = Some(Arc::new(AudioEvents {
                 next_id: state.next_id,
                 sources,
                 events: state
@@ -402,6 +503,11 @@ fn decode_version(mut value: serde_json::Value, version: u64) -> Result<Project,
     if !inventory.is_empty() {
         return Err(StorageError::Invalid(
             "grouped audio references a missing clip",
+        ));
+    }
+    if extended.is_some_and(|rows| !rows.is_empty()) {
+        return Err(StorageError::Invalid(
+            "extended frame geometry owner missing",
         ));
     }
     Project::from_legacy_snapshot(snapshot).map_err(invalid)

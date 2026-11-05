@@ -133,6 +133,12 @@ with "changed modules ran no tests". Example targets (the device gallery) are
 skipped for module-scoped owners. Smaller, self-tested modules therefore mean
 faster merges; an untested module inherits its parent's often-large suite.
 
+Standalone `scripts/test_shards.py` refuses an empty combined selection, including
+filter typos and skips removing every case. The runner passes `--allow-empty` only
+for module-scoped configurations whose coverage it checks together. That option
+reports an empty selection without claiming tests passed; callers must verify
+aggregate coverage themselves. An empty target alongside selected tests is allowed.
+
 A changed module root (for example `editor/mod.rs`) runs its complete test
 subtree, including tests in child modules, regardless of which child names
 appear in the diff. Module-scoped doctest steps run only when a changed file

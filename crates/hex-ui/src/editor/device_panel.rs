@@ -963,6 +963,7 @@ fn render_track(
         | GestureTarget::EqNodeCreation { device } => !alive.contains(&device),
         GestureTarget::ReturnSend { .. }
         | GestureTarget::TrackGain { .. }
+        | GestureTarget::TrackGains { .. }
         | GestureTarget::TrackBalance { .. }
         | GestureTarget::ReturnGain { .. } => false,
     }) || stale_keys.iter().any(|key| {

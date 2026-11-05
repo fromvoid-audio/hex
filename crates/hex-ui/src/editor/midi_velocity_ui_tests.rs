@@ -49,7 +49,7 @@ fn setup(
     pump(&editor, &mut visual);
     editor.update(&mut visual, |view, cx| {
         view.midi_selection.clear();
-        view.piano_beat_start = BeatTime::ZERO;
+        view.piano_beat_start = 0;
         view.piano_beat_span = BeatTime::from_quarters(4).unwrap();
         cx.notify();
     });
@@ -327,7 +327,7 @@ fn velocity_resize_collapse_and_wheel_keep_note_space_and_time_alignment(cx: &mu
         );
         assert_eq!(
             view.midi_velocity.scene.as_ref().unwrap().key.start,
-            view.piano_beat_start.raw()
+            view.piano_beat_start
         );
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
     });
@@ -593,7 +593,7 @@ fn velocity_empty_drag_shares_time_range_and_duplicate_destination_after_ack(
     let (mut visual, editor, _environment, clip) = setup(cx);
     for (start, span, reverse) in [(0.0, 4.0, false), (0.25, 2.0, true)] {
         editor.update(&mut visual, |v, cx| {
-            v.piano_beat_start = BeatTime::from_raw((start * BeatTime::ONE.raw() as f32) as u64);
+            v.piano_beat_start = i128::from((start * BeatTime::ONE.raw() as f32) as u64);
             v.piano_beat_span = BeatTime::from_raw((span * BeatTime::ONE.raw() as f32) as u64);
             cx.notify();
         });
@@ -853,7 +853,7 @@ fn velocity_range_and_marquee_cancel_on_escape_blur_resize_and_stale_view(cx: &m
                         .read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
                 }
                 _ => editor.update(&mut visual, |v, cx| {
-                    v.piano_beat_start = BeatTime::ONE;
+                    v.piano_beat_start = i128::from(BeatTime::ONE.raw());
                     cx.notify();
                 }),
             }
@@ -876,7 +876,7 @@ fn velocity_range_and_marquee_cancel_on_escape_blur_resize_and_stale_view(cx: &m
             });
             editor.update(&mut visual, |v, cx| {
                 v.selected_clip = Some(clip);
-                v.piano_beat_start = BeatTime::ZERO;
+                v.piano_beat_start = 0;
                 cx.notify();
             });
             visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));

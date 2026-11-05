@@ -3538,6 +3538,7 @@ pub(super) mod tests {
         let mut current = Some(current);
         let mut preview = None;
         let draft = crate::device_gesture::GestureSnapshot {
+            track_gains: None,
             touched_parameters: crate::device_gesture::TouchedParameters::default(),
             manual_edit: false,
             key: crate::device_gesture::GestureKey {
