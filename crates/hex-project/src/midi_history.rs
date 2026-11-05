@@ -1121,6 +1121,7 @@ fn same_shell(
     }
     tracks.iter().zip(&b.tracks).all(|(a, b)| {
         let Track {
+            tags,
             kind,
             parent_group,
             color,
@@ -1152,6 +1153,7 @@ fn same_shell(
             && parent_group == &b.parent_group
             && color == &b.color
             && id == &b.id
+            && tags == &b.tags
             && name == &b.name
             && automatic_name == &b.automatic_name
             && gain == &b.gain

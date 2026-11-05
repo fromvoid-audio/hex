@@ -1353,3 +1353,63 @@ fn compressor_sidechain_roundtrips_and_requires_schema_upgrade_consent() {
     assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn track_tags_upgrade_schema69_preserve_complete_state_and_original_bytes() {
+    let mut editor = Editor::new(project(), 16).unwrap();
+    let track = editor.project().tracks()[0].id();
+    let Created::Device(device) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: NativeDeviceState::new(
+                DeviceTypeId::from_static("hex.compressor"),
+                3,
+                vec![0; 32],
+            )
+            .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("compressor")
+    };
+    editor
+        .execute(Command::SetSidechain {
+            device,
+            source: Some(track),
+        })
+        .unwrap();
+    let original = editor.project().clone();
+    let dir = std::env::temp_dir().join(format!(
+        "hex-track-tags-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).unwrap();
+    let old = dir.join("schema69.hex");
+    save_new(&old, &original).unwrap();
+    let bytes = fs::read(&old).unwrap();
+    let (reopened, token) = hex_storage::load_with_token(&old).unwrap();
+    assert_eq!(reopened, original);
+    assert_eq!(hex_storage::schema_version_for(&reopened), 69);
+    editor
+        .execute(Command::SetTrackTags {
+            track,
+            tags: vec![
+                hex_project::TrackTag::new("drums").unwrap(),
+                hex_project::TrackTag::new("lowend").unwrap(),
+            ],
+        })
+        .unwrap();
+    assert!(token.requires_save_confirmation(editor.project()).unwrap());
+    let new = dir.join("schema70.hex");
+    save_new(&new, editor.project()).unwrap();
+    assert_eq!(load(&new).unwrap(), *editor.project());
+    assert_eq!(fs::read(&old).unwrap(), bytes);
+    assert_eq!(load(&old).unwrap(), original);
+    fs::remove_file(new).unwrap();
+    fs::remove_file(old).unwrap();
+    fs::remove_dir(dir).unwrap();
+}
