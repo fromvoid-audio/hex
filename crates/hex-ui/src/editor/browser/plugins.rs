@@ -434,12 +434,23 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let key = BrowserItemKey::Plugin(row.module.clone(), row.cid);
+        let payload = self
+            .state
+            .as_ref()
+            .zip(row.effect)
+            .map(|(state, selection)| drag::NativeDeviceDrag {
+                project_generation: self.project_generation,
+                revision: state.revision,
+                source: drag::NativeDeviceDragSource::PluginEffect(selection),
+                destination: Rc::new(Cell::new(None)),
+                return_destination: Rc::new(Cell::new(None)),
+            });
         let tooltip = format!(
             "{}\n{}",
             hex_session::service::text::verbatim(row.module.display()),
             row.status
         );
-        div()
+        let row = div()
             .id(("browser-vst3", index))
             .debug_selector(move || format!("browser-vst3-row-{index}"))
             .h(px(ROW_HEIGHT))
@@ -494,6 +505,7 @@ impl EditorView {
                     .text_xs()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text(row.status)),
-            )
+            );
+        Self::with_browser_device_drag(row, payload, cx)
     }
 }
