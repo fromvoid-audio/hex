@@ -5,13 +5,76 @@
 //! ramps do not start while bypassed; reset, retained tails, foreign processing and an
 //! authored/live output-gain program keep their existing laws.
 //!
-//! This is deliberately not a transient Set/Clear controller. Its target is the
-//! candidate's validated canonical state. A missing transient/clock origin is
-//! never interpreted as Clear; entries with a transient output target are not
-//! admitted. Recording/replay and transient-delivery receipts are unchanged.
+//! Armed transient Set holds its target; explicit Clear blends back to the
+//! sample's authored/external fallback. No command continues the admitted
+//! trajectory, including when a new command is deferred for lack of origin.
+//! Lifecycle invalidation drops the transient explicitly. The receipt marks
+//! delivery of the first sample of the change, independent of settling.
 //! Copy state lives in the existing committed/scratch transaction and is charged
 //! by RuntimeEntry storage accounting. Settled blocks use one constant multiply.
 use hex_dsp::StereoFrame;
+use hex_lattice_contract::{DeviceAutomationTarget, DeviceContractError};
+
+use crate::{NativeTransientOperation, NativeTransientValue, RuntimeEntry};
+
+/// Apply an already validated command to the current output stage. Repeated
+/// delivery of the same request must not restart a partially rendered ramp.
+pub(super) fn stage_transient(
+    entry: &mut RuntimeEntry,
+    operation: NativeTransientOperation,
+) -> Result<(), DeviceContractError> {
+    let next = match operation {
+        NativeTransientOperation::Set(NativeTransientValue::HostOutputGain(gain)) => {
+            TransientGain::Held(gain.linear())
+        }
+        NativeTransientOperation::Clear(DeviceAutomationTarget::HostOutputGain)
+            if matches!(entry.scratch_transient_output_gain, TransientGain::Held(_)) =>
+        {
+            TransientGain::Releasing
+        }
+        _ => return Ok(()),
+    };
+    if matches!(
+        entry.runtime,
+        crate::runtime_ownership::RuntimeOwnership::Foreign(_)
+    ) {
+        return Err(DeviceContractError::UnsupportedProcessingClass);
+    }
+    if next != entry.scratch_transient_output_gain {
+        let from = entry.scratch_host_gains[1];
+        entry.scratch_output_gain_ramp = match next {
+            TransientGain::Held(target) if target == from => OutputGainRamp::INACTIVE,
+            _ => OutputGainRamp::start(from, entry.sample_rate),
+        };
+        entry.scratch_transient_output_gain = next;
+    }
+    Ok(())
+}
+
+pub(super) fn finish_release(entry: &mut RuntimeEntry) {
+    if entry.scratch_transient_output_gain == TransientGain::Releasing
+        && !entry.scratch_output_gain_ramp.active()
+    {
+        entry.scratch_transient_output_gain = TransientGain::Follow;
+    }
+}
+
+pub(super) fn invalidate_transient(entry: &mut RuntimeEntry) {
+    if entry.committed_transient_output_gain != TransientGain::Follow {
+        entry.committed_transient_output_gain = TransientGain::Follow;
+        entry.scratch_transient_output_gain = TransientGain::Follow;
+        entry.committed_output_gain_ramp = OutputGainRamp::INACTIVE;
+        entry.scratch_output_gain_ramp = OutputGainRamp::INACTIVE;
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub(super) enum TransientGain {
+    #[default]
+    Follow,
+    Held(f32),
+    Releasing,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct OutputGainRamp {
@@ -59,11 +122,20 @@ impl OutputGainRamp {
         if effective == target {
             return Self::INACTIVE;
         }
+        Self::start(effective, rate)
+    }
+    pub(super) fn start(from: f32, rate: u32) -> Self {
         Self {
-            from: effective,
+            from,
             elapsed: 0,
             total: rate.div_ceil(200).max(1),
         }
+    }
+    pub(super) fn next(&mut self, target: f32) -> f32 {
+        if self.active() {
+            self.elapsed += 1;
+        }
+        self.at(target, self.elapsed)
     }
     pub(super) fn apply(&mut self, target: f32, frames: &mut [StereoFrame]) -> Option<f32> {
         let mut last = None;
@@ -73,8 +145,7 @@ impl OutputGainRamp {
                 if !self.active() {
                     break;
                 }
-                self.elapsed += 1;
-                let gain = self.at(target, self.elapsed);
+                let gain = self.next(target);
                 frame[0] *= gain;
                 frame[1] *= gain;
                 last = Some(gain);

@@ -39,6 +39,78 @@ fn edited(rate: u32, owner: ProcessorChainOwner) -> NativeRuntimeChain {
     new.transfer_history_from(&mut old);
     new
 }
+
+#[test]
+fn transient_output_set_reversal_clear_and_rollback_survive_missing_requests() {
+    let owner = ProcessorChainOwner::Main;
+    let identity = ProcessorInstanceIdentity::new(owner, 7).unwrap();
+    let mut chain = chain(48_000, 0.0, owner);
+    chain.entries[0]
+        .automation
+        .arm_host_gain_input(HostOutputGain)
+        .unwrap();
+    let set = |db| {
+        NativeTransientOperation::Set(NativeTransientValue::HostOutputGain(
+            HostGain::from_db(db).unwrap(),
+        ))
+    };
+    let render_command = |chain: &mut NativeRuntimeChain, pcm: &mut [StereoFrame], operation| {
+        let mut input = NativeTransientProcessing::new(NativeTransientInput {
+            identity,
+            operation,
+        });
+        chain
+            .process_range_tapped_with_foreign_and_input(
+                0..1,
+                pcm,
+                0,
+                None,
+                None,
+                &mut RefuseForeign,
+                Some(&mut input),
+                &mut |_, _, _, _, _, _| {},
+            )
+            .unwrap();
+        assert_eq!(input.applied.unwrap().operation, operation);
+    };
+    chain.begin_block();
+    let mut first = [INPUT; 73];
+    render_command(&mut chain, &mut first, set(-6.0));
+    chain.commit_block();
+    let forward = render(&mut chain, 167, 19);
+    let target = HostGain::from_db(-6.0).unwrap().linear();
+    assert!((first[0][0] - INPUT[0]).abs() < 0.001);
+    assert!(forward[0][0] < first[72][0]);
+    assert_eq!(forward[166], INPUT.map(|sample| sample * target));
+    chain.begin_block();
+    let mut reversed = [INPUT; 22];
+    render_command(&mut chain, &mut reversed, set(6.0));
+    chain.rollback_block();
+    assert_eq!(render(&mut chain, 1, 1)[0], forward[166]);
+    chain.begin_block();
+    let mut retry = [INPUT; 22];
+    render_command(&mut chain, &mut retry, set(6.0));
+    chain.commit_block();
+    assert_eq!(retry, reversed);
+    assert!(retry[21][0] > retry[0][0]);
+    let mut release = [INPUT; 1];
+    chain.begin_block();
+    render_command(
+        &mut chain,
+        &mut release,
+        NativeTransientOperation::Clear(HostOutputGain),
+    );
+    chain.commit_block();
+    assert!((release[0][0] - retry[21][0]).abs() < 0.001);
+    let released = render(&mut chain, 240, 64);
+    assert_eq!(released[238], INPUT);
+    assert_eq!(released[239], INPUT);
+    chain.begin_block();
+    render_command(&mut chain, &mut first, set(-6.0));
+    chain.commit_block();
+    chain.invalidate_transient_output_gain(identity);
+    assert_eq!(render(&mut chain, 1, 1), [INPUT]);
+}
 #[test]
 fn canonical_effect_output_trim_has_exact_pcm_partition_and_twin_continuation_laws() {
     for owner in [

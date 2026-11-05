@@ -1,5 +1,4 @@
 //! Canonical output-trim revisions through prepared publication and real callbacks.
-#![cfg(feature = "allocation-probe")]
 use allocation_counter::measure;
 use hex_audio::prepared::{self, PublicationPolicy};
 use hex_engine::{
