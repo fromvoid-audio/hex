@@ -89,7 +89,18 @@ impl AudioTransformPreparation {
         if clip.duration() > MAX_AUDIO_DOMAIN_FRAMES || projection.occurrence_count() > 8_192 {
             return Err(Invalid("grouped audio exceeds bounded placement work"));
         }
-        let mut work = edit.domain.clock.length();
+        // A single forward occurrence can be copied from its exact root
+        // interval. Root previews, directed views and multiple occurrences
+        // still use the complete root.
+        let root_window =
+            if !root_only && edit.content_view.is_none() && projection.occurrence_count() == 1 {
+                let occurrence = projection.occurrence(0)?;
+                occurrence.root_start..occurrence.root_end
+            } else {
+                0..edit.domain.clock.length()
+            };
+        let root_length = root_window.end - root_window.start;
+        let mut work = root_length;
         for source in sources {
             let root = &source.root.clip;
             let root_work = if let Some(inner) = root.audio_edit() {
@@ -149,18 +160,12 @@ impl AudioTransformPreparation {
                 .and_then(|length| length.checked_mul(std::mem::size_of::<crate::Frame>()))
                 .ok_or(Invalid("grouped audio byte count overflow"))
         };
-        let root_bytes = bytes_for(edit.domain.clock.length())?;
+        let root_bytes = bytes_for(root_length)?;
         let root_charge = self.reserve_with_eviction(root_bytes)?;
         let output_reservation = if root_only {
             None
         } else {
             Some(self.reserve_with_eviction(bytes_for(clip.duration())?)?)
-        };
-        // A plain container plays only its window. Freely placed events outside
-        // it stay silent, so preparation skips their per-sample composition.
-        let windowed = !root_only && edit.placement.is_none() && edit.content_view.is_none();
-        let audible = |event: &hex_project::AudioEvent| {
-            !windowed || (event.end > edit.view_start && event.start < edit.view_end)
         };
         let mut root_pcm = Vec::new();
         root_pcm
@@ -199,10 +204,18 @@ impl AudioTransformPreparation {
             for event in events
                 .events
                 .iter()
-                .filter(|event| event.active && event.source == source.root.id && audible(event))
+                .filter(|event| event.active && event.source == source.root.id)
             {
+                let start = event.start.max(root_window.start);
+                let end = event.end.min(root_window.end);
+                if start >= end {
+                    continue;
+                }
+                let source_start = event.source_start + (start - event.start);
                 let destination = root_pcm
-                    .get_mut(event.start as usize..event.end as usize)
+                    .get_mut(
+                        (start - root_window.start) as usize..(end - root_window.start) as usize,
+                    )
                     .ok_or(Invalid("grouped audio event exceeds root"))?;
                 let event_gain = event.gain.linear();
                 for (offset, frame) in destination.iter_mut().enumerate() {
@@ -212,7 +225,7 @@ impl AudioTransformPreparation {
                     if let Some(compiled) = compiled.as_ref() {
                         let position = compiled
                             .start
-                            .checked_add(event.source_start)
+                            .checked_add(source_start)
                             .and_then(|start| start.checked_add(offset as u64))
                             .ok_or(Invalid("grouped audio source position overflow"))?;
                         let metadata = compiled.metadata.as_deref();
@@ -229,8 +242,7 @@ impl AudioTransformPreparation {
                             sample[1] *= gain;
                         }
                         if let Some(fade) = event.fade {
-                            let at = event
-                                .source_start
+                            let at = source_start
                                 .checked_add(offset as u64)
                                 .and_then(|at| at.checked_sub(fade.source_start()))
                                 .filter(|at| *at < fade.shape().span())
@@ -249,7 +261,13 @@ impl AudioTransformPreparation {
             }
         }
         if root_only || edit.content_view.is_none() {
-            mapping::apply_fade(&mut root_pcm, edit, tempo, &self.shutdown)?;
+            mapping::apply_fade(
+                &mut root_pcm,
+                root_window.start,
+                edit,
+                tempo,
+                &self.shutdown,
+            )?;
         }
         let audio = if let Some(reservation) = output_reservation {
             let mut output = Vec::new();
@@ -267,7 +285,10 @@ impl AudioTransformPreparation {
                     }
                     let occurrence = projection.occurrence(index)?;
                     let from = root_pcm
-                        .get(occurrence.root_start as usize..occurrence.root_end as usize)
+                        .get(
+                            (occurrence.root_start - root_window.start) as usize
+                                ..(occurrence.root_end - root_window.start) as usize,
+                        )
                         .ok_or(Invalid("grouped audio crop exceeds root"))?;
                     let start = (occurrence.destination_start - clip.start()) as usize;
                     let to = output
