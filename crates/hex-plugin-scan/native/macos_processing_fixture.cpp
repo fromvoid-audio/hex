@@ -87,6 +87,9 @@ static double parameter_value(int variant,double value) {
     if(variant==82) return value>=0.5?1.0:0.0;
     return value;
 }
+// The latency fixture invokes one additional restart synchronously during
+// activation. Its controller owns this borrowed handler on the main lane.
+IComponentHandler* latency_handler=nullptr;
 class RestoreController final : public IEditController {
     std::atomic<uint32> refs{1};
     const int fault=next_fault;
@@ -134,6 +137,7 @@ public:
     tresult PLUGIN_API setComponentHandler(IComponentHandler* value) override {
         if (!control() || !context || (value && handler)) return kResultFalse;
         if(value)value->addRef();if(handler)handler->release();handler=value;
+        if(fault==104) latency_handler=handler;
         if(value && fault>=85 && fault<=89) {
             CFRunLoopTimerContext timer_context{};timer_context.info=this;
             edit_timer=CFRunLoopTimerCreate(nullptr,CFAbsoluteTimeGetCurrent(),0.001,0,0,edit_tick,&timer_context);
@@ -253,6 +257,10 @@ public:
             return kInvalidArgument;
         if(fault==76 && observed.flushes.load()) return kResultFalse;
         component_gain=static_cast<float>(parameter_value(fault,value)*4.0);
+        if(fault==104 && observed.blocks) {
+            const auto extra=value==0.25?kIoChanged:kParamValuesChanged;
+            handler->restartComponent(kLatencyChanged|extra);
+        }
         restoration.controller_gain=bits(component_gain);trace(21);return kResultOk;
     }
     IPlugView* PLUGIN_API createView(FIDString) override { return nullptr; }
@@ -262,6 +270,7 @@ class ProcessingProcessor final : public Processor,public IAudioPresentationLate
     bool initialized=false, arranged=false, setup=false, active=false;
     std::atomic<bool> processing{false};
     bool input=false,output=false,thread_bound=false;
+    bool activation_restart_sent=false;
     int32 inputs=2,outputs=2,maximum=0,precision=kSample32;
     std::atomic<int32> block{0};
     double sample_rate=0;
@@ -459,6 +468,20 @@ public:
     tresult PLUGIN_API setActive(TBool enabled) override {
         if (!enabled && fault==25) trace(7); // sensitivity: teardown after unknown startup
         if (!control() || !setup || processing) return kResultFalse;
+        if(observed.stops) {
+            if(fault>=100 && fault<=103 && !module_event(enabled?'A':'D')) return kResultFalse;
+            if((fault==100 && !enabled) || (fault==101 && enabled)) { trace(24);return kResultFalse; }
+            if((fault==102 && !enabled) || (fault==103 && enabled)) {
+                trace(25);throw std::runtime_error("original SDK reactivation exception");
+            }
+            if((fault==99 || fault==104) && enabled && !active) {
+                restored_latency=7;delay={};delay_cursor=0;
+                if(fault==104 && !activation_restart_sent && latency_handler) {
+                    activation_restart_sent=true;
+                    latency_handler->restartComponent(kLatencyChanged);
+                }
+            }
+        }
         active=enabled;return kResultOk;
     }
     tresult PLUGIN_API setProcessing(TBool enabled) override {
@@ -655,9 +678,9 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     // The production helper never reads this environment variable.
     const auto* selected=std::getenv("HEX_ORIGINAL_INSTANCE_VARIANT");
     if (selected) {
-        const auto length=std::strlen(selected);if (!length || length>2) return false;
+        const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>98) return false;next_fault=value;
+        if (value>104) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);
