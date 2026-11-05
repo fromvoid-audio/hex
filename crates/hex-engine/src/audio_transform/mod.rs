@@ -132,6 +132,7 @@ enum EntryKey {
     },
     Group {
         root_only: bool,
+        sparse: bool,
         edit: AudioClipEdit,
         duration: u64,
         sources: Vec<(Audio, u32, u32)>,

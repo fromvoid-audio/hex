@@ -1265,3 +1265,74 @@ fn distant_events_do_not_increase_finite_once_playback_pcm_budget() {
         assert!(actual[4_000..].iter().all(|sample| *sample == [0.0; 2]));
     }
 }
+
+#[test]
+fn sparse_one_shot_keeps_occupied_pcm_and_reads_both_sides_of_its_gate() {
+    use hex_project::{AudioEventEdit, TrimEdge};
+    for destination in [32_000_i64, 4_000_000] {
+        let (mut editor, clip, media) = fixture(false);
+        let reference = isolated(128 * 1024, 0, 0);
+        let original = render(&prepare(&editor, &media, &reference), 0, 8_000, 79);
+        for operation in [
+            AudioEventEdit::Split { at: 1_000 },
+            AudioEventEdit::Place {
+                event: 1,
+                start: destination,
+            },
+        ] {
+            editor
+                .execute(Command::EditAudioEvents { clip, operation })
+                .unwrap();
+        }
+        let context = isolated(128 * 1024, 0, 0);
+        let accepted = prepare(&editor, &media, &context);
+        let view = &accepted.arrangement().audio_clip_views()[0];
+        let map = view.sparse.as_ref().unwrap();
+        assert_eq!(map.extent(), destination as usize + 1_000);
+        assert_eq!(
+            context.retained_pcm_bytes(),
+            8_000 * size_of::<crate::Frame>()
+        );
+        let actual = render(&accepted, 0, 8_017, 57);
+        assert!(actual[..1_000].iter().all(|frame| *frame == [0.0; 2]));
+        assert_eq!(actual[1_000..8_000], original[1_000..]);
+        assert!(actual[8_000..].iter().all(|frame| *frame == [0.0; 2]));
+        assert_eq!(
+            render(&accepted, destination as u64 - 7, 32, 7),
+            [[0.0; 2]; 32]
+        );
+        drop(accepted);
+
+        editor
+            .execute(Command::TrimClipEdge {
+                clip,
+                edge: TrimEdge::Right,
+                frame: destination as u64 + 1_000,
+            })
+            .unwrap();
+        let accepted = prepare(&editor, &media, &context);
+        let source = media.values().next().unwrap();
+        let fade = editor
+            .project()
+            .clip(clip)
+            .unwrap()
+            .audio_event_root()
+            .domain
+            .fade;
+        for block in [1, 57, 512] {
+            let actual = render(&accepted, destination as u64 - 7, 1_019, block);
+            assert_eq!(actual[..7], [[0.0; 2]; 7]);
+            for (i, sample) in actual[7..1_007].iter().enumerate() {
+                assert_eq!(
+                    *sample,
+                    source.frames()[i].map(|s| s * fade.gain_at(destination as u64 + i as u64))
+                );
+            }
+            assert_eq!(actual[1_007..], [[0.0; 2]; 12]);
+        }
+        assert_eq!(
+            context.retained_pcm_bytes(),
+            8_000 * size_of::<crate::Frame>()
+        );
+    }
+}

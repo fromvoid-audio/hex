@@ -288,6 +288,7 @@ impl ArrangementClips {
                     source_phase: s.phase,
                     fade,
                     streamed: None,
+                    sparse: None,
                 }));
             }
         }
