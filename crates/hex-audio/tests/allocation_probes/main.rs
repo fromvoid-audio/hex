@@ -2,6 +2,8 @@
 //! The allocation counter measures each test thread independently. Keep fixtures
 //! and measured scopes local to each test.
 
+mod audio_event_placement_allocations;
+
 mod callback_allocations;
 mod callback_session_batch;
 mod controller_keyboard_allocations;

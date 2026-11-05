@@ -388,7 +388,8 @@ pub fn audio_projection_frame_q32(tempo: &TempoMap, beat_raw: i128) -> Result<i1
 }
 
 /// Signed nearest-frame conversion; exact half ties move later, including -0.5.
-/// Negative projection uses tempo-at-zero only for invisible analysis context.
+/// Negative projection uses tempo-at-zero for bounded, non-transport context,
+/// including the virtual clip-editor grid. It does not enable playback before zero.
 pub fn audio_projection_frame(tempo: &TempoMap, beat_raw: i128) -> Result<i128, Invalid> {
     if beat_raw >= 0 {
         return tempo
