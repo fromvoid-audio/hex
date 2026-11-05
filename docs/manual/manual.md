@@ -26,6 +26,11 @@ original note-off times; earlier voice history is reset. starting does not repla
 the song before the cursor. section launches and exact-history seeks have their
 own preparation behavior.
 
+normal pause and stop fade the output briefly. seeking during playback fades
+out at the old position and in at the new one. pause releases held arrangement
+and session instrument notes. when resuming from that position, the instrument
+plays the next note starts without replaying those held notes.
+
 # install and update
 
 the macos package includes `hex.app`, this manual in pdf and offline html,
@@ -225,6 +230,8 @@ edits keep a held arrangement instrument note sounding, when the note and its
 release finish before both loop ends and playback can retain the same source
 history. when playback needs to restart at the playhead, effect tails reset and
 notes under the playhead start again from there.
+at a normal loop wrap, arrangement audio fades briefly at the end so the next
+pass can keep its original attack. this fade belongs to the loop boundary.
 for multiple sections, the loop spans the earliest start to the latest end,
 including gaps. while the computer midi keyboard is on, plain **l** and **w** play notes.
 setting new loop bounds from selected main sections also turns on section focus
@@ -255,6 +262,8 @@ an arrange section to play it repeatedly. the launch dropdown beside it also
 sets quantization for console clip and scene launches: **none**, **8 bars**,
 **4 bars**, **2 bars**, **1 bar**, **1/2**, **1/2t**, **1/4**, **1/4t**, **1/8**,
 **1/8t**, **1/16**, **1/16t**, or **1/32**. **t** means triplet timing.
+when a console launch replaces a playing audio clip, the outgoing clip fades
+briefly as the new one begins.
 
 current playback continues while hex prepares the section. the prepared section
 starts at the next selected boundary after it is ready; **none** starts as soon
