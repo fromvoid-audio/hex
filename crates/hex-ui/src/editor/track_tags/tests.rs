@@ -67,6 +67,22 @@ fn rendered_tag_selection_modifiers_overflow_and_filter_are_view_only(cx: &mut T
         );
     }
     let canonical = view.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());
+    let from = visual
+        .debug_bounds(selector("track-tag-first", ids[0]))
+        .unwrap()
+        .center();
+    let to = visual
+        .debug_bounds(selector("arrangement-track-header", ids[2]))
+        .unwrap()
+        .center();
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    view.read_with(&visual, |v, _| {
+        assert!(!v.track_reorder_active());
+        assert_eq!(v.state.as_ref().unwrap().project, canonical);
+    });
     click(
         &mut visual,
         selector("track-tag-first", ids[0]),
@@ -332,6 +348,35 @@ fn folded_matches_stay_selected_and_filter_applies_to_console_headers(cx: &mut T
     click(&mut visual, "clear-track-tag-filter", Modifiers::default());
     view.read_with(&visual, |v, _| {
         assert_eq!(v.arrangement_focus.projection.console_indices.len(), 3)
+    });
+    click(
+        &mut visual,
+        selector("track-tag-more", ids[1]),
+        Modifiers::default(),
+    );
+    choose(&mut visual, &view, |action| {
+        matches!(action, Action::Edit { .. })
+    });
+    assert!(
+        visual
+            .debug_bounds(selector("track-tags-input", ids[1]))
+            .is_some()
+    );
+    visual.simulate_input("drums, live");
+    visual.simulate_keystrokes("enter");
+    receive(&mut visual, &view);
+    view.read_with(&visual, |v, _| {
+        assert_eq!(v.mode, EditorMode::Session);
+        assert_eq!(
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(ids[1])
+                .unwrap()
+                .tags(),
+            tags(&["drums", "live"])
+        );
     });
 }
 
