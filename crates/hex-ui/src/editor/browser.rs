@@ -1604,7 +1604,7 @@ impl EditorView {
                 .focus_handle()
                 .is_focused(window)
             {
-                self.activate_browser_plugin(&module, cid);
+                self.activate_browser_plugin(&module, cid, cx);
             }
             cx.notify();
             return;
