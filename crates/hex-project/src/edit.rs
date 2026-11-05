@@ -622,6 +622,10 @@ pub enum Command {
     RemoveTrack(TrackId),
     /// Remove explicit tracks through the existing cleanup as one history edit.
     RemoveTracks(Vec<TrackId>),
+    SetTrackTags {
+        track: TrackId,
+        tags: Vec<crate::TrackTag>,
+    },
     RenameTrack {
         track: TrackId,
         name: String,
@@ -629,6 +633,10 @@ pub enum Command {
     Gain {
         track: TrackId,
         gain: f32,
+    },
+    /// Change a bounded set of static track gains atomically in one history step.
+    SetTrackGains {
+        gains: Vec<(TrackId, f32)>,
     },
     /// Set original Hex stereo balance; this is not a measured Live pan law.
     Balance {
@@ -1346,6 +1354,7 @@ pub(crate) fn new_track(
     let id = TrackId(project.allocate_id()?);
     let color = crate::appearance::new_track_color(project);
     Ok(Track {
+        tags: Vec::new(),
         kind,
         parent_group,
         color,
@@ -2657,6 +2666,11 @@ impl Project {
                 notes,
             } => crate::midi_source_prefix::apply(self, clip, prefix, notes),
             Command::RenameClip { clip, name } => crate::clip_name::rename(self, clip, name),
+            Command::SetTrackTags { track, tags } => {
+                let tags = crate::track_tags::canonical_list(tags)?;
+                self.track_mut(track)?.tags = tags;
+                Ok(Created::None)
+            }
             Command::RenameTrack { track, name } => {
                 name_valid(&name)?;
                 let target = self.track_mut(track)?;
@@ -2664,28 +2678,8 @@ impl Project {
                 target.automatic_name = false;
                 Ok(Created::None)
             }
-            Command::Gain { track, gain } => {
-                if !gain.is_finite() || !(0.0..=2.0).contains(&gain) {
-                    return Err(Invalid("gain must be finite and within 0..2"));
-                }
-                if !self
-                    .track(track)
-                    .ok_or(Invalid("track no longer exists"))?
-                    .gain_lane()
-                    .base()
-                    .is_empty()
-                    || !self
-                        .track(track)
-                        .ok_or(Invalid("track no longer exists"))?
-                        .gain_lane
-                        .spans
-                        .is_empty()
-                {
-                    return Err(Invalid("track gain is owned by automation"));
-                }
-                self.track_mut(track)?.gain = gain;
-                Ok(Created::None)
-            }
+            Command::Gain { track, gain } => crate::track_gain_group::apply(self, &[(track, gain)]),
+            Command::SetTrackGains { gains } => crate::track_gain_group::apply(self, &gains),
             Command::Balance { track, balance } => {
                 if !balance.is_finite() || !(-1.0..=1.0).contains(&balance) {
                     return Err(Invalid("balance must be finite and within -1..1"));

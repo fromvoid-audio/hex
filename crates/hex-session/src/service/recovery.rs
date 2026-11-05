@@ -277,11 +277,6 @@ pub(super) fn open_source_with_limits(
         project = Project::from_snapshot(snapshot).map_err(|e| e.to_string())?;
     }
     project = with_missing_media_offline(project, &project_dir)?;
-    if mode == DocumentAudioMode::Resident
-        && project.sample_rate() != current.project().sample_rate()
-    {
-        return Err("project sample rate differs from the active audio device".into());
-    }
     let reservation = match mode {
         DocumentAudioMode::Resident => reservation.or(current.source_plan_reservation()),
         DocumentAudioMode::VerifiedStreaming => reservation,
@@ -299,10 +294,9 @@ pub(super) fn open_source_with_limits(
             .checked_add(frames)
             .ok_or("project pcm frame count overflow")
     })?;
-    // Preserve the ordinary document policy. Native replacement first retains
-    // factual file inputs with its admitted offline graph; the fresh output
-    // verifies its real catalog and delivers the endpoint before queue submission.
-    // File facts alone never promise page readiness or callback application.
+    // The fresh output verifies the candidate's factual file inputs and
+    // delivers the real page endpoint before queue submission. File facts
+    // alone never promise page readiness or callback application.
     // A plain asset past the per-file resident decode caps was imported as a
     // streamed file; reopening must keep it file-backed even when the total
     // working set would otherwise fit (Pulse #3949).

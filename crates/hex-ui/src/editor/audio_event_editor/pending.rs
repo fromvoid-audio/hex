@@ -9,6 +9,7 @@ pub(super) struct Pending {
     pub(super) owner: (ClipId, u64),
     pub(super) operation: AudioEventEdit,
     pub(super) preview: AudioEvents,
+    pub(super) placement: Option<std::sync::Arc<placement::Preview>>,
     receipt: Receipt,
     intent: Option<u64>,
     before: Selection,
@@ -35,16 +36,24 @@ impl EditorView {
         let Some(source) = self.state.as_ref().and_then(|s| s.project.clip(clip)) else {
             return;
         };
-        let preview = match source
-            .editable_audio_events()
-            .and_then(|events| events.edited(operation.clone(), root.domain.clock.length()))
-        {
-            Ok(events) => events,
-            Err(error) => {
-                self.error = Some(error.0.into());
-                return;
+        let placement = self.placement_preview(&operation);
+        let preview = if let Some(placement) = &placement {
+            placement.clip().audio_events()
+        } else {
+            match source
+                .editable_audio_events()
+                .and_then(|events| events.edited(operation.clone(), root.domain.clock.length()))
+            {
+                Ok(events) => events,
+                Err(error) => {
+                    self.error = Some(error.0.into());
+                    return;
+                }
             }
         };
+        if placement.is_some() && self.audio_event_editor.viewport.is_none() {
+            self.store_event_camera(self.event_frame_window(&root));
+        }
         self.advance_selection_intent();
         let before = Selection {
             cursor: self.audio_event_editor.cursor,
@@ -82,6 +91,7 @@ impl EditorView {
             owner: (clip, self.project_generation),
             operation: operation.clone(),
             preview,
+            placement,
             receipt: Receipt::new(self.project_generation),
             intent: self.selection_intent_epoch,
             before,
@@ -123,10 +133,11 @@ impl EditorView {
         }
         true
     }
-    pub(in crate::editor) fn audio_events_request_complete(&mut self, event: &Event) {
-        let Some(p) = &mut self.audio_event_editor.pending else {
-            return;
-        };
+    pub(in crate::editor) fn audio_events_request_complete(
+        &mut self,
+        event: &Event,
+    ) -> Option<(u64, u64)> {
+        let p = self.audio_event_editor.pending.as_mut()?;
         match p.receipt.observe(
             self.project_generation,
             event.project_replaced,
@@ -137,18 +148,30 @@ impl EditorView {
                 self.retire_pending_audio_events();
             }
             Disposition::Terminal => {
-                if let Some(clipboard) = self
-                    .audio_event_editor
-                    .pending
-                    .take()
-                    .and_then(|p| p.clipboard)
-                {
+                let p = self.audio_event_editor.pending.take()?;
+                if let Some(clipboard) = p.clipboard {
                     self.audio_event_editor.clipboard = Some(clipboard);
+                }
+                if self.audio_event_editor.owner == Some(p.owner)
+                    && self.detail_clip_id() == Some(p.owner.0)
+                    && p.intent.is_some()
+                    && p.intent == self.selection_intent_epoch
+                {
+                    return p.placement?.range(&p.operation);
                 }
             }
             Disposition::Invalidated => {
                 self.audio_event_editor.pending = None;
             }
         }
+        None
+    }
+
+    pub(in crate::editor) fn install_placed_audio_range(&mut self, range: (u64, u64)) {
+        self.sync_audio_navigation();
+        self.audio_event_editor.range = Some(range);
+        self.audio_event_editor.cursor = range.0;
+        self.audio_event_editor.selected = None;
+        self.audio_event_editor.retained_selection = None;
     }
 }

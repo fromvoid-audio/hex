@@ -43,10 +43,14 @@ mod audio_event_fade;
 mod audio_events;
 pub use audio_event_fade::AudioEventFade;
 mod project_tempo;
+mod track_gain_group;
+pub use track_gain_group::RelativeTrackGains;
 mod retained_audio;
 pub use retained_audio::MAX_RETAINED_AUDIO_DEPTH;
 mod track_groups;
 mod track_name;
+mod track_tags;
+pub use track_tags::{MAX_TRACK_TAG_BYTES, MAX_TRACK_TAG_CHARS, MAX_TRACK_TAGS, TrackTag};
 mod track_order;
 pub use audio_events::{
     AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS, RetainedAudioRoot,
@@ -63,7 +67,9 @@ mod clip_alias_edit;
 pub use clip_alias::{
     AliasContentSnapshot, AliasMemberSnapshot, AliasSourceSnapshot, ClipAliasesSnapshot,
 };
+mod audio_event_placement_preview;
 mod audio_event_timeline;
+pub use audio_event_placement_preview::AudioEventPlacementPreview;
 mod clip_fade_split;
 mod clip_fade_trim;
 mod clip_name;
@@ -76,10 +82,10 @@ pub use audio_edit::{
     AudioDomainClock, AudioFadeProjection, AudioImportWarp, AudioProcessingProjection,
     AudioViewMode, AudioViewOccurrence, AudioViewPlacement, AudioViewProjection, AudioViewResize,
     AudioViewResizeOperation, BeatsPreserve, BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS,
-    MAX_SOURCE_GAIN, ProjectedAudioFade, SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode,
-    WarpResampler, WarpSettings, audio_projection_beat, audio_projection_frame,
-    audio_projection_frame_q32, default_audio_warp, preview_audio_clip_stretch,
-    preview_audio_view_resize, preview_view_resize,
+    MAX_SOURCE_GAIN, MAX_SPARSE_AUDIO_TIMELINE_FRAMES, MusicalEventSource, ProjectedAudioFade,
+    SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode, WarpResampler, WarpSettings,
+    audio_projection_beat, audio_projection_frame, audio_projection_frame_q32, default_audio_warp,
+    preview_audio_clip_stretch, preview_audio_view_resize, preview_view_resize,
 };
 pub use clip_selection_edit::{ClipCommandScope, ClipEdit, WarpAdjustment};
 pub use content_window::{ContentWindow, RepeatBoundaryPlan};
@@ -519,6 +525,7 @@ impl Clip {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Track {
+    pub(crate) tags: Vec<TrackTag>,
     pub(crate) kind: TrackKind,
     pub(crate) parent_group: Option<TrackId>,
     pub(crate) color: crate::ElementColor,

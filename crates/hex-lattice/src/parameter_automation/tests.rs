@@ -58,6 +58,38 @@ impl NativeInstrumentClock for Clock {
         Some(offset as u64)
     }
 }
+
+#[test]
+fn tail_split_control_preflight_accepts_only_unautomated_output_gain() {
+    let empty = PreparedParameterAutomation::default();
+    assert!(empty.supports_tail_split_controls());
+    let mut output = empty.clone();
+    output
+        .arm_host_gain_input(DeviceAutomationTarget::HostOutputGain)
+        .unwrap();
+    assert!(output.supports_tail_split_controls());
+    let mut external_output = empty.clone();
+    external_output
+        .prepare_external_host(DeviceAutomationTarget::HostOutputGain)
+        .unwrap();
+    assert!(external_output.supports_tail_split_controls());
+    let mut input = empty.clone();
+    input
+        .arm_host_gain_input(DeviceAutomationTarget::HostInputGain)
+        .unwrap();
+    assert!(!input.supports_tail_split_controls());
+    let mut external_input = empty.clone();
+    external_input
+        .prepare_external_host(DeviceAutomationTarget::HostInputGain)
+        .unwrap();
+    assert!(!external_input.supports_tail_split_controls());
+    let mut provider = empty;
+    provider
+        .arm_provider_input(descriptor(), semantics())
+        .unwrap();
+    assert!(!provider.supports_tail_split_controls());
+    assert!(!program(descriptor(), semantics()).supports_tail_split_controls());
+}
 #[test]
 fn content_origin_linear_increment_discrete_and_absent_laws_are_partition_independent() {
     let id = descriptor().id;
@@ -940,7 +972,9 @@ fn transient_host_stages_only_successful_current_processing_and_clear_restores_b
     let mut frame = [[1.0, 0.5]];
     process_transient_host(&mut chain, &mut frame, Some(&mut context), 9).unwrap();
     let input = HostGain::from_db(-6.0).unwrap().linear();
-    assert_eq!(frame, [[2.0 * input, input]]);
+    let base = HostGain::from_db(3.0).unwrap().linear();
+    let down = (f64::from(base) + (1.0 - f64::from(base)) / 240.0) as f32;
+    assert_eq!(frame, [[2.0 * input * down, input * down]]);
     assert_eq!(
         context.applied,
         Some(crate::NativeTransientApplication {
@@ -965,8 +999,8 @@ fn transient_host_stages_only_successful_current_processing_and_clear_restores_b
             offset: 0
         })
     );
-    let base = input * HostGain::from_db(3.0).unwrap().linear();
-    assert_eq!(cleared, [[2.0 * base, base]]);
+    let up = (f64::from(down) + (f64::from(base) - f64::from(down)) / 240.0) as f32;
+    assert_eq!(cleared, [[2.0 * input * up, input * up]]);
     chain.rollback_block();
     chain.begin_output_tail();
     context.applied = None;

@@ -297,6 +297,11 @@ impl ClaimedAudioCandidateRuntime {
             playback.invalidate_native_parameter_input();
         }
     }
+    pub fn finish_native_parameter_input(&mut self) {
+        if let Some(playback) = self.current_playback_mut() {
+            playback.finish_native_parameter_input();
+        }
+    }
     pub fn take_native_parameter_application(
         &mut self,
     ) -> Option<crate::NativeParameterApplication> {

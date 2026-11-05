@@ -119,7 +119,7 @@ pub(super) fn retire_stale(view: &mut EditorView, cx: &mut Context<EditorView>) 
         if let Some(binding) = view.track_gain_controls.bindings.remove(&track) {
             if device_panel::owns_numeric_gesture(
                 view,
-                GestureTarget::TrackGain { track },
+                binding_target(view, track, &binding.lease),
                 &binding.lease,
             ) {
                 let _ = view.cancel_device_gesture();
@@ -160,7 +160,7 @@ pub(super) fn controls_for_finalize(
         .iter()
         .map(|(track, binding)| {
             (
-                GestureTarget::TrackGain { track: *track },
+                binding_target(view, *track, &binding.lease),
                 binding.entity.clone(),
             )
         })
@@ -171,6 +171,52 @@ pub(super) fn controls_for_finalize(
                 .map(|(key, binding)| (key.target(), binding.entity.clone())),
         )
         .collect()
+}
+
+fn binding_target(
+    view: &EditorView,
+    track: TrackId,
+    lease: &device_panel::NumericGestureLease,
+) -> GestureTarget {
+    view.device_gesture
+        .snapshot()
+        .filter(|active| {
+            Some(active.key) == lease.get()
+                && active.key.generation == view.project_generation
+                && active.target.track_gain_anchor() == Some(track)
+        })
+        .map_or(GestureTarget::TrackGain { track }, |active| active.target)
+}
+
+fn dispatch_track_gain(
+    view: &mut EditorView,
+    track: TrackId,
+    lease: &device_panel::NumericGestureLease,
+    phase: NumericEventPhase,
+    value: ParameterValue,
+) -> Result<(), &'static str> {
+    if phase == NumericEventPhase::Begin
+        && let Some(state) = view.state.as_ref()
+        && view.track_selection.contains(track)
+        && state
+            .project
+            .track(track)
+            .is_some_and(|track| track.gain() > 0.0)
+    {
+        let selected = view.track_selection.ordered(&state.project);
+        if selected.len() > 1 {
+            let group = hex_project::RelativeTrackGains::capture(&state.project, track, &selected)
+                .map_err(|error| error.0)?;
+            if group.len() > 1 {
+                view.device_gesture
+                    .begin_track_gains(view.project_generation, group)?;
+                lease.set(view.device_gesture.snapshot().map(|active| active.key));
+                return Ok(());
+            }
+        }
+    }
+    let target = binding_target(view, track, lease);
+    device_panel::dispatch_bound_numeric_gesture(view, target, lease, phase, value)
 }
 
 impl EditorView {
@@ -189,7 +235,6 @@ impl EditorView {
                 .debug_selector(move || format!("track-volume-auto-{}", id.value()))
                 .child(theme::text("auto"));
         }
-        let target = GestureTarget::TrackGain { track: id };
         let generation = self.project_generation;
         if let std::collections::btree_map::Entry::Vacant(entry) =
             self.track_gain_controls.bindings.entry(id)
@@ -252,9 +297,9 @@ impl EditorView {
                             return;
                         }
                     }
-                    if let Err(reason) = device_panel::dispatch_bound_numeric_gesture(
+                    if let Err(reason) = dispatch_track_gain(
                         view,
-                        target,
+                        id,
                         &captured,
                         event.phase,
                         ParameterValue::Float(event.value as f32),
@@ -275,12 +320,7 @@ impl EditorView {
         }
         let active = self
             .device_gesture
-            .snapshot()
-            .filter(|active| active.target == target)
-            .and_then(|active| match active.value {
-                ParameterValue::Float(gain) => Some(gain),
-                _ => None,
-            });
+            .preview_track_gain(self.project_generation, id);
         let enabled = !automated(track)
             && !self.gain_recorder.blocks_edits()
             && !self.midi_recorder.blocks_edits()
