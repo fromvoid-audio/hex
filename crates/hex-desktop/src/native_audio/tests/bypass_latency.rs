@@ -118,6 +118,18 @@ fn live_short_latency_bypass(kind: &'static str) {
         .unwrap()
         .with_output_gain_db(6.0)
         .unwrap();
+        // Full wet avoids the default Overdrive half-dry path cancelling
+        // the +6 dB trim on this DC input and hiding the bypass contrast.
+        let state = if kind == "hex.overdrive" {
+            hex_engine::patch_native_device_parameter(
+                &state,
+                hex_session::device_gesture::ParameterId::from_static(6),
+                hex_session::device_gesture::ParameterValue::Float(100.0),
+            )
+            .unwrap()
+        } else {
+            state
+        };
         let command = match owner {
             "track" => Command::InsertDevice {
                 track,
