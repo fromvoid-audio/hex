@@ -76,8 +76,16 @@ impl EditorView {
             && shift != 0
         {
             let previous_root = previous.audio_event_root();
-            let camera_delta = i128::from(shift) + i128::from(editor_bounds(&previous_root).0)
-                - i128::from(editor_bounds(&root).0);
+            // The camera measures frames while musical selection coordinates
+            // measure beat ticks. A one-shot musical rebase carries its frame
+            // anchor by exactly the same amount as its content.
+            let frames = matches!(root.domain.clock, hex_project::AudioDomainClock::Frames(_));
+            let camera_delta = if frames {
+                i128::from(shift) + i128::from(editor_bounds(&previous_root).0)
+                    - i128::from(editor_bounds(&root).0)
+            } else {
+                0
+            };
             let state = &mut self.audio_event_editor;
             let translate_camera = |view: &mut Viewport, negative: &mut u64| {
                 let start = i128::from(view.start) - i128::from(*negative) + camera_delta;
@@ -101,7 +109,7 @@ impl EditorView {
             });
             state.canonical_start = state
                 .canonical_start
-                .map(|(raw, frame)| (shifted(raw), shifted(frame)));
+                .map(|(raw, frame)| (shifted(raw), if frames { shifted(frame) } else { frame }));
             state.start_grip = state
                 .start_grip
                 .map(|(raw, offset, length)| (shifted(raw), offset, length));
