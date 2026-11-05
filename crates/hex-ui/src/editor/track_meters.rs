@@ -256,7 +256,7 @@ fn render_meter(id: String, peak: f32, height: f32) -> Div {
         div()
             .debug_selector(move || unity_selector.clone())
             .absolute()
-            .top(gpui::relative(6.0 / 76.0))
+            .top(gpui::relative(1.0 - scale::UNITY_FRACTION))
             .w_full()
             .h(px(1.0))
             .bg(gpui::rgb(theme::color(theme::PaletteRole::Muted))),
@@ -321,7 +321,8 @@ mod tests {
             for (peak, expected) in [
                 (0.0, 0.0),
                 (scale::FLOOR_AMPLITUDE, 0.0),
-                (1.0, 70.0 / 76.0),
+                (10_f32.powf(-24.0 / 20.0), 0.5),
+                (1.0, 0.8972),
                 (10_f32.powf(6.0 / 20.0), 1.0),
                 (100.0, 1.0),
             ] {
@@ -349,6 +350,8 @@ mod tests {
                 }
                 let unity = visual.debug_bounds("scale-probe-unity").unwrap();
                 assert!(unity.top() >= well.top() && unity.bottom() <= well.bottom());
+                let expected_unity = f32::from(well.size.height) * (1.0 - 0.8972);
+                assert!((f32::from(unity.top() - well.top()) - expected_unity).abs() <= 1.0);
             }
         }
     }
