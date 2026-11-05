@@ -3,64 +3,141 @@ use super::*;
 use std::time::Instant;
 
 fn workload(compensated: bool) -> Project {
-    let mut snapshot = audio_fixture_project(false, false, false).snapshot();
-    let audio = snapshot.tracks[0].clone();
-    let midi = project(0.1, 0, 8 << 32).snapshot().tracks[0].clone();
-    snapshot.next_id = 20_000;
-    snapshot.tracks.clear();
-    for index in 0..100_u64 {
-        let mut track = if index % 5 == 0 {
-            midi.clone()
+    // Use canonical edits so source bindings and receivers have real ownership;
+    // cloning a TrackSnapshot alone cannot clone its retained native source.
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+    let mut asset = None;
+    for index in 0..100 {
+        let track = if index % 5 == 0 {
+            let Created::Track(track) = editor
+                .execute(Command::InsertTrackWithDevice {
+                    name: format!("midi {index}"),
+                    before_track: None,
+                    slot: hex_project::TrackDeviceSlot::Instrument,
+                    state: crate::default_native_device_state_for_class(
+                        crate::NativeDeviceClass::Instrument,
+                        hex_devices::SINE_INSTRUMENT_TYPE_ID,
+                    )
+                    .unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("midi track");
+            };
+            let Created::Clip(clip) = editor
+                .execute(Command::PlaceMidiClip {
+                    track,
+                    start: BeatTime::ZERO,
+                    length: BeatTime::from_quarters(64).unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("midi clip");
+            };
+            editor
+                .execute(Command::AddMidiNote {
+                    clip,
+                    start: BeatTime::ZERO,
+                    duration: BeatTime::from_quarters(64).unwrap(),
+                    pitch: 60,
+                    velocity: 96,
+                    channel: 0,
+                })
+                .unwrap();
+            track
         } else {
-            audio.clone()
+            let track = if asset.is_none() {
+                let Created::Imported {
+                    track,
+                    asset: imported,
+                    clip,
+                } = editor
+                    .execute(Command::ImportPreparedAudioTrack {
+                        name: "audio".into(),
+                        path: "original-profile.wav".into(),
+                        source_sample_rate: 48_000,
+                        source_frames: 32,
+                        playback_frames: 32,
+                        conversion_version: hex_project::IDENTITY_CONVERSION,
+                    })
+                    .unwrap()
+                else {
+                    panic!("audio asset");
+                };
+                editor.execute(Command::RemoveClip(clip)).unwrap();
+                asset = Some(imported);
+                track
+            } else {
+                let Created::Track(track) = editor
+                    .execute(Command::AddTrack {
+                        name: format!("audio {index}"),
+                    })
+                    .unwrap()
+                else {
+                    panic!("audio track");
+                };
+                track
+            };
+            editor
+                .execute(Command::PlaceClip {
+                    track,
+                    asset: asset.unwrap(),
+                    start: 0,
+                    duration: 2_000_000,
+                    source_offset: 0,
+                    source_length: 32,
+                    looping: true,
+                })
+                .unwrap();
+            track
         };
-        track.id = 100 + index;
-        track.name = format!("track {index}");
-        if let Some(instrument) = track.instrument.as_mut() {
-            instrument.id = 5000 + index;
-        }
-        if let TrackContentSnapshot::Hybrid {
-            audio_clips,
-            midi_clips,
-        } = &mut track.content
-        {
-            for clip in audio_clips {
-                clip.id = 1000 + index;
-                clip.duration = 2_000_000;
-                clip.fade = ClipFade::neutral(clip.duration).unwrap();
-            }
-            for clip in midi_clips {
-                clip.id = 2000 + index;
-                clip.length_raw = 64 << 32;
-                clip.source_length_raw = 64 << 32;
-                clip.loop_end_raw = 64 << 32;
-                for note in &mut clip.notes {
-                    note.id = 3000 + index;
-                }
-            }
-        } else {
-            panic!("hybrid fixture");
-        }
         if index % 10 == 0 {
-            track.devices.push(DeviceSnapshot {
-                id: 10_000 + index,
-                bypassed: false,
-                comparison: None,
-                automation: Vec::new(),
-                state: crate::default_native_device_state_for_class(
-                    crate::NativeDeviceClass::Effect,
-                    hex_lattice_contract::DeviceTypeId::from_static(if compensated {
-                        "hex.overdrive"
-                    } else {
-                        "hex.reverb"
-                    }),
-                )
-                .unwrap(),
-            });
+            editor
+                .execute(Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: crate::default_native_device_state_for_class(
+                        crate::NativeDeviceClass::Effect,
+                        hex_lattice_contract::DeviceTypeId::from_static(if compensated {
+                            "hex.overdrive"
+                        } else {
+                            "hex.reverb"
+                        }),
+                    )
+                    .unwrap(),
+                })
+                .unwrap();
         }
-        snapshot.tracks.push(track);
     }
-    Project::from_snapshot(snapshot).unwrap()
+    editor.project().clone()
+}
+
+#[test]
+fn hundred_track_rotation_observes_each_owner_and_preserves_pcm() {
+    for compensated in [false, true] {
+        let project = workload(compensated);
+        let revision = prepare_audio(&project);
+        let observation = PreparedPlaybackObservation::prepare_on_control(&revision).unwrap();
+        observation.set_render_work_enabled(true);
+        let mut tested = linear(revision);
+        let mut oracle = linear(prepare_audio(&project));
+        tested.set_device_metering(true);
+        oracle.set_device_metering(true);
+        assert_eq!(tested.compensation.is_some(), compensated);
+        for _ in 0..100 {
+            let mut actual = [[0.0; 2]; 1];
+            let mut expected = actual;
+            tested.render(&mut actual).unwrap();
+            oracle.render(&mut expected).unwrap();
+            assert_eq!(actual, expected);
+        }
+        assert_eq!(observation.render_work_meters().count(), 100);
+        assert!(
+            observation
+                .render_work_meters()
+                .all(|(_, meter)| meter.sample().is_some())
+        );
+    }
 }
 
 fn percentile(values: &mut [u128], fraction: usize) -> u128 {
