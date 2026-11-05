@@ -200,6 +200,7 @@ mod session_navigation_ui_test;
 mod session_route_view;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod session_track_reorder_ui_test;
+mod signed_frame_viewport;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod snap_nudge_ui_test;
 mod tempo_input;
@@ -240,7 +241,6 @@ mod transport;
 mod trim;
 mod tuning;
 mod update_flow;
-mod signed_frame_viewport;
 mod viewport;
 mod waveform;
 mod waveform_geometry;
