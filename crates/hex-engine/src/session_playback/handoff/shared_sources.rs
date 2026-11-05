@@ -1437,6 +1437,16 @@ mod tests {
             use crate::playback::PlaybackCommand;
             for key_up in ["before-disable", "while-disabled", "after-reenable"] {
                 let mut f = fixture();
+                let clips: Vec<_> = f
+                    .editor
+                    .project()
+                    .tracks()
+                    .iter()
+                    .flat_map(|track| track.midi_clips().iter().map(|clip| clip.id()))
+                    .collect();
+                for clip in clips {
+                    f.editor.execute(Command::RemoveMidiClip(clip)).unwrap();
+                }
                 let instrument = f
                     .editor
                     .project()
@@ -1464,8 +1474,8 @@ mod tests {
                 }
                 let (mut actual, _) = live_playback(&f, &input);
                 let (mut oracle, _) = live_playback(&f, &oracle_input);
-                actual.apply(PlaybackCommand::PlayFrom(5000));
-                oracle.apply(PlaybackCommand::PlayFrom(5000));
+                actual.apply(PlaybackCommand::Play);
+                oracle.apply(PlaybackCommand::Play);
                 let compare = |actual: &mut crate::playback::Playback,
                                oracle: &mut crate::playback::Playback,
                                frames: usize,
@@ -1475,6 +1485,9 @@ mod tests {
                     actual.render(&mut a).unwrap();
                     oracle.render(&mut b).unwrap();
                     assert_eq!(a, b, "{key_up}: {phase}");
+                    if phase == "held prefix" {
+                        assert!(a.iter().flatten().any(|x| x.abs() > 0.001));
+                    }
                 };
                 compare(&mut actual, &mut oracle, 129, "held prefix");
                 if key_up == "before-disable" {
