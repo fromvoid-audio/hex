@@ -34,6 +34,8 @@ pub(super) fn short_source_release_blocks_reenable(
 /// Plan a return from a detached release to the same dry receiver. Copying
 /// the committed kernel and its ledger admits future onsets immediately;
 /// the old tail stays in the retiring graph and cannot render a second copy.
+/// Live releases require committed NoteOffs; source inheritance retains their
+/// generations, IDs, allocator and render-age deadlines beside the same DSP pair.
 pub(super) fn reenabled_release_receivers(
     candidate: &SessionPlayback,
     previous: &SessionPlayback,
@@ -96,7 +98,7 @@ pub(super) fn reenabled_release_receivers(
                 .iter()
                 .any(|release| release.location.tail_group().map(usize::from) == Some(slot));
         let released = tail.runtime.max_release_tail_frames() > short_limit
-            && !tail.runtime.has_committed_live_occurrences()
+            && tail.runtime.committed_live_gates_released()
             && tail.runtime.proofs().all(|note| {
                 note.note_off_sent || note.gate_end_frame <= previous.performance_frame
             });
@@ -1414,10 +1416,146 @@ mod tests {
             &resources,
         )
         .unwrap();
-        result
-            .prepare_computer_keyboard(f.editor.project(), f.contributor, Arc::clone(input))
-            .unwrap();
+        if !f
+            .editor
+            .project()
+            .track(f.contributor)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .bypassed()
+        {
+            result
+                .prepare_computer_keyboard(f.editor.project(), f.contributor, Arc::clone(input))
+                .unwrap();
+        }
         (result, revision)
+    }
+
+    #[test]
+    fn live_sampler_long_release_survives_reenable_without_reusing_input_ids() {
+        on_control(|| {
+            use crate::computer_keyboard::ComputerKeyboardInput;
+            use crate::playback::PlaybackCommand;
+            for key_up in ["before-disable", "while-disabled", "after-reenable"] {
+                let mut f = fixture();
+                let clips: Vec<_> = f
+                    .editor
+                    .project()
+                    .tracks()
+                    .iter()
+                    .flat_map(|track| track.midi_clips().iter().map(|clip| clip.id()))
+                    .collect();
+                for clip in clips {
+                    f.editor.execute(Command::RemoveMidiClip(clip)).unwrap();
+                }
+                let instrument = f
+                    .editor
+                    .project()
+                    .track(f.receiver)
+                    .unwrap()
+                    .instrument()
+                    .unwrap();
+                let device = instrument.id();
+                let mut state =
+                    hex_devices::sampler::state::SamplerState::from_native(instrument.state())
+                        .unwrap();
+                state.envelope.release_seconds = 0.1;
+                let state = state
+                    .to_native()
+                    .unwrap()
+                    .with_asset_references(instrument.state().asset_references().to_vec())
+                    .unwrap();
+                f.editor
+                    .execute(Command::ReplaceDeviceState { device, state })
+                    .unwrap();
+                let input = Arc::new(ComputerKeyboardInput::default());
+                let oracle_input = Arc::new(ComputerKeyboardInput::default());
+                for keys in [&input, &oracle_input] {
+                    keys.set_key(0, Some((60, 127, 1))).unwrap();
+                }
+                let (mut actual, _) = live_playback(&f, &input);
+                let (mut oracle, _) = live_playback(&f, &oracle_input);
+                actual.apply(PlaybackCommand::Play);
+                oracle.apply(PlaybackCommand::Play);
+                let compare = |actual: &mut crate::playback::Playback,
+                               oracle: &mut crate::playback::Playback,
+                               frames: usize,
+                               phase: &str| {
+                    let mut a = vec![[0.0; 2]; frames];
+                    let mut b = a.clone();
+                    actual.render(&mut a).unwrap();
+                    oracle.render(&mut b).unwrap();
+                    assert_eq!(a, b, "{key_up}: {phase}");
+                    if phase == "held prefix" {
+                        assert!(a.iter().flatten().any(|x| x.abs() > 0.001));
+                    }
+                };
+                compare(&mut actual, &mut oracle, 129, "held prefix");
+                if key_up == "before-disable" {
+                    input.set_key(0, None).unwrap();
+                    oracle_input.set_key(0, None).unwrap();
+                    compare(&mut actual, &mut oracle, 13, "physical release");
+                } else {
+                    oracle_input.set_key(0, None).unwrap();
+                }
+                f.editor
+                    .execute(Command::SetDeviceBypass {
+                        device,
+                        bypassed: true,
+                    })
+                    .unwrap();
+                let (mut disabled, _) = live_playback(&f, &input);
+                disabled
+                    .try_inherit_runtime_in_control_context(&mut actual, Some(19), Some(19))
+                    .unwrap();
+                compare(&mut disabled, &mut oracle, 32, "disable release");
+                assert!(input.is_cancelled(), "disabled input is terminal");
+                if key_up == "while-disabled" {
+                    input.set_key(0, None).unwrap();
+                }
+                input.set_key(1, Some((67, 127, 2))).unwrap();
+                compare(
+                    &mut disabled,
+                    &mut oracle,
+                    7,
+                    "disabled key up and new press",
+                );
+                f.editor
+                    .execute(Command::SetDeviceBypass {
+                        device,
+                        bypassed: false,
+                    })
+                    .unwrap();
+                // Resident input attachment drops a bypassed source. A later
+                // activation gets a fresh root/generation, even if tokens repeat.
+                let fresh = Arc::new(ComputerKeyboardInput::default());
+                let (mut enabled, _) = live_playback(&f, &fresh);
+                enabled
+                    .try_inherit_runtime_in_control_context(&mut disabled, Some(19), Some(19))
+                    .unwrap();
+                compare(&mut enabled, &mut oracle, 13, "reenable release");
+                for keys in [&fresh, &oracle_input] {
+                    keys.set_key(1, Some((67, 127, 1))).unwrap();
+                }
+                compare(&mut enabled, &mut oracle, 13, "new physical key");
+                input.set_key(0, None).unwrap();
+                fresh.set_key(0, None).unwrap();
+                compare(
+                    &mut enabled,
+                    &mut oracle,
+                    13,
+                    "old key up cannot cut the new key",
+                );
+                for keys in [&fresh, &oracle_input] {
+                    keys.set_key(1, None).unwrap();
+                }
+                compare(&mut enabled, &mut oracle, 900, "all released");
+                let mut silence = [[1.0; 2]; 32];
+                enabled.render(&mut silence).unwrap();
+                assert_eq!(silence, [[0.0; 2]; 32]);
+            }
+        });
     }
 
     #[test]

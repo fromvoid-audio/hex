@@ -1,46 +1,112 @@
 //! Transactional wet/dry transition for compatible native effect handoffs.
+use hex_lattice_contract::DeviceContractError;
 
-/// The small fixed-latency admission bound. Longer lookahead requires a
-/// separately budgeted history owner.
 const MAX_ALIGNED_DRY_FRAMES: usize = 16;
 
-/// Inline host history for untrimmed dry input, in the same frame domain as
-/// the processor. The chain keeps separate committed and speculative copies.
-#[derive(Clone, Copy)]
+/// Dry input has one control-allocated owner per committed/speculative history.
+/// Short legacy delays remain inline. The separately admitted owned lookahead
+/// reserves exact configured storage before publication; callback operations
+/// copy samples in place and never clone, replace, grow or destroy a buffer.
 pub(crate) struct AlignedDry {
-    frames: [[f32; 2]; MAX_ALIGNED_DRY_FRAMES],
-    len: usize,
-    next: usize,
+    storage: DryStorage,
 }
-
+// Keep lengths and cursor construction private to this history owner.
+enum DryStorage {
+    Inline {
+        frames: [[f32; 2]; MAX_ALIGNED_DRY_FRAMES],
+        len: usize,
+        next: usize,
+    },
+    Reserved {
+        frames: Vec<[f32; 2]>,
+        next: usize,
+    },
+}
 impl AlignedDry {
     pub(crate) fn new(latency: Option<u32>) -> Option<Self> {
         let len = usize::try_from(latency?).ok()?;
         (1..=MAX_ALIGNED_DRY_FRAMES).contains(&len).then_some(Self {
-            frames: [[0.0; 2]; MAX_ALIGNED_DRY_FRAMES],
-            len,
-            next: 0,
+            storage: DryStorage::Inline {
+                frames: [[0.0; 2]; MAX_ALIGNED_DRY_FRAMES],
+                len,
+                next: 0,
+            },
         })
     }
-
+    pub(crate) fn reserved(frames: u32) -> Result<Self, DeviceContractError> {
+        if !(1..=crate::MAX_RESERVED_BYPASS_FRAMES).contains(&frames) {
+            return Err(DeviceContractError::InvalidDescriptor);
+        }
+        let len =
+            usize::try_from(frames).map_err(|_| DeviceContractError::RuntimeBudgetExceeded)?;
+        let mut frames = Vec::new();
+        frames
+            .try_reserve_exact(len)
+            .map_err(|_| DeviceContractError::RuntimeAllocation)?;
+        // The aggregate quote charges this exact logical capacity, excluding
+        // allocator bookkeeping. Refuse an allocator's larger logical reserve.
+        if frames.capacity() != len {
+            return Err(DeviceContractError::RuntimeBudgetExceeded);
+        }
+        frames.resize(len, [0.0; 2]);
+        Ok(Self {
+            storage: DryStorage::Reserved { frames, next: 0 },
+        })
+    }
+    fn parts(&self) -> (&[[f32; 2]], usize) {
+        match &self.storage {
+            DryStorage::Inline { frames, len, next } => (&frames[..*len], *next),
+            DryStorage::Reserved { frames, next } => (frames, *next),
+        }
+    }
+    fn parts_mut(&mut self) -> (&mut [[f32; 2]], &mut usize) {
+        match &mut self.storage {
+            DryStorage::Inline { frames, len, next } => (&mut frames[..*len], next),
+            DryStorage::Reserved { frames, next } => (frames, next),
+        }
+    }
+    pub(crate) fn can_copy_from(&self, previous: &Self) -> bool {
+        std::mem::discriminant(&self.storage) == std::mem::discriminant(&previous.storage)
+            && self.parts().0.len() == previous.parts().0.len()
+    }
+    pub(crate) fn copy_from(&mut self, previous: &Self) -> bool {
+        if !self.can_copy_from(previous) {
+            return false;
+        }
+        let (source, old_next) = previous.parts();
+        let (destination, next) = self.parts_mut();
+        destination.copy_from_slice(source);
+        *next = old_next;
+        true
+    }
     pub(crate) fn advance(&mut self, input: [f32; 2]) -> [f32; 2] {
-        let dry = std::mem::replace(&mut self.frames[self.next], input);
-        self.next += 1;
-        if self.next == self.len {
-            self.next = 0;
+        let (frames, next) = self.parts_mut();
+        let dry = std::mem::replace(&mut frames[*next], input);
+        *next += 1;
+        if *next == frames.len() {
+            *next = 0;
         }
         dry
     }
-
-    pub(crate) fn is_quiet(self) -> bool {
-        self.frames[..self.len]
-            .iter()
-            .all(|frame| *frame == [0.0; 2])
+    pub(crate) fn is_quiet(&self) -> bool {
+        self.parts().0.iter().all(|f| *f == [0.0; 2])
     }
-
     pub(crate) fn reset(&mut self) {
-        self.frames.fill([0.0; 2]);
-        self.next = 0;
+        let (frames, next) = self.parts_mut();
+        frames.fill([0.0; 2]);
+        *next = 0;
+    }
+}
+/// Both options have the same prepared layout within one transaction. A
+/// cross-owner caller must preflight compatibility; mismatch never mutates.
+pub(crate) fn copy_dry(
+    destination: &mut Option<AlignedDry>,
+    previous: &Option<AlignedDry>,
+) -> bool {
+    match (destination.as_mut(), previous.as_ref()) {
+        (Some(destination), Some(previous)) => destination.copy_from(previous),
+        (None, None) => true,
+        _ => false,
     }
 }
 
@@ -103,6 +169,38 @@ mod tests {
         ProcessorChainOwner, StereoMatrix,
     };
     use std::sync::Arc;
+
+    #[test]
+    fn reserved_dry_is_bounded_and_copies_only_into_existing_storage() {
+        for len in [1, 16, 17, 2366, crate::MAX_RESERVED_BYPASS_FRAMES] {
+            let mut committed = super::AlignedDry::reserved(len).unwrap();
+            let mut scratch = super::AlignedDry::reserved(len).unwrap();
+            let address = scratch.parts().0.as_ptr();
+            for i in 0..len + 7 {
+                let actual = committed.advance([i as f32, -(i as f32)]);
+                let expected = if i < len {
+                    [0.0; 2]
+                } else {
+                    [(i - len) as f32, -((i - len) as f32)]
+                };
+                assert_eq!(actual, expected);
+            }
+            assert!(scratch.copy_from(&committed));
+            assert_eq!(scratch.parts(), committed.parts());
+            assert_eq!(scratch.parts().0.as_ptr(), address);
+            let before = scratch.parts().0.to_vec();
+            let other = super::AlignedDry::reserved(if len == 1 { 2 } else { 1 }).unwrap();
+            assert!(!scratch.copy_from(&other));
+            assert_eq!(scratch.parts().0, before);
+            scratch.reset();
+            assert!(scratch.is_quiet());
+            assert_eq!(scratch.parts().0.as_ptr(), address);
+        }
+        for len in [0, crate::MAX_RESERVED_BYPASS_FRAMES + 1, u32::MAX] {
+            assert!(super::AlignedDry::reserved(len).is_err());
+        }
+        assert!(super::AlignedDry::new(Some(17)).is_none());
+    }
 
     fn chain(rate: u32, bypassed: bool) -> NativeRuntimeChain {
         let kind = DeviceTypeId::from_static("test.bypass.ramp");
@@ -204,7 +302,6 @@ mod tests {
         }
     }
 
-    #[derive(Clone, Copy)]
     struct AlignedFixtureRuntime(super::AlignedDry);
     impl crate::NativeProcessorRuntime for AlignedFixtureRuntime {
         fn process_block(
@@ -231,7 +328,7 @@ mod tests {
 
         fn copy_history_from(&mut self, previous: &dyn crate::NativeProcessorRuntime) {
             if let Some(previous) = previous.as_any().downcast_ref::<Self>() {
-                *self = *previous;
+                self.0.copy_from(&previous.0);
             }
         }
 

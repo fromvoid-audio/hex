@@ -11,6 +11,7 @@ mod replacement;
 mod replacement_ui;
 use super::*;
 mod keyboard;
+mod live_release;
 use hex_project::{BeatTime, Command, Created};
 
 /// The sampler's prepared ~2 ms declick release floor at this fixture's

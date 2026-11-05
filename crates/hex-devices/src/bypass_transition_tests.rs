@@ -5,6 +5,8 @@ use hex_lattice::{
 };
 use std::sync::Arc;
 
+mod short_latency;
+
 fn chain(
     definition: &'static dyn NativeDeviceDefinition,
     bypassed: bool,

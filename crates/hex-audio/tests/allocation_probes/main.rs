@@ -12,6 +12,8 @@ mod eq8_audition_allocations;
 mod eq8_oversampling_study;
 mod fresh_publication_cancellation;
 mod limiter_allocations;
+mod limiter_bypass;
+mod live_release_receiver;
 mod main_chain_allocations;
 mod manual_host_gain_allocations;
 
@@ -25,6 +27,7 @@ mod routed_midi_allocations;
 mod session_audio_loop_allocations;
 mod session_silence_effect_allocations;
 mod shared_source_allocations;
+mod short_latency_bypass;
 mod signed_envelope_allocations;
 mod spectrum_capture_allocations;
 mod stream_miss_fade;

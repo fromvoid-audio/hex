@@ -6,6 +6,7 @@ use gpui::{Context, Div, MouseButton, canvas, div, prelude::*, px, relative, rgb
 use hex_widgets::{RANGE_HANDLE_FRACTION, RangeSelectionTarget, RangeSelectionZones};
 
 const EVENT_RULER_HEIGHT: f32 = super::super::timeline_strip::RULER_HEIGHT;
+const EVENT_TOP: f32 = EVENT_RULER_HEIGHT + 1.0;
 
 pub(in crate::editor) fn view(
     view: &mut EditorView,
@@ -16,6 +17,7 @@ pub(in crate::editor) fn view(
     view.sync_audio_navigation();
     let owner = (clip_id, view.project_generation);
     let state = view.state.as_ref()?;
+    let revision = state.revision;
     let clip = state.project.clip(clip_id)?.clone();
     let events = match clip.editable_audio_events() {
         Ok(events) => events,
@@ -195,7 +197,7 @@ pub(in crate::editor) fn view(
             .id(("audio-event", event.id))
             .debug_selector(move || format!("audio-event-{}", event_id))
             .absolute()
-            .top(px(25.0))
+            .top(px(EVENT_TOP))
             .bottom(px(3.0))
             .left(relative(frame_to_x(visible_start)))
             .w(relative(
@@ -210,7 +212,30 @@ pub(in crate::editor) fn view(
             })))
             .bg(rgb(theme::color(theme::PaletteRole::Clip)))
             .opacity(if event.active { 1.0 } else { 0.5 })
-            .cursor(gpui::CursorStyle::Arrow);
+            .cursor(gpui::CursorStyle::Arrow)
+            .on_mouse_move(
+                cx.listener(move |view, event: &gpui::MouseMoveEvent, _, cx| {
+                    if event.pressed_button.is_some() {
+                        return;
+                    }
+                    let editor = &mut view.audio_event_editor;
+                    let content = editor.bounds.is_some_and(|bounds| {
+                        event.position.y >= bounds.top() + px(EVENT_TOP + fades::CONTENT_TOP)
+                    });
+                    if editor.set_fade_hover(owner, revision, event_id, content) {
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_hover(cx.listener(move |view, hovered: &bool, _, cx| {
+                if !*hovered
+                    && view
+                        .audio_event_editor
+                        .set_fade_hover(owner, revision, event_id, false)
+                {
+                    cx.notify();
+                }
+            }));
         let handle_height = view
             .audio_event_editor
             .bounds
@@ -421,8 +446,8 @@ pub(in crate::editor) fn view(
         element = element.children(view.event_fade_elements(
             &root,
             *event,
-            visible_start,
-            visible_end,
+            start..end,
+            visible_start..visible_end,
             local.length,
             cx,
         ));
@@ -720,6 +745,14 @@ pub(in crate::editor) fn view(
                         last_y: f32::from(event.position.y),
                         value: f64::from(target.gain.millidb()),
                     }
+                } else if target == RangeSelectionTarget::Move && event.modifiers.alt {
+                    Kind::Duplicate {
+                        event: hit,
+                        limits: state
+                            .project
+                            .audio_event_drag_bounds(clip_id, hit.start, hit.end)
+                            .ok(),
+                    }
                 } else if target == RangeSelectionTarget::Move {
                     if let Ok(limits) = state
                         .project
@@ -1003,6 +1036,13 @@ pub(in crate::editor) fn view(
             cx.stop_propagation();
             cx.notify();
         }))
+        .on_action(
+            cx.trace(|view, _: &super::super::DuplicateAudioEvent, _, cx| {
+                view.duplicate_selected_event();
+                cx.stop_propagation();
+                cx.notify();
+            }),
+        )
         .on_action(cx.trace(|view, _: &super::super::DuplicateClip, _, cx| {
             view.event_duplicate();
             cx.stop_propagation();

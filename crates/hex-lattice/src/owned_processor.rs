@@ -7,9 +7,21 @@ use crate::{
 use hex_lattice_contract::{DeviceContractError, DeviceTypeId, NativeDeviceState};
 use std::{any::Any, sync::Arc};
 
+/// Maximum per-history dry reservation, in stereo frames. The pair is charged
+/// to the same aggregate native runtime budgets before construction.
+pub const MAX_RESERVED_BYPASS_FRAMES: u32 = 4096;
+
 /// Control-prepared owned transaction factory, independent of the legacy twin
 /// factory. Construction is fallible and finishes before audio publication.
 pub trait PreparedOwnedProcessorRuntime: Send + Sync {
+    /// Opt into warm, latency-aligned host bypass with an independently reserved
+    /// dry history pair. The exact configured delay must equal algorithmic
+    /// latency and lie in 1..=MAX_RESERVED_BYPASS_FRAMES. Processing/automation,
+    /// detector and finite-tail semantics must remain valid while bypassed.
+    /// No source/resource custody transfers; all default providers refuse.
+    fn reserved_bypass_latency_frames(&self) -> Option<u32> {
+        None
+    }
     /// Opt in when the host can smoothly mix dry and processed output during
     /// bypass changes while continuing this owner's existing signal history.
     fn supports_smoothed_bypass(&self) -> bool {
@@ -255,12 +267,38 @@ impl PreparedProcessorFactory {
             Self::Foreign(_) => 1,
         }
     }
+    /// Provider pair plus any explicitly reserved host dry pair. Inline host
+    /// history is charged in the entry itself. Compiler, bank and retained-tail
+    /// budgets all consume this one quote; providers still declare private DSP
+    /// storage independently for their actual runtime construction check.
     pub fn declared_pair_bytes(&self) -> Option<usize> {
-        match self {
+        let provider = match self {
             Self::Legacy(v) => v.declared_runtime_bytes().checked_mul(2),
             Self::Owned(v) => Some(v.declared_pair_bytes()),
-            Self::Foreign(_) => Some(0), // scalar declaration is already inline; host charges actual endpoints
+            Self::Foreign(_) => Some(0), // endpoint storage retains its host owner
+        }?;
+        let dry = match self.reserved_bypass_frames().ok()? {
+            Some(frames) => usize::try_from(frames)
+                .ok()?
+                .checked_mul(std::mem::size_of::<StereoFrame>())?
+                .checked_mul(2)?,
+            None => 0,
+        };
+        provider.checked_add(dry)
+    }
+    pub(crate) fn reserved_bypass_frames(&self) -> Result<Option<u32>, DeviceContractError> {
+        let Self::Owned(value) = self else {
+            return Ok(None);
+        };
+        let Some(frames) = value.reserved_bypass_latency_frames() else {
+            return Ok(None);
+        };
+        if !(1..=MAX_RESERVED_BYPASS_FRAMES).contains(&frames)
+            || value.algorithmic_latency_frames() != Some(frames)
+        {
+            return Err(DeviceContractError::InvalidDescriptor);
         }
+        Ok(Some(frames))
     }
     pub fn output_tail(&self) -> OutputTail {
         match self {
@@ -278,6 +316,9 @@ impl PreparedProcessorFactory {
     }
     pub(crate) fn supports_latency_aligned_bypass(&self) -> bool {
         matches!(self, Self::Legacy(value) if value.supports_latency_aligned_bypass())
+            || self
+                .reserved_bypass_frames()
+                .is_ok_and(|frames| frames.is_some())
     }
 
     /// Control-side legacy preview capability, when actually supported.
@@ -379,6 +420,142 @@ impl std::fmt::Debug for PreparedRuntimeInstance {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct ReservationQuote {
+        frames: Option<u32>,
+        latency: Option<u32>,
+    }
+    impl PreparedOwnedProcessorRuntime for ReservationQuote {
+        fn reserved_bypass_latency_frames(&self) -> Option<u32> {
+            self.frames
+        }
+        fn algorithmic_latency_frames(&self) -> Option<u32> {
+            self.latency
+        }
+        fn runtime_version(&self) -> u32 {
+            1
+        }
+        fn declared_pair_bytes(&self) -> usize {
+            17
+        }
+        fn output_tail(&self) -> OutputTail {
+            OutputTail::Finite { max_tail_frames: 0 }
+        }
+        fn create_runtime(&self) -> Result<Box<dyn OwnedProcessorRuntime>, DeviceContractError> {
+            Ok(Box::new(EmptyHistory))
+        }
+    }
+    #[test]
+    fn reserved_bypass_quote_refuses_unbounded_or_mismatched_latency() {
+        for (frames, latency) in [
+            (Some(0), Some(0)),
+            (
+                Some(MAX_RESERVED_BYPASS_FRAMES + 1),
+                Some(MAX_RESERVED_BYPASS_FRAMES + 1),
+            ),
+            (Some(12), None),
+            (Some(12), Some(13)),
+        ] {
+            let factory =
+                PreparedProcessorFactory::Owned(Arc::new(ReservationQuote { frames, latency }));
+            assert!(factory.declared_pair_bytes().is_none());
+            assert!(!factory.supports_latency_aligned_bypass());
+        }
+        for frames in [1, 16, 17, MAX_RESERVED_BYPASS_FRAMES] {
+            let factory = PreparedProcessorFactory::Owned(Arc::new(ReservationQuote {
+                frames: Some(frames),
+                latency: Some(frames),
+            }));
+            assert_eq!(
+                factory.declared_pair_bytes(),
+                Some(17 + 2 * frames as usize * std::mem::size_of::<StereoFrame>())
+            );
+            assert!(factory.supports_latency_aligned_bypass());
+        }
+        let default = PreparedProcessorFactory::Owned(Arc::new(ReservationQuote {
+            frames: None,
+            latency: Some(100),
+        }));
+        assert_eq!(default.declared_pair_bytes(), Some(17));
+        assert!(!default.supports_latency_aligned_bypass());
+    }
+
+    // An actually empty provider history isolates host dry custody from the
+    // provider's own quiescence and layout decisions.
+    struct EmptyHistory;
+    impl OwnedProcessorRuntime for EmptyHistory {
+        fn fixed_storage_pair_bytes(&self) -> Option<usize> {
+            Some(0)
+        }
+        fn begin_block(&mut self) {}
+        fn process_block(&mut self, _: &mut [StereoFrame], _: &dyn crate::DeviceResources) {}
+        fn commit_block(&mut self) {}
+        fn rollback_block(&mut self) {}
+        fn reset(&mut self) {}
+        fn committed_is_quiescent(&self) -> bool {
+            true
+        }
+        fn speculative_is_quiescent(&self) -> bool {
+            true
+        }
+        fn can_inherit_from(&self, old: &dyn OwnedProcessorRuntime) -> bool {
+            old.as_any().is::<Self>()
+        }
+        fn can_retarget_parameters_from(&self, old: &dyn OwnedProcessorRuntime) -> bool {
+            self.can_inherit_from(old)
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+    #[test]
+    fn changed_dry_layout_waits_for_its_donor_and_clears_a_reused_candidate() {
+        let make = |frames: u32, bypassed| {
+            let kind = DeviceTypeId::from_static("test.reserved.bypass");
+            crate::NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+                automation: Default::default(),
+                meter: Default::default(),
+                owner: ProcessorChainOwner::Track(1),
+                device_id: 1,
+                device_type: kind,
+                matrix: StereoMatrix::identity(),
+                bypassed,
+                sample_rate: 48_000,
+                configuration: Some(Arc::new(
+                    NativeDeviceState::new(kind, 1, frames.to_le_bytes().to_vec()).unwrap(),
+                )),
+                definition: Some(PreparedProcessorFactory::Owned(Arc::new(
+                    ReservationQuote {
+                        frames: Some(frames),
+                        latency: Some(frames),
+                    },
+                ))),
+            }])
+            .unwrap()
+        };
+        let mut old = make(12, true);
+        old.begin_block();
+        old.process_block(&mut [[0.5; 2]; 1]).unwrap();
+        old.commit_block();
+        let mut next = make(24, true);
+        next.begin_block();
+        next.process_block(&mut [[0.75; 2]; 32]).unwrap();
+        next.commit_block();
+        assert!(!next.can_inherit_from(&old));
+        assert!(!next.can_retarget_parameters_from_range(&old, 0..1));
+        old.reset();
+        assert!(next.can_inherit_from(&old));
+        assert!(next.can_retarget_parameters_from_range(&old, 0..1));
+        next.transfer_history_from(&mut old);
+        let mut silence = [[0.0; 2]; 48];
+        next.begin_block();
+        next.process_block(&mut silence).unwrap();
+        next.commit_block();
+        assert_eq!(
+            silence, [[0.0; 2]; 48],
+            "fresh layout must not replay the candidate's former dry input"
+        );
+    }
+
     struct Clock;
     impl NativeInstrumentClock for Clock {
         fn beat_at_offset(&self, offset: usize) -> Option<u64> {

@@ -28,11 +28,35 @@ pub(crate) fn prepare(
     operation: &AudioEventEdit,
 ) -> Result<Clip, Invalid> {
     let original = project.clip(clip).ok_or(Invalid("clip no longer exists"))?;
-    let (mut edit, mut events) = placement_timeline(project, original)?;
+    let edit = original.audio_event_root();
+    let events = original.editable_audio_events()?;
+    if let AudioEventEdit::Duplicate { event, start } = *operation {
+        // Linked frame peers share content but keep independent view origins.
+        if start < 0 && project.clip_alias(clip).is_some() {
+            return Err(Invalid(
+                "audio event duplicate cannot shift a linked source origin",
+            ));
+        }
+        let source = events
+            .events
+            .iter()
+            .find(|item| item.id == event)
+            .ok_or(Invalid("audio event no longer exists"))?;
+        if u64::try_from(start).is_ok_and(|start| {
+            start >= edit.view_start
+                && start
+                    .checked_add(source.length())
+                    .is_some_and(|end| end <= edit.view_end)
+        }) {
+            let next = events.edited(operation.clone(), edit.domain.clock.length())?;
+            return finish_candidate(project, original, edit, next);
+        }
+    }
+    let (mut edit, mut events) = placement_timeline(project, original, edit, events)?;
     let length = edit.domain.clock.length();
     let musical = matches!(edit.domain.clock, AudioDomainClock::Beats(_));
     let (old_start, span, start) = match *operation {
-        AudioEventEdit::Place { event, start } => {
+        AudioEventEdit::Place { event, start } | AudioEventEdit::Duplicate { event, start } => {
             let moved = events
                 .events
                 .iter()
@@ -47,7 +71,9 @@ pub(crate) fn prepare(
         } if start < end && end <= length => (start, end - start, destination),
         _ => return Err(Invalid("invalid audio event placement range")),
     };
-    if i128::from(start) == i128::from(old_start) {
+    if !matches!(operation, AudioEventEdit::Duplicate { .. })
+        && i128::from(start) == i128::from(old_start)
+    {
         return Ok(original.clone());
     }
     let lead = if start < 0 { start.unsigned_abs() } else { 0 };
@@ -111,6 +137,14 @@ pub(crate) fn prepare(
             },
             timeline,
         )?,
+        AudioEventEdit::Duplicate { event, .. } => events.edited(
+            AudioEventEdit::Duplicate {
+                event,
+                start: i64::try_from(destination)
+                    .map_err(|_| Invalid("audio event duplicate destination overflow"))?,
+            },
+            timeline,
+        )?,
         _ => events.place_range(
             old_start + lead,
             old_start + lead + span,
@@ -118,6 +152,15 @@ pub(crate) fn prepare(
             timeline,
         )?,
     };
+    finish_candidate(project, original, edit, next)
+}
+
+fn finish_candidate(
+    project: &Project,
+    original: &Clip,
+    mut edit: AudioClipEdit,
+    next: AudioEvents,
+) -> Result<Clip, Invalid> {
     Arc::make_mut(&mut edit.domain).events = Some(Arc::new(next));
     let mut candidate = original.clone();
     candidate.edit = Some(Arc::new(edit));
@@ -141,9 +184,9 @@ pub(crate) fn prepare(
 fn placement_timeline(
     project: &Project,
     clip: &Clip,
+    mut edit: AudioClipEdit,
+    mut events: AudioEvents,
 ) -> Result<(AudioClipEdit, AudioEvents), Invalid> {
-    let mut edit = clip.audio_event_root();
-    let mut events = clip.editable_audio_events()?;
     if matches!(edit.domain.clock, AudioDomainClock::Beats(_)) {
         if edit.placement.is_some()
             || edit.content_view.is_some()
