@@ -432,7 +432,7 @@ pub(in crate::editor) fn view(
                 .bottom(px(3.0))
                 .left(relative(x))
                 .w(relative(length as f32))
-                .child(grid.debug_selector(|| "audio-event-musical-grid".into())),
+                .children([grid.debug_selector(|| "audio-event-musical-grid".into())]),
         );
     }
     for (index, line) in negative_grid.iter().enumerate() {
