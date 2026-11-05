@@ -201,8 +201,11 @@ fn live_short_latency_bypass(kind: &'static str) {
             assert_eq!(status.performance_frame.load(Acquire), cut + 64 * blocks);
             assert_eq!(audio.control.output_identity(), output_identity);
             assert!(status.applied_revision.load(Acquire) > applied);
-            (applied, _) = h.applied(applied);
-            if blocks == 5 {
+            applied = status.applied_revision.load(Acquire);
+            // Rattle's noise/filter envelope evolves on a DC source. Its
+            // enabled waveform is checked against uninterrupted PCM by the
+            // shared callback oracle; do not assert a stationary wet sample.
+            if blocks == 5 && (bypassed || kind != "hex.rattle") {
                 let target = if bypassed { dry } else { wet };
                 assert!(
                     (previous - target).abs() < 1e-3,
