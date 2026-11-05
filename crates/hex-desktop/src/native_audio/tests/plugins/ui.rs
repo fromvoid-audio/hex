@@ -267,7 +267,17 @@ fn rendered_vst3_effect_drop_inserts_before_the_pointed_device_on_each_owner(
 ) {
     let _native = native_fixture();
     for location in 0..3 {
-        let mut fixture = open_browser_metadata(cx, location, None, "Fx", 0, true);
+        let mut fixture = open_browser_metadata(
+            cx,
+            location,
+            Some(EffectPresentation {
+                input_frames: 0,
+                output_frames: 512,
+            }),
+            "Fx",
+            0,
+            true,
+        );
         let owner = fixture.expected_owner;
         let devices = |state: &hex_session::service::ViewState| -> Vec<hex_project::DeviceId> {
             match owner {
