@@ -1139,3 +1139,30 @@ fn tail_split_refuses_frozen_changed_and_invalid_buffers_without_losing_history(
     reference.commit_block();
     assert_eq!(before, expected);
 }
+
+#[test]
+fn static_output_trim_ramp_retains_tail_split_fallback_until_its_exact_endpoint() {
+    let configured = state(&[(DRY_WET, ParameterValue::Float(0.0))]);
+    let mut old = split_test_chain(&configured, false);
+    old.begin_block();
+    old.process_block(&mut [[0.25; 2]; 16]).unwrap();
+    old.commit_block();
+    let changed = configured.with_output_gain_db(-6.0).unwrap();
+    let mut current = split_test_chain(&changed, false);
+    current.transfer_history_from(&mut old);
+    current.begin_block();
+    current.process_block(&mut [[0.25; 2]; 7]).unwrap();
+    current.commit_block();
+    let next = split_test_chain(&changed, true);
+    assert!(
+        !next.can_prepare_tail_split_at(&current, 0),
+        "an active static trim must not bypass the existing split control proof"
+    );
+    current.begin_block();
+    current.process_block(&mut [[0.25; 2]; 33]).unwrap();
+    current.commit_block();
+    assert!(
+        next.can_prepare_tail_split_at(&current, 0),
+        "the exact40-frame endpoint at8kHz restores ordinary split eligibility"
+    );
+}

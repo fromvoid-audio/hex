@@ -940,7 +940,9 @@ fn transient_host_stages_only_successful_current_processing_and_clear_restores_b
     let mut frame = [[1.0, 0.5]];
     process_transient_host(&mut chain, &mut frame, Some(&mut context), 9).unwrap();
     let input = HostGain::from_db(-6.0).unwrap().linear();
-    assert_eq!(frame, [[2.0 * input, input]]);
+    let base = HostGain::from_db(3.0).unwrap().linear();
+    let down = (f64::from(base) + (1.0 - f64::from(base)) / 240.0) as f32;
+    assert_eq!(frame, [[2.0 * input * down, input * down]]);
     assert_eq!(
         context.applied,
         Some(crate::NativeTransientApplication {
@@ -965,8 +967,8 @@ fn transient_host_stages_only_successful_current_processing_and_clear_restores_b
             offset: 0
         })
     );
-    let base = input * HostGain::from_db(3.0).unwrap().linear();
-    assert_eq!(cleared, [[2.0 * base, base]]);
+    let up = (f64::from(down) + (f64::from(base) - f64::from(down)) / 240.0) as f32;
+    assert_eq!(cleared, [[2.0 * input * up, input * up]]);
     chain.rollback_block();
     chain.begin_output_tail();
     context.applied = None;

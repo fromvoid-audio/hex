@@ -13,6 +13,8 @@ mod eq8_oversampling_study;
 mod fresh_publication_cancellation;
 mod limiter_allocations;
 mod main_chain_allocations;
+mod manual_host_gain_allocations;
+
 mod midi_once_allocations;
 mod operator_filter_proof_allocations;
 mod operator_fixed_allocations;
