@@ -97,7 +97,7 @@ fn verified_utility_width_reaches_callback_before_commit_with_literal_stereo_pcm
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut pcm = Vec::new();
         loop {
-            pcm.extend_from_slice(&h.render());
+            pcm.extend_from_slice(&render_advancing(&h));
             if h.audio
                 .as_ref()
                 .unwrap()
@@ -148,7 +148,7 @@ fn verified_utility_width_reaches_callback_before_commit_with_literal_stereo_pcm
             .applied_revision
             .load(Acquire);
         for _ in 0..8 {
-            pcm.extend_from_slice(&h.render());
+            pcm.extend_from_slice(&render_advancing(&h));
         }
         let mut maximum = 0.0_f32;
         for frame in pcm {
@@ -178,7 +178,11 @@ fn verified_utility_width_reaches_callback_before_commit_with_literal_stereo_pcm
     // Give the worker multiple idle polls; a closed key cannot resurrect audio.
     let stable_until = Instant::now() + Duration::from_millis(20);
     while Instant::now() < stable_until {
-        assert!(h.render().iter().all(|frame| *frame == [0.25, -0.125]));
+        assert!(
+            render_advancing(&h)
+                .iter()
+                .all(|frame| *frame == [0.25, -0.125])
+        );
         assert_eq!(
             h.audio
                 .as_ref()
@@ -261,7 +265,7 @@ fn wait_pcm(h: &Harness, previous: u64, expected: [f32; 2]) -> u64 {
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut settled = 0;
     loop {
-        let block = h.render();
+        let block = render_advancing(h);
         let actual = h
             .audio
             .as_ref()
@@ -290,4 +294,27 @@ fn wait_pcm(h: &Harness, previous: u64, expected: [f32; 2]) -> u64 {
         );
         std::thread::sleep(Duration::from_millis(1));
     }
+}
+
+fn render_advancing(h: &Harness) -> [hex_engine::Frame; 64] {
+    let before = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .position
+        .load(Acquire);
+    let block = h.render();
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire),
+        before + 64
+    );
+    block
 }

@@ -612,7 +612,7 @@ mod tests {
         assert_eq!(editor.project(), &original);
         editor.execute(command).unwrap();
         assert_eq!(editor.project(), &preview);
-        editor.undo().unwrap();
+        assert!(editor.undo());
         assert_eq!(editor.project(), &original);
         assert!(
             original
