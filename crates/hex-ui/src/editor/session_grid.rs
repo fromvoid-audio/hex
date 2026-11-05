@@ -656,6 +656,9 @@ impl EditorView {
                                     )
                                     .children(self.track_tags_header(track, cx)),
                             )
+                            .children(self.track_latency_indicator(
+                                super::track_latency::Owner::Track(track_id),
+                            ))
                             .children(self.route_marker_for_track(
                                 track.id().value(),
                                 route_snapshot,

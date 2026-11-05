@@ -60,6 +60,7 @@ mod section_layout_preview;
 mod track_header;
 mod track_header_device_drop;
 mod track_hierarchy_indent;
+mod track_latency;
 mod track_meters;
 mod workspace_view;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -382,6 +383,7 @@ actions!(
     hex_editor,
     [
         TogglePlay,
+        ToggleTrackLatency,
         ToggleBrowser,
         SearchBrowser,
         CreateFadesOrSearch,
@@ -889,6 +891,7 @@ pub(super) struct EditorView {
     zoom_fit: zoom_fit::State,
     playback_candidates: VecDeque<PlaybackCandidate>,
     audible_playback: Option<PlaybackCandidate>,
+    show_track_latency: bool,
     track_meters: track_meters::State,
     // One existing read-only view per transient protocol, never a prepared graph/resource set.
     resident_device_preview: Option<hex_session::service::DevicePreview>,
@@ -1655,6 +1658,7 @@ impl EditorView {
             zoom_fit: zoom_fit::State::default(),
             playback_candidates: VecDeque::new(),
             audible_playback: None,
+            show_track_latency: false,
             track_meters: Default::default(),
             resident_device_preview: None,
             resident_tuning_preview: None,

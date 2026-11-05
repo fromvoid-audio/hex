@@ -1,9 +1,11 @@
 //! Typed production signal topology and control-prepared compensation ownership.
 use crate::{Frame, Invalid, Project, Track, compensation::*};
+mod latency_observation;
 mod legacy;
 #[cfg(feature = "instrument-test-support")]
 mod printed_branch_probe;
 use hex_project::{GroupOutputMuteRange, ReturnId, RoutingOwner, TrackId};
+pub use latency_observation::OutputLatency;
 #[cfg(feature = "instrument-test-support")]
 pub use printed_branch_probe::PrintedBranchProbe;
 use std::{collections::BTreeMap, mem::size_of, sync::Arc};
