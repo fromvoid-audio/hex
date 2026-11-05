@@ -1,5 +1,22 @@
 # hex / orbital workstation — Frame study
 
+## Continue editing in Frame
+
+[hex-orbital.frame.json](hex-orbital.frame.json) is the current editable prototype,
+saved at r127. It includes the structured design, prototype actions, and orbital
+styleguide in one portable project.
+
+In Frame, choose **Project → Import project**, select the file, and open the
+imported copy. If Frame already has a project with the same ID, use the separate
+copy proposed by the import preview. Turn on **Interact** to use the top-right
+Arrangement/Console switch and bottom-right Clip/Device switch.
+
+To save a later design revision back to Hex, use **Project → Download project** in
+Frame and update the portable project on the design branch. The older artifacts
+below document earlier iterations.
+
+## Earlier design and implementation reference
+
 Two editable 1900 × 1120 desktop concepts closely follow the user-supplied Live
 screenshots' layout and widgets with a neutral charcoal / sci-fi accent theme and Hex's
 lowercase Ioskeley Mono typography. Arrangement has the overview, timeline,
