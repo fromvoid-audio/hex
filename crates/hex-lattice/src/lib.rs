@@ -247,6 +247,12 @@ pub enum OutputTail {
 /// admission. Prepared automation normally succeeds; malformed borrowed delivery
 /// or a derived-control failure returns through the host's existing rollback.
 pub trait NativeProcessorRuntime: StdAny + Send {
+    /// Opt in when the host can ramp changed input matrix coefficients while
+    /// the processor retains its committed history and authored settings.
+    fn supports_manual_host_matrix_retarget(&self) -> bool {
+        false
+    }
+
     /// Opt in when processing a source release without an external clock,
     /// auxiliary input or automation is equivalent to ordinary processing,
     /// and ordinary history copy resumes that exact signal history.
@@ -1455,9 +1461,9 @@ impl NativeRuntimeChain {
     /// authored parameter change. Entry identity and processing topology must
     /// remain exact; a changed configuration is accepted only when both
     /// candidate twins explicitly support retargeting from the old committed
-    /// runtime, or when an unbypassed, unautomated memoryless entry changes
-    /// only its static host matrix (the handoff then ramps it; see
-    /// `matrix_ramp`). A simultaneous bypass change also requires explicit
+    /// runtime, or when a compatible unbypassed, unautomated entry changes
+    /// its static host matrix. The host ramps that matrix; a stateful entry
+    /// must also explicitly admit history and parameter retargeting. A simultaneous bypass change also requires explicit
     /// smoothed bypass support, transferable history and unchanged host
     /// gains, matrix and automation. Empty and malformed ranges are refused.
     pub fn can_retarget_parameters_from_range(
@@ -1475,13 +1481,21 @@ impl NativeRuntimeChain {
             .iter()
             .zip(&previous.entries[range])
             .all(|(candidate, old)| {
-                // A memoryless static matrix carries no processor history; its
-                // changed coefficients ramp in the host across the handoff.
-                let static_matrix_retarget = !candidate.runtime.is_stateful()
-                    && !old.runtime.is_stateful()
-                    && !candidate.bypassed
+                // Static host coefficients ramp independently of processor
+                // history. A stateful provider still has to admit the retarget.
+                let stateful_matrix_retarget =
+                    matches!(
+                        &candidate.runtime,
+                        RuntimeOwnership::Legacy { primary, scratch }
+                            if primary.supports_manual_host_matrix_retarget()
+                                && scratch.supports_manual_host_matrix_retarget()
+                    ) && candidate.runtime.can_inherit_from(&old.runtime)
+                        && candidate.runtime.can_retarget_from(&old.runtime);
+                let static_matrix_retarget = !candidate.bypassed
                     && candidate.automation.is_empty()
-                    && old.automation.is_empty();
+                    && old.automation.is_empty()
+                    && ((!candidate.runtime.is_stateful() && !old.runtime.is_stateful())
+                        || stateful_matrix_retarget);
                 let bypass_retarget = candidate.bypassed != old.bypassed
                     && candidate.configuration.is_some()
                     && old.configuration.is_some()

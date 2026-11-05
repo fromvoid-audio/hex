@@ -1354,6 +1354,7 @@ pub(crate) fn new_track(
     let id = TrackId(project.allocate_id()?);
     let color = crate::appearance::new_track_color(project);
     Ok(Track {
+        group_output_mutes: Default::default(),
         tags: Vec::new(),
         kind,
         parent_group,
@@ -1425,6 +1426,16 @@ pub(crate) fn preview_edge_trim(
         return Err(Invalid("clip source phase is outside its source interval"));
     }
 
+    // Consume available earlier media through the existing plain trim law,
+    // then represent only the pre-source interval as silent output.
+    if !clip.looping && edge == TrimEdge::Left {
+        let first = clip.start.saturating_sub(clip.source_offset);
+        if frame < first {
+            let rewound = preview_edge_trim(clip, edge, first, asset_playback_frames)?;
+            return crate::audio_edit::extend_frame_left(&rewound, frame)?
+                .ok_or(Invalid("audio source cannot retain a silent prefix"));
+        }
+    }
     let end = timeline_end;
     let (start, duration, source_offset, source_length, source_phase) = match (clip.looping, edge) {
         (true, TrimEdge::Left) => {

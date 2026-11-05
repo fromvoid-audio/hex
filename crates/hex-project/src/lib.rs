@@ -150,10 +150,12 @@ mod time_range;
 pub use time_range::{RangeClipboard, TimeRange};
 mod gain_envelope;
 mod gain_touch;
+mod group_output_mute;
 pub use gain_touch::{
     GAIN_TOUCH_UNSUPPORTED, GainLane, GainTouchContext, GainTouchSpan, GainTouchStep,
     MAX_GAIN_TOUCH_SPANS_PER_TRACK, MAX_GAIN_TOUCH_STEPS_PER_SPAN, validate_gain_lane_parts,
 };
+pub use group_output_mute::{GroupOutputMuteRange, MAX_GROUP_OUTPUT_MUTE_RANGES};
 mod midi;
 mod midi_batch;
 mod midi_note_overwrite;
@@ -525,6 +527,7 @@ impl Clip {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Track {
+    pub(crate) group_output_mutes: Arc<[GroupOutputMuteRange]>,
     pub(crate) tags: Vec<TrackTag>,
     pub(crate) kind: TrackKind,
     pub(crate) parent_group: Option<TrackId>,

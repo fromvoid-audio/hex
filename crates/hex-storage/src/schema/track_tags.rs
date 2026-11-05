@@ -2,6 +2,7 @@
 //! saved without tags keep their existing codec. The earlier tag draft at
 //! 3a50aa81 used schema70 over schema69, with a disjoint tag inventory and no
 //! musical event inventory. It remains readable and upgrades only on save.
+//! Schema73 reuses the complete layout and may have no tagged tracks.
 use crate::{Project, StorageError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -39,17 +40,22 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
     Ok(value)
 }
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    let mut value = super::audio_events::parse_unique(bytes)?;
-    if value.get("version").and_then(Value::as_u64) != Some(crate::TRACK_TAGS_SCHEMA_VERSION.into())
-    {
+    decode_with_version(bytes, crate::TRACK_TAGS_SCHEMA_VERSION)
+}
+
+pub(crate) fn decode_with_version(bytes: &[u8], version: u32) -> Result<Project, StorageError> {
+    decode_value(super::audio_events::parse_unique(bytes)?, version)
+}
+
+pub(crate) fn decode_value(mut value: Value, version: u32) -> Result<Project, StorageError> {
+    if value.get("version").and_then(Value::as_u64) != Some(version.into()) {
         return Err(StorageError::Invalid("invalid track tag schema"));
     }
     let assignments = take_assignments(&mut value)?;
-    if assignments.is_empty() {
+    if version == crate::TRACK_TAGS_SCHEMA_VERSION && assignments.is_empty() {
         return Err(StorageError::Invalid("track tag inventory is empty"));
     }
-    let project =
-        super::musical_event_source::decode_value(value, crate::TRACK_TAGS_SCHEMA_VERSION)?;
+    let project = super::musical_event_source::decode_value(value, version)?;
     restore_assignments(project, assignments)
 }
 

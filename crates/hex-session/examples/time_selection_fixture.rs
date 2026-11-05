@@ -80,6 +80,7 @@ fn project(count: usize, wav: &Path, audio_only: bool) -> Result<Project, Box<dy
             });
         }
         tracks.push(TrackSnapshot {
+            group_output_mutes: Vec::new(),
             tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,

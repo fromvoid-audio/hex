@@ -662,7 +662,12 @@ impl SessionPlayback {
                         .route_track_output(index, routed)
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     if let Some(capture) = capture.as_mut() {
-                        capture.add(OutputCaptureId::Track(route.id), frame_offset, &[main])?;
+                        capture.add_prepared_frame(
+                            owner,
+                            OutputCaptureId::Track(route.id),
+                            frame_offset,
+                            main,
+                        )?;
                     }
                     for feed_index in 0..compensation.graph.tracks[index].audio_feeds.len() {
                         let feed = &compensation.graph.tracks[index].audio_feeds[feed_index];
@@ -737,7 +742,12 @@ impl SessionPlayback {
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     self.return_scratch[index][0] = main;
                     if let Some(capture) = capture.as_mut() {
-                        capture.add(OutputCaptureId::Return(bus.id), frame_offset, &[main])?;
+                        capture.add_prepared_frame(
+                            owner,
+                            OutputCaptureId::Return(bus.id),
+                            frame_offset,
+                            main,
+                        )?;
                     }
                 }
             }
