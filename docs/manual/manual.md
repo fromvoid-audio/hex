@@ -66,6 +66,10 @@ readers, choose **save as…** to keep the original. only choose overwrite when 
 intend to replace that original. supported format migration happens while opening;
 opening alone does not authorize rewriting the original project.
 
+on macos, saving over a project can remove custom access rules on that file.
+use **file → save as…** to keep the original and check the new file's access
+rules before sharing it.
+
 keep the original project and its media if opening fails. an unsupported or
 malformed format needs its reported recovery path; changing the filename does
 not convert it. compatibility with every historical alpha file is not implied.
