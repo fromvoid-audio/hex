@@ -1,38 +1,37 @@
 # engineering health
 
-Snapshot: 5 November 2026, Linux x86_64, pinned Rust/Cargo 1.94.0.
-The runtime has resumed the supplied goal automatically; it is active. No scheduled
-task was created. A runtime stop still requires checkpoint recovery.
+Snapshot: 5 November 2026, Linux x86_64, Rust/Cargo 1.94.0. The runtime goal is
+active; no scheduled task was created. Reconcile the checkpoint with live Pulse
+and Git after an interruption.
 
-Latest verified cycle: [priority Stop after compensated source refusal](https://pulse.iocore.dev/#/issues/5009).
-The existing actual-callback regression now issues priority Stop after the rejected
-candidate is reclaimed, compares PCM with an independently stopped oracle across
-1/7/64/512-frame blocks, and reaches silence beyond the future onset/release.
-Each callback retains zero total and signed-net allocation/count/byte checks.
-The existing fixture and runtime implementation are reused.
+Latest cycle: [subframe tempo test partitions](https://pulse.iocore.dev/#/issues/5034),
+[PR #2090](https://github.com/PORTALSURFER/hex/pull/2090). Nine independent rate/mode
+cases retain all 27 combinations, the same fixtures, complete history and full PCM
+oracles. The formatted check body matches the original. At matching baseline
+`d78d2fb484e74fa062fdfdd3bfc1ca0fd8a715f4` and candidate
+`0cc77317ca3f29c486f6543e61925332c85c4b28`:
 
-At source `562e452e40f632b3b384dc669290699d17ea3c14` over `69d66f11fb7a710f5dc4be89a324cff587238751`:
+- Old case median: 2.942 s across three isolated runs. Largest new isolated case:
+  0.666 s; selected default-parallel matrix median: 1.740 s.
+- Serial matrix median: 3.190 s. Full library: 11.825 s before and 11.947 s after.
+  These results do not establish less total work or faster whole-suite execution.
+- Contended cases can still exceed 1 s. The broader unit-budget acceptance remains
+  open; this is a test scheduling improvement, not application CPU evidence.
 
-- Six static/live receiver regressions passed in 4.09 s (build time separate);
-  current-base revalidation passed in 4.08 s.
-- Both allocation-counter sensitivity calibration tests passed.
-- Strict owner all-target Clippy passed in default and allocation/stream-support configurations.
-- Final guard/format and metadata verification are recorded with the canonical PR #2085.
+Current-base verification at `bafdd2ac8a0f9f90c513e7ad01ff052c00aec6b8` over
+`c38297e419cfa6e0139e0971870b3a5f34c4361f`: all nine matrix cases passed; the full
+Session library passed 481 tests with three existing manual profiles ignored in
+12.141 s. Strict owner all-target Clippy passed in default and additive-feature
+configurations. Canonical PR/Pulse records own final guard and integration evidence.
 
-A provisional runtime refusal was superseded by upstream PRs #1974/#2080 and is
-not in the retained diff. Those changes preserve the static send route and refuse
-unproved compensation; their source/native acceptance remains in the owning Pulse
-issues. Commit `020108332` and raw logs retain the superseded experiment honestly.
-
-Prior verified outcomes and exact commands/source/base/log references remain in
-[measurement records](measurements.jsonl) and canonical PRs: empty shard refusal,
-reviewed Python inventory, and 200-to-2 document-output test selection with the
-228-test compiled inventory preserved. Old health snapshots remain in Git history.
+The [Sampler readiness experiment](https://pulse.iocore.dev/#/issues/3851) was
+retired after inconclusive paired timings; the original fixture was restored.
+The [Session audit](https://pulse.iocore.dev/#/issues/3850) refreshes historical slow
+cases and preserves meaningful rate/mode, large-source and history coverage.
 
 The [private-project CPU report](https://pulse.iocore.dev/#/issues/4965) still needs
-its matched optimized Mac/project baseline. Linux/headless checks establish neither
-macOS UI/listening acceptance nor physical deadlines or application speed.
-Ignored `artifacts/engineering-cycle-5009/` retains local raw evidence; canonical
-PR/Pulse records retain essential results if executor-local logs expire.
-
-Final integrated evidence at `2decefbeb08cb15422f363addb9eece2510e643b` over `eddf7202823f1de3574899ac699adad942ba5481` repeats the receiver/calibration and both strict owner configurations successfully; all seven quick guard/format steps pass.
+its matched optimized Mac/project baseline. Headless checks establish neither
+native UI/listening acceptance nor physical deadlines or application speed.
+Previous verified outcomes and exact provenance remain in
+[measurements](measurements.jsonl), Git history and canonical PRs/Pulse. Ignored
+raw logs remain executor-local; essential evidence also belongs in the live records.
