@@ -21,6 +21,14 @@ forwards all arguments to the release binary. It does not install an app bundle,
 run local CI, or terminate an existing process. Git and Cargo use their normal
 configuration, including `CARGO_TARGET_DIR` when set.
 
+On macOS arm64, `./launch` also makes VST3 discovery available in the source
+build. Set `HEX_VST3_SDK` to a pinned clean SDK checkout, or place it at
+`artifacts/vst3-sdk` in the primary checkout. The first preparation for a new
+native helper source needs a clean Hex checkout and the configured Developer ID
+signing identity. Later launches reuse the verified tools from
+`artifacts/launch-discovery`. If preparation fails, the source app still opens.
+Use **scan trusted standard folders** in the plug-in browser to run a scan.
+
 ## Qualified user-test delivery
 
 Review the final diff and obtain a complete passing full local-CI report on the
