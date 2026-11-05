@@ -5,6 +5,29 @@ alpha software for macOS arm64. Feature completeness, Live compatibility and
 native listening acceptance are ongoing work, tracked in [Pulse](https://pulse.iocore.dev/).
 The private repository does not currently select a distribution license.
 
+## Professional performance target
+
+hex aims to match Ableton Live and Bitwig Studio on comparable production and
+live performance workloads, then substantially surpass both in reliable track
+and device capacity, editing responsiveness, and low-latency performance.
+
+Dense sessions with native devices and hosted plug-ins should keep audio
+continuous and editing responsive. Live instruments and monitoring should run
+at the lowest practical latency. Independent playback paths should use available
+cores and bounded render-ahead where it improves headroom while preserving
+timing, automation, project recall, and plug-in fault isolation.
+
+Audio fidelity is part of the performance target. Changes must preserve
+sample-accurate timing, effect tails, and the selected processing quality.
+Performance comparisons use equivalent oversampling, interpolation, and
+plug-in quality settings.
+
+We compare pinned optimized builds on matched hardware, sample rates, buffer
+sizes, signal paths, and plug-in settings. We measure audio deadline misses,
+process CPU, monitoring latency, stable track and device counts, and editor
+responsiveness separately. Comparative claims require native device, listening,
+and failure-recovery evidence. [Performance baseline work](https://pulse.iocore.dev/#/issues/5044)
+
 ## Run
 
 Install the native Rust/macOS build toolchain.
