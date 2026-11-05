@@ -13,7 +13,8 @@ The existing fixture and runtime implementation are reused.
 
 At source `562e452e40f632b3b384dc669290699d17ea3c14` over `69d66f11fb7a710f5dc4be89a324cff587238751`:
 
-- Six static/live receiver regressions passed in 4.09 s (build time separate).
+- Six static/live receiver regressions passed in 4.09 s (build time separate);
+  current-base revalidation passed in 4.08 s.
 - Both allocation-counter sensitivity calibration tests passed.
 - Strict owner all-target Clippy passed in default and allocation/stream-support configurations.
 - Final guard/format and metadata verification are recorded with the canonical PR #2085.
@@ -33,3 +34,5 @@ its matched optimized Mac/project baseline. Linux/headless checks establish neit
 macOS UI/listening acceptance nor physical deadlines or application speed.
 Ignored `artifacts/engineering-cycle-5009/` retains local raw evidence; canonical
 PR/Pulse records retain essential results if executor-local logs expire.
+
+Final integrated evidence at `2decefbeb08cb15422f363addb9eece2510e643b` over `eddf7202823f1de3574899ac699adad942ba5481` repeats the receiver/calibration and both strict owner configurations successfully; all seven quick guard/format steps pass.
