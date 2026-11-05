@@ -542,6 +542,10 @@ mod tests {
                 start: 123,
             },
             Request::SaveNew(path.clone()),
+            Request::Edit(Command::SetTrackTags {
+                track,
+                tags: vec![hex_project::TrackTag::new(name).unwrap()],
+            }),
         ];
         let hooks = Hooks::default();
         let records = Arc::new(Mutex::new(Vec::new()));
@@ -559,7 +563,7 @@ mod tests {
             hooks.begin(request).expect("request identity");
         }
         let records = records.lock().unwrap();
-        assert_eq!(records.len(), 3);
+        assert_eq!(records.len(), 4);
         for (index, (stamp, text, truncated)) in records.iter().enumerate() {
             assert!(!truncated);
             assert!(!text.contains(name));
@@ -567,6 +571,8 @@ mod tests {
             assert!(!text.contains("/private/"));
             assert_eq!(stamp.unwrap().request_id, index as u64 + 1);
         }
+        assert!(records[3].1.contains("set_track_tags"));
+        assert!(records[3].1.contains("tags_count=1"));
         assert!(records[0].1.contains(&format!("track={}", track.value())));
         assert!(
             records[0]
