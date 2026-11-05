@@ -12,6 +12,7 @@ mod eq8_audition_allocations;
 mod eq8_oversampling_study;
 mod fresh_publication_cancellation;
 mod limiter_allocations;
+mod limiter_bypass;
 mod main_chain_allocations;
 mod manual_host_gain_allocations;
 
