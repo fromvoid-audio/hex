@@ -221,6 +221,25 @@ impl SharedSourceHandoff {
                 let same_device = old_runtime.expression_identity.is_some()
                     && old_runtime.expression_identity
                         == revision.arrangement().tracks()[new_index].instrument_id;
+                let old_track = previous
+                    .revision
+                    .arrangement()
+                    .tracks()
+                    .get(old_index)
+                    .ok_or(SessionPlaybackError::RevisionTrackMismatch)?;
+                // The detached suffix mixes to Main; it does not own the
+                // current send inputs. A reset cannot preserve this active
+                // source's routed release, so refuse before either graph moves.
+                if previous.playing
+                    && same_device
+                    && !revision.arrangement().tracks()[new_index].instrument_slot_enabled()
+                    && !old_track.sends().is_empty()
+                    && old_runtime.max_release_tail_frames()
+                        > u64::from(revision.arrangement().sample_rate().div_ceil(200))
+                    && !old_runtime.committed_is_quiescent()
+                {
+                    return Err(SessionPlaybackError::RoutedSourceHistoryUnavailable);
+                }
                 let held_input = previous.computer_keyboard.as_ref().is_some_and(|keyboard| {
                     keyboard.has_mutable_source_input_voices()
                         && previous
