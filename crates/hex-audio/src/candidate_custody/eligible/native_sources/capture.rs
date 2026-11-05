@@ -98,6 +98,16 @@ impl Custody {
             _ => Err("native edit owner differs"),
         })
     }
+    pub(in crate::candidate_custody) fn native_recovery_edits(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<hex_plugin_host::protocol::RecoveryEdits>, &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.poll_recovery_edits(),
+            Owner::Loaned(owner) => owner.poll_recovery_edits(),
+            _ => Err("native edit owner differs"),
+        })
+    }
     pub(in crate::candidate_custody) fn native_parameter_values(
         &self,
         binding: Binding,
@@ -193,6 +203,16 @@ impl Custody {
     ) -> Result<Option<hex_plugin_host::protocol::Facts>, &'static str> {
         self.with_quiescent_native_source(binding, |owner| {
             let owner = owner.reactivate_retained_on_control()?;
+            let facts = owner.facts();
+            Ok((owner, facts))
+        })
+    }
+    pub(in crate::candidate_custody) fn settle_native_latency(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<hex_plugin_host::protocol::Facts>, &'static str> {
+        self.with_quiescent_native_source(binding, |owner| {
+            let owner = owner.settle_latency_retained_on_control()?;
             let facts = owner.facts();
             Ok((owner, facts))
         })
@@ -312,12 +332,31 @@ impl CandidateRoot {
         result
     }
 
+    pub(crate) fn settle_native_latency(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<hex_plugin_host::protocol::Facts>, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self.0.eligible.settle_native_latency(binding);
+        crate::lifecycle::request_candidate_cleanup(self);
+        self.require_native_source_control_open()?;
+        result
+    }
     pub(crate) fn native_source_parameter_edits(
         &self,
         binding: Binding,
     ) -> Result<Option<hex_plugin_host::protocol::ParameterEdits>, &'static str> {
         self.require_native_source_control_open()?;
         let result = self.0.eligible.native_parameter_edits(binding)?;
+        self.require_native_source_control_open()?;
+        Ok(result)
+    }
+    pub(crate) fn native_source_recovery_edits(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<hex_plugin_host::protocol::RecoveryEdits>, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self.0.eligible.native_recovery_edits(binding)?;
         self.require_native_source_control_open()?;
         Ok(result)
     }
