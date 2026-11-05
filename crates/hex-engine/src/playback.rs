@@ -114,6 +114,7 @@ pub enum PlaybackActionRejection {
     StreamSourceChanged = 15,
     OutputFailed = 16,
     NoActivePlayback = 17,
+    ProjectChanged = 18,
 }
 
 impl PlaybackActionRejection {
@@ -136,6 +137,7 @@ impl PlaybackActionRejection {
             15 => Some(Self::StreamSourceChanged),
             16 => Some(Self::OutputFailed),
             17 => Some(Self::NoActivePlayback),
+            18 => Some(Self::ProjectChanged),
             _ => None,
         }
     }
@@ -143,6 +145,7 @@ impl PlaybackActionRejection {
     pub const fn message(self) -> &'static str {
         match self {
             Self::NoActivePlayback => "no active playback graph",
+            Self::ProjectChanged => "project changed · playback action cancelled",
             Self::MetronomeUnavailable => {
                 "metronome requires prepared musical timing and sample storage"
             }

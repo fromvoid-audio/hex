@@ -514,6 +514,7 @@ mod tests {
         QueuedCommand {
             ticket,
             sampler_edit_gate,
+            project_generation: None,
             transport_epoch: 1,
             action: PlaybackAction::Transport(PlaybackCommand::Play),
         }

@@ -468,6 +468,12 @@ impl NativeAudioSink {
         let Some(mut client) = output.take_client() else {
             return;
         };
+        if mode == DocumentAudioMode::Resident
+            && client.worker_owns_graph_publication()
+            && let Some(generation) = std::num::NonZeroU64::new(generation)
+        {
+            client.bind_resident_transport(generation);
+        }
         let reader = output.take_action_outcomes();
         if reader.is_none_or(|reader| client.attach_action_outcomes(reader).is_err()) {
             client.close();
