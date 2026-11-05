@@ -141,8 +141,13 @@ impl EditorView {
             return state.unavailable(Availability::Fault);
         }
         let Some(source) = status.recording_source().filter(|source| {
-            source.context.project_generation == self.project_generation
-                && audio.control.output_identity() == Some(source.output_identity)
+            super::controller::publication_observation_for_view(
+                self.project_generation,
+                self.state.as_deref(),
+                audio.control.output_identity(),
+                source.context,
+                source.output_identity,
+            ) == super::controller::PublicationObservationDisposition::Apply
         }) else {
             return state.unavailable(Availability::Pending);
         };
@@ -231,7 +236,7 @@ fn render(state: &State, owner: OutputCaptureId, now: Instant) -> gpui::Stateful
         })
         .unwrap_or_default();
     let description = theme::text(format!(
-        "track performance · {status}{value}\nlocal source and processing work; groups exclude children; shared instruments belong to the receiver. sampled in rotation; peak decays over one second.\nsix steps: 0.1, 0.5, 1, 2.5, 5, 10%. main, old detached tails and shared overhead remain in the global meter. external worker cpu is excluded. this is not latency or proof of a dropout."
+        "track performance · {status}{value}\nlocal source and processing work; groups exclude children; shared instruments belong to the receiver. sampled in rotation; the observed peak decays over one second. brief spikes can be missed.\nsix steps: 0.1, 0.5, 1, 2.5, 5, 10%. main, old detached tails and shared overhead remain in the global meter. external worker cpu is excluded. this is not latency or proof of a dropout."
     ));
     let (kind, id) = key(owner);
     div()

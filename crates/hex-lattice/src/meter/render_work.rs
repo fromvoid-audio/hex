@@ -13,6 +13,7 @@ pub struct RenderWorkMeter {
 
 /// A sampled wall-time fraction of the rendered audio duration. This is not
 /// process CPU, worker CPU, physical latency, or proof of an audio dropout.
+/// This is the last sampled render, not a continuous maximum.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RenderWorkSample {
     pub epoch: u16,

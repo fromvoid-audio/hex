@@ -4,7 +4,7 @@
 //! and shared instruments belong to their actual receiver. Main, detached old
 //! tails, scheduling and other shared work remain in the global callback meter.
 //! Foreign endpoint calls include their host cost, not asynchronous worker CPU.
-//! Inline Copy scratch has no independently movable or destructible resources.
+//! Inline scalar scratch has no independently movable or destructible resources.
 use crate::PreparedRevision;
 use std::time::Instant;
 
