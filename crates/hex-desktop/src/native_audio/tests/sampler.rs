@@ -16,6 +16,7 @@ use hex_project::{BeatTime, Command, Created};
 /// The sampler's prepared ~2 ms declick release floor at this fixture's
 /// 16 kHz output (#4087): no note-off releases in fewer frames.
 const RELEASE_FLOOR_FRAMES: usize = 32;
+const SAMPLER_OUTPUT_RATE: u32 = 16_000;
 
 /// Release level `steps` frames after a note-off whose prepared release is
 /// `max(authored, RELEASE_FLOOR_FRAMES)` frames.
@@ -47,7 +48,7 @@ impl Harness {
                 return Ok(None);
             }
             match hex_audio::worker_fixture::open_with_reliable_action_outcomes(
-                rate.unwrap_or(16000),
+                rate.unwrap_or(SAMPLER_OUTPUT_RATE),
             ) {
                 Ok((output, callback)) => {
                     *slot = Some(callback);
@@ -58,31 +59,52 @@ impl Harness {
             }
         }));
         let observation = Arc::new(Mutex::new(Observation::default()));
+        let mut observed = if rendered {
+            ObservedSink::rendered(sink, Arc::clone(&observation))
+        } else {
+            ObservedSink::legacy(sink, Arc::clone(&observation))
+        };
+        // The canonical project now starts before the asynchronous open
+        // completes. Keep the rate assumed by the literal PCM and clock checks.
+        observed.initial_rate = Some(SAMPLER_OUTPUT_RATE);
         let service = Service::with_audio_sink_and_native_reservation(
             16,
             frame_limit,
             None,
-            Box::new(if rendered {
-                ObservedSink::rendered(sink, Arc::clone(&observation))
-            } else {
-                ObservedSink::legacy(sink, Arc::clone(&observation))
-            }),
+            Box::new(observed),
             AudioPolicy::new().unwrap().resident_native,
         )
         .unwrap();
-        Self {
-            rendered_setup: setup_sender.map(|sender| RenderedSetup {
+        let wait = Duration::from_secs(10);
+        let rendered_setup = setup_sender.map(|sender| {
+            // Pre-window authoring drives the real callback on each event.
+            // Wait for asynchronous output before its first render and keep
+            // the actual Opened event for the later handoff to the editor.
+            let opened = receiver
+                .recv_timeout(wait)
+                .expect("initial sampler output event");
+            match &opened {
+                EditorAudioEvent::Opened { audio, .. } => {
+                    assert_eq!(audio.sample_rate, SAMPLER_OUTPUT_RATE);
+                }
+                EditorAudioEvent::Unavailable { error, .. } => panic!("{error}"),
+                _ => panic!("expected the initial sampler output to open"),
+            }
+            RenderedSetup {
                 sender,
-                opened: None,
+                opened: Some(opened),
                 observation: None,
-            }),
+            }
+        });
+        Self {
+            rendered_setup,
             service: Some(service),
             events: receiver,
             backend,
             audio: None,
             context: None,
             observation,
-            wait: Duration::from_secs(10),
+            wait,
         }
     }
     fn open_sampler(&mut self, old_identity: u64) {
@@ -473,7 +495,9 @@ fn sampler_fresh_output_failure_cleans_unpublished_copy_and_allows_new_context_r
         if slot.is_some() {
             return Ok(None);
         }
-        match hex_audio::worker_fixture::open_with_reliable_action_outcomes(rate.unwrap_or(16000)) {
+        match hex_audio::worker_fixture::open_with_reliable_action_outcomes(
+            rate.unwrap_or(SAMPLER_OUTPUT_RATE),
+        ) {
             Ok((output, callback)) => {
                 opens += 1;
                 if opens == 2 {
@@ -489,11 +513,13 @@ fn sampler_fresh_output_failure_cleans_unpublished_copy_and_allows_new_context_r
         }
     }));
     let observation = Arc::new(Mutex::new(Observation::default()));
+    let mut observed = ObservedSink::legacy(sink, Arc::clone(&observation));
+    observed.initial_rate = Some(SAMPLER_OUTPUT_RATE);
     let service = Service::with_audio_sink_and_native_reservation(
         16,
         8,
         None,
-        Box::new(ObservedSink::legacy(sink, observation.clone())),
+        Box::new(observed),
         AudioPolicy::new().unwrap().resident_native,
     )
     .unwrap();
