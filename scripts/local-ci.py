@@ -287,7 +287,9 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
             argv = (*(a for a in argv if a != "--all-targets"), *selector)
         if argv[:2] == ("python3", "scripts/test_shards.py"):
             split = argv.index("--")
-            return (*argv[:split], *(a for name in names for a in ("--filter", name)), *argv[split:])
+            # Coverage is verified across module-scoped configurations together.
+            return (*argv[:split], "--allow-empty",
+                    *(a for name in names for a in ("--filter", name)), *argv[split:])
         return (*argv, "--", *names)
     if boundary["kind"] == "packages":
         if not tested or set(tested) - set(affected) or tests:
