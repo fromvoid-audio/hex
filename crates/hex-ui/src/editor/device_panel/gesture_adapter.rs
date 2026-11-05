@@ -75,6 +75,9 @@ pub fn commit_owned_numeric_edit(
             GestureTarget::DeviceParameter { device, parameter } => {
                 view.manual_device_parameter_request(device, parameter, value)?
             }
+            GestureTarget::TrackGains { .. } => {
+                return Err("selected gains require their captured gesture");
+            }
             GestureTarget::DeviceParameterPair { .. } => {
                 return Err("paired parameter edits use the graph gesture");
             }

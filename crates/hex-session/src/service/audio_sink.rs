@@ -850,6 +850,7 @@ impl WorkerEvents {
                 matches!(
                     active.target,
                     crate::device_gesture::GestureTarget::TrackGain { .. }
+                        | crate::device_gesture::GestureTarget::TrackGains { .. }
                 ) && event
                     .state
                     .canonical_audio_source

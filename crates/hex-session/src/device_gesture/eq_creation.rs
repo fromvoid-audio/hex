@@ -188,6 +188,7 @@ impl GestureMachine {
                     .ok_or(SessionError::Invalid("eq no longer exists"))?;
                 self.active = Some(Active {
                     snapshot: GestureSnapshot {
+                        track_gains: None,
                         touched_parameters: crate::device_gesture::TouchedParameters::default(),
                         manual_edit: false,
                         key,
