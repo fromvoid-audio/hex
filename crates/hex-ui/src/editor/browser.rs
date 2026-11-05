@@ -11,8 +11,10 @@ mod history;
 mod insertion;
 mod place_icons;
 mod plugins;
+mod random;
 mod resize;
 mod samples;
+mod scrollbar;
 mod tree;
 
 use super::{EditorMode, EditorView, browser_input, drag};
@@ -230,6 +232,7 @@ pub(super) struct BrowserState {
     results_focused: bool,
     selected_index: usize,
     scroll: gpui::UniformListScrollHandle,
+    scrollbar: scrollbar::State,
     _search_observer: gpui::Subscription,
     observed_query: String,
     history: history::History,
@@ -239,6 +242,8 @@ pub(super) struct BrowserState {
     playback_in_flight: Option<Arc<AtomicBool>>,
     playback_pending: Option<PlaybackPreviewRequest>,
     auto_audition: bool,
+    audition_gain: f32,
+    audition_gain_dragging: bool,
     playback_phase: Phase,
     playback_output: Option<(u64, u64)>,
     playback_path: Option<PathBuf>,
@@ -320,11 +325,14 @@ impl BrowserState {
             results_focused: false,
             selected_index: 0,
             scroll: gpui::UniformListScrollHandle::new(),
+            scrollbar: scrollbar::State::default(),
             _search_observer: observer,
             observed_query: String::new(),
             history: history::History::default(),
             playback_generation: 0,
             auto_audition: true,
+            audition_gain: 1.0,
+            audition_gain_dragging: false,
             playback_phase: Phase::Idle,
             playback_output: None,
             playback_path: None,
@@ -364,6 +372,7 @@ impl BrowserState {
         self.auto_audition = false;
     }
     fn reset_results(&mut self) {
+        self.scrollbar.invalidate();
         self.selected_index = 0;
         self.results_focused = false;
         self.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
@@ -855,7 +864,11 @@ impl EditorView {
             self.error = Some("sample preview unavailable · no audio output".into());
             return;
         };
-        let output_generation = match audio.control.preview_request() {
+        let output_generation = match audio
+            .control
+            .preview_set_gain(self.browser.audition_gain)
+            .and_then(|()| audio.control.preview_request())
+        {
             Ok(token) => token,
             Err(error) => {
                 self.error = Some(format!("sample preview failed · {error}").into());
@@ -1861,6 +1874,7 @@ impl EditorView {
     }
 
     pub(super) fn browser_view(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
+        self.browser.scrollbar.begin_render();
         if !self.browser.open {
             let rail = div()
                 .w(px(COLLAPSED_WIDTH))
@@ -1890,6 +1904,13 @@ impl EditorView {
         self.restore_browser_history_position(cx);
         let path = self.browser.directory.clone();
         let folder_dialog = self.browser_folder_button(cx);
+        let control = self.browser_random_button(cx);
+        let folder_dialog = div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(folder_dialog)
+            .child(control);
         let section = self.browser.section.clone();
         if matches!(section, BrowserSection::All | BrowserSection::Instruments)
             && self.browser.device_catalog.is_none()
@@ -2049,7 +2070,9 @@ impl EditorView {
         match section {
             BrowserSection::Plugins => {
                 let controls = self.plugin_controls(cx);
-                panel = panel.child(controls).child(rows.flex_1());
+                panel = panel
+                    .child(controls)
+                    .child(self.browser_results(rows, row_count, cx));
             }
             BrowserSection::Collection(_) => {
                 panel = panel.child(
@@ -2083,32 +2106,27 @@ impl EditorView {
                             );
                         } else {
                             let count = entries.len();
-                            panel = panel.child(
-                                uniform_list(
-                                    "native-device-browser-entries",
-                                    count,
-                                    cx.processor(
-                                        move |view, range: std::ops::Range<usize>, _window, cx| {
-                                            range
-                                                .filter_map(|index| {
-                                                    entries.get(index).cloned().map(
-                                                        |(class, entry)| {
-                                                            view.browser_device_row(
-                                                                index, class, entry, cx,
-                                                            )
-                                                        },
-                                                    )
+                            let list = uniform_list(
+                                "native-device-browser-entries",
+                                count,
+                                cx.processor(
+                                    move |view, range: std::ops::Range<usize>, _window, cx| {
+                                        range
+                                            .filter_map(|index| {
+                                                entries.get(index).cloned().map(|(class, entry)| {
+                                                    view.browser_device_row(index, class, entry, cx)
                                                 })
-                                                .collect()
-                                        },
-                                    ),
-                                )
-                                .h_full()
-                                .min_h_0()
-                                .w_full()
-                                .track_scroll(self.browser.scroll.clone())
-                                .flex_1(),
-                            );
+                                            })
+                                            .collect()
+                                    },
+                                ),
+                            )
+                            .h_full()
+                            .min_h_0()
+                            .w_full()
+                            .track_scroll(self.browser.scroll.clone())
+                            .flex_1();
+                            panel = panel.child(self.browser_results(list, count, cx));
                         }
                     }
                     Err(error) => {
@@ -2141,7 +2159,7 @@ impl EditorView {
                             )),
                     );
                 } else {
-                    panel = panel.child(rows.flex_1());
+                    panel = panel.child(self.browser_results(rows, row_count, cx));
                 }
             }
             _ if row_count == 0
@@ -2200,7 +2218,7 @@ impl EditorView {
                 );
             }
             _ => {
-                panel = panel.child(rows.flex_1());
+                panel = panel.child(self.browser_results(rows, row_count, cx));
                 if self
                     .browser
                     .listing
@@ -2690,7 +2708,7 @@ impl EditorView {
             .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |view, _, window, cx| {
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
                     let Some(current) =
                         view.browser_history_index(&BrowserItemKey::Device(class, type_id), cx)
                     else {
@@ -2701,6 +2719,24 @@ impl EditorView {
                     view.browser.results_focused = true;
                     view.browser.results_focus.focus(window);
                     window.prevent_default();
+                    if event.click_count == 2 {
+                        let request = view
+                            .selected_track
+                            .ok_or("select a track before adding a device")
+                            .and_then(|track| {
+                                view.browser_device_append_request(track, class, type_id, cx)
+                            });
+                        match request {
+                            Ok(request) => {
+                                if view.enqueue_device_barrier(request) {
+                                    view.error = None;
+                                    view.status = "adding device to track".into();
+                                }
+                            }
+                            Err(reason) => view.error = Some(reason.into()),
+                        }
+                        cx.stop_propagation();
+                    }
                     cx.notify();
                 }),
             )

@@ -38,6 +38,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
             })
             .collect();
         tracks.push(TrackSnapshot {
+            tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),
@@ -84,6 +85,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
         tuning: Default::default(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
+        sidechains: Vec::new(),
         return_feeds: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,

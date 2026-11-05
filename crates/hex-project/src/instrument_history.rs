@@ -66,6 +66,7 @@ impl Project {
             routing,
             audio_feeds,
             midi_routes,
+            sidechains,
             import_provenance,
             sample_rate,
             next_id,
@@ -88,6 +89,7 @@ impl Project {
             || routing != &target.routing
             || audio_feeds != &target.audio_feeds
             || midi_routes != &target.midi_routes
+            || sidechains != &target.sidechains
             || import_provenance != &target.import_provenance
             || sample_rate != &target.sample_rate
             || target.next_id > *next_id
@@ -106,6 +108,7 @@ impl Project {
         let mut changed = None;
         for (current, next) in tracks.iter().zip(&target.tracks) {
             let Track {
+                tags,
                 kind,
                 parent_group,
                 color,
@@ -133,6 +136,7 @@ impl Project {
                 || parent_group != &next.parent_group
                 || color != &next.color
                 || id != &next.id
+                || tags != &next.tags
                 || name != &next.name
                 || automatic_name != &next.automatic_name
                 || gain != &next.gain

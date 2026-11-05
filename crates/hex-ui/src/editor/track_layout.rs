@@ -451,8 +451,42 @@ impl EditorView {
         }
         self.track_layout.active_heights_mut().insert(row, height);
         self.invalidate_track_size(track);
+        if let Some(track) = track {
+            self.center_resized_track(track);
+        }
         cx.notify();
     }
+
+    // Express the desired viewport top as a logical list position. Walking
+    // backwards only across rows that fit above the target avoids maintaining a
+    // second content-height inventory; GPUI clamps the final position at the end.
+    fn center_resized_track(&self, track: TrackId) {
+        let Some(mut index) = self.track_layout.tracks.iter().position(|id| *id == track) else {
+            return;
+        };
+        let viewport_height = f32::from(self.track_scroll.list.viewport_bounds().size.height);
+        let height = self.track_height(track);
+        if !viewport_height.is_finite() || viewport_height <= 0.0 || !height.is_finite() {
+            return;
+        }
+        let mut offset = (height - viewport_height) / 2.0;
+        while offset < 0.0 && index > 0 {
+            index -= 1;
+            let previous = self.track_height(self.track_layout.tracks[index]);
+            if !previous.is_finite() || previous <= 0.0 {
+                return;
+            }
+            offset += previous;
+        }
+        if !offset.is_finite() {
+            return;
+        }
+        self.track_scroll.list.scroll_to(gpui::ListOffset {
+            item_ix: index,
+            offset_in_item: px(offset.max(0.0)),
+        });
+    }
+
     fn row_resize_geometry(&self, row: Row) -> (f32, f32) {
         let original = if row == Row::Main {
             // Flex may reduce Main after window resizing; its painted lane
@@ -581,10 +615,10 @@ impl EditorView {
         }
     }
     fn invalidate_track_size(&self, track: Option<TrackId>) {
-        if let Some(id) = track {
-            if let Some(index) = self.track_layout.tracks.iter().position(|t| *t == id) {
-                self.track_scroll.invalidate(index..index + 1, 1);
-            }
+        if let Some(id) = track
+            && let Some(index) = self.track_layout.tracks.iter().position(|t| *t == id)
+        {
+            self.track_scroll.invalidate(index..index + 1, 1);
         }
     }
     fn capture_track_resize(

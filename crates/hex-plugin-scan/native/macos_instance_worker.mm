@@ -259,10 +259,10 @@ int main(int argc,char** argv) {
             // processing lane is stopped and waiting at every epoch SDK step.
             // Live capture below has its own bounded nonwaiting slot in this
             // same worker. Mutex/condition waits live only in the epoch path.
-            enum EpochStage { Idle,FactsRequested,FactsSent,CaptureRequested,CaptureSent,FlushRequested,FlushSent,ResumeRequested,ResumeConfigured,Restarted,ResumeSent };
+            enum EpochStage { Idle,FactsRequested,FactsSent,CaptureRequested,CaptureSent,FlushRequested,FlushSent,ReactivateRequested,ReactivateSent,ResumeRequested,ResumeConfigured,Restarted,ResumeSent };
             EpochStage epoch_stage=Idle;
             uint64_t next_graph=0,next_epoch=0;
-            uint64_t capture_operation=0,flush_operation=0;
+            uint64_t capture_operation=0,flush_operation=0,reactivate_operation=0;
             hex_instance::ParameterFeedback flushed_values;
             bool flush_applied=false;
             std::optional<wire::Presentation> next_presentation;
@@ -304,6 +304,7 @@ int main(int argc,char** argv) {
                     };
                     const auto read_edit_receipts=[&](const wire::Packet& packet) {
                         if(edit_query_operation==std::numeric_limits<uint64_t>::max() || packet.capture_operation!=edit_query_operation+1) return false;
+                        if(packet.observe_latency) instance.observe_latency_restarts();
                         drain_edit_boundaries();
                         wire::Bytes body;config->stamp(body);wire::number(body,blocks,8);wire::number(body,frames,8);
                         const auto ready=instance.ready_parameter_edits();
@@ -315,7 +316,8 @@ int main(int argc,char** argv) {
                             uint64_t bits=0;std::memcpy(&bits,&value.normalized,8);wire::number(body,bits,8);
                             wire::number(body,value.id,4);wire::number(body,value.kind,4);wire::number(body,record.first_frame,8);
                         }
-                        if(!wire::send(channel,"HXVIGE01",body)) return false;
+                        if(packet.observe_latency) wire::number(body,instance.latency_restart(),8);
+                        if(!wire::send(channel,packet.observe_latency?"HXVIGE02":"HXVIGE01",body)) return false;
                         ++edit_query_operation;completed_edit_count=0;return true;
                     };
                     std::array<hex_instance::EditEvent,hex_instance::HOST_EDIT_COUNT> applying_edits{};size_t applying_edit_count=0;
@@ -482,8 +484,23 @@ int main(int argc,char** argv) {
                             if(worker_failure.load()) break;
                             phase.store(1,std::memory_order_release);
                             auto resumed=packet.read(channel,*config,blocks,frames);
-                            uint64_t captures=0,flushes=0;
-                            while(resumed==5 || resumed==8 || resumed==9 || resumed==10 || resumed==11) {
+                            uint64_t captures=0,flushes=0,reactivations=0;
+                            while(resumed==5 || resumed==8 || resumed==9 || resumed==10 || resumed==11 || resumed==12) {
+                                if(resumed==12) {
+                                    if(reactivations==std::numeric_limits<uint64_t>::max() || packet.capture_operation!=reactivations+1) {
+                                        worker_failure.store(ProtocolFailure);break;
+                                    }
+                                    phase.store(3,std::memory_order_release);
+                                    {
+                                        std::unique_lock<std::mutex> lock(startup_mutex);
+                                        reactivate_operation=packet.capture_operation;epoch_stage=ReactivateRequested;
+                                        startup_changed.notify_all();
+                                        startup_changed.wait(lock,[&]{return epoch_stage==ReactivateSent || worker_failure.load();});
+                                    }
+                                    if(worker_failure.load()) break;
+                                    ++reactivations;phase.store(1,std::memory_order_release);
+                                    resumed=packet.read(channel,*config,blocks,frames);continue;
+                                }
                                 if(resumed==10 || resumed==11) {
                                     if(!page_reply(packet,resumed==11)) {if(!worker_failure.load())worker_failure.store(ProtocolFailure);break;}
                                     resumed=packet.read(channel,*config,blocks,frames);continue;
@@ -736,6 +753,27 @@ int main(int argc,char** argv) {
                         if(!wire::send(channel,"HXVIQF02",body)) std::_Exit(Cancelled);
                         std::lock_guard<std::mutex> lock(startup_mutex);
                         epoch_stage=FactsSent;startup_changed.notify_all();
+                    } else if(stage==ReactivateRequested) {
+                        try {
+                            const auto covered=instance.latency_restart();
+                            if(!instance.reactivate_on_control()) { error(channel,&*config,Quiescence);std::_Exit(Quiescence); }
+                            latency=instance.reported_latency_on_control();
+                            tail=instance.reported_tail_on_control();
+                            available=instance.presentation_latency_available_on_control();
+                            if(!latency || !tail || !available || instance.host_refusals()) {
+                                error(channel,&*config,Quiescence);std::_Exit(Quiescence);
+                            }
+                            instance.cover_latency_restart(covered);
+                            auto body=facts_body(*config,*latency,*tail,*available,restoration);
+                            wire::number(body,blocks,8);wire::number(body,frames,8);wire::number(body,reactivate_operation,8);
+                            if(!wire::send(channel,"HXVIAR01",body)) std::_Exit(Cancelled);
+                        } catch(...) {
+                            // Foreign activation/facts have unknown side effects.
+                            // Never retry teardown/release/unload beneath them.
+                            error(channel,&*config,Unexpected);std::_Exit(Unexpected);
+                        }
+                        std::lock_guard<std::mutex> lock(startup_mutex);
+                        epoch_stage=ReactivateSent;startup_changed.notify_all();
                     } else if(stage==FlushRequested) {
                         // The original worker is stopped and waiting at this
                         // barrier. Synchronize controller values before ACK;
@@ -800,6 +838,7 @@ int main(int argc,char** argv) {
                         std::lock_guard<std::mutex> lock(startup_mutex);
                         epoch_stage=CaptureSent;startup_changed.notify_all();
                     } else if(stage==ResumeRequested) {
+                        if(instance.latency_restart()) { error(channel,&*config,Quiescence);std::_Exit(Quiescence); }
                         supplied=next_presentation;
                         presentation=hex_instance::Instance::PresentationResult::Absent;
                         if(supplied) presentation=instance.set_presentation_latency(supplied->input,supplied->output);
@@ -812,6 +851,7 @@ int main(int argc,char** argv) {
                              presentation!=hex_instance::Instance::PresentationResult::Absent)) {
                             error(channel,&*config,Presentation);std::_Exit(Presentation);
                         }
+                        if(instance.latency_restart()) { error(channel,&*config,Quiescence);std::_Exit(Quiescence); }
                         // The old input/reply sequence is quiescent. Only this
                         // acknowledged transition changes its wire binding;
                         // no old queued request is accepted under the new one.

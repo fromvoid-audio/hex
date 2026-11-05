@@ -348,7 +348,9 @@ fn spec(window: ClipWindow, field: Field, horizon: u64) -> Option<NumericSpec> {
     .ok()
     .map(|s| {
         s.with_codec(
-            move |v| frame_value(v).map_or_else(String::new, |v| format_frame_time(v, rate)),
+            move |v| {
+                frame_value(v).map_or_else(String::new, |v| format_frame_time(i128::from(v), rate))
+            },
             move |s| {
                 let s = s.trim();
                 let frames = if let Some(seconds) = s.strip_suffix('s').filter(|_| !s.contains('·'))

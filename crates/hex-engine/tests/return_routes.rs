@@ -820,8 +820,16 @@ fn return_feed_transport_wrap_keeps_history_and_linear_export_ignores_transport_
     let mut playback = session(&f, &source);
     let mut actual = vec![[0.0; 2]; 600];
     playback.render(&mut actual).unwrap();
-    // Constant input makes a fresh attack at wrap distinguishable from continuity.
-    assert_eq!(actual, expected);
+    // The two-frame loop alternates its full attack with a zero end
+    // sample. Render that input linearly through the same routing graph:
+    // return processors must retain history across every transport wrap.
+    let mut enveloped_source = source;
+    for frame in enveloped_source.iter_mut().skip(1).step_by(2) {
+        *frame = [0.0; 2];
+    }
+    let loop_expected = arrangement_pcm(&f, &enveloped_source);
+    assert_ne!(loop_expected, expected);
+    assert_eq!(actual, loop_expected);
     let prepared = Arc::new(
         PreparedRevision::prepare(
             f.editor.project(),

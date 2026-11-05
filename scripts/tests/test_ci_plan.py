@@ -241,7 +241,7 @@ class ScopeTests(unittest.TestCase):
             (root / "src").mkdir()
             (root / "src/lib.rs").write_text("pub fn value() {}\n")
             (root / "Cargo.toml").write_text('[package]\nname="metadata-receiver"\nversion="0.1.0"\nedition="2021"\n')
-            (root / ".gitignore").write_text('/target/\n/artifacts/\n')
+            (root / ".gitignore").write_text('/target/\n/artifacts/\n__pycache__/\n')
             (root / "scripts").mkdir()
             for name in ("ci_plan.py", "python_test_plan.py"):
                 (root / "scripts" / name).write_bytes((SCRIPTS / name).read_bytes())
@@ -835,6 +835,44 @@ class ScopeTests(unittest.TestCase):
 
 class TestShardTests(unittest.TestCase):
     shards = module("test_shards_fixture", "test_shards.py")
+
+    def test_real_cargo_empty_selections_fail_without_rejecting_empty_targets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src").mkdir()
+            (root / "Cargo.toml").write_text(
+                '[package]\nname = "emptyshardfixture"\nversion = "0.1.0"\nedition = "2021"\n')
+            env = {**os.environ, "CARGO_TARGET_DIR": str(root / "target")}
+            command = [sys.executable, str(SCRIPTS / "test_shards.py"), "--shards", "3"]
+
+            def run(*options):
+                return subprocess.run([*command, *options, "--", "cargo", "test", "--offline"],
+                                      cwd=root, env=env, capture_output=True, text=True)
+
+            for source, options in (
+                ("", ()),
+                ("#[test] fn present() {}\n", ("--filter", "typo_no_match")),
+                ("#[test] fn present() {}\n", ("--skip", "present")),
+            ):
+                with self.subTest(options=options):
+                    (root / "src/lib.rs").write_text(source)
+                    result = run(*options)
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("no tests matched", result.stderr)
+                    self.assertNotIn("test result: ok", result.stdout)
+                    allowed = run("--allow-empty", *options)
+                    self.assertEqual(allowed.returncode, 0, allowed.stdout + allowed.stderr)
+                    self.assertIn("no tests matched", allowed.stderr)
+                    self.assertNotIn("test result: ok", allowed.stdout)
+
+            # Cargo may build an empty integration target alongside selected
+            # library tests. Refuse only a completely empty combined selection.
+            (root / "tests").mkdir()
+            (root / "tests/empty.rs").write_text("")
+            selected = run("--filter", "present")
+            self.assertEqual(selected.returncode, 0, selected.stdout + selected.stderr)
+            self.assertEqual(selected.stdout.count("present ... ok"), 1)
+            self.assertIn("test result: ok. 1 passed;", selected.stdout)
 
     def test_partition_is_disjoint_complete_and_deterministic(self):
         names = [f"t{i:02d}" for i in range(11)]
@@ -1650,6 +1688,7 @@ class ModuleScopeTests(unittest.TestCase):
                     self.assertTrue({"--lib", "--bins"} & set(step.argv))
                     self.assertNotIn("--all-targets", step.argv)
                     if step.argv[:2] == ("python3", "scripts/test_shards.py"):
+                        self.assertLess(step.argv.index("--allow-empty"), step.argv.index("--"))
                         self.assertLess(step.argv.index("--filter"), step.argv.index("--"))
             self.assertNotIn("device-gallery-tests", steps)
             self.assertTrue(any(s.argv[:2] == ("cargo", "clippy") for s in steps.values()))

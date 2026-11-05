@@ -27,6 +27,7 @@ pub struct Snapshot {
     pub retained_source_paths: Vec<u64>,
     pub audio_feeds: Vec<crate::AudioFeedSnapshot>,
     pub midi_routes: Vec<crate::MidiRouteSnapshot>,
+    pub sidechains: Vec<crate::SidechainRouteSnapshot>,
     pub import_provenance: Option<crate::ImportProvenance>,
     pub sample_rate: u32,
     pub next_id: u64,
@@ -110,6 +111,7 @@ pub struct AssetSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackSnapshot {
+    pub tags: Vec<String>,
     pub kind: crate::TrackKind,
     pub parent_group: Option<u64>,
     pub color: crate::ElementColor,
@@ -268,6 +270,14 @@ impl Project {
                     gain: f.gain(),
                 })
                 .collect(),
+            sidechains: self
+                .sidechains
+                .iter()
+                .map(|route| crate::SidechainRouteSnapshot {
+                    device: route.device.value(),
+                    source: route.source.value(),
+                })
+                .collect(),
             midi_routes: self
                 .midi_routes
                 .iter()
@@ -323,6 +333,11 @@ impl Project {
                 .tracks
                 .iter()
                 .map(|track| TrackSnapshot {
+                    tags: track
+                        .tags
+                        .iter()
+                        .map(|tag| tag.as_str().to_owned())
+                        .collect(),
                     kind: track.kind,
                     parent_group: track.parent_group.map(TrackId::value),
                     color: track.color,
@@ -700,6 +715,7 @@ impl Project {
         let return_feeds = std::mem::take(&mut snapshot.return_feeds);
         let audio_feeds = std::mem::take(&mut snapshot.audio_feeds);
         let midi_routes = std::mem::take(&mut snapshot.midi_routes);
+        let sidechains = std::mem::take(&mut snapshot.sidechains);
         let automatic_track_names = std::mem::take(&mut snapshot.automatic_track_names);
         let retained_source_paths = std::mem::take(&mut snapshot.retained_source_paths);
         if retained_source_paths.len() > MAX_TRACKS
@@ -1113,6 +1129,7 @@ impl Project {
                 });
             }
             tracks.push(Track {
+                tags: crate::track_tags::snapshot_list(track.tags)?,
                 kind: track.kind,
                 parent_group: track.parent_group.map(TrackId),
                 color: track.color,
@@ -1355,6 +1372,9 @@ impl Project {
             candidate.midi_routes = midi_routes;
             project.routing = Self::validate_return_feed_snapshot(&candidate)?;
             project.adopt_playable_snapshot(&candidate)?;
+        }
+        if !sidechains.is_empty() {
+            project.adopt_sidechains(sidechains)?;
         }
         project.validate_arrangement_occupancy()?;
         project.validate_midi_volumes()?;

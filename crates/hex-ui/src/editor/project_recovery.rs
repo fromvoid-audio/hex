@@ -58,10 +58,10 @@ impl EditorView {
         self.pending_open_path = None;
         cx.spawn(async move |this, cx| {
             let result: Result<Option<ProjectSource>, String> = async {
-                if let Some(confirmation) = confirmation {
-                    if confirmation.await.ok() != Some(1) {
-                        return Ok(None);
-                    }
+                if let Some(confirmation) = confirmation
+                    && confirmation.await.ok() != Some(1)
+                {
+                    return Ok(None);
                 }
                 let source = if matches!(kind, OpenKind::Untitled) {
                     own_untitled_source(own_slot.as_deref())?

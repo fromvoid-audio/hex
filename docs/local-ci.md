@@ -133,6 +133,12 @@ with "changed modules ran no tests". Example targets (the device gallery) are
 skipped for module-scoped owners. Smaller, self-tested modules therefore mean
 faster merges; an untested module inherits its parent's often-large suite.
 
+Standalone `scripts/test_shards.py` refuses an empty combined selection, including
+filter typos and skips removing every case. The runner passes `--allow-empty` only
+for module-scoped configurations whose coverage it checks together. That option
+reports an empty selection without claiming tests passed; callers must verify
+aggregate coverage themselves. An empty target alongside selected tests is allowed.
+
 A changed module root (for example `editor/mod.rs`) runs its complete test
 subtree, including tests in child modules, regardless of which child names
 appear in the diff. Module-scoped doctest steps run only when a changed file
@@ -501,6 +507,19 @@ cargo test -p hex-audio --features allocation-probe --locked
 cargo test -p hex-stream --features allocation-probe --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
+
+The headless callback probes share the `allocation_probes` integration target.
+Use the former target name as a module filter to run one fixture family, for
+example:
+
+```sh
+cargo test -p hex-audio --locked --features allocation-probe \
+  --test allocation_probes -- track_gain_allocations::
+```
+
+The calibration, stage-clock and device-comparison targets still support
+isolated runs. The stream-pressure target requires both `allocation-probe` and
+`stream-test-support`.
 
 For the focused Limiter stage-clock allocation check, a smaller test binary
 can reduce cold-start time while retaining debug assertions and the same test

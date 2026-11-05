@@ -21,6 +21,7 @@ enum Fault {
     NonfiniteRead,
     InvalidEdit,
     BlockDependent,
+    AlignedBypass,
 }
 struct Fixture(Fault);
 impl NativeDeviceMetadata for Fixture {
@@ -108,6 +109,9 @@ impl NativeDeviceDefinition for Fixture {
         _state: &NativeDeviceState,
         _context: &crate::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
+        if matches!(self.0, Fault::AlignedBypass) {
+            return Ok(Some(Box::new(AlignedBypassPrepared)));
+        }
         Ok(Some(Box::new(Prepared(matches!(
             self.0,
             Fault::BlockDependent
@@ -115,6 +119,33 @@ impl NativeDeviceDefinition for Fixture {
     }
 }
 struct Prepared(bool);
+
+// Only the host dry path is under test here; reuse the deterministic ordinary
+// processor to isolate the admitted fixed-latency bypass contract.
+struct AlignedBypassPrepared;
+impl PreparedNativeProcessor for AlignedBypassPrepared {
+    fn supports_latency_aligned_bypass(&self) -> bool {
+        true
+    }
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(11)
+    }
+    fn runtime_version(&self) -> u32 {
+        1
+    }
+    fn declared_runtime_bytes(&self) -> usize {
+        std::mem::size_of::<Runtime>()
+    }
+    fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
+        Prepared(false).create_runtime()
+    }
+}
+
+#[test]
+fn aligned_bypass_conformance_checks_the_exact_delayed_dry_contract() {
+    let fixture = Fixture(Fault::AlignedBypass);
+    check_effect(&fixture, &fixture.default_state().unwrap(), 48_000).unwrap();
+}
 
 struct AuxiliaryFixture;
 impl NativeDeviceMetadata for AuxiliaryFixture {
@@ -298,4 +329,107 @@ fn authoring_checks_detect_broken_values_edits_and_block_laws()
         "finite partition agreement"
     );
     Ok(())
+}
+
+#[test]
+fn auxiliary_stage_delivers_independent_pcm_and_rolls_back_with_the_chain() {
+    use crate::{
+        NativeRuntimeChain, NodeSignalPhase, PreparedProcessorInstance, ProcessorChainOwner,
+    };
+    use std::sync::Arc;
+
+    for bypassed in [false, true] {
+        let mut chain = NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+            meter: Arc::default(),
+            owner: ProcessorChainOwner::Track(1),
+            device_id: 2,
+            device_type: ID,
+            matrix: StereoMatrix::identity(),
+            bypassed,
+            sample_rate: 48_000,
+            configuration: None,
+            definition: Some(Arc::new(AuxiliaryPrepared)),
+        }])
+        .unwrap();
+        let mut main = [[2.0, -4.0]; 4];
+        let key = [[0.5, 0.25]; 4];
+        let mut silence = [];
+        let mut taps = Vec::new();
+        chain.begin_block();
+        for (i, (main, key)) in main.chunks_mut(2).zip(key.chunks(2)).enumerate() {
+            let block = crate::StereoAuxiliaryBlock::new(main, Some(key), &mut silence, 4).unwrap();
+            chain
+                .process_auxiliary_stage(
+                    0,
+                    block,
+                    i * 2,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &mut |owner, device, kind, phase, offset, frames| {
+                        assert_eq!(
+                            (owner, device, kind),
+                            (ProcessorChainOwner::Track(1), 2, ID)
+                        );
+                        taps.push((phase, offset, frames[0]));
+                    },
+                )
+                .unwrap();
+        }
+        let wet = if bypassed { [2.0, -4.0] } else { [1.0, -1.0] };
+        assert_eq!(main, [wet; 4]);
+        assert_eq!(
+            taps,
+            [
+                (NodeSignalPhase::Input, 0, [2.0, -4.0]),
+                (NodeSignalPhase::Output, 0, wet),
+                (NodeSignalPhase::Input, 2, [2.0, -4.0]),
+                (NodeSignalPhase::Output, 2, wet),
+            ]
+        );
+        chain.commit_block();
+        chain.begin_block();
+        let block =
+            crate::StereoAuxiliaryBlock::new(&mut main, Some(&key), &mut silence, 4).unwrap();
+        chain
+            .process_auxiliary_stage(
+                0,
+                block,
+                0,
+                None,
+                None,
+                None,
+                None,
+                &mut |_, _, _, _, _, _| {},
+            )
+            .unwrap();
+        // A later refusal lets the host discard the successful key on this block.
+        let block =
+            crate::StereoAuxiliaryBlock::new(&mut main, Some(&key), &mut silence, 4).unwrap();
+        assert_eq!(
+            chain.process_auxiliary_stage(
+                1,
+                block,
+                0,
+                None,
+                None,
+                None,
+                None,
+                &mut |_, _, _, _, _, _| {}
+            ),
+            Err(DeviceContractError::InvalidDescriptor)
+        );
+        chain.rollback_block();
+        let crate::RuntimeOwnership::Legacy { primary, scratch } = &chain.entries[0].runtime else {
+            panic!("auxiliary fixture runtime")
+        };
+        for processor in [primary, scratch] {
+            let probe = processor
+                .as_any()
+                .downcast_ref::<super::auxiliary::AuxiliaryProbe>()
+                .unwrap();
+            assert_eq!(probe.frames_seen, 4);
+        }
+    }
 }

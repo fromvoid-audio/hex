@@ -610,7 +610,7 @@ fn structural_section_edits_roundtrip_the_complete_project_and_one_history_edge(
                 let duplicate = editor.project().arrangement_section(copy).unwrap();
                 assert_eq!(duplicate.start(), source.end());
                 assert_eq!(duplicate.name(), source.name());
-                assert_ne!(duplicate.color(), source.color());
+                assert!(ElementColor::ALL.contains(&duplicate.color()));
             }
             "duplicate-before" | "duplicate-after" => {
                 let after_target = operation == "duplicate-after";
@@ -628,7 +628,7 @@ fn structural_section_edits_roundtrip_the_complete_project_and_one_history_edge(
                 let target = editor.project().arrangement_section(ids[1]).unwrap();
                 let copied = editor.project().arrangement_section(copy).unwrap();
                 assert_eq!(copied.name(), source.name());
-                assert_ne!(copied.color(), source.color());
+                assert!(ElementColor::ALL.contains(&copied.color()));
                 if after_target {
                     assert_eq!(copied.start(), target.end());
                 } else {
@@ -753,4 +753,61 @@ fn implied_warp_laws(project: &hex_project::Project) -> hex_project::Project {
         "only visible clip content is converted"
     );
     project
+}
+
+#[test]
+fn exhausted_section_palette_keeps_drawn_colors_through_history_and_reopen() {
+    let mut editor = Editor::new(fixture(), 64).unwrap();
+    let source = editor.project().arrangement_sections()[0].id();
+    let original_color = editor
+        .project()
+        .arrangement_section(source)
+        .unwrap()
+        .color();
+    for (index, color) in ElementColor::ALL.into_iter().enumerate() {
+        editor
+            .execute(Command::AddArrangementSection {
+                name: "palette".into(),
+                color,
+                start: b(100 + index as u64 * 2),
+                end: b(101 + index as u64 * 2),
+            })
+            .unwrap();
+    }
+    for round in 0..4 {
+        let before = editor.project().snapshot();
+        let command = if round % 2 == 0 {
+            Command::DuplicateArrangementSection(source)
+        } else {
+            Command::DuplicateArrangementSectionAt {
+                section: source,
+                target: source,
+                after: false,
+            }
+        };
+        let Created::ArrangementSection(copy) = editor.execute(command).unwrap() else {
+            panic!("copy identity")
+        };
+        let chosen = editor.project().arrangement_section(copy).unwrap().color();
+        assert!(ElementColor::ALL.contains(&chosen));
+        assert_eq!(
+            editor
+                .project()
+                .arrangement_section(source)
+                .unwrap()
+                .color(),
+            original_color
+        );
+        let after = editor.project().snapshot();
+        let reopened =
+            hex_storage::decode(&hex_storage::encode(editor.project()).unwrap()).unwrap();
+        assert_eq!(reopened.snapshot(), after);
+        assert_eq!(reopened.arrangement_section(copy).unwrap().color(), chosen);
+        assert!(editor.undo());
+        let mut undone = editor.project().snapshot();
+        undone.next_id = before.next_id;
+        assert_eq!(undone, before);
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), after);
+    }
 }

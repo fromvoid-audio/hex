@@ -231,7 +231,7 @@ impl PreparedAnalyticContinuation for Context {
         _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<[f32; 2], Error> {
         self.validate_note(note)?;
-        if self.refusal == 2 && age % 17 == 0 {
+        if self.refusal == 2 && age.is_multiple_of(17) {
             return Err(Error::InvalidParameters);
         }
         Ok(signal(age, gate, self.gain(target, parameters)?))

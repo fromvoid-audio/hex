@@ -966,6 +966,11 @@ impl Render for EditorView {
                 view.browser_next(window, cx);
             }))
             .on_action(
+                cx.trace(|view, _: &super::BrowserRandomSample, window, cx| {
+                    view.browser_random_sample(window, cx);
+                }),
+            )
+            .on_action(
                 cx.trace(|view, _: &super::BrowserPreviewSelected, window, cx| {
                     view.browser_preview_selected(window, cx);
                 }),
@@ -1258,15 +1263,15 @@ impl Render for EditorView {
                 view.cancel_duplicate_chain();
                 if view.midi_focus.is_focused(window) {
                     if view.midi_selection.len() == 1 {
-                        if let Some(note) = view.midi_selection.primary() {
-                            if let Some(state) = view.state.as_ref() {
-                                view.update_note_field(
-                                    note,
-                                    state.revision,
-                                    view.project_generation,
-                                    super::midi::NoteField::Duration(-1),
-                                );
-                            }
+                        if let Some(note) = view.midi_selection.primary()
+                            && let Some(state) = view.state.as_ref()
+                        {
+                            view.update_note_field(
+                                note,
+                                state.revision,
+                                view.project_generation,
+                                super::midi::NoteField::Duration(-1),
+                            );
                         }
                     } else if view.midi_selection.len() > 1 {
                         view.adjust_selected_group_current(
@@ -1287,15 +1292,15 @@ impl Render for EditorView {
                 view.cancel_duplicate_chain();
                 if view.midi_focus.is_focused(window) {
                     if view.midi_selection.len() == 1 {
-                        if let Some(note) = view.midi_selection.primary() {
-                            if let Some(state) = view.state.as_ref() {
-                                view.update_note_field(
-                                    note,
-                                    state.revision,
-                                    view.project_generation,
-                                    super::midi::NoteField::Duration(1),
-                                );
-                            }
+                        if let Some(note) = view.midi_selection.primary()
+                            && let Some(state) = view.state.as_ref()
+                        {
+                            view.update_note_field(
+                                note,
+                                state.revision,
+                                view.project_generation,
+                                super::midi::NoteField::Duration(1),
+                            );
                         }
                     } else if view.midi_selection.len() > 1 {
                         view.adjust_selected_group_current(
@@ -1389,6 +1394,9 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &DeleteClip, window, cx| {
+                if view.selection_delete_blocked() {
+                    return;
+                }
                 if view.delete_automation_point(window, cx) {
                     return;
                 }
@@ -1533,7 +1541,7 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &ToggleLoop, window, cx| {
-                view.toggle_active_loop_shortcut(window);
+                view.toggle_active_loop_shortcut(window, cx);
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &ZoomIn, _, cx| {

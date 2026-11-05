@@ -1057,7 +1057,7 @@ mod capture_tests;
 mod main_size_tests;
 
 #[gpui::test]
-fn arrangement_z_fits_selected_track_span_and_x_restores_both_axes(cx: &mut TestAppContext) {
+fn arrangement_z_fits_selected_track_span_and_v_restores_both_axes(cx: &mut TestAppContext) {
     let (mut visual, editor, tracks) = fixture(cx, 12);
     editor.update(&mut visual, |view, cx| {
         view.track_scroll
@@ -1126,7 +1126,7 @@ fn arrangement_z_fits_selected_track_span_and_x_restores_both_axes(cx: &mut Test
     visual.run_until_parked();
     visual.simulate_resize(size(px(1200.0), px(680.0)));
     visual.run_until_parked();
-    visual.simulate_keystrokes("x");
+    visual.simulate_keystrokes("v");
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.track_body_height(tracks[6]), before.0);
@@ -1159,7 +1159,7 @@ fn arrangement_z_fits_selected_track_span_and_x_restores_both_axes(cx: &mut Test
                 <= 2.0
         );
     });
-    visual.simulate_keystrokes("x");
+    visual.simulate_keystrokes("v");
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.track_body_height(tracks[6]), before.0);

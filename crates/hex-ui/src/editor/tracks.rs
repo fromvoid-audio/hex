@@ -709,6 +709,26 @@ impl EditorView {
                 .w(px(1.0))
                 .bg(rgb(theme::color(theme::PaletteRole::Border))),
         );
+        // Keep the group cue anchored to the header edge, below clips and their
+        // interaction overlays, while the timeline scrolls independently.
+        clip_area = clip_area.children(
+            self.track_hierarchy_indent
+                .ancestors(track_id)
+                .iter()
+                .enumerate()
+                .map(|(depth, &(ancestor, color))| {
+                    div()
+                        .absolute()
+                        .right(px(1.0 + depth as f32 * 2.0))
+                        .top_0()
+                        .bottom_0()
+                        .w(px(2.0))
+                        .debug_selector(move || {
+                            format!("lane-group-rail-{}-{}", track_id.value(), ancestor.value())
+                        })
+                        .bg(gpui::Hsla::from(rgb(theme::element_colors(color).accent)).alpha(0.35))
+                }),
+        );
         clip_area = clip_area.child(
             div()
                 .absolute()
@@ -893,8 +913,8 @@ impl EditorView {
                             );
                     let looping = loop_handles::audio_repeats(&preview_clip);
                     preview = loop_handles::surface(preview, looping);
-                    if self.track_body_height(track_id) > super::track_layout::HEADER_ONLY_HEIGHT {
-                        if let Some(waveform) = super::waveform::preview_waveform_view_cached(
+                    if self.track_body_height(track_id) > super::track_layout::HEADER_ONLY_HEIGHT
+                        && let Some(waveform) = super::waveform::preview_waveform_view_cached(
                             super::waveform::WaveformPreview {
                                 original: &original_clip,
                                 preview: &preview_clip,
@@ -906,10 +926,10 @@ impl EditorView {
                             visible_end,
                             std::rc::Rc::clone(&self.waveform_geometry_cache),
                             self.waveform_grid(track_id, viewport, scale_factor),
-                        ) {
-                            preview = preview
-                                .child(loop_handles::body(clip_waveform_body(waveform), looping));
-                        }
+                        )
+                    {
+                        preview = preview
+                            .child(loop_handles::body(clip_waveform_body(waveform), looping));
                     }
                     preview = preview.child(self.clip_name_preview_header(
                         track_id,
@@ -1533,6 +1553,7 @@ impl EditorView {
                 track.name(),
                 cx,
             ))
+            .children(self.track_tags_header(track, cx))
             .tooltip(move |_, cx| {
                 cx.new(|_| ClipTooltip {
                     kind: crate::tooltips::Kind::Identification,
@@ -1820,6 +1841,24 @@ impl EditorView {
         let click_focus = header_focus.clone();
         let header_height = self.track_body_height(track_id);
         let expanded_header = header_height > TRACK_ROW_HEIGHT;
+        let group_rails = self
+            .track_hierarchy_indent
+            .ancestors(track_id)
+            .iter()
+            .enumerate()
+            .map(|(depth, &(ancestor, color))| {
+                div()
+                    .absolute()
+                    .left(px(depth as f32 * super::track_hierarchy_indent::RAIL_WIDTH))
+                    .top(px(1.0))
+                    .bottom_0()
+                    .w(px(super::track_hierarchy_indent::RAIL_WIDTH))
+                    .debug_selector(move || {
+                        format!("track-group-rail-{}-{}", track_id.value(), ancestor.value())
+                    })
+                    .bg(rgb(theme::element_colors(color).accent))
+            })
+            .collect::<Vec<_>>();
         let header = super::track_header::surface(
             ("arrangement-track-header", track_id.value()),
             self.track_header_width(),
@@ -1856,10 +1895,11 @@ impl EditorView {
         )
         .children(self.track_resize_handles(track_id, cx))
         .relative()
+        .children(group_rails)
         .child(
             div()
                 .absolute()
-                .left_0()
+                .left(px(hierarchy_indent))
                 .top(px(1.0))
                 .bottom_0()
                 .w(px(4.0))

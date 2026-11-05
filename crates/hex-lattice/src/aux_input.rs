@@ -63,6 +63,11 @@ impl<'a> StereoAuxiliaryBlock<'a> {
         Ok(Self { main, key })
     }
 
+    /// Reborrow a matching subrange of an already validated block.
+    pub(crate) fn paired(main: &'a mut [StereoFrame], key: &'a [StereoFrame]) -> Self {
+        Self { main, key }
+    }
+
     /// Split the validated block into its mutable main and immutable key views.
     pub fn into_parts(self) -> (&'a mut [StereoFrame], &'a [StereoFrame]) {
         (self.main, self.key)
