@@ -316,6 +316,11 @@ pub trait WorkerAudioSink: Send {
     ) -> Result<Option<hex_engine::PreparedRevision>, String> {
         Ok(None)
     }
+    /// Rate of the current default interface for an un-authored document.
+    /// An unavailable observation leaves selection to the existing fallback.
+    fn default_project_sample_rate(&self) -> Option<u32> {
+        None
+    }
     /// Ordinary source-planning defaults, independent of the document mode.
     /// A host opts in only with bounded file preparation/publication consumers.
     fn ordinary_source_reservation(&self) -> Option<crate::SourcePlanReservation> {
@@ -688,6 +693,13 @@ impl WorkerEvents {
             );
         }
     }
+    pub(super) fn default_project_sample_rate(&self) -> Option<u32> {
+        self.audio
+            .as_ref()
+            .and_then(|audio| audio.default_project_sample_rate())
+            .filter(|rate| (8_000..=192_000).contains(rate))
+    }
+
     pub(super) fn ordinary_source_reservation(&self) -> Option<crate::SourcePlanReservation> {
         self.audio
             .as_ref()

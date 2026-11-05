@@ -149,7 +149,7 @@ pub(super) struct NativeAudioSink {
     #[cfg(all(test, feature = "allocation-probe"))]
     startup_open_deadline: std::time::Duration,
     #[cfg(all(test, feature = "allocation-probe"))]
-    startup_bridge_rate_probe: Option<fn() -> Option<u32>>,
+    project_rate_probe: Box<dyn Fn() -> Option<u32> + Send>,
     next_catalog: u64,
     domains: [Option<Domain>; 2],
     preparation: Option<Preparation>,
@@ -223,7 +223,7 @@ impl NativeAudioSink {
             #[cfg(all(test, feature = "allocation-probe"))]
             startup_open_deadline: STARTUP_OPEN_DEADLINE,
             #[cfg(all(test, feature = "allocation-probe"))]
-            startup_bridge_rate_probe: None,
+            project_rate_probe: Box::new(|| None),
             next_catalog: 1,
             domains: std::array::from_fn(|_| None),
             preparation: None,
@@ -1323,6 +1323,13 @@ impl WorkerAudioSink for NativeAudioSink {
     ) {
         self.retry_resident_pending(admit);
     }
+    fn default_project_sample_rate(&self) -> Option<u32> {
+        #[cfg(all(test, feature = "allocation-probe"))]
+        let rate = (self.project_rate_probe)();
+        #[cfg(not(all(test, feature = "allocation-probe")))]
+        let rate = hex_audio::OutputRoute::probe_default_on_control().map(|route| route.nominal_hz);
+        rate.filter(|rate| (8_000..=192_000).contains(rate))
+    }
     fn initialize(&mut self, shutdown: &AtomicBool) -> Result<u32, String> {
         if shutdown.load(Acquire) {
             self.close();
@@ -1330,23 +1337,9 @@ impl WorkerAudioSink for NativeAudioSink {
         }
         self.plugins.initialize();
         self.route_watch = hex_audio::OutputRouteWatch::spawn().ok();
-        // The bridge runs at the device's nominal rate. Choose it before the
-        // first project is authored, without waiting for a stream to open.
-        // Later opens must honor the project's rate, including after a route change.
-        let bridge_rate = self
-            .plugins
-            .wants_profile()
-            .then(|| {
-                hex_audio::OutputRoute::probe_default_on_control().map(|route| route.nominal_hz)
-            })
-            .flatten();
-        #[cfg(all(test, feature = "allocation-probe"))]
-        let bridge_rate = self
-            .startup_bridge_rate_probe
-            .map_or(bridge_rate, |probe| probe());
-        let rate = bridge_rate
-            .filter(|rate| (8_000..=192_000).contains(rate))
-            .unwrap_or(48_000);
+        // Choose the rate before the first project is authored. Stream
+        // completion still happens asynchronously.
+        let rate = self.default_project_sample_rate().unwrap_or(48_000);
         self.request_open(Some(rate), None);
         self.initial_open_started = Some(std::time::Instant::now());
         Ok(rate)

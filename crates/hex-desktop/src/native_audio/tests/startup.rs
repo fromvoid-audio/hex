@@ -12,17 +12,17 @@ fn delayed_initial_rate_mismatch_preserves_edits_and_reports_refusal() {
 }
 
 #[test]
-fn delayed_initial_bridge_at_device_rate_authors_at_that_rate() {
+fn delayed_initial_output_at_device_rate_authors_at_that_rate() {
     delayed_completion(Some(|| Some(44_100)), 44_100);
 }
 
-fn delayed_completion(bridge_probe: Option<fn() -> Option<u32>>, device_rate: u32) {
-    let project_rate = bridge_probe.and_then(|probe| probe()).unwrap_or(48_000);
+fn delayed_completion(rate_probe: Option<fn() -> Option<u32>>, device_rate: u32) {
+    let project_rate = rate_probe.and_then(|probe| probe()).unwrap_or(48_000);
     let _native = native_fixture();
     let (events, audio_events) = mpsc::sync_channel(4);
     let mut sink = NativeAudioSink::new(events);
     sink.lifecycle_status = Some(|| None);
-    sink.startup_bridge_rate_probe = bridge_probe;
+    sink.project_rate_probe = Box::new(rate_probe.unwrap_or(|| None));
     let release = Arc::new(AtomicBool::new(false));
     let gate = Arc::clone(&release);
     let backend = Arc::new(Mutex::new(None));

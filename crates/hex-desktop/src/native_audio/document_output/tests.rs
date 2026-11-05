@@ -30,6 +30,8 @@ impl Harness {
         let callback = Arc::clone(&backend);
         let nominal_device_rate = Arc::new(AtomicU32::new(48_000));
         let device = Arc::clone(&nominal_device_rate);
+        let probe = Arc::clone(&nominal_device_rate);
+        sink.project_rate_probe = Box::new(move || Some(probe.load(Acquire)));
         let fail = Arc::new(AtomicU8::new(0));
         let failure = Arc::clone(&fail);
         sink.output_factory = Some(Box::new(move |rate| {
@@ -217,6 +219,23 @@ fn saved_fixture(files: &Files, rate: u32) -> (PathBuf, PathBuf, Project) {
     let project = editor.project().clone();
     hex_storage::save_new(&path, &project).unwrap();
     (path, wav, project)
+}
+
+#[test]
+fn new_project_uses_current_interface_rate() {
+    let _native = native_fixture();
+    let mut h = Harness::new();
+    let initial = h.wait(|h| h.service.try_event().ok());
+    h.await_playback(&initial, 48_000);
+
+    h.nominal_device_rate.store(44_100, Release);
+    let opened = h.submit(Request::NewWithAudioMode {
+        mode: hex_session::DocumentAudioMode::Resident,
+        reservation: None,
+    });
+    assert!(opened.project_replaced, "{:?}", opened.error);
+    assert_eq!(opened.state.project.sample_rate(), 44_100);
+    h.await_playback(&opened, 44_100);
 }
 
 #[test]

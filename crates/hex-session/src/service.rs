@@ -5029,7 +5029,9 @@ fn run_worker(
                 Request::NewWithAudioMode { mode, reservation } => {
                     open_complete = true;
                     let candidate = Session::new_with_audio_mode_in_overview_domain(
-                        session.project().sample_rate(),
+                        events
+                            .default_project_sample_rate()
+                            .unwrap_or_else(|| session.project().sample_rate()),
                         history_capacity,
                         session.max_resident_frames(),
                         mode,
