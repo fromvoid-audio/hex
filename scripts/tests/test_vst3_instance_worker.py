@@ -574,6 +574,25 @@ class NativeInstanceTests(unittest.TestCase):
         self.assertEqual(struct.unpack("<14f", output[64:]), tuple(v*.5 for v in inputs))
         self.terminal(session, 0, message=session.stop())
 
+    def test_null_false_optional_query_keeps_separate_controller_and_pcm(self):
+        session = self.session(variant=112, auto_present=False)
+        self.assertEqual(session.message()[0], b"HXVIFA03")
+        session.presentation((77, 91))
+        magic, ready = session.message()
+        self.assertEqual((magic, ready[70:72]), (b"HXVIRD04", b"\0\x01"))
+        self.assertEqual(ready[-8:], b"HXCT" + struct.pack("<I", 7))
+        _, inputs, (magic, pcm) = session.render(7)
+        self.assertEqual(magic, b"HXVB")
+        self.assertEqual(struct.unpack("<14f", pcm[64:]), tuple(v * .5 for v in inputs))
+        self.terminal(session, 0, message=session.stop())
+
+    def test_null_success_or_missing_required_processor_refuses_instance_open(self):
+        for variant in (113, 114):
+            with self.subTest(variant=variant):
+                session = self.session(variant=variant)
+                self.error(session, 13)
+                self.terminal(session, 13)
+
     def test_plugin_stdio_cannot_corrupt_or_consume_the_owned_protocol(self):
         for variant in (21, 22):
             with self.subTest(variant=variant):
