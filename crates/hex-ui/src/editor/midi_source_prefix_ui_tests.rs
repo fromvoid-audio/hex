@@ -4,7 +4,7 @@ use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
 use hex_project::{BeatTime, Command, MidiNoteInsert};
 use hex_session::service::Request;
 
-fn grid_lines(visual: &mut gpui::VisualTestContext) -> Vec<i32> {
+fn grid_lines(visual: &mut gpui::VisualTestContext) -> Vec<(i32, usize)> {
     let roll = visual.debug_bounds("midi-note-roll").unwrap();
     let scale = gpui::ScaledPixels::from(visual.update(|window, _| window.scale_factor()));
     let colors: [gpui::Background; 2] = [
@@ -19,7 +19,12 @@ fn grid_lines(visual: &mut gpui::VisualTestContext) -> Vec<i32> {
                 && (b.size.width / scale - 1.0).abs() < 0.01
                 && (b.size.height / scale - (f32::from(roll.size.height) - 2.0)).abs() < 0.01
         })
-        .map(|(b, _)| ((b.origin.x / scale) * 100.0).round() as i32)
+        .map(|(b, color)| {
+            (
+                ((b.origin.x / scale) * 100.0).round() as i32,
+                colors.iter().position(|c| c == &color).unwrap(),
+            )
+        })
         .collect::<Vec<_>>();
     lines.sort_unstable();
     assert!(!lines.is_empty());
