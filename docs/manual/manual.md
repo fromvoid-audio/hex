@@ -65,6 +65,14 @@ keep the original project and its media if opening fails. an unsupported or
 malformed format needs its reported recovery path; changing the filename does
 not convert it. compatibility with every historical alpha file is not implied.
 
+## quit with work in progress
+
+quitting from the dock uses the same confirmation as quitting from the app
+menu. if hex asks whether to discard unsaved work, choose **cancel** to return
+to the project and save it. **discard** closes the project and can cancel an
+export in progress. finish a recording or resolve a retained take before
+quitting.
+
 ## missing media
 
 when you open a project whose audio files have moved, hex shows the
