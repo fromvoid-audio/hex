@@ -1254,9 +1254,9 @@ fn distant_events_do_not_increase_finite_once_playback_pcm_budget() {
         let prepared = prepare(&editor, &media, &context);
         let actual = render(&prepared, 0, 8_032, 57);
         let source = media.values().next().unwrap();
-        for frame in 0..900 {
+        for (frame, sample) in actual[..900].iter().enumerate() {
             assert_eq!(
-                actual[frame],
+                *sample,
                 source.frames()[frame + 100].map(|x| x * fade.gain_at(frame as u64))
             );
         }
