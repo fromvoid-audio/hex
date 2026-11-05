@@ -2224,3 +2224,41 @@ fn group_gain_automation_tracks_delayed_content_across_render_partitions() {
     assert_eq!(whole[3], f.samples[0].map(|value| value * 0.5));
     assert_eq!(whole[10], f.samples[7]);
 }
+
+#[test]
+fn compressor_sidechain_refuses_preparation_until_rendering_is_supported() {
+    let mut f = fixture(&[&[], &[]], 64);
+    let state = hex_devices::compressor::COMPRESSOR_DEFINITION
+        .default_state()
+        .unwrap();
+    let Created::Device(device) = f
+        .editor
+        .execute(Command::InsertDevice {
+            track: f.tracks[1],
+            before: None,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("compressor")
+    };
+    let prepare = |f: &Fixture| {
+        PreparedRevision::prepare(
+            f.editor.project(),
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+        )
+    };
+    assert!(prepare(&f).is_ok());
+    f.editor
+        .execute(Command::SetSidechain {
+            device,
+            source: Some(f.tracks[0]),
+        })
+        .unwrap();
+    assert_eq!(
+        prepare(&f).err(),
+        Some(Invalid("compressor sidechain playback is unavailable"))
+    );
+}
