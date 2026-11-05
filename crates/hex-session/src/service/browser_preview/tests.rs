@@ -144,6 +144,28 @@ fn cancelled_jobs_stop_promptly_and_cache_nothing() {
 }
 
 #[test]
+fn cancellation_after_decode_refuses_waveform_and_preserves_cached_source() {
+    let directory = TestDir::new();
+    let path = directory.0.join("cancel-after-decode.wav");
+    fs::write(&path, wav_mono(&[100; 64])).unwrap();
+    let sources = PreviewSources::default();
+    let cancel = AtomicBool::new(false);
+    let source = sources.source(&path, &cancel).unwrap();
+    cancel.store(true, Ordering::Relaxed);
+    assert!(matches!(
+        waveform_from_source(source, 48_000, &cancel),
+        Err(PreviewFailure::Cancelled)
+    ));
+    let retry = sources.prepare_waveform(&path, 48_000, &RUNNING).unwrap();
+    assert_eq!(retry.playback_frames, 64);
+    assert_eq!(
+        decodes(&sources),
+        1,
+        "a cancelled summary keeps decoded PCM"
+    );
+}
+
+#[test]
 fn a_waiting_job_receives_the_in_flight_decode() {
     let directory = TestDir::new();
     let path = directory.0.join("single-flight.wav");
