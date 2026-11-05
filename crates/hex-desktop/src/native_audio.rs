@@ -118,6 +118,7 @@ pub(super) struct NativeAudioSink {
     /// One route-change notice for the delivered output (#4131).
     pending_route_event: Option<EditorAudioEvent>,
     pending_degraded_event: Option<EditorAudioEvent>,
+    pending_latency_event: Option<EditorAudioEvent>,
     /// Samples the default output route off this worker; `None` when the
     /// watch thread could not start, which only disables route following.
     route_watch: Option<hex_audio::OutputRouteWatch>,
@@ -193,6 +194,7 @@ impl NativeAudioSink {
             pending_status_observation: None,
             pending_route_event: None,
             pending_degraded_event: None,
+            pending_latency_event: None,
             route_watch: None,
             route_seen: 0,
             route_follow: Default::default(),
@@ -265,6 +267,7 @@ impl NativeAudioSink {
         self.pending_status_observation = None;
         self.pending_route_event = None;
         self.pending_degraded_event = None;
+        self.pending_latency_event = None;
         self.preparation = None;
         self.domains = std::array::from_fn(|_| None);
         self.submitted = std::array::from_fn(|_| None);
@@ -525,6 +528,7 @@ impl NativeAudioSink {
             &mut self.pending_status_observation,
             &mut self.pending_route_event,
             &mut self.pending_degraded_event,
+            &mut self.pending_latency_event,
         ] {
             let Some(event) = pending.take() else {
                 continue;
@@ -1538,6 +1542,16 @@ impl WorkerAudioSink for NativeAudioSink {
                     &mut output,
                     self.desired.as_ref().map(|source| source.context()),
                 );
+                if self.sampler.is_none()
+                    && let Some(desired) = self.desired.as_ref()
+                    && desired.audio_mode() == DocumentAudioMode::Resident
+                    && let Some(source) = self
+                        .plugins
+                        .poll_latency_restart(&mut output, desired.context())
+                {
+                    self.pending_latency_event =
+                        Some(EditorAudioEvent::NativeLatencyRestart { source });
+                }
                 if let Some((output_identity, devices)) = self.plugins.take_degraded_change() {
                     self.pending_degraded_event = Some(EditorAudioEvent::DegradedPlugins {
                         output_identity,
@@ -1570,6 +1584,7 @@ impl WorkerAudioSink for NativeAudioSink {
             && self.pending_status_observation.is_none()
             && self.pending_route_event.is_none()
             && self.pending_degraded_event.is_none()
+            && self.pending_latency_event.is_none()
             && self.sampler.is_none()
             && self.sampler_parameter.is_none()
             && self.sampler_budget_wait.is_none()

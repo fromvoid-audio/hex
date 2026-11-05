@@ -166,6 +166,7 @@ impl Editor {
         let mut candidate = self.project.clone();
         let result = candidate.apply(command)?;
         let alias_changed = alias_plan.finish(&mut candidate)?;
+        candidate.prune_deleted_sidechains();
         if alias_changed {
             Project::from_snapshot(candidate.snapshot())?;
         }
@@ -324,6 +325,7 @@ impl Editor {
             for mut command in commands {
                 let alias_plan = crate::clip_alias_edit::Plan::capture(&candidate, &mut command)?;
                 results.push(candidate.apply(command)?);
+                candidate.prune_deleted_sidechains();
                 alias_changed |= alias_plan.finish(&mut candidate)?;
             }
             if alias_changed {

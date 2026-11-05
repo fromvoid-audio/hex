@@ -311,6 +311,34 @@ impl RuntimeOwnership {
         }
     }
 
+    pub(super) fn process_auxiliary(
+        &mut self,
+        block: crate::StereoAuxiliaryBlock<'_>,
+        clock: Option<&dyn crate::NativeInstrumentClock>,
+        automation: Option<&dyn crate::NativeParameterAutomation>,
+        bypassed: bool,
+    ) -> Result<(), DeviceContractError> {
+        match self {
+            Self::Legacy { scratch, .. } => scratch.process_block_with_auxiliary(
+                block,
+                clock,
+                automation,
+                bypassed,
+                &crate::EMPTY_DEVICE_RESOURCES,
+            ),
+            Self::Owned(runtime) => runtime.process_block_with_auxiliary(
+                block,
+                clock,
+                automation,
+                bypassed,
+                &crate::EMPTY_DEVICE_RESOURCES,
+            ),
+            Self::Memoryless | Self::Foreign(_) => {
+                Err(DeviceContractError::UnsupportedProcessingClass)
+            }
+        }
+    }
+
     pub(super) fn process_with_clock(
         &mut self,
         frames: &mut [crate::StereoFrame],

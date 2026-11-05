@@ -56,3 +56,80 @@ fn allocation_counter_detects_both_allocation_and_deallocation() {
     let deallocation = allocation_counter::measure(|| drop(std::hint::black_box(value)));
     assert!(deallocation.count_current < 0 && deallocation.bytes_current < 0);
 }
+
+#[test]
+fn compressor_auxiliary_transaction_does_not_allocate_or_free() {
+    use hex_lattice::{
+        DevicePreparationContext, NativeDeviceDefinition, NativeRuntimeChain,
+        PreparedProcessorInstance, ProcessorChainOwner, StereoMatrix, TuningTable,
+    };
+    use hex_lattice_contract::NativeDeviceMetadata;
+    use std::sync::Arc;
+
+    let definition = &hex_devices::compressor::COMPRESSOR_DEFINITION;
+    let state = definition.default_state().unwrap();
+    let sample_rate = 48_000;
+    let prepared = definition
+        .prepare_processor(
+            &state,
+            &DevicePreparationContext {
+                sample_rate,
+                tuning: &TuningTable::default(),
+                resources: &EMPTY_DEVICE_RESOURCES,
+            },
+        )
+        .unwrap()
+        .unwrap();
+    let mut chain = NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+        meter: Arc::default(),
+        owner: ProcessorChainOwner::Track(1),
+        device_id: 2,
+        device_type: definition.type_id(),
+        matrix: StereoMatrix::identity(),
+        bypassed: false,
+        sample_rate,
+        configuration: Some(Arc::new(state)),
+        definition: Some(Arc::from(prepared)),
+    }])
+    .unwrap();
+    let input = [[0.125, -0.0625]; 256];
+    let key = [[1.0, 0.0]; 256];
+    let mut main = input;
+    let mut silence = [];
+    let mut success = true;
+    let measurement = allocation_counter::measure(|| {
+        for commit in [false, true] {
+            chain.begin_block();
+            let block =
+                StereoAuxiliaryBlock::new(&mut main, Some(&key), &mut silence, 256).unwrap();
+            success &= chain
+                .process_auxiliary_stage(
+                    0,
+                    block,
+                    0,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &mut |_, _, _, _, _, _| {},
+                )
+                .is_ok();
+            if commit {
+                chain.commit_block();
+            } else {
+                chain.rollback_block();
+            }
+        }
+    });
+    assert!(success);
+    assert!(main[255][0] < input[255][0]);
+    assert_eq!(
+        (
+            measurement.count_total,
+            measurement.bytes_total,
+            measurement.count_current,
+            measurement.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+}
