@@ -1545,8 +1545,11 @@ impl WorkerAudioSink for NativeAudioSink {
                     self.pending_latency_event =
                         Some(EditorAudioEvent::NativeLatencyRestart { source });
                 }
-                if let Some((output_identity, devices)) = self.plugins.take_degraded_change() {
+                if let Some((project_generation, output_identity, devices)) =
+                    self.plugins.take_degraded_change()
+                {
                     self.pending_degraded_event = Some(EditorAudioEvent::DegradedPlugins {
+                        project_generation,
                         output_identity,
                         devices,
                     });

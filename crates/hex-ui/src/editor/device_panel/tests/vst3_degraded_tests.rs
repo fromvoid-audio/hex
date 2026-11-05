@@ -8,7 +8,7 @@ fn selector(status: &str, device: DeviceId) -> &'static str {
 }
 
 #[gpui::test]
-fn only_the_current_outputs_degraded_vst3_devices_show_the_marker(cx: &mut TestAppContext) {
+fn only_the_current_documents_degraded_vst3_devices_show_the_marker(cx: &mut TestAppContext) {
     let _output_serial = hex_audio::worker_fixture::serial_output();
     let (mut output, backend) =
         hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
@@ -52,7 +52,9 @@ fn only_the_current_outputs_degraded_vst3_devices_show_the_marker(cx: &mut TestA
         Arc::default(),
     );
     let (events, receiver) = std::sync::mpsc::sync_channel(4);
+    let generation = 1;
     view.update(cx, |view, cx| {
+        view.project_generation = generation;
         view.audio_events = receiver;
         view.audio = Some(EditorAudio {
             control: client,
@@ -68,9 +70,14 @@ fn only_the_current_outputs_degraded_vst3_devices_show_the_marker(cx: &mut TestA
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
-    let deliver = |visual: &mut VisualTestContext, output_identity, devices, current: bool| {
+    let deliver = |visual: &mut VisualTestContext,
+                   project_generation,
+                   output_identity,
+                   devices,
+                   current: bool| {
         events
             .send(EditorAudioEvent::DegradedPlugins {
+                project_generation,
                 output_identity,
                 devices,
             })
@@ -87,15 +94,29 @@ fn only_the_current_outputs_degraded_vst3_devices_show_the_marker(cx: &mut TestA
         assert!(visual.debug_bounds(selector("pending", device)).is_some());
     }
     // A notice from an output that is no longer current is ignored.
-    deliver(&mut visual, identity + 1, vec![faulted.value()], false);
+    deliver(
+        &mut visual,
+        generation,
+        identity + 1,
+        vec![faulted.value()],
+        false,
+    );
+    // The same output may still carry a queued notice from its old document.
+    deliver(&mut visual, 0, identity, vec![faulted.value()], false);
     assert!(visual.debug_bounds(selector("degraded", faulted)).is_none());
-    deliver(&mut visual, identity, vec![faulted.value()], true);
+    deliver(
+        &mut visual,
+        generation,
+        identity,
+        vec![faulted.value()],
+        true,
+    );
     assert!(visual.debug_bounds(selector("degraded", faulted)).is_some());
     assert!(visual.debug_bounds(selector("pending", faulted)).is_none());
     assert!(visual.debug_bounds(selector("degraded", healthy)).is_none());
     assert!(visual.debug_bounds(selector("pending", healthy)).is_some());
     // An empty set clears the marker.
-    deliver(&mut visual, identity, Vec::new(), true);
+    deliver(&mut visual, generation, identity, Vec::new(), true);
     assert!(visual.debug_bounds(selector("degraded", faulted)).is_none());
     assert!(visual.debug_bounds(selector("pending", faulted)).is_some());
     drop(backend);

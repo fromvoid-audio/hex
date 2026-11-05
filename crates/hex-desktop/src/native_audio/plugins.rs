@@ -135,7 +135,7 @@ pub(super) struct Plugins {
     edit: Option<AudioSourceContext>,
     pub(super) catalog: Option<std::path::PathBuf>,
     degraded: degraded::DegradedReport<Binding>,
-    degraded_changed: Option<(u64, Vec<u64>)>,
+    degraded_changed: Option<(u64, u64, Vec<u64>)>,
     latency_poll: usize,
     latency_poll_at: Option<std::time::Instant>,
     latency_notice: Option<(hex_audio::prepared::AppliedAudioSource, std::time::Instant)>,
@@ -205,8 +205,8 @@ impl Plugins {
         self.sources.clear();
         self.pool_held = false;
     }
-    /// The newest changed degraded vst3 device set and its output, once.
-    pub fn take_degraded_change(&mut self) -> Option<(u64, Vec<u64>)> {
+    /// The newest changed degraded vst3 device set, project generation and output, once.
+    pub fn take_degraded_change(&mut self) -> Option<(u64, u64, Vec<u64>)> {
         self.degraded_changed.take()
     }
     pub fn output_closed(&mut self) {
@@ -280,8 +280,24 @@ impl Plugins {
                 .iter()
                 .any(|source| source.retiring || (source.queued && !source.accepted))
     }
-    pub(super) fn can_retain_output_for_native_document(&self) -> bool {
-        self.sources.is_empty() && self.idle()
+    pub(super) fn can_retain_output_for_native_document(&self, generation: u64) -> bool {
+        self.idle()
+            && self
+                .sources
+                .iter()
+                .all(|source| source.accepted && source.project_generation == generation)
+    }
+    /// The exact successor has applied. Keep the old bindings until Root
+    /// returns their graph, tail and endpoint obligations on control.
+    pub(super) fn retire_document_sources(&mut self, generation: u64) {
+        for source in self
+            .sources
+            .iter_mut()
+            .filter(|source| source.project_generation == generation)
+        {
+            source.accepted = false;
+            source.retiring = true;
+        }
     }
     pub fn ready(&self) -> bool {
         // Session queries this only for its held insertion. No Root binding yet
@@ -483,16 +499,23 @@ impl Plugins {
             return;
         };
         self.poll_restore(control, context);
-        if let Some(output) = control.output_identity() {
-            let endpoints = self.sources.iter().map(|source| {
-                (
-                    source.binding,
-                    source.device,
-                    control.native_source_endpoint_status(source.binding),
-                )
-            });
+        if let Some(output) = control.output_identity()
+            && let Some(context) = context
+        {
+            let generation = context.project_generation;
+            let endpoints = self
+                .sources
+                .iter()
+                .filter(|source| source.project_generation == generation)
+                .map(|source| {
+                    (
+                        source.binding,
+                        source.device,
+                        control.native_source_endpoint_status(source.binding),
+                    )
+                });
             if let Some(devices) = self.degraded.observe(output, endpoints) {
-                self.degraded_changed = Some((output, devices));
+                self.degraded_changed = Some((generation, output, devices));
             }
         }
         #[cfg(all(test, feature = "allocation-probe"))]

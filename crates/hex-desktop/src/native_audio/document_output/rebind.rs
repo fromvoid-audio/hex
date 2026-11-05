@@ -1,7 +1,7 @@
 //! A delivered Resident output can hold one stopped document transition.
 //! Session has already accepted the saved document and retained its graph.
-//! The callback fence drains the outgoing command prefix. Rebound is emitted
-//! only for the applied successor, then the editor binds its existing Client.
+//! The callback fence drains the outgoing command prefix. The exact applied
+//! successor permits retirement of outgoing VST3 sources and client rebind.
 use super::super::*;
 use hex_audio::prepared::{StoppedEditFence, StoppedEditFenceState};
 use std::time::Instant;
@@ -9,6 +9,7 @@ use std::time::Instant;
 pub(in crate::native_audio) struct Rebind {
     pub(in crate::native_audio) context: AudioSourceContext,
     pub(in crate::native_audio) fence: StoppedEditFence,
+    outgoing_generation: u64,
     output_identity: u64,
     deadline: Instant,
 }
@@ -25,12 +26,15 @@ impl NativeAudioSink {
             return false;
         };
         let context = incoming.context();
+        let outgoing_generation = previous.context().project_generation;
         if previous.audio_mode() != DocumentAudioMode::Resident
             || incoming.audio_mode() != DocumentAudioMode::Resident
             || previous.sample_rate() != incoming.sample_rate()
             || incoming.effect_preparation().requires_plugin_profile()
-            || !self.plugins.can_retain_output_for_native_document()
-            || self.output_generation != Some(previous.context().project_generation)
+            || !self
+                .plugins
+                .can_retain_output_for_native_document(outgoing_generation)
+            || self.output_generation != Some(outgoing_generation)
             || self.document_rebind.is_some()
             || self.open_pending
             || self.opening.is_some()
@@ -82,6 +86,7 @@ impl NativeAudioSink {
         self.document_rebind = Some(Rebind {
             context,
             output_identity,
+            outgoing_generation,
             fence,
             deadline: Instant::now() + STARTUP_OPEN_DEADLINE,
         });
@@ -130,6 +135,8 @@ impl NativeAudioSink {
         {
             let generation = rebind.context.project_generation;
             let output_identity = rebind.output_identity;
+            self.plugins
+                .retire_document_sources(rebind.outgoing_generation);
             control.release_stopped_edit_fence(rebind.fence);
             self.document_rebind = None;
             self.output_generation = Some(generation);
