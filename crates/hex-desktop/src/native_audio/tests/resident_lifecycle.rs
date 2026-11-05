@@ -494,7 +494,11 @@ fn resident_pending_survives_refused_verified_transition_and_retires_on_accepted
     let files = Files::new();
     let gate = Arc::new(AtomicBool::new(false));
     let mut h = ResidentHarness::with_open_gate(8192, Arc::clone(&gate));
-    assert!(h.next().error.is_some());
+    assert!(
+        h.next().error.is_none(),
+        "the editor opens while audio is pending"
+    );
+    assert!(h.audio.is_none(), "the gate still holds the output closed");
     let added = h.run(Request::Edit(Command::AddMidiTrack {
         name: "sampler".into(),
     }));

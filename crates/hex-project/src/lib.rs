@@ -43,6 +43,8 @@ mod audio_event_fade;
 mod audio_events;
 pub use audio_event_fade::AudioEventFade;
 mod project_tempo;
+mod track_gain_group;
+pub use track_gain_group::RelativeTrackGains;
 mod retained_audio;
 pub use retained_audio::MAX_RETAINED_AUDIO_DEPTH;
 mod track_groups;
@@ -63,7 +65,9 @@ mod clip_alias_edit;
 pub use clip_alias::{
     AliasContentSnapshot, AliasMemberSnapshot, AliasSourceSnapshot, ClipAliasesSnapshot,
 };
+mod audio_event_placement_preview;
 mod audio_event_timeline;
+pub use audio_event_placement_preview::AudioEventPlacementPreview;
 mod clip_fade_split;
 mod clip_fade_trim;
 mod clip_name;

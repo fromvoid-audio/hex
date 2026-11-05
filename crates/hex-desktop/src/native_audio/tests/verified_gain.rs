@@ -1,6 +1,7 @@
 //! Actual default native consumer in explicit verified mode. Only output creation
 //! is replaced by the existing headless backend; reader/page/publication stay real.
 use super::*;
+mod group;
 use hex_session::device_gesture::{GestureKey, GestureRequest, GestureTarget, ParameterValue};
 
 fn actual_native_harness() -> Harness {

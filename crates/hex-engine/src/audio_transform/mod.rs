@@ -630,10 +630,19 @@ impl AudioTransformPreparation {
             })
             .map_err(warp_error)?;
         if edit.domain.events.is_some() {
-            rendered.frames = events::compose(&rendered.frames, edit, tempo_map, &self.shutdown)?;
+            rendered.frames = events::compose(
+                events::EventSource {
+                    frames: &rendered.frames,
+                    root: edit,
+                    zero_in_destination: 0,
+                },
+                edit,
+                tempo_map,
+                &self.shutdown,
+            )?;
         }
         drop(scratch_reservation);
-        mapping::apply_fade(&mut rendered.frames, edit, tempo_map, &self.shutdown)?;
+        mapping::apply_fade(&mut rendered.frames, 0, edit, tempo_map, &self.shutdown)?;
         let audio = Audio::from_derived(source.sample_rate(), rendered.frames, reservation)?;
         self.retain(Entry {
             source: source.clone(),

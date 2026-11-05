@@ -760,6 +760,9 @@ pub(super) fn command(value: &Command) -> Description {
         Command::Gain { track, gain } => {
             describe!("gain"; ["track" => track.value(), "gain" => gain]; omitted="")
         }
+        Command::SetTrackGains { gains } => {
+            describe!("set_track_gains"; ["tracks_count" => gains.len()]; omitted="gains")
+        }
         Command::Balance { track, balance } => {
             describe!("balance"; ["track" => track.value(), "balance" => balance]; omitted="")
         }
@@ -1719,6 +1722,9 @@ pub(super) fn gesture(value: &crate::device_gesture::GestureRequest) -> Descript
         } => {
             describe!("commit_pair"; ["key_generation" => key.generation, "key_token" => key.token, "sequence" => sequence, "manual_edit" => manual_edit, "value_first" => Parameter(&value.first), "value_second" => Parameter(&value.second)]; omitted="")
         }
+        crate::device_gesture::GestureRequest::BeginTrackGains { key, group } => {
+            describe!("begin_track_gains"; ["key_generation" => key.generation, "key_token" => key.token, "anchor" => group.anchor().value(), "tracks_count" => group.len()]; omitted="gains")
+        }
         crate::device_gesture::GestureRequest::BeginSnapshot {
             key,
             device,
@@ -1761,6 +1767,9 @@ pub(super) fn gesture_target(value: &crate::device_gesture::GestureTarget) -> De
     match value {
         crate::device_gesture::GestureTarget::TrackGain { track } => {
             describe!("track_gain"; ["track" => track.value()]; omitted="")
+        }
+        crate::device_gesture::GestureTarget::TrackGains { track } => {
+            describe!("track_gains"; ["anchor" => track.value()]; omitted="")
         }
         crate::device_gesture::GestureTarget::TrackBalance { track } => {
             describe!("track_balance"; ["track" => track.value()]; omitted="")

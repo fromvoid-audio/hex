@@ -243,7 +243,7 @@ impl WorkerAudioSink for Sink {
                     error: "fixture does not publish stopped arrangement replacements".into(),
                 });
             }
-            ResidentPublicationPolicy::ReplaceDocument => {
+            ResidentPublicationPolicy::ReplaceDocument { .. } => {
                 return Err(ResidentPublicationRefusal {
                     playback,
                     error: "fixture does not replace documents".into(),

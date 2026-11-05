@@ -1191,3 +1191,77 @@ fn split_and_copied_repeating_group_pieces_share_one_composite_root() {
         expected[23_456..]
     );
 }
+
+#[test]
+fn distant_events_do_not_increase_finite_once_playback_pcm_budget() {
+    use hex_project::AudioEventEdit;
+    for destination in [-1_000_000_i64, 1_000_000] {
+        let (mut editor, clip, media) = fixture(false);
+        let reference_context = isolated(128 * 1024, 0, 0);
+        let original = render(&prepare(&editor, &media, &reference_context), 0, 8_032, 57);
+        for operation in [
+            AudioEventEdit::Split { at: 1_000 },
+            AudioEventEdit::Place {
+                event: 1,
+                start: destination,
+            },
+        ] {
+            editor
+                .execute(Command::EditAudioEvents { clip, operation })
+                .unwrap();
+        }
+        let first = editor
+            .project()
+            .clip(clip)
+            .unwrap()
+            .audio_event_root()
+            .view_start;
+        editor
+            .execute(Command::ResizeAudioClipView {
+                clip,
+                operation: hex_project::AudioViewResizeOperation::CycleRange {
+                    start: first,
+                    end: first + 4_000,
+                    looping: false,
+                },
+            })
+            .unwrap();
+        let context = isolated(128 * 1024, 0, 0);
+        let prepared = prepare(&editor, &media, &context);
+        assert_eq!(
+            context.retained_pcm_bytes(),
+            8_000 * std::mem::size_of::<crate::Frame>()
+        );
+        for block in [1, 57, 512] {
+            let actual = render(&prepared, 0, 8_032, block);
+            assert!(actual[..1_000].iter().all(|sample| *sample == [0.0; 2]));
+            assert_eq!(actual[1_000..4_000], original[1_000..4_000]);
+            assert!(actual[4_000..].iter().all(|sample| *sample == [0.0; 2]));
+        }
+        // A moved event straddles the beginning of the gate. The retained
+        // source advances by the omitted samples, and the container fade
+        // remains at its Arrangement position.
+        let placed = editor.project().clip(clip).unwrap();
+        let start = placed.audio_event_root().view_start as i64 - 100;
+        let fade = placed.audio_event_root().domain.fade;
+        editor
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::Place { event: 1, start },
+            })
+            .unwrap();
+        drop(prepared);
+        let prepared = prepare(&editor, &media, &context);
+        let actual = render(&prepared, 0, 8_032, 57);
+        let source = media.values().next().unwrap();
+        for (frame, sample) in actual[..900].iter().enumerate() {
+            assert_eq!(
+                *sample,
+                source.frames()[frame + 100].map(|x| x * fade.gain_at(frame as u64))
+            );
+        }
+        assert!(actual[900..1_000].iter().all(|sample| *sample == [0.0; 2]));
+        assert_eq!(actual[1_000..4_000], original[1_000..4_000]);
+        assert!(actual[4_000..].iter().all(|sample| *sample == [0.0; 2]));
+    }
+}
