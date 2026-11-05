@@ -20,7 +20,8 @@ enum Failure : uint32_t { Configuration=1,Admission=2,ClassFailure=3,Setup=4,Pre
     Processing=7,ProtocolFailure=8,Cancelled=9,Teardown=10,HostControl=11,Unexpected=12,InstanceOpen=13,Restore=14,
     Quiescence=15,Resume=16,SetupState=17,SetupConfiguration=18,SetupPrecision=19,
     SetupTopology=20,SetupArrangementRefused=21,SetupArrangementMismatch=22,
-    SetupProcessing=23,SetupActivation=24 };
+    SetupProcessing=23,SetupActivation=24,ControllerInventoryCapacity=25,
+    ControllerInventoryInvalid=26 };
 // Keep existing frame shape and old stage codes. New setup reasons remain
 // ordinary refusal codes for an older supervisor.
 Failure setup_failure(hex_instance::ConfigurationResult result) {
@@ -37,6 +38,12 @@ Failure setup_failure(hex_instance::ConfigurationResult result) {
         case Result::ActivationRefused: return SetupActivation;
     }
     return Setup;
+}
+uint32_t controller_inventory_failure(const hex_instance::Instance& instance,uint32_t fallback) {
+    const auto refused=instance.host_refusals();
+    if(refused&hex_instance::MetadataCapacity) return ControllerInventoryCapacity;
+    if(refused&hex_instance::InvalidMetadata) return ControllerInventoryInvalid;
+    return fallback;
 }
 struct Refusal {}; // Expected local/SDK return-code refusal, never an exception from foreign code.
 // Main-lane wait after a published failure: at most `milliseconds` per call,
@@ -246,7 +253,10 @@ int main(int argc,char** argv) {
             // processing. Fold it into the facts we already validate here.
             instance.observe_latency_restarts();
             if(restoration.restored()) {
-                failure=Restore;if(!instance.restore_initial_state_on_control(restoration.state)) throw Refusal{};
+                failure=Restore;
+                if(!instance.restore_initial_state_on_control(restoration.state)) {
+                    failure=controller_inventory_failure(instance,failure);throw Refusal{};
+                }
             }
             failure=Setup;hex_instance::ProcessingConfiguration setup{};
             setup.sample_rate=config->rate;setup.maximum_frames=config->maximum;
@@ -270,7 +280,9 @@ int main(int argc,char** argv) {
             auto presentation=apply_presentation(instance,*available,supplied);
             if(!presentation) throw Refusal{};
             failure=Capture;hex_instance::CapturedState state{};
-            if(!instance.capture_initial_state_on_control(state)) throw Refusal{};
+            if(!instance.capture_initial_state_on_control(state)) {
+                failure=controller_inventory_failure(instance,failure);throw Refusal{};
+            }
             failure=HostControl;instance.dispatch_host_callbacks();
             if(instance.host_refusals()) throw Refusal{};
             const auto final_latency=instance.reported_latency_on_control();

@@ -3,14 +3,21 @@
 #include "macos_host_messages.hpp"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
 #include "pluginterfaces/vst/ivsthostapplication.h"
+#include <algorithm>
 #include <limits>
+#include <memory>
+#include <new>
+#include <utility>
 
 namespace hex_instance {
-inline constexpr size_t HOST_PARAMETER_COUNT=128;
+inline constexpr size_t HOST_PARAMETER_COUNT=576;
+inline constexpr size_t HOST_FEEDBACK_COUNT=128;
 inline constexpr size_t HOST_RESTART_COUNT=8;
 struct ParameterSnapshot {
     struct Parameter { ParameterInfo info{}; ParamValue value=0; };
-    std::array<Parameter,HOST_PARAMETER_COUNT> parameters{};
+    // Rich strings belong to the main SDK lane. Allocate only the validated
+    // count, retaining the previous inventory until a full refresh succeeds.
+    std::unique_ptr<Parameter[]> parameters;
     uint32 count=0;
     uint64 revision=0;
 };
@@ -22,18 +29,19 @@ struct ProcessingParameterSnapshot {
     uint32 count=0;
     uint64 revision=0;
     const Parameter* find(ParamID id) const {
-        for(uint32 n=0;n<count;++n) if(parameters[n].id==id) return &parameters[n];
-        return nullptr;
+        const auto end=parameters.begin()+count;
+        const auto found=std::lower_bound(parameters.begin(),end,id,
+            [](const Parameter& value,ParamID target) { return value.id<target; });
+        return found!=end && found->id==id?&*found:nullptr;
     }
 };
 // Latest processor observations, coalesced by stable ID. This is controller
 // synchronization, not an authored gesture or callback-delivery acknowledgement.
 struct ParameterFeedback {
     struct Value { ParamID id=0; ParamValue normalized=0; };
-    // Parallel fixed arrays avoid four padding bytes per entry. This reserves
-    // space for ordered edits within the existing one MiB Host bound.
-    std::array<ParamID,HOST_PARAMETER_COUNT> ids{};
-    std::array<ParamValue,HOST_PARAMETER_COUNT> normalized{};
+    // The per-epoch feedback obligation is independent of the inventory.
+    std::array<ParamID,HOST_FEEDBACK_COUNT> ids{};
+    std::array<ParamValue,HOST_FEEDBACK_COUNT> normalized{};
     uint32 count=0;
     Value at(uint32 index) const { return {ids[index],normalized[index]}; }
     bool put(ParamID id,ParamValue value) {
@@ -106,6 +114,8 @@ class Host final : public IHostApplication, public IComponentHandler {
             const auto& parameter=source.parameters[n];
             result.parameters[n]={parameter.info.id,parameter.info.flags};
         }
+        std::sort(result.parameters.begin(),result.parameters.begin()+result.count,
+            [](const auto& left,const auto& right) { return left.id<right.id; });
         return result;
     }
     bool publish_processing_snapshot(const ProcessingParameterSnapshot& next) {
@@ -298,11 +308,17 @@ private:
         struct Leave { bool& flag; ~Leave() { flag=false; } } leave{dispatching};
         ParameterSnapshot staged{};
         const auto total=controller->getParameterCount();
-        if (total>static_cast<int32>(staged.parameters.size())) {
+        if (total>static_cast<int32>(HOST_PARAMETER_COUNT)) {
             refuse(MetadataCapacity); result.disposition=HostDisposition::Capacity; return result;
         }
         bool valid=total>=0;uint32 bypasses=0;
         if (valid) staged.count=static_cast<uint32>(total);
+        if (staged.count) {
+            staged.parameters.reset(new(std::nothrow) ParameterSnapshot::Parameter[staged.count]);
+            if(!staged.parameters) {
+                refuse(MetadataCapacity); result.disposition=HostDisposition::Capacity; return result;
+            }
+        }
         for (uint32 i=0;valid && i<staged.count;++i) {
             auto& parameter=staged.parameters[i];
             valid=controller->getParameterInfo(static_cast<int32>(i),parameter.info)==kResultOk;
@@ -335,7 +351,7 @@ private:
         if(!publish_processing_snapshot(compact(staged))) {
             result.disposition=HostDisposition::Pending;return result;
         }
-        metadata=staged;
+        metadata=std::move(staged);
         result.metadata_revision=metadata.revision; result.disposition=HostDisposition::Refreshed;
         return result;
     }
@@ -383,7 +399,8 @@ public:
         // cannot stall the producer, and no SDK pointer crosses this handoff.
         feedback.phase.store(Free,std::memory_order_release);
         if(!controller || metadata.revision==std::numeric_limits<uint64>::max()) return false;
-        auto next=metadata;
+        struct Observation { uint32 index=0; ParamValue normalized=0; };
+        std::array<Observation,HOST_FEEDBACK_COUNT> observations{};
         dispatching=true;recursive=false;
         struct Leave {
             bool& dispatching;bool& feedback;
@@ -391,17 +408,20 @@ public:
         } leave{dispatching,applying_feedback};
         for(uint32 n=0;n<staged.count;++n) {
             const auto value=staged.at(n);
-            ParameterSnapshot::Parameter* destination=nullptr;
-            for(uint32 i=0;i<next.count;++i) if(next.parameters[i].info.id==value.id) destination=&next.parameters[i];
-            if(!destination) return false;
+            uint32 index=0;
+            while(index<metadata.count && metadata.parameters[index].info.id!=value.id) ++index;
+            if(index==metadata.count) return false;
             applying_feedback=true;
             const auto updated=controller->setParamNormalized(value.id,value.normalized);
             applying_feedback=false;
             if(updated!=kResultOk) return false;
-            destination->value=controller->getParamNormalized(value.id);
-            if(!std::isfinite(destination->value) || destination->value<0 || destination->value>1 || recursive) return false;
+            const auto normalized=controller->getParamNormalized(value.id);
+            if(!std::isfinite(normalized) || normalized<0 || normalized>1 || recursive) return false;
+            observations[n]={index,normalized};
         }
-        ++next.revision;metadata=next;return true;
+        for(uint32 n=0;n<staged.count;++n)
+            metadata.parameters[observations[n].index].value=observations[n].normalized;
+        ++metadata.revision;return true;
     }
     // One serialized processing consumer; main never overwrites an unread
     // record. Full handoff defers dispatch, preserving main request FIFO.
@@ -428,6 +448,7 @@ public:
         accepting=false; first=0; count=0;active_tokens.fill(0);pending_edits.store(0,std::memory_order_release);
     }
 };
-static_assert(sizeof(Host)+HOST_MESSAGE_COUNT*sizeof(HostMessage)+sizeof(ParameterSnapshot)<1024*1024,
-              "native host and staged metadata stay below the declared one MiB bound");
+static_assert(sizeof(Host)+HOST_MESSAGE_COUNT*sizeof(HostMessage)+
+    2*HOST_PARAMETER_COUNT*sizeof(ParameterSnapshot::Parameter)<2*1024*1024,
+    "native host and both controller inventories stay below the declared two MiB bound");
 } // namespace hex_instance

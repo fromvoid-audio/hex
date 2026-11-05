@@ -148,6 +148,8 @@ fn worker_refusal(code: u32) -> Option<&'static str> {
         22 => "plug-in reported a different audio bus arrangement",
         23 => "plug-in rejected processing setup",
         24 => "plug-in activation refused",
+        25 => "plug-in controller parameter inventory exceeds the host capacity",
+        26 => "plug-in reported an invalid controller parameter inventory",
         _ => return None,
     })
 }
