@@ -296,6 +296,16 @@ pub trait WorkerAudioSink: Send {
     fn plugin_effect_ready(&self) -> bool {
         false
     }
+    /// Send a window action to the existing hosted instance, without a project edit.
+    fn toggle_plugin_editor(&mut self, _generation: u64, _device: u64) -> Result<(), String> {
+        Err("vst3 editor unavailable for this output".into())
+    }
+    fn plugin_editor_ready(&self) -> bool {
+        false
+    }
+    fn take_plugin_editor_result(&mut self, _generation: u64) -> Option<Result<bool, String>> {
+        None
+    }
     /// Match the exact request control; never cancel an unrelated later source.
     /// Exact canonical terminal. Rejected requests retire only their matching native preparation;
     /// acceptance transfers display/request custody, never the native source's lifetime.
@@ -1116,6 +1126,16 @@ impl WorkerEvents {
             {
                 return Some(QueuedRequest::continuation(
                     Request::ContinuePluginStateRestore,
+                    document_intent,
+                ));
+            }
+            if self
+                .audio
+                .as_ref()
+                .is_some_and(|audio| audio.plugin_editor_ready())
+            {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinuePluginEditor,
                     document_intent,
                 ));
             }

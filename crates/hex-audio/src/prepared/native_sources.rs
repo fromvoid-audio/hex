@@ -24,13 +24,13 @@ impl PublicationControl {
     pub fn begin_native_source_controller_query_on_control(
         &mut self,
         binding: Binding,
-        query: hex_plugin_host::protocol::ParameterPageQuery,
+        query: impl Into<hex_plugin_host::protocol::ControllerRequest>,
     ) -> Result<crate::plugin_worker::NativeWorkerControllerQuery, &'static str> {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native controller output is closing");
         }
         self.candidate_root
-            .begin_native_controller_query(binding, query)
+            .begin_native_controller_query(binding, query.into())
     }
     /// Consume only the exact source/worker query terminal. Recheck the owning
     /// document/device context before using these copied observations in UI.

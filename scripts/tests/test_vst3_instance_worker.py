@@ -8,6 +8,7 @@ import socket
 import struct
 import subprocess
 import tempfile
+import time
 import unittest
 from test_vst3_macos_bootstrap import BOOT
 
@@ -220,6 +221,35 @@ class NativeInstanceTests(unittest.TestCase):
         self.assertEqual(reply[:64], header)
         self.assertEqual(struct.unpack_from("<26f", reply, 64), tuple(value * 4 for value in inputs))
         self.terminal(session, 0, message=session.stop())
+
+    def test_editor_unavailable_completes_without_stopping_original_pcm(self):
+        session = self.session(variant=37)
+        self.ready(session, controller=True)
+
+        def exchange(magic, operation=1, action=6):
+            session.socket.sendall(struct.pack("<4sHHH6x6QQHQBIQ256x", magic, 1, 0, 0,
+                                               *BINDING, session.sequence, session.frames,
+                                               operation, 0, 0, action, 0, 0))
+            reply_magic, reply = session.message()
+            self.assertEqual(reply_magic, b"HXVIMD01")
+            self.assertEqual(struct.unpack_from("<H7Q", reply),
+                             (1, *BINDING, session.sequence, session.frames, operation))
+            return reply[58:]
+
+        def terminal(operation, action):
+            until = time.monotonic() + 2
+            while (reply := exchange(b"HXVN", operation, action)) == b"\0":
+                self.assertLess(time.monotonic(), until)
+                time.sleep(.001)
+            return reply
+
+        self.assertEqual(exchange(b"HXVM"), b"\0")
+        self.assertEqual(session.render(7)[2][0], b"HXVB")
+        self.assertEqual(terminal(1, 6), b"\x04\x02")
+        self.assertEqual(exchange(b"HXVM", 2, 7), b"\0")
+        self.assertEqual(terminal(2, 7), b"\x04\0")
+        self.assertEqual(session.render(7)[2][0], b"HXVB")
+        self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (2, 14))
 
     def test_processor_feedback_reaches_original_controller_before_live_and_quiescent_capture(self):
         session = self.session(variant=37)

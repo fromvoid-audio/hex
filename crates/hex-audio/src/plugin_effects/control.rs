@@ -15,7 +15,7 @@ pub(crate) struct NativeEffectControl {
 impl NativeEffect {
     pub(crate) fn begin_controller_query(
         &mut self,
-        query: hex_plugin_host::protocol::ParameterPageQuery,
+        query: hex_plugin_host::protocol::ControllerRequest,
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
         self.worker.begin_controller_query_on_control(query)
     }
@@ -74,7 +74,7 @@ impl NativeEffect {
 impl NativeEffectControl {
     pub(crate) fn begin_controller_query(
         &mut self,
-        query: hex_plugin_host::protocol::ParameterPageQuery,
+        query: hex_plugin_host::protocol::ControllerRequest,
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
         self.worker.begin_controller_query_on_control(query)
     }

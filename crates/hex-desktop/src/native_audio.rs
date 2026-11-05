@@ -1117,6 +1117,21 @@ impl WorkerAudioSink for NativeAudioSink {
     fn plugin_effect_ready(&self) -> bool {
         self.plugins.ready()
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn toggle_plugin_editor(&mut self, generation: u64, device: u64) -> Result<(), String> {
+        if self.output.is_none() {
+            return Err("native output unavailable".into());
+        }
+        self.plugins.toggle_editor(generation, device)
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn plugin_editor_ready(&self) -> bool {
+        self.plugins.editor_ready()
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn take_plugin_editor_result(&mut self, generation: u64) -> Option<Result<bool, String>> {
+        self.plugins.take_editor_result(generation)
+    }
     fn finish_plugin_effect(
         &mut self,
         control: &Arc<hex_session::service::PluginEffectControl>,
@@ -1564,6 +1579,10 @@ impl WorkerAudioSink for NativeAudioSink {
                     &mut output,
                     self.desired.as_ref().map(|source| source.context()),
                 );
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                if let Some(desired) = self.desired.as_deref() {
+                    self.plugins.close_removed_editor(desired);
+                }
                 if self.sampler.is_none()
                     && let Some(desired) = self.desired.as_ref()
                     && desired.audio_mode() == DocumentAudioMode::Resident

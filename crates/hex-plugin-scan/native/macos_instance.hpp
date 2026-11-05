@@ -394,6 +394,10 @@ public:
         if (!opened || !host || quarantined.load()) { HostDispatch refused{}; refused.disposition=HostDisposition::Retiring; return refused; }
         return host->dispatch(controller);
     }
+    IPlugView* create_editor_on_control() {
+        return [NSThread isMainThread] && opened && controller && !quarantined.load()
+            ? controller->createView(ViewType::kEditor) : nullptr;
+    }
     const ParameterSnapshot* parameter_snapshot() const {
         return host?host->snapshot():nullptr;
     }

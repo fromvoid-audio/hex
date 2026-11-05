@@ -1,5 +1,29 @@
 //! Finite hostile-wire contracts; actual SDK behavior is tested separately.
 use super::*;
+
+#[test]
+fn editor_receipt_requires_exact_controller_operation_and_discriminant() {
+    let config = config();
+    let request = ControllerRequest::ToggleEditor;
+    let wire = parameter_page_request(&config, 1, 7, request, false).unwrap();
+    assert_eq!(&wire[..4], b"HXVM");
+    assert_eq!(wire[82], 6);
+    assert!(wire[83..].iter().all(|byte| *byte == 0));
+    let mut reply = Vec::new();
+    stamp(&mut reply, config.binding);
+    for value in [1_u64, u64::from(config.quantum), 7] {
+        reply.extend(value.to_le_bytes());
+    }
+    reply.extend([4, 1]);
+    assert_eq!(
+        parameter_page(&reply, &config, 1, 7, request).unwrap(),
+        ParameterPageProgress::Editor(PluginEditorState::Open)
+    );
+    assert!(parameter_page(&reply, &config, 1, 8, request).is_err());
+    assert!(parameter_page(&reply, &config, 1, 7, ParameterPageQuery::default()).is_err());
+    reply.push(0);
+    assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
+}
 #[path = "protocol_tests/conversion.rs"]
 mod conversion;
 use crate::transport::{Events, MidiEvent};

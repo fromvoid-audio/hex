@@ -159,6 +159,7 @@ impl ParameterPage {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ParameterPageProgress {
     Pending,
+    Editor(PluginEditorState),
     /// One bounded control-side allocation; never decoded on the callback.
     Page(Box<ParameterPage>),
     Conversion(Box<ParameterConversionResult>),
@@ -169,21 +170,62 @@ pub enum ParameterPageProgress {
     },
 }
 
+/// A single request on the original instance's serialized controller lane.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)] // Reuse the fixed controller mailbox without allocating its UTF-16 query.
+pub enum ControllerRequest {
+    Parameters(ParameterPageQuery),
+    ToggleEditor,
+    CloseEditor,
+}
+impl Default for ControllerRequest {
+    fn default() -> Self {
+        Self::Parameters(ParameterPageQuery::default())
+    }
+}
+impl From<ParameterPageQuery> for ControllerRequest {
+    fn from(query: ParameterPageQuery) -> Self {
+        Self::Parameters(query)
+    }
+}
+impl ControllerRequest {
+    pub fn validate(self) -> Result<()> {
+        match self {
+            Self::Parameters(query) => query.validate(),
+            Self::ToggleEditor | Self::CloseEditor => Ok(()),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PluginEditorState {
+    Closed,
+    Open,
+    Unavailable,
+}
+
 pub fn parameter_page_request(
     config: &Configuration,
     sequence: u64,
     operation: u64,
-    query: ParameterPageQuery,
+    request: impl Into<ControllerRequest>,
     poll: bool,
 ) -> Result<[u8; 351]> {
-    query.validate()?;
+    let request = request.into();
+    request.validate()?;
     let mut out = [0; 351];
     out[..72].copy_from_slice(&capture_request(config, sequence, operation)?);
     out[..4].copy_from_slice(if poll { b"HXVN" } else { b"HXVM" });
-    out[72..74].copy_from_slice(&query.first.to_le_bytes());
-    out[74..82].copy_from_slice(&query.revision.to_le_bytes());
-    if let Some(conversion) = query.conversion {
-        conversion.write(&mut out[82..]);
+    match request {
+        ControllerRequest::Parameters(query) => {
+            out[72..74].copy_from_slice(&query.first.to_le_bytes());
+            out[74..82].copy_from_slice(&query.revision.to_le_bytes());
+            if let Some(conversion) = query.conversion {
+                conversion.write(&mut out[82..]);
+            }
+        }
+        ControllerRequest::ToggleEditor => out[82] = 6,
+        ControllerRequest::CloseEditor => out[82] = 7,
     }
     Ok(out)
 }
@@ -193,10 +235,11 @@ pub fn parameter_page(
     config: &Configuration,
     sequence: u64,
     operation: u64,
-    query: ParameterPageQuery,
+    request: impl Into<ControllerRequest>,
 ) -> Result<ParameterPageProgress> {
     config.validate()?;
-    query.validate()?;
+    let request = request.into();
+    request.validate()?;
     let frames = sequence
         .checked_mul(u64::from(config.quantum))
         .ok_or(Error::Protocol("controller page position exhausted"))?;
@@ -214,6 +257,22 @@ pub fn parameter_page(
         reader.end()?;
         return Ok(ParameterPageProgress::Pending);
     }
+    let ControllerRequest::Parameters(query) = request else {
+        if status != 4 {
+            return Err(Error::Protocol("missing native editor acknowledgement"));
+        }
+        let state = match reader.byte()? {
+            0 => PluginEditorState::Closed,
+            1 => PluginEditorState::Open,
+            2 => PluginEditorState::Unavailable,
+            _ => return Err(Error::Protocol("invalid native editor state")),
+        };
+        if request == ControllerRequest::CloseEditor && state != PluginEditorState::Closed {
+            return Err(Error::Protocol("native editor did not close"));
+        }
+        reader.end()?;
+        return Ok(ParameterPageProgress::Editor(state));
+    };
     let revision = u64::from_le_bytes(reader.array()?);
     let total = u16::from_le_bytes(reader.array()?);
     if total > MAX_CONTROLLER_PARAMETERS || (total != 0 && revision == 0) {

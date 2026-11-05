@@ -210,6 +210,15 @@ impl WorkerAudioSink for ResidentSink {
     fn plugin_effect_ready(&self) -> bool {
         self.inner.plugin_effect_ready()
     }
+    fn toggle_plugin_editor(&mut self, generation: u64, device: u64) -> Result<(), String> {
+        self.inner.toggle_plugin_editor(generation, device)
+    }
+    fn plugin_editor_ready(&self) -> bool {
+        self.inner.plugin_editor_ready()
+    }
+    fn take_plugin_editor_result(&mut self, generation: u64) -> Option<Result<bool, String>> {
+        self.inner.take_plugin_editor_result(generation)
+    }
     fn finish_plugin_effect(
         &mut self,
         control: &Arc<hex_session::service::PluginEffectControl>,

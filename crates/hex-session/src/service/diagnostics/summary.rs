@@ -1390,6 +1390,13 @@ pub(super) fn request(value: &Request) -> Description {
         }
         Request::InsertPluginEffect(_) => describe!("insert_plugin_effect"; []; omitted="value0"),
         Request::ContinuePluginEffect => describe!("continue_plugin_effect"; []; omitted=""),
+        Request::TogglePluginEditor {
+            project_generation,
+            device,
+        } => {
+            describe!("toggle_plugin_editor"; ["project_generation" => project_generation, "device" => device.value()]; omitted="")
+        }
+        Request::ContinuePluginEditor => describe!("continue_plugin_editor"; []; omitted=""),
         Request::ContinuePluginStateRestore => {
             describe!("continue_plugin_state_restore"; []; omitted="")
         }
