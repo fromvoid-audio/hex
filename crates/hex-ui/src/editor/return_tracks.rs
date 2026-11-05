@@ -4,13 +4,11 @@ use crate::theme;
 use gpui::{Context, Div, ElementId, div, prelude::*, px, rgb};
 use hex_project::{Command, Track};
 
-const RETURN_ROW_HEIGHT: f32 = 23.0;
-const RETURN_SECTION_HEADER_HEIGHT: f32 = 20.0;
-const RETURN_SECTION_MAX_HEIGHT: f32 = 67.0;
+const RETURN_ROW_HEIGHT: f32 = super::tracks::TRACK_ROW_HEIGHT;
+const RETURN_SECTION_MAX_HEIGHT: f32 = 2.0 * RETURN_ROW_HEIGHT;
 
 pub(super) fn section_height(count: usize) -> f32 {
-    (RETURN_SECTION_HEADER_HEIGHT + count as f32 * RETURN_ROW_HEIGHT + 1.0)
-        .min(RETURN_SECTION_MAX_HEIGHT)
+    (count as f32 * RETURN_ROW_HEIGHT).min(RETURN_SECTION_MAX_HEIGHT)
 }
 
 impl EditorView {
@@ -43,12 +41,23 @@ impl EditorView {
             cx.notify();
             return None;
         };
+        let Some(row_index) = self.arrangement_row_index(track_index) else {
+            // A section selection change can hide an open menu's track. Finalize
+            // through its existing owner before retiring that input surface.
+            if super::device_panel::finalize_send_controls_for_track(self, cx, track_id) {
+                self.send_menu_track = None;
+                self.focus.focus(window);
+            }
+            cx.notify();
+            return None;
+        };
         let body = self.arrangement_bounds?;
         let scroll_y = f32::from(self.track_scroll.offset().y);
         let expected_top = body.top
-            + state.project.tracks()[..track_index]
-                .iter()
-                .map(|track| self.track_height(track.id()))
+            + self
+                .arrangement_tracks(&state.project)
+                .take(row_index)
+                .map(|(_, track)| self.track_height(track.id()))
                 .sum::<f32>()
             + scroll_y;
         let expected_bottom = expected_top + self.track_height(track_id);
@@ -60,7 +69,7 @@ impl EditorView {
                 self.focus.focus(window);
             } else {
                 self.track_scroll
-                    .scroll_to_item(track_index, gpui::ScrollStrategy::Top);
+                    .scroll_to_item(row_index, gpui::ScrollStrategy::Top);
             }
             cx.notify();
             return None;
@@ -111,7 +120,20 @@ impl EditorView {
                 .flex_shrink_0();
         };
         let returns = state.project.return_tracks();
-        let height = section_height(returns.len());
+        let viewport = self.visible_viewport(state.timeline_frames);
+        let extra = if self.automation_view.enabled {
+            returns
+                .iter()
+                .map(|track| {
+                    self.automation_view
+                        .devices
+                        .extra_height(super::device_panel::DevicePanelOwner::Return(track.id()))
+                })
+                .sum::<f32>()
+        } else {
+            0.0
+        };
+        let height = (section_height(returns.len()) + extra).min(RETURN_SECTION_MAX_HEIGHT);
         let mut rows = div()
             .id("pinned-return-tracks")
             .debug_selector(|| "pinned-return-tracks".to_owned())
@@ -121,63 +143,10 @@ impl EditorView {
             .flex_col()
             .overflow_y_scroll()
             .bg(rgb(theme::color(theme::PaletteRole::Background)))
-            .border_t_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)));
-        let add = div()
-            .id("add-return-track")
-            .debug_selector(|| "add-return-track".to_owned())
-            .size(px(17.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_xs()
-            .cursor(gpui::CursorStyle::PointingHand)
-            .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
-            .tooltip(|_, cx| {
-                cx.new(|_| super::transport::MiniTooltip {
-                    description: "add return track".into(),
-                })
-                .into()
-            })
-            .child(theme::text("+"))
-            .on_click(cx.listener(|view, _, _, cx| {
-                let count = view
-                    .state
-                    .as_ref()
-                    .map_or(0, |state| state.project.return_tracks().len());
-                super::device_panel::enqueue_return_edit(
-                    view,
-                    Command::AddReturnTrack {
-                        name: format!("return {}", count + 1),
-                    },
-                    cx,
-                );
-                cx.notify();
-            }));
-        rows = rows.child(
-            div()
-                .id("return-track-section-header")
-                .debug_selector(|| "return-track-section-header".to_owned())
-                .h(px(RETURN_SECTION_HEADER_HEIGHT))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .gap(px(4.0))
-                .px(px(5.0))
-                .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-                .border_b_1()
-                .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                .child(theme::text("returns"))
-                .child(div().flex_1())
-                .child(add),
-        );
         for track in returns {
             let id = track.id();
             let selected = self.focused_return == Some(id);
-            let name = track.name().to_owned();
             let muted = track.muted();
             let (active_background, active_text) = super::track_gain::activator_colors(!muted);
             let gain = track.gain();
@@ -240,43 +209,21 @@ impl EditorView {
                         })),
                     )
             };
-            let row = div()
+            let track_name_view = super::track_header::name()
                 .id(ElementId::Name(
-                    format!("return-track-{}", id.value()).into(),
+                    format!("return-track-focus-{}", id.value()).into(),
                 ))
-                .debug_selector(move || format!("return-track-row-{}", id.value()))
-                .h(px(RETURN_ROW_HEIGHT))
-                .flex_shrink_0()
+                .debug_selector(move || format!("return-track-focus-{}", id.value()))
+                .child(self.track_name_label(
+                    super::track_name::Target::Return(id),
+                    track.name(),
+                    cx,
+                ));
+            let controls = div()
+                .w_full()
                 .flex()
                 .items_center()
                 .gap(px(3.0))
-                .px(px(5.0))
-                .border_b_1()
-                .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-                .bg(rgb(if selected {
-                    theme::color(theme::PaletteRole::Hover)
-                } else {
-                    theme::color(theme::PaletteRole::Surface)
-                }))
-                .child(
-                    div()
-                        .id(ElementId::Name(
-                            format!("return-track-focus-{}", id.value()).into(),
-                        ))
-                        .debug_selector(move || format!("return-track-focus-{}", id.value()))
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .cursor(gpui::CursorStyle::PointingHand)
-                        .text_xs()
-                        .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                        .child(theme::text(name))
-                        .on_click(cx.listener(move |view, _, window, cx| {
-                            if view.focus_return_details(id, window, cx) {
-                                cx.notify();
-                            }
-                        })),
-                )
                 .child(gain_control)
                 .child(
                     return_button(
@@ -319,7 +266,88 @@ impl EditorView {
                         cx.notify();
                     })),
                 );
-            rows = rows.child(row);
+            let header = super::track_header::surface(
+                ElementId::Name(format!("return-track-header-{}", id.value()).into()),
+                self.track_header_width(),
+                RETURN_ROW_HEIGHT,
+                selected,
+                None,
+            )
+            .debug_selector(move || format!("return-track-header-{}", id.value()))
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(px(2.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
+                            .child(track_name_view)
+                            .child(controls),
+                    )
+                    .children(
+                        self.track_performance_indicator(hex_engine::OutputCaptureId::Return(id)),
+                    )
+                    .children(self.track_latency_indicator(super::track_latency::Owner::Return(id)))
+                    .children([super::track_meters::render_return(
+                        id,
+                        self.track_meters.return_level(id),
+                        RETURN_ROW_HEIGHT,
+                    )]),
+            )
+            .children(selected.then(|| {
+                super::track_header::selection_outline(format!(
+                    "return-selection-outline-{}",
+                    id.value()
+                ))
+            }));
+            let automation = super::device_automation::overlay(
+                self,
+                &state,
+                super::device_panel::DevicePanelOwner::Return(id),
+                viewport,
+                cx,
+            );
+            let row = div()
+                .id(ElementId::Name(
+                    format!("return-track-{}", id.value()).into(),
+                ))
+                .debug_selector(move || format!("return-track-row-{}", id.value()))
+                .h(px(RETURN_ROW_HEIGHT))
+                .w_full()
+                .flex_shrink_0()
+                .flex()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .relative()
+                        .h_full()
+                        .children(automation)
+                        .border_b_1()
+                        .border_color(rgb(theme::color(theme::PaletteRole::Border))),
+                )
+                .child(header)
+                .on_mouse_down(
+                    gpui::MouseButton::Right,
+                    cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        view.open_return_name_context_menu(event.position, id, window, cx);
+                    }),
+                );
+            let panel = super::device_automation::rows(
+                self,
+                &state,
+                super::device_panel::DevicePanelOwner::Return(id),
+                viewport,
+                cx,
+            );
+            rows = rows.child(row).child(panel);
         }
         rows
     }
@@ -396,23 +424,18 @@ impl EditorView {
 }
 
 fn return_button(id: String, icon: &'static str, tooltip: &'static str) -> gpui::Stateful<Div> {
-    div()
+    hex_widgets::action(theme::text(icon), theme::action_style())
         .id(ElementId::Name(id.clone().into()))
         .debug_selector(move || id.clone())
         .size(px(15.0))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
         .text_xs()
         .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
-        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
         .cursor(gpui::CursorStyle::PointingHand)
         .tooltip(move |_, cx| {
             cx.new(|_| super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Identification,
                 description: tooltip.into(),
             })
             .into()
         })
-        .child(theme::text(icon))
 }

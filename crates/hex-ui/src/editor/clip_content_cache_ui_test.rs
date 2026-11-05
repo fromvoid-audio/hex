@@ -2,9 +2,80 @@ use super::*;
 use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point};
 
 #[gpui::test]
+fn draw_order_queries_match_independent_scan(cx: &mut TestAppContext) {
+    cx.verify_draw_order_queries()
+        .expect("private GPUI draw-order oracle");
+}
+
+#[gpui::test]
 fn cached_scene_bulk_replay_matches_legacy_painter_and_refusal_state(cx: &mut TestAppContext) {
     cx.verify_cached_scene_replay()
         .expect("private GPUI replay oracle");
+}
+
+#[gpui::test]
+fn held_pan_reuses_current_scene_and_release_keeps_first_clip_drag(cx: &mut TestAppContext) {
+    let (project, source, _, clip) = super::super::clip_drag_ui_test::audio_project();
+    let before = project.clone();
+    let (handle, editor) =
+        super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |view, cx| {
+        view.viewport = Some(super::super::viewport::Viewport {
+            start: 0,
+            length: 192_000,
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let lane = editor.read_with(&visual, |view, _| view.drag_lanes[&source]);
+    let start = point(gpui::px(lane.left + 40.0), gpui::px(lane.top + 25.0));
+    visual.simulate_mouse_down(start, MouseButton::Middle, Modifiers::default());
+    let end = point(start.x - gpui::px(20.0), start.y);
+    visual.simulate_mouse_move(end, MouseButton::Middle, Modifiers::default());
+    visual.run_until_parked();
+    let content = editor.read_with(&visual, |view, _| {
+        assert!(view.arrangement_pan.is_some());
+        assert!(
+            view.visible_viewport(view.state.as_ref().unwrap().timeline_frames)
+                .start
+                > 0
+        );
+        view.clip_content_cache.entries[&source].clone()
+    });
+    let builds = content.read_with(&visual, |content, _| content.builds);
+    for _ in 0..2 {
+        visual.update(|window, cx| {
+            editor.update(cx, |_, cx| cx.notify());
+            window.draw(cx).clear();
+        });
+    }
+    assert_eq!(
+        content.read_with(&visual, |content, _| content.builds),
+        builds
+    );
+    visual.simulate_mouse_up(end, MouseButton::Middle, Modifiers::default());
+    visual.run_until_parked();
+    let surface = Box::leak(format!("clip-drag-surface-{}", clip.value()).into_boxed_str());
+    let down = visual
+        .debug_bounds(surface)
+        .expect("current clip move hit")
+        .center();
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + gpui::px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    assert!(
+        cx.update(|app| app.has_active_drag()),
+        "first motion after pan release"
+    );
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &before)
+    });
 }
 
 fn publish_snapshot(view: &mut EditorView, project: Arc<hex_project::Project>, revision: u64) {
@@ -14,6 +85,7 @@ fn publish_snapshot(view: &mut EditorView, project: Arc<hex_project::Project>, r
         comparison_audio: None,
         project,
         waveforms: old.waveforms.clone(),
+        source_overviews: old.source_overviews.clone(),
         audio_clip_waveforms: old.audio_clip_waveforms.clone(),
         midi_preview: Arc::clone(&old.midi_preview),
         gain_preview: old.gain_preview.clone(),
@@ -739,10 +811,11 @@ fn cold_main_selection_reuses_clip_scene_with_current_geometry(cx: &mut TestAppC
     );
     assert_eq!(content.read_with(cx, |content, _| content.builds), builds);
     // The first scene's cached handle still captures an ordinary trim drag.
-    let down = visual
-        .debug_bounds(trim_selector)
-        .expect("reused trim handle")
-        .center();
+    let down = crate::editor::clip_drag_ui_test::trim_grab_point(
+        visual
+            .debug_bounds(trim_selector)
+            .expect("reused trim handle"),
+    );
     visual.simulate_mouse_move(down, None, Modifiers::default());
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(
@@ -807,5 +880,140 @@ fn track_color_repaints_inherited_clips_while_flavor_stays_independent(cx: &mut 
                 Some(gpui::rgb(theme::clip_fill(owner.color(), clip.flavor(), false)).into())
             );
         }
+    }
+}
+
+#[gpui::test]
+fn deep_element_id_paths_keep_distinct_click_state_and_focus_across_repaints(
+    cx: &mut TestAppContext,
+) {
+    use gpui::{Context, FocusHandle, Render, Window, div, prelude::*, px, rgb};
+    struct IdentityFixture {
+        depth: usize,
+        counts: [usize; 2],
+        focus: [FocusHandle; 2],
+    }
+    impl Render for IdentityFixture {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+            let mut row = div().flex().pl(px(theme::TITLEBAR_LEADING_INSET));
+            for index in 0..2 {
+                let control = div()
+                    // Identical leaf names remain distinct through their full
+                    // ancestor path, including ancestors past inline storage.
+                    .id("leaf")
+                    .debug_selector(move || format!("identity-leaf-{index}"))
+                    .track_focus(&self.focus[index])
+                    .w(px(160.0))
+                    .h(px(40.0))
+                    .bg(rgb(theme::color(theme::PaletteRole::Grid)))
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        view.counts[index] += 1;
+                        view.focus[index].focus(window);
+                        cx.notify();
+                    }))
+                    .on_key_down(cx.listener(move |view, event: &gpui::KeyDownEvent, _, cx| {
+                        if event.keystroke.key == "up" {
+                            view.counts[index] += 1;
+                            cx.stop_propagation();
+                            cx.notify();
+                        }
+                    }))
+                    .child(theme::text(format!(
+                        "identity {index} · {}",
+                        self.counts[index]
+                    )));
+                row = row.child(div().id(("branch", index)).child(control));
+            }
+            let mut content = row.into_any_element();
+            for level in 0..self.depth {
+                content = div()
+                    .id(("ancestor", level))
+                    .w_full()
+                    .child(content)
+                    .into_any_element();
+            }
+            content
+        }
+    }
+    for depth in [0, 40, 80] {
+        let handle = cx.add_window(|_, cx| IdentityFixture {
+            depth,
+            counts: [0; 2],
+            focus: std::array::from_fn(|_| cx.focus_handle()),
+        });
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.run_until_parked();
+        let left = visual.debug_bounds("identity-leaf-0").unwrap().center();
+        let right = visual.debug_bounds("identity-leaf-1").unwrap().center();
+        visual.simulate_click(left, Modifiers::default());
+        visual.simulate_keystrokes("up");
+        visual.run_until_parked();
+        assert_eq!(view.read_with(cx, |view, _| view.counts), [2, 0]);
+        for _ in 0..3 {
+            view.update(cx, |_, cx| cx.notify());
+            visual.run_until_parked();
+        }
+        visual.update(|window, cx| assert!(view.read(cx).focus[0].is_focused(window)));
+        visual.simulate_click(right, Modifiers::default());
+        visual.simulate_keystrokes("up");
+        visual.run_until_parked();
+        assert_eq!(view.read_with(cx, |view, _| view.counts), [2, 2]);
+        visual.update(|window, cx| assert!(view.read(cx).focus[1].is_focused(window)));
+        // GPUI must find the same pending click after rebuilding all ancestors;
+        // retaining just entity-local counters would not establish this.
+        visual.simulate_mouse_down(left, MouseButton::Left, Modifiers::default());
+        view.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+        visual.simulate_mouse_up(left, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(view.read_with(cx, |view, _| view.counts), [3, 2]);
+    }
+}
+
+#[test]
+fn element_identity_keys_use_the_complete_path_independent_of_storage() {
+    use gpui::{ElementId, GlobalElementId};
+    use std::{
+        collections::hash_map::DefaultHasher,
+        hash::{Hash, Hasher},
+    };
+    let hash = |key: &GlobalElementId| {
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        hasher.finish()
+    };
+    for depth in [0, 1, 8, 9, 32, 33, 80] {
+        let path = (0..depth)
+            .map(|index| ElementId::Integer(index as u64))
+            .collect::<Vec<_>>();
+        let mut ordinary = GlobalElementId::default();
+        let mut reserved = GlobalElementId::default();
+        // Force dynamic storage even for an empty/shallow identity. Hashing and
+        // equality must depend on the path, never its current allocation mode.
+        reserved.reserve(128);
+        for id in &path {
+            ordinary.push(id.clone());
+            reserved.push(id.clone());
+        }
+        assert_eq!(ordinary.as_slice(), path.as_slice());
+        assert_eq!(ordinary, reserved);
+        assert_eq!(hash(&ordinary), hash(&reserved));
+        assert_eq!(
+            ordinary.to_string(),
+            path.iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(".")
+        );
+        reserved.push(ElementId::Integer(999));
+        assert_ne!(
+            ordinary, reserved,
+            "a suffix beyond inline storage belongs to the identity"
+        );
+        let mut map = std::collections::HashMap::new();
+        map.insert(ordinary, "first");
+        map.insert(reserved, "second");
+        assert_eq!(map.len(), 2);
     }
 }

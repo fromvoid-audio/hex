@@ -2,6 +2,7 @@ use super::*;
 use hex_project::{Command, Created, Editor, GainInterpolation, Project};
 fn point(raw: u64, gain: f32) -> GainPoint {
     GainPoint {
+        incoming_gain: None,
         beat: BeatTime::from_raw(raw),
         gain,
         outgoing: GainInterpolation::Linear,
@@ -133,13 +134,15 @@ fn presentation_distinguishes_local_drafts_canonical_pending_and_exact_applied_r
     );
 }
 #[cfg(feature = "ui-test-support")]
-mod native {
+pub(in crate::editor) mod native {
     use super::*;
     use gpui::{
         Modifiers, MouseButton, TestAppContext, VisualTestContext, point as gpui_point, px, size,
     };
     use std::sync::Arc;
-    fn window(cx: &mut TestAppContext) -> (gpui::AnyWindowHandle, Entity<EditorView>, TrackId) {
+    pub(in crate::editor) fn window(
+        cx: &mut TestAppContext,
+    ) -> (gpui::AnyWindowHandle, Entity<EditorView>, TrackId) {
         cx.update(super::super::super::bind_editor_keys);
         let (project, track, _) = project();
         let preview = Arc::new(hex_engine::GainAutomationPreview::prepare(&project).unwrap());
@@ -152,6 +155,7 @@ mod native {
                 comparison_audio: None,
                 project: old.project.clone(),
                 waveforms: old.waveforms.clone(),
+                source_overviews: old.source_overviews.clone(),
                 audio_clip_waveforms: old.audio_clip_waveforms.clone(),
                 midi_preview: old.midi_preview.clone(),
                 gain_preview: Ok(preview),
@@ -223,24 +227,6 @@ mod native {
             assert_eq!(view.state.as_ref().unwrap().revision, 1);
             assert!(view.cancel_gain_draft(cx));
             assert!(!view.cancel_gain_draft(cx));
-        });
-    }
-    #[gpui::test]
-    fn automated_manual_gain_attempt_is_visible_refusal_and_does_not_queue_edit(
-        cx: &mut TestAppContext,
-    ) {
-        let (handle, entity, track) = window(cx);
-        let mut visual = VisualTestContext::from_window(handle, cx);
-        entity.update(&mut visual, |view, _| {
-            view.gain_by(track, 0.1);
-            assert!(
-                view.error
-                    .as_ref()
-                    .unwrap()
-                    .contains("automation owns gain")
-            );
-            assert_eq!(view.gain_lane.track, Some(track));
-            assert!(view.last_enqueued_edit.is_none());
         });
     }
     #[gpui::test]
@@ -345,7 +331,7 @@ mod native {
         visual.simulate_keystrokes("down escape");
         entity.read_with(visual, |view, cx| {
             assert!(
-                view.browser.search.read(cx).content.is_empty(),
+                view.browser.search.read(cx).text().is_empty(),
                 "browser escape must resolve after cancelling gain edit"
             )
         });
@@ -415,6 +401,76 @@ mod native {
             assert_eq!(view.worker_requests_pending, 1);
         });
     }
+
+    #[gpui::test]
+    fn unrelated_edit_refuses_during_gain_gesture_but_release_commits(cx: &mut TestAppContext) {
+        let (handle, entity, track) = window(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let position = visual.debug_bounds("gain-lane-plot").unwrap().center();
+        visual.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
+        entity.update(&mut visual, |view, _| {
+            assert!(view.gain_lane.draft.is_some());
+            assert!(!view.enqueue(hex_session::service::Request::Edit(
+                hex_project::Command::Mute { track, muted: true }
+            )));
+            assert!(view.gain_lane.draft.is_some());
+            assert_eq!(view.worker_requests_pending, 0);
+            assert!(
+                view.error
+                    .as_deref()
+                    .unwrap()
+                    .contains("gain point gesture")
+            );
+        });
+        visual.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
+        entity.update(&mut visual, |view, _| {
+            assert!(view.gain_lane.draft.is_none());
+            assert_eq!(view.worker_requests_pending, 1);
+            assert!(view.gain_lane.pending.is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn unrelated_edit_preserves_numeric_gain_text_and_valid_commit(cx: &mut TestAppContext) {
+        let (handle, entity, track) = window(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let position = visual
+            .debug_bounds("gain-point-value-value")
+            .unwrap()
+            .center();
+        visual.simulate_click(position, Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("invalid");
+        entity.update(&mut visual, |view, cx| {
+            assert!(view.gain_numeric_editing(cx));
+            assert!(!view.enqueue(hex_session::service::Request::Edit(
+                hex_project::Command::Mute { track, muted: true }
+            )));
+            assert!(view.gain_numeric_editing(cx));
+            assert_eq!(
+                view.gain_lane
+                    .gain
+                    .as_ref()
+                    .unwrap()
+                    .entity
+                    .read(cx)
+                    .display_text(),
+                "invalid"
+            );
+            assert_eq!(view.worker_requests_pending, 0);
+        });
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("75");
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        entity.update(&mut visual, |view, cx| {
+            assert!(!view.gain_numeric_editing(cx));
+            assert_eq!(view.worker_requests_pending, 1);
+            assert!(view.gain_lane.pending.is_some());
+        });
+    }
     #[gpui::test]
     fn header_a_opens_selected_lane_and_retains_operable_rows(cx: &mut TestAppContext) {
         let (handle, entity, track) = window(cx);
@@ -477,11 +533,17 @@ mod native {
         visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
         visual.simulate_keystrokes("cmd-a");
         visual.simulate_input("125%");
+        visual.simulate_keystrokes("a");
         visual.run_until_parked();
-        entity.update(&mut visual, |view, _| {
+        entity.update(&mut visual, |view, cx| {
+            assert!(!view.automation_view.enabled);
+            assert!(view.gain_numeric_editing(cx));
             assert_eq!(view.worker_requests_pending, 0);
             assert_eq!(view.gain_lane.selected, Some(BeatTime::from_raw(2)));
         });
+        // The text editor owns the typed a; replace that invalid numeric text.
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("125%");
         visual.simulate_keystrokes("enter");
         visual.run_until_parked();
         entity.update(&mut visual, |view, _| {
@@ -519,6 +581,8 @@ mod native {
         let (handle, entity, track) = window(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
         entity.update(&mut visual, |view, cx| {
+            // This test exercises auto-fit before a canonical lane install.
+            view.viewport = None;
             let old = view.state.as_ref().unwrap();
             let mut project = Editor::new((*old.project).clone(), 8).unwrap();
             project
@@ -536,6 +600,7 @@ mod native {
                 project: project.clone(),
                 gain_preview: Ok(Arc::new(preview)),
                 waveforms: old.waveforms.clone(),
+                source_overviews: old.source_overviews.clone(),
                 audio_clip_waveforms: old.audio_clip_waveforms.clone(),
                 midi_preview: old.midi_preview.clone(),
                 timeline_frames: content_extent,
@@ -565,6 +630,8 @@ mod native {
         let (handle, entity, track) = window(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
         entity.update(&mut visual, |view, cx| {
+            // This test exercises auto-fit before a canonical lane install.
+            view.viewport = None;
             let old = view.state.as_ref().unwrap();
             let mut snapshot = old.project.snapshot();
             let owner = snapshot
@@ -576,6 +643,7 @@ mod native {
             owner.gain = 0.25;
             owner.gain_touch_epoch = 1;
             owner.gain_touch_spans = vec![hex_project::GainTouchSpan {
+                source_start: BeatTime::ONE,
                 start: BeatTime::ONE,
                 end: BeatTime::from_quarters(100).unwrap(),
                 context: hex_project::GainTouchContext {
@@ -605,6 +673,7 @@ mod native {
                 project,
                 gain_preview: Ok(preview),
                 waveforms: old.waveforms.clone(),
+                source_overviews: old.source_overviews.clone(),
                 audio_clip_waveforms: old.audio_clip_waveforms.clone(),
                 midi_preview: old.midi_preview.clone(),
                 timeline_frames: old.timeline_frames,
@@ -616,22 +685,22 @@ mod native {
             }));
             let state = view.state.as_ref().unwrap();
             assert_eq!(preview_gain(state, track, 0), Some(0.25));
-            assert_eq!(preview_gain(state, track, 24000), Some(0.8));
-            assert_eq!(preview_gain(state, track, 2400000), Some(0.25));
+            // Read-only paint follows playback's 5 ms Touch and rejoin ramps.
+            // Authored targets remain unchanged, but their first frame is no
+            // longer an instantaneous jump to the final gain.
+            let first = preview_gain(state, track, 24000).unwrap();
+            let middle = preview_gain(state, track, 24119).unwrap();
+            assert!(0.25 < first && first < middle && middle < 0.8);
+            assert_eq!(preview_gain(state, track, 24239), Some(0.8));
+            let released = preview_gain(state, track, 2400000).unwrap();
+            assert!(0.25 < released && released < 0.8);
+            assert_eq!(preview_gain(state, track, 2400239), Some(0.25));
             assert!(
                 view.visible_viewport(content_extent)
                     .fraction(2400000)
                     .is_some()
             );
             assert_eq!(state.timeline_frames, content_extent);
-            view.gain_by(track, 0.1);
-            assert!(
-                view.error
-                    .as_ref()
-                    .unwrap()
-                    .contains("automation owns gain")
-            );
-            assert!(view.last_enqueued_edit.is_none());
             assert!(!view.begin_gain_draft(None, point(0, 0.5)));
             assert!(view.gain_lane.error.as_ref().unwrap().contains("read-only"));
             assert!(

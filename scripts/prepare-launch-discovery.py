@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Prepare a signed VST3 helper profile for the raw Cargo desktop."""
+import argparse
+from contextlib import redirect_stdout
+import fcntl
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT = Path(__file__).resolve().parent.parent
+SPEC = importlib.util.spec_from_file_location("hex_launch_delivery", ROOT / "scripts/hex-test-build.py")
+delivery = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(delivery)
+
+
+def optimized_scanner() -> Path:
+    result = subprocess.run(
+        ["cargo", "build", "--release", "-p", "hex-plugin-scan", "--bin",
+         "hex-vst3-scan-macos", "--locked", "--message-format=json"],
+        cwd=ROOT, stdout=subprocess.PIPE, text=True, check=True,
+    )
+    artifacts = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
+    paths = [Path(event["executable"]) for event in artifacts
+             if event.get("reason") == "compiler-artifact" and event.get("executable")
+             and event.get("target", {}).get("name") == "hex-vst3-scan-macos"
+             and event.get("profile", {}).get("opt_level") == "3"]
+    if len(paths) != 1 or not paths[0].is_absolute():
+        raise delivery.DeliveryError("no unique optimized discovery scanner from Cargo")
+    return paths[0]
+
+
+def verify_tools(app: Path, signing: dict, instance: bool) -> None:
+    receipt_path = app / "Contents/Resources/test-build.json"
+    delivery.assert_plain_path(receipt_path)
+    receipt = json.loads(receipt_path.read_bytes())
+    if (receipt.get("schema") != 2 or receipt.get("profile") != "release"
+            or receipt.get("signing") != signing
+            or receipt.get("files") != delivery.inventory(app)):
+        raise delivery.DeliveryError(f"invalid launch tools cache: {app}")
+    if instance:
+        delivery.verify_instance_package(app, receipt)
+    else:
+        delivery.verify_discovery_package(app, receipt)
+
+
+def prepare(instance: bool) -> Path:
+    common = Path(delivery.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"]))
+    artifacts = common.parent / "artifacts"
+    sdk = Path(os.environ.get("HEX_VST3_SDK") or artifacts / "vst3-sdk")
+    builder = delivery.discovery_builder()
+    native_digest = builder.source_digest()
+    cache = artifacts / ("launch-instance" if instance else "launch-discovery")
+    native = cache / ("native-" + native_digest)
+    if not native.exists() and not sdk.is_dir():
+        raise delivery.DeliveryError("set HEX_VST3_SDK to the pinned clean VST3 SDK checkout")
+    signing = delivery.signing_configuration(json.loads((ROOT / "scripts/hex-test-build.json").read_bytes()))
+    scanner = None
+    if not instance:
+        path = optimized_scanner()
+        delivery.assert_plain_path(path)
+        scanner = {"path": str(path), "sha256": delivery.sha(path)}
+    key = hashlib.sha256(json.dumps(
+        [scanner and scanner["sha256"], native_digest, signing], sort_keys=True
+    ).encode()).hexdigest()
+    delivery.assert_plain_path(cache)
+    cache.mkdir(parents=True, exist_ok=True)
+    generation = cache / key
+    app = generation / "hex.app"
+    # Only one launcher publishes a generation; readers use immutable directories.
+    lock_path = cache / "prepare.lock"
+    delivery.assert_plain_path(lock_path)
+    with lock_path.open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not generation.exists():
+            with tempfile.TemporaryDirectory(prefix="stage-", dir=cache) as staging:
+                staging = Path(staging)
+                if not native.exists():
+                    if delivery.run(["git", "status", "--porcelain"]):
+                        raise delivery.DeliveryError("prepare new vst3 tools from a clean checkout first")
+                    local = ROOT / "artifacts"
+                    local.mkdir(exist_ok=True)
+                    with tempfile.TemporaryDirectory(prefix="launch-native-", dir=local) as output:
+                        built = builder.build(sdk, Path(output) / "native",
+                                              discovery_only=not instance, instance_only=instance)
+                        shutil.copytree(built.parent, staging / "native")
+                    (staging / "native").rename(native)
+                receipt = native / "controlled-macos.json"
+                delivery.assert_plain_path(receipt)
+                source = json.loads(receipt.read_bytes()).get("source_commit", "")
+                if not isinstance(source, str) or re.fullmatch(r"[0-9a-f]{40}", source) is None:
+                    raise delivery.DeliveryError("cannot identify source for launch tools")
+                tools = staging / "tools" / "hex.app"
+                (tools / "Contents/Resources").mkdir(parents=True)
+                if instance:
+                    evidence = {"vst3_instance": delivery.stage_instance(tools, receipt, source, signing)}
+                else:
+                    evidence = {"vst3_discovery": delivery.stage_discovery(
+                        tools, receipt, source, scanner, signing)}
+                delivery.write_json(tools / "Contents/Resources/test-build.json", {
+                    "schema": 2, "profile": "release", "source": source,
+                    "signing": signing, **evidence,
+                    "files": delivery.inventory(tools),
+                })
+                verify_tools(tools, signing, instance)
+                tools.parent.rename(generation)
+        else:
+            verify_tools(app, signing, instance)
+    return app
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--instance", action="store_true")
+    options = parser.parse_args()
+    try:
+        with redirect_stdout(sys.stderr):
+            app = prepare(options.instance)
+        print(app)
+    except (delivery.DeliveryError, OSError, ValueError, KeyError, TypeError,
+            subprocess.SubprocessError) as error:
+        role = "instance" if options.instance else "discovery"
+        print(f"vst3 {role} unavailable: {error}", file=sys.stderr)
+        raise SystemExit(1)

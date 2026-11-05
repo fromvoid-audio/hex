@@ -245,25 +245,18 @@ fn gain_row(
 }
 
 fn button(label: impl Into<String>, tooltip: &'static str, key: String) -> gpui::Stateful<Div> {
-    div()
+    hex_widgets::action(theme::text(label.into()), theme::action_style())
         .id(gpui::ElementId::Name(key.clone().into()))
         .debug_selector(move || key.clone())
         .px_1()
         .h(px(21.0))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-        .text_color(rgb(theme::color(theme::PaletteRole::Text)))
         .tooltip(move |_, cx| {
             cx.new(|_| super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Identification,
                 description: tooltip.into(),
             })
             .into()
         })
-        .child(theme::text(label.into()))
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]

@@ -184,6 +184,7 @@ impl CandidateState {
         let runtime = runtime.as_ref().ok_or(AudioStorageError::SourceMismatch)?;
         let RuntimeOwner {
             playback,
+            sampler_sources,
             #[cfg(any(test, feature = "instrument-test-support"))]
             probe,
         } = runtime.as_ref();
@@ -196,6 +197,16 @@ impl CandidateState {
             Location("runtime-owner-box", 0),
             std::mem::size_of::<RuntimeOwner>(),
         )?;
+        if let Some((sources, handle)) = sampler_sources {
+            l.shared(
+                sources.arc(),
+                sources.parts(),
+                Owner::exclusive(sources),
+                *handle,
+                None,
+            )?;
+            sources.visit(l)?;
+        }
         playback.visit_fresh_candidate_storage(l)
     }
 }

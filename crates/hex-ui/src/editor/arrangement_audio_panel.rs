@@ -1,11 +1,12 @@
 //! Arrangement audio Clip View with canonical source and timeline controls.
-use super::EditorView;
+use super::{EditorView, signed_frame_viewport::SignedFrameViewport};
 use crate::theme;
-use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, relative, rgb};
+use gpui::{Context, Div, div, prelude::*, px, relative, rgb};
 use hex_project::{AssetId, AudioViewMode, ClipId, Command, TrackId};
 use std::path::Path;
+pub(crate) mod controls;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Field {
     Position,
     Length,
@@ -14,9 +15,10 @@ enum Field {
     PlayStart,
     Looping,
     Gain,
+    Pitch,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct ClipWindow {
     track: TrackId,
     clip: ClipId,
@@ -30,6 +32,7 @@ struct ClipWindow {
     source_looping: bool,
     placement_mode: Option<AudioViewMode>,
     gain: hex_project::ClipGain,
+    pitch_cents: i16,
     asset_frames: u64,
     sample_rate: u32,
     revision: u64,
@@ -41,7 +44,6 @@ impl ClipWindow {
         self.placement_mode
             .map_or(self.source_looping, |mode| mode == AudioViewMode::Repeat)
     }
-
     fn loop_tooltip(self) -> &'static str {
         match (self.placement_mode, self.looping()) {
             (Some(_), true) => "disable clip repetition · retain source cycle and play start",
@@ -52,14 +54,23 @@ impl ClipWindow {
     }
 }
 
-pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Option<Div> {
+pub(super) fn view(
+    view: &mut EditorView,
+    render_window: &gpui::Window,
+    cx: &mut Context<EditorView>,
+) -> Option<Div> {
     if view.mode != super::EditorMode::Arrangement {
         return None;
     }
     let state = view.state.as_ref()?.clone();
     let (track, clip_id, position, length, source_start, source_length) =
-        view.selected_clip_data()?;
+        view.detail_audio_clip_data()?;
     let clip = state.project.clip(clip_id)?;
+    let retained_source_count = clip
+        .audio_edit()
+        .and_then(|edit| edit.domain.events.as_ref())
+        .map_or(0, |events| events.sources.len());
+    let grouped_audio = retained_source_count > 0;
     let asset = state.project.asset(clip.asset())?;
     let source_end = source_start.checked_add(source_length)?;
     let window = ClipWindow {
@@ -78,16 +89,22 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
             .and_then(|edit| edit.placement)
             .map(|p| p.mode),
         gain: clip.gain(),
+        pitch_cents: clip.audio_edit().map_or(0, |e| e.domain.pitch_cents),
         asset_frames: asset.playback_frames(),
         sample_rate: state.project.sample_rate(),
         revision: state.revision,
         generation: view.project_generation,
     };
-    let pending = view.edit_pending();
-    let waveform = state.waveforms.get(&window.asset).cloned();
-    let title = lowercase_path_tail(asset.path());
+    let waveform = (!grouped_audio)
+        .then(|| state.waveforms.get(&window.asset).cloned())
+        .flatten();
+    let title = if grouped_audio {
+        format!("grouped audio · {retained_source_count} sources")
+    } else {
+        lowercase_path_tail(asset.path())
+    };
     let mut details = div()
-        .h(px(super::clip_view::CLIP_DETAIL_BODY_HEIGHT))
+        .h(px(view.clip_detail_body_height))
         .w_full()
         .flex_shrink_0()
         .flex()
@@ -119,63 +136,41 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .child(theme::text(title)),
     );
-    controls = controls.child(super::musical_audio_controls::warp_header(
-        view, clip_id, cx,
-    ));
-    controls = controls
-        .child(field_row(
-            cx,
-            window,
-            Field::Position,
-            "pos",
-            format_frame_time(position, window.sample_rate),
-            pending,
-        ))
-        .child(field_row(
-            cx,
-            window,
-            Field::Length,
-            "len",
-            format_frame_time(length, window.sample_rate),
-            pending,
-        ))
-        .child(field_row(
-            cx,
-            window,
-            Field::SourceStart,
-            "src in",
-            format_frame_time(source_start, window.sample_rate),
-            pending,
-        ))
-        .child(field_row(
-            cx,
-            window,
-            Field::PlayStart,
-            "play at",
-            format_frame_time(
-                source_start.saturating_add(window.source_phase),
-                window.sample_rate,
-            ),
-            pending,
-        ))
-        .child(field_row(
-            cx,
-            window,
-            Field::SourceEnd,
-            "src end",
-            format_frame_time(source_end, window.sample_rate),
-            pending,
-        ))
-        .child(field_row(
-            cx,
-            window,
-            Field::Gain,
-            "gain",
-            format!("{:+.1} db", f64::from(window.gain.millidb()) / 1_000.0),
-            pending,
-        ))
-        .child(loop_row(cx, window, pending));
-    controls = controls.child(super::musical_audio_controls::view(view, clip_id, cx));
+    controls = controls.child(controls::toggle(view, window, true, cx));
+    if !grouped_audio {
+        controls = controls.child(super::musical_audio_controls::warp_header(
+            view, clip_id, cx,
+        ));
+        let pitch = controls::number(view, window, Field::Pitch, "pitch", cx);
+        let gain = controls::number(view, window, Field::Gain, "gain", cx);
+        controls = controls.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .flex_shrink_0()
+                .children([pitch, gain.flex_1().min_w_0()]),
+        );
+    }
+    for (field, label) in [
+        (Field::Position, "pos"),
+        (Field::Length, "len"),
+        (Field::SourceStart, "src in"),
+        (Field::PlayStart, "play at"),
+        (Field::SourceEnd, "src end"),
+        (Field::Gain, "gain"),
+    ] {
+        if field == Field::Gain && !grouped_audio {
+            continue; // Already beside the pitch dial; grouped sources retain their gain row.
+        }
+        if !grouped_audio || matches!(field, Field::Position | Field::Length | Field::Gain) {
+            controls = controls.child(controls::number(view, window, field, label, cx));
+        }
+    }
+    if !grouped_audio {
+        controls = controls.child(controls::toggle(view, window, false, cx));
+        controls = controls.child(super::musical_audio_controls::view(view, clip_id, cx));
+    }
     details = details.child(controls);
 
     let mut waveform_panel = div()
@@ -188,7 +183,42 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
         .p(px(4.0))
         .gap(px(2.0))
         .debug_selector(|| "arrangement-audio-waveform-panel".into());
+    view.sync_audio_navigation();
+    if grouped_audio && view.audio_event_editor.source_view {
+        view.audio_event_editor.source_view = false;
+    }
     let source_view = view.audio_event_editor.source_view;
+    let control = if grouped_audio {
+        div()
+            .id("audio-source-tab")
+            .w(px(56.0))
+            .h(px(20.0))
+            .text_xs()
+            .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
+            .tooltip(|_, cx| {
+                cx.new(|_| super::waveform::ClipTooltip {
+                    kind: crate::tooltips::Kind::Identification,
+                    name: "source view unavailable for grouped audio".into(),
+                })
+                .into()
+            })
+            .child(theme::text("n/a"))
+            .debug_selector(|| "audio-source-tab-unavailable".into())
+    } else {
+        super::waveform::button(
+            "source",
+            "inspect original source and warp markers",
+            ("audio-source-tab", 0),
+        )
+        .w(px(56.0))
+        .debug_selector(|| "audio-source-tab".into())
+        .on_click(cx.listener(|view, _, window, cx| {
+            view.audio_event_editor.gesture = None;
+            view.audio_event_editor.source_view = true;
+            view.audio_event_focus.focus(window);
+            cx.notify();
+        }))
+    };
     waveform_panel = waveform_panel.child(
         div()
             .h(px(20.0))
@@ -205,24 +235,12 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
                         cx.notify();
                     })),
             )
-            .child(
-                super::waveform::button(
-                    "source",
-                    "inspect original source and warp markers",
-                    ("audio-source-tab", 0),
-                )
-                .w(px(56.0))
-                .debug_selector(|| "audio-source-tab".into())
-                .on_click(cx.listener(|view, _, window, cx| {
-                    view.audio_event_editor.gesture = None;
-                    view.audio_event_editor.source_view = true;
-                    view.focus.focus(window);
-                    cx.notify();
-                })),
-            ),
+            .child(control)
+            .children(source_view.then(|| source_navigation(view, cx))),
     );
     if !source_view {
-        waveform_panel = waveform_panel.child(super::audio_event_editor::view(view, cx)?);
+        waveform_panel =
+            waveform_panel.child(super::audio_event_editor::view(view, render_window, cx)?);
         return Some(details.child(waveform_panel));
     }
     if let Some(prepared) = state.audio_clip_waveforms.get(&clip_id) {
@@ -239,9 +257,16 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
             "audible output · source and warp markers below",
         )));
     }
-    waveform_panel = waveform_panel.child(time_ruler(window));
+    let viewport = view.audio_source_viewport();
+    waveform_panel = waveform_panel.child(time_ruler(window, viewport));
     let mut canvas_region = div()
         .id("arrangement-audio-waveform")
+        .on_scroll_wheel(cx.listener(|view, event, window, cx| {
+            if view.audio_navigation_wheel(event, true, window, cx) {
+                cx.stop_propagation();
+                cx.notify();
+            }
+        }))
         .relative()
         .flex_1()
         .min_h_0()
@@ -250,17 +275,73 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
         .border_1()
         .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-        .debug_selector(|| "arrangement-audio-waveform".into());
+        .debug_selector(|| "arrangement-audio-waveform".into())
+        .track_focus(&view.audio_event_focus)
+        .on_action(cx.listener(|view, _: &super::ZoomIn, _, cx| {
+            view.event_zoom(true);
+            cx.stop_propagation();
+            cx.notify();
+        }))
+        .on_action(cx.listener(|view, _: &super::ZoomOut, _, cx| {
+            view.event_zoom(false);
+            cx.stop_propagation();
+            cx.notify();
+        }))
+        .on_action(cx.listener(|view, _: &super::PanTimelineLeft, _, cx| {
+            view.event_pan(false);
+            cx.stop_propagation();
+            cx.notify();
+        }))
+        .on_action(cx.listener(|view, _: &super::PanTimelineRight, _, cx| {
+            view.event_pan(true);
+            cx.stop_propagation();
+            cx.notify();
+        }))
+        .on_action(cx.listener(|view, _: &super::FitTimeline, _, cx| {
+            view.audio_fit_all();
+            cx.stop_propagation();
+            cx.notify();
+        }))
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(|view, _, window, _| view.audio_event_focus.focus(window)),
+        );
+    let measure = cx.entity().clone();
+    canvas_region = canvas_region.children([gpui::canvas(
+        |_, _, _| (),
+        move |bounds, _, _, cx| {
+            measure.update(cx, |view, _| {
+                view.audio_event_editor.source_bounds = Some(bounds)
+            });
+        },
+    )
+    .absolute()
+    .inset_0()]);
     if let Some(waveform) = waveform {
-        canvas_region =
-            canvas_region.child(super::waveform::waveform_source_segment_gain_view_cached(
+        if let Some((first, end)) = viewport.intersect(0, window.asset_frames)
+            && let Some(left) = viewport.fraction(i128::from(first))
+        {
+            let visible = super::waveform::waveform_source_segment_gain_view_cached(
                 waveform,
                 0,
-                0,
-                window.asset_frames,
+                first,
+                end,
                 window.gain,
+                false,
                 std::rc::Rc::clone(&view.waveform_geometry_cache),
-            ));
+            );
+            canvas_region = canvas_region.child(
+                div()
+                    .absolute()
+                    .left(relative(left as f32))
+                    .top_0()
+                    .bottom_0()
+                    .w(relative((end - first) as f32 / viewport.length as f32))
+                    .overflow_hidden()
+                    .debug_selector(|| "audio-source-visible-waveform".into())
+                    .children([visible]),
+            );
+        }
     } else {
         canvas_region = canvas_region.child(
             div()
@@ -276,21 +357,21 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
     }
     if window.asset_frames > 0 {
         canvas_region = canvas_region
-            .child(source_marker(
+            .children(source_marker(
                 window.source_start,
-                window.asset_frames,
+                viewport,
                 "source-start-marker",
                 theme::color(theme::PaletteRole::Primary),
             ))
-            .child(source_marker(
+            .children(source_marker(
                 window.source_end,
-                window.asset_frames,
+                viewport,
                 "source-end-marker",
                 theme::color(theme::PaletteRole::Primary),
             ))
-            .child(source_marker(
+            .children(source_marker(
                 window.source_start.saturating_add(window.source_phase),
-                window.asset_frames,
+                viewport,
                 "play-start-marker",
                 theme::color(theme::PaletteRole::Secondary),
             ));
@@ -298,22 +379,33 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
     if let Some(edit) = clip.audio_edit() {
         if let Some(warp) = edit.domain.warp.as_ref() {
             for marker in &warp.markers {
-                canvas_region = canvas_region.child(source_marker(
+                canvas_region = canvas_region.children(source_marker(
                     marker.source_frame,
-                    window.asset_frames,
+                    viewport,
                     "warp-source-marker",
                     theme::color(theme::PaletteRole::Secondary),
                 ));
             }
         }
         for point in &edit.domain.source_gain {
-            canvas_region = canvas_region.child(source_marker(
+            canvas_region = canvas_region.children(source_marker(
                 point.frame,
-                window.asset_frames,
+                viewport,
                 "source-gain-point",
                 theme::color(theme::PaletteRole::Primary),
             ));
         }
+    }
+    if let Some(position) = view
+        .audio_playhead_media_frame()
+        .filter(|frame| *frame < window.asset_frames)
+    {
+        canvas_region = canvas_region.children(source_marker(
+            position,
+            viewport,
+            "audio-source-playback-position",
+            theme::color(theme::PaletteRole::Text),
+        ));
     }
     waveform_panel = waveform_panel.child(canvas_region).child(
         div()
@@ -346,192 +438,11 @@ fn lowercase_path_tail(path: &Path) -> String {
         .to_lowercase()
 }
 
-fn format_frame_time(frames: u64, sample_rate: u32) -> String {
-    let rate = u64::from(sample_rate.max(1));
-    let millis = frames.saturating_mul(1_000) / rate;
-    format!("{frames} · {}.{:03}s", millis / 1_000, millis % 1_000)
-}
-
-fn field_row(
-    cx: &mut Context<EditorView>,
-    window: ClipWindow,
-    field: Field,
-    label: &'static str,
-    value: String,
-    pending: bool,
-) -> Div {
-    let tooltip_minus = match field {
-        Field::Position => "move clip earlier · alt: one frame",
-        Field::Length => "shorten timeline length · alt: one frame",
-        Field::SourceStart => {
-            "move source interval start earlier · trim resets loop phase · alt: one frame"
-        }
-        Field::SourceEnd => {
-            "move source interval end earlier · trim resets loop phase · alt: one frame"
-        }
-        Field::PlayStart => "move play start earlier inside the source interval · alt: one frame",
-        Field::Looping => window.loop_tooltip(),
-        Field::Gain => "adjust clip gain by 1 db · alt: 0.1 db",
-    };
-    let tooltip_plus = match field {
-        Field::Position => "move clip later · alt: one frame",
-        Field::Length => "extend timeline length · alt: one frame",
-        Field::SourceStart => {
-            "move source interval start later · trim resets loop phase · alt: one frame"
-        }
-        Field::SourceEnd => {
-            "move source interval end later · trim resets loop phase · alt: one frame"
-        }
-        Field::PlayStart => "move play start later inside the source interval · alt: one frame",
-        Field::Looping => window.loop_tooltip(),
-        Field::Gain => "adjust clip gain by 1 db · alt: 0.1 db",
-    };
-    div()
-        .h(px(24.0))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .gap(px(2.0))
-        .child(
-            div()
-                .w(px(54.0))
-                .flex_shrink_0()
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                .child(theme::text(label)),
-        )
-        .child(step_button(
-            cx,
-            window,
-            field,
-            -1,
-            "−",
-            tooltip_minus,
-            pending,
-        ))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                .debug_selector(move || format!("audio-clip-{field:?}-value").to_lowercase())
-                .child(theme::text(value)),
-        )
-        .child(step_button(
-            cx,
-            window,
-            field,
-            1,
-            "+",
-            tooltip_plus,
-            pending,
-        ))
-}
-
-fn loop_row(cx: &mut Context<EditorView>, window: ClipWindow, pending: bool) -> Div {
-    let tooltip = window.loop_tooltip();
-    div()
-        .h(px(24.0))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .gap(px(3.0))
-        .child(
-            div()
-                .w(px(54.0))
-                .flex_shrink_0()
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                .child(theme::text("loop")),
-        )
-        .child(control_button(
-            window,
-            Field::Looping,
-            1,
-            if window.looping() { "↻" } else { "○" },
-            tooltip,
-            pending,
-            cx,
-        ))
-        .child(
-            div()
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                .child(theme::text(if window.looping() { "on" } else { "off" })),
-        )
-}
-
-fn step_button(
-    cx: &mut Context<EditorView>,
-    window: ClipWindow,
-    field: Field,
-    direction: i8,
-    glyph: &'static str,
-    tooltip: &'static str,
-    pending: bool,
-) -> Stateful<Div> {
-    control_button(window, field, direction, glyph, tooltip, pending, cx)
-}
-
-fn control_button(
-    window: ClipWindow,
-    field: Field,
-    direction: i8,
-    glyph: &'static str,
-    tooltip: &'static str,
-    pending: bool,
-    cx: &mut Context<EditorView>,
-) -> Stateful<Div> {
-    let id = ElementId::Name(
-        format!("audio-clip-{}-{field:?}-{direction}", window.clip.value())
-            .to_lowercase()
-            .into(),
-    );
-    div()
-        .id(id)
-        .size(px(18.0))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
-        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Background))))
-        .debug_selector(move || {
-            let field = match field {
-                Field::Position => "position",
-                Field::Length => "length",
-                Field::SourceStart => "source-start",
-                Field::SourceEnd => "source-end",
-                Field::PlayStart => "play-start",
-                Field::Looping => "looping",
-                Field::Gain => "gain",
-            };
-            format!("audio-clip-{field}-{direction}")
-        })
-        .tooltip(move |_, cx| {
-            cx.new(|_| super::transport::MiniTooltip {
-                description: tooltip.into(),
-            })
-            .into()
-        })
-        .child(theme::text(glyph))
-        .on_click(cx.listener(move |view, event: &gpui::ClickEvent, _, cx| {
-            if pending || !clip_window_is_current(view, window) || view.edit_pending() {
-                return;
-            }
-            let fine = event.modifiers().alt;
-            let step = if field == Field::Gain {
-                if fine { 100 } else { 1_000 }
-            } else {
-                frame_step(window.sample_rate, fine)
-            };
-            if let Some(command) = command_for(window, field, direction, step) {
-                view.enqueue(hex_session::service::Request::Edit(command));
-            }
-            cx.notify();
-        }))
+fn format_frame_time(frames: i128, sample_rate: u32) -> String {
+    let rate = u128::from(sample_rate.max(1));
+    let millis = frames.unsigned_abs().saturating_mul(1_000) / rate;
+    let sign = if frames < 0 { "-" } else { "" };
+    format!("{frames} · {sign}{}.{:03}s", millis / 1_000, millis % 1_000)
 }
 
 fn frame_step(sample_rate: u32, fine: bool) -> u64 {
@@ -539,6 +450,27 @@ fn frame_step(sample_rate: u32, fine: bool) -> u64 {
         1
     } else {
         u64::from((sample_rate / 1_000).max(1))
+    }
+}
+
+#[cfg(test)]
+fn selection_command_for(
+    window: ClipWindow,
+    field: Field,
+    direction: i8,
+    step: u64,
+    multiple: bool,
+) -> Option<Command> {
+    if field == Field::Gain && multiple {
+        let millidb = i32::try_from(step)
+            .ok()?
+            .checked_mul(i32::from(direction))?;
+        Some(Command::EditClips {
+            clips: vec![window.clip],
+            edit: hex_project::ClipEdit::GainBy { millidb },
+        })
+    } else {
+        command_for(window, field, direction, step)
     }
 }
 
@@ -656,6 +588,7 @@ fn command_for(window: ClipWindow, field: Field, direction: i8, step: u64) -> Op
                 millidb,
             })
         }
+        Field::Pitch => None, // Signed pitch uses its musical-command owner.
         Field::Looping => Some(Command::SetClipLooping {
             clip: window.clip,
             looping: !window.looping(),
@@ -666,8 +599,9 @@ fn command_for(window: ClipWindow, field: Field, direction: i8, step: u64) -> Op
 fn clip_window_is_current(view: &EditorView, captured: ClipWindow) -> bool {
     if view.mode != super::EditorMode::Arrangement
         || view.project_generation != captured.generation
-        || view.selected_track != Some(captured.track)
-        || view.selected_clip != Some(captured.clip)
+        || view
+            .detail_audio_clip_data()
+            .is_none_or(|(track, clip, ..)| track != captured.track || clip != captured.clip)
     {
         return false;
     }
@@ -680,6 +614,7 @@ fn clip_window_is_current(view: &EditorView, captured: ClipWindow) -> bool {
                     && clip.source_offset() == captured.source_start
                     && clip.source_length() == captured.source_length
                     && clip.gain() == captured.gain
+                    && clip.audio_edit().map_or(0, |e| e.domain.pitch_cents) == captured.pitch_cents
                     && clip.looping() == captured.source_looping
                     && clip
                         .audio_edit()
@@ -695,48 +630,71 @@ fn clip_window_is_current(view: &EditorView, captured: ClipWindow) -> bool {
     })
 }
 
-fn time_ruler(window: ClipWindow) -> Div {
-    let mut ruler = div()
-        .relative()
-        .h(px(18.0))
-        .flex_shrink_0()
+fn time_ruler(window: ClipWindow, viewport: SignedFrameViewport) -> Div {
+    let mut ruler = super::timeline_strip::ruler_surface()
         .w_full()
-        .overflow_hidden()
-        .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-        .text_xs()
-        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
         .debug_selector(|| "arrangement-audio-time-ruler".into());
-    if window.asset_frames == 0 {
+    if viewport.length == 0 {
         return ruler;
     }
     for index in 0..=4_u64 {
-        let frame = window.asset_frames.saturating_mul(index) / 4;
-        let x = frame as f32 / window.asset_frames as f32;
-        let ruler_label = div().absolute();
-        let ruler_label = if index == 4 {
-            ruler_label.right_0()
-        } else {
-            ruler_label.left(relative(x))
-        };
-        let ruler_label = ruler_label
-            .top_0()
-            .bottom_0()
-            .flex()
-            .items_center()
-            .child(theme::text(format_frame_time(frame, window.sample_rate)));
-        ruler = ruler.child(ruler_label);
+        let frame = viewport.start + i128::from(viewport.length) * i128::from(index) / 4;
+        let x = index as f32 / 4.0;
+        ruler = ruler.children(super::timeline_strip::ruler_tick(
+            x,
+            format_frame_time(frame, window.sample_rate),
+            index == 0,
+            false,
+            false,
+        ));
     }
     ruler
 }
 
-fn source_marker(frame: u64, total: u64, id: &'static str, color: u32) -> Div {
+fn source_marker(
+    frame: u64,
+    viewport: SignedFrameViewport,
+    id: &'static str,
+    color: u32,
+) -> Option<Div> {
+    let frame = i128::from(frame);
+    if !viewport.contains(frame) {
+        return None;
+    }
+    let fraction = viewport.fraction(frame)? as f32;
     let marker = div().debug_selector(move || id.into()).absolute();
-    let marker = if frame >= total {
+    let marker = if fraction == 1.0 {
         marker.right_0()
     } else {
-        marker.left(relative((frame as f32 / total as f32).clamp(0.0, 1.0)))
+        marker.left(relative(fraction))
     };
-    marker.top_0().bottom_0().w(px(1.0)).bg(rgb(color))
+    Some(marker.top_0().bottom_0().w(px(1.0)).bg(rgb(color)))
+}
+
+fn source_navigation(view: &EditorView, cx: &mut Context<EditorView>) -> Div {
+    let mut toolbar = div()
+        .h(px(20.0))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .gap(px(4.0));
+    for (label, id, inward) in [
+        ("+", "audio-source-zoom-in", true),
+        ("−", "audio-source-zoom-out", false),
+    ] {
+        toolbar = toolbar.child(
+            super::waveform::button(label, "zoom original audio source", (id, 0)).on_click(
+                cx.listener(move |view, _, window, cx| {
+                    view.audio_event_focus.focus(window);
+                    view.event_zoom(inward);
+                    cx.notify();
+                }),
+            ),
+        );
+    }
+    toolbar
+        .child(view.zoom_fit_button(super::zoom_fit::Target::Audio, false, cx))
+        .child(view.zoom_fit_button(super::zoom_fit::Target::Audio, true, cx))
 }
 
 #[cfg(test)]
@@ -829,7 +787,7 @@ mod tests {
         });
         visual.run_until_parked();
         let button = visual
-            .debug_bounds("audio-clip-looping-1")
+            .debug_bounds("audio-clip-loop-toggle")
             .unwrap()
             .center();
         let controls = visual.debug_bounds("arrangement-audio-controls").unwrap();
@@ -931,6 +889,7 @@ mod tests {
                     .and_then(|edit| edit.placement)
                     .map(|p| p.mode),
                 gain: clip.gain(),
+                pitch_cents: clip.audio_edit().map_or(0, |e| e.domain.pitch_cents),
                 asset_frames: state.project.asset(clip.asset()).unwrap().playback_frames(),
                 sample_rate: state.project.sample_rate(),
                 revision: state.revision,
@@ -939,7 +898,7 @@ mod tests {
             assert!(clip_window_is_current(view, captured));
             captured
         });
-        editor.update(&mut visual, |view, _| {
+        editor.update(&mut visual, |view, cx| {
             let old = view.state.as_ref().unwrap();
             let mut snapshot = old.project.snapshot();
             snapshot.tracks[0].audio_clips_mut().unwrap()[0]
@@ -957,6 +916,7 @@ mod tests {
                 comparison_audio: old.comparison_audio.clone(),
                 project: Arc::new(hex_project::Project::from_snapshot(snapshot).unwrap()),
                 waveforms: old.waveforms.clone(),
+                source_overviews: old.source_overviews.clone(),
                 audio_clip_waveforms: old.audio_clip_waveforms.clone(),
                 midi_preview: old.midi_preview.clone(),
                 gain_preview: old.gain_preview.clone(),
@@ -970,6 +930,7 @@ mod tests {
             assert!(!clip_window_is_current(view, captured));
             assert!(view.last_enqueued_edit.is_none());
             assert_eq!(view.worker_requests_pending, 0);
+            cx.notify(); // Model mutation above stands in for a received state.
         });
         // A newly rendered control is valid and must use the new Once mode.
         visual.run_until_parked();
@@ -1039,13 +1000,20 @@ mod tests {
             command_for(captured, Field::Gain, -1, 100),
             Some(Command::SetAudioClipGain { millidb: -100, .. })
         ));
+        for (direction, step, delta) in [(-1, 100, -100), (1, 1_000, 1_000)] {
+            assert!(
+                matches!(selection_command_for(captured, Field::Gain, direction, step, true),
+                Some(Command::EditClips { clips, edit: hex_project::ClipEdit::GainBy { millidb } })
+                if clips == vec![captured.clip] && millidb == delta)
+            );
+        }
         captured.gain = hex_project::ClipGain::new(24_000).unwrap();
         assert!(command_for(captured, Field::Gain, 1, 1_000).is_none());
         captured.gain = hex_project::ClipGain::new(-60_000).unwrap();
         assert!(command_for(captured, Field::Gain, -1, 100).is_none());
     }
 
-    fn window() -> ClipWindow {
+    pub(super) fn window() -> ClipWindow {
         use hex_project::{Created, Editor, Project};
         let mut editor = Editor::new(Project::new(48_000).expect("project"), 8).expect("editor");
         let Created::Track(track) = editor
@@ -1097,6 +1065,7 @@ mod tests {
             source_looping: true,
             placement_mode: None,
             gain: hex_project::ClipGain::UNITY,
+            pitch_cents: 0,
             asset_frames: 1_000,
             sample_rate: 48_000,
             revision: 7,
@@ -1165,7 +1134,7 @@ mod tests {
         use std::time::{Duration, Instant};
 
         fn next(service: &Service) -> Event {
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = crate::test_wait::hang_deadline();
             loop {
                 if let Ok(event) = service.try_event() {
                     assert!(event.error.is_none(), "{:?}", event.error);
@@ -1180,7 +1149,7 @@ mod tests {
         }
 
         fn pump(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = crate::test_wait::hang_deadline();
             loop {
                 let done = editor.update(&mut *visual, |v, cx| {
                     v.tick(cx);
@@ -1365,6 +1334,7 @@ mod tests {
         }
 
         fn length_steps(cx: &mut TestAppContext, mode: Option<AudioViewMode>, phase: u64) {
+            cx.update(super::super::super::bind_editor_keys);
             for direction in [-1, 1] {
                 let (handle, editor, clip, _files) = fixture(cx, mode, phase, 48_000);
                 let mut visual = VisualTestContext::from_window(handle, cx);
@@ -1394,15 +1364,15 @@ mod tests {
                 };
                 let mut oracle = Editor::new((*before.project).clone(), 16).unwrap();
                 oracle.execute(expected).unwrap();
-                let button = visual
-                    .debug_bounds(Box::leak(
-                        format!("audio-clip-length-{direction}").into_boxed_str(),
-                    ))
-                    .unwrap()
-                    .center();
+                let button = visual.debug_bounds("audio-clip-length").unwrap().center();
                 let controls = visual.debug_bounds("arrangement-audio-controls").unwrap();
                 assert!(controls.contains(&button));
                 visual.simulate_click(button, Modifiers::default());
+                visual.simulate_keystrokes(if direction < 0 {
+                    "down enter"
+                } else {
+                    "up enter"
+                });
                 pump(&editor, &mut visual);
                 let after = editor.read_with(&visual, |v, _| {
                     assert!(v.error.is_none(), "{:?}", v.error);
@@ -1431,11 +1401,9 @@ mod tests {
                 let mut visual = VisualTestContext::from_window(handle, cx);
                 visual.run_until_parked();
                 let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
-                let minus = visual
-                    .debug_bounds("audio-clip-length--1")
-                    .unwrap()
-                    .center();
+                let minus = visual.debug_bounds("audio-clip-length").unwrap().center();
                 visual.simulate_click(minus, Modifiers::default());
+                visual.simulate_keystrokes("down");
                 editor.read_with(&visual, |v, _| {
                     assert_eq!(v.worker_requests_pending, 0);
                     assert!(v.pending_requests.is_empty());

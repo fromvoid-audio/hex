@@ -1,5 +1,5 @@
 use super::*;
-use gpui::{Context, Entity, Render, TestAppContext, VisualTestContext, Window, size};
+use gpui::{Context, Entity, Modifiers, Render, TestAppContext, VisualTestContext, Window, size};
 
 struct Fixture {
     input: MeterInput,
@@ -52,6 +52,86 @@ fn change(fixture: &Entity<Fixture>, visual: &mut VisualTestContext, input: Mete
 }
 
 #[gpui::test]
+fn output_meter_uses_shared_level_colors_and_click_clear_clipping_caps(cx: &mut TestAppContext) {
+    let _restore = RestoreTheme(theme::preferences());
+    let window = cx.add_window(|_, _| Fixture {
+        input: MeterInput::Offline,
+    });
+    let fixture = window.root(cx).unwrap();
+    let mut visual = VisualTestContext::from_window(*window, cx);
+    for preferences in [
+        hex_preferences::ThemePreferences::default(),
+        hex_preferences::ThemePreferences {
+            background: hex_preferences::RgbColor::new(230, 230, 230),
+            text: hex_preferences::RgbColor::new(20, 20, 20),
+            primary: hex_preferences::RgbColor::new(180, 110, 20),
+            secondary: hex_preferences::RgbColor::new(20, 120, 70),
+        },
+    ] {
+        theme::apply_preferences(preferences);
+        let signal = theme::color(theme::PaletteRole::Secondary);
+        let warning = theme::color(theme::PaletteRole::Primary);
+        for (amplitude, color, above) in [
+            (0.1, signal, false),
+            (
+                f32::from_bits(hex_widgets::METER_NEAR_PEAK_AMPLITUDE.to_bits() - 1),
+                signal,
+                false,
+            ),
+            (hex_widgets::METER_NEAR_PEAK_AMPLITUDE, warning, false),
+            (0.75, signal, false),
+            (1.0, warning, false),
+            (f32::from_bits(1.0_f32.to_bits() + 1), 0xe34b4b, true),
+        ] {
+            change(
+                &fixture,
+                &mut visual,
+                MeterInput::Last {
+                    left: amplitude,
+                    right: amplitude,
+                },
+            );
+            for (fill, cap) in [
+                ("output-meter-left-fill", "output-meter-left-above"),
+                ("output-meter-right-fill", "output-meter-right-above"),
+            ] {
+                assert_eq!(visual.rendered_background(fill), Some(rgb(color).into()));
+                assert_eq!(visual.debug_bounds(cap).is_some(), above);
+                if above {
+                    assert_eq!(visual.rendered_background(cap), Some(rgb(0xe34b4b).into()));
+                }
+            }
+        }
+        for cap in ["output-meter-left-above", "output-meter-right-above"] {
+            let bounds = visual.debug_bounds(cap).expect("latched clipping cap");
+            visual.simulate_click(bounds.center(), Modifiers::default());
+        }
+        change(
+            &fixture,
+            &mut visual,
+            MeterInput::Last {
+                left: 0.1,
+                right: f32::NAN,
+            },
+        );
+        assert_eq!(
+            visual.rendered_background("output-meter-left-fill"),
+            Some(rgb(signal).into())
+        );
+        assert!(visual.debug_bounds("output-meter-left-above").is_none());
+        assert_eq!(
+            visual
+                .debug_bounds("output-meter-right-fill")
+                .unwrap()
+                .size
+                .height,
+            px(0.0)
+        );
+        assert!(visual.debug_bounds("output-meter-right-above").is_none());
+    }
+}
+
+#[gpui::test]
 fn fixed_meter_slot_at_minimum_window_preserves_neighbors_and_actual_fill_geometry(
     cx: &mut TestAppContext,
 ) {
@@ -73,6 +153,7 @@ fn fixed_meter_slot_at_minimum_window_preserves_neighbors_and_actual_fill_geomet
         "six source status children and five gaps"
     );
     assert_eq!(diagnostic.size.width, px(168.0));
+    let mut latched = [false; 2];
     for input in [
         MeterInput::Last {
             left: 0.0,
@@ -136,13 +217,15 @@ fn fixed_meter_slot_at_minimum_window_preserves_neighbors_and_actual_fill_geomet
                 gauge.bottom_right().y,
                 "bottom anchored scale"
             );
+            let index = usize::from(channel == "right");
+            latched[index] |= peak(amplitude).above();
             assert_eq!(
                 visual.debug_bounds(selector("-above")).is_some(),
-                peak(amplitude).above()
+                latched[index]
             );
         }
     }
-    // Above-unity indication disappears on a subsequent valid sample; no hold.
+    // The cap holds observed clipping through lower levels until explicitly cleared.
     change(
         &fixture,
         &mut visual,
@@ -159,7 +242,59 @@ fn fixed_meter_slot_at_minimum_window_preserves_neighbors_and_actual_fill_geomet
             right: 0.5,
         },
     );
+    let fill = visual.debug_bounds("output-meter-left-fill").unwrap();
+    let cap = visual
+        .debug_bounds("output-meter-left-above")
+        .expect("latched clipping");
+    visual.simulate_click(cap.center(), Modifiers::default());
+    visual.run_until_parked();
     assert!(visual.debug_bounds("output-meter-left-above").is_none());
+    assert!(visual.debug_bounds("output-meter-right-above").is_some());
+    assert_eq!(visual.debug_bounds("output-meter-left-fill"), Some(fill));
+    change(
+        &fixture,
+        &mut visual,
+        MeterInput::Last {
+            left: 2.0,
+            right: 2.0,
+        },
+    );
+    let cap = visual
+        .debug_bounds("output-meter-left-above")
+        .expect("new clipping rearms");
+    visual.simulate_click(cap.center(), Modifiers::default());
+    change(
+        &fixture,
+        &mut visual,
+        MeterInput::Last {
+            left: 2.0,
+            right: 2.0,
+        },
+    );
+    assert!(
+        visual.debug_bounds("output-meter-left-above").is_none(),
+        "acknowledged stale high reading stays cleared"
+    );
+    change(
+        &fixture,
+        &mut visual,
+        MeterInput::Last {
+            left: 0.5,
+            right: 0.5,
+        },
+    );
+    change(
+        &fixture,
+        &mut visual,
+        MeterInput::Last {
+            left: 2.0,
+            right: 2.0,
+        },
+    );
+    assert!(
+        visual.debug_bounds("output-meter-left-above").is_some(),
+        "fresh crossing rearms"
+    );
     visual.simulate_resize(size(px(1180.0), px(780.0)));
     visual.run_until_parked();
     assert_eq!(visual.debug_bounds("output-meter").unwrap().size, slot.size);

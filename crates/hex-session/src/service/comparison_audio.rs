@@ -46,21 +46,20 @@ impl ComparisonAudioBinding {
     }
 }
 impl ViewState {
-    /// Map this exact source context to its current authored view. No older
-    /// revision is accepted without the private, persistent worker binding.
+    /// Map either the exact preparation context or the exact current authored context to this
+    /// view. Older preparation aliases require the sealed binding; intermediate revisions and
+    /// foreign generations never match. This is authoring correlation, not audio admission.
     pub fn audio_authoring_revision(&self, context: hex_engine::AudioSourceContext) -> Option<u64> {
         let source = self.canonical_audio_source.as_ref()?;
-        if source.context() != context {
+        let prepared = source.context();
+        if context.project_generation != prepared.project_generation {
             return None;
         }
-        if context.editor_revision == self.revision {
-            return Some(self.revision);
-        }
-        self.comparison_audio
-            .as_ref()
-            .filter(|binding| {
+        let bound = prepared.editor_revision == self.revision
+            || self.comparison_audio.as_ref().is_some_and(|binding| {
                 binding.revision == self.revision && Arc::ptr_eq(&binding.source, source)
-            })
-            .map(|_| self.revision)
+            });
+        (bound && (context == prepared || context.editor_revision == self.revision))
+            .then_some(self.revision)
     }
 }

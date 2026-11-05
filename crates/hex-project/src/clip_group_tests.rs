@@ -1,6 +1,6 @@
 //! Complete selection projection and canonical atomic history; no media/backend fixture.
 use super::*;
-use crate::{ClipFlavor, Command, Editor, MAX_NOTES, NoteId};
+use crate::{ClipFlavor, Command, Editor, MAX_NAME_BYTES, MAX_NOTES, NoteId};
 
 struct Fixture {
     editor: Editor,
@@ -114,6 +114,153 @@ fn command(f: &Fixture, anchor: ClipId, track: TrackId, position: ClipGroupPosit
         position,
         copy: false,
     }
+}
+#[test]
+fn audio_name_candidates_preserve_source_history_and_owned_snapshots() {
+    let mut f = fixture();
+    let original = f.editor.project().clone();
+    let original_snapshot = original.snapshot();
+    let rename = |name: &str| Command::RenameClip {
+        clip: f.audio,
+        name: name.into(),
+    };
+    let changed = "Lead Äudio 01";
+    f.editor.execute(rename(changed)).unwrap();
+    assert_eq!(f.editor.project().clip_name(f.audio), Some(changed));
+    assert_eq!(original.clip_name(f.audio), Some("kept audio"));
+    assert_eq!(original.snapshot(), original_snapshot);
+    let renamed = f.editor.project().snapshot();
+    assert_eq!(
+        Project::from_snapshot(renamed.clone()).unwrap(),
+        *f.editor.project()
+    );
+    assert!(f.editor.undo());
+    assert_eq!(f.editor.project().snapshot(), original_snapshot);
+    // A new allocation containing the same label is still a semantic no-op.
+    f.editor.execute(rename("kept audio")).unwrap();
+    assert!(f.editor.can_redo());
+    let refused: Result<(Created, ()), Invalid> =
+        f.editor
+            .execute_prepared_transition(rename("refused label"), |source, candidate| {
+                assert_eq!(source.clip_name(f.audio), Some("kept audio"));
+                assert_eq!(candidate.clip_name(f.audio), Some("refused label"));
+                Err(Invalid("test preparation refusal"))
+            });
+    assert!(refused.is_err());
+    assert_eq!(f.editor.project().snapshot(), original_snapshot);
+    assert!(f.editor.can_redo());
+    assert!(f.editor.redo());
+    assert_eq!(f.editor.project().snapshot(), renamed);
+    assert_eq!(original.snapshot(), original_snapshot);
+}
+#[test]
+fn retained_root_labels_are_bounded_and_independent_of_the_project() {
+    let f = fixture();
+    let project = f.editor.project();
+    let before = project.snapshot();
+    let tempo = std::sync::Arc::new(project.tempo_map().clone());
+    let mut snapshot = project.clip(f.audio).unwrap().retained_snapshot();
+    snapshot.name = "Ā".repeat(MAX_NAME_BYTES / "Ā".len());
+    let root = project
+        .restore_retained_audio_root(1, snapshot.clone(), tempo.clone())
+        .unwrap();
+    assert_eq!(root.clip.retained_snapshot(), snapshot);
+    for name in [String::new(), "\n".into(), "x".repeat(MAX_NAME_BYTES + 1)] {
+        let mut invalid = snapshot.clone();
+        invalid.name = name;
+        assert!(
+            project
+                .restore_retained_audio_root(1, invalid, tempo.clone())
+                .is_err()
+        );
+    }
+    assert_eq!(project.snapshot(), before);
+    assert_eq!(root.clip.retained_snapshot(), snapshot);
+}
+
+#[test]
+fn retained_root_nesting_has_a_bounded_depth() {
+    use crate::{AudioClipEdit, AudioEvent, AudioEvents};
+    use std::sync::Arc;
+
+    let f = fixture();
+    let project = f.editor.project();
+    let clip = project.clip(f.audio).unwrap();
+    let tempo = Arc::new(project.tempo_map().clone());
+    let mut root = project
+        .restore_retained_audio_root(1, clip.retained_snapshot(), tempo.clone())
+        .unwrap();
+    for depth in 2..=crate::retained_audio::MAX_RETAINED_AUDIO_DEPTH + 1 {
+        let mut snapshot = clip.retained_snapshot();
+        snapshot.looping = false;
+        snapshot.source_phase = 0;
+        let mut edit = AudioClipEdit::capture(clip);
+        Arc::make_mut(&mut edit.domain).looping = false;
+        Arc::make_mut(&mut edit.domain).source_phase = 0;
+        Arc::make_mut(&mut edit.domain).events = Some(Arc::new(AudioEvents {
+            next_id: 2,
+            events: vec![AudioEvent {
+                active: true,
+                gain: crate::ClipGain::UNITY,
+                source: 1,
+                id: 1,
+                start: 0,
+                end: clip.duration(),
+                source_start: 0,
+                fade: None,
+            }],
+            sources: vec![root.clone()],
+        }));
+        snapshot.edit = Some(edit);
+        let result = project.restore_retained_audio_root(1, snapshot, tempo.clone());
+        if depth <= crate::retained_audio::MAX_RETAINED_AUDIO_DEPTH {
+            root = result.unwrap();
+            assert_eq!(root.clip.referenced_assets().count(), depth);
+        } else {
+            assert_eq!(
+                result.unwrap_err().0,
+                "retained audio nesting limit reached"
+            );
+            break;
+        }
+    }
+    let before = root.clip.audio_events();
+    let changed = before
+        .edited(
+            crate::AudioEventEdit::SetRetainedPathActive {
+                sources: vec![1; crate::retained_audio::MAX_RETAINED_AUDIO_DEPTH - 1],
+                events: vec![1],
+                active: false,
+            },
+            root.clip.audio_edit().unwrap().domain.clock.length(),
+        )
+        .unwrap();
+    let mut events = &changed;
+    for _ in 0..crate::retained_audio::MAX_RETAINED_AUDIO_DEPTH - 1 {
+        events = events.sources[0]
+            .clip
+            .audio_edit()
+            .unwrap()
+            .domain
+            .events
+            .as_ref()
+            .unwrap();
+    }
+    assert!(!events.events[0].active);
+    assert!(before.events[0].active);
+    assert!(
+        before
+            .edited(
+                crate::AudioEventEdit::SetRetainedPathActive {
+                    sources: vec![1, 999],
+                    events: vec![1],
+                    active: false,
+                },
+                root.clip.audio_edit().unwrap().domain.clock.length(),
+            )
+            .is_err()
+    );
+    assert_eq!(root.clip.audio_events(), before);
 }
 #[test]
 fn mixed_group_either_anchor_preserves_offsets_payloads_ids_and_one_history_step() {
@@ -475,7 +622,7 @@ fn canonical_subframe_midi_member_is_retained_in_whole_group_move() {
     assert_eq!(f.editor.project(), &before);
 }
 
-fn copied_group_preserves_overlapped_selected_originals(kind: u8) {
+fn copied_group_overwrites_overlapped_old_selected_members(kind: u8) {
     let mut f = fixture();
     let track = f.tracks[0];
     let (a, b, victim, destination) = match kind {
@@ -573,18 +720,12 @@ fn copied_group_preserves_overlapped_selected_originals(kind: u8) {
             copy: true,
         })
         .unwrap();
-    for id in [a, b] {
-        assert_eq!(
-            f.editor.project().clip(id),
-            before.clip(id),
-            "selected audio original must retain exact metadata/ID: kind={kind} id={id:?}"
-        );
-        assert_eq!(
-            f.editor.project().midi_clip(id),
-            before.midi_clip(id),
-            "selected MIDI original must retain exact metadata/ID: kind={kind} id={id:?}"
-        );
-    }
+    assert_eq!(f.editor.project().clip(a), before.clip(a));
+    assert_eq!(f.editor.project().midi_clip(a), before.midi_clip(a));
+    assert!(
+        f.editor.project().clip(b).is_none() && f.editor.project().midi_clip(b).is_none(),
+        "incoming copy replaces the overlapped old selected member"
+    );
     assert!(
         f.editor.project().clip(victim).is_none() && f.editor.project().midi_clip(victim).is_none(),
         "unselected destination is still overwritten"
@@ -605,16 +746,16 @@ fn copied_group_preserves_overlapped_selected_originals(kind: u8) {
     assert_eq!(f.editor.project().snapshot(), after);
 }
 #[test]
-fn copy_overlap_preserves_audio_selected_originals() {
-    copied_group_preserves_overlapped_selected_originals(0);
+fn copy_overlap_overwrites_audio_old_member() {
+    copied_group_overwrites_overlapped_old_selected_members(0);
 }
 #[test]
-fn copy_overlap_preserves_midi_selected_originals() {
-    copied_group_preserves_overlapped_selected_originals(1);
+fn copy_overlap_overwrites_midi_old_member() {
+    copied_group_overwrites_overlapped_old_selected_members(1);
 }
 #[test]
-fn copy_overlap_preserves_mixed_selected_originals() {
-    copied_group_preserves_overlapped_selected_originals(2);
+fn copy_overlap_overwrites_mixed_old_member() {
+    copied_group_overwrites_overlapped_old_selected_members(2);
 }
 
 fn capture_project() -> std::sync::Arc<Project> {
@@ -998,10 +1139,34 @@ fn group_copy_disjoint_cuts_preserve_gaps_carry_and_fragment_ids_before_copies()
     f.editor
         .execute(Command::MoveMidiClip {
             clip: f.midi,
-            track: f.tracks[0],
+            track: f.tracks[1],
             start: BeatTime::from_quarters(8).unwrap(),
         })
         .unwrap();
+    // Both valid hybrid rows have disjoint audio/MIDI members. Each destination
+    // victim sees two cuts, without constructing overlapping old material.
+    let Created::Clip(other_audio) = f
+        .editor
+        .execute(Command::CopyClipTo {
+            clip: f.audio,
+            track: f.tracks[1],
+            start: 48_000,
+        })
+        .unwrap()
+    else {
+        panic!("other audio")
+    };
+    let Created::Clip(other_midi) = f
+        .editor
+        .execute(Command::CopyMidiClipTo {
+            clip: f.midi,
+            track: f.tracks[0],
+            start: BeatTime::from_quarters(8).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("other midi")
+    };
     let asset = f.editor.project().clip(f.audio).unwrap().asset();
     let Created::Clip(audio_victim) = f
         .editor
@@ -1021,7 +1186,7 @@ fn group_copy_disjoint_cuts_preserve_gaps_carry_and_fragment_ids_before_copies()
     let Created::Clip(midi_victim) = f
         .editor
         .execute(Command::PlaceMidiClip {
-            track: f.tracks[0],
+            track: f.tracks[1],
             start: BeatTime::from_quarters(18).unwrap(),
             length: BeatTime::from_quarters(14).unwrap(),
         })
@@ -1043,7 +1208,7 @@ fn group_copy_disjoint_cuts_preserve_gaps_carry_and_fragment_ids_before_copies()
     let Created::Clips { first, last } = f
         .editor
         .execute(Command::MoveClipsWithOverwrite {
-            clips: vec![f.audio, f.midi],
+            clips: vec![f.audio, f.midi, other_audio, other_midi],
             anchor: f.audio,
             track: f.tracks[0],
             position: ClipGroupPosition::Audio(480_000),
@@ -1055,16 +1220,21 @@ fn group_copy_disjoint_cuts_preserve_gaps_carry_and_fragment_ids_before_copies()
     };
     let after = f.editor.project().clone();
     let row = after.track(f.tracks[0]).unwrap();
-    let births = row
-        .clips()
+    let births = after
+        .tracks()
         .iter()
-        .map(|c| c.id())
-        .chain(row.midi_clips().iter().map(|c| c.id()))
+        .flat_map(|track| {
+            track
+                .clips()
+                .iter()
+                .map(|c| c.id())
+                .chain(track.midi_clips().iter().map(|c| c.id()))
+        })
         .filter(|id| *id >= first && *id <= last)
         .collect::<Vec<_>>();
     assert_eq!(
         births.len(),
-        2,
+        4,
         "fragment births must be outside the copy range"
     );
     assert!(births.contains(&first) && births.contains(&last));
@@ -1083,7 +1253,9 @@ fn group_copy_disjoint_cuts_preserve_gaps_carry_and_fragment_ids_before_copies()
     );
     assert_eq!(audio[0].id(), audio_victim);
     assert!(audio.iter().all(|c| c.id() < first));
-    let mut midi = row
+    let mut midi = after
+        .track(f.tracks[1])
+        .unwrap()
         .midi_clips()
         .iter()
         .filter(|c| c.id() != f.midi && (c.id() < first || c.id() > last))
@@ -1255,9 +1427,11 @@ fn group_final_note_capacity_includes_session_and_real_preparation_refusal_keeps
             _ => panic!("session"),
         };
         let mut notes = Vec::new();
-        for _ in 0..MAX_NOTES - 2 + usize::from(excess) {
+        for index in 0..MAX_NOTES - 2 + usize::from(excess) {
             let mut n = template.clone();
             n.id = NoteId(p.allocate_id().unwrap());
+            n.start = BeatTime::from_raw(index as u64);
+            n.duration = BeatTime::from_raw(1);
             notes.push(n);
         }
         let crate::SessionCellContent::Midi(c) = &mut p.session.cells[0].content else {
@@ -1331,12 +1505,15 @@ fn group_bounds_occurrence_enumeration_separately_from_tiny_retained_tail() {
             .find(|c| c.id() == id)
             .unwrap();
         victim.source = std::sync::Arc::new(crate::MidiSource {
-            source_length: length,
+            content: std::sync::Arc::new(crate::MidiContent {
+                source_length: length,
+                notes: vec![note],
+            }),
+            one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
             source_start: BeatTime::ZERO,
             loop_start: BeatTime::ZERO,
             loop_end: length,
             looping: true,
-            notes: vec![note],
         });
         assert!(crate::midi::overwrite_occurrence_count(victim).unwrap() > MAX_NOTES);
         assert_eq!(Project::from_snapshot(p.snapshot()).unwrap(), p);
@@ -1371,4 +1548,132 @@ fn group_bounds_occurrence_enumeration_separately_from_tiny_retained_tail() {
             assert_eq!(calls, 1);
         }
     }
+}
+
+#[test]
+fn all_midi_group_moves_by_exact_beats_at_non_integer_frame_tempo() {
+    let mut editor = Editor::new(Project::new(44_100).unwrap(), 8).unwrap();
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ZERO,
+            tempo: crate::Tempo::new(123_000_000).unwrap(),
+        })
+        .unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack { name: "m".into() })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let four = BeatTime::from_quarters(4).unwrap();
+    let mut clips = Vec::new();
+    for start in [BeatTime::ZERO, four] {
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start,
+                length: four,
+            })
+            .unwrap()
+        else {
+            panic!("midi")
+        };
+        clips.push(clip);
+    }
+    let one = BeatTime::ONE;
+    let position = ClipGroupPosition::Midi(one);
+    let source = std::sync::Arc::new(editor.project().clone());
+    let mut captured = crate::ClipGroupMovePreview::capture(&source, &clips, clips[0]).unwrap();
+    captured.update(&source, track, position).unwrap();
+    assert_capture_matches_plan(
+        captured.previews(),
+        &source
+            .preview_clip_group_move(&clips, clips[0], track, position)
+            .unwrap(),
+    );
+    editor
+        .execute(Command::MoveClipsWithOverwrite {
+            clips: clips.clone(),
+            anchor: clips[0],
+            track,
+            position,
+            copy: false,
+        })
+        .unwrap();
+    let project = editor.project();
+    let (first, second) = (
+        project.midi_clip(clips[0]).unwrap(),
+        project.midi_clip(clips[1]).unwrap(),
+    );
+    assert_eq!(first.start(), one);
+    assert_eq!(second.start(), BeatTime::from_quarters(5).unwrap());
+    assert_eq!(first.length(), four);
+    assert_eq!(second.length(), four);
+}
+
+#[test]
+fn destination_alias_group_keeps_members_and_relative_placement() {
+    let mut f = fixture();
+    let before = f.editor.project().snapshot();
+    let Created::Clips { first, last } = f
+        .editor
+        .execute(Command::DuplicateAliasClipsAt {
+            clips: vec![f.audio, f.midi],
+            anchor: f.audio,
+            track: f.tracks[0],
+            position: ClipGroupPosition::Audio(288_000),
+        })
+        .unwrap()
+    else {
+        panic!("alias group")
+    };
+    assert_ne!(first, last);
+    assert!(f.editor.project().clip(f.audio).is_some());
+    assert!(f.editor.project().midi_clip(f.midi).is_some());
+    let copied_audio = f
+        .editor
+        .project()
+        .track(f.tracks[0])
+        .unwrap()
+        .clips()
+        .iter()
+        .find(|clip| clip.id() != f.audio)
+        .unwrap();
+    let copied_midi = f
+        .editor
+        .project()
+        .track(f.tracks[1])
+        .unwrap()
+        .midi_clips()
+        .iter()
+        .find(|clip| clip.id() != f.midi)
+        .unwrap();
+    assert_eq!(copied_audio.start(), 288_000);
+    let project = f.editor.project();
+    assert_eq!(
+        project
+            .tempo_map()
+            .beat_to_frame(copied_midi.start())
+            .unwrap(),
+        project
+            .tempo_map()
+            .beat_to_frame(project.midi_clip(f.midi).unwrap().start())
+            .unwrap()
+            + 240_000,
+    );
+    assert_eq!(
+        f.editor.project().clip_alias(copied_audio.id()),
+        f.editor.project().clip_alias(f.audio)
+    );
+    assert_eq!(
+        f.editor.project().clip_alias(copied_midi.id()),
+        f.editor.project().clip_alias(f.midi)
+    );
+    let after = f.editor.project().snapshot();
+    let mut expected = before;
+    expected.next_id = after.next_id;
+    assert!(f.editor.undo());
+    assert_eq!(f.editor.project().snapshot(), expected);
+    assert!(f.editor.redo());
+    assert_eq!(f.editor.project().snapshot(), after);
 }

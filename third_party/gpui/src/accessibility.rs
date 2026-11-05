@@ -29,6 +29,8 @@ pub struct AccessibilityId(pub u64);
 /// User-facing semantics of a control, independent of its painted shape.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AccessibilityValue {
+    /// A stateless action, with no editable value or option inventory.
+    Button,
     /// A finite adjustable canonical value and its actual formatted readout.
     Number {
         /// Canonical current value.
@@ -56,7 +58,7 @@ pub enum AccessibilityValue {
 pub enum AccessibilityAction {
     /// Move keyboard focus without editing the parameter.
     Focus,
-    /// Activate a boolean or open a choice control.
+    /// Activate a stateless action, boolean, or choice control.
     Press,
     /// Apply the control's existing positive keyboard step.
     Increment,
@@ -122,7 +124,7 @@ impl AccessibilityDescriptor {
                         && (*min..=*max).contains(value)
                         && text_ok(text)
                 }
-                AccessibilityValue::Toggle(_) => true,
+                AccessibilityValue::Button | AccessibilityValue::Toggle(_) => true,
                 AccessibilityValue::Choice { selected, options } => {
                     !options.is_empty()
                         && options.len() <= 128
@@ -137,7 +139,7 @@ impl AccessibilityDescriptor {
             + self.status.as_ref().map_or(0, |text| text.len())
             + match &self.value {
                 AccessibilityValue::Number { text, .. } => text.len(),
-                AccessibilityValue::Toggle(_) => 0,
+                AccessibilityValue::Button | AccessibilityValue::Toggle(_) => 0,
                 AccessibilityValue::Choice { options, .. } => {
                     options.iter().map(|text| text.len()).sum()
                 }
@@ -153,7 +155,9 @@ impl AccessibilityDescriptor {
             (AccessibilityAction::Focus, _) => true,
             (
                 AccessibilityAction::Press,
-                AccessibilityValue::Toggle(_) | AccessibilityValue::Choice { .. },
+                AccessibilityValue::Button
+                | AccessibilityValue::Toggle(_)
+                | AccessibilityValue::Choice { .. },
             ) => true,
             (
                 AccessibilityAction::Increment | AccessibilityAction::Decrement,

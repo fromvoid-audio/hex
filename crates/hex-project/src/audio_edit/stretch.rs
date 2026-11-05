@@ -23,9 +23,35 @@ pub(super) fn retime(
     if numerator == denominator && numerator != 0 {
         return Ok(());
     }
+    if edit.domain.musical_event_source.is_some() {
+        return Err(Invalid(
+            "stretching a separated musical event source is unsupported",
+        ));
+    }
     let (_, old_frames, _, _) = edit.projected_domain(tempo)?;
     let old_fade = edit.domain.fade;
     let length = scale(edit.domain.clock.length(), numerator, denominator)?;
+    if let Some(view) = &mut edit.content_view {
+        view.base_view_start = scale(view.base_view_start, numerator, denominator)?;
+        view.base_view_end = scale(view.base_view_end, numerator, denominator)?;
+        let sign = view.base_start_delta.signum();
+        let absolute = u64::try_from(view.base_start_delta.unsigned_abs())
+            .map_err(|_| Invalid("audio content stretch displacement overflow"))?;
+        view.base_start_delta = i128::from(scale(absolute, numerator, denominator)?) * sign;
+        view.window = crate::ContentWindow::new(
+            scale(view.window.start, numerator, denominator)?,
+            scale(view.window.end, numerator, denominator)?,
+            view.window.reversed,
+        )?;
+        if let Some(p) = &mut view.base_placement {
+            p.outer_length = AudioDomainClock::Beats(BeatTime::from_raw(scale(
+                p.outer_length.length(),
+                numerator,
+                denominator,
+            )?));
+            p.cycle_phase = scale(p.cycle_phase, numerator, denominator)?;
+        }
+    }
     edit.view_start = scale(edit.view_start, numerator, denominator)?;
     edit.view_end = scale(edit.view_end, numerator, denominator)?;
     if let Some(placement) = &mut edit.placement {
@@ -41,7 +67,7 @@ pub(super) fn retime(
             return Err(Invalid("stretched cycle phase exceeds selected interval"));
         }
     }
-    edit.musical_start = Some(tempo.frame_to_beat(start)?);
+    edit.timing = AudioClipTiming::Musical(tempo.frame_to_beat(start)?);
     let domain = Arc::make_mut(&mut edit.domain);
     domain.clock = AudioDomainClock::Beats(BeatTime::from_raw(length));
     domain.fade_start = scale(domain.fade_start, numerator, denominator)?;
@@ -55,12 +81,20 @@ pub(super) fn retime(
             event.start = scale(event.start, numerator, denominator)?;
             event.end = scale(event.end, numerator, denominator)?;
             event.source_start = scale(event.source_start, numerator, denominator)?;
+            event.fade = event
+                .fade
+                .map(|fade| fade.reproject(|at| scale(at, numerator, denominator)))
+                .transpose()?;
         }
     }
+    edit.sync_content_length()?;
     let origin = edit.projection_origin()?;
     let (_, frames, _, _) = edit.projected_domain(tempo)?;
-    if frames == 0 || frames > MAX_AUDIO_DOMAIN_FRAMES {
-        return Err(Invalid("stretched root exceeds bounded audio domain"));
+    if frames > MAX_AUDIO_DOMAIN_FRAMES {
+        return Err(transform_domain_limit(tempo.sample_rate()));
+    }
+    if frames == 0 {
+        return Err(Invalid("stretch must retain a positive interval"));
     }
     let domain = Arc::make_mut(&mut edit.domain);
     let fade_scale = |value| scale(value, frames, old_frames);
@@ -76,7 +110,8 @@ pub(super) fn retime(
         fade_scale(old_fade.out_end_offset())?,
         old_fade.in_curve(),
         old_fade.out_curve(),
-    )?;
+    )?
+    .with_curve_positions(old_fade.in_position(), old_fade.out_position())?;
     domain.fade_projection = Some(AudioFadeProjection {
         tempo: tempo.clone(),
         origin_beat_raw: origin + i128::from(domain.fade_start),
@@ -149,7 +184,7 @@ pub fn preview_audio_clip_stretch(
     super::project_clip(&mut result, tempo)?;
     result
         .audio_edit()
-        .unwrap()
+        .ok_or(Invalid("stretch edit missing after projection"))?
         .validate(&result, tempo, asset_frames)?;
     Ok(result)
 }

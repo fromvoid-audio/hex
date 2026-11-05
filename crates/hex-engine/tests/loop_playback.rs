@@ -149,14 +149,14 @@ fn repeated_non_power_of_two_period_preserves_intro_phase_and_partial_cycle() {
 }
 
 #[test]
-fn seek_beyond_loop_normalizes_on_playing_render_and_pause_or_empty_preserves_position() {
+fn seek_beyond_loop_stays_absolute_and_pause_empty_or_overflow_preserve_position() {
     let project = compiled(Some((1, 4, true)));
     let mut playback = play(project.clone());
     playback.apply(PlaybackCommand::Seek(5));
     let mut output = [[0.0; 2]; 1];
     playback.render(&mut output).unwrap();
-    assert_eq!(output[0], [3.0, -3.0]);
-    assert_eq!(playback.position(), 3);
+    assert_eq!(output[0], [6.0, -6.0]);
+    assert_eq!(playback.position(), 6);
 
     playback.apply(PlaybackCommand::Seek(u64::MAX));
     playback.render(&mut []).unwrap();
@@ -170,21 +170,55 @@ fn seek_beyond_loop_normalizes_on_playing_render_and_pause_or_empty_preserves_po
 
     let mut huge_seek = play(project);
     huge_seek.apply(PlaybackCommand::Seek(u64::MAX));
-    huge_seek.render(&mut output).unwrap();
-    let normalized = 1 + (u64::MAX - 1) % 3;
-    assert_eq!(
-        output[0],
-        [(normalized + 1) as f32, -((normalized + 1) as f32)]
-    );
-    assert_eq!(
-        huge_seek.position(),
-        if normalized == 3 { 1 } else { normalized + 1 }
-    );
-    assert!(huge_seek.performance_clock_exhausted());
-    huge_seek.render(&mut output).unwrap();
-    assert!(huge_seek.performance_clock_exhausted());
+    output.fill([0.25; 2]);
+    assert!(huge_seek.render(&mut output).is_err());
+    assert_eq!(output, [[0.25; 2]; 1]);
+    assert_eq!(huge_seek.position(), u64::MAX);
+    assert!(!huge_seek.performance_clock_exhausted());
     huge_seek.apply(PlaybackCommand::Stop);
     assert!(!huge_seek.performance_clock_exhausted());
+}
+
+#[test]
+fn cursor_start_preserves_before_inside_and_after_loop_positions_across_blocks() {
+    for (start, expected) in [
+        (0, vec![1.0, 2.0, 3.0, 4.0, 2.0, 3.0]),
+        (1, vec![2.0, 3.0, 4.0, 2.0, 3.0, 4.0]),
+        (3, vec![4.0, 2.0, 3.0, 4.0, 2.0, 3.0]),
+        (4, vec![5.0, 6.0, 7.0, 8.0, 0.0, 0.0]),
+        (5, vec![6.0, 7.0, 8.0, 0.0, 0.0, 0.0]),
+    ] {
+        for block in [1, 3, 6] {
+            let project = compiled(Some((1, 4, true)));
+            let mut playback = Playback::new(project);
+            playback.apply(PlaybackCommand::PlayFrom(start));
+            let mut output = vec![[0.0; 2]; expected.len()];
+            for chunk in output.chunks_mut(block) {
+                playback.render(chunk).unwrap();
+            }
+            assert_eq!(
+                output,
+                expected
+                    .iter()
+                    .map(|sample| [*sample, -*sample])
+                    .collect::<Vec<_>>(),
+                "cursor {start}, block {block}"
+            );
+            playback.apply(PlaybackCommand::Pause);
+            let position = playback.position();
+            playback.render(&mut output).unwrap();
+            assert_eq!(output, vec![[0.0; 2]; expected.len()]);
+            assert_eq!(playback.position(), position);
+            playback.apply(PlaybackCommand::Stop);
+            assert_eq!(playback.position(), 0);
+            playback.apply(PlaybackCommand::Play);
+            playback.render(&mut output[..4]).unwrap();
+            assert_eq!(
+                output[..4],
+                [[1.0, -1.0], [2.0, -2.0], [3.0, -3.0], [4.0, -4.0]]
+            );
+        }
+    }
 }
 
 #[test]
@@ -224,7 +258,7 @@ fn replacement_inherits_transport_before_new_region_normalization() {
     let mut old = play(compiled(Some((1, 4, true))));
     old.apply(PlaybackCommand::Seek(6));
     let mut replacement = Playback::new(compiled(Some((5, 7, true))));
-    replacement.inherit_transport(&old);
+    replacement.inherit_transport(&old).unwrap();
     assert!(replacement.playing());
     assert_eq!(replacement.position(), 6);
     let mut output = [[0.0; 2]; 2];

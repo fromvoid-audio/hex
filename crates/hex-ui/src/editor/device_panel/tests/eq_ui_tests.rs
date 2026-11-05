@@ -31,6 +31,15 @@ fn fixture(legacy: bool) -> (Service, Arc<ViewState>, TrackId, DeviceId) {
     let device = state.project.track(track).unwrap().devices()[0].id();
     (service, state, track, device)
 }
+/// Option on a blank press keeps the held create-and-shape gesture; a plain
+/// blank press creates and only a shift blank drag draws the marquee.
+const OPTION_CREATE: Modifiers = Modifiers {
+    control: false,
+    alt: true,
+    shift: false,
+    platform: false,
+    function: false,
+};
 fn read(view: &EditorView, device: DeviceId) -> EqState {
     EqState::decode(
         view.state
@@ -150,6 +159,15 @@ fn assert_action_label_fits(
 
 #[gpui::test]
 fn eq_backspace_removes_only_the_focused_band_and_preserves_history(cx: &mut TestAppContext) {
+    eq_remove_key_history(cx, "backspace");
+}
+
+#[gpui::test]
+fn eq_x_removes_only_the_focused_band_and_preserves_history(cx: &mut TestAppContext) {
+    eq_remove_key_history(cx, "x");
+}
+
+fn eq_remove_key_history(cx: &mut TestAppContext, key: &str) {
     cx.update(super::super::super::bind_editor_keys);
     cx.update(hex_widgets::bind_numeric_control_keys);
     let (service, state, track, device) = fixture(false);
@@ -169,7 +187,7 @@ fn eq_backspace_removes_only_the_focused_band_and_preserves_history(cx: &mut Tes
     let position = plot(&mut visual, device, 0.5, 0.5);
     visual.simulate_click(position, Modifiers::default());
     visual.run_until_parked();
-    visual.simulate_keystrokes("backspace");
+    visual.simulate_keystrokes(key);
     pump_until(&editor, cx, |view| {
         settled(view)
             && (view.state.as_ref().unwrap().project.track(track).is_none()
@@ -187,7 +205,7 @@ fn eq_backspace_removes_only_the_focused_band_and_preserves_history(cx: &mut Tes
             "node removal atomically removes its automation"
         );
     });
-    visual.simulate_keystrokes("backspace");
+    visual.simulate_keystrokes(key);
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert!(
@@ -417,33 +435,141 @@ fn eq_layout_contains_full_controls_without_overlap_at_supported_widths(cx: &mut
 
 #[gpui::test]
 fn eq_blank_press_drags_edge_cuts_and_bell_as_one_history_edit(cx: &mut TestAppContext) {
-    let (service, state, track, device) = fixture(false);
+    creation_history_and_round_trip(cx, CreationOwner::Track);
+}
+
+#[gpui::test]
+fn main_eq_catalog_creation_drag_history_and_round_trip(cx: &mut TestAppContext) {
+    creation_history_and_round_trip(cx, CreationOwner::Main);
+}
+
+#[gpui::test]
+fn return_eq_creation_drag_history_and_round_trip(cx: &mut TestAppContext) {
+    creation_history_and_round_trip(cx, CreationOwner::Return);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CreationOwner {
+    Track,
+    Main,
+    Return,
+}
+
+fn creation_history_and_round_trip(cx: &mut TestAppContext, owner: CreationOwner) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, mut state, track, mut device) = fixture(false);
+    if owner != CreationOwner::Track {
+        service
+            .submit(Request::Edit(Command::AddReturnTrack {
+                name: "return sentinel".into(),
+            }))
+            .unwrap();
+        state = receive_service_event(&service).state;
+        service
+            .submit(Request::Edit(Command::InsertReturnDevice {
+                return_track: state.project.return_tracks()[0].id(),
+                before: None,
+                state: EqState::default().encode().unwrap(),
+            }))
+            .unwrap();
+        state = receive_service_event(&service).state;
+    }
+    let sentinel = Arc::clone(&state);
     let (handle, editor, _root) = graph_layout_tests::bounded_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1500.0), px(650.0)));
+    if owner != CreationOwner::Track {
+        editor.update(&mut visual, |view, cx| {
+            view.mode = crate::editor::EditorMode::Arrangement;
+            cx.notify();
+        });
+    }
     visual.run_until_parked();
-    for (index, (x, kind)) in [
-        (0.02, hex_engine::eq::NodeKind::LowCut),
-        (0.98, hex_engine::eq::NodeKind::HighCut),
-        (0.5, hex_engine::eq::NodeKind::Bell),
+    if owner != CreationOwner::Track {
+        let return_id = sentinel.project.return_tracks()[0].id();
+        let focus = match owner {
+            CreationOwner::Main => "main-track-header".to_owned(),
+            CreationOwner::Return => format!("return-track-focus-{}", return_id.value()),
+            CreationOwner::Track => unreachable!(),
+        };
+        let header = visual
+            .debug_bounds(Box::leak(focus.into_boxed_str()))
+            .unwrap();
+        visual.simulate_click(
+            if owner == CreationOwner::Main {
+                point(header.left() + px(14.), header.center().y)
+            } else {
+                header.center()
+            },
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        if owner == CreationOwner::Main {
+            let add = visual.debug_bounds("device-add-toggle").unwrap();
+            visual.simulate_click(add.center(), Modifiers::default());
+            visual.run_until_parked();
+            let eq = visual.debug_bounds("add-main-effect-hex.eq").unwrap();
+            visual.simulate_click(eq.center(), Modifiers::default());
+            pump_until(&editor, cx, |view| {
+                settled(view) && view.state.as_ref().unwrap().project.main_devices().len() == 1
+            });
+        }
+        device = editor.read_with(cx, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            let entry = if owner == CreationOwner::Main {
+                assert!(view.selected_track.is_none());
+                assert!(view.focused_return.is_none());
+                assert_eq!(
+                    view.device_panel.main_selected,
+                    Some(view.project_generation)
+                );
+                &project.main_devices()[0]
+            } else {
+                assert_eq!(view.focused_return, Some(return_id));
+                assert_eq!(view.selected_track, Some(track));
+                &project.return_tracks()[0].devices()[0]
+            };
+            assert_eq!(entry.state().type_id(), EQ_TYPE_ID);
+            entry.id()
+        });
+        visual.run_until_parked();
+    }
+    for (index, (x, y, kind, hint)) in [
+        (0.02, 0.4, hex_engine::eq::NodeKind::LowCut, "low-cut"),
+        (0.98, 0.4, hex_engine::eq::NodeKind::HighCut, "high-cut"),
+        (0.5, 0.4, hex_engine::eq::NodeKind::Bell, "bell"),
+        (0.5, 0.02, hex_engine::eq::NodeKind::Notch, "notch"),
     ]
     .into_iter()
     .enumerate()
     {
-        let start = plot(&mut visual, device, x, 0.4);
+        let start = plot(&mut visual, device, x, y);
+        visual.simulate_mouse_move(start, None, Modifiers::default());
+        visual.run_until_parked();
+        let hint_selector = Box::leak(
+            format!("eq-response-{}-creation-hint-{hint}", device.value()).into_boxed_str(),
+        );
+        assert!(
+            visual.debug_bounds(hint_selector).is_some(),
+            "actual {hint} creation indicator before press"
+        );
         let moved = plot(&mut visual, device, 0.6, 0.7);
-        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
         visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
         visual.run_until_parked();
+        assert!(
+            visual.debug_bounds(hint_selector).is_none(),
+            "a captured creation owns the pointer, not its hover hint"
+        );
         editor.read_with(cx, |v, _| {
             assert_eq!(
                 read(v, device).nodes.len(),
                 index,
-                "held creation is a local preview"
+                "held creation cannot commit canonical state"
             );
             assert!(
-                settled(v),
-                "no worker acknowledgment is needed to keep dragging"
+                v.device_gesture.snapshot().is_some(),
+                "held creation owns its keyed preview"
             );
         });
         assert!(
@@ -481,6 +607,37 @@ fn eq_blank_press_drags_edge_cuts_and_bell_as_one_history_edit(cx: &mut TestAppC
         pump_until(&editor, cx, |v| settled(v) && read(v, device) == authored);
         visual.run_until_parked();
     }
+    if owner != CreationOwner::Track {
+        let before_parameter = editor.read_with(cx, |view, _| read(view, device));
+        let id = before_parameter.nodes[0].id;
+        // Undo may retire detail selection. Select the first authored node again,
+        // just as a user must, before editing its numeric controls.
+        let node = plot(&mut visual, device, 0.6, 0.7);
+        visual.simulate_click(node, Modifiers::default());
+        visual.run_until_parked();
+        enter_typed_value(
+            &mut visual,
+            device,
+            id.parameter(hex_engine::eq::NodeParameter::Frequency)
+                .unwrap(),
+            "1234",
+        );
+        visual.simulate_keystrokes("enter");
+        pump_until(&editor, cx, |view| {
+            settled(view) && (read(view, device).nodes[0].frequency_hz - 1234.).abs() < 0.01
+        });
+        let changed = editor.read_with(cx, |view, _| read(view, device));
+        assert_eq!(changed.nodes.len(), before_parameter.nodes.len());
+        assert_eq!(changed.nodes[0].id, id);
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |view| {
+            settled(view) && read(view, device) == before_parameter
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+        pump_until(&editor, cx, |view| {
+            settled(view) && read(view, device) == changed
+        });
+    }
     let authored = editor.read_with(cx, |v, _| read(v, device));
     assert!(
         authored
@@ -509,6 +666,38 @@ fn eq_blank_press_drags_edge_cuts_and_bell_as_one_history_edit(cx: &mut TestAppC
         EqState::decode(reopened.state.project.device(device).unwrap().state()).unwrap(),
         authored
     );
+    if owner != CreationOwner::Track {
+        editor.read_with(cx, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert_eq!(project.tracks(), sentinel.project.tracks());
+            if owner == CreationOwner::Main {
+                assert_eq!(project.return_tracks(), sentinel.project.return_tracks());
+                assert!(view.selected_track.is_none());
+                assert!(view.focused_return.is_none());
+                assert_eq!(
+                    view.device_panel.main_selected,
+                    Some(view.project_generation)
+                );
+            } else {
+                assert_eq!(project.main_devices(), sentinel.project.main_devices());
+                assert_eq!(
+                    view.focused_return,
+                    Some(sentinel.project.return_tracks()[0].id())
+                );
+                assert_eq!(view.selected_track, Some(track));
+            }
+            assert_eq!(reopened.state.project.tracks(), project.tracks());
+            assert_eq!(
+                reopened.state.project.return_tracks(),
+                project.return_tracks()
+            );
+            assert_eq!(
+                reopened.state.project.main_devices(),
+                project.main_devices()
+            );
+        });
+    }
     std::fs::remove_file(path).unwrap();
 }
 
@@ -516,16 +705,25 @@ fn eq_blank_press_drags_edge_cuts_and_bell_as_one_history_edit(cx: &mut TestAppC
 fn eq_creation_escape_and_changed_source_cancel_without_reserving_identity(
     cx: &mut TestAppContext,
 ) {
+    creation_cancellation(cx, [0.02, 0.5]);
+}
+#[gpui::test]
+fn eq_notch_creation_escape_and_changed_source_cancel_without_reserving_identity(
+    cx: &mut TestAppContext,
+) {
+    creation_cancellation(cx, [0.5, 0.025]);
+}
+fn creation_cancellation(cx: &mut TestAppContext, origin: [f32; 2]) {
     let (service, state, track, device) = fixture(false);
-    let initial_next = state.project.next_identity();
+    let mut initial_next = state.project.next_identity();
     let (handle, editor, _root) = graph_layout_tests::bounded_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1500.0), px(650.0)));
     visual.run_until_parked();
-    let start = plot(&mut visual, device, 0.02, 0.5);
+    let start = plot(&mut visual, device, origin[0], origin[1]);
     let moved = plot(&mut visual, device, 0.4, 0.7);
     for cancellation in 0..3 {
-        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
         visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
         match cancellation {
             0 => visual.simulate_keystrokes("escape"),
@@ -548,15 +746,25 @@ fn eq_creation_escape_and_changed_source_cancel_without_reserving_identity(
             assert!(settled(v));
         });
     }
-    // If worker admission becomes busy between press and release, rejecting
-    // the transaction must also remove the provisional selection immediately.
-    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-    editor.update(cx, |v, _| v.worker_requests_pending = 1);
+    // Other in-flight UI work cannot discard a creation's reserved terminal.
+    visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
+    editor.update(cx, |view, _| view.worker_requests_pending = 1);
     visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
-    editor.update(cx, |v, _| v.worker_requests_pending = 0);
-    visual.run_until_parked();
-    assert!(visual.debug_bounds(selector("eq-auto", device)).is_none());
-    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert!(view.device_gesture.terminal().is_some())
+    });
+    editor.update(cx, |view, _| view.worker_requests_pending = 0);
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes.len() == 1
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes.is_empty()
+    });
+    initial_next = editor.read_with(cx, |view, _| {
+        view.state.as_ref().unwrap().project.next_identity()
+    });
+    visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
     visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
     // A canonical edit during the held preview invalidates its expected state.
     editor.update(cx, |v, _| {
@@ -601,7 +809,7 @@ fn eq_creation_outside_release_clamps_and_allocator_or_project_change_cancels(
         .debug_bounds(selector("eq-response", device))
         .unwrap();
     let outside = point(bounds.right() + px(12.0), bounds.center().y);
-    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
     visual.simulate_mouse_move(outside, Some(MouseButton::Left), Modifiers::default());
     visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
     pump_until(&editor, cx, |v| {
@@ -613,7 +821,7 @@ fn eq_creation_outside_release_clamps_and_allocator_or_project_change_cancels(
         assert!((state.nodes[0].frequency_hz - 20000.0).abs() < 0.1);
     });
     visual.run_until_parked();
-    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
     // The EQ source is unchanged, but another identity reservation invalidates
     // the provisional ID. It must never be rebased onto a replacement ID.
     editor.update(cx, |v, _| {
@@ -628,7 +836,7 @@ fn eq_creation_outside_release_clamps_and_allocator_or_project_change_cancels(
     visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     assert_eq!(editor.read_with(cx, |v, _| read(v, device).nodes.len()), 1);
-    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
     editor.update(cx, |v, cx| {
         v.project_generation += 1;
         cx.notify();
@@ -818,10 +1026,13 @@ fn legacy_eq_upgrade_is_one_undoable_state_and_identity_transaction(cx: &mut Tes
 }
 
 #[path = "eq_graph_layout_tests.rs"]
-mod graph_layout_tests;
+pub(in crate::editor) mod graph_layout_tests;
 
 #[path = "eq_node_gesture_tests.rs"]
 mod node_gesture_tests;
+
+#[path = "eq_marquee_tests.rs"]
+mod marquee_tests;
 
 #[gpui::test]
 fn eq_node_controls_stay_bound_without_a_local_automation_editor(cx: &mut TestAppContext) {
@@ -941,4 +1152,206 @@ fn eq_node_controls_stay_bound_without_a_local_automation_editor(cx: &mut TestAp
 }
 
 #[path = "eq_held_pointer_tests.rs"]
-mod held_pointer_tests;
+pub(in crate::editor) mod held_pointer_tests;
+
+#[gpui::test]
+fn eq_notch_hover_matches_creation_and_node_priority_at_narrow_and_wide_sizes(
+    cx: &mut TestAppContext,
+) {
+    fn reveal_in_chain(
+        editor: &gpui::Entity<EditorView>,
+        visual: &mut VisualTestContext,
+        target: &'static str,
+    ) -> gpui::Bounds<gpui::Pixels> {
+        let chain = visual.debug_bounds("device-chain-scroll").unwrap();
+        let viewport = visual.update(|window, _| window.viewport_size());
+        let left = chain.left().max(px(0.0)) + px(1.0);
+        let right = chain.right().min(viewport.width) - px(1.0);
+        let before = visual.debug_bounds(target).unwrap();
+        assert!(
+            before.size.width <= right - left,
+            "{target} cannot fit the actual chain viewport: target={before:?}, chain={chain:?}, viewport={viewport:?}"
+        );
+        let delta = if before.left() < left {
+            left - before.left()
+        } else if before.right() > right {
+            right - before.right()
+        } else {
+            px(0.0)
+        };
+        if delta != px(0.0) {
+            editor.update(&mut *visual, |view, cx| {
+                let scroll = &view.device_panel.chain_window.scroll;
+                scroll.set_offset(scroll.offset() + point(delta, px(0.0)));
+                cx.notify();
+            });
+            visual.run_until_parked();
+        }
+        let revealed = visual.debug_bounds(target).unwrap();
+        assert!(
+            revealed.left() >= left
+                && revealed.right() <= right
+                && revealed.top() >= chain.top()
+                && revealed.bottom() <= chain.bottom(),
+            "{target} must be physically reachable through the chain, including its edges: target={revealed:?}, chain={chain:?}, viewport={viewport:?}"
+        );
+        revealed
+    }
+
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, state, track, device) = fixture(false);
+    let (handle, editor, _root) = graph_layout_tests::bounded_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    for (width, bank) in [(880.0, 1), (1500.0, 4)] {
+        visual.simulate_resize(size(px(width), px(650.0)));
+        visual.run_until_parked();
+        for (x, y, kind, hint) in [
+            (0.5, 0.025, hex_engine::eq::NodeKind::Notch, "notch"),
+            (0.5, 0.5, hex_engine::eq::NodeKind::Bell, "bell"),
+            (0.02, 0.025, hex_engine::eq::NodeKind::LowCut, "low-cut"),
+            (0.98, 0.025, hex_engine::eq::NodeKind::HighCut, "high-cut"),
+        ] {
+            // Undo rebuilds detail selection under the existing owner. Select
+            // the intended bank again before each independent creation.
+            // The existing narrow chain viewport scrolls the EQ sidebar
+            // horizontally. Bring its real control onscreen, select, then
+            // reveal the whole graph before testing its pointer targets.
+            let bank_selector =
+                Box::leak(format!("eq-bank-{}-{bank}", device.value()).into_boxed_str());
+            let bank_control = reveal_in_chain(&editor, &mut visual, bank_selector).center();
+            visual.simulate_click(bank_control, Modifiers::default());
+            visual.run_until_parked();
+            let graph = reveal_in_chain(&editor, &mut visual, selector("eq-response", device));
+            let start = plot(&mut visual, device, x, y);
+            let chain = visual.debug_bounds("device-chain-scroll").unwrap();
+            assert!(
+                chain.contains(&start),
+                "{hint} pointer must belong to the revealed chain: point={start:?}, graph={graph:?}, chain={chain:?}"
+            );
+            visual.simulate_mouse_move(start, None, Modifiers::default());
+            visual.run_until_parked();
+            let hint_selector = Box::leak(
+                format!("eq-response-{}-creation-hint-{hint}", device.value()).into_boxed_str(),
+            );
+            let shown = visual
+                .debug_bounds(hint_selector)
+                .unwrap_or_else(|| panic!("missing actual {hint} hint at width={width}, bank={bank}, normalized=({x},{y}), pointer={start:?}, graph={graph:?}, chain={chain:?}"));
+            assert!(
+                shown.left() >= graph.left()
+                    && shown.right() <= graph.right()
+                    && shown.top() >= graph.top()
+                    && shown.bottom() <= graph.bottom(),
+                "{hint} hint must stay within compact graph: {shown:?} {graph:?}"
+            );
+            assert_eq!(
+                visual.rendered_cursor_style(),
+                Some(gpui::CursorStyle::Crosshair)
+            );
+            visual.simulate_click(start, Modifiers::default());
+            pump_until(&editor, cx, |v| {
+                settled(v) && read(v, device).nodes.len() == 1
+            });
+            visual.run_until_parked();
+            let authored = editor.read_with(cx, |v, _| read(v, device));
+            assert_eq!(
+                authored.nodes[0].kind, kind,
+                "hint action must equal actual canonical shape"
+            );
+            assert_eq!(
+                authored.nodes[0].bank, bank,
+                "{hint} at {width}px must retain its selected bank"
+            );
+            if kind != hex_engine::eq::NodeKind::Bell {
+                assert_eq!(authored.nodes[0].gain_db, 0.0);
+                assert!((authored.nodes[0].q - 0.1 * 180.0_f32.powf(y)).abs() < 0.001);
+            }
+            visual.simulate_mouse_move(start, None, Modifiers::default());
+            visual.run_until_parked();
+            assert!(
+                visual.debug_bounds(hint_selector).is_none(),
+                "existing node consumes the same bottom/edge zone"
+            );
+            assert_ne!(
+                visual.rendered_cursor_style(),
+                Some(gpui::CursorStyle::Crosshair)
+            );
+            visual.simulate_click(start, Modifiers::default());
+            pump_until(&editor, cx, settled);
+            editor.read_with(cx, |v, _| {
+                assert_eq!(
+                    read(v, device),
+                    authored,
+                    "existing node click must select without creating or changing it"
+                )
+            });
+            editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
+            pump_until(&editor, cx, |v| {
+                settled(v) && read(v, device).nodes.is_empty()
+            });
+            visual.run_until_parked();
+        }
+    }
+}
+
+#[gpui::test]
+fn eq_notch_hint_retires_for_real_pending_work_and_invalid_numeric_draft(cx: &mut TestAppContext) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, state, track, device) = fixture(false);
+    let (handle, editor, _root) = graph_layout_tests::bounded_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let start = plot(&mut visual, device, 0.5, 0.025);
+    let hint_selector =
+        Box::leak(format!("eq-response-{}-creation-hint-notch", device.value()).into_boxed_str());
+    let before = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    visual.simulate_mouse_move(start, None, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(hint_selector).is_some());
+    // Queue a real no-op command. Before consuming its exact worker event,
+    // the owner must hide the offer without creating any EQ state/history.
+    editor.update(cx, |v, cx| {
+        let name = v
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .name()
+            .to_owned();
+        assert!(v.enqueue(Request::Edit(Command::RenameTrack { track, name })));
+        assert_eq!(v.worker_requests_pending, 1);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(hint_selector).is_none());
+    visual.simulate_mouse_move(start, None, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(hint_selector).is_none());
+    editor.read_with(cx, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
+    pump_until(&editor, cx, settled);
+    visual.simulate_mouse_move(start, None, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(hint_selector).is_some());
+    enter_typed_value(&mut visual, device, hex_engine::eq::OUTPUT_GAIN, "invalid");
+    editor.read_with(cx, |v, cx| assert!(v.device_panel.has_pending_draft(cx)));
+    visual.simulate_mouse_move(start, None, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(hint_selector).is_none());
+    editor.read_with(cx, |v, _| {
+        assert!(settled(v));
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        assert!(read(v, device).nodes.is_empty());
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    visual.simulate_mouse_move(start, None, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(hint_selector).is_some());
+    editor.read_with(cx, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
+}

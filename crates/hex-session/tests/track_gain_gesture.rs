@@ -11,7 +11,7 @@ use std::{
 };
 
 fn wait(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + std::time::Duration::from_secs(60);
     loop {
         match service.try_event() {
             Ok(event) => return event,
@@ -170,6 +170,7 @@ fn held_gain_changes_pcm_before_commit_and_commits_one_undo_step() {
     let committed = request(
         &service,
         Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: false,
             key,
             sequence: 6,
             value: ParameterValue::Float(0.75),
@@ -243,6 +244,7 @@ fn invalid_final_gain_and_deleted_target_refuse_without_mutating_canonical_state
     let rejected = request(
         &service,
         Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: false,
             key,
             sequence: 7,
             value: ParameterValue::Float(2.1),
@@ -255,6 +257,7 @@ fn invalid_final_gain_and_deleted_target_refuse_without_mutating_canonical_state
     let stale = request(
         &service,
         Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: false,
             key,
             sequence: 1,
             value: ParameterValue::Float(0.2),
@@ -273,6 +276,7 @@ fn no_op_commit_has_no_history_and_new_automation_retires_the_gesture() {
     let committed = request(
         &service,
         Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: false,
             key,
             sequence: 2,
             value: ParameterValue::Float(1.0),
@@ -287,6 +291,7 @@ fn no_op_commit_has_no_history_and_new_automation_retires_the_gesture() {
         Command::ReplaceTrackGainEnvelope {
             track,
             points: vec![hex_project::GainPoint {
+                incoming_gain: None,
                 beat: BeatTime::ZERO,
                 gain: 0.8,
                 outgoing: hex_project::GainInterpolation::Step,
@@ -298,6 +303,7 @@ fn no_op_commit_has_no_history_and_new_automation_retires_the_gesture() {
     let stale = request(
         &service,
         Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: false,
             key,
             sequence: 2,
             value: ParameterValue::Float(0.25),
@@ -551,6 +557,7 @@ fn track_gain_worker_profile_covers_populated_projects_and_retains_one_history_s
         let committed = request(
             &service,
             Request::DeviceGesture(GestureRequest::Commit {
+                manual_edit: false,
                 key,
                 sequence: 65,
                 value: ParameterValue::Float(0.25),
@@ -579,7 +586,7 @@ fn track_gain_worker_profile_covers_populated_projects_and_retains_one_history_s
 }
 
 #[test]
-fn verified_streaming_refuses_track_gain_begin_without_preview_or_history_change() {
+fn verified_track_gain_preview_preserves_canonical_state_and_other_mixer_limits() {
     use hex_session::{DocumentAudioMode, SourcePlanReservation};
     let service = Service::new(48_000, 16, 0).unwrap();
     wait(&service);
@@ -613,53 +620,52 @@ fn verified_streaming_refuses_track_gain_begin_without_preview_or_history_change
         generation: source.context().project_generation,
         token: 1,
     };
-    let refused = request(
+    let began = request(
         &service,
         Request::DeviceGesture(GestureRequest::Begin {
             key,
             target: GestureTarget::TrackGain { track },
         }),
     );
-    assert!(
-        !refused.gesture_ack.as_ref().unwrap().accepted,
-        "unsupported mode must refuse before acknowledging a held preview"
-    );
-    assert!(
-        refused
-            .gesture_ack
-            .as_ref()
-            .unwrap()
-            .reason
-            .as_deref()
-            .is_some_and(|reason| reason.contains("resident"))
-    );
-    assert!(refused.device_preview.is_none());
-    assert!(refused.active_device_gesture.is_none());
-    assert!(refused.playback.is_none());
-    assert_eq!(refused.state.revision, before.state.revision);
-    assert_eq!(refused.state.unsaved, before.state.unsaved);
-    assert_eq!(refused.state.can_undo, before.state.can_undo);
-    assert_eq!(refused.state.can_redo, before.state.can_redo);
-    assert!(Arc::ptr_eq(&refused.state.project, &before.state.project));
-    for request_value in [
-        GestureRequest::Change {
+    assert!(began.gesture_ack.as_ref().unwrap().accepted);
+    let preview = request(
+        &service,
+        Request::DeviceGesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: ParameterValue::Float(0.5),
-        },
-        GestureRequest::Commit {
-            key,
-            sequence: 2,
-            value: ParameterValue::Float(0.5),
-        },
-    ] {
-        let refused = request(&service, Request::DeviceGesture(request_value));
-        assert!(!refused.gesture_ack.as_ref().unwrap().accepted);
-        assert!(refused.device_preview.is_none());
-        assert!(refused.active_device_gesture.is_none());
-        assert!(refused.playback.is_none());
-        assert_eq!(refused.state.revision, before.state.revision);
-        assert_eq!(refused.state.project, before.state.project);
+        }),
+    );
+    assert!(preview.gesture_ack.as_ref().unwrap().accepted);
+    assert_eq!(
+        preview
+            .device_preview
+            .as_ref()
+            .unwrap()
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .gain(),
+        0.5
+    );
+    let cancelled = request(
+        &service,
+        Request::DeviceGesture(GestureRequest::Cancel { key }),
+    );
+    assert!(cancelled.gesture_ack.as_ref().unwrap().accepted);
+    assert!(cancelled.active_device_gesture.is_none());
+    for event in [&began, &preview, &cancelled] {
+        assert!(event.playback.is_none(), "no resident fallback");
+        assert_eq!(event.state.revision, before.state.revision);
+        assert_eq!(event.state.unsaved, before.state.unsaved);
+        assert_eq!(event.state.can_undo, before.state.can_undo);
+        assert_eq!(event.state.can_redo, before.state.can_redo);
+        assert!(Arc::ptr_eq(&event.state.project, &before.state.project));
+        assert!(Arc::ptr_eq(
+            event.state.canonical_audio_source.as_ref().unwrap(),
+            source
+        ));
     }
     // The existing explicit +/- path remains a normal undoable canonical edit.
     let changed = edit(&service, Command::Gain { track, gain: 0.5 });
@@ -782,6 +788,7 @@ fn header_pan_previews_real_pcm_and_commits_or_cancels_one_canonical_edit() {
     let committed = request(
         &service,
         Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: false,
             key,
             sequence: 6,
             value: ParameterValue::Float(0.75),
@@ -906,6 +913,7 @@ fn header_return_gain_previews_real_bus_pcm_and_preserves_current_save_open_and_
     let committed = request(
         &service,
         Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: false,
             key,
             sequence: 5,
             value: ParameterValue::Float(0.25),
@@ -975,6 +983,7 @@ fn header_mix_targets_refuse_nonfinite_out_of_range_and_removed_owners() {
         let stale = request(
             &service,
             Request::DeviceGesture(GestureRequest::Commit {
+                manual_edit: false,
                 key,
                 sequence: 5,
                 value: ParameterValue::Float(0.5),

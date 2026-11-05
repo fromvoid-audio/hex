@@ -48,21 +48,8 @@ impl ReturnTrack {
 
 pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Created, Invalid> {
     match command {
-        Command::AddReturnTrack { name } => {
-            crate::edit::name_valid(&name)?;
-            if project.returns.len() >= MAX_RETURN_TRACKS {
-                return Err(Invalid("return track limit reached"));
-            }
-            let id = ReturnId(project.allocate_id()?);
-            project.returns.push(ReturnTrack {
-                id,
-                name,
-                gain: 1.0,
-                muted: false,
-                devices: Vec::new(),
-            });
-            Ok(crate::Created::ReturnTrack(id))
-        }
+        Command::AddReturnTrack { name } => add_return(project, name, 1.0),
+        Command::AddReturnTrackWithGain { name, gain } => add_return(project, name, gain),
         Command::RemoveReturnTrack(id) => {
             let index = project
                 .returns
@@ -154,6 +141,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             find_mut(project, return_track)?.devices.insert(
                 index,
                 Device {
+                    automation: Vec::new(),
                     comparison: None,
                     id,
                     state,
@@ -207,6 +195,23 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
     }
 }
 
+fn add_return(project: &mut Project, name: String, gain: f32) -> Result<crate::Created, Invalid> {
+    validate_gain(gain)?;
+    crate::edit::name_valid(&name)?;
+    if project.returns.len() >= MAX_RETURN_TRACKS {
+        return Err(Invalid("return track limit reached"));
+    }
+    let id = ReturnId(project.allocate_id()?);
+    project.returns.push(ReturnTrack {
+        id,
+        name,
+        gain,
+        muted: false,
+        devices: Vec::new(),
+    });
+    Ok(crate::Created::ReturnTrack(id))
+}
+
 fn validate_gain(gain: f32) -> Result<(), Invalid> {
     if gain.is_finite() && (0.0..=2.0).contains(&gain) {
         Ok(())
@@ -237,7 +242,14 @@ pub(crate) fn device_count(project: &Project) -> Result<usize, Invalid> {
         .try_fold(project.main_devices.len(), |count, track| {
             count
                 .checked_add(track.devices.len())
-                .and_then(|sum| sum.checked_add(usize::from(track.instrument.is_some())))
+                .ok_or(Invalid("device count overflow"))
+        })?;
+    let regular = project
+        .native_sources
+        .iter()
+        .try_fold(regular, |count, source| {
+            count
+                .checked_add(source.devices().count())
                 .ok_or(Invalid("device count overflow"))
         })?;
     project.returns.iter().try_fold(regular, |count, track| {

@@ -1,12 +1,12 @@
 //! Verified real-file catalog and immutable metadata; no synthetic lease.
 use hex_engine::{StreamSourceKey, StreamedSourceMetadata};
 use std::{io::Write, path::PathBuf};
-pub(super) struct Wav(PathBuf, u64, u32);
+pub(in crate::prepared) struct Wav(PathBuf, u64, u32);
 impl Wav {
     pub(super) fn new() -> Self {
         Self::with_frames(8)
     }
-    pub(super) fn with_frames(frames: u32) -> Self {
+    pub(in crate::prepared) fn with_frames(frames: u32) -> Self {
         Self::with_samples(frames, |_| 8192)
     }
     pub(super) fn with_samples(frames: u32, sample: impl Fn(u32) -> i16) -> Self {
@@ -53,7 +53,7 @@ impl Wav {
         file.sync_all().unwrap();
         Self(path, u64::from(frames), rate)
     }
-    pub(super) fn definition(
+    pub(in crate::prepared) fn definition(
         &self,
         asset: hex_project::AssetId,
         context: u64,

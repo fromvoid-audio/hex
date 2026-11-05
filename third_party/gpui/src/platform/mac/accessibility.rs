@@ -181,7 +181,7 @@ pub(super) fn publish(
             }
             let value_bytes = match &descriptor.value {
                 crate::AccessibilityValue::Number { text, .. } => text.len(),
-                crate::AccessibilityValue::Toggle(_) => 0,
+                crate::AccessibilityValue::Button | crate::AccessibilityValue::Toggle(_) => 0,
                 crate::AccessibilityValue::Choice { options, .. } => {
                     options.iter().map(|text| text.len()).sum()
                 }
@@ -668,6 +668,7 @@ extern "C" fn accessibility_role(this: &Object, _: Sel) -> id {
     };
     unsafe {
         ns_string(match node.descriptor.value {
+            crate::AccessibilityValue::Button => "AXButton",
             crate::AccessibilityValue::Number { .. } => "AXSlider",
             crate::AccessibilityValue::Toggle(_) => "AXCheckBox",
             crate::AccessibilityValue::Choice { .. } => "AXPopUpButton",
@@ -683,6 +684,7 @@ extern "C" fn accessibility_value(this: &Object, _: Sel) -> id {
     };
     unsafe {
         match node.descriptor.value {
+            crate::AccessibilityValue::Button => nil,
             crate::AccessibilityValue::Number { value, .. } => {
                 msg_send![class!(NSNumber), numberWithDouble: value]
             }
@@ -705,7 +707,7 @@ extern "C" fn accessibility_value_description(this: &Object, _: Sel) -> id {
             crate::AccessibilityValue::Choice { selected, options } => {
                 options.get(selected).map_or(nil, |text| ns_string(text))
             }
-            crate::AccessibilityValue::Toggle(_) => nil,
+            crate::AccessibilityValue::Button | crate::AccessibilityValue::Toggle(_) => nil,
         }
     }
 }
@@ -810,7 +812,7 @@ extern "C" fn accessibility_set_value(this: &Object, _: Sel, value: id) {
                     }
                 }
             }
-            crate::AccessibilityValue::Toggle(_) => {}
+            crate::AccessibilityValue::Button | crate::AccessibilityValue::Toggle(_) => {}
         }
     }
 }
@@ -859,6 +861,53 @@ mod tests {
                 refused: false,
             },
         )
+    }
+    #[test]
+    fn appkit_stateless_button_has_button_role_no_value_and_only_action_semantics() {
+        let (_owner, mut snapshot) = fixture();
+        let descriptor = &mut snapshot.nodes[0].node.descriptor;
+        descriptor.value = crate::AccessibilityValue::Button;
+        descriptor.name = "clear search".into();
+        assert!(descriptor.permits(&crate::AccessibilityAction::Press));
+        assert!(descriptor.permits(&crate::AccessibilityAction::Focus));
+        for action in [
+            crate::AccessibilityAction::Increment,
+            crate::AccessibilityAction::Decrement,
+            crate::AccessibilityAction::SetNumber(1.0),
+            crate::AccessibilityAction::Choose(0),
+        ] {
+            assert!(!descriptor.permits(&action));
+        }
+        descriptor.enabled = false;
+        assert!(!descriptor.permits(&crate::AccessibilityAction::Press));
+        descriptor.enabled = true;
+        let descriptor = descriptor.clone();
+        let mut registry = Registry::default();
+        let bridge: Arc<NativeBridge> = registry.register(13, |_| ()).unwrap();
+        bridge.publish(snapshot);
+        // Same existing AppKit test boundary: release the actual semantic object
+        // before assertions, including when a getter returns the wrong role.
+        unsafe {
+            let class = Class::get("GPUISemanticControl").unwrap();
+            let object: id = msg_send![class, new];
+            assert!(!object.is_null());
+            (*object).set_ivar(
+                "semanticState",
+                Box::into_raw(Box::new(ElementData {
+                    bridge: bridge.clone(),
+                    id: descriptor.id,
+                    owner: descriptor.lifetime,
+                })) as *mut c_void,
+            );
+            let role: id = msg_send![object, accessibilityRole];
+            let expected = ns_string("AXButton");
+            let button: BOOL = msg_send![role, isEqualToString: expected];
+            let value: id = msg_send![object, accessibilityValue];
+            let description: id = msg_send![object, accessibilityValueDescription];
+            let _: () = msg_send![object, release];
+            assert_eq!(button, YES);
+            assert!(value.is_null() && description.is_null());
+        }
     }
     #[test]
     fn appkit_boolean_getters_follow_snapshot_and_revocation() {

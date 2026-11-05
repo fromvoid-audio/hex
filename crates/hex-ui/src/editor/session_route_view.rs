@@ -296,7 +296,8 @@ mod tests {
         SessionRouteEntry {
             track_id,
             owner,
-            active_launch_beat_raw: None,
+            active_origin: None,
+            audio_launch_frame: None,
             pending: None,
         }
     }
@@ -312,6 +313,7 @@ mod tests {
             capability,
             route_state_generation: 7,
             performance_at_update: 100,
+            clock_anchor: None,
         }
     }
 

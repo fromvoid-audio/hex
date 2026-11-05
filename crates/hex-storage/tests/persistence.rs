@@ -1,6 +1,6 @@
 use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
 use hex_project::{BeatTime, Command, Created, Editor, Meter, Project, Tempo};
-use hex_storage::{MAX_DOCUMENT_BYTES, decode, encode, load, save_new};
+use hex_storage::{LEGACY_READER_DOCUMENT_BYTES, decode, encode, load, save_new};
 use std::fs;
 
 fn project() -> Project {
@@ -77,33 +77,6 @@ fn project() -> Project {
     editor.project().clone()
 }
 
-fn assert_empty_session(project: &Project) {
-    assert!(project.scenes().is_empty());
-    assert!(project.session_cells().is_empty());
-}
-
-fn remove_gain_lane_fields(document: &mut serde_json::Value) {
-    document.as_object_mut().unwrap().remove("audio_clip_state");
-    document.as_object_mut().unwrap().remove("fade_shapes");
-    document
-        .as_object_mut()
-        .unwrap()
-        .remove("audio_event_state");
-
-    document.as_object_mut().unwrap().remove("clip_names");
-    for track in document["tracks"].as_array_mut().unwrap() {
-        for key in ["gain_envelope", "gain_touch_spans", "gain_touch_epoch"] {
-            track.as_object_mut().unwrap().remove(key);
-        }
-    }
-}
-fn remove_schema_seventeen_routes(document: &mut serde_json::Value) {
-    remove_gain_lane_fields(document);
-    document.as_object_mut().unwrap().remove("return_tracks");
-    for track in document["tracks"].as_array_mut().unwrap() {
-        track.as_object_mut().unwrap().remove("sends");
-    }
-}
 #[test]
 fn roundtrip_complete_current_state_and_highwater() {
     let project = project();
@@ -120,7 +93,7 @@ fn roundtrip_complete_current_state_and_highwater() {
 }
 
 #[test]
-fn schema_seventeen_roundtrips_return_devices_sends_and_strictly_migrates_sixteen() {
+fn current_format_roundtrips_return_devices_sends_and_strict_fields() {
     let mut editor = Editor::new(project(), 32).unwrap();
     let track = editor.project().tracks()[0].id();
     let return_track = match editor
@@ -165,7 +138,7 @@ fn schema_seventeen_roundtrips_return_devices_sends_and_strictly_migrates_sixtee
     let with_returns = editor.project().clone();
     let bytes = encode(&with_returns).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 33);
+    assert_eq!(json["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     assert_eq!(json["return_tracks"][0]["name"], "Verb return");
     assert_eq!(
         json["return_tracks"][0]["devices"][0]["type_id"],
@@ -180,70 +153,6 @@ fn schema_seventeen_roundtrips_return_devices_sends_and_strictly_migrates_sixtee
         decode(&bytes).unwrap().device(device).unwrap().state(),
         &effect_state
     );
-
-    let mut schema_sixteen = json.clone();
-    schema_sixteen["version"] = 16.into();
-    schema_sixteen
-        .as_object_mut()
-        .unwrap()
-        .remove("main_devices");
-    schema_sixteen
-        .as_object_mut()
-        .unwrap()
-        .remove("main_devices");
-    schema_sixteen.as_object_mut().unwrap().remove("tuning");
-    schema_sixteen
-        .as_object_mut()
-        .unwrap()
-        .remove("device_assets");
-    schema_sixteen
-        .as_object_mut()
-        .unwrap()
-        .remove("track_colors");
-    schema_sixteen
-        .as_object_mut()
-        .unwrap()
-        .remove("accented_clips");
-    schema_sixteen
-        .as_object_mut()
-        .unwrap()
-        .remove("track_colors");
-    schema_sixteen
-        .as_object_mut()
-        .unwrap()
-        .remove("accented_clips");
-    schema_sixteen
-        .as_object_mut()
-        .unwrap()
-        .remove("audio_clip_state");
-    schema_sixteen
-        .as_object_mut()
-        .unwrap()
-        .remove("fade_shapes");
-    schema_sixteen
-        .as_object_mut()
-        .unwrap()
-        .remove("audio_feeds");
-    schema_sixteen
-        .as_object_mut()
-        .unwrap()
-        .remove("midi_routes");
-    remove_gain_lane_fields(&mut schema_sixteen);
-    schema_sixteen.as_object_mut().unwrap().remove("routing");
-    schema_sixteen
-        .as_object_mut()
-        .unwrap()
-        .remove("import_provenance");
-    schema_sixteen
-        .as_object_mut()
-        .unwrap()
-        .remove("return_tracks");
-    for track in schema_sixteen["tracks"].as_array_mut().unwrap() {
-        track.as_object_mut().unwrap().remove("sends");
-    }
-    let migrated = decode(&serde_json::to_vec(&schema_sixteen).unwrap()).unwrap();
-    assert!(migrated.return_tracks().is_empty());
-    assert!(migrated.tracks()[0].sends().is_empty());
 
     let mut missing = json.clone();
     missing["tracks"][0]
@@ -395,7 +304,7 @@ fn schema_fourteen_roundtrips_generic_opaque_device_envelopes() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 33);
+    assert_eq!(json["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     assert_eq!(json["tracks"][0]["devices"][0]["id"], second.value());
     assert_eq!(json["tracks"][0]["devices"][1]["id"], first.value());
     assert_eq!(
@@ -538,123 +447,7 @@ fn check_operator_opaque_roundtrip(state_version: u32) {
 }
 
 #[test]
-fn schema_fourteen_and_fifteen_migrate_instrument_front_and_schema_sixteen_preserves_state() {
-    // These legacy layouts require an authored instrument; ordinary current
-    // tracks deliberately start with an empty device chain.
-    let mut authored = Editor::new(project(), 8).unwrap();
-    let tracks: Vec<_> = authored
-        .project()
-        .tracks()
-        .iter()
-        .map(|track| track.id())
-        .collect();
-    for track in tracks {
-        authored
-            .execute(Command::InsertInstrument {
-                track,
-                state: hex_project::default_instrument_state().unwrap(),
-            })
-            .unwrap();
-    }
-    let mut legacy: serde_json::Value =
-        serde_json::from_slice(&encode(authored.project()).unwrap()).unwrap();
-    let old_highwater = legacy["next_id"].as_u64().unwrap();
-    legacy["version"] = 14.into();
-    legacy.as_object_mut().unwrap().remove("main_devices");
-    legacy.as_object_mut().unwrap().remove("tuning");
-    legacy.as_object_mut().unwrap().remove("device_assets");
-    legacy.as_object_mut().unwrap().remove("track_colors");
-    legacy.as_object_mut().unwrap().remove("accented_clips");
-    legacy.as_object_mut().unwrap().remove("audio_clip_state");
-    legacy.as_object_mut().unwrap().remove("fade_shapes");
-    legacy.as_object_mut().unwrap().remove("audio_event_state");
-
-    legacy.as_object_mut().unwrap().remove("clip_names");
-    legacy.as_object_mut().unwrap().remove("audio_feeds");
-    legacy.as_object_mut().unwrap().remove("midi_routes");
-    legacy.as_object_mut().unwrap().remove("routing");
-    legacy.as_object_mut().unwrap().remove("import_provenance");
-    remove_schema_seventeen_routes(&mut legacy);
-    for track in legacy["tracks"].as_array_mut().unwrap() {
-        track.as_object_mut().unwrap().remove("instrument");
-        track.as_object_mut().unwrap().remove("instrument_position");
-    }
-    let migrated = decode(&serde_json::to_vec(&legacy).unwrap()).unwrap();
-    for track in migrated.tracks() {
-        let instrument = track.instrument().expect("legacy default instrument");
-        assert_eq!(
-            instrument.state(),
-            &hex_project::default_instrument_state().unwrap()
-        );
-        assert!(instrument.id().value() >= old_highwater);
-        assert_eq!(track.instrument_position(), Some(0));
-    }
-
-    let mut schema_fifteen: serde_json::Value =
-        serde_json::from_slice(&encode(authored.project()).unwrap()).unwrap();
-    schema_fifteen["version"] = 15.into();
-    schema_fifteen
-        .as_object_mut()
-        .unwrap()
-        .remove("main_devices");
-    schema_fifteen
-        .as_object_mut()
-        .unwrap()
-        .remove("main_devices");
-    schema_fifteen.as_object_mut().unwrap().remove("tuning");
-    schema_fifteen
-        .as_object_mut()
-        .unwrap()
-        .remove("device_assets");
-    schema_fifteen
-        .as_object_mut()
-        .unwrap()
-        .remove("track_colors");
-    schema_fifteen
-        .as_object_mut()
-        .unwrap()
-        .remove("accented_clips");
-    schema_fifteen
-        .as_object_mut()
-        .unwrap()
-        .remove("track_colors");
-    schema_fifteen
-        .as_object_mut()
-        .unwrap()
-        .remove("accented_clips");
-    schema_fifteen
-        .as_object_mut()
-        .unwrap()
-        .remove("audio_clip_state");
-    schema_fifteen
-        .as_object_mut()
-        .unwrap()
-        .remove("fade_shapes");
-    schema_fifteen
-        .as_object_mut()
-        .unwrap()
-        .remove("audio_feeds");
-    schema_fifteen
-        .as_object_mut()
-        .unwrap()
-        .remove("midi_routes");
-    schema_fifteen.as_object_mut().unwrap().remove("routing");
-    schema_fifteen
-        .as_object_mut()
-        .unwrap()
-        .remove("import_provenance");
-    remove_schema_seventeen_routes(&mut schema_fifteen);
-    for track in schema_fifteen["tracks"].as_array_mut().unwrap() {
-        track.as_object_mut().unwrap().remove("instrument_position");
-    }
-    let migrated = decode(&serde_json::to_vec(&schema_fifteen).unwrap()).unwrap();
-    assert!(
-        migrated
-            .tracks()
-            .iter()
-            .all(|track| track.instrument_position() == Some(0))
-    );
-
+fn current_format_preserves_opaque_instrument_state_and_requires_its_field() {
     let mut current = Project::new(48_000).unwrap();
     let mut editor = Editor::new(current.clone(), 8).unwrap();
     let track = match editor
@@ -685,9 +478,9 @@ fn schema_fourteen_and_fifteen_migrate_instrument_front_and_schema_sixteen_prese
         .unwrap();
     let bytes = encode(editor.project()).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 33);
+    assert_eq!(json["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     assert_eq!(
-        json["tracks"][0]["instrument"]["type_id"],
+        json["native_sources"][0]["devices"][0]["device"]["type_id"],
         "future.instrument"
     );
     assert_eq!(
@@ -750,67 +543,33 @@ fn schema_sixteen_roundtrips_chain_position_and_rejects_malformed_positions() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 33);
-    assert_eq!(json["tracks"][0]["instrument_position"], 1);
+    assert_eq!(json["version"], hex_storage::CURRENT_SCHEMA_VERSION);
+    assert_eq!(json["track_source_bindings"][0]["instrument_position"], 1);
     assert_eq!(decode(&bytes).unwrap(), project);
 
     let mut missing = json.clone();
-    missing["tracks"][0]
+    missing["track_source_bindings"][0]
         .as_object_mut()
         .unwrap()
         .remove("instrument_position");
     assert!(decode(&serde_json::to_vec(&missing).unwrap()).is_err());
 
     let mut out_of_range = json.clone();
-    out_of_range["tracks"][0]["instrument_position"] = 2.into();
+    out_of_range["track_source_bindings"][0]["instrument_position"] = 2.into();
     assert!(decode(&serde_json::to_vec(&out_of_range).unwrap()).is_err());
 
     let mut orphaned = json.clone();
-    orphaned["tracks"][0]["instrument"] = serde_json::Value::Null;
-    orphaned["tracks"][0]["instrument_position"] = 0.into();
+    orphaned["track_source_bindings"][0]["source"] = serde_json::Value::Null;
+    orphaned["track_source_bindings"][0]["instrument_position"] = 0.into();
     assert!(decode(&serde_json::to_vec(&orphaned).unwrap()).is_err());
 
     let mut missing_instrument = json;
-    missing_instrument["tracks"][0]
+    missing_instrument["track_source_bindings"][0]
         .as_object_mut()
         .unwrap()
-        .remove("instrument");
+        .remove("source");
     assert!(decode(&serde_json::to_vec(&missing_instrument).unwrap()).is_err());
     assert!(editor.project().device(effect).is_some());
-}
-
-#[test]
-fn schema_thirteen_projects_migrate_with_empty_device_chains() {
-    let mut json: serde_json::Value = serde_json::from_slice(&encode(&project()).unwrap()).unwrap();
-    assert_eq!(json["version"], 33);
-    json["version"] = 13.into();
-    json.as_object_mut().unwrap().remove("main_devices");
-    json.as_object_mut().unwrap().remove("tuning");
-    json.as_object_mut().unwrap().remove("device_assets");
-    json.as_object_mut().unwrap().remove("track_colors");
-    json.as_object_mut().unwrap().remove("accented_clips");
-    json.as_object_mut().unwrap().remove("audio_clip_state");
-    json.as_object_mut().unwrap().remove("fade_shapes");
-    json.as_object_mut().unwrap().remove("audio_event_state");
-
-    json.as_object_mut().unwrap().remove("clip_names");
-    json.as_object_mut().unwrap().remove("audio_feeds");
-    json.as_object_mut().unwrap().remove("midi_routes");
-    json.as_object_mut().unwrap().remove("routing");
-    json.as_object_mut().unwrap().remove("import_provenance");
-    remove_schema_seventeen_routes(&mut json);
-    for track in json["tracks"].as_array_mut().unwrap() {
-        track.as_object_mut().unwrap().remove("devices");
-        track.as_object_mut().unwrap().remove("instrument");
-        track.as_object_mut().unwrap().remove("instrument_position");
-    }
-    let migrated = decode(&serde_json::to_vec(&json).unwrap()).unwrap();
-    assert!(
-        migrated
-            .tracks()
-            .iter()
-            .all(|track| track.devices().is_empty())
-    );
 }
 
 #[test]
@@ -940,7 +699,7 @@ fn schema_twelve_persists_arrangement_midi_and_session_audio_sources_strictly() 
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 33);
+    assert_eq!(json["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     assert!(
         json["tracks"][0]["audio_clips"]
             .as_array()
@@ -1025,71 +784,17 @@ fn schema_twelve_persists_arrangement_midi_and_session_audio_sources_strictly() 
 }
 
 #[test]
-fn schema_nine_literal_migrates_midi_source_to_strict_one_shot_defaults() {
-    let legacy = br#"{
-        "format":"hex-project","version":9,"sample_rate":48000,"next_id":4,
-        "assets":[],"tracks":[{"id":1,"name":"keys","gain":1.0,
-          "balance":0.0,"muted":false,"soloed":false,
-          "content":{"kind":"instrument","loop_policy":"one_shot",
-            "clips":[{"id":2,"start_raw":0,"length_raw":17179869184,
-              "notes":[{"id":3,"start_raw":4294967296,"duration_raw":4294967296,
-                "pitch":60,"channel":0,"velocity":100}]}]}}],
-        "loop_region":null,"master_gain":1.0,
-        "tempo_points":[{"beat_raw":0,"micro_bpm":120000000}],
-        "meter_points":[{"beat_raw":0,"numerator":4,"denominator":4}]
-    }"#;
-    let project = decode(legacy).expect("strict schema nine fixture migrates");
-    assert_empty_session(&project);
-    let clip = &project.tracks()[0].midi_clips()[0];
-    assert_eq!(clip.length(), BeatTime::from_quarters(4).unwrap());
-    assert_eq!(clip.source_length(), clip.length());
-    assert_eq!(clip.source_start(), BeatTime::ZERO);
-    assert_eq!(clip.loop_start(), BeatTime::ZERO);
-    assert_eq!(clip.loop_end(), clip.length());
-    assert!(!clip.looping());
-
-    let mut json: serde_json::Value = serde_json::from_slice(legacy).unwrap();
-    json["tracks"][0]["content"]["loop_policy"] = "loop".into();
-    assert!(decode(&serde_json::to_vec(&json).unwrap()).is_err());
-    json["tracks"][0]["content"]["loop_policy"] = "one_shot".into();
-    json["tracks"][0]["content"]["clips"][0]["unexpected"] = true.into();
-    assert!(decode(&serde_json::to_vec(&json).unwrap()).is_err());
-}
-
-#[test]
-fn schema_ten_migrates_to_an_empty_session_grid() {
-    let literal = br#"{"format":"hex-project","version":10,"sample_rate":48000,"next_id":2,"assets":[],"tracks":[{"id":1,"name":"keys","gain":1.0,"balance":0.0,"muted":false,"soloed":false,"content":{"kind":"instrument","clips":[]}}],"loop_region":null,"master_gain":1.0,"tempo_points":[{"beat_raw":0,"micro_bpm":120000000}],"meter_points":[{"beat_raw":0,"numerator":4,"denominator":4}]}"#;
-    let migrated = decode(literal).unwrap();
-    assert_empty_session(&migrated);
-}
-#[test]
-fn malformed_unknown_future_and_oversized_documents_refused() {
+fn malformed_unknown_future_and_large_invalid_documents_refused() {
     let bytes = encode(&project()).unwrap();
     assert!(decode(&bytes[..bytes.len() - 1]).is_err());
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 33);
-    json["version"] = (json["version"].as_u64().unwrap() + 1).into();
-    json.as_object_mut().unwrap().remove("main_devices");
-    assert!(decode(&serde_json::to_vec(&json).unwrap()).is_err());
-    json["version"] = 16.into();
-    json.as_object_mut().unwrap().remove("main_devices");
-    json.as_object_mut().unwrap().remove("tuning");
-    json.as_object_mut().unwrap().remove("device_assets");
-    json.as_object_mut().unwrap().remove("track_colors");
-    json.as_object_mut().unwrap().remove("accented_clips");
-    json.as_object_mut().unwrap().remove("audio_clip_state");
-    json.as_object_mut().unwrap().remove("fade_shapes");
-    json.as_object_mut().unwrap().remove("audio_event_state");
-
-    json.as_object_mut().unwrap().remove("clip_names");
-    json.as_object_mut().unwrap().remove("audio_feeds");
-    json.as_object_mut().unwrap().remove("midi_routes");
-    json.as_object_mut().unwrap().remove("routing");
-    json.as_object_mut().unwrap().remove("import_provenance");
-    remove_schema_seventeen_routes(&mut json);
-    json["unrecognized"] = true.into();
-    assert!(decode(&serde_json::to_vec(&json).unwrap()).is_err());
-    json.as_object_mut().unwrap().remove("unrecognized");
+    assert_eq!(json["version"], hex_storage::CURRENT_SCHEMA_VERSION);
+    let mut future = json.clone();
+    future["version"] = (hex_storage::NEWEST_SCHEMA_VERSION + 1).into();
+    assert!(decode(&serde_json::to_vec(&future).unwrap()).is_err());
+    let mut unknown = json.clone();
+    unknown["unrecognized"] = true.into();
+    assert!(decode(&serde_json::to_vec(&unknown).unwrap()).is_err());
     let mut missing_master = json.clone();
     missing_master
         .as_object_mut()
@@ -1113,34 +818,11 @@ fn malformed_unknown_future_and_oversized_documents_refused() {
     assert!(decode(&serde_json::to_vec(&invalid_phase).unwrap()).is_err());
     json["tracks"][0]["audio_clips"][0]["asset"] = 999.into();
     assert!(decode(&serde_json::to_vec(&json).unwrap()).is_err());
-    assert!(decode(&vec![b' '; MAX_DOCUMENT_BYTES + 1]).is_err());
+    assert!(decode(&vec![b' '; LEGACY_READER_DOCUMENT_BYTES + 1]).is_err());
 }
 
 #[test]
-fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
-    let legacy = br#"{
-        "format":"hex-project","version":1,"sample_rate":48000,"next_id":4,
-        "assets":[{"id":1,"path":"Media/Legacy.WAV","frames":200}],
-        "tracks":[{"id":2,"name":"legacy","gain":1.0,"muted":false,
-          "clips":[{"id":3,"asset":1,"start":0,"duration":200,"source_offset":0,
-            "source_length":200,"looping":false}]}]
-    }"#;
-    let migrated = decode(legacy).expect("schema one is supported");
-    assert_empty_session(&migrated);
-    let asset = migrated.assets().next().expect("legacy asset");
-    assert_eq!(asset.source_sample_rate(), 48_000);
-    assert_eq!(asset.source_frames(), 200);
-    assert_eq!(asset.playback_frames(), 200);
-    assert_eq!(asset.conversion_version(), 0);
-    assert_eq!(migrated.tracks()[0].clips()[0].source_phase(), 0);
-    assert_eq!(migrated.tracks()[0].balance(), 0.0);
-    assert_eq!(migrated.master_gain(), 1.0);
-    assert_eq!(decode(&encode(&migrated).unwrap()).unwrap(), migrated);
-    assert!(!migrated.tracks()[0].soloed());
-    let mut invalid_v1: serde_json::Value = serde_json::from_slice(legacy).unwrap();
-    invalid_v1["tracks"][0]["unknown"] = true.into();
-    assert!(decode(&serde_json::to_vec(&invalid_v1).unwrap()).is_err());
-
+fn current_format_roundtrips_converted_media_phase_loop_tempo_and_meter() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let (track, asset) = match editor
         .execute(Command::ImportPreparedAudioTrack {
@@ -1160,7 +842,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
         .execute(Command::PlaceClip {
             track,
             asset,
-            start: 1_000,
+            start: 48_000,
             duration: 9,
             source_offset: 20,
             source_length: 3,
@@ -1174,7 +856,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
     editor
         .execute(Command::SplitClip {
             clip: loop_clip,
-            frame: 1_002,
+            frame: 48_002,
         })
         .unwrap();
     editor
@@ -1205,309 +887,23 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let current_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(current_json["version"], 33);
+    assert_eq!(current_json["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     assert_eq!(decode(&bytes).unwrap(), project);
-    let mut json = current_json.clone();
-    json.as_object_mut().unwrap().remove("session");
-    json["version"] = 8.into();
-    json.as_object_mut().unwrap().remove("main_devices");
-    json.as_object_mut().unwrap().remove("tuning");
-    json.as_object_mut().unwrap().remove("device_assets");
-    json.as_object_mut().unwrap().remove("track_colors");
-    json.as_object_mut().unwrap().remove("accented_clips");
-    json.as_object_mut().unwrap().remove("audio_clip_state");
-    json.as_object_mut().unwrap().remove("fade_shapes");
-    json.as_object_mut().unwrap().remove("audio_event_state");
-
-    json.as_object_mut().unwrap().remove("clip_names");
-    json.as_object_mut().unwrap().remove("audio_feeds");
-    json.as_object_mut().unwrap().remove("midi_routes");
-    json.as_object_mut().unwrap().remove("routing");
-    json.as_object_mut().unwrap().remove("import_provenance");
-    remove_schema_seventeen_routes(&mut json);
-    for track in json["tracks"].as_array_mut().unwrap() {
-        track.as_object_mut().unwrap().remove("devices");
-        track.as_object_mut().unwrap().remove("instrument");
-        track.as_object_mut().unwrap().remove("instrument_position");
-        let clips = track["audio_clips"].take();
-        let object = track.as_object_mut().unwrap();
-        object.remove("audio_clips");
-        object.remove("midi_clips");
-        track["clips"] = clips;
-    }
-    assert_eq!(json["assets"][0]["source_sample_rate"], 44_100);
-    assert_eq!(json["assets"][0]["source_frames"], 44_100);
-    assert_eq!(json["assets"][0]["playback_frames"], 48_000);
-    assert_eq!(json["assets"][0]["conversion_version"], 1);
-    assert_eq!(json["tracks"][0]["soloed"], true);
-    assert_eq!(json["tracks"][0]["balance"], 0.0);
-    assert_eq!(json["master_gain"], 1.0);
-    assert_eq!(json["loop_region"]["start"], 100);
-    assert_eq!(json["loop_region"]["end"], 300);
-    assert_eq!(json["tracks"][0]["clips"][0]["fade"]["span"], 48_000);
-    assert_eq!(json["tracks"][0]["clips"][2]["source_phase"], 2);
-    assert_eq!(json["tempo_points"][1]["beat_raw"], 8_u64 << 32);
-    assert_eq!(json["tempo_points"][1]["micro_bpm"], 93_500_000);
-    assert_eq!(json["meter_points"][1]["beat_raw"], (5_u64 << 31));
-    assert_eq!(json["meter_points"][1]["numerator"], 7);
-    let migrated_v8 = decode(&serde_json::to_vec(&json).unwrap()).unwrap();
-    assert_empty_session(&migrated_v8);
-    assert_eq!(decode(&bytes).unwrap(), project);
-
-    let mut invalid_mix = json.clone();
-    invalid_mix["tracks"][0]["balance"] = 1.01.into();
-    assert!(decode(&serde_json::to_vec(&invalid_mix).unwrap()).is_err());
-    invalid_mix["tracks"][0]["balance"] = 0.0.into();
-    invalid_mix["master_gain"] = 2.01.into();
-    assert!(decode(&serde_json::to_vec(&invalid_mix).unwrap()).is_err());
-
-    let mut legacy_v2 = json.clone();
-    legacy_v2["version"] = 2.into();
-    legacy_v2.as_object_mut().unwrap().remove("main_devices");
-    legacy_v2.as_object_mut().unwrap().remove("tuning");
-    legacy_v2.as_object_mut().unwrap().remove("device_assets");
-    legacy_v2.as_object_mut().unwrap().remove("track_colors");
-    legacy_v2.as_object_mut().unwrap().remove("accented_clips");
-    legacy_v2
-        .as_object_mut()
-        .unwrap()
-        .remove("audio_clip_state");
-    legacy_v2.as_object_mut().unwrap().remove("fade_shapes");
-    legacy_v2
-        .as_object_mut()
-        .unwrap()
-        .remove("import_provenance");
-    legacy_v2.as_object_mut().unwrap().remove("tempo_points");
-    legacy_v2.as_object_mut().unwrap().remove("meter_points");
-    legacy_v2.as_object_mut().unwrap().remove("loop_region");
-    legacy_v2.as_object_mut().unwrap().remove("master_gain");
-    for track in legacy_v2["tracks"].as_array_mut().unwrap() {
-        track.as_object_mut().unwrap().remove("soloed");
-        track.as_object_mut().unwrap().remove("balance");
-        for clip in track["clips"].as_array_mut().unwrap() {
-            clip.as_object_mut().unwrap().remove("fade");
-            clip.as_object_mut().unwrap().remove("source_phase");
-            clip.as_object_mut().unwrap().remove("gain_millidb");
-            clip.as_object_mut().unwrap().remove("audio_edit");
-        }
-    }
-    let migrated_v2 = decode(&serde_json::to_vec(&legacy_v2).unwrap()).unwrap();
-    assert_empty_session(&migrated_v2);
-    assert!(
-        migrated_v2
-            .tracks()
-            .iter()
-            .flat_map(|track| track.clips())
-            .all(|clip| clip.source_phase() == 0)
-    );
+    assert_eq!(current_json["assets"][0]["source_sample_rate"], 44_100);
+    assert_eq!(current_json["assets"][0]["playback_frames"], 48_000);
     assert_eq!(
-        migrated_v2.assets().next().unwrap().source_sample_rate(),
-        44_100
+        current_json["tracks"][0]["audio_clips"][2]["source_phase"],
+        2
     );
-    assert!(!migrated_v2.tracks()[0].soloed());
-    assert_eq!(migrated_v2.tracks()[0].balance(), 0.0);
-    assert_eq!(migrated_v2.master_gain(), 1.0);
-    legacy_v2["tracks"][0]["unknown"] = true.into();
-    assert!(decode(&serde_json::to_vec(&legacy_v2).unwrap()).is_err());
-
-    let mut legacy_v3 = json.clone();
-    legacy_v3["version"] = 3.into();
-    legacy_v3.as_object_mut().unwrap().remove("main_devices");
-    legacy_v3.as_object_mut().unwrap().remove("tuning");
-    legacy_v3.as_object_mut().unwrap().remove("device_assets");
-    legacy_v3.as_object_mut().unwrap().remove("track_colors");
-    legacy_v3.as_object_mut().unwrap().remove("accented_clips");
-    legacy_v3
-        .as_object_mut()
-        .unwrap()
-        .remove("audio_clip_state");
-    legacy_v3.as_object_mut().unwrap().remove("fade_shapes");
-    legacy_v3
-        .as_object_mut()
-        .unwrap()
-        .remove("import_provenance");
-    legacy_v3.as_object_mut().unwrap().remove("tempo_points");
-    legacy_v3.as_object_mut().unwrap().remove("meter_points");
-    legacy_v3.as_object_mut().unwrap().remove("loop_region");
-    legacy_v3.as_object_mut().unwrap().remove("master_gain");
-    legacy_v3["tracks"][0]
-        .as_object_mut()
-        .unwrap()
-        .remove("balance");
-    for track in legacy_v3["tracks"].as_array_mut().unwrap() {
-        for clip in track["clips"].as_array_mut().unwrap() {
-            clip.as_object_mut().unwrap().remove("fade");
-            clip.as_object_mut().unwrap().remove("source_phase");
-            clip.as_object_mut().unwrap().remove("gain_millidb");
-            clip.as_object_mut().unwrap().remove("audio_edit");
-        }
+    for (field, value) in [("balance", 1.01), ("gain", -0.1)] {
+        let mut invalid = current_json.clone();
+        invalid["tracks"][0][field] = value.into();
+        assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
     }
-    let migrated_v3 = decode(&serde_json::to_vec(&legacy_v3).unwrap()).unwrap();
-    assert_empty_session(&migrated_v3);
-    assert!(
-        migrated_v3
-            .tracks()
-            .iter()
-            .flat_map(|track| track.clips())
-            .all(|clip| clip.source_phase() == 0)
-    );
-    assert_eq!(migrated_v3.loop_region(), None);
-    assert!(migrated_v3.tracks()[0].soloed());
-    assert_eq!(migrated_v3.tracks()[0].balance(), 0.0);
-    assert_eq!(migrated_v3.master_gain(), 1.0);
-    assert_eq!(migrated_v3.assets().next().unwrap().conversion_version(), 1);
-
-    let mut legacy_v4 = json.clone();
-    legacy_v4["version"] = 4.into();
-    legacy_v4.as_object_mut().unwrap().remove("main_devices");
-    legacy_v4.as_object_mut().unwrap().remove("tuning");
-    legacy_v4.as_object_mut().unwrap().remove("device_assets");
-    legacy_v4.as_object_mut().unwrap().remove("track_colors");
-    legacy_v4.as_object_mut().unwrap().remove("accented_clips");
-    legacy_v4
-        .as_object_mut()
-        .unwrap()
-        .remove("audio_clip_state");
-    legacy_v4.as_object_mut().unwrap().remove("fade_shapes");
-    legacy_v4
-        .as_object_mut()
-        .unwrap()
-        .remove("import_provenance");
-    legacy_v4.as_object_mut().unwrap().remove("tempo_points");
-    legacy_v4.as_object_mut().unwrap().remove("meter_points");
-    legacy_v4.as_object_mut().unwrap().remove("master_gain");
-    legacy_v4["tracks"][0]
-        .as_object_mut()
-        .unwrap()
-        .remove("balance");
-    for track in legacy_v4["tracks"].as_array_mut().unwrap() {
-        for clip in track["clips"].as_array_mut().unwrap() {
-            clip.as_object_mut().unwrap().remove("fade");
-            clip.as_object_mut().unwrap().remove("source_phase");
-            clip.as_object_mut().unwrap().remove("gain_millidb");
-            clip.as_object_mut().unwrap().remove("audio_edit");
-        }
-    }
-    let migrated_v4 = decode(&serde_json::to_vec(&legacy_v4).unwrap()).unwrap();
-    assert_empty_session(&migrated_v4);
-    assert!(
-        migrated_v4
-            .tracks()
-            .iter()
-            .flat_map(|track| track.clips())
-            .all(|clip| clip.source_phase() == 0)
-    );
-    assert_eq!(migrated_v4.loop_region(), project.loop_region());
-    assert!(migrated_v4.tracks()[0].soloed());
-    assert_eq!(migrated_v4.tracks()[0].balance(), 0.0);
-    assert_eq!(migrated_v4.master_gain(), 1.0);
-
-    let mut legacy_v5 = json.clone();
-    legacy_v5["version"] = 5.into();
-    legacy_v5.as_object_mut().unwrap().remove("main_devices");
-    legacy_v5.as_object_mut().unwrap().remove("tuning");
-    legacy_v5.as_object_mut().unwrap().remove("device_assets");
-    legacy_v5.as_object_mut().unwrap().remove("track_colors");
-    legacy_v5.as_object_mut().unwrap().remove("accented_clips");
-    legacy_v5
-        .as_object_mut()
-        .unwrap()
-        .remove("audio_clip_state");
-    legacy_v5.as_object_mut().unwrap().remove("fade_shapes");
-    legacy_v5
-        .as_object_mut()
-        .unwrap()
-        .remove("import_provenance");
-    legacy_v5.as_object_mut().unwrap().remove("tempo_points");
-    legacy_v5.as_object_mut().unwrap().remove("meter_points");
-    for track in legacy_v5["tracks"].as_array_mut().unwrap() {
-        for clip in track["clips"].as_array_mut().unwrap() {
-            clip.as_object_mut().unwrap().remove("fade");
-            clip.as_object_mut().unwrap().remove("source_phase");
-            clip.as_object_mut().unwrap().remove("gain_millidb");
-            clip.as_object_mut().unwrap().remove("audio_edit");
-        }
-    }
-    let migrated_v5 = decode(&serde_json::to_vec(&legacy_v5).unwrap()).unwrap();
-    assert_empty_session(&migrated_v5);
-    assert!(
-        migrated_v5
-            .tracks()
-            .iter()
-            .flat_map(|track| track.clips())
-            .all(|clip| clip.source_phase() == 0)
-    );
-    assert_eq!(migrated_v5.tracks()[0].clips()[0].fade().span(), 48_000);
-    assert_eq!(migrated_v5.tracks()[0].clips()[0].fade().offset(), 0);
-    assert_eq!(migrated_v5.tracks()[0].clips()[0].fade().fade_in(), 0);
-    assert_eq!(migrated_v5.tracks()[0].clips()[0].fade().fade_out(), 0);
-    assert_eq!(decode(&encode(&migrated_v5).unwrap()).unwrap(), migrated_v5);
-
-    let mut legacy_v6 = json.clone();
-    legacy_v6["version"] = 6.into();
-    legacy_v6.as_object_mut().unwrap().remove("main_devices");
-    legacy_v6.as_object_mut().unwrap().remove("tuning");
-    legacy_v6.as_object_mut().unwrap().remove("device_assets");
-    legacy_v6.as_object_mut().unwrap().remove("track_colors");
-    legacy_v6.as_object_mut().unwrap().remove("accented_clips");
-    legacy_v6
-        .as_object_mut()
-        .unwrap()
-        .remove("audio_clip_state");
-    legacy_v6.as_object_mut().unwrap().remove("fade_shapes");
-    legacy_v6
-        .as_object_mut()
-        .unwrap()
-        .remove("import_provenance");
-    legacy_v6.as_object_mut().unwrap().remove("tempo_points");
-    legacy_v6.as_object_mut().unwrap().remove("meter_points");
-    for track in legacy_v6["tracks"].as_array_mut().unwrap() {
-        for clip in track["clips"].as_array_mut().unwrap() {
-            clip.as_object_mut().unwrap().remove("source_phase");
-            clip.as_object_mut().unwrap().remove("gain_millidb");
-            clip.as_object_mut().unwrap().remove("audio_edit");
-        }
-    }
-    let migrated_v6 = decode(&serde_json::to_vec(&legacy_v6).unwrap()).unwrap();
-    assert_empty_session(&migrated_v6);
-    assert!(
-        migrated_v6
-            .tracks()
-            .iter()
-            .flat_map(|track| track.clips())
-            .all(|clip| clip.source_phase() == 0)
-    );
-
-    let mut legacy_v7 = json.clone();
-    legacy_v7["version"] = 7.into();
-    legacy_v7.as_object_mut().unwrap().remove("main_devices");
-    legacy_v7.as_object_mut().unwrap().remove("tuning");
-    legacy_v7.as_object_mut().unwrap().remove("device_assets");
-    legacy_v7.as_object_mut().unwrap().remove("track_colors");
-    legacy_v7.as_object_mut().unwrap().remove("accented_clips");
-    legacy_v7
-        .as_object_mut()
-        .unwrap()
-        .remove("audio_clip_state");
-    legacy_v7.as_object_mut().unwrap().remove("fade_shapes");
-    legacy_v7
-        .as_object_mut()
-        .unwrap()
-        .remove("import_provenance");
-    legacy_v7.as_object_mut().unwrap().remove("tempo_points");
-    legacy_v7.as_object_mut().unwrap().remove("meter_points");
-    let migrated_v7 = decode(&serde_json::to_vec(&legacy_v7).unwrap()).unwrap();
-    assert_empty_session(&migrated_v7);
-    assert_eq!(migrated_v7.tempo_map().points().len(), 1);
-    assert_eq!(migrated_v7.tempo_map().points()[0].tempo(), Tempo::DEFAULT);
-    assert_eq!(migrated_v7.meter_map().points().len(), 1);
-    assert_eq!(
-        migrated_v7.meter_map().points()[0].meter(),
-        Meter::COMMON_TIME
-    );
-    assert_eq!(migrated_v7.tracks()[0].clips()[0].start(), 0);
-
-    let mut invalid = json.clone();
+    let mut invalid = current_json.clone();
+    invalid["master_gain"] = 2.01.into();
+    assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
+    let mut invalid = current_json.clone();
     invalid["assets"][0]["conversion_version"] = 90.into();
     assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
     invalid["assets"][0]["conversion_version"] = 1.into();
@@ -1516,59 +912,59 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
         .unwrap()
         .remove("soloed");
     assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
-    invalid = json.clone();
+    invalid = current_json.clone();
     invalid.as_object_mut().unwrap().remove("loop_region");
     assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
-    invalid = json.clone();
-    invalid["tracks"][0]["clips"][0]
+    invalid = current_json.clone();
+    invalid["tracks"][0]["audio_clips"][0]
         .as_object_mut()
         .unwrap()
         .remove("fade");
     assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
-    invalid = json.clone();
-    invalid["tracks"][0]["clips"][0]["fade"]["offset"] = 48_000.into();
+    invalid = current_json.clone();
+    invalid["tracks"][0]["audio_clips"][0]["fade"]["offset"] = 48_000.into();
     assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
-    invalid = json.clone();
-    invalid["tracks"][0]["clips"][0]["fade"]
+    invalid = current_json.clone();
+    invalid["tracks"][0]["audio_clips"][0]["fade"]
         .as_object_mut()
         .unwrap()
         .remove("fade_out");
     assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
-    invalid = json.clone();
-    invalid["tracks"][0]["clips"][0]["fade"]["unrecognized"] = true.into();
+    invalid = current_json.clone();
+    invalid["tracks"][0]["audio_clips"][0]["fade"]["unrecognized"] = true.into();
     assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
-    invalid = json.clone();
-    invalid["tracks"][0]["clips"][0]["fade"]["fade_in"] = 48_001.into();
+    invalid = current_json.clone();
+    invalid["tracks"][0]["audio_clips"][0]["fade"]["fade_in"] = 48_001.into();
     assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
-    invalid = json.clone();
-    invalid["tracks"][0]["clips"][0]["duration"] = u64::MAX.into();
-    invalid["tracks"][0]["clips"][0]["fade"]["offset"] = 1.into();
+    invalid = current_json.clone();
+    invalid["tracks"][0]["audio_clips"][0]["duration"] = u64::MAX.into();
+    invalid["tracks"][0]["audio_clips"][0]["fade"]["offset"] = 1.into();
     assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
-    invalid = json.clone();
+    invalid = current_json.clone();
     invalid["loop_region"]["end"] = 100.into();
     assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
-    invalid = json.clone();
+    invalid = current_json.clone();
     invalid.as_object_mut().unwrap().remove("tempo_points");
     assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
-    invalid = json.clone();
+    invalid = current_json.clone();
     invalid.as_object_mut().unwrap().remove("meter_points");
     assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
-    invalid = json.clone();
+    invalid = current_json.clone();
     invalid["tempo_points"][0]["micro_bpm"] = 0.into();
     assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
-    invalid = json.clone();
+    invalid = current_json.clone();
     invalid["meter_points"][0]["denominator"] = 3.into();
     assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
-    invalid = json.clone();
+    invalid = current_json.clone();
     invalid["tempo_points"][0]["unknown"] = true.into();
     assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
-    invalid = json.clone();
+    invalid = current_json.clone();
     invalid["meter_points"][0]["beat_raw"] = 1.into();
     assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
 }
 
 #[test]
-fn schema_eleven_session_midi_and_stop_migrate_to_schema_twelve_model() {
+fn current_session_midi_and_stop_cells_roundtrip() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let track = match editor
         .execute(Command::AddMidiTrack {
@@ -1627,120 +1023,23 @@ fn schema_eleven_session_midi_and_stop_migrate_to_schema_twelve_model() {
         .unwrap();
     let expected = editor.project().clone();
     let current = encode(&expected).unwrap();
-    let mut value: serde_json::Value = serde_json::from_slice(&current).unwrap();
-    let midi_clips = value["tracks"][0]["midi_clips"].take();
-    let track_object = value["tracks"][0].as_object_mut().unwrap();
-    track_object.remove("audio_clips");
-    track_object.remove("midi_clips");
-    track_object.remove("devices");
-    track_object.remove("instrument");
-    track_object.remove("instrument_position");
-    value["tracks"][0]["content"] = serde_json::json!({
-        "kind": "instrument",
-        "clips": midi_clips,
-    });
-    value["version"] = 11.into();
-    value.as_object_mut().unwrap().remove("main_devices");
-    value.as_object_mut().unwrap().remove("tuning");
-    value.as_object_mut().unwrap().remove("device_assets");
-    value.as_object_mut().unwrap().remove("track_colors");
-    value.as_object_mut().unwrap().remove("accented_clips");
-    value.as_object_mut().unwrap().remove("audio_clip_state");
-    value.as_object_mut().unwrap().remove("fade_shapes");
-    value.as_object_mut().unwrap().remove("audio_event_state");
-
-    value.as_object_mut().unwrap().remove("clip_names");
-    value.as_object_mut().unwrap().remove("audio_feeds");
-    value.as_object_mut().unwrap().remove("midi_routes");
-    value.as_object_mut().unwrap().remove("routing");
-    value.as_object_mut().unwrap().remove("import_provenance");
-    remove_schema_seventeen_routes(&mut value);
-    let migrated = decode(&serde_json::to_vec(&value).unwrap()).expect("schema eleven migrates");
-    assert_eq!(migrated.sample_rate(), expected.sample_rate());
-    assert_eq!(migrated.tracks()[0].name(), expected.tracks()[0].name());
+    let reopened = decode(&current).unwrap();
+    assert_eq!(reopened, expected);
     assert_eq!(
-        migrated.tracks()[0].instrument().unwrap().state(),
-        &hex_project::default_instrument_state().unwrap()
-    );
-    assert_eq!(
-        migrated
+        reopened
             .session_midi_clip(clip)
-            .expect("schema eleven Session MIDI clip")
+            .unwrap()
             .source()
             .notes()
             .len(),
         1
     );
     assert!(matches!(
-        migrated.session_cell(track, stop_scene),
+        reopened.session_cell(track, stop_scene),
         Some(hex_project::SessionCellContent::Stop)
     ));
 }
 
-#[test]
-fn literal_schema_eleven_migrates_session_midi_and_stop_cells() {
-    let literal = br#"{
-        "format":"hex-project","version":11,"sample_rate":48000,"next_id":6,
-        "assets":[],
-        "tracks":[{"id":1,"name":"keys","gain":1.0,"balance":0.0,
-          "muted":false,"soloed":false,"content":{"kind":"audio","clips":[]}}],
-        "loop_region":null,"master_gain":1.0,
-        "tempo_points":[{"beat_raw":0,"micro_bpm":120000000}],
-        "meter_points":[{"beat_raw":0,"numerator":4,"denominator":4}],
-        "session":{"scenes":[{"id":2,"name":"midi"},{"id":3,"name":"stop"}],
-          "cells":[
-            {"track":1,"scene":2,"content":{"kind":"midi","clip":{
-              "id":4,"name":"legacy midi","source":{
-                "source_length_raw":4294967296,"source_start_raw":0,
-                "loop_start_raw":0,"loop_end_raw":4294967296,"looping":false,
-                "notes":[{"id":5,"start_raw":0,"duration_raw":4294967296,
-                  "pitch":60,"channel":0,"velocity":100}]}}}},
-            {"track":1,"scene":3,"content":{"kind":"stop"}}
-          ]}
-    }"#;
-    let migrated = decode(literal).expect("literal schema eleven");
-    let track = migrated.tracks()[0].id();
-    let midi_scene = migrated.scenes()[0].id();
-    let stop_scene = migrated.scenes()[1].id();
-    let cell = migrated
-        .session_cell(track, midi_scene)
-        .expect("migrated midi cell");
-    assert!(matches!(cell, hex_project::SessionCellContent::Midi(_)));
-    assert!(matches!(
-        migrated.session_cell(track, stop_scene),
-        Some(hex_project::SessionCellContent::Stop)
-    ));
-    assert_eq!(decode(&encode(&migrated).unwrap()).unwrap(), migrated);
-}
-
-#[test]
-fn literal_schema_twelve_migrates_session_audio_cell_and_asset_window() {
-    let literal = br#"{
-        "format":"hex-project","version":12,"sample_rate":48000,"next_id":5,
-        "assets":[{"id":2,"path":"Media/one-shot.wav","source_sample_rate":48000,
-          "source_frames":8,"playback_frames":8,"conversion_version":0}],
-        "tracks":[{"id":1,"name":"hybrid","gain":1.0,"balance":0.0,
-          "muted":false,"soloed":false,"content":{"kind":"audio","clips":[]}}],
-        "loop_region":null,"master_gain":1.0,
-        "tempo_points":[{"beat_raw":0,"micro_bpm":120000000}],
-        "meter_points":[{"beat_raw":0,"numerator":4,"denominator":4}],
-        "session":{"scenes":[{"id":3,"name":"audio"}],
-          "cells":[{"track":1,"scene":3,"content":{"kind":"audio","clip":{
-            "id":4,"name":"legacy one shot","asset":2,
-            "source_start":2,"source_end":7}}}]}
-    }"#;
-    let migrated = decode(literal).expect("literal schema twelve");
-    let track = migrated.tracks()[0].id();
-    let scene = migrated.scenes()[0].id();
-    let Some(hex_project::SessionCellContent::Audio(clip)) = migrated.session_cell(track, scene)
-    else {
-        panic!("session audio cell was not migrated");
-    };
-    assert_eq!(clip.source_start(), 2);
-    assert_eq!(clip.source_end(), 7);
-    assert_eq!(migrated.asset(clip.asset()).expect("asset").frames(), 8);
-    assert_eq!(decode(&encode(&migrated).unwrap()).unwrap(), migrated);
-}
 #[test]
 fn new_file_is_complete_and_old_file_survives_failures() {
     let directory = std::env::temp_dir().join(format!("hex-storage-{}", std::process::id()));
@@ -1849,7 +1148,15 @@ fn resized_midi_clip_roundtrips_retained_notes_and_source_marker() {
     assert_eq!(resized.notes(), notes);
     assert_eq!(resized.start(), beat(7));
     assert_eq!(resized.length(), beat(4));
-    assert_eq!(resized.source_start(), beat(3));
+    assert_eq!(resized.source_start(), BeatTime::ZERO);
+    assert_eq!(resized.playback_offset(), beat(3));
+    assert_eq!(
+        resized
+            .source_playback()
+            .unwrap()
+            .source_phase_at_elapsed(BeatTime::ZERO),
+        Some(beat(3))
+    );
     assert_eq!(resized.source_length(), beat(8));
     let right = restored.midi_clip(right_id).expect("split right clip");
     assert_eq!(right.start(), beat(11));
@@ -1864,7 +1171,7 @@ fn resized_midi_clip_roundtrips_retained_notes_and_source_marker() {
 }
 
 #[test]
-fn host_output_trim_round_trips_migrates_unity_and_rejects_invalid_gain() {
+fn host_output_trim_roundtrips_and_rejects_invalid_gain() {
     let mut editor = Editor::new(project(), 8).unwrap();
     let track = editor.project().tracks()[0].id();
     let state = NativeDeviceState::new(DeviceTypeId::from_static("test.device"), 1, vec![1, 2])
@@ -1890,55 +1197,9 @@ fn host_output_trim_round_trips_migrates_unity_and_rejects_invalid_gain() {
         -9500
     );
     assert_eq!(restored.device(id).unwrap().state().input_gain_db(), 3.0);
-    let mut legacy: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    legacy["version"] = 17.into();
-    legacy.as_object_mut().unwrap().remove("main_devices");
-    legacy.as_object_mut().unwrap().remove("tuning");
-    legacy.as_object_mut().unwrap().remove("device_assets");
-    legacy.as_object_mut().unwrap().remove("track_colors");
-    legacy.as_object_mut().unwrap().remove("accented_clips");
-    legacy.as_object_mut().unwrap().remove("audio_clip_state");
-    legacy.as_object_mut().unwrap().remove("fade_shapes");
-    legacy.as_object_mut().unwrap().remove("audio_event_state");
-
-    legacy.as_object_mut().unwrap().remove("clip_names");
-    legacy.as_object_mut().unwrap().remove("audio_feeds");
-    legacy.as_object_mut().unwrap().remove("midi_routes");
-    remove_gain_lane_fields(&mut legacy);
-    legacy.as_object_mut().unwrap().remove("routing");
-    legacy.as_object_mut().unwrap().remove("import_provenance");
-    legacy["tracks"][0]["devices"][0]
-        .as_object_mut()
-        .unwrap()
-        .remove("input_gain_millidb");
-    legacy["tracks"][0]["devices"][0]
-        .as_object_mut()
-        .unwrap()
-        .remove("output_gain_millidb");
-    assert_eq!(
-        decode(&serde_json::to_vec(&legacy).unwrap())
-            .unwrap()
-            .device(id)
-            .unwrap()
-            .state()
-            .output_gain_millidb(),
-        0
-    );
-    legacy["version"] = 18.into();
-    legacy.as_object_mut().unwrap().remove("main_devices");
-    legacy.as_object_mut().unwrap().remove("tuning");
-    legacy.as_object_mut().unwrap().remove("device_assets");
-    legacy.as_object_mut().unwrap().remove("track_colors");
-    legacy.as_object_mut().unwrap().remove("accented_clips");
-    legacy.as_object_mut().unwrap().remove("audio_clip_state");
-    legacy.as_object_mut().unwrap().remove("fade_shapes");
-    legacy.as_object_mut().unwrap().remove("audio_event_state");
-
-    legacy.as_object_mut().unwrap().remove("clip_names");
-    legacy.as_object_mut().unwrap().remove("audio_feeds");
-    legacy.as_object_mut().unwrap().remove("midi_routes");
-    legacy["tracks"][0]["devices"][0]["output_gain_millidb"] = 24_001.into();
-    assert!(decode(&serde_json::to_vec(&legacy).unwrap()).is_err());
+    let mut invalid: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    invalid["tracks"][0]["devices"][0]["output_gain_millidb"] = 24_001.into();
+    assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
     assert!(
         restored
             .device(id)
@@ -1969,7 +1230,7 @@ fn invalid_host_input_gain_refuses_loading() {
 }
 
 #[test]
-fn schema_twenty_clip_gain_round_trip_legacy_unity_and_invalid_values() {
+fn current_audio_clip_gains_roundtrip_and_refuse_invalid_values() {
     let mut editor = Editor::new(project(), 8).unwrap();
     let clip = editor.project().tracks()[0].clips()[0].id();
     editor
@@ -2003,7 +1264,7 @@ fn schema_twenty_clip_gain_round_trip_legacy_unity_and_invalid_values() {
         .unwrap();
     let bytes = encode(editor.project()).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 33);
+    assert_eq!(json["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     assert_eq!(decode(&bytes).unwrap(), *editor.project());
     for value in [
         serde_json::json!(-60_001),
@@ -2021,36 +1282,134 @@ fn schema_twenty_clip_gain_round_trip_legacy_unity_and_invalid_values() {
             assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
         }
     }
-    let mut legacy = json;
-    legacy["version"] = 19.into();
-    legacy.as_object_mut().unwrap().remove("main_devices");
-    legacy.as_object_mut().unwrap().remove("tuning");
-    legacy.as_object_mut().unwrap().remove("device_assets");
-    legacy.as_object_mut().unwrap().remove("track_colors");
-    legacy.as_object_mut().unwrap().remove("accented_clips");
-    legacy.as_object_mut().unwrap().remove("audio_clip_state");
-    legacy.as_object_mut().unwrap().remove("fade_shapes");
-    legacy.as_object_mut().unwrap().remove("audio_event_state");
+}
 
-    legacy.as_object_mut().unwrap().remove("clip_names");
-    remove_gain_lane_fields(&mut legacy);
-    for key in ["audio_feeds", "midi_routes", "routing", "import_provenance"] {
-        legacy.as_object_mut().unwrap().remove(key);
-    }
-    for clip in legacy["tracks"][0]["audio_clips"].as_array_mut().unwrap() {
-        clip.as_object_mut().unwrap().remove("gain_millidb");
-    }
-    legacy["session"]["cells"][0]["content"]["clip"]
-        .as_object_mut()
+#[test]
+fn historical_layout_admission_has_no_blanket_document_byte_ceiling() {
+    let project = Project::new(48_000).unwrap();
+    let mut historical = hex_storage::encode_schema20(&project).unwrap();
+    historical.resize(LEGACY_READER_DOCUMENT_BYTES + 1, b' ');
+    assert_eq!(decode(&historical).unwrap(), project);
+}
+
+#[test]
+fn compressor_sidechain_roundtrips_and_requires_schema_upgrade_consent() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(source) = editor
+        .execute(Command::AddTrack { name: "key".into() })
         .unwrap()
-        .remove("gain_millidb");
-    let migrated = decode(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+    else {
+        panic!("source")
+    };
+    let Created::Device(device) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: NativeDeviceState::new(
+                DeviceTypeId::from_static("hex.compressor"),
+                3,
+                vec![0; 32],
+            )
+            .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("compressor")
+    };
+    let original = editor.project().clone();
+    let dir = std::env::temp_dir().join(format!("hex-sidechain-schema-{}", std::process::id()));
+    fs::create_dir(&dir).unwrap();
+    let legacy = dir.join("legacy.hex");
+    save_new(&legacy, &original).unwrap();
+    let (reopened, token) = hex_storage::load_with_token(&legacy).unwrap();
+    assert_eq!(reopened, original);
+    assert!(reopened.sidechains().is_empty());
+    editor
+        .execute(Command::SetSidechain {
+            device,
+            source: Some(source),
+        })
+        .unwrap();
+    let routed = editor.project();
+    assert!(token.requires_save_confirmation(routed).unwrap());
+    assert!(hex_storage::encode_schema22(routed).is_err());
     assert_eq!(
-        migrated.clip(clip).unwrap().gain(),
-        hex_project::ClipGain::UNITY
+        hex_storage::schema_version_for(routed),
+        hex_storage::SIDECHAIN_SCHEMA_VERSION
     );
-    assert_eq!(
-        migrated.session_audio_clip(session).unwrap().gain(),
-        hex_project::ClipGain::UNITY
-    );
+    let path = dir.join("sidechain.hex");
+    save_new(&path, routed).unwrap();
+    assert_eq!(load(&path).unwrap(), *routed);
+
+    let document: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let mut invalid = document.clone();
+    invalid["sidechains"][0]["source"] = u64::MAX.into();
+    assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
+    let mut invalid = document.clone();
+    invalid["sidechains"][0]["tap"] = "unknown".into();
+    assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
+    let mut invalid = document;
+    let repeated = invalid["sidechains"][0].clone();
+    invalid["sidechains"].as_array_mut().unwrap().push(repeated);
+    assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn track_tags_upgrade_schema69_preserve_complete_state_and_original_bytes() {
+    let mut editor = Editor::new(project(), 16).unwrap();
+    let track = editor.project().tracks()[0].id();
+    let Created::Device(device) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: NativeDeviceState::new(
+                DeviceTypeId::from_static("hex.compressor"),
+                3,
+                vec![0; 32],
+            )
+            .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("compressor")
+    };
+    editor
+        .execute(Command::SetSidechain {
+            device,
+            source: Some(track),
+        })
+        .unwrap();
+    let original = editor.project().clone();
+    let dir = std::env::temp_dir().join(format!(
+        "hex-track-tags-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).unwrap();
+    let old = dir.join("schema69.hex");
+    save_new(&old, &original).unwrap();
+    let bytes = fs::read(&old).unwrap();
+    let (reopened, token) = hex_storage::load_with_token(&old).unwrap();
+    assert_eq!(reopened, original);
+    assert_eq!(hex_storage::schema_version_for(&reopened), 69);
+    editor
+        .execute(Command::SetTrackTags {
+            track,
+            tags: vec![
+                hex_project::TrackTag::new("drums").unwrap(),
+                hex_project::TrackTag::new("lowend").unwrap(),
+            ],
+        })
+        .unwrap();
+    assert!(token.requires_save_confirmation(editor.project()).unwrap());
+    let new = dir.join("schema72.hex");
+    save_new(&new, editor.project()).unwrap();
+    assert_eq!(load(&new).unwrap(), *editor.project());
+    assert_eq!(fs::read(&old).unwrap(), bytes);
+    assert_eq!(load(&old).unwrap(), original);
+    fs::remove_file(new).unwrap();
+    fs::remove_file(old).unwrap();
+    fs::remove_dir(dir).unwrap();
 }

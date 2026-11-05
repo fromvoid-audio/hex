@@ -41,19 +41,26 @@ pub(super) fn install_project_actions(cx: &mut gpui::App) {
             cx.defer(move |cx| {
                 let _ = window.update(cx, |_, window, cx| {
                     if let Some(Some(view)) = window.root::<EditorView>() {
-                        view.update(cx, |view, cx| handler(view, window, cx));
+                        view.update(cx, |view, cx| {
+                            let _scope = crate::diagnostics::action_scope(cx, A::name_for_type());
+                            handler(view, window, cx);
+                        });
                     }
                 });
             });
             cx.stop_propagation();
         });
     }
-    register::<super::NewProject>(cx, |view, _, cx| {
-        view.new_project(hex_session::DocumentAudioMode::Resident);
+    register::<super::NewProject>(cx, |view, window, cx| {
+        view.new_project(hex_session::DocumentAudioMode::Resident, window, cx);
         cx.notify();
     });
-    register::<super::NewStreamingProject>(cx, |view, _, cx| {
-        view.new_project(hex_session::DocumentAudioMode::VerifiedStreaming);
+    register::<super::NewStreamingProject>(cx, |view, window, cx| {
+        view.new_project(
+            hex_session::DocumentAudioMode::VerifiedStreaming,
+            window,
+            cx,
+        );
         cx.notify();
     });
     register::<super::OpenProject>(cx, |view, window, cx| {
@@ -90,6 +97,7 @@ impl EditorView {
         // selected-path reconciliation already waits for its canonical worker.
         if !self.finalize_track_name_for_open(window, cx)
             || !self.finalize_clip_name_for_open(window, cx)
+            || !self.finalize_section_name_for_open(window, cx)
         {
             cx.notify();
             return;
@@ -112,12 +120,7 @@ impl EditorView {
                     files: true,
                     directories: false,
                     multiple: false,
-                    prompt: Some(match mode {
-                        hex_session::DocumentAudioMode::Resident => "open project".into(),
-                        hex_session::DocumentAudioMode::VerifiedStreaming => {
-                            "open project as verified streaming".into()
-                        }
-                    }),
+                    prompt: Some("open project".into()),
                 },
                 directory.as_deref(),
             );
@@ -133,14 +136,19 @@ impl EditorView {
                         }
                         match picked {
                             Ok(Ok(Some(mut paths))) if !paths.is_empty() => {
-                                if let Some(path) = paths.pop() {
-                                    if super::device_panel::finalize_controls(view, cx) {
-                                        view.choose_project(path, mode);
-                                    }
+                                if let Some(path) = paths.pop()
+                                    && super::device_panel::finalize_controls(view, cx)
+                                {
+                                    view.choose_project(path, mode);
                                 }
                             }
                             Ok(Err(error)) => {
-                                view.error = Some(error.to_string().to_lowercase().into())
+                                view.error = Some(
+                                    hex_session::service::text::lowercase_outside_verbatim(
+                                        &error.to_string(),
+                                    )
+                                    .into(),
+                                )
                             }
                             _ => view.status = "open cancelled".into(),
                         }
@@ -166,7 +174,7 @@ impl EditorView {
             || self.close_prompt_open
             || self.saving_project
             || self.save_dialog_open
-            || self.gain_recorder.blocks_edits()
+            || (self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits())
         {
             self.error =
                 Some("finish the current project action before opening another project".into());
@@ -182,42 +190,69 @@ impl EditorView {
         self.error = None;
     }
 
-    fn begin_open(&mut self, path: std::path::PathBuf, mode: hex_session::DocumentAudioMode) {
-        let request = match mode {
-            hex_session::DocumentAudioMode::Resident => Request::Open(path),
+    /// Opens after a read-only missing-media check; missing files show the
+    /// relink panel instead of failing the open.
+    fn begin_open(
+        &mut self,
+        path: std::path::PathBuf,
+        mode: hex_session::DocumentAudioMode,
+        cx: &mut Context<Self>,
+    ) {
+        let source = hex_session::service::ProjectSource::Saved(path.clone());
+        let (request, reservation) = match mode {
+            hex_session::DocumentAudioMode::Resident => (Request::Open(path), None),
             hex_session::DocumentAudioMode::VerifiedStreaming => {
                 let Some(reservation) = self.source_reservation else {
                     self.error = Some("verified streaming is unavailable".into());
                     return;
                 };
-                Request::OpenWithAudioMode {
-                    source: hex_session::service::ProjectSource::Saved(path),
-                    relinks: std::collections::BTreeMap::new(),
-                    mode,
-                    reservation: Some(reservation),
-                }
+                (
+                    Request::OpenWithAudioMode {
+                        source: source.clone(),
+                        relinks: std::collections::BTreeMap::new(),
+                        mode,
+                        reservation: Some(reservation),
+                    },
+                    Some(reservation),
+                )
             }
         };
-        self.begin_open_request(request);
+        self.open_checking_missing_media(source, mode, reservation, request, cx);
     }
 
-    pub(super) fn new_project(&mut self, mode: hex_session::DocumentAudioMode) {
-        if self.opening_project || self.project_open.busy() || self.pending_open_path.is_some() {
+    pub(super) fn new_project(
+        &mut self,
+        mode: hex_session::DocumentAudioMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.opening_project
+            || self.project_open.busy()
+            || self.pending_open_path.is_some()
+            || self.close_prompt_open
+            || self.saving_project
+            || self.save_dialog_open
+            || (self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits())
+        {
             return;
         }
-        let has_content = self.state.as_ref().is_some_and(|state| {
-            state.unsaved
-                || !state.project.tracks().is_empty()
-                || state.project.assets().next().is_some()
-        });
-        let has_content = has_content || self.tuning.client.snapshot().is_some();
-        if has_content && self.pending_new_mode != Some(mode) {
-            self.pending_new_mode = Some(mode);
-            self.status = "replace project · choose new project again to confirm".into();
-            self.error = None;
+        if mode == hex_session::DocumentAudioMode::VerifiedStreaming
+            && self.source_reservation.is_none()
+        {
+            self.error = Some("verified streaming is unavailable".into());
             return;
         }
-        self.pending_new_mode = None;
+        if !super::device_panel::finalize_controls(self, cx)
+            || !self.finalize_track_name_for_open(window, cx)
+            || !self.finalize_clip_name_for_open(window, cx)
+            || !self.finalize_section_name_for_open(window, cx)
+        {
+            return;
+        }
+        self.queue_new_project(mode);
+    }
+
+    fn begin_new_project(&mut self, mode: hex_session::DocumentAudioMode) {
         let Some(reservation) = self.source_reservation else {
             if mode == hex_session::DocumentAudioMode::VerifiedStreaming {
                 self.error = Some("verified streaming is unavailable".into());
@@ -303,7 +338,14 @@ impl EditorView {
                             }
                         }
                     }
-                    Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase().into()),
+                    Ok(Err(error)) => {
+                        view.error = Some(
+                            hex_session::service::text::lowercase_outside_verbatim(
+                                &error.to_string(),
+                            )
+                            .into(),
+                        )
+                    }
                     _ => {}
                 }
                 cx.notify();
@@ -350,7 +392,14 @@ impl EditorView {
                             }
                         }
                     }
-                    Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase().into()),
+                    Ok(Err(error)) => {
+                        view.error = Some(
+                            hex_session::service::text::lowercase_outside_verbatim(
+                                &error.to_string(),
+                            )
+                            .into(),
+                        )
+                    }
                     _ => {}
                 }
                 cx.notify();

@@ -2,16 +2,12 @@ use super::*;
 use crate::device_gesture::{GestureKey, GestureRequest, GestureTarget};
 use hex_engine::NativeDeviceClass;
 use hex_lattice_contract::{DeviceTypeId, ParameterValue};
-use std::time::{Duration, Instant};
 
 fn receive(service: &Service) -> Event {
-    let end = Instant::now() + Duration::from_secs(5);
-    loop {
-        match service.try_event() {
-            Ok(event) => return event,
-            Err(TryRecvError::Empty) if Instant::now() < end => thread::yield_now(),
-            Err(error) => panic!("effect bus worker: {error}"),
-        }
+    // Blocks on the event channel; bounded only against hangs.
+    match service.events.recv_timeout(crate::test_wait::HANG_BOUND) {
+        Ok(event) => event,
+        Err(error) => panic!("receive: worker event absent: {error}"),
     }
 }
 
@@ -275,4 +271,112 @@ fn effect_bus_worker_refusal_does_not_finalize_an_unrelated_live_gesture() {
         run(&service, Request::Undo).state.project.snapshot(),
         expected
     );
+}
+
+#[test]
+fn overdrive_track_return_main_parameters_history_and_file_roundtrip() {
+    use hex_lattice_contract::ParameterId;
+    let directory = super::service_tests::TestDir::new();
+    let path = directory.0.join("overdrive.hex");
+    let service = Service::new(48_000, 32, 8_000_000).unwrap();
+    receive(&service);
+    let added = run(
+        &service,
+        Request::Edit(Command::AddTrack {
+            name: "overdrive".into(),
+        }),
+    );
+    let track = added.state.project.tracks()[0].id();
+    let added = run(
+        &service,
+        Request::AddNativeDevice {
+            track,
+            class: NativeDeviceClass::Effect,
+            type_id: Box::new(DeviceTypeId::from_static("hex.overdrive")),
+            before: None,
+        },
+    );
+    assert!(added.error.is_none(), "{:?}", added.error);
+    let track_device = added.state.project.tracks()[0].devices()[0].id();
+    let added = run(
+        &service,
+        Request::Edit(Command::AddReturnTrack {
+            name: "overdrive return".into(),
+        }),
+    );
+    let return_id = added.state.project.return_tracks()[0].id();
+    let mut devices = vec![track_device];
+    let mut revision = added.state.revision;
+    for destination in [
+        EffectBusDestination::Return(return_id),
+        EffectBusDestination::Main,
+    ] {
+        let added = run(
+            &service,
+            Request::InsertEffectBusDevice {
+                project_generation: 0,
+                revision,
+                destination,
+                class: NativeDeviceClass::Effect,
+                type_id: DeviceTypeId::from_static("hex.overdrive"),
+                before: None,
+            },
+        );
+        assert!(added.error.is_none(), "{:?}", added.error);
+        let Some(Created::Device(device)) = added.created else {
+            panic!("created device");
+        };
+        revision = added.state.revision;
+        devices.push(device);
+    }
+    let mut last = None;
+    for device in devices {
+        for (id, value) in [
+            (1, 2_400.0),
+            (2, 3.0),
+            (3, 0.9),
+            (4, 0.2),
+            (5, 0.7),
+            (6, 0.8),
+        ] {
+            let changed = run(
+                &service,
+                Request::SetDeviceParameter {
+                    device,
+                    parameter: ParameterId::from_static(id),
+                    value: ParameterValue::Float(value),
+                },
+            );
+            assert!(changed.error.is_none(), "{:?}", changed.error);
+            assert!(changed.playback.is_some());
+            assert_eq!(
+                hex_engine::native_device_parameter(
+                    changed.state.project.device(device).unwrap().state(),
+                    ParameterId::from_static(id)
+                )
+                .unwrap(),
+                ParameterValue::Float(value)
+            );
+            last = Some(changed.state.project.clone());
+        }
+        let bypassed = run(
+            &service,
+            Request::Edit(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            }),
+        );
+        assert!(bypassed.error.is_none(), "{:?}", bypassed.error);
+        let undone = run(&service, Request::Undo);
+        assert_eq!(undone.state.project, last.clone().unwrap());
+        let redone = run(&service, Request::Redo);
+        assert_eq!(redone.state.project, bypassed.state.project);
+        last = Some(redone.state.project.clone());
+    }
+    let saved = run(&service, Request::SaveNew(path.clone()));
+    assert!(saved.error.is_none(), "{:?}", saved.error);
+    let opened = run(&service, Request::Open(path));
+    assert!(opened.error.is_none(), "{:?}", opened.error);
+    assert_eq!(opened.state.project, last.unwrap());
+    assert!(opened.playback.is_some());
 }

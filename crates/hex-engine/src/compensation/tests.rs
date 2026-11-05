@@ -257,8 +257,9 @@ fn silence_advances_pending_impulse_and_epoch_reset_removes_old_content() {
 
 fn stamp(index: usize) -> TransportStamp {
     TransportStamp {
+        tempo_micro_bpm: Some(123_000_000),
         performance_frame: index as u64,
-        transport_is_running: index % 3 != 0,
+        transport_is_running: !index.is_multiple_of(3),
         arrangement_frame: (index % 4) as u64,
         loop_pass: (index / 4) as u64,
         performance_beat_raw: (index as u64) << 30,
@@ -298,6 +299,56 @@ fn transport_origins_preserve_loop_identity_and_rollback_long_requests() {
     assert!(!runtime.transaction_active());
     assert_eq!(runtime.node_input_stamp(1).unwrap(), None);
     assert_eq!(runtime.stamp_at_delay(u32::MAX), None);
+}
+
+#[test]
+fn stage_origin_preview_matches_actual_pushes_and_rollback() {
+    let graph = plan(&[node(1, 3), node(2, 2)], &[edge(1, 1, 2)]);
+    let mut runtime = CompensationRuntime::new(graph, CompensationLimits::default()).unwrap();
+    let preview = |runtime: &CompensationRuntime, delay, offset, start| {
+        CompensationRuntime::preview_stage_frame(Some(runtime), delay, offset, |i| {
+            Ok::<_, ()>(Some(stamp((start + i) as usize).arrangement_frame))
+        })
+        .unwrap()
+    };
+    assert_eq!(preview(&runtime, 5, 0, 0), None);
+    assert_eq!(preview(&runtime, 5, 5, 0), Some(stamp(0).arrangement_frame));
+    runtime.begin_transaction().unwrap();
+    for index in 0..7 {
+        runtime.push_transport_stamp(stamp(index)).unwrap();
+    }
+    runtime.commit_transaction().unwrap();
+    let incoming = std::array::from_fn::<_, 9, _>(|index| Some(stamp(7 + index)));
+    for delay in [0, 3, 5] {
+        let predicted: Vec<_> = (0..9)
+            .map(|offset| preview(&runtime, delay, offset, 7))
+            .collect();
+        let window = OriginWindow {
+            history: &runtime,
+            incoming: &incoming,
+            delay,
+        };
+        let projected = std::array::from_fn::<_, 9, _>(|index| window.stamp(index));
+        runtime.begin_transaction().unwrap();
+        for (offset, expected) in predicted.into_iter().enumerate() {
+            runtime.push_transport_stamp(stamp(7 + offset)).unwrap();
+            assert_eq!(runtime.stamp_at_delay(delay), projected[offset]);
+            assert_eq!(
+                runtime
+                    .stamp_at_delay(delay)
+                    .map(|stamp| stamp.arrangement_frame),
+                expected
+            );
+        }
+        runtime.rollback_transaction().unwrap();
+        assert_eq!(runtime.stamp_at_delay(0), Some(stamp(6)));
+    }
+    runtime.reset_epoch();
+    assert_eq!(preview(&runtime, 3, 0, 100), None);
+    assert_eq!(
+        preview(&runtime, 3, 3, 100),
+        Some(stamp(100).arrangement_frame)
+    );
 }
 
 #[test]
@@ -444,6 +495,7 @@ fn bounded_history_copy_keeps_wrapped_full_origins_and_transaction_rollback() {
         source.begin();
         for frame in 0..count {
             source.push(Some(TransportStamp {
+                tempo_micro_bpm: Some(123_000_000),
                 performance_frame: 900 + frame,
                 transport_is_running: frame % 2 == 0,
                 arrangement_frame: frame % 3,
@@ -457,6 +509,7 @@ fn bounded_history_copy_keeps_wrapped_full_origins_and_transaction_rollback() {
         target.begin();
         for _ in 0..7 {
             target.push(Some(TransportStamp {
+                tempo_micro_bpm: Some(123_000_000),
                 performance_frame: 1,
                 transport_is_running: false,
                 arrangement_frame: 1,

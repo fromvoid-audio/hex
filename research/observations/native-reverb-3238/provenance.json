@@ -1,0 +1,58 @@
+{
+  "kind": "original provider processing measurement",
+  "date_utc": "2026-10-25",
+  "provider_input_commit": "9ee63ac529e57ecff409cddaf221eb7b4ca24046",
+  "command": "cargo run --release -p hex-devices --example profile_reverb --locked",
+  "toolchain": [
+    "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+    "cargo 1.94.0 (85eff7c80 2026-01-15)"
+  ],
+  "target": "x86_64-unknown-linux-gnu",
+  "hardware": {
+    "cpu": "Intel Xeon Platinum 8573C",
+    "logical_cpus": 5,
+    "hypervisor": "KVM",
+    "cpu_isolation": false
+  },
+  "profile": {
+    "optimization": "Cargo release default opt-level=3",
+    "incremental": false,
+    "build_jobs": 4,
+    "rustflags": null
+  },
+  "workload": {
+    "channels": "stereo",
+    "frames": 128,
+    "rates_hz": [
+      48000,
+      192000
+    ],
+    "instances": [
+      1,
+      16
+    ],
+    "scheduling": "independent instances processed sequentially on the caller thread",
+    "signal": "original repeated stereo block: 0.2*sin(i*0.041), 0.2*cos(i*0.073), i=0..127",
+    "state": "reverb v3 factory defaults except decay=2.5 s and density=low/high",
+    "warmup_blocks": 200,
+    "measured_blocks": 1000,
+    "input_copy": "included per instance",
+    "construction": "excluded",
+    "statistics": "sorted elapsed wall nanoseconds; entries 500, 950, 999 reported in microseconds"
+  },
+  "scope": [
+    "provider only; no host twins, graph scheduling, source I/O, native callback or resource reclamation",
+    "16 instances bypass host admission for this isolated processing measurement; not an admitted native project workload",
+    "unisolated VM outliers are retained; this does not establish physical audio deadlines, scalability or listening quality"
+  ],
+  "inputs_sha256": {
+    "Cargo.lock": "15e7c7a9b786a02c9d3ea3ab5cde3b027939d287085c58a23c321f60230a1954",
+    "Cargo.toml": "cfe2edebb4c02ad98cf77e42557c36b49dfbe81ebee7a4bc08e2db7ee0b10b79",
+    "crates/hex-devices/Cargo.toml": "9430fdce6de11c005c6f74ad81bdf6be5e2826089097cffcb47e925332540875",
+    "crates/hex-devices/examples/profile_reverb.rs": "ca2d9c2e06cac8bed3c743dd99dae199b24ece3314a0ad0ad8c824a4a8747cb7",
+    "crates/hex-devices/src/reverb.rs": "05de2f61cb912e311227ed7360477c805c0ea4f7be36104fbaf39651579e5098",
+    "crates/hex-devices/src/reverb/runtime.rs": "ff15f84c9f948594735bf685c45580d8aa32c9e931833621423589fa29d209c4",
+    "crates/hex-devices/src/reverb/state.rs": "3f31e50a45136b301606d6c6d297a16433be8486cd11ae335c2964bf30b307a7"
+  },
+  "raw_output_sha256": "e0bf78dba567381277e16282e7681bcc2c6e78b9c00dfd8ed7f8749c23e813de"
+}

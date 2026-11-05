@@ -51,6 +51,14 @@ impl<'a> ArrangementEffectClock<'a> {
 }
 
 impl NativeInstrumentClock for ArrangementEffectClock<'_> {
+    fn tempo_micro_bpm_at_offset(&self, offset: usize) -> Option<u32> {
+        let frame = self.frame(self.start, offset)?;
+        if let Some(map) = self.canonical {
+            Some(map.tempo_at(map.frame_to_beat(frame).ok()?).micro_bpm())
+        } else {
+            crate::MidiTiming::tempo_micro_bpm_at_frame(self.prepared?, frame)
+        }
+    }
     // This effect-only view deliberately does not synthesize performance beats.
     fn beat_at_offset(&self, _offset: usize) -> Option<u64> {
         None

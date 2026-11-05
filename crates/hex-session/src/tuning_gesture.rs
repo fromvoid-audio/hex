@@ -62,6 +62,9 @@ pub enum TuningGesturePhase {
 
 #[derive(Clone, Debug)]
 pub struct TuningGestureAck {
+    /// A refused native terminal kept the worker's last accepted overlay audible. Reconcile
+    /// with the exact active snapshot from the same Event; never infer restoration or retry.
+    pub preview_retained: bool,
     pub key: TuningGestureKey,
     pub phase: TuningGesturePhase,
     pub sequence: u64,
@@ -85,6 +88,7 @@ pub struct TuningGestureClient {
     active: Option<TuningGestureSnapshot>,
     in_flight: Option<TuningGestureRequest>,
     submitted: bool,
+    recovery_pending: bool,
     pending_begin: Option<TuningGestureRequest>,
     latest_change: Option<TuningGestureRequest>,
     terminal: Option<TuningGestureRequest>,
@@ -96,6 +100,12 @@ impl TuningGestureClient {
         generation: u64,
         initial: ProjectTuning,
     ) -> Result<TuningGestureKey, &'static str> {
+        if self.recovery_pending {
+            if !self.has_pending_terminal() {
+                self.cancel()?;
+            }
+            return Err("previous tuning edit is canceling · retry after it finishes");
+        }
         if self.active.is_some() {
             return Err("another tuning gesture is active");
         }
@@ -184,6 +194,17 @@ impl TuningGestureClient {
     }
 
     pub fn acknowledge(&mut self, ack: &TuningGestureAck) -> bool {
+        self.acknowledge_with_snapshot(ack, None)
+    }
+
+    /// Reconcile an exact terminal refusal with the worker's accepted scalar overlay. Missing
+    /// or unrelated snapshots leave the in-flight protocol slot untouched. A retained overlay
+    /// is parked without an automatic Commit; callers may retry or explicitly Cancel it.
+    pub fn acknowledge_with_snapshot(
+        &mut self,
+        ack: &TuningGestureAck,
+        worker_active: Option<TuningGestureSnapshot>,
+    ) -> bool {
         let Some(request) = self.in_flight else {
             return false;
         };
@@ -193,8 +214,32 @@ impl TuningGestureClient {
         {
             return false;
         }
+        let retained = if ack.preview_retained {
+            if ack.accepted
+                || !matches!(
+                    ack.phase,
+                    TuningGesturePhase::Commit | TuningGesturePhase::Cancel
+                )
+            {
+                return false;
+            }
+            let Some(snapshot) = worker_active.filter(|snapshot| snapshot.key == ack.key) else {
+                return false;
+            };
+            Some(snapshot)
+        } else {
+            None
+        };
         self.in_flight = None;
         self.submitted = false;
+        if let Some(snapshot) = retained {
+            self.active = Some(snapshot);
+            self.pending_begin = None;
+            self.latest_change = None;
+            self.terminal = None;
+            self.recovery_pending = true;
+            return true;
+        }
         if (!ack.accepted && ack.phase == TuningGesturePhase::Begin)
             || matches!(
                 ack.phase,
@@ -207,6 +252,7 @@ impl TuningGestureClient {
     }
 
     fn clear(&mut self) {
+        self.recovery_pending = false;
         self.active = None;
         self.pending_begin = None;
         self.latest_change = None;
@@ -217,6 +263,11 @@ impl TuningGestureClient {
 
     pub fn reset(&mut self) {
         self.clear();
+    }
+
+    /// A refused native terminal left an audible overlay which needs retry or Cancel.
+    pub fn is_recovery_pending(&self) -> bool {
+        self.recovery_pending
     }
 
     pub fn snapshot(&self) -> Option<TuningGestureSnapshot> {
@@ -277,6 +328,14 @@ pub(crate) struct TuningGestureOutcome {
     pub canonical_changed: bool,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum TuningPreparation {
+    Preview(TuningGestureSnapshot),
+    Commit(TuningGestureSnapshot),
+    Restore,
+}
+type PreparedTuningGesture = Result<Option<(Arc<Project>, Arc<PreparedRevision>)>, SessionError>;
+
 #[derive(Default)]
 pub(crate) struct TuningGestureMachine {
     active: Option<TuningGestureSnapshot>,
@@ -314,8 +373,63 @@ impl TuningGestureMachine {
         generation: u64,
         mut finish: impl FnMut(&Project, &Project, &Arc<PreparedRevision>) -> Result<(), SessionError>,
     ) -> TuningGestureOutcome {
+        self.handle_using(
+            session,
+            request,
+            previous,
+            generation,
+            false,
+            |session, operation| match operation {
+                TuningPreparation::Preview(active) => {
+                    let (project, prepared) =
+                        session.preview_tuning(active.tuning, previous.map(Arc::as_ref))?;
+                    finish(session.project(), &project, &prepared)?;
+                    Ok(Some((project, prepared)))
+                }
+                TuningPreparation::Commit(active) => {
+                    let (_, (prepared, ())) = session.command_prepared_revision_with(
+                        Command::SetTuning(active.tuning),
+                        previous.map(Arc::as_ref),
+                        |source, target, prepared| finish(source, target, prepared),
+                    )?;
+                    Ok(Some((Arc::new(session.project().clone()), prepared)))
+                }
+                TuningPreparation::Restore => {
+                    if let Some(prepared) = previous {
+                        finish(session.project(), session.project(), prepared)?;
+                        Ok(Some((
+                            Arc::new(session.project().clone()),
+                            Arc::clone(prepared),
+                        )))
+                    } else {
+                        Ok(None)
+                    }
+                }
+            },
+        )
+    }
+    pub(crate) fn handle_prepared(
+        &mut self,
+        session: &mut Session,
+        request: TuningGestureRequest,
+        previous: Option<&Arc<PreparedRevision>>,
+        generation: u64,
+        prepare: impl FnMut(&mut Session, TuningPreparation) -> PreparedTuningGesture,
+    ) -> TuningGestureOutcome {
+        self.handle_using(session, request, previous, generation, true, prepare)
+    }
+    fn handle_using(
+        &mut self,
+        session: &mut Session,
+        request: TuningGestureRequest,
+        previous: Option<&Arc<PreparedRevision>>,
+        generation: u64,
+        retain_terminal: bool,
+        mut prepare: impl FnMut(&mut Session, TuningPreparation) -> PreparedTuningGesture,
+    ) -> TuningGestureOutcome {
         let mut outcome = TuningGestureOutcome {
             ack: TuningGestureAck {
+                preview_retained: false,
                 key: request.key(),
                 phase: request.phase(),
                 sequence: request.sequence(),
@@ -330,12 +444,24 @@ impl TuningGestureMachine {
             outcome.ack.reason = Some("tuning gesture belongs to an old project".into());
             return outcome;
         }
-        let result = self.apply(session, request, previous, &mut outcome, &mut finish);
+        let result = self.apply(session, request, &mut outcome, &mut prepare);
         match result {
             Ok(()) => outcome.ack.accepted = true,
             Err(error) => {
-                outcome.ack.reason = Some(error.to_string().to_lowercase());
-                if request.phase() == TuningGesturePhase::Commit
+                outcome.ack.reason = Some(hex_storage::text::lowercase_outside_verbatim(
+                    &error.to_string(),
+                ));
+                if retain_terminal
+                    && matches!(
+                        request.phase(),
+                        TuningGesturePhase::Commit | TuningGesturePhase::Cancel
+                    )
+                    && self
+                        .active
+                        .is_some_and(|active| active.key == request.key())
+                {
+                    outcome.ack.preview_retained = true;
+                } else if request.phase() == TuningGesturePhase::Commit
                     && request.sequence() != 0
                     && self.active.is_some_and(|active| {
                         active.key == request.key() && request.sequence() >= active.sequence
@@ -354,9 +480,8 @@ impl TuningGestureMachine {
         &mut self,
         session: &mut Session,
         request: TuningGestureRequest,
-        previous: Option<&Arc<PreparedRevision>>,
         outcome: &mut TuningGestureOutcome,
-        finish: &mut impl FnMut(&Project, &Project, &Arc<PreparedRevision>) -> Result<(), SessionError>,
+        prepare: &mut impl FnMut(&mut Session, TuningPreparation) -> PreparedTuningGesture,
     ) -> Result<(), SessionError> {
         let key = request.key();
         let generation = key.generation;
@@ -394,19 +519,29 @@ impl TuningGestureMachine {
                 }
                 if terminal {
                     let before = session.project().clone();
-                    let (_, (prepared, ())) = session.command_prepared_revision_with(
-                        Command::SetTuning(tuning),
-                        previous.map(Arc::as_ref),
-                        |source, target, prepared| finish(source, target, prepared),
-                    )?;
+                    let (_, prepared) = prepare(
+                        session,
+                        TuningPreparation::Commit(TuningGestureSnapshot {
+                            sequence,
+                            tuning,
+                            ..active
+                        }),
+                    )?
+                    .ok_or(SessionError::Invalid("tuning commit produced no revision"))?;
                     outcome.canonical_changed = session.project() != &before;
                     outcome.playback = Some(prepared);
                     self.active = None;
                     self.initial = None;
                 } else {
-                    let (project, prepared) =
-                        session.preview_tuning(tuning, previous.map(Arc::as_ref))?;
-                    finish(session.project(), &project, &prepared)?;
+                    let (project, prepared) = prepare(
+                        session,
+                        TuningPreparation::Preview(TuningGestureSnapshot {
+                            sequence,
+                            tuning,
+                            ..active
+                        }),
+                    )?
+                    .ok_or(SessionError::Invalid("tuning preview produced no revision"))?;
                     if let Some(active) = self.active.as_mut() {
                         active.sequence = sequence;
                         active.tuning = tuning;
@@ -417,12 +552,10 @@ impl TuningGestureMachine {
             }
             TuningGestureRequest::Cancel { .. } => {
                 self.checked_active(session, key)?;
-                if let Some(prepared) = previous {
-                    finish(session.project(), session.project(), prepared)?;
-                }
+                let prepared = prepare(session, TuningPreparation::Restore)?;
                 self.active = None;
                 self.initial = None;
-                outcome.playback = previous.cloned();
+                outcome.playback = prepared.map(|(_, prepared)| prepared);
             }
         }
         Ok(())
@@ -463,6 +596,7 @@ impl TuningGestureMachine {
         {
             Ok((project, prepared)) => Some(TuningGestureOutcome {
                 ack: TuningGestureAck {
+                    preview_retained: false,
                     key: active.key,
                     phase: TuningGesturePhase::Change,
                     sequence: active.sequence,
@@ -477,11 +611,83 @@ impl TuningGestureMachine {
                 self.reset();
                 Some(TuningGestureOutcome {
                     ack: TuningGestureAck {
+                        preview_retained: false,
                         key: active.key,
                         phase: TuningGesturePhase::Cancel,
                         sequence: active.sequence,
                         accepted: false,
-                        reason: Some(error.to_string().to_lowercase()),
+                        reason: Some(hex_storage::text::lowercase_outside_verbatim(
+                            &error.to_string(),
+                        )),
+                    },
+                    playback: previous.cloned(),
+                    preview_project: None,
+                    canonical_changed: false,
+                })
+            }
+        }
+    }
+
+    pub(crate) fn finish_prepared(
+        &mut self,
+        session: &mut Session,
+        previous: Option<&Arc<PreparedRevision>>,
+        generation: u64,
+        prepare: impl FnMut(&mut Session, TuningPreparation) -> PreparedTuningGesture,
+    ) -> Option<TuningGestureOutcome> {
+        let active = self.active?;
+        Some(self.handle_prepared(
+            session,
+            TuningGestureRequest::Commit {
+                key: active.key,
+                sequence: active.sequence.max(1),
+                tuning: active.tuning,
+            },
+            previous,
+            generation,
+            prepare,
+        ))
+    }
+    /// Caller must already have accepted the independent canonical audio publication. On
+    /// refusal that graph retires the overlay; a model revision alone does not prove restoration.
+    pub(crate) fn rebase_prepared(
+        &mut self,
+        session: &mut Session,
+        previous: Option<&Arc<PreparedRevision>>,
+        prepare: &mut impl FnMut(&mut Session, TuningPreparation) -> PreparedTuningGesture,
+    ) -> Option<TuningGestureOutcome> {
+        let active = self.active?;
+        let result = self
+            .checked_active(session, active.key)
+            .and_then(|_| prepare(session, TuningPreparation::Preview(active)))
+            .and_then(|prepared| {
+                prepared.ok_or(SessionError::Invalid("tuning preview produced no revision"))
+            });
+        match result {
+            Ok((project, prepared)) => Some(TuningGestureOutcome {
+                ack: TuningGestureAck {
+                    preview_retained: false,
+                    key: active.key,
+                    phase: TuningGesturePhase::Change,
+                    sequence: active.sequence,
+                    accepted: true,
+                    reason: None,
+                },
+                playback: Some(prepared),
+                preview_project: Some(project),
+                canonical_changed: false,
+            }),
+            Err(error) => {
+                self.active = None;
+                self.initial = None;
+                Some(TuningGestureOutcome {
+                    ack: TuningGestureAck {
+                        preview_retained: false,
+                        key: active.key,
+                        phase: TuningGesturePhase::Cancel,
+                        sequence: 0,
+                        accepted: false,
+                        reason: Some(error.to_string()),
                     },
                     playback: previous.cloned(),
                     preview_project: None,
@@ -517,6 +723,57 @@ impl TuningGestureMachine {
 mod tests {
     use super::*;
 
+    #[test]
+    fn retained_tuning_terminal_parks_actual_snapshot_and_declines_new_begin_until_cancel() {
+        let mut client = TuningGestureClient::default();
+        let tuning = ProjectTuning::default();
+        client.begin(7, tuning).unwrap();
+        let begin = client.next_request().unwrap();
+        let make_ack = |request: TuningGestureRequest, accepted| TuningGestureAck {
+            preview_retained: false,
+            key: request.key(),
+            phase: request.phase(),
+            sequence: request.sequence(),
+            accepted,
+            reason: None,
+        };
+        assert!(client.acknowledge(&make_ack(begin, true)));
+        let accepted = client.snapshot().unwrap();
+        client.finish(custom_disabled_tuning()).unwrap();
+        let terminal = client.next_request().unwrap();
+        let mut refused = make_ack(terminal, false);
+        refused.preview_retained = true;
+        assert!(!client.acknowledge(&refused));
+        let mut foreign = accepted;
+        foreign.key.token += 1;
+        assert!(!client.acknowledge_with_snapshot(&refused, Some(foreign)));
+        assert!(client.acknowledge_with_snapshot(&refused, Some(accepted)));
+        assert_eq!(client.snapshot(), Some(accepted));
+        assert!(client.is_recovery_pending());
+        assert!(client.next_request().is_none());
+        client.change(custom_disabled_tuning()).unwrap();
+        let change = client.next_request().unwrap();
+        assert!(client.acknowledge(&make_ack(change, true)));
+        assert!(
+            client.is_recovery_pending(),
+            "accepted overlay changes cannot release terminal dependents"
+        );
+        let accepted = client.snapshot().unwrap();
+        assert!(client.begin(7, tuning).unwrap_err().contains("retry after"));
+        assert!(client.change(tuning).is_err());
+        let cancel = client.next_request().unwrap();
+        assert!(matches!(cancel, TuningGestureRequest::Cancel { .. }));
+        let mut refused = make_ack(cancel, false);
+        refused.preview_retained = true;
+        assert!(client.acknowledge_with_snapshot(&refused, Some(accepted)));
+        assert!(client.next_request().is_none());
+        client.cancel().unwrap();
+        let retry = client.next_request().unwrap();
+        assert!(client.acknowledge(&make_ack(retry, true)));
+        assert!(!client.is_recovery_pending());
+        assert!(client.begin(7, tuning).is_ok());
+    }
+
     fn custom_disabled_tuning() -> ProjectTuning {
         ProjectTuning::new(
             false,
@@ -533,6 +790,7 @@ mod tests {
         let begin = client.next_request().unwrap();
         assert_eq!(client.next_request(), Some(begin));
         let stale = TuningGestureAck {
+            preview_retained: false,
             key: TuningGestureKey {
                 generation: 4,
                 token: key.token + 1,
@@ -550,6 +808,7 @@ mod tests {
         client.finish(edited).unwrap();
         assert!(client.change(ProjectTuning::default()).is_err());
         let ack = |request: TuningGestureRequest| TuningGestureAck {
+            preview_retained: false,
             key: request.key(),
             phase: request.phase(),
             sequence: request.sequence(),

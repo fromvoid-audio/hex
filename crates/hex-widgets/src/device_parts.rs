@@ -1,27 +1,47 @@
 //! Stateless device chrome. Owners supply meaning, state, input and colors.
-use crate::{ControlStyle, DeviceActionStyle};
-use gpui::{Div, SharedString, div, prelude::*, px, rgb};
+use crate::{ActionStyle, ControlStyle};
+use gpui::{Div, SharedString, Stateful, div, prelude::*, px, rgb};
 
 pub const DEVICE_HEADER_ACTION_SIZE: f32 = 12.0;
 
-/// Compact action/segment; header consumers retain this shared twelve-pixel size.
+/// Compact momentary action; header consumers retain this shared twelve-pixel size.
 /// Non-header compositions may supply their own width/height without style forks.
-pub fn device_action(label: SharedString, style: DeviceActionStyle) -> Div {
+pub fn device_action(label: SharedString, style: ActionStyle) -> Div {
+    crate::action(label, style)
+        .size(px(DEVICE_HEADER_ACTION_SIZE))
+        .text_size(px(8.0))
+}
+
+/// Boolean state presentation, distinct from a momentary action surface.
+/// The owner supplies acknowledged state, semantic colors and all input/focus/
+/// accessibility handlers. An eight-pixel square with small corners paints inside
+/// the transparent twelve-pixel target. Hover/press never imply
+/// a state change, and this view owns no command, history or local toggle state.
+pub fn device_state_indicator(
+    id: SharedString,
+    checked: bool,
+    on_color: u32,
+    off_color: u32,
+) -> Stateful<Div> {
+    let selector = id.to_string();
+    let indicator = format!("{id}-indicator");
     div()
+        .id(id)
+        .debug_selector(move || selector.clone())
         .size(px(DEVICE_HEADER_ACTION_SIZE))
         .flex_shrink_0()
         .flex()
         .items_center()
         .justify_center()
-        .text_size(px(8.0))
-        .bg(rgb(style.background))
-        .text_color(rgb(style.text))
-        .hover(move |hover| {
-            hover
-                .bg(rgb(style.hover_background))
-                .text_color(rgb(style.hover_text))
-        })
-        .child(label)
+        .cursor_pointer()
+        .hover(|hover| hover.opacity(0.8))
+        .child(
+            div()
+                .debug_selector(move || indicator.clone())
+                .size(px(8.0))
+                .rounded(px(crate::TOGGLE_CORNER_RADIUS))
+                .bg(rgb(if checked { on_color } else { off_color })),
+        )
 }
 
 /// Compact identity cue with injected semantic color and selected/focus border.
@@ -66,8 +86,11 @@ pub fn device_divider(style: ControlStyle) -> Div {
 }
 
 /// Directly selectable compact segment, with the shared readout corner radius.
-pub fn device_segment(label: SharedString, style: DeviceActionStyle) -> Div {
-    device_action(label, style).rounded(px(crate::CONTROL_CORNER_RADIUS))
+pub fn device_segment(label: SharedString, style: ActionStyle) -> Div {
+    crate::action_surface(style)
+        .child(label)
+        .size(px(DEVICE_HEADER_ACTION_SIZE))
+        .text_size(px(8.0))
 }
 
 /// Focus boundary for owner-controlled navigation artwork.

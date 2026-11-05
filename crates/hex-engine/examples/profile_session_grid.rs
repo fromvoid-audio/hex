@@ -47,6 +47,10 @@ fn fixture(
         let track = next_id;
         next_id += 1;
         tracks.push(TrackSnapshot {
+            group_output_mutes: Vec::new(),
+            tags: Vec::new(),
+            kind: hex_project::TrackKind::Ordinary,
+            parent_group: None,
             color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
@@ -68,6 +72,8 @@ fn fixture(
                 let id = next_id;
                 next_id += 1;
                 SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                    loop_range: None,
+                    active: true,
                     flavor: hex_project::ClipFlavor::default(),
                     gain: hex_project::ClipGain::UNITY,
                     id,
@@ -86,16 +92,23 @@ fn fixture(
             });
         }
     }
-    let project = Project::from_snapshot(Snapshot {
+    let project = Project::from_legacy_snapshot(Snapshot {
+        automatic_track_names: Vec::new(),
+        retained_source_paths: Vec::new(),
+        aliases: Default::default(),
+        native_sources: Vec::new(),
+        arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
+        sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: RATE,
         next_id,
         assets: vec![AssetSnapshot {
+            original_source: None,
             id: 1,
             path: PathBuf::from("memory/grid.wav"),
             source_sample_rate: RATE,

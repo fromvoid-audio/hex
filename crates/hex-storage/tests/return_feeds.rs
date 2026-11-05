@@ -35,7 +35,7 @@ fn fixture() -> Project {
     editor.project().clone()
 }
 fn document() -> Value {
-    serde_json::from_slice(&encode_schema20(&fixture()).unwrap()).unwrap()
+    serde_json::from_slice(&encode(&fixture()).unwrap()).unwrap()
 }
 fn with_feed(mut doc: Value) -> Value {
     let id = doc["next_id"].as_u64().unwrap();
@@ -46,48 +46,15 @@ fn with_feed(mut doc: Value) -> Value {
 }
 
 #[test]
-fn explicit_schema20_legacy_and_migrations_keep_provenance_opaque_states_and_default19() {
+fn current_feeds_keep_provenance_and_opaque_device_states() {
     let project = fixture();
-    let bytes = encode_schema20(&project).unwrap();
+    let bytes = encode(&project).unwrap();
     let doc: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(doc["version"], 20);
+    assert_eq!(doc["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     assert_eq!(doc["routing"], json!([]));
     assert_eq!(decode(&bytes).unwrap(), project);
-    let default: Value = serde_json::from_slice(&encode(&project).unwrap()).unwrap();
-    assert_eq!(default["version"], 33);
-    assert_eq!(default["import_provenance"], doc["import_provenance"]);
-    assert_eq!(default["return_tracks"], doc["return_tracks"]);
-    let mut legacy = doc;
-    legacy["version"] = json!(19);
-    legacy.as_object_mut().unwrap().remove("main_devices");
-    legacy.as_object_mut().unwrap().remove("track_colors");
-    legacy.as_object_mut().unwrap().remove("accented_clips");
-    legacy.as_object_mut().unwrap().remove("audio_clip_state");
-    legacy.as_object_mut().unwrap().remove("fade_shapes");
-    legacy.as_object_mut().unwrap().remove("audio_event_state");
-
-    legacy.as_object_mut().unwrap().remove("clip_names");
-    legacy.as_object_mut().unwrap().remove("audio_feeds");
-    legacy.as_object_mut().unwrap().remove("midi_routes");
     assert_eq!(
-        decode(&serde_json::to_vec(&legacy).unwrap()).unwrap(),
-        project
-    );
-    legacy["version"] = json!(18);
-    legacy.as_object_mut().unwrap().remove("main_devices");
-    legacy.as_object_mut().unwrap().remove("track_colors");
-    legacy.as_object_mut().unwrap().remove("accented_clips");
-    legacy.as_object_mut().unwrap().remove("audio_clip_state");
-    legacy.as_object_mut().unwrap().remove("fade_shapes");
-    legacy.as_object_mut().unwrap().remove("audio_event_state");
-
-    legacy.as_object_mut().unwrap().remove("clip_names");
-    legacy.as_object_mut().unwrap().remove("audio_feeds");
-    legacy.as_object_mut().unwrap().remove("midi_routes");
-    assert!(decode(&serde_json::to_vec(&legacy).unwrap()).is_err());
-    legacy.as_object_mut().unwrap().remove("routing");
-    assert_eq!(
-        decode(&serde_json::to_vec(&legacy).unwrap()).unwrap(),
+        decode(&encode_schema20(&project).unwrap()).unwrap(),
         project
     );
 }
@@ -101,7 +68,7 @@ fn valid_feed_decode_load_and_save_preserve_canonical_state_and_input() {
     assert_eq!(decode(&encode(&decoded).unwrap()).unwrap(), decoded);
     assert_eq!(
         serde_json::from_slice::<Value>(&encode(&decoded).unwrap()).unwrap()["version"],
-        33
+        hex_storage::CURRENT_SCHEMA_VERSION
     );
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -161,6 +128,7 @@ fn schema20_refuses_cycles_id_collisions_zero_gain_unknown_fields_and_capacity()
     invalid.as_object_mut().unwrap().remove("main_devices");
     invalid.as_object_mut().unwrap().remove("tuning");
     invalid.as_object_mut().unwrap().remove("device_assets");
+    invalid.as_object_mut().unwrap().remove("asset_sources");
     invalid.as_object_mut().unwrap().remove("track_colors");
     invalid.as_object_mut().unwrap().remove("accented_clips");
     invalid.as_object_mut().unwrap().remove("audio_clip_state");

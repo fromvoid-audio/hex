@@ -43,6 +43,7 @@ fn values(frequency: f32, gain: f32) -> DeviceParameterSnapshot {
 }
 fn ack(request: GestureRequest) -> GestureAck {
     GestureAck {
+        preview_retained: false,
         key: request.key(),
         phase: request.phase(),
         sequence: request.sequence(),
@@ -78,6 +79,7 @@ fn snapshot_atomic_preview_commit_cancel_noop_and_history() {
     let change = machine.handle(
         &mut session,
         GestureRequest::ChangeSnapshot {
+            touched_parameters: crate::device_gesture::TouchedParameters::default(),
             key,
             sequence: 1,
             snapshot: values(1500.0, 6.0),
@@ -120,6 +122,7 @@ fn snapshot_atomic_preview_commit_cancel_noop_and_history() {
             .handle(
                 &mut session,
                 GestureRequest::CommitSnapshot {
+                    touched_parameters: crate::device_gesture::TouchedParameters::default(),
                     key,
                     sequence: 1,
                     snapshot: values(1500.0, 6.0)
@@ -199,6 +202,7 @@ fn snapshot_stale_domain_and_parameter_refusal_preserves_overlay() {
                 .handle(
                     &mut session,
                     GestureRequest::ChangeSnapshot {
+                        touched_parameters: TouchedParameters::default(),
                         key,
                         sequence,
                         snapshot
@@ -242,6 +246,7 @@ fn snapshot_save_finalization_rebases_latest_unrelated_state() {
             .handle(
                 &mut session,
                 GestureRequest::ChangeSnapshot {
+                    touched_parameters: crate::device_gesture::TouchedParameters::default(),
                     key,
                     sequence: 1,
                     snapshot: values(1500.0, 6.0)
@@ -319,8 +324,12 @@ fn snapshot_control_storage_and_coalescing_are_finitely_bounded() {
         32 * size_of::<crate::service::Request>(),
         start.elapsed().as_nanos()
     );
-    assert!(size_of::<GestureRequest>() <= 832);
-    assert!(size_of::<GestureClient>() < 8192);
+    // The largest inline intent is now the 256-member frozen gain cohort.
+    // It stays control-side; the same 32-slot FIFO and coalescing rules apply.
+    assert!(size_of::<GestureRequest>() <= 3200);
+    assert!(size_of::<crate::service::Request>() <= 3200);
+    assert!(32 * size_of::<crate::service::Request>() <= 102_400);
+    assert!(size_of::<GestureClient>() < 20_480);
     assert_eq!(client.snapshot().unwrap().sequence, 100_000);
     assert!(client.latest_change.is_some());
     assert!(client.in_flight.is_none());
@@ -348,6 +357,7 @@ fn snapshot_removed_owner_and_rapid_reversal_do_not_commit_stale_values() {
     let a = machine.handle(
         &mut session,
         GestureRequest::ChangeSnapshot {
+            touched_parameters: crate::device_gesture::TouchedParameters::default(),
             key,
             sequence: 1,
             snapshot: values(1500.0, 6.0),
@@ -358,6 +368,7 @@ fn snapshot_removed_owner_and_rapid_reversal_do_not_commit_stale_values() {
     let b = machine.handle(
         &mut session,
         GestureRequest::ChangeSnapshot {
+            touched_parameters: crate::device_gesture::TouchedParameters::default(),
             key,
             sequence: 2,
             snapshot: values(1200.0, 2.0),
@@ -371,6 +382,7 @@ fn snapshot_removed_owner_and_rapid_reversal_do_not_commit_stale_values() {
             .handle(
                 &mut session,
                 GestureRequest::ChangeSnapshot {
+                    touched_parameters: crate::device_gesture::TouchedParameters::default(),
                     key,
                     sequence: 1,
                     snapshot: values(1500.0, 6.0)
@@ -392,6 +404,7 @@ fn snapshot_removed_owner_and_rapid_reversal_do_not_commit_stale_values() {
             .handle(
                 &mut session,
                 GestureRequest::CommitSnapshot {
+                    touched_parameters: crate::device_gesture::TouchedParameters::default(),
                     key,
                     sequence: 3,
                     snapshot: values(1600.0, 8.0)
@@ -501,16 +514,19 @@ fn actual_harmonic_stroke_is_one_history_edit_and_hidden_partials_survive_reopen
             snapshot: spectrum(0.0),
         },
         GestureRequest::ChangeSnapshot {
+            touched_parameters: crate::device_gesture::TouchedParameters::default(),
             key,
             sequence: 1,
             snapshot: spectrum(0.25),
         },
         GestureRequest::ChangeSnapshot {
+            touched_parameters: crate::device_gesture::TouchedParameters::default(),
             key,
             sequence: 2,
             snapshot: spectrum(0.75),
         },
         GestureRequest::CommitSnapshot {
+            touched_parameters: crate::device_gesture::TouchedParameters::default(),
             key,
             sequence: 3,
             snapshot: spectrum(0.5),

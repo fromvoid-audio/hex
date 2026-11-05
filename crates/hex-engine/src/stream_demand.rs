@@ -11,6 +11,55 @@ pub struct StreamPageExtent {
     pub end: usize,
 }
 
+/// Typed union used by one stream-domain reservation. Audio traversal retains
+/// its narrow extent type; scalar demand joins this union before readiness.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StreamResourceExtent {
+    pub source: crate::StreamResourceKey,
+    pub page_index: u64,
+    pub start: usize,
+    pub end: usize,
+}
+impl From<StreamPageExtent> for StreamResourceExtent {
+    fn from(extent: StreamPageExtent) -> Self {
+        Self {
+            source: extent.source.into(),
+            page_index: extent.page_index,
+            start: extent.start,
+            end: extent.end,
+        }
+    }
+}
+
+/// Append exact scalar demand, clipping only known positions outside the
+/// immutable source extent. The catalog/page state still decides readiness.
+pub fn visit_scalar_page_range(
+    source: &crate::ScalarSourceMetadata,
+    start: u64,
+    count: usize,
+    mut visit: impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+) -> Result<(), Invalid> {
+    let end = start
+        .checked_add(count as u64)
+        .ok_or(Invalid("scalar demand range overflow"))?;
+    let mut cursor = start.max(source.start_frame());
+    let end = end.min(source.end_frame());
+    while cursor < end {
+        let offset = (cursor % STREAM_PAGE_FRAMES as u64) as usize;
+        let count = (end - cursor).min((STREAM_PAGE_FRAMES - offset) as u64) as usize;
+        visit(StreamResourceExtent {
+            source: source.key().into(),
+            page_index: cursor / STREAM_PAGE_FRAMES as u64,
+            start: offset,
+            end: offset + count,
+        })?;
+        cursor = cursor
+            .checked_add(count as u64)
+            .ok_or(Invalid("scalar demand advance overflow"))?;
+    }
+    Ok(())
+}
+
 /// The next render chunk's clocks and width; demand borrows never change them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StreamChunkWindow {
@@ -55,6 +104,9 @@ impl Clip {
         end: u64,
         mut visit: impl FnMut(&StreamedSourceMetadata, StreamedPageSpan<'_>) -> usize,
     ) {
+        if !self.active {
+            return;
+        }
         let Some(metadata) = self.metadata.as_deref() else {
             return;
         };
@@ -122,15 +174,15 @@ impl Track {
             .checked_add(count as u64)
             .ok_or(Invalid("stream demand clock overflow"))?;
         let mut result = Ok(());
-        for clip in &self.clips {
+        crate::clip_index::visit(&self.clip_index, &self.clips, start, end, |clip| {
             if result.is_err() {
-                break;
+                return;
             }
             clip.visit_streamed_spans(start, end, |source, span| {
                 result = visit_page_range(source, span.source_frame, span.count, visit);
                 if result.is_ok() { span.count } else { 0 }
             });
-        }
+        });
         result
     }
 }

@@ -12,3 +12,10 @@ license for Hex's application code.
 
 PhotoCraft is an engineering reference. No PhotoCraft application code or assets
 have been copied into this workspace.
+
+The optional MTS-ESP adapter follows ODDSound commit
+`f214739b8832e7f297cb9970d0c0efbf783f1462`; its interface notice remains in
+`third_party/mts-esp-master/LICENSE-ODDSOUND.txt`. Hex does not redistribute
+ODDSound's runtime library. The pinned VST3 SDK MIT/component notices are retained
+by the native builder; those licenses grant no license for third-party plugin
+content. See `crates/hex-plugin-scan/native/DEPENDENCIES.md` for the pinned inputs.

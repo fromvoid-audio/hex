@@ -1,0 +1,36 @@
+{
+  "writer_source": "4c66f735c93ada7deb573367ab4fb07a89ca92b2",
+  "description": "Unmodified schema40 decoder/encoder linked from existing Cargo-qualified libraries at frozen integration source. External harness changes activation and elapsed-window values through canonical snapshot validation, then encodes and verifies complete snapshot roundtrip. No codec modifications or hand-authored historical bytes. Relevant library source inputs unchanged during final3168 qualification.",
+  "writer_libs": {
+    "/Users/portalsurfer/.codex/worktrees/59b0/hex/target/debug/deps/libhex_storage-68c33be939975cf8.rlib": "cba2a38946f433f1107c3b419f5d169f72edd1faca934c07b38807b57b30c4f0",
+    "/Users/portalsurfer/.codex/worktrees/59b0/hex/target/debug/deps/libhex_project-4e5c268c7fdd44b4.rlib": "0a77d416b35d2a7bdc8eea26e800f7a38310229766a5e3fd09df0562b7719340"
+  },
+  "writer_rs_sha256": "04473f1054817f21d4abe34aeef7deee082d35b5c8ac52b381d3f8a7148b03e8",
+  "rustc": "rustc 1.94.0 (4a4ef493e 2026-03-02)\nbinary: rustc\ncommit-hash: 4a4ef493e3a1488c6e321570238084b38948f6db\ncommit-date: 2026-03-02\nhost: aarch64-apple-darwin\nrelease: 1.94.0\nLLVM version: 21.1.8\n",
+  "records": [
+    {
+      "input": "crates/hex-storage/tests/fixtures/clip-activation/schema39-midi-ae200f3c.json",
+      "input_sha256": "e2a1eba361f7e0f6f68bb81d8e571512b73821467b3ed735991bdb839dfeb07e",
+      "output": "schema40-midi-4c66f735.json",
+      "output_sha256": "763eba4e3cc7650dcb2647f876a9b62aa19bd8efa26c43421d9b3c022a772ec3",
+      "exit": 0,
+      "version": 40
+    },
+    {
+      "input": "crates/hex-storage/tests/fixtures/clip-activation/schema39-audio-ae200f3c.json",
+      "input_sha256": "414814c34ffa61ec60ee2afcc73dcf6482d0295283ae9a2d695f729262d15562",
+      "output": "schema40-audio-4c66f735.json",
+      "output_sha256": "26d4fd039a216b8ff5b64b2a5ac62acdca4f237dfdd3dca4be053fdee23e2cb2",
+      "exit": 0,
+      "version": 40
+    },
+    {
+      "input": "crates/hex-storage/tests/fixtures/clip-activation/schema39-session-audio-ae200f3c.json",
+      "input_sha256": "cc9ce6fb64af836e2dfe3938ac2cb5f2cba44afeed37a1193ede4c79b8e3b2a6",
+      "output": "schema40-session-audio-4c66f735.json",
+      "output_sha256": "d6c9f6d89d7bafe2d55eabeb90a860de23e84ef62096c869c48a85d11542c8fd",
+      "exit": 0,
+      "version": 40
+    }
+  ]
+}

@@ -19,6 +19,7 @@ fn chain(bypassed: bool) -> NativeRuntimeChain {
         )
         .unwrap();
     NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+        automation: Default::default(),
         meter: Default::default(),
         owner: ProcessorChainOwner::Track(1),
         device_id: 1,
@@ -30,6 +31,48 @@ fn chain(bypassed: bool) -> NativeRuntimeChain {
         definition: prepared.processor,
     }])
     .unwrap()
+}
+
+#[test]
+fn compensated_printed_branch_renders_without_allocations_or_frees() {
+    use hex_project::{Command, Created, Editor, Project};
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "receiver".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("receiver")
+    };
+    let revision = hex_engine::PreparedRevision::prepare(
+        editor.project(),
+        &std::collections::BTreeMap::new(),
+        Arc::new(hex_engine::SineTable::new()),
+        None,
+    )
+    .unwrap();
+    let mut probe =
+        hex_engine::PrintedBranchProbe::prepare(&revision, editor.project(), track).unwrap();
+    let mut frames = [[0.0; 2]; 64];
+    frames[0] = [1.0, -1.0];
+    let mut success = false;
+    let measurement = allocation_counter::measure(|| success = probe.render(&mut frames).is_ok());
+    assert!(success);
+    assert_eq!(
+        (
+            measurement.count_total,
+            measurement.bytes_total,
+            measurement.count_current,
+            measurement.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_ne!(frames[7], [0.0; 2]);
+    assert!(frames[..7].iter().all(|frame| *frame == [0.0; 2]));
 }
 #[test]
 fn owned_effect_active_abort_bypass_inherit_and_reset_allocate_and_free_nothing() {
@@ -43,22 +86,22 @@ fn owned_effect_active_abort_bypass_inherit_and_reset_allocate_and_free_nothing(
         for _ in 0..16 {
             frames.fill([0.25, -0.5]);
             active.begin_block();
-            active.process_block(&mut frames);
+            active.process_block(&mut frames).unwrap();
             active.commit_block();
         }
         active.begin_block();
-        active.process_block(&mut frames);
-        active.process_block(&mut frames);
+        active.process_block(&mut frames).unwrap();
+        active.process_block(&mut frames).unwrap();
         active.rollback_block();
         bypass.begin_block();
-        bypass.process_block(&mut dry);
+        bypass.process_block(&mut dry).unwrap();
         bypass.rollback_block();
         inherited = candidate.can_inherit_from(&active);
         if inherited {
             candidate.inherit_from(&active);
         }
         candidate.begin_block();
-        candidate.process_block(&mut frames);
+        candidate.process_block(&mut frames).unwrap();
         candidate.commit_block();
         active.reset();
         candidate.reset();

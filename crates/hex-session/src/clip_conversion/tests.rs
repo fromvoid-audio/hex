@@ -64,7 +64,8 @@ fn fixture() -> (Session, hex_project::TrackId, ClipId) {
     (session, track, clip)
 }
 fn pcm(revision: Arc<hex_engine::PreparedRevision>, frames: usize) -> Vec<hex_engine::Frame> {
-    let mut playback = SessionPlayback::new_linear_arrangement_export(revision).unwrap();
+    // The independent ordinary Arrangement owner is the source-sound oracle.
+    let mut playback = SessionPlayback::new(revision).unwrap();
     playback.apply(SessionPlaybackCommand::Play).unwrap();
     let mut result = vec![[0.0; 2]; frames];
     for chunk in result.chunks_mut(137) {
@@ -75,6 +76,11 @@ fn pcm(revision: Arc<hex_engine::PreparedRevision>, frames: usize) -> Vec<hex_en
 
 #[test]
 fn bounce_preserves_placement_sound_mix_history_and_saved_media() {
+    for main_type in ["hex.utility", "hex.overdrive"] {
+        bounce_with_main(main_type);
+    }
+}
+fn bounce_with_main(main_type: &'static str) {
     let folder = Folder::new();
     let (mut session, track, clip) = fixture();
     session
@@ -124,6 +130,19 @@ fn bounce_preserves_placement_sound_mix_history_and_saved_media() {
             state: effect,
         })
         .unwrap();
+    let main = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static(main_type),
+    )
+    .unwrap()
+    .with_output_gain_db(-6.0)
+    .unwrap();
+    session
+        .command(Command::InsertMainDevice {
+            before: None,
+            state: main,
+        })
+        .unwrap();
     let original = session.project().clone();
     let (start, frames) = original.midi_bounce_range(clip).unwrap();
     let before = session.compile_prepared_revision(None).unwrap();
@@ -140,6 +159,16 @@ fn bounce_preserves_placement_sound_mix_history_and_saved_media() {
         clip
     );
     assert!(session.project().midi_clip(clip).is_none());
+    assert_eq!(
+        session.project().native_sources(),
+        original.native_sources(),
+        "render normalization must not change retained source state"
+    );
+    assert_eq!(session.project().main_devices(), original.main_devices());
+    assert_eq!(
+        session.project().track(track).unwrap().devices(),
+        original.track(track).unwrap().devices()
+    );
     let actual = pcm(Arc::clone(&bounced), expected.len());
     let error = actual
         .iter()
@@ -195,36 +224,22 @@ fn bounce_preserves_placement_sound_mix_history_and_saved_media() {
     assert_eq!(restored, original.snapshot());
     session.redo_prepared_revision(None).unwrap().unwrap();
     assert!(session.project().clip(clip).is_some());
-    // Reverse conversion deliberately produces empty editable MIDI, with no transcription.
-    session
+    let bounced_project = session.project().clone();
+    let media_path = session.project().assets().next().unwrap().path().to_owned();
+    let bytes = fs::read(&media_path).unwrap();
+    let error = session
         .command(Command::ConvertAudioClipToMidi(clip))
-        .unwrap();
-    let midi = session.project().midi_clip(clip).unwrap();
-    assert_eq!(midi.name(), "Rendered Chorus");
-    assert!(midi.notes().is_empty());
-    assert_eq!(
-        session
-            .project()
-            .tempo_map()
-            .beat_to_frame(midi.start())
-            .unwrap(),
-        start
-    );
-    assert_eq!(
-        session.project().midi_bounce_range(clip).unwrap(),
-        (start, frames)
-    );
-    session
-        .command(Command::AddMidiNote {
-            clip,
-            start: BeatTime::ZERO,
-            duration: beat(1),
-            pitch: 67,
-            channel: 1,
-            velocity: 95,
-        })
-        .unwrap();
-    assert_eq!(session.project().midi_clip(clip).unwrap().notes().len(), 1);
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        SessionError::Project(hex_project::Invalid(hex_project::AUDIO_TO_MIDI_UNSUPPORTED))
+    ));
+    assert_eq!(session.project(), &bounced_project);
+    assert_eq!(fs::read(&media_path).unwrap(), bytes);
+    assert!(session.undo());
+    assert!(session.project().midi_clip(clip).is_some());
+    assert!(session.redo());
+    assert_eq!(session.project(), &bounced_project);
 }
 
 #[test]
@@ -239,6 +254,19 @@ fn refused_bounce_leaves_project_and_redo_and_files_untouched() {
     assert!(session.bounce_midi_clip(clip, &blocked, None).is_err());
     assert_eq!(session.project(), &original);
     assert!(session.can_redo());
+    assert_eq!(fs::read(&blocked).unwrap(), b"preserve");
+    // A successful create-new render followed by final admission refusal cleans only
+    // that uncommitted generated file, retaining the original source and history.
+    assert!(
+        session
+            .bounce_midi_clip_with_admission(clip, &folder.0, None, |_, _| Err(
+                SessionError::Invalid("injected final bounce refusal")
+            ),)
+            .is_err()
+    );
+    assert_eq!(session.project(), &original);
+    assert!(session.can_redo());
+    assert_eq!(fs::read_dir(&folder.0).unwrap().count(), 1);
     assert_eq!(fs::read(&blocked).unwrap(), b"preserve");
     session.command(Command::RemoveMidiClip(clip)).unwrap();
     session.undo();
@@ -313,15 +341,15 @@ fn session_conversion_retains_cell_name_identity_and_source_window() {
             .any(|sample| sample.abs() > 0.001)
     );
     assert!(session.project().midi_clip(arrangement).is_some());
-    session
-        .command(Command::ConvertAudioClipToMidi(clip))
-        .unwrap();
-    let midi = session.project().session_midi_clip(clip).unwrap();
-    assert_eq!(midi.name(), "phrase");
-    assert!(midi.source().notes().is_empty());
-    session.undo();
-    assert!(session.project().session_audio_clip(clip).is_some());
-    session.undo();
+    let bounced_project = session.project().clone();
+    assert!(matches!(
+        session.command(Command::ConvertAudioClipToMidi(clip)),
+        Err(SessionError::Project(hex_project::Invalid(
+            hex_project::AUDIO_TO_MIDI_UNSUPPORTED
+        )))
+    ));
+    assert_eq!(session.project(), &bounced_project);
+    assert!(session.undo());
     let mut restored = session.project().snapshot();
     restored.next_id = original.snapshot().next_id;
     assert_eq!(restored, original.snapshot());
@@ -357,25 +385,35 @@ fn looped_and_mutable_bounces_chase_history_and_isolate_other_clips() {
                     state,
                 })
                 .unwrap();
-        } else {
-            session
-                .command(Command::SetMidiClipSource {
-                    clip,
-                    source_length: beat(1),
-                    source_start: BeatTime::ZERO,
-                    loop_start: BeatTime::ZERO,
-                    loop_end: beat(1),
-                    looping: true,
-                    length: beat(3),
-                })
-                .unwrap();
         }
+        session
+            .command(Command::SetMidiClipSource {
+                clip,
+                source_length: beat(1),
+                source_start: BeatTime::ZERO,
+                loop_start: BeatTime::ZERO,
+                loop_end: beat(1),
+                looping: true,
+                length: beat(3),
+            })
+            .unwrap();
         let before = session.compile_prepared_revision(None).unwrap();
         let (start, frames) = session.project().midi_bounce_range(clip).unwrap();
         let expected = pcm(before, (start + frames) as usize);
+        let Created::Track(other_track) = session
+            .command(Command::InsertTrackWithDevice {
+                name: "independent voice".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("other track")
+        };
         let Created::Clip(other) = session
             .command(Command::PlaceMidiClip {
-                track,
+                track: other_track,
                 start: beat(1),
                 length: beat(3),
             })
@@ -450,4 +488,64 @@ fn effects_before_instrument_refuse_without_changing_source_or_redo() {
     );
     assert_eq!(session.project(), &original);
     assert_eq!(fs::read_dir(&folder.0).unwrap().count(), 0);
+}
+
+#[test]
+fn isolated_clip_source_omits_unrelated_retained_source_media_without_changing_live_state() {
+    let (session, track, clip) = fixture();
+    let mut editor = hex_project::Editor::new(session.project().clone(), 4).unwrap();
+    let Created::Asset(asset) = editor
+        .execute(Command::AddAsset {
+            path: "unassigned-original.wav".into(),
+            sample_rate: 48_000,
+            frames: 16,
+        })
+        .unwrap()
+    else {
+        panic!("asset")
+    };
+    let state = hex_project::default_instrument_state()
+        .unwrap()
+        .with_asset_references(vec![hex_lattice_contract::DeviceAssetReference {
+            slot: hex_lattice_contract::DeviceAssetSlot::new(1).unwrap(),
+            asset: hex_lattice_contract::DeviceAssetKey::new(asset.value()).unwrap(),
+        }])
+        .unwrap();
+    editor
+        .execute(Command::CreateNativeSource {
+            name: "unassigned".into(),
+            devices: vec![state],
+            instrument_index: 0,
+        })
+        .unwrap();
+    let original = editor.project().clone();
+    let (isolated, owner, _) = isolated_source(&original, clip).unwrap();
+    assert_eq!(owner, track);
+    assert_eq!(isolated.native_sources().len(), 1);
+    assert_eq!(
+        isolated.track(track).unwrap().source_id(),
+        original.track(track).unwrap().source_id()
+    );
+    assert!(isolated.asset(asset).is_none());
+    assert_eq!(editor.project(), &original);
+    assert!(editor.project().asset(asset).is_some());
+    assert_eq!(editor.project().native_sources().len(), 2);
+}
+
+#[test]
+fn isolated_conversion_admits_projects_with_automatic_names_on_dropped_tracks() {
+    let (mut session, track, clip) = fixture();
+    let Created::Track(other) = session
+        .command(Command::InsertDefaultTrack { before_track: None })
+        .unwrap()
+    else {
+        panic!("default track")
+    };
+    let original = session.project().clone();
+    assert!(original.track(other).unwrap().name_is_automatic());
+    let (isolated, owner, _) = isolated_source(&original, clip).unwrap();
+    assert_eq!(owner, track);
+    assert!(isolated.track(other).is_none());
+    assert!(isolated.snapshot().automatic_track_names.is_empty());
+    assert_eq!(session.project(), &original);
 }

@@ -97,7 +97,7 @@ fn paired_taps_bracket_whole_entry_and_preserve_bypass_pcm() {
             };
             let input = [[0.5, -0.25], [0.0, 0.0], [-0.5, 0.25]];
             let mut expected = input;
-            make_chain().process_block(&mut expected);
+            make_chain().process_block(&mut expected).unwrap();
             let mut actual = input;
             let mut observations = Vec::new();
             make_chain()
@@ -105,6 +105,7 @@ fn paired_taps_bracket_whole_entry_and_preserve_bypass_pcm() {
                     0..1,
                     &mut actual,
                     17,
+                    Some(&Clock),
                     Some(&Clock),
                     &mut |got_owner, device, _, phase, offset, audio| {
                         assert_eq!((got_owner, device, offset), (owner, 9, 17));
@@ -341,7 +342,7 @@ fn per_node_clock_reaches_processors_and_observers_without_changing_legacy_calls
     chain.begin_block();
     let mut frames = [[0.0; 2]; 4];
     chain
-        .process_range_with_clock(0..1, &mut frames, Some(&Clock))
+        .process_range_with_clock(0..1, &mut frames, Some(&Clock), Some(&Clock))
         .unwrap();
     assert_eq!(
         frames,
@@ -354,6 +355,7 @@ fn per_node_clock_reaches_processors_and_observers_without_changing_legacy_calls
             &mut frames,
             17,
             Some(&Clock),
+            Some(&Clock),
             &mut |owner, id, _, offset, audio| {
                 assert_eq!(owner, ProcessorChainOwner::Track(1));
                 assert_eq!(id, 1);
@@ -365,10 +367,10 @@ fn per_node_clock_reaches_processors_and_observers_without_changing_legacy_calls
     assert_eq!(observed, frames);
     chain.process_range(0..1, &mut frames).unwrap();
     assert_eq!(frames, [[7.0, 9.0]; 4]);
-    chain.process_block(&mut frames);
+    chain.process_block(&mut frames).unwrap();
     assert_eq!(frames, [[7.0, 9.0]; 4]);
     assert_eq!(
-        chain.process_range_with_clock(0..2, &mut frames, Some(&Clock)),
+        chain.process_range_with_clock(0..2, &mut frames, Some(&Clock), Some(&Clock)),
         Err(DeviceContractError::InvalidDescriptor)
     );
 }
@@ -385,7 +387,7 @@ fn bypass_private_clock_uses_offsets_while_audible_samples_are_preserved() {
         chain.begin_block();
         let mut frames = [[1.0, -0.5]; 4];
         chain
-            .process_range_with_clock(0..1, &mut frames, Some(&Clock))
+            .process_range_with_clock(0..1, &mut frames, Some(&Clock), Some(&Clock))
             .unwrap();
         assert_eq!(frames, [[1.0, -0.5]; 4]);
         let runtime = chain.entries[0]

@@ -73,6 +73,23 @@ impl PublicationControl {
         self.candidate_root
             .begin_domain_preparation(config, definitions, readiness)
     }
+    /// Test-only source-worker hold through the same reserved domain custody.
+    #[cfg(feature = "stream-test-support")]
+    pub fn begin_audio_candidate_domain_preparation_with_gate(
+        &mut self,
+        config: hex_stream::StreamConfig,
+        definitions: Vec<hex_stream::SourceDefinition>,
+        readiness: hex_stream::StreamReadinessReservation,
+        gate: hex_stream::test_support::PageGate,
+    ) -> Result<crate::AudioCandidateDomainToken, crate::AudioCandidateDomainStartError> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err(crate::AudioCandidateDomainStartError::Busy(
+                "candidate native custody unavailable",
+            ));
+        }
+        self.candidate_root
+            .begin_domain_preparation_with_gate(config, definitions, readiness, gate)
+    }
     /// Poll on the publication worker. Reserve the actual queue entry before
     /// sealing; a ready endpoint cannot escape or be dropped on queue refusal.
     pub fn poll_audio_candidate_domain_preparation(
@@ -95,6 +112,25 @@ impl PublicationControl {
         token: crate::AudioCandidateDomainToken,
     ) -> bool {
         self.candidate_root.domain_is_sealed(token)
+    }
+    /// Factual control-side cache eviction hint. This does not retire a domain,
+    /// grant source access, or establish callback/page readiness. Reuse and
+    /// retirement still validate the actual Root cell and incarnation.
+    pub fn audio_candidate_domain_has_no_graph_users(
+        &self,
+        token: crate::AudioCandidateDomainToken,
+    ) -> bool {
+        self.candidate_root.domain_has_no_graph_users(token)
+    }
+    /// Factual delivery receipt for a nonretiring sealed domain's one exact
+    /// endpoint. Ready/catalog sealing alone does not establish this receipt.
+    /// This is neither page readiness nor publication authority; every render
+    /// still requires exact protected extents from the actual retained loan.
+    pub fn audio_candidate_domain_endpoint_is_installed(
+        &self,
+        token: crate::AudioCandidateDomainToken,
+    ) -> bool {
+        self.candidate_root.domain_endpoint_installed(token)
     }
     /// Borrowed worker-side coverage check against the actual retained sealed
     /// catalog and exact Root slot/incarnation. Neutral file facts alone cannot
@@ -178,6 +214,42 @@ impl PublicationControl {
         self.candidate_root
             .reserve_runtime_preparation(reservation, domains)
     }
+    /// Actual configured Root/control backing, independent of its DATA ceiling.
+    /// Native sources require the exact accepted unsplit owner inventory; busy,
+    /// pending or retiring source inspection returns None. This grants no
+    /// callback, native-output or graph publication authority.
+    pub fn audio_candidate_control_backing_bytes(&self) -> Option<usize> {
+        self.candidate_root.actual_control_backing_bytes()
+    }
+    /// Reserve an empty destination for an intact preflighted resident CURRENT
+    /// cell. No duplicate engine cell/source allocation is constructed.
+    pub fn reserve_audio_candidate_adoption(
+        &mut self,
+        reservation: crate::AudioCandidatePreparationReservation,
+    ) -> Result<crate::AudioCandidatePreparationToken, crate::AudioCandidatePreparationRefusal>
+    {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err(crate::AudioCandidatePreparationRefusal {
+                reason: "candidate native custody unavailable",
+                domains: Vec::new(),
+            });
+        }
+        self.candidate_root.reserve_runtime_adoption(reservation)
+    }
+    /// Move only after destination Root/context/rate and actual constructor DATA
+    /// have passed. A refusal leaves the caller's original opaque Option intact.
+    pub fn adopt_audio_candidate_preparation(
+        &mut self,
+        token: crate::AudioCandidatePreparationToken,
+        context: hex_engine::AudioSourceContext,
+        cell: &mut Option<hex_engine::AudioCandidatePreparation>,
+    ) -> Result<(), &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("candidate native custody unavailable");
+        }
+        self.candidate_root
+            .adopt_runtime_preparation(token, context, self.rate, cell)
+    }
     /// Bind a newly ready exact domain into the already-reserved graph cell.
     /// This permits reserving graph construction BEFORE starting its source
     /// worker; no second runtime slot or source registration is introduced.
@@ -200,6 +272,17 @@ impl PublicationControl {
     ) -> Result<crate::AudioCandidatePreparationProgress, &'static str> {
         self.candidate_root.with_runtime_preparation(token, prepare)
     }
+    /// Recheck both canonical counters for the limited CURRENT path before the
+    /// ordinary destination seal/stage. No generation or editor relabel occurs.
+    pub fn stage_current_sampler_preparation(
+        &mut self,
+        token: crate::AudioCandidatePreparationToken,
+        expected: hex_engine::AudioSourceContext,
+    ) -> Result<crate::AudioCandidateTicket, &'static str> {
+        self.candidate_root
+            .check_current_sampler_preparation_context(token, expected)?;
+        self.stage_audio_candidate_preparation(token, expected.project_generation)
+    }
     /// Queue this exact rooted, completed preparation without returning an owner
     /// to the adapter or releasing/reacquiring its reserved runtime/archive cell.
     /// Busy/refusal retains all construction custody under the same token.
@@ -208,13 +291,54 @@ impl PublicationControl {
         token: crate::AudioCandidatePreparationToken,
         context_generation: u64,
     ) -> Result<crate::AudioCandidateTicket, &'static str> {
+        self.stage_audio_candidate_preparation_inner(token, context_generation, None)
+    }
+    /// Publish the successor of this exact native Stop gate. Root validates the
+    /// prepared owner's unchanged canonical context under its original custody.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn stage_native_epoch_preparation(
+        &mut self,
+        token: crate::AudioCandidatePreparationToken,
+        fence: StoppedEditFence,
+    ) -> Result<crate::AudioCandidateTicket, &'static str> {
+        let context = self
+            .status
+            .sampler_edit
+            .native_epoch_context(fence)
+            .filter(|_| self.stopped_edit_fence_state(fence) == StoppedEditFenceState::Ready)
+            .ok_or("native epoch fence is not ready")?;
+        if self.status.applied_audio_source().is_some() {
+            return Err("native epoch old runtime has not returned");
+        }
+        self.stage_audio_candidate_preparation_inner(
+            token,
+            context.project_generation,
+            Some(context),
+        )
+    }
+    fn stage_audio_candidate_preparation_inner(
+        &mut self,
+        token: crate::AudioCandidatePreparationToken,
+        context_generation: u64,
+        expected_context: Option<hex_engine::AudioSourceContext>,
+    ) -> Result<crate::AudioCandidateTicket, &'static str> {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("candidate native custody unavailable");
+        }
+        if self.status.sampler_edit.native_epoch_active() && expected_context.is_none() {
+            return Err("native epoch publication requires its exact ready fence");
         }
         if self.revision == u64::MAX {
             return Err("playback revision exhausted");
         }
-        if !self.status.publication_pending.reserve_publication() {
+        let reserved = if expected_context.is_some() {
+            self.status
+                .publication_pending
+                .reserve_native_epoch_publication()
+        } else {
+            self.status.publication_pending.reserve_publication()
+        };
+        if !reserved {
             return Err("playback publication already pending");
         }
         let Ok(chunk) = self.publications.write_chunk_uninit(1) else {
@@ -227,11 +351,15 @@ impl PublicationControl {
             context_generation,
             PublicationPolicy::InheritRuntime,
         );
-        match self
-            .candidate_root
-            .stage_runtime_preparation(token, self.rate, header, |queued| {
+        match self.candidate_root.stage_runtime_preparation(
+            token,
+            self.rate,
+            header,
+            expected_context,
+            |queued| {
                 chunk.fill_from_iter(std::iter::once(QueuedPublication::Eligible(queued)));
-            }) {
+            },
+        ) {
             Ok(ticket) => {
                 self.revision = revision;
                 self.status.submitted_revision.store(revision, Release);
@@ -270,14 +398,16 @@ impl PublicationControl {
     ) -> Result<crate::AudioCandidateTicket, crate::AudioCandidateEligibleStageRefusal> {
         let reason = if !self.native_custody || self.status.closing.load(Acquire) {
             Some("candidate native custody unavailable")
+        } else if self.status.sampler_edit.native_epoch_active() {
+            Some("native epoch publication requires its exact ready fence")
         } else if owner.sample_rate() != self.rate
             || owner.phase() != hex_engine::AudioCandidateDisposalPhase::Owned
         {
             Some("candidate constructor rate or phase differs")
         } else if policy != PublicationPolicy::InheritRuntime {
             Some("constructor fresh-runtime policy is not supported")
-        } else if self.status.publication_pending.gain_active() {
-            Some("finish gain recording before replacing playback")
+        } else if self.status.publication_pending.recording_active() {
+            Some("finish recording before replacing playback")
         } else if self.revision == u64::MAX {
             Some("playback revision exhausted")
         } else {
@@ -344,7 +474,7 @@ impl PublicationControl {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 impl Callback {
     pub(super) fn return_requested_domain_pages(&mut self) {
@@ -381,7 +511,18 @@ impl Callback {
         if self.active.is_some() && self.retired.is_full() {
             return;
         }
-        let decision = if self
+        let Some(next) = self.deferred_eligible.as_ref() else {
+            return;
+        };
+        let revision = next.revision();
+        let context = next.diagnostic_context();
+        self.trace_audio(
+            AudioDiagnosticKind::PublicationAttempt,
+            revision,
+            context,
+            frames.unwrap_or(0),
+        );
+        let mut decision = if self
             .active
             .as_ref()
             .is_some_and(|active| !matches!(active, ActivePublication::Eligible(_)))
@@ -406,8 +547,35 @@ impl Callback {
         } else {
             return;
         };
+        if let Some(handoff) = self
+            .deferred_eligible
+            .as_mut()
+            .and_then(|next| next.take_handoff_diagnostic())
+        {
+            if matches!(
+                decision,
+                InstallDecision::Refused(PlaybackHandoffRejection::StreamedPagesNotReady)
+            ) {
+                decision = InstallDecision::Refused(PlaybackHandoffRejection::from_error(handoff));
+            }
+            self.trace_audio(
+                AudioDiagnosticKind::StreamPreflightFailed {
+                    detail: "stream handoff demand refused",
+                    handoff: Some(handoff),
+                },
+                revision,
+                context,
+                frames.unwrap_or(0),
+            );
+        }
         match decision {
             InstallDecision::Retry => {
+                self.trace_audio(
+                    AudioDiagnosticKind::PublicationWaiting,
+                    revision,
+                    context,
+                    frames.unwrap_or(0),
+                );
                 if self.active.is_some()
                     && let Some(next) = self.deferred_eligible.as_mut()
                 {
@@ -417,8 +585,7 @@ impl Callback {
             InstallDecision::Refused(reason) => {
                 if let Some(mut value) = self.deferred_eligible.take() {
                     value.cancel_stream_readiness(&mut self.domain_pages);
-                    self.status
-                        .publish_rejected_revision(value.revision(), reason);
+                    self.reject_publication(value.revision(), reason);
                     self.return_publication(ReturnedPublication::Eligible(
                         value.reject_before_install(),
                     ));
@@ -428,6 +595,12 @@ impl Callback {
                             ticket,
                             PlaybackActionRejection::SessionNotPrepared,
                         );
+                        self.stage_stream_outcome(
+                            ticket,
+                            action_outcomes::Outcome::Rejected(
+                                PlaybackActionRejection::SessionNotPrepared,
+                            ),
+                        );
                         self.status
                             .stream_applied_command_prefix
                             .store(self.stream_prefix, Release);
@@ -435,6 +608,12 @@ impl Callback {
                 }
             }
             InstallDecision::Ready => {
+                self.trace_audio(
+                    AudioDiagnosticKind::PublicationPrepared,
+                    revision,
+                    context,
+                    frames.unwrap_or(0),
+                );
                 // Every fallible operation happened while both State Boxes
                 // remained in their persistent callback slots. Fixed moves only.
                 if let Some(next) = self.deferred_eligible.take() {
@@ -458,9 +637,14 @@ impl Callback {
                     self.finish_pending_stream_play();
                     self.status.stream_buffering.store(false, Release);
                     self.publish_active_routes(true);
+                    self.recovery_seek_pending = None;
+                    if !self.status.device_fault.load(Acquire) {
+                        self.recovery_position_frozen = false;
+                    }
                     self.publish_transport();
                     self.status.render_fault_record.clear();
                     self.status.render_fault.store(false, Release);
+                    self.status.stream_source_changed.store(false, Release);
                     self.status
                         .applied_source
                         .publish(match self.active.as_ref() {
@@ -470,6 +654,12 @@ impl Callback {
                             _ => None,
                         });
                     self.status.applied_revision.store(revision, Release);
+                    self.trace_audio(
+                        AudioDiagnosticKind::PublicationApplied,
+                        revision,
+                        context,
+                        frames.unwrap_or(0),
+                    );
                     self.status.publication_pending.store(false, Release);
                 }
             }

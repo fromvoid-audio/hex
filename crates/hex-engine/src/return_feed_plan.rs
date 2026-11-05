@@ -66,7 +66,10 @@ impl ReturnFeedPlan {
     pub(crate) fn validate_admission(project: &hex_project::Project) -> Result<(), Invalid> {
         // Canonical empty-feed projects keep the legacy preparation path.
         if !project.authored_routing().is_empty() {
-            hex_project::Project::validate_return_feed_snapshot(&project.snapshot())
+            // Recheck both combined graphs through their canonical owner. The
+            // input is already typed; do not clone/reconstruct unrelated content.
+            project
+                .validate_playback_routing()
                 .map_err(|error| Invalid(error.0))?;
         }
         Ok(())

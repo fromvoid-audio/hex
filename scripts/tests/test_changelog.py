@@ -175,11 +175,13 @@ class ChangelogTests(unittest.TestCase):
             'assert "UNTRUSTED DATA" in sys.stdin.read()\n'
             'Path(args[args.index("--output-last-message")+1]).write_text(json.dumps({"entries":[],"reason":"subprocess fixture only"}))\n')
         executable.chmod(0o700)
-        result = notes.infer(output, timeout=2, executable=str(executable))
+        # Verify real process transport, not first-execution startup speed.
+        # Keep a finite allowance without changing production timeout behavior.
+        result = notes.infer(output, timeout=10, executable=str(executable))
         self.assertEqual(notes.validate_response(result, packet)['entries'], [])
         executable.write_text('#!' + sys.executable + '\nimport sys\nsys.stderr.write("transport fixture refusal\\n")\nsys.exit(7)\n')
         with self.assertRaisesRegex(notes.Refusal, 'exit 7'):
-            notes.infer(output, timeout=2, executable=str(executable))
+            notes.infer(output, timeout=10, executable=str(executable))
         self.assertIn('transport fixture refusal', (output / 'generation.stderr').read_text())
 
     def test_actual_result_transport_checks_original_input_execution_and_idempotence(self):
@@ -271,7 +273,7 @@ entry=sys.argv[1]
 sys.argv=[entry,'--help']
 runpy.run_path(entry,run_name='__main__')
 """
-        for entry in [root / 'launch', root / 'scripts/hex-test-build.py', root / 'scripts/changelog.py']:
+        for entry in [root / 'scripts/hex-test-build.py', root / 'scripts/changelog.py']:
             result = subprocess.run([sys.executable, '-c', harness, str(entry)], text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('usage:', result.stdout)

@@ -1,0 +1,15 @@
+@font-face { font-family: "Ioskeley Mono"; src: url("../../assets/fonts/ioskeley-mono/ioskeley-mono-regular.ttf"); }
+@font-face { font-family: "Ioskeley Mono"; font-weight: 700; src: url("../../assets/fonts/ioskeley-mono/ioskeley-mono-bold.ttf"); }
+:root { font-family: "Ioskeley Mono"; color: #252a2d; background: #fafaf8; line-height: 1.65; }
+body { max-width: 76ch; margin: auto; padding: 2rem 1.5rem 4rem; font-size: 14px; }
+header { border-bottom: 2px solid #333b40; padding-bottom: 1rem; margin-bottom: 1.5rem; }
+h1 { font-size: 1.65rem; line-height: 1.25; margin-top: 2rem; color: #263e48; }
+h2 { font-size: 1.15rem; line-height: 1.35; margin-top: 1.7rem; }
+p, li { max-width: 76ch; }
+a { color: #2a596b; text-underline-offset: .2em; }
+nav { border-block: 1px solid #c8cece; padding-block: .75rem; }
+nav ul { padding-left: 1.25rem; }
+table { width: 100%; border-collapse: collapse; margin-block: 1rem; }
+th, td { text-align: left; border-bottom: 1px solid #c8cece; padding: .45rem .5rem; vertical-align: top; }
+code { font-family: inherit; background: #e9eded; padding: .05rem .2rem; }
+@media print { body { max-width: none; padding: 0; } h1, h2 { break-after: avoid; } }

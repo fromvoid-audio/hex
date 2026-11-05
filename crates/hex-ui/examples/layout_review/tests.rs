@@ -1,5 +1,5 @@
 use super::*;
-use gpui::{Focusable, Modifiers, TestAppContext, VisualTestContext, size};
+use gpui::{Focusable, Modifiers, MouseButton, TestAppContext, VisualTestContext, size};
 
 struct RestoreTheme(hex_preferences::ThemePreferences);
 impl Drop for RestoreTheme {
@@ -71,6 +71,23 @@ fn catalog_fixture_track_return_labels_reuse_production_geometry_in_bounded_view
                 mask.right() <= viewport.scale(scale).right(),
                 "wide cards stay clipped to the viewport"
             );
+            for (toggle, panel) in [
+                ("device-macro-toggle", "device-macro-panel"),
+                ("device-modulator-toggle", "device-modulator-panel"),
+            ] {
+                let button = visual.debug_bounds(toggle).expect("shared housing toggle");
+                assert!(header.contains(&button.center()));
+                visual.simulate_click(button.center(), Modifiers::default());
+                visual.run_until_parked();
+                let bounds = visual
+                    .debug_bounds(panel)
+                    .expect("shared placeholder panel");
+                assert!(card.contains(&bounds.center()));
+                visual.simulate_click(button.center(), Modifiers::default());
+                visual.run_until_parked();
+                assert!(visual.debug_bounds(panel).is_none());
+            }
+
             if entry.is_effect() {
                 visual.update(|_, cx| {
                     view.update(cx, |view, cx| {
@@ -143,9 +160,86 @@ fn selection_focus_hover_and_bypass_preserve_body_paint_and_real_control_footpri
     visual.run_until_parked();
     assert_eq!(
         visual.rendered_background("fixture-header-bypass"),
-        Some(gpui::Background::from(rgb(theme::color(
-            theme::PaletteRole::Hover
-        ))))
+        None,
+        "boolean hover must not restore the action box"
+    );
+    assert_eq!(
+        visual.rendered_background("fixture-header-bypass-indicator"),
+        Some(gpui::Background::from(
+            gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Border))).opacity(0.8)
+        ))
+    );
+}
+
+#[gpui::test]
+fn header_power_toggle_keeps_owner_state_when_disabled_and_has_a_full_hit_target(
+    cx: &mut TestAppContext,
+) {
+    let (handle, view) = open(cx, Entry::Utility);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let target = visual.debug_bounds("fixture-header-bypass").unwrap();
+    let indicator_bounds = visual
+        .debug_bounds("fixture-header-bypass-indicator")
+        .unwrap();
+    assert_eq!(target.size, size(px(12.0), px(12.0)));
+    assert_eq!(indicator_bounds.size, size(px(8.0), px(8.0)));
+    assert_eq!(indicator_bounds.center(), target.center());
+    let scale = visual.update(|window, _| window.scale_factor());
+    assert_eq!(
+        visual
+            .rendered_surface_geometry("fixture-header-bypass-indicator")
+            .unwrap()
+            .0
+            .top_left,
+        px(hex_widgets::TOGGLE_CORNER_RADIUS).scale(scale)
+    );
+    assert_eq!(visual.rendered_background("fixture-header-bypass"), None);
+    let on = visual.rendered_background("fixture-header-bypass-indicator");
+    visual.simulate_mouse_move(target.center(), None, Modifiers::default());
+    visual.simulate_mouse_down(target.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_ne!(
+        visual.rendered_background("fixture-header-bypass-indicator"),
+        on
+    );
+    visual.simulate_mouse_up(target.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    view.read_with(cx, |v, _| assert!(v.bypassed));
+    let off = visual.rendered_background("fixture-header-bypass-indicator");
+    assert_ne!(on, off);
+    view.update(cx, |v, cx| {
+        v.disabled = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_click(target.center(), Modifiers::default());
+    view.read_with(cx, |v, _| assert!(v.bypassed));
+    assert_eq!(
+        visual.rendered_background("fixture-header-bypass-indicator"),
+        off
+    );
+    view.update(cx, |v, cx| {
+        v.disabled = false;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    // The transparent corner outside the dot remains part of the hit target.
+    visual.simulate_click(
+        target.origin + gpui::point(px(0.5), px(0.5)),
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    view.read_with(cx, |v, _| assert!(!v.bypassed));
+    visual.simulate_mouse_move(
+        gpui::point(px(500.0), px(500.0)),
+        None,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_background("fixture-header-bypass-indicator"),
+        on
     );
 }
 
@@ -221,9 +315,10 @@ fn selector_popup_is_real_retained_foreground_and_theme_refresh_keeps_focus(
     let popup = visual
         .debug_bounds("fixture-saturator-selector-0-popup")
         .unwrap();
+    let card = visual.debug_bounds("catalog-card").unwrap();
     assert!(
-        popup.bottom_left().y > visual.debug_bounds("catalog-card").unwrap().bottom_left().y,
-        "popup escapes the clipped device body"
+        popup.bottom() > card.bottom() || popup.top() < card.top(),
+        "popup escapes the clipped device body: popup {popup:?}, card {card:?}"
     );
     let focus = cx.update(|app| choice.focus_handle(app));
     view.update(cx, |view, cx| view.set_alternate(true, cx));
@@ -405,11 +500,25 @@ fn eq_catalog_uses_shared_live_geometry_controls_and_registered_response_without
                 && graph.size.height >= body.size.height * 0.9
         );
     }
+    let q_control = view.read_with(cx, |view, _| {
+        view.fixtures[&Entry::Eq].numbers[3].entity.clone()
+    });
+    q_control.update(cx, |q, cx| q.set_external_value(18.0, cx).unwrap());
     let before = view.read_with(cx, |view, cx| {
         eq::model(&view.fixtures[&Entry::Eq], cx).unwrap()
     });
     before.validate().unwrap();
-    assert!(before.analyzer.is_none() && before.input_analyzer.is_none());
+    let center = before.nodes[0].position[0];
+    assert!(
+        before
+            .primary
+            .iter()
+            .any(|point| (point[0] - center).abs() < 1.0e-6),
+        "the narrow node center must be sampled"
+    );
+    assert!(before.analyzer.is_some());
+    assert!(before.input_analyzer.is_some());
+    assert!(before.analyzer_peak.is_some());
     let field = visual.debug_bounds("fixture-eq-numeric-2-value").unwrap();
     visual.simulate_click(field.center(), Modifiers::default());
     visual.simulate_keystrokes("cmd-a");
@@ -424,6 +533,9 @@ fn eq_catalog_uses_shared_live_geometry_controls_and_registered_response_without
         after.primary, before.primary,
         "real registered response follows the shared numeric control"
     );
+    assert_eq!(after.analyzer, before.analyzer);
+    assert_eq!(after.input_analyzer, before.input_analyzer);
+    assert_eq!(after.analyzer_peak, before.analyzer_peak);
     let choice = visual.debug_bounds("fixture-eq-selector-1").unwrap();
     visual.simulate_click(choice.center(), Modifiers::default());
     visual.run_until_parked();
@@ -431,4 +543,20 @@ fn eq_catalog_uses_shared_live_geometry_controls_and_registered_response_without
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     assert!(visual.debug_bounds("fixture-eq-selector-1-popup").is_none());
+}
+
+#[gpui::test]
+fn shared_housing_visibility_does_not_transfer_to_another_fixture(cx: &mut TestAppContext) {
+    let _restore = RestoreTheme(theme::preferences());
+    let (handle, view) = open(cx, Entry::Utility);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(760.0), px(660.0)));
+    visual.run_until_parked();
+    let button = visual.debug_bounds("device-macro-toggle").unwrap();
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-macro-panel").is_some());
+    choose(&mut visual, &view, Entry::Saturator);
+    assert!(visual.debug_bounds("device-macro-panel").is_none());
+    assert!(visual.debug_bounds("device-modulator-panel").is_none());
 }

@@ -115,12 +115,12 @@ fn browser_non_text_clicks_leave_real_query_focus_and_do_not_accept_typing(
             visual.simulate_mouse_up(release, MouseButton::Left, Modifiers::default());
             visual.run_until_parked();
             let query = editor.read_with(visual, |view, cx| {
-                view.browser.search.read(cx).content.clone()
+                view.browser.search.read(cx).text().to_owned()
             });
             visual.simulate_input("qxj");
             editor.read_with(visual, |view, cx| {
                 assert_eq!(
-                    view.browser.search.read(cx).content,
+                    view.browser.search.read(cx).text(),
                     query,
                     "typing after {target} changed query"
                 )
@@ -141,7 +141,7 @@ fn browser_non_text_clicks_leave_real_query_focus_and_do_not_accept_typing(
             });
             editor.update(visual, |view, cx| {
                 assert_eq!(
-                    view.browser.search.read(cx).content,
+                    view.browser.search.read(cx).text(),
                     query,
                     "typing after {target} changed query"
                 );
@@ -166,7 +166,7 @@ fn browser_non_text_clicks_leave_real_query_focus_and_do_not_accept_typing(
                             .is_focused(window),
                         "worker restored query focus after {target}"
                     );
-                    assert_eq!(view.browser.search.read(cx).content, query);
+                    assert_eq!(view.browser.search.read(cx).text(), query);
                     assert!(view.pending_requests.is_empty());
                     assert!(view.pending_audio_commands.is_empty());
                 })
@@ -175,7 +175,7 @@ fn browser_non_text_clicks_leave_real_query_focus_and_do_not_accept_typing(
             visual.simulate_click(search.center(), Modifiers::default());
             visual.simulate_input("loop");
             editor.read_with(visual, |view, cx| {
-                assert_eq!(view.browser.search.read(cx).content, "loop")
+                assert_eq!(view.browser.search.read(cx).text(), "loop")
             });
             if target == "browser-control-⚙" {
                 let gear = visual.debug_bounds(target).unwrap();
@@ -216,12 +216,12 @@ fn browser_query_entry_navigation_escape_and_close_have_real_focus_owners(cx: &m
     });
     visual.simulate_input("qxj");
     editor.read_with(visual, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "loop")
+        assert_eq!(view.browser.search.read(cx).text(), "loop")
     });
     visual.simulate_keystrokes("escape");
     visual.update(|window, cx| {
         editor.read_with(cx, |view, cx| {
-            assert!(view.browser.search.read(cx).content.is_empty());
+            assert!(view.browser.search.read(cx).text().is_empty());
             assert_eq!(view.browser_key_context(window, cx), "hex_browser");
         })
     });
@@ -230,7 +230,7 @@ fn browser_query_entry_navigation_escape_and_close_have_real_focus_owners(cx: &m
     visual.simulate_keystrokes("cmd-f");
     visual.simulate_input("child");
     editor.read_with(visual, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "child")
+        assert_eq!(view.browser.search.read(cx).text(), "child")
     });
     let caret = visual.update(|window, cx| {
         let input = editor.read(cx).browser.search.clone();
@@ -244,7 +244,7 @@ fn browser_query_entry_navigation_escape_and_close_have_real_focus_owners(cx: &m
     visual.simulate_click(caret, Modifiers::default());
     visual.simulate_input("Z");
     editor.read_with(visual, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "chzild")
+        assert_eq!(view.browser.search.read(cx).text(), "chzild")
     });
     editor.update(visual, |view, cx| view.refresh_sample_catalog(cx));
     visual.run_until_parked();
@@ -271,7 +271,7 @@ fn browser_query_entry_navigation_escape_and_close_have_real_focus_owners(cx: &m
     });
     visual.simulate_input("q");
     editor.read_with(visual, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "chzild")
+        assert_eq!(view.browser.search.read(cx).text(), "chzild")
     });
     visual.simulate_keystrokes("cmd-alt-b");
     visual.update(|window, cx| {
@@ -290,7 +290,7 @@ fn browser_query_entry_navigation_escape_and_close_have_real_focus_owners(cx: &m
     visual.simulate_keystrokes("cmd-f");
     visual.simulate_input("loop");
     editor.read_with(visual, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "loop")
+        assert_eq!(view.browser.search.read(cx).text(), "loop")
     });
 }
 
@@ -372,7 +372,7 @@ fn browser_stale_unavailable_row_click_leaves_query_focus_without_action(cx: &mu
             visual.run_until_parked();
             visual.update(|window, cx| {
                 editor.read_with(cx, |view, cx| {
-                    assert_eq!(view.browser.search.read(cx).content, "loop");
+                    assert_eq!(view.browser.search.read(cx).text(), "loop");
                     assert!(view.browser.results_focus.is_focused(window));
                     assert!(
                         view.pending_requests.is_empty() && view.pending_audio_commands.is_empty()

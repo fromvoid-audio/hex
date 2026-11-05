@@ -1,5 +1,6 @@
 //! Original registered test provider for owned-effect transactions. Not shipped
-//! in the device browser. Production admission limits remain unchanged.
+//! in the device browser. This fixture retains a narrow live-copy bound;
+//! production providers declare and validate their own owned-history footprint.
 use crate::{
     NativeDeviceDefinition, OutputTail, OwnedProcessorRuntime, PreparedOwnedProcessorRuntime,
     PreparedProcessorFactory, StereoFrame, StereoMatrix,

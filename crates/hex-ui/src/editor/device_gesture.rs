@@ -67,12 +67,17 @@ pub(super) fn retire_failed_finalize_barriers(
     };
     while let Some(request) = deferred.pop_front() {
         match request {
-            Request::SaveNew(_) | Request::SaveCurrent => effects.save_refused = true,
+            Request::SaveNew(_)
+            | Request::SaveCurrent
+            | Request::SaveCurrentWithFormatUpgrade { .. } => effects.save_refused = true,
             Request::Export(_) => effects.export_refused = true,
             Request::ExportRange { control, .. } => {
                 control.cancel();
                 effects.export_refused = true;
             }
+            Request::SamplerEdit(hex_session::service::SamplerEdit::History(edit)) => edit
+                .cancel
+                .store(true, std::sync::atomic::Ordering::Release),
             Request::Undo
             | Request::Redo
             | Request::SaveDevicePreset { .. }
@@ -166,17 +171,17 @@ impl EditorView {
         match self.service.submit(Request::DeviceGesture(gesture)) {
             Ok(()) => {
                 self.device_gesture.mark_submitted();
-                self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
+                self.worker_submitted();
                 true
             }
             Err(SubmitError::Full(_)) => false,
-            Err(SubmitError::Busy(_)) => {
+            Err(SubmitError::Busy(_, reason)) => {
                 self.device_gesture.reset();
                 self.device_gesture_barriers.clear();
                 self.effect_bus_barrier.custody = None;
                 self.retire_tuning_library_device_terminal();
                 self.refuse_deferred_tuning_writes();
-                self.error = Some("an export is already pending".into());
+                self.error = Some(super::user_errors::busy(reason).into());
                 true
             }
             Err(SubmitError::Closed(_)) => {
@@ -191,12 +196,21 @@ impl EditorView {
         }
     }
 
+    #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn acknowledge_device_gesture(
         &mut self,
         ack: &hex_session::device_gesture::GestureAck,
     ) -> bool {
+        self.acknowledge_device_gesture_with_snapshot(ack, None)
+    }
+
+    pub(super) fn acknowledge_device_gesture_with_snapshot(
+        &mut self,
+        ack: &hex_session::device_gesture::GestureAck,
+        snapshot: Option<hex_session::device_gesture::GestureSnapshot>,
+    ) -> bool {
         let terminal = matches!(ack.phase, GesturePhase::Commit | GesturePhase::Cancel);
-        let matched = self.device_gesture.acknowledge(ack);
+        let matched = self.device_gesture.acknowledge_with_snapshot(ack, snapshot);
         if !matched {
             self.refuse_effect_bus_barriers(
                 "effect insertion canceled · device acknowledgment did not match",
@@ -214,6 +228,7 @@ impl EditorView {
                 }
                 if effects.save_refused {
                     self.saving_project = false;
+                    self.cancel_open_after_save();
                 }
                 if effects.export_refused {
                     // Deferred exports have not been submitted to Service, so
@@ -231,10 +246,14 @@ impl EditorView {
                         .into(),
                 );
             }
-            release_deferred(
-                &mut self.pending_requests,
-                &mut self.device_gesture_barriers,
-            );
+            // A refused publication still owns the audible preview. Keep unrelated intents
+            // ordered behind its explicit retry/cancel instead of claiming canonical restoration.
+            if !ack.preview_retained {
+                release_deferred(
+                    &mut self.pending_requests,
+                    &mut self.device_gesture_barriers,
+                );
+            }
         } else if ack.phase == GesturePhase::Begin && !ack.accepted {
             self.refuse_effect_bus_barriers("effect insertion canceled · device edit was refused");
             // The worker refused to admit the draft, so release dependent
@@ -254,6 +273,9 @@ impl EditorView {
     }
 
     pub(super) fn enqueue_device_barrier(&mut self, request: Request) -> bool {
+        if let Some(admitted) = self.submit_update_save(&request) {
+            return admitted;
+        }
         if self.device_gesture.snapshot().is_none() {
             return self.enqueue(request);
         }
@@ -271,7 +293,17 @@ impl EditorView {
             }
         };
         if !self.device_gesture.has_pending_terminal() {
-            if let Err(error) = self.device_gesture.finish_current() {
+            // An unreleased creation has no canonical node to finalize. An
+            // independent project action cancels it; a released terminal keeps
+            // its admitted custody and remains ordered ahead of this barrier.
+            let result = if self.device_gesture.snapshot().is_some_and(|snapshot| {
+                matches!(snapshot.target, GestureTarget::EqNodeCreation { .. })
+            }) {
+                self.device_gesture.cancel()
+            } else {
+                self.device_gesture.finish_current()
+            };
+            if let Err(error) = result {
                 self.error = Some(error.into());
                 return false;
             }
@@ -332,6 +364,111 @@ mod tests {
     };
     use hex_session::service::Request;
     use std::collections::VecDeque;
+
+    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
+    fn retained_preview_refusal_keeps_edit_barrier_until_cancel(cx: &mut gpui::TestAppContext) {
+        use hex_lattice_contract::ParameterValue;
+        use hex_project::{Command, Created, Editor, Project};
+        use hex_session::device_gesture::{GestureAck, GesturePhase, GestureTarget};
+        use std::sync::Arc;
+        let mut project = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+        let Created::Track(track) = project
+            .execute(Command::AddTrack {
+                name: "preview".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let (_, editor) = crate::editor::clip_drag_ui_test::editor_window(
+            cx,
+            project.project().clone(),
+            Arc::default(),
+        );
+        editor.update(cx, |view, _| {
+            let key = view
+                .device_gesture
+                .begin(
+                    view.project_generation,
+                    GestureTarget::TrackGain { track },
+                    ParameterValue::Float(1.0),
+                )
+                .unwrap();
+            view.device_gesture.next_request().unwrap();
+            let begin_ack = GestureAck {
+                key,
+                phase: GesturePhase::Begin,
+                sequence: 0,
+                accepted: true,
+                preview_retained: false,
+                reason: None,
+            };
+            assert!(view.acknowledge_device_gesture(&begin_ack));
+            let sequence = view
+                .device_gesture
+                .change(ParameterValue::Float(0.5))
+                .unwrap();
+            view.device_gesture.next_request().unwrap();
+            assert!(view.acknowledge_device_gesture(&GestureAck {
+                key,
+                phase: GesturePhase::Change,
+                sequence,
+                accepted: true,
+                preview_retained: false,
+                reason: None,
+            }));
+            let accepted = view.device_gesture.snapshot().unwrap();
+            view.device_gesture
+                .finish(ParameterValue::Float(0.25))
+                .unwrap();
+            let terminal = view.device_gesture.next_request().unwrap();
+            view.device_gesture.mark_submitted();
+            view.device_gesture_barriers.push_back(Request::SaveCurrent);
+            view.device_gesture_barriers
+                .push_back(Request::Edit(Command::AddTrack {
+                    name: "after cancellation".into(),
+                }));
+            view.saving_project = true;
+            let refusal = GestureAck {
+                key,
+                phase: GesturePhase::Commit,
+                sequence: terminal.sequence(),
+                accepted: false,
+                preview_retained: true,
+                reason: Some("audio publication queue full".into()),
+            };
+            assert!(view.acknowledge_device_gesture_with_snapshot(&refusal, Some(accepted)));
+            assert_eq!(view.device_gesture.snapshot(), Some(accepted));
+            assert!(
+                view.device_gesture.next_request().is_none(),
+                "refusal does not spin"
+            );
+            assert!(!view.saving_project);
+            assert!(view.pending_requests.is_empty());
+            assert_eq!(view.device_gesture_barriers.len(), 1);
+            assert!(matches!(
+                view.device_gesture_barriers.front(),
+                Some(Request::Edit(_))
+            ));
+            view.device_gesture.cancel().unwrap();
+            let cancel = view.device_gesture.next_request().unwrap();
+            assert!(view.acknowledge_device_gesture(&GestureAck {
+                key,
+                phase: GesturePhase::Cancel,
+                sequence: cancel.sequence(),
+                accepted: true,
+                preview_retained: false,
+                reason: None,
+            }));
+            assert!(view.device_gesture.snapshot().is_none());
+            assert!(view.device_gesture_barriers.is_empty());
+            assert!(matches!(
+                view.pending_requests.front(),
+                Some(Request::Edit(_))
+            ));
+        });
+    }
 
     #[test]
     fn unrelated_event_does_not_retire_a_pending_begin_or_terminal() {
@@ -435,6 +572,7 @@ mod tests {
                 frames: Some(256),
                 signal: hex_session::service::ExportSignal::Main,
                 control: control.clone(),
+                format: hex_session::service::ExportFormat::Pcm16,
                 overwrite: false,
             },
             Request::Undo,
@@ -469,6 +607,7 @@ mod tests {
             phase: hex_session::device_gesture::GesturePhase::Change,
             sequence: 1,
             accepted: true,
+            preview_retained: false,
             reason: None,
         }
     }

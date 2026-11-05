@@ -75,7 +75,7 @@ impl EditorView {
                 self.error = Some(
                     format!(
                         "could not load recent projects · {}",
-                        error.to_string().to_lowercase()
+                        hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
                     )
                     .into(),
                 );
@@ -86,7 +86,12 @@ impl EditorView {
                     for path in self.recent_projects.projects.paths().iter().rev() {
                         if let Err(error) = merged.record_opened(path.clone()) {
                             self.recent_projects.writable = false;
-                            self.error = Some(error.to_string().to_lowercase().into());
+                            self.error = Some(
+                                hex_session::service::text::lowercase_outside_verbatim(
+                                    &error.to_string(),
+                                )
+                                .into(),
+                            );
                             break;
                         }
                     }
@@ -110,7 +115,7 @@ impl EditorView {
                 self.error = Some(
                     format!(
                         "could not add recent project · {}",
-                        error.to_string().to_lowercase()
+                        hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
                     )
                     .into(),
                 );
@@ -174,7 +179,7 @@ impl EditorView {
             self.error = Some(
                 format!(
                     "could not save recent projects · {}",
-                    error.to_string().to_lowercase()
+                    hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
                 )
                 .into(),
             );
@@ -197,11 +202,11 @@ impl EditorView {
 }
 
 pub(super) fn recent_project_label(path: &Path, all_paths: &[PathBuf]) -> String {
-    let file_name = path
+    let raw_file_name = path
         .file_name()
         .unwrap_or(path.as_os_str())
-        .to_string_lossy()
-        .to_lowercase();
+        .to_string_lossy();
+    let file_name = raw_file_name.to_lowercase();
     let duplicate_name = all_paths
         .iter()
         .filter(|other| {
@@ -209,7 +214,7 @@ pub(super) fn recent_project_label(path: &Path, all_paths: &[PathBuf]) -> String
                 .file_name()
                 .unwrap_or(other.as_os_str())
                 .to_string_lossy()
-                .eq_ignore_ascii_case(&file_name)
+                .eq_ignore_ascii_case(&raw_file_name)
         })
         .count()
         > 1;
@@ -267,6 +272,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn duplicate_unicode_filenames_include_each_parent() {
+        let paths = [
+            PathBuf::from("/Work/Ärger.hex"),
+            PathBuf::from("/Archive/Ärger.hex"),
+        ];
+        assert_eq!(recent_project_label(&paths[0], &paths), "ärger.hex · /work");
+        assert_eq!(
+            recent_project_label(&paths[1], &paths),
+            "ärger.hex · /archive"
+        );
+    }
+
     fn editor_fixture(
         cx: &mut TestAppContext,
         directory: &TestDirectory,
@@ -294,6 +312,7 @@ mod tests {
                         comparison_audio: None,
                         project: Arc::new(Project::new(48_000).expect("project")),
                         waveforms: Default::default(),
+                        source_overviews: Default::default(),
                         audio_clip_waveforms: std::collections::BTreeMap::new(),
                         midi_preview: Arc::new(Default::default()),
                         gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -337,6 +356,7 @@ mod tests {
                 comparison_audio: None,
                 project: Arc::clone(&current.project),
                 waveforms: Default::default(),
+                source_overviews: Default::default(),
                 audio_clip_waveforms: std::collections::BTreeMap::new(),
                 midi_preview: Arc::clone(&current.midi_preview),
                 gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -400,6 +420,101 @@ mod tests {
         assert_eq!(
             hex_preferences::load_recent_projects(&recent_path).expect("saved merged MRU"),
             editor.read_with(cx, |view, _| view.recent_projects.projects.clone())
+        );
+    }
+
+    #[gpui::test]
+    fn successful_save_as_and_save_current_update_persisted_recent_projects(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui::VisualTestContext;
+        use hex_session::service::Request;
+        use std::time::Instant;
+
+        fn settle(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
+            let deadline = crate::test_wait::hang_deadline();
+            loop {
+                editor.update(&mut *visual, |view, cx| {
+                    view.tick(cx);
+                    cx.notify();
+                });
+                visual.run_until_parked();
+                if editor.read_with(&*visual, |view, _| {
+                    !view.edit_pending()
+                        && !view.save_dialog_open
+                        && !view.recent_projects.loading
+                        && !view.recent_projects.save_in_flight
+                        && view.recent_projects.pending_save.is_none()
+                }) {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "save/recent-list update stalled");
+                std::thread::yield_now();
+            }
+        }
+
+        let directory = TestDirectory::new();
+        let recent_path = directory.0.join("recent-projects.json");
+        let first = directory.0.join("never-opened.hex");
+        let second = directory.0.join("saved-as.hex");
+        let (handle, editor) = editor_fixture(cx, &directory);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        settle(&editor, &mut visual);
+        for path in [&first, &second] {
+            editor.update(&mut visual, |view, _| {
+                assert!(view.enqueue(Request::SaveNew(path.clone())));
+            });
+            settle(&editor, &mut visual);
+            assert!(path.is_file(), "the real save must publish the project");
+            editor.read_with(&visual, |view, _| {
+                assert!(view.error.is_none(), "{:?}", view.error);
+                assert_eq!(view.recent_projects.projects.paths().first(), Some(path));
+            });
+        }
+        // Another recent entry can be promoted without changing this document.
+        editor.update(&mut visual, |view, cx| {
+            view.record_opened_project(first.clone(), cx);
+            assert!(view.enqueue(Request::SaveCurrent));
+        });
+        settle(&editor, &mut visual);
+        let expected = RecentProjects::new([second.clone(), first.clone()]).unwrap();
+        assert_eq!(
+            hex_preferences::load_recent_projects(&recent_path).unwrap(),
+            expected
+        );
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::SaveCurrent));
+        });
+        settle(&editor, &mut visual);
+        assert_eq!(
+            hex_preferences::load_recent_projects(&recent_path).unwrap(),
+            expected,
+            "repeated saves must not duplicate the path"
+        );
+
+        editor.update(&mut visual, |view, cx| view.save_as_dialog(cx));
+        visual.run_until_parked();
+        assert!(visual.pending_save_options().is_some());
+        visual.simulate_new_path_selection(|_| None);
+        settle(&editor, &mut visual);
+        let invalid = directory.0.join("missing/failed.hex");
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::SaveNew(invalid.clone())));
+        });
+        settle(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert!(view.error.is_some());
+            assert_eq!(
+                view.state.as_ref().unwrap().document_path.as_ref(),
+                Some(&second)
+            );
+            assert_eq!(view.recent_projects.projects, expected);
+        });
+        assert!(!invalid.exists());
+        assert_eq!(
+            hex_preferences::load_recent_projects(&recent_path).unwrap(),
+            expected,
+            "cancelled and failed saves must preserve the persisted list"
         );
     }
 }

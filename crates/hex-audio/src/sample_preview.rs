@@ -1,13 +1,15 @@
 //! Independent one-shot browser PCM on the existing output stream.
 //! One incoming owner, two retirement slots and one latest control-side pending
 //! owner bound memory and callback work. Only control reclaims PCM.
+//! A latest-value atomic controls preview gain independently of PCM custody.
+//! Live changes slew over at most about 5 ms at the current sample rate.
 use hex_engine::{Audio, Frame, Invalid};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 use std::sync::{
     Arc,
     atomic::{
-        AtomicU64,
-        Ordering::{Acquire, Release},
+        AtomicU32, AtomicU64,
+        Ordering::{Acquire, Release, SeqCst},
     },
 };
 
@@ -60,15 +62,19 @@ pub struct Control {
     retired: Consumer<Preview>,
     pending: Option<Preview>,
     generation: Arc<AtomicU64>,
+    fault_epoch: Arc<AtomicU64>,
     started: Arc<AtomicU64>,
     finished: Arc<AtomicU64>,
     position: Arc<AtomicU64>,
+    target_gain: Arc<AtomicU32>,
     start: usize,
     frames: usize,
     rate: u32,
     last_generation: u64,
     closing: bool,
     status: Option<Arc<crate::prepared::Status>>,
+    #[cfg(test)]
+    request_gate: Option<Arc<std::sync::Barrier>>,
 }
 
 pub(crate) struct Callback {
@@ -76,47 +82,73 @@ pub(crate) struct Callback {
     retired: Producer<Preview>,
     active: Option<Preview>,
     generation: Arc<AtomicU64>,
+    fault_epoch: Arc<AtomicU64>,
     started: Arc<AtomicU64>,
     finished: Arc<AtomicU64>,
     position: Arc<AtomicU64>,
+    target_gain: Arc<AtomicU32>,
+    gain: f32,
+    gain_step: f32,
 }
 
 pub(crate) fn channel(rate: u32) -> (Control, Callback) {
     let (incoming, consumer) = RingBuffer::new(1);
     let (returning, retired) = RingBuffer::new(2);
     let generation = Arc::new(AtomicU64::new(0));
+    let fault_epoch = Arc::new(AtomicU64::new(0));
     let started = Arc::new(AtomicU64::new(0));
     let finished = Arc::new(AtomicU64::new(0));
     let position = Arc::new(AtomicU64::new(0));
+    let target_gain = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
     (
         Control {
             incoming,
             retired,
             pending: None,
             generation: generation.clone(),
+            fault_epoch: fault_epoch.clone(),
             started: started.clone(),
             finished: finished.clone(),
             position: position.clone(),
+            target_gain: target_gain.clone(),
             start: 0,
             frames: 0,
             rate,
             last_generation: 0,
             closing: false,
             status: None,
+            #[cfg(test)]
+            request_gate: None,
         },
         Callback {
             incoming: consumer,
             retired: returning,
             active: None,
             generation,
+            fault_epoch,
             started,
             finished,
             position,
+            target_gain,
+            gain: 1.0,
+            gain_step: 200.0 / rate as f32,
         },
     )
 }
 
 impl Control {
+    /// Set the linear gain for active and future previews. A newer value
+    /// supersedes older values before the next callback render.
+    pub fn set_gain(&mut self, gain: f32) -> Result<(), Invalid> {
+        if !(0.0..=1.0).contains(&gain) {
+            return Err(Invalid(
+                "sample preview gain must be between zero and unity",
+            ));
+        }
+        self.target_gain.store(gain.to_bits(), Release);
+        Ok(())
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         let generation = self.generation.load(Acquire);
         let phase = if !self.permitted()
@@ -160,8 +192,20 @@ impl Control {
     /// Silence the previous request, including queued PCM, before decode starts.
     /// The returned token is scoped to this output instance.
     pub fn request(&mut self) -> Result<u64, Invalid> {
+        // The sequentially consistent epoch and generation stores order this
+        // request against the callback's fault invalidation, even if recovery
+        // clears the fault flag before the request reaches its second check.
+        let epoch = self.fault_epoch.load(SeqCst);
         if !self.permitted() {
-            return Err(Invalid("sample preview output is closing"));
+            return Err(Invalid("sample preview output is unavailable"));
+        }
+        if epoch == u64::MAX {
+            return Err(Invalid("sample preview fault counter exhausted"));
+        }
+        #[cfg(test)]
+        if let Some(gate) = &self.request_gate {
+            gate.wait();
+            gate.wait();
         }
         let generation = self
             .last_generation
@@ -173,7 +217,16 @@ impl Control {
         self.start = 0;
         self.frames = 0;
         self.last_generation = generation;
-        self.generation.store(generation, Release);
+        self.generation.store(generation, SeqCst);
+        if self.fault_epoch.load(SeqCst) != epoch || !self.permitted() {
+            let _ = self.generation.compare_exchange(
+                generation,
+                0,
+                std::sync::atomic::Ordering::AcqRel,
+                Acquire,
+            );
+            return Err(Invalid("sample preview output failed"));
+        }
         self.pending = None;
         self.reclaim();
         Ok(generation)
@@ -194,7 +247,7 @@ impl Control {
     ) -> Result<(), PublishRefusal> {
         if !self.permitted() {
             return Err(PublishRefusal {
-                reason: Invalid("sample preview output is closing"),
+                reason: Invalid("sample preview output is unavailable"),
                 audio,
             });
         }
@@ -267,9 +320,11 @@ impl Callback {
         ChannelStorage::ring(self.incoming.buffer())?
             .plus(ChannelStorage::ring(self.retired.buffer())?)?
             .plus(ChannelStorage::paired_payload(self.generation.as_ref()))?
+            .plus(ChannelStorage::paired_payload(self.fault_epoch.as_ref()))?
             .plus(ChannelStorage::paired_payload(self.started.as_ref()))?
             .plus(ChannelStorage::paired_payload(self.finished.as_ref()))?
-            .plus(ChannelStorage::paired_payload(self.position.as_ref()))
+            .plus(ChannelStorage::paired_payload(self.position.as_ref()))?
+            .plus(ChannelStorage::paired_payload(self.target_gain.as_ref()))
     }
 
     pub(crate) fn begin_block(&mut self, closing: bool) {
@@ -292,6 +347,9 @@ impl Callback {
             && !self.retired.is_full()
             && let Ok(preview) = self.incoming.pop()
         {
+            // A fresh audition starts at the selected level, including seeks
+            // and a gain set while transport was stopped.
+            self.gain = f32::from_bits(self.target_gain.load(Acquire));
             self.active = Some(preview);
             if (closing
                 || self
@@ -306,11 +364,19 @@ impl Callback {
         }
     }
 
+    /// The callback is the sole epoch writer. Invalidate without dropping PCM;
+    /// control rejects requests racing this transition and reclaims owners.
+    pub(crate) fn invalidate_on_fault(&mut self) {
+        let epoch = self.fault_epoch.load(SeqCst);
+        self.fault_epoch.store(epoch.saturating_add(1), SeqCst);
+        self.generation.store(0, SeqCst);
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.active.is_none() && self.incoming.is_empty()
     }
 
-    /// Unity preview is added after the project's master stage. It never moves
+    /// Preview is added after the project's master stage. It never moves
     /// project transport and is not captured by project-node spectrum taps.
     pub(crate) fn mix(&mut self, output: &mut [Frame]) {
         let Some(preview) = self.active.as_mut() else {
@@ -321,9 +387,24 @@ impl Callback {
         }
         let frames = preview.audio.frames();
         let count = output.len().min(frames.len() - preview.position);
-        for (target, source) in output.iter_mut().zip(&frames[preview.position..][..count]) {
-            target[0] += source[0];
-            target[1] += source[1];
+        let target_gain = f32::from_bits(self.target_gain.load(Acquire));
+        let samples = output.iter_mut().zip(&frames[preview.position..][..count]);
+        if self.gain == 1.0 && target_gain == 1.0 {
+            for (target, source) in samples {
+                target[0] += source[0];
+                target[1] += source[1];
+            }
+        } else {
+            for (target, source) in samples {
+                let delta = target_gain - self.gain;
+                self.gain = if delta.abs() <= self.gain_step {
+                    target_gain
+                } else {
+                    self.gain + self.gain_step.copysign(delta)
+                };
+                target[0] += source[0] * self.gain;
+                target[1] += source[1] * self.gain;
+            }
         }
         preview.position += count;
         self.position.store(preview.position as u64, Release);
@@ -334,6 +415,15 @@ impl Callback {
             self.finished.store(preview.generation, Release);
         }
     }
+}
+
+/// Fresh fixed channel payload quote; opaque allocator/OS costs are excluded.
+pub(crate) fn constructor_storage_quote() -> Option<usize> {
+    use crate::native_callback_owner::ChannelStorage;
+    ChannelStorage::ring_bytes::<Preview>(1)?
+        .checked_add(ChannelStorage::ring_bytes::<Preview>(2)?)?
+        .checked_add(5 * std::mem::size_of::<AtomicU64>())?
+        .checked_add(std::mem::size_of::<AtomicU32>())
 }
 
 #[cfg(test)]
@@ -442,6 +532,110 @@ mod tests {
         assert_eq!(output, [[0.0; 2]; 2]);
         control.shutdown();
         assert_eq!(control.snapshot().phase, Phase::Unavailable);
+    }
+
+    #[test]
+    fn render_fault_silences_active_preview() {
+        use hex_engine::{Project, playback::Playback};
+        let (mut control, mut callback) = crate::prepared::channel(48_000).unwrap();
+        let token = control.sample_preview.request().unwrap();
+        control.sample_preview.publish(token, pcm(0.5, 20)).unwrap();
+        callback.begin_block();
+        let mut output = [[0.0; 2]; 2];
+        callback.render(&mut output).unwrap();
+        assert_eq!(output, [[0.5, -0.5]; 2]);
+        #[cfg(feature = "allocation-probe")]
+        let allocations = allocation_counter::measure(|| {
+            callback.report_render_fault(Some(&Invalid("injected render failure")), 2);
+        });
+        #[cfg(not(feature = "allocation-probe"))]
+        callback.report_render_fault(Some(&Invalid("injected render failure")), 2);
+        #[cfg(feature = "allocation-probe")]
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(control.sample_preview.snapshot().phase, Phase::Unavailable);
+        assert!(control.sample_preview.request().is_err());
+        assert!(control.sample_preview.publish(token, pcm(0.8, 4)).is_err());
+        output.fill([0.0; 2]);
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+        assert_eq!(output, [[0.0; 2]; 2]);
+        let replacement = Playback::new(Project::new(48_000, vec![]).unwrap());
+        control.publish(replacement).unwrap();
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+        assert_eq!(output, [[0.0; 2]; 2], "old preview must not resume");
+        let fresh = control.sample_preview.request().unwrap();
+        control.sample_preview.publish(fresh, pcm(0.25, 4)).unwrap();
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+        assert_eq!(output, [[0.25, -0.25]; 2]);
+    }
+
+    #[test]
+    fn render_fault_discards_queued_preview_without_callback_destruction() {
+        let (mut control, mut callback) = crate::prepared::channel(48_000).unwrap();
+        let token = control.sample_preview.request().unwrap();
+        control.sample_preview.publish(token, pcm(0.5, 8)).unwrap();
+        #[cfg(feature = "allocation-probe")]
+        let allocations = allocation_counter::measure(|| {
+            callback.report_render_fault(Some(&Invalid("injected failure")), 0);
+            callback.begin_block();
+        });
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            callback.report_render_fault(Some(&Invalid("injected failure")), 0);
+            callback.begin_block();
+        }
+        #[cfg(feature = "allocation-probe")]
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        let mut output = [[0.0; 2]; 2];
+        callback.render(&mut output).unwrap();
+        assert_eq!(output, [[0.0; 2]; 2]);
+        assert_eq!(control.sample_preview.retired.slots(), 1);
+        control.sample_preview.reclaim();
+        assert_eq!(control.sample_preview.retired.slots(), 0);
+    }
+
+    #[test]
+    fn request_racing_a_fault_and_recovery_does_not_revive_old_audio() {
+        let (mut control, mut callback) = crate::prepared::channel(48_000).unwrap();
+        let gate = Arc::new(std::sync::Barrier::new(2));
+        control.sample_preview.request_gate = Some(gate.clone());
+        let status = control.status.clone();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                gate.wait();
+                callback.report_render_fault(Some(&Invalid("injected failure")), 0);
+                // Model recovery completing before the interrupted request resumes.
+                status.render_fault.store(false, Release);
+                gate.wait();
+            });
+            assert!(control.sample_preview.request().is_err());
+        });
+        control.sample_preview.request_gate = None;
+        assert_eq!(control.sample_preview.snapshot().phase, Phase::Idle);
+        let token = control.sample_preview.request().unwrap();
+        control.sample_preview.publish(token, pcm(0.25, 4)).unwrap();
+        callback.begin_block();
+        let mut output = [[0.0; 2]; 2];
+        callback.render(&mut output).unwrap();
+        assert_eq!(output, [[0.25, -0.25]; 2]);
     }
 
     #[test]
@@ -568,7 +762,11 @@ mod tests {
         let (mut control, mut callback) = crate::prepared::channel(48_000).unwrap();
         control.publish(Playback::from_shared(project)).unwrap();
         let token = control.sample_preview.request().unwrap();
-        control.sample_preview.publish(token, pcm(0.5, 20)).unwrap();
+        // Long enough to outlast the 128-frame Pause fade below.
+        control
+            .sample_preview
+            .publish(token, pcm(0.5, 200))
+            .unwrap();
         let mut output = [[0.0; 2]; 2];
         callback.begin_block();
         callback.render(&mut output).unwrap();
@@ -581,10 +779,15 @@ mod tests {
         assert_eq!(output, [[0.75, -0.25]; 2]);
         assert_eq!(control.status.position.load(Acquire), 2);
         control.command(PlaybackCommand::Pause).unwrap();
+        // The queued Pause fades the project out over 128 frames (#4151).
+        let mut fade = [[0.0; 2]; 128];
+        callback.begin_block();
+        callback.render(&mut fade).unwrap();
+        assert!(!control.status.playing.load(Acquire));
         callback.begin_block();
         callback.render(&mut output).unwrap();
         assert_eq!(output, [[0.5, -0.5]; 2]);
-        assert_eq!(control.status.position.load(Acquire), 2);
+        assert_eq!(control.status.position.load(Acquire), 130);
         control.stop();
         callback.begin_block();
         callback.render(&mut output).unwrap();
@@ -593,6 +796,53 @@ mod tests {
         control.request_shutdown();
         callback.begin_block();
         control.reclaim();
+    }
+
+    #[test]
+    fn live_preview_gain_slews_without_affecting_project_or_restarting_pcm() {
+        use hex_engine::{Clip, PlaybackCommand, Project, Track, playback::Playback};
+        let audio = Audio::new(48_000, vec![[0.25; 2]]).unwrap();
+        let clip = Clip::new(audio, 0, 1_000, true).unwrap();
+        let track = Track::new(vec![clip], 1.0, false).unwrap();
+        let project = Arc::new(Project::new(48_000, vec![track]).unwrap());
+        let (mut control, mut callback) = crate::prepared::channel(48_000).unwrap();
+        control.publish(Playback::from_shared(project)).unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+
+        control.sample_preview.set_gain(0.5).unwrap();
+        for invalid in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
+            assert!(control.sample_preview.set_gain(invalid).is_err());
+        }
+        let token = control.sample_preview.request().unwrap();
+        control
+            .sample_preview
+            .publish(token, pcm(0.5, 1_000))
+            .unwrap();
+        callback.begin_block();
+        let mut initial = [[0.0; 2]; 8];
+        callback.render(&mut initial).unwrap();
+        assert_eq!(initial, [[0.5, 0.0]; 8]);
+
+        control.sample_preview.set_gain(0.0).unwrap();
+        let mut fade = [[0.0; 2]; 240];
+        for block in fade.chunks_mut(37) {
+            callback.begin_block();
+            callback.render(block).unwrap();
+        }
+        assert!(fade[0][0] < 0.5 && fade[0][0] > 0.49);
+        assert!(fade.windows(2).all(|frames| frames[0][0] >= frames[1][0]));
+        assert_eq!(fade[239], [0.25; 2]);
+        assert_eq!(control.status.position.load(Acquire), 248);
+        assert_eq!(control.sample_preview.snapshot().frame, 248);
+        assert_eq!(control.sample_preview.snapshot().generation, token);
+
+        control.sample_preview.cancel();
+        let next = control.sample_preview.request().unwrap();
+        control.sample_preview.publish(next, pcm(0.5, 32)).unwrap();
+        callback.begin_block();
+        callback.render(&mut initial).unwrap();
+        assert_eq!(initial, [[0.25; 2]; 8]);
+        assert_eq!(control.sample_preview.snapshot().frame, 8);
     }
 
     #[test]
@@ -642,6 +892,22 @@ mod tests {
             (0, 0, 0, 0)
         );
         assert_eq!(output, [[0.25, -0.25]; 2]);
+        control.sample_preview.set_gain(0.0).unwrap();
+        let measure = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        });
+        assert_eq!(
+            (
+                measure.count_total,
+                measure.bytes_total,
+                measure.count_current,
+                measure.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(output[0][0] > 0.24 && output[0][0] < 0.25);
+        assert_eq!(output[1], [0.0; 2]);
         let token = control.sample_preview.request().unwrap();
         control.sample_preview.publish(token, pcm(0.5, 1)).unwrap();
         let measure = allocation_counter::measure(|| {

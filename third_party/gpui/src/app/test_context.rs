@@ -120,6 +120,12 @@ impl AppContext for TestAppContext {
 }
 
 impl TestAppContext {
+    /// Verify private draw-order queries against an independent linear scan.
+    /// Test support only; no native graphics or public scene API.
+    pub fn verify_draw_order_queries(&self) -> std::result::Result<(), String> {
+        crate::bounds_tree::verify_ordering()
+    }
+
     /// Verify private cached-scene replay against the retained legacy painter.
     /// Test support only; no window, native graphics or public scene API.
     pub fn verify_cached_scene_replay(&self) -> std::result::Result<(), String> {
@@ -353,6 +359,24 @@ impl TestAppContext {
     pub fn pending_save_options(&self) -> Option<(std::path::PathBuf, Option<String>)> {
         self.test_platform.pending_save_options()
     }
+    /// Hex patch: deliver an OS termination request (Dock Quit, logout,
+    /// restart) to the app's [`App::on_should_quit`] handler. Returns true when
+    /// the app deferred its answer; false means it would terminate immediately.
+    pub fn simulate_should_quit(&self) -> bool {
+        self.test_platform.simulate_should_quit()
+    }
+
+    /// Hex patch: whether a simulated termination request awaits its reply.
+    pub fn quit_request_pending(&self) -> bool {
+        self.test_platform.quit_request_pending()
+    }
+
+    /// Hex patch: every [`App::reply_to_quit`] answer to a pending simulated
+    /// request, in order (`true` terminates, `false` cancels).
+    pub fn quit_replies(&self) -> Vec<bool> {
+        self.test_platform.quit_replies()
+    }
+
     /// Complete the injected Open request with a platform error, without a panel.
     pub fn simulate_paths_error(&self, message: &str) {
         self.test_platform.simulate_paths_error(message);
@@ -758,6 +782,44 @@ impl VisualTestContext {
                 .rev()
                 .find(|quad| quad.bounds == scaled && !quad.background.is_transparent())
                 .map(|quad| quad.background)
+        })
+    }
+
+    /// Return monochrome sprite colors intersecting an element in the completed scene.
+    /// This observes SVG painting, not a native framebuffer or cursor.
+    pub fn rendered_monochrome_colors(&mut self, selector: &'static str) -> Vec<crate::Hsla> {
+        self.update(|window, _| {
+            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
+                return Vec::new();
+            };
+            let scaled = bounds.scale(window.scale_factor());
+            window.rendered_frame.scene.monochrome_sprites.iter()
+                .filter(|sprite| sprite.bounds.intersects(&scaled))
+                .map(|sprite| sprite.color)
+                .collect()
+        })
+    }
+
+    /// Filled quad fragments inside a debug element in the completed scene,
+    /// clipped to its bounds and each replay/content mask. Canvas primitives do
+    /// not have individual element selectors. This is scene geometry, not native
+    /// framebuffer readback; it draws no frame and injects no input.
+    pub fn rendered_filled_quads(
+        &mut self,
+        selector: &'static str,
+    ) -> Vec<(Bounds<crate::ScaledPixels>, crate::Background)> {
+        self.update(|window, _| {
+            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
+                return Vec::new();
+            };
+            let scaled = bounds.scale(window.scale_factor());
+            window.rendered_frame.scene.quads.iter().filter_map(|quad| {
+                let visible = quad.bounds.intersect(&scaled).intersect(&quad.content_mask.bounds);
+                (!quad.background.is_transparent()
+                    && visible.size.width > crate::ScaledPixels(0.0)
+                    && visible.size.height > crate::ScaledPixels(0.0))
+                    .then(|| (visible, quad.background.clone()))
+            }).collect()
         })
     }
 

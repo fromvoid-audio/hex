@@ -1,50 +1,194 @@
-//! One accepted group-copy completion; actual Service FIFO owns its terminal.
+//! One accepted group-copy or clip-paste completion; actual Service FIFO owns
+//! its terminal.
 use super::{EditorMode, EditorView};
-use hex_project::{ClipGroupPosition, ClipId, Command, TrackId};
+use hex_project::{ClipGroupPosition, ClipId, Command, Project, TrackId};
 use hex_session::service::{Event, Request};
+
+/// The request whose acknowledged copy births become the selection.
+enum Kind {
+    Move {
+        anchor: ClipId,
+        track: TrackId,
+        position: ClipGroupPosition,
+        count: usize,
+        alias: bool,
+    },
+    NewTrack {
+        clip: ClipId,
+        before_track: Option<TrackId>,
+        position: ClipGroupPosition,
+    },
+    /// A clip-clipboard paste or insert. Its reported `first..=last` range
+    /// holds only pasted clips (hex-project's paste contract), so the expected
+    /// count is the number of clips in that range.
+    Paste {
+        track: TrackId,
+        frame: u64,
+        insert: bool,
+    },
+}
 
 pub(super) struct Pending {
     generation: u64,
     revision: u64,
     epoch: u64,
     primary: Option<ClipId>,
-    anchor: ClipId,
-    track: TrackId,
-    position: ClipGroupPosition,
-    pub(super) count: usize,
+    kind: Kind,
     remaining: Option<usize>,
 }
 impl Pending {
-    pub(super) fn capture(view: &EditorView, command: &Command) -> Option<Self> {
-        let Command::MoveClipsWithOverwrite {
-            clips,
-            anchor,
-            track,
-            position,
-            copy: true,
-        } = command
-        else {
-            return None;
-        };
+    fn new(view: &EditorView, kind: Kind) -> Option<Self> {
         Some(Self {
             generation: view.project_generation,
             revision: view.state.as_ref()?.revision,
             epoch: view.clip_selection.epoch,
             primary: view.selected_clip,
-            anchor: *anchor,
-            track: *track,
-            position: *position,
-            count: clips.len(),
+            kind,
             remaining: None,
         })
+    }
+    pub(super) fn capture(view: &EditorView, command: &Command) -> Option<Self> {
+        let kind = match command {
+            Command::MoveClipsWithOverwrite {
+                clips,
+                anchor,
+                track,
+                position,
+                copy: true,
+            } => Kind::Move {
+                anchor: *anchor,
+                track: *track,
+                position: *position,
+                count: clips.len(),
+                alias: false,
+            },
+            Command::DuplicateAliasClipsAt {
+                clips,
+                anchor,
+                track,
+                position,
+            } => Kind::Move {
+                anchor: *anchor,
+                track: *track,
+                position: *position,
+                count: clips.len(),
+                alias: true,
+            },
+            Command::DuplicateAliasClipToNewTrack {
+                clip,
+                before_track,
+                position,
+                ..
+            } => Kind::NewTrack {
+                clip: *clip,
+                before_track: *before_track,
+                position: *position,
+            },
+            _ => return None,
+        };
+        Self::new(view, kind)
+    }
+    /// Capture a time-selection paste/insert request. A range clipboard paste
+    /// reports no clip births, so its completion selects nothing.
+    pub(super) fn capture_paste(view: &EditorView, request: &Request) -> Option<Self> {
+        let (track, frame, insert) = match request {
+            Request::PasteTimeRange { track, frame } => (*track, *frame, false),
+            Request::InsertTimeRange { track, frame } => (*track, *frame, true),
+            _ => return None,
+        };
+        Self::new(
+            view,
+            Kind::Paste {
+                track,
+                frame,
+                insert,
+            },
+        )
     }
     pub(super) fn submitted(&mut self, remaining: usize) {
         self.remaining = Some(remaining);
     }
+    /// The number of committed births the acknowledged range must contain.
+    pub(super) fn expected_count(&self, project: &Project, first: ClipId, last: ClipId) -> usize {
+        match self.kind {
+            Kind::Move { count, .. } => count,
+            Kind::NewTrack { .. } => 1,
+            Kind::Paste { .. } => project
+                .tracks()
+                .iter()
+                .flat_map(|track| {
+                    track
+                        .clips()
+                        .iter()
+                        .map(|c| c.id())
+                        .chain(track.midi_clips().iter().map(|c| c.id()))
+                })
+                .filter(|id| *id >= first && *id <= last)
+                .count(),
+        }
+    }
     fn matches(&self, request: &Request) -> bool {
-        matches!(request, Request::Edit(Command::MoveClipsWithOverwrite { clips, anchor, track, position, copy: true })
-            if self.remaining.is_none() && *anchor == self.anchor && *track == self.track
-            && *position == self.position && clips.len() == self.count)
+        if self.remaining.is_some() {
+            return false;
+        }
+        match self.kind {
+            Kind::Paste {
+                track,
+                frame,
+                insert,
+            } => {
+                return match request {
+                    Request::PasteTimeRange { track: t, frame: f } => {
+                        !insert && *t == track && *f == frame
+                    }
+                    Request::InsertTimeRange { track: t, frame: f } => {
+                        insert && *t == track && *f == frame
+                    }
+                    _ => false,
+                };
+            }
+            Kind::Move { .. } | Kind::NewTrack { .. } => {}
+        }
+        let command = match request {
+            Request::Edit(command) => command,
+            Request::MoveExistingClips {
+                project_generation,
+                revision,
+                command,
+            } if *project_generation == self.generation && *revision == self.revision => command,
+            _ => return false,
+        };
+        match self.kind {
+            Kind::Move {
+                anchor,
+                track,
+                position,
+                count,
+                alias: false,
+            } => {
+                matches!(command, Command::MoveClipsWithOverwrite { clips, anchor: a, track: t, position: p, copy: true }
+                    if *a == anchor && *t == track && *p == position && clips.len() == count)
+            }
+            Kind::Move {
+                anchor,
+                track,
+                position,
+                count,
+                alias: true,
+            } => {
+                matches!(command, Command::DuplicateAliasClipsAt { clips, anchor: a, track: t, position: p }
+                    if *a == anchor && *t == track && *p == position && clips.len() == count)
+            }
+            Kind::NewTrack {
+                clip,
+                before_track,
+                position,
+            } => {
+                matches!(command, Command::DuplicateAliasClipToNewTrack { clip: c, before_track: b, position: p, .. }
+                    if *c == clip && *b == before_track && *p == position)
+            }
+            Kind::Paste { .. } => false,
+        }
     }
     pub(super) fn is_current(&self, view: &EditorView) -> bool {
         self.generation == view.project_generation

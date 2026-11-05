@@ -4,10 +4,13 @@ use gpui::{Div, Entity, Subscription, div, prelude::*, px};
 use hex_audio::gain_recording::{Receipt, Target};
 use hex_session::gain_recording::{AppliedGain, GainTakeEnd};
 use hex_widgets::{
-    NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlEvent,
-    NumericControlKind, NumericEventPhase, NumericScale, NumericSpec,
+    NumericControl, NumericControlConfig, NumericControlEvent, NumericControlKind,
+    NumericControlPresentation, NumericEventPhase, NumericScale, NumericSpec,
 };
 use std::sync::atomic::Ordering::Acquire;
+mod pending;
+mod retirement;
+use pending::SealedTake;
 
 #[derive(Default, PartialEq, Eq)]
 enum Mode {
@@ -17,6 +20,8 @@ enum Mode {
     Ready,
     Touching,
     Finishing,
+    Retained,
+    Committing,
 }
 struct Binding {
     entity: Entity<NumericControl>,
@@ -35,6 +40,8 @@ pub(super) struct Recorder {
     pending_gain: Option<f32>,
     cancelled: bool,
     binding: Option<Binding>,
+    sealed: Option<SealedTake>,
+    retired: Option<retirement::RetiredCapture>,
 }
 impl Recorder {
     pub(super) fn discard(&mut self) {
@@ -44,6 +51,8 @@ impl Recorder {
         self.audio_revision = None;
         self.pending_gain = None;
         self.events.clear();
+        self.sealed = None;
+        self.retired = None;
         self.binding = None;
         self.cancelled = true;
     }
@@ -51,9 +60,9 @@ impl Recorder {
         matches!(self.mode, Mode::Arming | Mode::Touching | Mode::Finishing)
     }
     pub(super) fn blocks_edits(&self) -> bool {
-        self.busy() || self.mode == Mode::Ready
+        self.busy() || self.mode == Mode::Ready || self.has_retained_take()
     }
-    pub(super) fn numeric_editing(&self, cx: &Context<EditorView>) -> bool {
+    pub(super) fn numeric_editing(&self, cx: &gpui::App) -> bool {
         self.binding
             .as_ref()
             .is_some_and(|binding| binding.entity.read(cx).is_editing())
@@ -74,6 +83,14 @@ impl EditorView {
         if self.gain_recorder.mode != Mode::Idle {
             self.cancel_gain_recording();
             cx.notify();
+            return;
+        }
+        if self.gain_lane.draft.is_some()
+            || self.gain_lane.numeric_draft_active()
+            || self.sampler_parameter.numeric_draft_active()
+            || self.automation_view.devices.point_draft_active()
+        {
+            self.error = Some("finish local drafts before arming gain recording".into());
             return;
         }
         if self.edit_pending()
@@ -111,14 +128,13 @@ impl EditorView {
         self.gain_recorder.pending_gain = None;
         self.gain_recorder.binding = None;
         self.status = "preparing gain recording · playback starts before touch".into();
-        if let Some(audio) = self.audio.as_mut() {
-            if audio
+        if let Some(audio) = self.audio.as_mut()
+            && audio
                 .control
                 .command(hex_engine::PlaybackCommand::Play)
                 .is_err()
-            {
-                self.error = Some("play is queued; retry after pending transport controls".into());
-            }
+        {
+            self.error = Some("play is queued; retry after pending transport controls".into());
         }
         cx.notify();
     }
@@ -215,10 +231,11 @@ impl EditorView {
                 }
             }
         }
-        if self.gain_recorder.mode == Mode::Finishing && !self.gain_recorder.cancelled {
-            if let Err(reason) = audio.control.gain_release() {
-                self.error = Some(reason.into());
-            }
+        if self.gain_recorder.mode == Mode::Finishing
+            && !self.gain_recorder.cancelled
+            && let Err(reason) = audio.control.gain_release()
+        {
+            self.error = Some(reason.into());
         }
     }
     fn end_gain_touch(&mut self) {
@@ -229,13 +246,19 @@ impl EditorView {
         }
     }
     pub(super) fn cancel_gain_recording(&mut self) {
+        if self.gain_recorder.has_retained_take() {
+            self.error = Some(
+                "gain take retained · wait for acknowledgment or retry/discard explicitly".into(),
+            );
+            return;
+        }
         self.gain_recorder.pending_gain = None;
         self.gain_recorder.cancelled = true;
         if self.gain_recorder.target.is_some() {
-            if let Some(audio) = self.audio.as_mut() {
-                if let Err(reason) = audio.control.gain_cancel() {
-                    self.error = Some(reason.into());
-                }
+            if let Some(audio) = self.audio.as_mut()
+                && let Err(reason) = audio.control.gain_cancel()
+            {
+                self.error = Some(reason.into());
             }
             self.gain_recorder.mode = Mode::Finishing;
         } else {
@@ -245,23 +268,34 @@ impl EditorView {
         self.status = "gain take cancelled · original lane retained".into();
     }
     pub(super) fn tick_gain_recording(&mut self) -> bool {
-        if self.gain_recorder.mode == Mode::Idle {
-            return false;
+        let retired_changed = self.poll_retired_gain_receipts();
+        if self.gain_recorder.mode == Mode::Idle || self.gain_recorder.has_retained_take() {
+            return retired_changed;
         }
         let Some(state) = self.state.as_ref() else {
-            return false;
+            return retired_changed;
         };
-        if self.project_generation != self.gain_recorder.generation
-            || state.revision != self.gain_recorder.revision
-        {
-            self.cancel_gain_recording();
-        }
+        let source_changed = self.project_generation != self.gain_recorder.generation
+            || state.revision != self.gain_recorder.revision;
         let Some(audio) = self.audio.as_mut() else {
-            self.gain_recorder.discard();
-            self.error =
-                Some("audio unavailable · gain take discarded; original lane retained".into());
+            self.gain_recorder.audio_lost();
+            self.error = Some(
+                "audio unavailable · incomplete gain take retained for explicit discard".into(),
+            );
             return true;
         };
+        if source_changed {
+            // Invalidate unfinished capture without treating an already queued
+            // Finished receipt as an explicit user discard.
+            let _ = audio.control.gain_cancel();
+            self.gain_recorder.pending_gain = None;
+            if self.gain_recorder.target.is_some() {
+                self.gain_recorder.mode = Mode::Finishing;
+            } else {
+                self.gain_recorder.audio_lost();
+                return true;
+            }
+        }
         let mut receipts = Vec::new();
         for _ in 0..66 {
             let Some(receipt) = audio.control.gain_receipt() else {
@@ -269,157 +303,213 @@ impl EditorView {
             };
             receipts.push(receipt);
         }
-        let mut changed = !receipts.is_empty();
+        let mut changed = retired_changed || !receipts.is_empty();
         let status_values = audio.control.status().map(|status| {
             (
                 status.applied_revision.load(Acquire),
                 status.gain_recording_ready.load(Acquire),
                 status.device_fault.load(Acquire),
+                status.render_fault.load(Acquire),
                 status.gain_recording_fault.load(Acquire),
             )
         });
         if self.gain_recorder.mode == Mode::Arming
-            && status_values.is_some_and(|(revision, ready, _, _)| {
-                self.gain_recorder.audio_revision == Some(revision) && ready
-            })
+            && status_values.is_some_and(
+                |(revision, ready, device_fault, render_fault, recording_fault)| {
+                    self.gain_recorder.audio_revision == Some(revision)
+                        && ready
+                        && !device_fault
+                        && !render_fault
+                        && !recording_fault
+                },
+            )
         {
             self.gain_recorder.mode = Mode::Ready;
             self.status = "gain recording ready · drag touch gain; release returns to read".into();
             changed = true;
         }
-        if status_values
-            .is_none_or(|(_, _, device_fault, recording_fault)| device_fault || recording_fault)
-        {
+        let output_failed = status_values
+            .is_none_or(|(_, _, device_fault, render_fault, _)| device_fault || render_fault);
+        let audio_failed = output_failed
+            || status_values.is_some_and(|(_, _, _, _, recording_fault)| recording_fault);
+        if audio_failed {
             let _ = audio.control.gain_cancel();
-            audio.control.stop();
-            // The sink may never call back after device loss. Discard the
-            // uncommitted UI take without waiting for a receipt or pretending
-            // that the callback quiesced. Existing recovery retires this output.
-            self.gain_recorder.discard();
-            self.error =
-                Some("audio failed · gain take discarded; recover audio before recording".into());
-            return true;
+            // The output's fault fence already stops playback. A priority Stop
+            // here would falsely turn automatic recovery into the user's rewind.
+            if !output_failed {
+                audio.control.stop();
+            }
+            // Process already-delivered Finished below before retiring capture.
+            // Device loss cannot erase a completed take awaiting control polling.
         }
-        if self.gain_recorder.mode == Mode::Arming {
-            if let Some((revision, reason)) = audio
+        if self.gain_recorder.mode == Mode::Arming
+            && let Some((revision, reason)) = audio
                 .control
                 .status()
                 .and_then(|status| status.rejected_revision())
-            {
-                if self.gain_recorder.audio_revision == Some(revision) {
-                    self.gain_recorder.mode = Mode::Idle;
-                    self.gain_recorder.pending_gain = None;
-                    self.gain_recorder.binding = None;
-                    self.error =
-                        Some(format!("gain recording arm refused · {}", reason.message()).into());
-                    return true;
-                }
-            }
+            && self.gain_recorder.audio_revision == Some(revision)
+        {
+            self.gain_recorder.mode = Mode::Idle;
+            self.gain_recorder.pending_gain = None;
+            self.gain_recorder.binding = None;
+            self.error = Some(format!("gain recording arm refused · {}", reason.message()).into());
+            return true;
         }
         for receipt in receipts {
-            if Some(receipt.target()) != self.gain_recorder.target {
-                continue;
+            self.gain_receipt(receipt);
+        }
+        self.flush_gain_touch();
+        if audio_failed {
+            // Keep the target until the output's quiescent retirement transfer.
+            // A late sink Finished may still be delivered after this status read.
+            self.gain_recorder.pending_gain = None;
+            self.gain_recorder.binding = None;
+            if self.gain_recorder.target.is_none() && !self.gain_recorder.has_retained_take() {
+                self.gain_recorder.audio_lost();
+                self.error =
+                    Some("audio failed · gain recording stopped · restart audio to retry".into());
+            } else {
+                self.error = Some(
+                    "audio failed · gain take retained · recover audio to finish receipt handoff"
+                        .into(),
+                );
             }
-            match receipt {
-                Receipt::Applied {
-                    sequence,
-                    performance_frame,
-                    content_frame,
-                    loop_pass,
-                    gain,
-                    ..
-                } => {
-                    if self.gain_recorder.events.len()
-                        < hex_audio::gain_recording::MAX_TAKE_EVENTS as usize
-                    {
-                        self.gain_recorder.events.push(AppliedGain {
-                            sequence,
+            return true;
+        }
+        changed
+    }
+    fn gain_receipt(&mut self, receipt: Receipt) {
+        if Some(receipt.target()) != self.gain_recorder.target {
+            return;
+        }
+        match receipt {
+            Receipt::Applied {
+                sequence,
+                performance_frame,
+                content_frame,
+                loop_pass,
+                gain,
+                ..
+            } => {
+                if self.gain_recorder.events.len()
+                    < hex_audio::gain_recording::MAX_TAKE_EVENTS as usize
+                {
+                    self.gain_recorder.events.push(AppliedGain {
+                        sequence,
+                        performance_frame,
+                        content_frame,
+                        loop_pass,
+                        gain,
+                    });
+                } else {
+                    self.error =
+                        Some("gain take exceeded its event limit · original lane retained".into());
+                    self.cancel_gain_recording();
+                }
+            }
+            Receipt::Superseded { .. } => {}
+            Receipt::Finished {
+                target,
+                performance_frame,
+                content_frame,
+                loop_pass,
+            } => {
+                if self.gain_recorder.cancelled {
+                    self.gain_recorder.discard();
+                } else {
+                    self.seal_gain_take(
+                        target,
+                        GainTakeEnd {
                             performance_frame,
                             content_frame,
                             loop_pass,
-                            gain,
-                        });
-                    } else {
-                        self.cancel_gain_recording();
-                    }
+                        },
+                    );
                 }
-                Receipt::Superseded { .. } => {}
-                Receipt::Finished {
-                    target,
-                    performance_frame,
-                    content_frame,
-                    loop_pass,
-                } => {
-                    let events = std::mem::take(&mut self.gain_recorder.events);
-                    let track = self.gain_recorder.track;
-                    let cancelled = self.gain_recorder.cancelled;
-                    self.gain_recorder.target = None;
-                    self.gain_recorder.pending_gain = None;
-                    self.gain_recorder.mode = Mode::Idle;
-                    self.gain_recorder.binding = None;
-                    if cancelled {
-                        continue;
-                    }
-                    if let (Some(state), Some(track)) = (self.state.as_ref(), track) {
-                        let expected_epoch = target.recording_epoch - 1;
-                        let context = hex_project::GainTouchContext {
-                            recording_epoch: target.recording_epoch,
-                            project_generation: target.project_generation,
-                            canonical_revision: target.canonical_revision,
-                            audio_revision: target.audio_revision,
-                            transport_epoch: target.transport_epoch,
-                            gesture_epoch: target.transport_epoch,
-                            gesture_serial: target.gesture_serial,
-                            sample_rate: target.sample_rate,
-                            loop_pass: events.first().map_or(loop_pass, |event| event.loop_pass),
-                        };
-                        match hex_session::gain_recording::finish_take(
-                            &state.project,
-                            track,
-                            expected_epoch,
-                            context,
-                            &events,
-                            GainTakeEnd {
-                                performance_frame,
-                                content_frame,
-                                loop_pass,
-                            },
-                        ) {
-                            Ok(spans) if !spans.is_empty() => {
-                                self.enqueue(Request::GainLane {
-                                    project_generation: target.project_generation,
-                                    revision: target.canonical_revision,
-                                    track,
-                                    edit: hex_session::service::GainLaneEdit::SpliceTake {
-                                        expected_epoch,
-                                        spans,
-                                    },
-                                });
-                            }
-                            Ok(_) => self.status = "empty gain touch · project unchanged".into(),
-                            Err(reason) => {
-                                self.error = Some(format!("gain take refused · {reason}").into())
-                            }
-                        }
-                    }
+            }
+            Receipt::Aborted { reason, .. } => {
+                let expected_cancel = self.gain_recorder.cancelled
+                    && reason == hex_audio::gain_recording::AbortReason::Cancelled;
+                if self.gain_recorder.cancelled {
+                    self.gain_recorder.discard();
+                } else {
+                    self.gain_recorder.audio_lost();
                 }
-                Receipt::Aborted { reason, .. } => {
-                    self.gain_recorder.target = None;
-                    self.gain_recorder.pending_gain = None;
-                    self.gain_recorder.events.clear();
-                    self.gain_recorder.mode = Mode::Idle;
-                    self.gain_recorder.binding = None;
+                if !expected_cancel {
                     self.error = Some(
-                        format!("gain take aborted · {reason:?} · original lane retained")
-                            .to_lowercase()
-                            .into(),
+                        format!(
+                            "gain take aborted · {} · original lane retained",
+                            super::user_errors::gain_abort(reason)
+                        )
+                        .into(),
                     );
                 }
             }
         }
-        self.flush_gain_touch();
-        changed
     }
+}
+
+/// Recovery stays visible even when the recorded track/source was replaced.
+pub(super) fn retained_controls(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+) -> gpui::AnyElement {
+    if !view.gain_recorder.has_retained_take() {
+        return div().into_any_element();
+    }
+    let retry_available = view.gain_take_retry_available();
+    let waiting = view
+        .gain_recorder
+        .sealed
+        .as_ref()
+        .is_some_and(SealedTake::awaiting_commit);
+    div()
+        .id("retained-gain-take")
+        .flex()
+        .items_center()
+        .child(theme::text(if waiting {
+            "saving gain take"
+        } else if view.gain_recorder.retired.is_some() {
+            "recovering gain take"
+        } else if view
+            .gain_recorder
+            .sealed
+            .as_ref()
+            .is_some_and(|take| !take.complete())
+        {
+            "incomplete gain take"
+        } else {
+            "gain take retained"
+        }))
+        .child(
+            super::waveform::button(
+                "↻",
+                if retry_available {
+                    "retry retained gain take against its original source"
+                } else {
+                    "retry unavailable · keep or explicitly discard the retained gain take"
+                },
+                ("gain-take-retry", 0),
+            )
+            .opacity(if retry_available { 1.0 } else { 0.4 })
+            .on_click(cx.listener(|view, _, _, cx| {
+                view.retry_gain_take();
+                cx.notify();
+            })),
+        )
+        .child(
+            super::waveform::button(
+                "×",
+                "explicitly discard retained gain take · unavailable while applying",
+                ("gain-take-discard", 0),
+            )
+            .opacity(if waiting { 0.4 } else { 1.0 })
+            .on_click(cx.listener(|view, _, _, cx| {
+                view.discard_gain_take();
+                cx.notify();
+            })),
+        )
+        .into_any_element()
 }
 
 pub(super) fn controls(view: &mut EditorView, track: TrackId, cx: &mut Context<EditorView>) -> Div {
@@ -427,12 +517,16 @@ pub(super) fn controls(view: &mut EditorView, track: TrackId, cx: &mut Context<E
     let mut controls = div().flex().items_center().gap_1().child(
         super::waveform::button(
             if armed { "■" } else { "●" },
-            "arm gain touch recording · stop cancels the uncommitted take",
+            if view.gain_recorder.has_retained_take() {
+                "gain take retained · use the transport retry/discard controls"
+            } else {
+                "arm gain touch recording · stop cancels the uncommitted take"
+            },
             ("gain-record-arm", track.value()),
         )
         .on_click(cx.listener(move |view, _, _, cx| view.toggle_gain_recording(track, cx))),
     );
-    if !armed || view.gain_recorder.track != Some(track) {
+    if !armed || view.gain_recorder.track != Some(track) || view.gain_recorder.has_retained_take() {
         return controls;
     }
     if view.gain_recorder.binding.is_none() {
@@ -463,11 +557,11 @@ pub(super) fn controls(view: &mut EditorView, track: TrackId, cx: &mut Context<E
                 NumericControlKind::HorizontalSlider,
                 spec,
                 f64::from(gain) * 100.0,
-                super::device_panel::control_style(),
+                crate::theme::control_style(),
             )
         });
         let config = match config {
-            Ok(value) => value.with_appearance(NumericControlAppearance::InlineValue),
+            Ok(value) => value.with_presentation(NumericControlPresentation::InlineValue),
             Err(reason) => {
                 view.error = Some(reason.to_string().into());
                 return controls;
@@ -566,6 +660,7 @@ mod tests {
                         comparison_audio: None,
                         project: Arc::new(model.project().clone()),
                         waveforms: Default::default(),
+                        source_overviews: Default::default(),
                         audio_clip_waveforms: Default::default(),
                         midi_preview: Arc::default(),
                         gain_preview: Ok(Arc::default()),
@@ -626,9 +721,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn unavailable_output_discards_uncommitted_take_and_releases_edit_fence(
-        cx: &mut TestAppContext,
-    ) {
+    fn unavailable_output_retains_captured_take_until_explicit_discard(cx: &mut TestAppContext) {
         let mut editor = Editor::new(Project::new(48000).unwrap(), 8).unwrap();
         let Created::Track(track) = editor
             .execute(Command::AddTrack {
@@ -648,6 +741,16 @@ mod tests {
             view.gain_recorder.generation = view.project_generation;
             view.gain_recorder.revision = revision;
             view.gain_recorder.serial = 7;
+            view.gain_recorder.target = Some(Target {
+                track_id: track.value(),
+                project_generation: view.project_generation,
+                canonical_revision: revision,
+                audio_revision: 1,
+                recording_epoch: 1,
+                transport_epoch: 1,
+                gesture_serial: 7,
+                sample_rate: 48_000,
+            });
             view.gain_recorder.pending_gain = Some(1.5);
             view.gain_recorder.events.push(AppliedGain {
                 sequence: 1,
@@ -658,10 +761,11 @@ mod tests {
             });
             assert!(view.gain_recorder.blocks_edits());
             assert!(view.tick_gain_recording());
-            assert!(!view.gain_recorder.blocks_edits());
+            assert!(view.gain_recorder.blocks_edits());
             assert!(view.gain_recorder.pending_gain.is_none());
-            assert!(view.gain_recorder.events.is_empty());
-            assert!(view.gain_recorder.track.is_none());
+            assert_eq!(view.gain_recorder.events.len(), 1);
+            assert!(!view.gain_recorder.sealed.as_ref().unwrap().complete());
+            assert!(!view.gain_take_retry_available());
             assert_eq!(
                 view.gain_recorder.serial, 7,
                 "discard never reuses gesture identity"
@@ -672,8 +776,16 @@ mod tests {
                 view.error
                     .as_deref()
                     .unwrap()
-                    .contains("original lane retained")
+                    .contains("incomplete gain take retained")
             );
+            view.discard_gain_take();
+            assert!(!view.gain_recorder.blocks_edits());
+            assert!(view.gain_recorder.events.is_empty());
+            assert_eq!(view.gain_recorder.serial, 7);
         });
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "gain_recording/tests.rs"]
+mod custody_tests;

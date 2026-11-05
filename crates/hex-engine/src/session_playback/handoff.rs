@@ -1,5 +1,83 @@
 use super::*;
 use crate::MidiTiming;
+mod shared_sources;
+use shared_sources::SharedSourceHandoff;
+
+/// Retained-path creation/removal needs the stopped bounce fence and a fresh
+/// graph. Do not let an ordinary handoff preserve voices or tails across it.
+fn retained_path_roles_match(old: &PreparedRevision, new: &PreparedRevision) -> bool {
+    let retained = |revision: &PreparedRevision, index: usize| {
+        revision.source_routing().source(index).is_some()
+            && !revision.source_routing().contributes(index)
+    };
+    let matches = |a: &PreparedRevision, b: &PreparedRevision| {
+        a.arrangement()
+            .tracks()
+            .iter()
+            .enumerate()
+            .all(|(index, track)| {
+                if !retained(a, index) {
+                    return true;
+                }
+                track
+                    .canonical_track_id()
+                    .and_then(|id| {
+                        b.arrangement()
+                            .tracks()
+                            .iter()
+                            .position(|candidate| candidate.canonical_track_id() == Some(id))
+                    })
+                    .is_some_and(|other| {
+                        retained(b, other)
+                            && a.source_routing().source(index) == b.source_routing().source(other)
+                    })
+            })
+    };
+    matches(old, new) && matches(new, old)
+}
+
+/// One physical foreign endpoint cannot process both current input and an old
+/// tail in the same callback. Fresh local scalar history cannot reset or clone
+/// that external source. Compare exact bindings, including root and epoch,
+/// before accepting the transition; no resource or DSP owner moves here.
+fn validate_foreign_tail_sources(
+    candidate: &SessionPlayback,
+    tail: &hex_lattice::NativeRuntimeChain,
+    start: usize,
+) -> Result<(), SessionPlaybackError> {
+    if start > tail.len() {
+        return Err(SessionPlaybackError::DeviceRuntime);
+    }
+    for entry in tail.storage_view().entries().skip(start) {
+        let Some(prepared) = entry.foreign_processor() else {
+            continue;
+        };
+        let binding = prepared
+            .binding()
+            .ok_or(SessionPlaybackError::DeviceRuntime)?;
+        let arrangement = candidate.revision.arrangement();
+        if arrangement
+            .tracks
+            .iter()
+            .flat_map(|track| track.device_chain.iter())
+            .chain(
+                arrangement
+                    .return_buses
+                    .iter()
+                    .flat_map(|bus| bus.device_chain.iter()),
+            )
+            .chain(arrangement.main_device_chain.iter())
+            .any(|node| {
+                matches!(&node.definition,
+                Some(hex_lattice::PreparedProcessorFactory::Foreign(current))
+                    if current.binding() == Some(binding))
+            })
+        {
+            return Err(SessionPlaybackError::ForeignTailSourceBusy);
+        }
+    }
+    Ok(())
+}
 
 fn validate_tail_suffix(
     chain: &hex_lattice::NativeRuntimeChain,
@@ -7,6 +85,9 @@ fn validate_tail_suffix(
     sample_rate: u32,
 ) -> Result<usize, SessionPlaybackError> {
     let suffix_range = suffix_start..chain.len();
+    if chain.range_has_unbounded_foreign_tail(suffix_range.clone()) {
+        return Err(SessionPlaybackError::DeviceRuntime);
+    }
     let tail = chain
         .zero_input_drain_for_range(suffix_range.clone())
         .ok_or(SessionPlaybackError::DeviceRuntime)?;
@@ -36,6 +117,17 @@ fn tail_runtime_suffix_start(
     }
 }
 
+/// The Arrangement position at which candidate mutable spans are queried.
+/// An unchanged base tempo map keeps the donor's frame, pass and loop; an
+/// edited one uses the beat-remapped candidate cut and loop (Pulse #4117).
+#[derive(Clone, Copy)]
+struct ArrangementQueryCut {
+    frame: u64,
+    loop_pass: u64,
+    /// The active loop start once the cursor has wrapped at least once.
+    wrapped_loop_start: Option<u64>,
+}
+
 #[derive(Clone, Copy)]
 struct MutableCandidateSpan {
     signature: crate::mutable_instrument::MutableOccurrenceSignature,
@@ -43,13 +135,86 @@ struct MutableCandidateSpan {
     end_frame: u64,
 }
 
+/// A narrower gate is authorized only by an actual dispatched occurrence and
+/// a canonical retained source prefix. Generic same-key edits remain refused.
+#[derive(Clone, Copy)]
+struct GateShortening {
+    deadline_frame: u64,
+}
+fn mutable_prefix_shortening(
+    previous: &SessionPlayback,
+    candidate: &PreparedRevision,
+    span: MutableCandidateSpan,
+    release_frames: u64,
+) -> Option<GateShortening> {
+    let key = span.signature.key();
+    let (prefix_end, _) = previous.revision.retained_midi_prefix_end(candidate, key)?;
+    let (onset, gate, pitch, channel, velocity) = span.signature.details();
+    if gate != prefix_end {
+        return None;
+    }
+    let matches = |proof: crate::mutable_instrument::MutableOccurrence| {
+        let (old_onset, old_gate, old_pitch, old_channel, old_velocity) = proof.signature.details();
+        proof.signature.key() == key
+            && !proof.note_off_sent
+            && proof.onset_frame < previous.performance_frame
+            && proof.gate_end_frame > previous.performance_frame
+            && (old_onset, old_pitch, old_channel, old_velocity)
+                == (onset, pitch, channel, velocity)
+            && gate < old_gate
+    };
+    let actual = previous
+        .routes
+        .iter()
+        .position(|route| route.id == key.track)
+        .map(|index| {
+            previous
+                .revision
+                .source_routing()
+                .receiver_index(index)
+                .unwrap_or(index)
+        })
+        .and_then(|index| previous.mutable_instruments.get(index))
+        .and_then(Option::as_ref)
+        .is_some_and(|runtime| runtime.proofs().any(matches))
+        || previous
+            .tail_mutable_instruments
+            .iter()
+            .flatten()
+            .any(|tail| tail.runtime.proofs().any(matches));
+    actual
+        .then(|| {
+            span.end_frame
+                .checked_sub(release_frames)
+                .map(|deadline_frame| GateShortening { deadline_frame })
+        })
+        .flatten()
+}
+
+/// Restoring an unchanged source beyond its retained prefix authorizes only
+/// suppression of an already-started candidate. Its old runtime keeps the
+/// admitted cutoff; an ended gate is never chased or given a new NoteOn.
+fn mutable_prefix_restoration(
+    previous: &SessionPlayback,
+    candidate: &PreparedRevision,
+    span: MutableCandidateSpan,
+) -> bool {
+    let (onset, gate, ..) = span.signature.details();
+    candidate
+        .retained_midi_prefix_end(&previous.revision, span.signature.key())
+        .is_some_and(|(prefix_end, _)| onset < prefix_end && gate > prefix_end)
+}
+
 impl SessionPlayback {
+    #[allow(clippy::too_many_arguments)] // Explicit old/candidate timing, identity and disjoint span-buffer borrows.
     fn mutable_candidates_at_cut<T: MidiTiming + ?Sized>(
         revision: &PreparedRevision,
+        midi: crate::session_inventory::EffectiveSessionMidi<'_>,
         track_index: usize,
         track_id: TrackId,
         owner: RouteOwner,
         previous: &Self,
+        arrangement_cut: ArrangementQueryCut,
         timing: &T,
         spans: &mut MidiSpanBuffer,
     ) -> Result<
@@ -64,7 +229,7 @@ impl SessionPlayback {
         let mut count = 0_usize;
         let source_frame = match owner {
             RouteOwner::Arrangement => {
-                let frame = previous.arrangement_frame;
+                let frame = arrangement_cut.frame;
                 let end = frame
                     .checked_add(1)
                     .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
@@ -75,12 +240,7 @@ impl SessionPlayback {
                     .ok_or(SessionPlaybackError::UnknownTrack)?;
                 let mut overflow = false;
                 let mut arithmetic_failure = false;
-                let wrapped_loop_start = revision
-                    .arrangement()
-                    .loop_region()
-                    .filter(|region| region.enabled())
-                    .filter(|_| previous.arrangement_loop_pass > 0)
-                    .map(|region| region.start());
+                let wrapped_loop_start = arrangement_cut.wrapped_loop_start;
                 track
                     .for_each_mutable_midi_span(frame, end, |span| {
                         // A pre-loop gate that ended before loop_start is not
@@ -113,7 +273,7 @@ impl SessionPlayback {
                                         span.clip,
                                         span.note,
                                         span.iteration,
-                                        previous.arrangement_loop_pass,
+                                        arrangement_cut.loop_pass,
                                     ),
                                     span.onset_beat,
                                     span.gate_end_beat,
@@ -135,20 +295,23 @@ impl SessionPlayback {
                 }
                 frame
             }
-            RouteOwner::Session { clip, launch } => {
+            RouteOwner::Session { clip, origin } => {
                 let frame = previous.performance_frame;
                 let end = frame
                     .checked_add(1)
                     .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-                let Some(prepared) = revision.session().midi_clip_for_track(clip, track_id) else {
+                let Some(prepared) = midi.midi_clip_for_track(clip, track_id) else {
                     return Ok((candidates, 0, frame));
                 };
-                if prepared.track != track_id || !prepared.instrument_enabled() {
+                if prepared.track != track_id
+                    || (!prepared.instrument_enabled()
+                        && !revision.source_routing().is_shared(track_index))
+                {
                     return Ok((candidates, 0, frame));
                 }
                 prepared
                     .instrument_template()
-                    .query(launch, timing, frame, end, spans)
+                    .query_with_origin(origin, timing, frame, end, spans)
                     .map_err(SessionPlaybackError::Midi)?;
                 for span in spans.spans().copied() {
                     let Some(slot) = candidates.get_mut(count) else {
@@ -162,7 +325,15 @@ impl SessionPlayback {
                                     span.clip,
                                     span.note,
                                     span.iteration,
-                                    0,
+                                    if revision.source_routing().source(track_index).is_some() {
+                                        previous
+                                            .routes
+                                            .iter()
+                                            .find(|route| route.id == track_id)
+                                            .map_or(0, |route| route.current_incarnation)
+                                    } else {
+                                        0
+                                    },
                                 ),
                                 span.onset_beat,
                                 span.gate_end_beat,
@@ -184,28 +355,158 @@ impl SessionPlayback {
         Ok((candidates, count, source_frame))
     }
 
+    /// Strict planner: an unproven mutable chase refuses, leaving both
+    /// runtimes unchanged.
     pub(super) fn inherit_state(
         &mut self,
         previous: &mut Self,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        self.inherit_state_with_groups(previous, None)
+        self.inherit_state_planned(previous, None, None, false, false)
     }
-    pub(super) fn inherit_state_with_groups(
+    /// Live publication policy (Pulse #3770): see `inherit_state_planned`.
+    pub(super) fn inherit_state_live(
         &mut self,
         previous: &mut Self,
         groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        self.inherit_state_planned(previous, groups, None)
+        self.inherit_state_planned(previous, groups, None, true, false)
     }
+    pub(super) fn inherit_state_fenced_restart(
+        &mut self,
+        previous: &mut Self,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        self.inherit_state_planned(previous, None, None, true, true)
+    }
+    /// With `live`, a transition the strict planner cannot prove (an unproven
+    /// mutable chase, a changed MIDI source layout, compensated timing or tails,
+    /// unavailable source history...) does not refuse: the planner rejects it
+    /// in its pure preflight (nothing committed), then audio restarts at the
+    /// cursor through the reset handoff. Voices and tails reset and gate-active
+    /// notes are chased on the next played block; the transport is never
+    /// stopped and no note-off is lost. A changed tempo map or loop relocates
+    /// to the musically equivalent frame while playing.
     pub(super) fn inherit_state_planned(
+        &mut self,
+        previous: &mut Self,
+        groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
+        mut demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
+        live: bool,
+        fenced_restart: bool,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if !(retained_path_roles_match(&previous.revision, &self.revision)
+            || fenced_restart && live && self.live_restart && self.candidate_admission_open)
+        {
+            return Err(SessionPlaybackError::Arrangement(
+                "retained source path changes require stopped graph replacement",
+            ));
+        }
+        if shared_sources::compensated_long_source_bypass(self, previous) {
+            return Err(SessionPlaybackError::DetachedReceiverHistoryUnavailable);
+        }
+        if live && self.live_restart && self.candidate_admission_open {
+            return self.inherit_state_planned_once(previous, None, demand, true);
+        }
+        match self.inherit_state_planned_once(previous, groups, demand.as_deref_mut(), false) {
+            // An open admission proves the refusal came from the pure
+            // preflight: neither runtime changed, so the reset handoff may
+            // run instead (Pulse #3770, #3774).
+            Err(SessionPlaybackError::MutableInstrumentActive)
+                if live
+                    && previous.playing
+                    && self.candidate_admission_open
+                    && shared_sources::short_source_release_blocks_reenable(
+                        &self.revision,
+                        previous,
+                    ) =>
+            {
+                Err(SessionPlaybackError::DeviceTransitionBusy)
+            }
+            Err(error) if live && self.candidate_admission_open && restartable(error) => {
+                self.inherit_state_planned_once(previous, None, demand, true)
+            }
+            result => result,
+        }
+    }
+    /// Whether any same-identity device chain must defer this handoff until
+    /// the predecessor's committed live transitions drain (Pulse #4178).
+    /// Pairs track chains by route identity and Return chains by bus identity,
+    /// as the planner does; read-only, bounded and allocation-free.
+    pub(super) fn device_transition_busy(&self, previous: &Self) -> bool {
+        let tracks = self
+            .routes
+            .iter()
+            .zip(&self.device_chains)
+            .any(|(route, chain)| {
+                previous
+                    .routes
+                    .iter()
+                    .position(|old| old.id == route.id)
+                    .and_then(|index| previous.device_chains.get(index))
+                    .is_some_and(|old| chain.transition_busy_from(old))
+            });
+        let returns = self
+            .revision
+            .arrangement()
+            .return_buses()
+            .iter()
+            .zip(&self.return_chains)
+            .any(|(bus, chain)| {
+                previous
+                    .revision
+                    .arrangement()
+                    .return_buses()
+                    .iter()
+                    .position(|old| old.id == bus.id)
+                    .and_then(|index| previous.return_chains.get(index))
+                    .is_some_and(|old| chain.transition_busy_from(old))
+            });
+        tracks || returns || self.main_chain.transition_busy_from(&previous.main_chain)
+    }
+
+    /// Settle the idle `previous` graph's committed transitions that this
+    /// candidate is busy from (Pulse #4558), pairing chains exactly as
+    /// `device_transition_busy`. Only called while `previous` renders no
+    /// device chains; bounded by the existing chains and allocation-free.
+    fn settle_idle_device_transitions(&self, previous: &mut Self) {
+        for (route, chain) in self.routes.iter().zip(&self.device_chains) {
+            if let Some(old) = previous
+                .routes
+                .iter()
+                .position(|old| old.id == route.id)
+                .and_then(|index| previous.device_chains.get_mut(index))
+            {
+                old.settle_idle_transitions_for(chain);
+            }
+        }
+        for (bus, chain) in self
+            .revision
+            .arrangement()
+            .return_buses()
+            .iter()
+            .zip(&self.return_chains)
+        {
+            if let Some(old) = previous
+                .revision
+                .arrangement()
+                .return_buses()
+                .iter()
+                .position(|old| old.id == bus.id)
+                .and_then(|index| previous.return_chains.get_mut(index))
+            {
+                old.settle_idle_transitions_for(chain);
+            }
+        }
+        previous
+            .main_chain
+            .settle_idle_transitions_for(&self.main_chain);
+    }
+    fn inherit_state_planned_once(
         &mut self,
         previous: &mut Self,
         mut groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
         demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
+        force_restart: bool,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        if !self.main_chain.can_inherit_from(&previous.main_chain) {
-            return Err(SessionPlaybackError::DeviceRuntime);
-        }
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
         {
@@ -216,6 +517,21 @@ impl SessionPlayback {
             || previous.analytic_continuations.len() != MAX_TRACKS
         {
             return Err(SessionPlaybackError::SharedAnalyticContext);
+        }
+        // Before every inheritance, tail or reset classification (Pulse
+        // #4178): even the reset handoff transfers Main history.
+        if self.device_transition_busy(previous) {
+            // Pulse #4558: an idle predecessor never renders its chains, so a
+            // deferral could not drain. Its output is silent and a resume
+            // ramps in from silence, so its inaudible outgoing branches are
+            // settled instead. A rendering predecessor still defers.
+            if !previous.renders_no_device_chains() {
+                return Err(SessionPlaybackError::DeviceTransitionBusy);
+            }
+            self.settle_idle_device_transitions(previous);
+            if self.device_transition_busy(previous) {
+                return Err(SessionPlaybackError::DeviceTransitionBusy);
+            }
         }
         if self
             .compensation
@@ -276,7 +592,7 @@ impl SessionPlayback {
                 || previous.arrangement_frame != 0)
         {
             return Err(SessionPlaybackError::Arrangement(
-                "midi source layout changed · stop transport before applying this revision",
+                MIDI_SOURCE_LAYOUT_CHANGED,
             ));
         }
         let compensation_bytes = self
@@ -295,63 +611,6 @@ impl SessionPlayback {
         if compensation_bytes > crate::signal_graph::MAX_COEXISTING_COMPENSATION_BYTES {
             return Err(SessionPlaybackError::DeviceRuntime);
         }
-        if (self.compensation.is_some() || previous.compensation.is_some())
-            && !previous.playing
-            && previous.performance_frame == 0
-            && previous.arrangement_frame == 0
-        {
-            // Stop/explicit reset removed every in-flight sample. Adopt fresh
-            // processor/delay owners instead of copying incompatible histories.
-            let recipient_epoch = self
-                .capture_epoch
-                .checked_add(1)
-                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-            let donor_epoch = previous
-                .capture_epoch
-                .checked_add(1)
-                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-            for route in &mut self.route_scratch {
-                if let Some(old) = previous.routes.iter().find(|old| old.id == route.id) {
-                    route.owner = match old.owner {
-                        RouteOwner::Session { clip, .. }
-                            if self
-                                .revision
-                                .session()
-                                .midi_clip(clip)
-                                .is_some_and(|clip| clip.track == route.id) =>
-                        {
-                            RouteOwner::Session {
-                                clip,
-                                launch: BeatTime::ZERO,
-                            }
-                        }
-                        RouteOwner::SessionAudio { clip, .. }
-                            if self
-                                .revision
-                                .session()
-                                .audio_clip(clip)
-                                .is_some_and(|clip| clip.track == route.id) =>
-                        {
-                            RouteOwner::SessionAudio {
-                                clip,
-                                launch_frame: 0,
-                            }
-                        }
-                        RouteOwner::Silence => RouteOwner::Silence,
-                        _ => RouteOwner::Arrangement,
-                    };
-                }
-            }
-            self.routes.copy_from_slice(&self.route_scratch);
-            self.capture_epoch = recipient_epoch;
-            previous.capture_epoch = donor_epoch;
-            self.candidate_admission_open = false;
-            self.main_chain.inherit_from(&previous.main_chain);
-            return Ok(SessionHandoffReport {
-                cancelled_pending: [None; MAX_TRACKS],
-                cancelled_pending_len: 0,
-            });
-        }
         // 0: existing fresh/no-delay path; 1: copy into the larger fresh
         // history; 2: carry the actual larger donor plan/rings, explicitly bound
         // to the candidate's immutable typed pre-Main map.
@@ -360,21 +619,82 @@ impl SessionPlayback {
             .session()
             .timing()
             .same_map(previous.revision.session().timing())
-            && self.revision.arrangement().loop_region()
-                == previous.revision.arrangement().loop_region();
+            && self.loop_region() == previous.loop_region();
         let donor_epoch_matches = previous.compensation.as_ref().is_none_or(|old| {
             old.delays.latest_stamp().is_none_or(|stamp| {
                 !stamp.transport_is_running
                     || stamp.performance_frame.checked_add(1) == Some(previous.performance_frame)
             })
         });
-        let clock_transfer = match (&self.compensation, &previous.compensation) {
+        // First upstream lookahead introduces a new empty delay epoch. There
+        // must be no old compensation PCM, retained tails or shifted DSP
+        // output to consume while its origin stamps fill. Source/instrument
+        // history still passes through the complete planner below; Pause is
+        // neither a reset nor a substitute for these proofs.
+        let first_compensation = self.candidate_admission_open
+            && mapped_main_clock
+            && previous.compensation.is_none()
+            && self.compensation.as_ref().is_some_and(|candidate| {
+                previous
+                    .revision
+                    .arrangement()
+                    .signal_graph
+                    .as_ref()
+                    .is_some_and(|old| {
+                        let graph = &candidate.graph;
+                        graph.can_start_compensation_from(old)
+                            && previous.device_chains.len() == old.tracks.len()
+                            && previous.return_chains.len() == old.returns.len()
+                            && graph
+                                .tracks
+                                .iter()
+                                .zip(&old.tracks)
+                                .zip(&previous.device_chains)
+                                .all(|((new, old_track), chain)| {
+                                    graph.can_start_chain_from(
+                                        &new.devices,
+                                        old,
+                                        &old_track.devices,
+                                        chain,
+                                    )
+                                })
+                            && graph
+                                .returns
+                                .iter()
+                                .zip(&old.returns)
+                                .zip(&previous.return_chains)
+                                .all(|((new, old_bus), chain)| {
+                                    graph.can_start_chain_from(
+                                        &new.devices,
+                                        old,
+                                        &old_bus.devices,
+                                        chain,
+                                    )
+                                })
+                            && graph.can_start_chain_from(
+                                &graph.main_devices,
+                                old,
+                                &old.main_devices,
+                                &previous.main_chain,
+                            )
+                    })
+            })
+            && !previous.tail_output_active.iter().any(|active| *active)
+            && !previous
+                .return_effect_tails
+                .slots()
+                .iter()
+                .flatten()
+                .any(|tail| tail.output_active);
+        // None: the delay layout cannot carry the moved clock (refused below
+        // unless a paused donor takes the reset at its cursor).
+        let planned_transfer = match (&self.compensation, &previous.compensation) {
             (Some(candidate), Some(old))
                 if (candidate.graph.compatible(&old.graph) || mapped_main_clock)
                     && donor_epoch_matches
                     && candidate.can_copy_from(old) =>
             {
-                1_u8
+                Some(1_u8)
             }
             (_, Some(old))
                 if mapped_main_clock
@@ -400,9 +720,10 @@ impl SessionPlayback {
                                 })
                         }) =>
             {
-                2
+                Some(2)
             }
-            (None, None) => 0,
+            (None, None) => Some(0),
+            (Some(_), None) if first_compensation => Some(0),
             (Some(candidate), None)
                 if mapped_main_clock
                     && previous
@@ -412,23 +733,257 @@ impl SessionPlayback {
                         .as_ref()
                         .is_some_and(|graph| candidate.graph.pre_main_compatible(graph)) =>
             {
-                0
+                Some(0)
             }
             _ if self.revision.arrangement().main_latency_frames() == 0
                 && previous.revision.arrangement().main_latency_frames() == 0 =>
             {
-                0
+                Some(0)
             }
             _ if previous.playing
                 || previous.performance_frame != 0
                 || previous.arrangement_frame != 0 =>
             {
-                return Err(SessionPlaybackError::Arrangement(
-                    "latency layout changed · stop transport before applying this revision",
-                ));
+                None
             }
-            _ => 0,
+            _ => Some(0),
         };
+        // Paused away from the origin with a delay layout that cannot carry the
+        // moved clock: the delay rings and processor histories are frozen.
+        // Apply the interactive seek law at the kept cursor (device chains,
+        // tails, compensation and mutable voices start empty) instead of
+        // refusing every later revision until Stop.
+        //
+        // Private sampler scopes never reach this as a live edit (Pulse
+        // #3792). A `resource_scope` revision comes only from
+        // `ControlSamplerSources` (offline export and non-resident service
+        // snapshots). Every ordinary interactive constructor refuses it, and
+        // the resident desktop sampler carries only `device_resource_scope`.
+        // Only the CURRENT console runtime accepts it, and that runtime
+        // refuses every live handoff before planning. Its closed-stream
+        // demand preview may still plan here, so the exclusion keeps that
+        // preview a refusal like its commit.
+        let relocate = (planned_transfer.is_none() || force_restart)
+            && !self.current_sampler_console
+            && !self.revision.requires_control_sampler_sources();
+        // A paused cursor keeps its Arrangement beat across an edited base
+        // tempo map, like the running handoff below (Pulse #4118).
+        let paused_cursor = if relocate && !previous.playing {
+            Some(
+                if self
+                    .revision
+                    .session()
+                    .timing()
+                    .same_map(previous.revision.session().timing())
+                {
+                    previous.arrangement_frame
+                } else {
+                    candidate_arrangement_cut(
+                        previous,
+                        &base_timing_for(
+                            self.revision.session(),
+                            self.periodic_tempo_at(previous.arrangement_frame),
+                        ),
+                        self.loop_region(),
+                    )?
+                    .0
+                },
+            )
+        } else {
+            None
+        };
+        // Running: the same law at the next block boundary, but the transport
+        // clock, loop pass and Session launches continue unchanged. Audio
+        // restarts there (tails/PDC empty, gate-active notes chased); the user
+        // never has to stop. A changed tempo map or loop keeps its refusal.
+        let running_restart = relocate
+            && previous.playing
+            && mapped_main_clock
+            && previous.periodic_tempo() == self.periodic_tempo_at(previous.arrangement_frame);
+        // A changed tempo map or loop cannot keep the running clock: restart
+        // as a Play-from at the musically equivalent frame instead.
+        let running_relocate = relocate && previous.playing && !running_restart;
+        if (self.compensation.is_some() || previous.compensation.is_some() || force_restart)
+            && (!previous.playing || running_restart || running_relocate)
+            && (paused_cursor.is_some()
+                || running_restart
+                || running_relocate
+                || (!previous.monitor_source_releases
+                    && previous.performance_frame == 0
+                    && previous.arrangement_frame == 0))
+            && self.main_chain.can_inherit_from(&previous.main_chain)
+        {
+            // Stop/explicit reset removed every in-flight sample; a donor with
+            // admitted stopped monitoring must use the full source planner.
+            // Adopt fresh
+            // processor/delay owners instead of copying incompatible histories.
+            // A changed foreign binding needs the full tail/source planner
+            // below; the fast reset cannot inherit that original endpoint.
+            let recipient_epoch = self
+                .capture_epoch
+                .checked_add(1)
+                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+            let donor_epoch = previous
+                .capture_epoch
+                .checked_add(1)
+                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+            for route in &mut self.route_scratch {
+                if let Some(old) = previous.routes.iter().find(|old| old.id == route.id) {
+                    route.owner = match old.owner {
+                        RouteOwner::Session { clip, origin }
+                            if crate::session_inventory::EffectiveSessionMidi::new(
+                                self.revision.session(),
+                                self.midi_admission.as_ref(),
+                            )
+                            .midi_clip(clip)
+                            .is_some_and(|clip| clip.track == route.id) =>
+                        {
+                            RouteOwner::Session { clip, origin }
+                        }
+                        RouteOwner::SessionAudio { clip, launch_frame }
+                            if self
+                                .revision
+                                .session()
+                                .audio_clip(clip)
+                                .is_some_and(|clip| clip.track == route.id) =>
+                        {
+                            RouteOwner::SessionAudio {
+                                clip,
+                                launch_frame: if running_restart { launch_frame } else { 0 },
+                            }
+                        }
+                        RouteOwner::Silence => RouteOwner::Silence,
+                        _ => RouteOwner::Arrangement,
+                    };
+                }
+            }
+            // Queued launches cannot be proven against the restarted graph;
+            // report them as cancelled rather than dropping them silently.
+            let mut cancelled_pending = [None; MAX_TRACKS];
+            let mut cancelled_pending_len = 0;
+            if running_restart {
+                for (slot, old) in cancelled_pending
+                    .iter_mut()
+                    .zip(previous.routes.iter().filter(|old| old.pending.is_some()))
+                {
+                    *slot = Some(old.id);
+                    cancelled_pending_len += 1;
+                }
+            }
+            let relocated = if running_relocate {
+                use crate::MidiTiming as _;
+                let beat = base_timing_for(previous.revision.session(), previous.periodic_tempo())
+                    .frame_to_beat(previous.arrangement_frame)
+                    .map_err(|_| SessionPlaybackError::TempoConversion)?;
+                Some(
+                    base_timing_for(
+                        self.revision.session(),
+                        self.periodic_tempo_at(previous.arrangement_frame),
+                    )
+                    .beat_to_frame(beat)
+                    .map_err(|_| SessionPlaybackError::TempoConversion)?,
+                )
+            } else {
+                None
+            };
+            let cursor = match paused_cursor.or(relocated) {
+                Some(frame) => {
+                    let beat =
+                        base_timing_for(self.revision.session(), self.periodic_tempo_at(frame))
+                            .frame_to_beat(frame)
+                            .map_err(|_| SessionPlaybackError::TempoConversion)?;
+                    // The same route relaunch `install_seek` commits below.
+                    for route in &mut self.route_scratch {
+                        route.pending = None;
+                        if let RouteOwner::Session { clip, .. } = route.owner {
+                            route.owner = RouteOwner::Session {
+                                clip,
+                                origin: SessionMidiOrigin::launch(beat),
+                            };
+                        }
+                        if let RouteOwner::SessionAudio { clip, .. } = route.owner {
+                            route.owner = RouteOwner::SessionAudio {
+                                clip,
+                                launch_frame: frame,
+                            };
+                        }
+                    }
+                    Some((frame, beat))
+                }
+                None => None,
+            };
+            if let Some(demand) = demand {
+                // This stopped reset is also a publication planning boundary.
+                // Enumerate its candidate routes before either runtime's capture
+                // epoch, DSP history or one-shot admission is changed.
+                let (frame, arrangement_frame, loop_pass) = match cursor {
+                    Some((frame, _)) => (frame, frame, 0),
+                    None if running_restart => (
+                        previous.performance_frame,
+                        previous.arrangement_frame,
+                        previous.arrangement_loop_pass,
+                    ),
+                    None => (
+                        self.performance_frame,
+                        self.arrangement_frame,
+                        self.arrangement_loop_pass,
+                    ),
+                };
+                demand.window = Some(
+                    self.visit_stream_chunk_with_history(
+                        demand.ordinary,
+                        &self.route_scratch,
+                        frame,
+                        arrangement_frame,
+                        self.route_state_generation,
+                        loop_pass,
+                        demand.playing.unwrap_or(previous.playing),
+                        demand.maximum_frames,
+                        &mut demand.visit,
+                        super::stream_demand::ScalarOriginHistory::Empty,
+                    )
+                    .map_err(|error| SessionPlaybackError::Arrangement(error.0))?,
+                );
+                return Ok(SessionHandoffReport {
+                    cancelled_pending,
+                    cancelled_pending_len,
+                });
+            }
+            self.routes.copy_from_slice(&self.route_scratch);
+            self.capture_epoch = recipient_epoch;
+            previous.capture_epoch = donor_epoch;
+            self.candidate_admission_open = false;
+            self.main_chain
+                .transfer_history_from(&mut previous.main_chain);
+            if let Some((frame, beat)) = cursor {
+                // Admitted paused monitoring keeps rendering at the cursor.
+                let monitoring = self.monitor_source_releases || previous.monitor_source_releases;
+                self.install_seek(frame, beat);
+                self.monitor_source_releases = monitoring;
+                // Notes sounding at the cursor are chased when play resumes
+                // (or on the next block when relocating while playing).
+                self.interactive_start_frame = Some(frame);
+                self.playing = running_relocate;
+            } else if running_restart {
+                self.performance_frame = previous.performance_frame;
+                self.arrangement_frame = previous.arrangement_frame;
+                self.arrangement_loop_pass = previous.arrangement_loop_pass;
+                self.anchor = previous.anchor;
+                self.historical_floor = previous.historical_floor;
+                self.route_historical_floors = previous.route_historical_floors;
+                self.monitor_source_releases |= previous.monitor_source_releases;
+                self.restart_audio_history();
+                self.interactive_start_frame = Some(self.performance_frame);
+                self.playing = true;
+                self.route_state_generation = previous.route_state_generation.wrapping_add(1);
+            }
+            return Ok(SessionHandoffReport {
+                cancelled_pending,
+                cancelled_pending_len,
+            });
+        }
+        let mut clock_transfer =
+            planned_transfer.ok_or(SessionPlaybackError::LatencyLayoutChanged)?;
         let capture_epoch = self
             .capture_epoch
             .checked_add(1)
@@ -437,17 +992,31 @@ impl SessionPlayback {
             .capture_epoch
             .checked_add(1)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-        let old_loop = previous
-            .revision
-            .arrangement()
-            .loop_region()
-            .filter(|region| region.enabled());
-        let new_loop = self
-            .revision
-            .arrangement()
-            .loop_region()
-            .filter(|region| region.enabled());
-        if old_loop != new_loop
+        let old_loop = previous.loop_region().filter(|region| region.enabled());
+        let new_loop = self.loop_region().filter(|region| region.enabled());
+        let old_base = previous.revision.session().timing();
+        let new_base = self.revision.session().timing();
+        let same_base = old_base.same_map(new_base);
+        let candidate_periodic = self.periodic_tempo_at(previous.arrangement_frame);
+        let same_periodic = previous.periodic_tempo() == candidate_periodic;
+        let old_clock = previous.timing_view();
+        let old_beat = old_clock
+            .frame_to_beat(previous.performance_frame)
+            .map_err(|_| SessionPlaybackError::TempoConversion)?;
+        let new_base_view = base_timing_for(self.revision.session(), candidate_periodic);
+        let new_beat = new_base_view
+            .frame_to_beat(previous.performance_frame)
+            .map_err(|_| SessionPlaybackError::TempoConversion)?;
+        let arrangement_loop_continuity = same_base
+            && old_loop != new_loop
+            && old_beat == new_beat
+            && first_pass_arrangement_loop_continuity(self, previous);
+        // An edited base map cuts every held mutable Arrangement gate at the
+        // donor's cut (`arrangement_tempo_remap` below), so a retimed loop
+        // has no active gate deadline left to prove.
+        if same_base
+            && !arrangement_loop_continuity
+            && old_loop != new_loop
             && previous.routes.iter().enumerate().any(|(index, _)| {
                 effective_midi_route(&previous.revision, &previous.routes, index)
                     .is_ok_and(|route| matches!(route.owner, RouteOwner::Arrangement))
@@ -460,20 +1029,46 @@ impl SessionPlayback {
         {
             return Err(SessionPlaybackError::MutableInstrumentLoopBoundsActive);
         }
-        let old_base = previous.revision.session().timing();
-        let new_base = self.revision.session().timing();
-        let same_base = old_base.same_map(new_base);
-        let same_periodic = previous.periodic_tempo == self.periodic_tempo;
-        let old_clock = previous.timing_view();
-        let old_beat = old_clock
-            .frame_to_beat(previous.performance_frame)
-            .map_err(|_| SessionPlaybackError::TempoConversion)?;
-        let new_base_view = base_timing_for(self.revision.session(), self.periodic_tempo);
-        let new_beat = new_base_view
-            .frame_to_beat(previous.performance_frame)
-            .map_err(|_| SessionPlaybackError::TempoConversion)?;
         let timing_changed = !same_base || !same_periodic;
-        if timing_changed
+        // Arrangement content is beat-anchored, so an edited base tempo map
+        // keeps the cursor's beat, not its frame (Pulse #3935). Old-revision
+        // queries keep `previous.arrangement_frame`; candidate queries and the
+        // installed cursor use this cut. An unchanged map keeps the same frame.
+        let (arrangement_cut, arrangement_cut_pass) = if same_base {
+            (previous.arrangement_frame, previous.arrangement_loop_pass)
+        } else {
+            candidate_arrangement_cut(previous, &new_base_view, self.loop_region())?
+        };
+        // The defined discontinuity for native mutable Arrangement
+        // instruments under an edited base map (Pulse #4117): every held gate
+        // is cut at the donor's cut (NoteOff at the first candidate frame),
+        // and candidate spans whose onset precedes the remapped cut are
+        // suppressed until they end, so nothing is chased or retriggered.
+        // Released proofs keep their sample-timed tails.
+        let arrangement_tempo_remap = !same_base;
+        let arrangement_query_cut = if arrangement_tempo_remap {
+            ArrangementQueryCut {
+                frame: arrangement_cut,
+                loop_pass: arrangement_cut_pass,
+                wrapped_loop_start: new_loop
+                    .filter(|_| arrangement_cut_pass > 0)
+                    .map(hex_project::LoopRegion::start),
+            }
+        } else {
+            ArrangementQueryCut {
+                frame: previous.arrangement_frame,
+                loop_pass: previous.arrangement_loop_pass,
+                wrapped_loop_start: old_loop
+                    .filter(|_| previous.arrangement_loop_pass > 0)
+                    .map(hex_project::LoopRegion::start),
+            }
+        };
+        // A loop-only edit keeps the canonical base map, paused or playing.
+        // Delayed stamps already carry their own beats, and the candidate's
+        // anchor keeps new stamps continuous at the cut; the planner below
+        // still refuses incompatible sources and active tails. An edited base
+        // tempo map still needs the old guard once the clock has moved.
+        if !same_base
             && (self.revision.arrangement().main_latency_frames() > 0
                 || previous.revision.arrangement().main_latency_frames() > 0)
             && (previous.playing
@@ -481,10 +1076,12 @@ impl SessionPlayback {
                 || previous.arrangement_frame != 0)
         {
             return Err(SessionPlaybackError::Arrangement(
-                "compensated timing changed · stop transport before applying this revision",
+                COMPENSATED_TIMING_CHANGED,
             ));
         }
         if timing_changed
+            && !arrangement_loop_continuity
+            && !arrangement_tempo_remap
             && old_loop.is_some()
             && previous.routes.iter().enumerate().any(|(index, _)| {
                 effective_midi_route(&previous.revision, &previous.routes, index)
@@ -557,10 +1154,11 @@ impl SessionPlayback {
                 for index in 0..previous.routes.len() {
                     let route = effective_midi_route(&previous.revision, &previous.routes, index)?;
                     if let RouteOwner::Session { clip, .. } = route.owner
-                        && let Some(clip) = previous
-                            .revision
-                            .session()
-                            .midi_clip_for_track(clip, route.id)
+                        && let Some(clip) = crate::session_inventory::EffectiveSessionMidi::new(
+                            previous.revision.session(),
+                            previous.midi_admission.as_ref(),
+                        )
+                        .midi_clip_for_track(clip, route.id)
                     {
                         let bank = clip.instrument_template().note_bank();
                         if bank.context_matches(Some((old_context_index, source))) {
@@ -571,12 +1169,36 @@ impl SessionPlayback {
                 }
             }
         }
-        let mut mutable_continuity_new_for_old = [usize::MAX; MAX_TRACKS];
-        let mut mutable_retarget_new_for_old = [usize::MAX; MAX_TRACKS];
-        if !timing_changed {
+        let reenabled_release_receivers = shared_sources::reenabled_release_receivers(
+            self,
+            previous,
+            timing_changed || old_loop != new_loop,
+        )?;
+        let source_handoff = SharedSourceHandoff::prepare(
+            &self.revision,
+            &self.mutable_instruments,
+            &self.routes,
+            self.midi_admission.as_ref(),
+            previous,
+            timing_changed,
+            arrangement_tempo_remap,
+            arrangement_loop_continuity,
+            &mut self.spans,
+        )?;
+        let mut mutable_continuity_new_for_old = source_handoff.new_for_old;
+        let mut mutable_retarget_new_for_old = source_handoff.retarget_for_old;
+        // An edited base map keeps only Arrangement mutable runtimes: their
+        // held gates are cut at the cut, so no stale frame deadline survives.
+        if !timing_changed || arrangement_tempo_remap || arrangement_loop_continuity {
             for (old_index, _) in previous.routes.iter().enumerate() {
+                if source_handoff.handles_old(old_index) {
+                    continue;
+                }
                 let old_route =
                     effective_midi_route(&previous.revision, &previous.routes, old_index)?;
+                if timing_changed && old_route.owner != RouteOwner::Arrangement {
+                    continue;
+                }
                 let Some(old_runtime) = previous
                     .mutable_instruments
                     .get(old_index)
@@ -609,18 +1231,30 @@ impl SessionPlayback {
                     continue;
                 };
                 let exact_source_matches = match old_route.owner {
+                    RouteOwner::Arrangement if timing_changed => {
+                        self.routes
+                            .get(new_index)
+                            .is_some_and(|route| route.owner == RouteOwner::Arrangement)
+                            && arrangement_only_proofs(previous, old_runtime)
+                            && previous.revision.mutable_arrangement_track_matches_retimed(
+                                &self.revision,
+                                old_route.id,
+                            )
+                    }
                     RouteOwner::Arrangement => previous
                         .revision
                         .mutable_arrangement_track_matches(&self.revision, old_route.id),
                     RouteOwner::Session { clip, .. } => {
-                        let old = previous
-                            .revision
-                            .session()
-                            .midi_clip_for_track(clip, old_route.id);
-                        let new = self
-                            .revision
-                            .session()
-                            .midi_clip_for_track(clip, old_route.id);
+                        let old = crate::session_inventory::EffectiveSessionMidi::new(
+                            previous.revision.session(),
+                            previous.midi_admission.as_ref(),
+                        )
+                        .midi_clip_for_track(clip, old_route.id);
+                        let new = crate::session_inventory::EffectiveSessionMidi::new(
+                            self.revision.session(),
+                            self.midi_admission.as_ref(),
+                        )
+                        .midi_clip_for_track(clip, old_route.id);
                         previous
                             .revision
                             .mutable_track_topology_matches(&self.revision, old_route.id)
@@ -629,8 +1263,8 @@ impl SessionPlayback {
                                     && old.track == old_route.id
                                     && new.track == old_route.id
                                     && old.scene == new.scene
-                                    && old.source_content_matches(new)
-                                    && old.instrument_config_matches(new)
+                                    && old.source_content_matches(&new)
+                                    && old.instrument_config_matches(&new)
                             })
                     }
                     RouteOwner::SessionAudio { .. } | RouteOwner::Silence => false,
@@ -644,14 +1278,16 @@ impl SessionPlayback {
                         .revision
                         .mutable_arrangement_retarget_matches(&self.revision, old_route.id),
                     RouteOwner::Session { clip, .. } => {
-                        let old = previous
-                            .revision
-                            .session()
-                            .midi_clip_for_track(clip, old_route.id);
-                        let new = self
-                            .revision
-                            .session()
-                            .midi_clip_for_track(clip, old_route.id);
+                        let old = crate::session_inventory::EffectiveSessionMidi::new(
+                            previous.revision.session(),
+                            previous.midi_admission.as_ref(),
+                        )
+                        .midi_clip_for_track(clip, old_route.id);
+                        let new = crate::session_inventory::EffectiveSessionMidi::new(
+                            self.revision.session(),
+                            self.midi_admission.as_ref(),
+                        )
+                        .midi_clip_for_track(clip, old_route.id);
                         previous
                             .revision
                             .mutable_track_retarget_topology_matches(&self.revision, old_route.id)
@@ -660,8 +1296,8 @@ impl SessionPlayback {
                                     && old.track == old_route.id
                                     && new.track == old_route.id
                                     && old.scene == new.scene
-                                    && old.source_content_matches(new)
-                                    && old.instrument_retarget_compatible(new)
+                                    && old.source_content_matches(&new)
+                                    && old.instrument_retarget_compatible(&new)
                             })
                     }
                     RouteOwner::SessionAudio { .. } | RouteOwner::Silence => false,
@@ -749,6 +1385,7 @@ impl SessionPlayback {
         // source law and phases into an inactive, fully charged candidate.
         // The graph identity/source checks remain independent of provider checks.
         let mut harmonic_import_old = [false; MAX_TRACKS];
+        let mut analytic_imported_old = [false; MAX_TRACKS];
         let mut analytic_import_new_for_old = [usize::MAX; MAX_TRACKS];
         if !timing_changed && old_loop == new_loop {
             for (new_index, new_route) in self.routes.iter().enumerate() {
@@ -759,11 +1396,23 @@ impl SessionPlayback {
                 else {
                     continue;
                 };
-                let Some(old_index) = previous
-                    .routes
-                    .iter()
-                    .position(|old| old.id == new_route.id)
-                else {
+                let source = self.revision.source_routing().source(new_index);
+                let old_index = source
+                    .and_then(|source| {
+                        previous.routes.iter().enumerate().find_map(|(index, _)| {
+                            (previous.revision.source_routing().source(index) == Some(source)
+                                && previous.revision.source_routing().receiver_index(index)
+                                    == Some(index))
+                            .then_some(index)
+                        })
+                    })
+                    .or_else(|| {
+                        previous
+                            .routes
+                            .iter()
+                            .position(|old| old.id == new_route.id)
+                    });
+                let Some(old_index) = old_index else {
                     continue;
                 };
                 let old_route =
@@ -775,46 +1424,66 @@ impl SessionPlayback {
                     || old_route.pending.is_some()
                     || previous
                         .revision
-                        .arrangement()
-                        .shared_contexts()
-                        .index_for_track(new_route.id)
+                        .analytic_context_for_track(old_route.id)
                         .is_none()
                 {
                     continue;
                 }
-                let same_source = match old_route.owner {
-                    RouteOwner::Arrangement => previous
-                        .revision
-                        .mutable_arrangement_retarget_matches(&self.revision, new_route.id),
-                    RouteOwner::Session { clip, .. } => {
-                        previous
+                let shared = previous.revision.source_routing().is_shared(old_index)
+                    || self.revision.source_routing().is_shared(new_index);
+                let same_source = if shared {
+                    shared_sources::analytic_import_sources_match(
+                        self, previous, old_index, new_index,
+                    )?
+                } else {
+                    match old_route.owner {
+                        RouteOwner::Arrangement => previous
                             .revision
-                            .mutable_track_retarget_topology_matches(&self.revision, new_route.id)
-                            && previous
-                                .revision
-                                .session()
-                                .midi_clip_for_track(clip, new_route.id)
-                                .zip(
-                                    self.revision
-                                        .session()
-                                        .midi_clip_for_track(clip, new_route.id),
+                            .mutable_arrangement_retarget_matches(&self.revision, new_route.id),
+                        RouteOwner::Session { clip, .. } => {
+                            previous.revision.mutable_track_retarget_topology_matches(
+                                &self.revision,
+                                new_route.id,
+                            ) && crate::session_inventory::EffectiveSessionMidi::new(
+                                previous.revision.session(),
+                                previous.midi_admission.as_ref(),
+                            )
+                            .midi_clip_for_track(clip, new_route.id)
+                            .zip(
+                                crate::session_inventory::EffectiveSessionMidi::new(
+                                    self.revision.session(),
+                                    self.midi_admission.as_ref(),
                                 )
-                                .is_some_and(|(old, new)| {
-                                    old.track == new_route.id
-                                        && new.track == new_route.id
-                                        && old.scene == new.scene
-                                        && old.source_content_matches(new)
-                                        && old.instrument_identity_matches(new)
-                                        && old.instrument_enabled()
-                                        && new.instrument_enabled()
-                                })
+                                .midi_clip_for_track(clip, new_route.id),
+                            )
+                            .is_some_and(|(old, new)| {
+                                old.track == new_route.id
+                                    && new.track == new_route.id
+                                    && old.scene == new.scene
+                                    && old.source_content_matches(&new)
+                                    && old.instrument_identity_matches(&new)
+                                    && old.instrument_enabled()
+                                    && new.instrument_enabled()
+                            })
+                        }
+                        RouteOwner::Silence => previous
+                            .revision
+                            .mutable_track_retarget_topology_matches(&self.revision, new_route.id),
+                        RouteOwner::SessionAudio { .. } => false,
                     }
-                    RouteOwner::Silence => previous
-                        .revision
-                        .mutable_track_retarget_topology_matches(&self.revision, new_route.id),
-                    RouteOwner::SessionAudio { .. } => false,
                 };
                 if !same_source {
+                    if shared
+                        && super::harmonic_import::has_active_history(
+                            previous,
+                            old_index,
+                            &mut self.spans,
+                        )?
+                    {
+                        return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                            "shared source history adoption requires unchanged contributor content",
+                        ));
+                    }
                     continue;
                 }
                 if super::harmonic_import::preflight(previous, old_index, &mut self.spans, target)?
@@ -827,11 +1496,19 @@ impl SessionPlayback {
                         .device_chains
                         .get(old_index)
                         .ok_or(SessionPlaybackError::DeviceRuntime)?;
-                    if !new_chain.can_inherit_from(old_chain) {
+                    if !shared && !new_chain.can_inherit_from(old_chain) {
                         return Err(SessionPlaybackError::DeviceRuntime);
                     }
                     analytic_import_new_for_old[old_index] = new_index;
                     harmonic_import_old[old_index] = true;
+                    analytic_imported_old[old_index] = true;
+                    if shared {
+                        for &contributor in
+                            previous.revision.source_routing().contributors(old_index)
+                        {
+                            analytic_imported_old[usize::from(contributor)] = true;
+                        }
+                    }
                 }
             }
         }
@@ -869,6 +1546,7 @@ impl SessionPlayback {
                     let plan = &self.analytic_import;
                     if runtime.can_import_analytic(&plan.seeds[..plan.len]) {
                         analytic_import_new_for_old[old_index] = new_index;
+                        analytic_imported_old[old_index] = true;
                     }
                 }
             }
@@ -906,24 +1584,24 @@ impl SessionPlayback {
             else {
                 continue;
             };
-            let Some(old_clip) = previous
-                .revision
-                .session()
-                .midi_clip_for_track(clip, new_route.id)
-            else {
+            let Some(old_clip) = crate::session_inventory::EffectiveSessionMidi::new(
+                previous.revision.session(),
+                previous.midi_admission.as_ref(),
+            )
+            .midi_clip_for_track(clip, new_route.id) else {
                 continue;
             };
-            let Some(candidate_clip) = self
-                .revision
-                .session()
-                .midi_clip_for_track(clip, new_route.id)
-            else {
+            let Some(candidate_clip) = crate::session_inventory::EffectiveSessionMidi::new(
+                self.revision.session(),
+                self.midi_admission.as_ref(),
+            )
+            .midi_clip_for_track(clip, new_route.id) else {
                 continue;
             };
             if candidate_clip.track == new_route.id
                 && candidate_clip.instrument_enabled()
-                && !old_clip.instrument_config_matches(candidate_clip)
-                && old_clip.instrument_identity_matches(candidate_clip)
+                && !old_clip.instrument_config_matches(&candidate_clip)
+                && old_clip.instrument_identity_matches(&candidate_clip)
             {
                 return Err(SessionPlaybackError::MutableInstrumentChase);
             }
@@ -995,19 +1673,18 @@ impl SessionPlayback {
                 RouteOwner::Arrangement => {
                     let mut active = false;
                     new_track
-                        .for_each_active_midi_span(previous.arrangement_frame, |span, _| {
-                            active |= span.start < previous.arrangement_frame
-                                && span.end > previous.arrangement_frame;
+                        .for_each_active_midi_span(arrangement_cut, |span, _| {
+                            active |= span.start < arrangement_cut && span.end > arrangement_cut;
                         })
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     active
                 }
-                RouteOwner::Session { clip, launch } => {
-                    let Some(prepared) = self
-                        .revision
-                        .session()
-                        .midi_clip_for_track(clip, new_route.id)
-                    else {
+                RouteOwner::Session { clip, origin } => {
+                    let Some(prepared) = crate::session_inventory::EffectiveSessionMidi::new(
+                        self.revision.session(),
+                        self.midi_admission.as_ref(),
+                    )
+                    .midi_clip_for_track(clip, new_route.id) else {
                         continue;
                     };
                     if prepared.track != new_route.id
@@ -1022,7 +1699,13 @@ impl SessionPlayback {
                             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
                         prepared
                             .instrument_template()
-                            .query(launch, &candidate_timing, frame, end, &mut self.spans)
+                            .query_with_origin(
+                                origin,
+                                &candidate_timing,
+                                frame,
+                                end,
+                                &mut self.spans,
+                            )
                             .map_err(SessionPlaybackError::Midi)?;
                         self.spans
                             .spans()
@@ -1036,11 +1719,47 @@ impl SessionPlayback {
             }
         }
 
-        // A mutable candidate may retain only occurrences proven to have been
-        // dispatched under the old law. Missing or changed historical proof
-        // remains a no-chase refusal.
-        for (new_index, runtime) in self.mutable_instruments.iter().enumerate() {
+        // A genuinely fresh authored device suppresses pre-cut gates instead of chasing them.
+        // Complete ordinary predecessor evidence distinguishes installation from a MIDI/history
+        // edit. This one-shot eligibility is not runtime continuity or an occurrence proof.
+        let mut fresh_mutable_install = [false; MAX_TRACKS];
+        let mut newly_authored_notes = [false; MAX_TRACKS];
+        // A mutable candidate may retain only occurrences proven to have been dispatched under
+        // the old law. The fresh-install exception only supplies bounded suppression below.
+        for new_index in 0..self.routes.len() {
+            let receiver = self
+                .revision
+                .source_routing()
+                .receiver_index(new_index)
+                .unwrap_or(new_index);
+            let source_carried = source_handoff.handles_new(receiver);
+            if analytic_import_new_for_old.contains(&receiver) {
+                continue;
+            }
+            let runtime = self
+                .mutable_instruments
+                .get(receiver)
+                .and_then(Option::as_ref);
             if runtime.is_none() {
+                continue;
+            }
+            // A newly bound contributor supplies future onsets only. Existing
+            // contributor edits still require the canonical occurrence proof.
+            if source_carried
+                && previous
+                    .routes
+                    .iter()
+                    .position(|route| route.id == self.routes[new_index].id)
+                    .is_none_or(|old| {
+                        previous.revision.source_routing().source(old)
+                            != self.revision.source_routing().source(new_index)
+                    })
+            {
+                if previous.interactive_start_frame == Some(previous.performance_frame) {
+                    // A new binding is not part of the already admitted pending
+                    // cursor chase. Retry after its first render instead.
+                    return Err(SessionPlaybackError::MutableInstrumentChase);
+                }
                 continue;
             }
             let new_route = self
@@ -1051,17 +1770,19 @@ impl SessionPlayback {
                 .routes
                 .iter()
                 .position(|route| route.id == new_route.id);
-            if old_index.is_some_and(|old_index| {
-                mutable_continuity_new_for_old.get(old_index) == Some(&new_index)
-                    || analytic_import_new_for_old.get(old_index) == Some(&new_index)
-                    || mutable_retarget_new_for_old.get(old_index) == Some(&new_index)
-                    || analytic_import_new_for_old.get(old_index) == Some(&new_index)
-            }) {
+            if !source_carried
+                && old_index.is_some_and(|old_index| {
+                    mutable_continuity_new_for_old.get(old_index) == Some(&new_index)
+                        || analytic_import_new_for_old.get(old_index) == Some(&new_index)
+                        || mutable_retarget_new_for_old.get(old_index) == Some(&new_index)
+                })
+            {
                 continue;
             }
-            let candidate_owner = if let Some(old_index) = old_index {
-                let old_route =
-                    effective_midi_route(&previous.revision, &previous.routes, old_index)?;
+            let old_route = old_index
+                .map(|index| effective_midi_route(&previous.revision, &previous.routes, index))
+                .transpose()?;
+            let candidate_owner = if let Some(old_route) = old_route {
                 if old_route
                     .pending
                     .is_some_and(|pending| pending.frame > previous.performance_frame)
@@ -1071,14 +1792,15 @@ impl SessionPlayback {
                 match old_route.owner {
                     RouteOwner::Arrangement => RouteOwner::Arrangement,
                     RouteOwner::Silence => RouteOwner::Silence,
-                    RouteOwner::Session { clip, launch } => {
-                        if self
-                            .revision
-                            .session()
-                            .midi_clip_for_track(clip, new_route.id)
-                            .is_some_and(|prepared| prepared.track == new_route.id)
+                    RouteOwner::Session { clip, origin } => {
+                        if crate::session_inventory::EffectiveSessionMidi::new(
+                            self.revision.session(),
+                            self.midi_admission.as_ref(),
+                        )
+                        .midi_clip_for_track(clip, new_route.id)
+                        .is_some_and(|prepared| prepared.track == new_route.id)
                         {
-                            RouteOwner::Session { clip, launch }
+                            RouteOwner::Session { clip, origin }
                         } else {
                             RouteOwner::Silence
                         }
@@ -1102,21 +1824,113 @@ impl SessionPlayback {
                 // because there was no old route to match.
                 new_route.owner
             };
+            let fresh_source_matches = match candidate_owner {
+                RouteOwner::Arrangement => previous
+                    .revision
+                    .mutable_arrangement_sources_match(&self.revision, new_route.id),
+                RouteOwner::Session { clip, .. } => {
+                    crate::session_inventory::EffectiveSessionMidi::new(
+                        previous.revision.session(),
+                        previous.midi_admission.as_ref(),
+                    )
+                    .midi_clip_for_track(clip, new_route.id)
+                    .zip(
+                        crate::session_inventory::EffectiveSessionMidi::new(
+                            self.revision.session(),
+                            self.midi_admission.as_ref(),
+                        )
+                        .midi_clip_for_track(clip, new_route.id),
+                    )
+                    .is_some_and(|(old, new)| {
+                        old.track == new_route.id
+                            && new.track == new_route.id
+                            && old.scene == new.scene
+                            && old.source_content_matches(&new)
+                    })
+                }
+                RouteOwner::SessionAudio { .. } | RouteOwner::Silence => false,
+            };
+            fresh_mutable_install[new_index] = !timing_changed
+                && old_loop == new_loop
+                && !midi_layout_changed
+                && new_route.pending.is_none()
+                && previous
+                    .revision
+                    .fresh_mutable_device_install(&self.revision, new_route.id)
+                && fresh_source_matches;
+            // A new/restored stable authored identity may be suppressed, never chased. Keep
+            // this separate from fresh device installation and from runtime/proof continuity.
+            newly_authored_notes[new_index] = !timing_changed
+                && old_loop == new_loop
+                && !midi_layout_changed
+                && new_route.pending.is_none()
+                && old_route.is_some_and(|route| route.pending.is_none())
+                && matches!(
+                    candidate_owner,
+                    RouteOwner::Arrangement | RouteOwner::Session { .. }
+                );
+            let pending_start = source_carried
+                && !timing_changed
+                && old_loop == new_loop
+                && !midi_layout_changed
+                && new_route.pending.is_none()
+                && shared_sources::pending_unchanged_source_start(
+                    previous,
+                    &self.revision,
+                    new_route.id,
+                    candidate_owner,
+                );
+            let completed_source = source_carried
+                && shared_sources::completed_unchanged_source(
+                    previous,
+                    &self.revision,
+                    new_route.id,
+                    candidate_owner,
+                );
             let (candidates, candidate_count, source_frame) = Self::mutable_candidates_at_cut(
                 &self.revision,
+                crate::session_inventory::EffectiveSessionMidi::new(
+                    self.revision.session(),
+                    self.midi_admission.as_ref(),
+                ),
                 new_index,
                 new_route.id,
                 candidate_owner,
                 previous,
+                arrangement_query_cut,
                 &candidate_timing,
                 &mut self.spans,
             )?;
+            if arrangement_tempo_remap && matches!(candidate_owner, RouteOwner::Arrangement) {
+                // Every pre-cut onset is suppressed below; none is chased.
+                continue;
+            }
             for candidate in candidates[..candidate_count].iter().flatten().copied() {
                 let exact = mutable_proof_deadline(previous, new_route.id, candidate.signature);
                 let carried = previous.suppressions.iter().any(|entry| {
                     entry.mutable_signature() == Some(candidate.signature)
                         && entry.until_frame > previous.performance_frame
                 });
+                let shortening = (!timing_changed
+                    && old_loop == new_loop
+                    && !midi_layout_changed
+                    && matches!(candidate_owner, RouteOwner::Arrangement))
+                .then(|| {
+                    mutable_prefix_shortening(
+                        previous,
+                        &self.revision,
+                        candidate,
+                        runtime.map_or(0, |runtime| runtime.max_release_tail_frames()),
+                    )
+                })
+                .flatten();
+                let restoration = !timing_changed
+                    && old_loop == new_loop
+                    && !midi_layout_changed
+                    && new_route.pending.is_none()
+                    && old_route.is_some_and(|route| route.pending.is_none())
+                    && matches!(candidate_owner, RouteOwner::Arrangement)
+                    && mutable_prefix_restoration(previous, &self.revision, candidate);
                 let same_key =
                     mutable_key_has_live_proof(previous, new_route.id, candidate.signature.key())
                         || previous.suppressions.iter().any(|entry| {
@@ -1130,10 +1944,24 @@ impl SessionPlayback {
                                 && entry.until_frame > previous.performance_frame
                                 && entry.mutable_signature().is_some()
                         });
-                if candidate.source_frame < source_frame && exact.is_none() && !carried {
+                if candidate.source_frame < source_frame
+                    && exact.is_none()
+                    && !carried
+                    && shortening.is_none()
+                    && !restoration
+                    && !fresh_mutable_install[new_index]
+                    && !completed_source
+                    && !pending_start
+                    && !(newly_authored_notes[new_index]
+                        && previous.revision.newly_authored_mutable_note(
+                            &self.revision,
+                            candidate.signature.key(),
+                            matches!(candidate_owner, RouteOwner::Session { .. }),
+                        ))
+                {
                     return Err(SessionPlaybackError::MutableInstrumentChase);
                 }
-                if same_key && exact.is_none() && !carried {
+                if same_key && exact.is_none() && !carried && shortening.is_none() && !restoration {
                     return Err(SessionPlaybackError::MutableInstrumentChase);
                 }
             }
@@ -1166,10 +1994,10 @@ impl SessionPlayback {
                     RouteOwner::Session { .. } | RouteOwner::SessionAudio { .. }
                 ) {
                     source_changed = true;
-                    if matches!(old_route.owner, RouteOwner::Session { .. }) {
-                        if let Some(changed) = midi_route_changed.get_mut(old_index) {
-                            *changed = true;
-                        }
+                    if matches!(old_route.owner, RouteOwner::Session { .. })
+                        && let Some(changed) = midi_route_changed.get_mut(old_index)
+                    {
+                        *changed = true;
                     }
                 } else if matches!(old_route.owner, RouteOwner::Arrangement) {
                     let old_track = previous
@@ -1207,6 +2035,12 @@ impl SessionPlayback {
                                         self.release_capacity,
                                         &mut next_order,
                                         ReleaseEntry {
+                                            timeline: ReleaseTimeline::Arrangement,
+                                            source_origin: ReleaseSourceOrigin::capture(
+                                                &previous.revision,
+                                                old_index,
+                                            ),
+                                            monitor_offset: 0,
                                             location: match ReleaseLocation::new(usize::MAX, None) {
                                                 Ok(location) => location,
                                                 Err(error) => {
@@ -1220,10 +2054,24 @@ impl SessionPlayback {
                                                 old_track,
                                                 previous.arrangement_frame,
                                                 previous.revision.gain_recording_track(),
-                                                previous.gain_recording_override,
+                                                previous.live_gain.audible(),
                                             ),
                                             continuation: None,
                                             inline_tuning_owned: false,
+                                            clip_gain: match super::clip_gain::at_cut(
+                                                previous,
+                                                old_index,
+                                                old_route.owner,
+                                                span.clip,
+                                                previous.arrangement_frame,
+                                                previous.performance_frame,
+                                            ) {
+                                                Ok((gain, _)) => gain,
+                                                Err(error) => {
+                                                    failure = Some(error);
+                                                    return;
+                                                }
+                                            },
                                             voice,
                                         },
                                     ) {
@@ -1254,6 +2102,16 @@ impl SessionPlayback {
                 return Err(SessionPlaybackError::RevisionTrackMismatch);
             };
             *mapped_index = new_index;
+            if previous
+                .revision
+                .source_routing()
+                .source(old_index)
+                .is_some()
+                || self.revision.source_routing().source(new_index).is_some()
+            {
+                route.current_incarnation = old_route.current_incarnation;
+                route.current_first_frame = old_route.current_first_frame;
+            }
             if old_route.owner == RouteOwner::Arrangement {
                 let old_track = previous
                     .revision
@@ -1270,14 +2128,35 @@ impl SessionPlayback {
                 let carried_by_retarget = mutable_retarget_new_for_old
                     .get(old_index)
                     .is_some_and(|candidate_index| *candidate_index == new_index)
-                    || analytic_import_new_for_old[old_index] == new_index;
+                    || analytic_imported_old[old_index];
                 let analytic_retarget = previous
                     .revision
-                    .arrangement()
-                    .shared_contexts()
-                    .index_for_track(old_route.id)
+                    .analytic_context_for_track(old_route.id)
                     .is_some_and(|index| analytic_new_for_old[usize::from(index)].is_some());
-                if !old_track.instrument_config_matches(new_track)
+                let source_binding_changed = previous.revision.source_routing().source(old_index)
+                    != self.revision.source_routing().source(new_index)
+                    || (previous
+                        .revision
+                        .source_routing()
+                        .receiver_index(old_index)
+                        .is_some()
+                        && self
+                            .revision
+                            .source_routing()
+                            .receiver_index(new_index)
+                            .is_none());
+                let analytic_bypass_changed = shared_sources::shared_analytic_bypass_changed(
+                    &previous.revision,
+                    old_index,
+                    &self.revision,
+                    new_index,
+                );
+                if (source_binding_changed
+                    || analytic_bypass_changed
+                    || !old_track.instrument_config_matches(new_track))
+                    && !previous
+                        .revision
+                        .track_retains_source_configuration(&self.revision, old_route.id)
                     && !analytic_retarget
                     && !carried_by_retarget
                     && let Some(changed) = arrangement_instrument_changed.get_mut(old_index)
@@ -1297,17 +2176,19 @@ impl SessionPlayback {
             route.owner = match old_route.owner {
                 RouteOwner::Arrangement => RouteOwner::Arrangement,
                 RouteOwner::Silence => RouteOwner::Silence,
-                RouteOwner::Session { clip, launch } => {
-                    if let Some(next) = self
-                        .revision
-                        .session()
-                        .midi_clip_for_track(clip, old_route.id)
+                RouteOwner::Session { clip, origin } => {
+                    if let Some(next) = crate::session_inventory::EffectiveSessionMidi::new(
+                        self.revision.session(),
+                        self.midi_admission.as_ref(),
+                    )
+                    .midi_clip_for_track(clip, old_route.id)
                     {
-                        let old = previous
-                            .revision
-                            .session()
-                            .midi_clip_for_track(clip, old_route.id)
-                            .ok_or(SessionPlaybackError::UnknownClip)?;
+                        let old = crate::session_inventory::EffectiveSessionMidi::new(
+                            previous.revision.session(),
+                            previous.midi_admission.as_ref(),
+                        )
+                        .midi_clip_for_track(clip, old_route.id)
+                        .ok_or(SessionPlaybackError::UnknownClip)?;
                         if next.track != old_route.id {
                             source_changed = true;
                             if let Some(changed) = midi_route_changed.get_mut(old_index) {
@@ -1315,7 +2196,7 @@ impl SessionPlayback {
                             }
                             RouteOwner::Silence
                         } else {
-                            if !next.source_content_matches(old) {
+                            if !next.source_content_matches(&old) {
                                 source_changed = true;
                                 if let Some(changed) = midi_route_changed.get_mut(old_index) {
                                     *changed = true;
@@ -1324,16 +2205,14 @@ impl SessionPlayback {
                             let carried_by_retarget = mutable_retarget_new_for_old
                                 .get(old_index)
                                 .is_some_and(|candidate_index| *candidate_index == new_index)
-                                || analytic_import_new_for_old[old_index] == new_index;
+                                || analytic_imported_old[old_index];
                             let analytic_retarget = previous
                                 .revision
-                                .arrangement()
-                                .shared_contexts()
-                                .index_for_track(old_route.id)
+                                .analytic_context_for_track(old_route.id)
                                 .is_some_and(|index| {
                                     analytic_new_for_old[usize::from(index)].is_some()
                                 });
-                            if !next.instrument_config_matches(old)
+                            if !next.instrument_config_matches(&old)
                                 && !analytic_retarget
                                 && !carried_by_retarget
                             {
@@ -1345,7 +2224,7 @@ impl SessionPlayback {
                                         Some(floor.map_or(old_beat, |prior| prior.max(old_beat)));
                                 }
                             }
-                            RouteOwner::Session { clip, launch }
+                            RouteOwner::Session { clip, origin }
                         }
                     } else {
                         source_changed = true;
@@ -1378,14 +2257,24 @@ impl SessionPlayback {
                 }
             };
             route.pending = old_route.pending;
+            // A fading outgoing clip continues only while the new revision
+            // keeps that clip on this track; otherwise it ends with its source.
+            route.audio_release = old_route.audio_release.filter(|release| {
+                self.revision
+                    .session()
+                    .audio_clip(release.clip)
+                    .is_some_and(|prepared| prepared.track == old_route.id)
+            });
             if let Some(mut pending) = route.pending {
                 let valid = match pending.target {
                     RouteTarget::Arrangement | RouteTarget::Silence => true,
                     RouteTarget::Session(clip) => {
-                        self.revision
-                            .session()
-                            .midi_clip_for_track(clip, old_route.id)
-                            .is_some_and(|prepared| prepared.track == old_route.id)
+                        crate::session_inventory::EffectiveSessionMidi::new(
+                            self.revision.session(),
+                            self.midi_admission.as_ref(),
+                        )
+                        .midi_clip_for_track(clip, old_route.id)
+                        .is_some_and(|prepared| prepared.track == old_route.id)
                             || self
                                 .revision
                                 .session()
@@ -1423,7 +2312,7 @@ impl SessionPlayback {
             for (old_index, _) in previous.routes.iter().enumerate() {
                 let route = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
                 if matches!(route.owner, RouteOwner::Session { .. })
-                    && analytic_import_new_for_old[old_index] == usize::MAX
+                    && !analytic_imported_old[old_index]
                     && let Some(changed) = midi_route_changed.get_mut(old_index)
                 {
                     *changed = true;
@@ -1476,12 +2365,24 @@ impl SessionPlayback {
                 .get(new_index)
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
             let cut_frame = previous.arrangement_frame;
+            let new_cut_frame = arrangement_cut;
+            let candidate_loop_end = self
+                .active_loop_region_at(new_cut_frame)
+                .map(hex_project::LoopRegion::end);
+            let wrap_frame = candidate_loop_end
+                .map(|end| {
+                    end.checked_sub(new_cut_frame)
+                        .and_then(|remaining| previous.performance_frame.checked_add(remaining))
+                        .ok_or(SessionPlaybackError::ArithmeticOverflow)
+                })
+                .transpose()?;
+            let until_wrap = |frame: u64| wrap_frame.map_or(frame, |wrap| frame.min(wrap));
             let mut candidate_occurrences = [None; crate::midi_template::MIDI_SPAN_BUFFER_CAPACITY];
             let mut candidate_occurrence_count = 0;
-            if new_track.instrument_enabled() {
+            if shared_sources::track_has_analytic_source(&self.revision, new_index) {
                 let mut overflow = false;
                 new_track
-                    .for_each_active_midi_span(cut_frame, |candidate, _| {
+                    .for_each_active_midi_span(new_cut_frame, |candidate, _| {
                         if let Some(slot) =
                             candidate_occurrences.get_mut(candidate_occurrence_count)
                         {
@@ -1538,19 +2439,22 @@ impl SessionPlayback {
                     let Some(index) = existing_index else {
                         continue;
                     };
+                    let candidate_end =
+                        candidate_loop_end.map_or(candidate_end, |end| candidate_end.min(end));
                     let elapsed = candidate_end
-                        .checked_sub(cut_frame)
+                        .checked_sub(new_cut_frame)
                         .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
                     let candidate_end = previous
                         .performance_frame
                         .checked_add(elapsed)
                         .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
                     if let Some(suppression) = self.suppression_scratch.get_mut(index) {
-                        suppression.until_frame = suppression.until_frame.max(candidate_end);
+                        suppression.until_frame =
+                            until_wrap(suppression.until_frame.max(candidate_end));
                     }
                 }
             }
-            if old_track.instrument_enabled() {
+            if shared_sources::track_has_analytic_source(&previous.revision, old_index) {
                 let mut failure = None;
                 old_track
                     .for_each_active_midi_span(cut_frame, |span, sampler| {
@@ -1565,7 +2469,9 @@ impl SessionPlayback {
                         if is_suppressed(previous, old_route.id, key) {
                             return;
                         }
-                        let voice_result = if new_track.instrument_enabled() {
+                        let voice_result = if arrangement_cut == previous.arrangement_frame
+                            && shared_sources::track_has_analytic_source(&self.revision, new_index)
+                        {
                             MidiReleaseVoice::from_finite_span_preserving_gate(
                                 span.start,
                                 span.gate_end,
@@ -1585,7 +2491,9 @@ impl SessionPlayback {
                             )
                         };
                         let voice = match voice_result {
-                            Ok(Some(voice)) => voice,
+                            Ok(Some(voice)) => {
+                                wrap_frame.map_or(voice, |wrap| voice.ending_by(wrap))
+                            }
                             Ok(None) => return,
                             Err(_) => {
                                 failure = Some(SessionPlaybackError::ArithmeticOverflow);
@@ -1610,7 +2518,9 @@ impl SessionPlayback {
                                 failure = Some(SessionPlaybackError::ArithmeticOverflow);
                                 return;
                             };
-                            let Some(elapsed) = candidate_end.checked_sub(cut_frame) else {
+                            let candidate_end = candidate_loop_end
+                                .map_or(candidate_end, |end| candidate_end.min(end));
+                            let Some(elapsed) = candidate_end.checked_sub(new_cut_frame) else {
                                 failure = Some(SessionPlaybackError::ArithmeticOverflow);
                                 return;
                             };
@@ -1632,6 +2542,12 @@ impl SessionPlayback {
                             self.release_capacity,
                             &mut next_order,
                             ReleaseEntry {
+                                timeline: ReleaseTimeline::Arrangement,
+                                source_origin: ReleaseSourceOrigin::capture(
+                                    &previous.revision,
+                                    old_index,
+                                ),
+                                monitor_offset: 0,
                                 location: match ReleaseLocation::new(new_index, None) {
                                     Ok(location) => location,
                                     Err(error) => {
@@ -1645,8 +2561,22 @@ impl SessionPlayback {
                                     old_track,
                                     previous.arrangement_frame,
                                     previous.revision.gain_recording_track(),
-                                    previous.gain_recording_override,
+                                    previous.live_gain.audible(),
                                 ),
+                                clip_gain: match super::clip_gain::at_cut(
+                                    previous,
+                                    old_index,
+                                    old_route.owner,
+                                    span.clip,
+                                    previous.arrangement_frame,
+                                    previous.performance_frame,
+                                ) {
+                                    Ok((gain, _)) => gain,
+                                    Err(error) => {
+                                        failure = Some(error);
+                                        return;
+                                    }
+                                },
                                 continuation: (matching_candidate
                                     && matches!(
                                         sampler,
@@ -1689,9 +2619,11 @@ impl SessionPlayback {
                                         iteration: span.iteration,
                                         loop_pass: 0,
                                     },
-                                    candidate_end_frame.map_or(voice.end_frame(), |end| {
-                                        end.max(voice.end_frame())
-                                    }),
+                                    until_wrap(
+                                        candidate_end_frame.map_or(voice.end_frame(), |end| {
+                                            end.max(voice.end_frame())
+                                        }),
+                                    ),
                                 ),
                             )
                         {
@@ -1702,18 +2634,24 @@ impl SessionPlayback {
                 if let Some(error) = failure {
                     return Err(error);
                 }
-            } else if new_track.instrument_enabled() {
+            } else if shared_sources::track_has_analytic_source(&self.revision, new_index) {
                 // Re-enabling an instrument must not chase notes already in
                 // progress; exact-boundary and later onsets remain eligible.
+                // The loop wrap ends this pass: the next pass is a new onset
+                // and must sound (Pulse #4124).
+                let loop_end = self
+                    .active_loop_region_at(new_cut_frame)
+                    .map(hex_project::LoopRegion::end);
                 let mut failure = None;
                 new_track
-                    .for_each_active_midi_span(cut_frame, |span, _| {
-                        if span.start >= cut_frame {
+                    .for_each_active_midi_span(new_cut_frame, |span, _| {
+                        if span.start >= new_cut_frame {
                             return;
                         }
+                        let end = loop_end.map_or(span.end, |loop_end| span.end.min(loop_end));
                         let until_frame = match previous
                             .performance_frame
-                            .checked_add(span.end.saturating_sub(cut_frame))
+                            .checked_add(end.saturating_sub(new_cut_frame))
                         {
                             Some(frame) => frame,
                             None => {
@@ -1744,10 +2682,42 @@ impl SessionPlayback {
                 }
             }
         }
-        for new_index in 0..self.routes.len() {
+        if arrangement_cut != previous.arrangement_frame {
+            let loop_end = self
+                .active_loop_region_at(arrangement_cut)
+                .map(hex_project::LoopRegion::end);
+            cut_arrangement_voices_for_remap(
+                previous,
+                RemapCandidate {
+                    revision: &self.revision,
+                    releases: &mut self.release_scratch,
+                    suppressions: &mut self.suppression_scratch,
+                    capacity: self.release_capacity,
+                    cut: arrangement_cut,
+                    loop_end,
+                },
+                &track_map,
+                &arrangement_instrument_changed,
+                &mut next_order,
+            )?;
+        }
+        for (new_index, fresh_install) in fresh_mutable_install
+            .iter()
+            .copied()
+            .enumerate()
+            .take(self.routes.len())
+        {
+            let receiver = self
+                .revision
+                .source_routing()
+                .receiver_index(new_index)
+                .unwrap_or(new_index);
+            if analytic_import_new_for_old.contains(&receiver) {
+                continue;
+            }
             if self
                 .mutable_instruments
-                .get(new_index)
+                .get(receiver)
                 .is_none_or(Option::is_none)
             {
                 continue;
@@ -1757,16 +2727,108 @@ impl SessionPlayback {
                 .get(new_index)
                 .copied()
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
-            let (candidates, candidate_count, _) = Self::mutable_candidates_at_cut(
+            let pending_start = source_handoff.handles_new(receiver)
+                && !timing_changed
+                && old_loop == new_loop
+                && !midi_layout_changed
+                && route.pending.is_none()
+                && shared_sources::pending_unchanged_source_start(
+                    previous,
+                    &self.revision,
+                    route.id,
+                    route.owner,
+                );
+            let completed_source = source_handoff.handles_new(receiver)
+                && shared_sources::completed_unchanged_source(
+                    previous,
+                    &self.revision,
+                    route.id,
+                    route.owner,
+                );
+            let (candidates, candidate_count, source_frame) = Self::mutable_candidates_at_cut(
                 &self.revision,
+                crate::session_inventory::EffectiveSessionMidi::new(
+                    self.revision.session(),
+                    self.midi_admission.as_ref(),
+                ),
                 new_index,
                 route.id,
                 route.owner,
                 previous,
+                arrangement_query_cut,
                 &candidate_timing,
                 &mut self.spans,
             )?;
             for candidate in candidates[..candidate_count].iter().flatten().copied() {
+                if arrangement_tempo_remap && matches!(route.owner, RouteOwner::Arrangement) {
+                    // Its donor voice, if any, is released at the cut below.
+                    if candidate.source_frame < source_frame {
+                        add_or_extend_suppression(
+                            &mut self.suppression_scratch,
+                            self.release_capacity,
+                            MidiOccurrenceSuppression::mutable(
+                                candidate.signature,
+                                candidate.end_frame,
+                            ),
+                        )?;
+                    }
+                    continue;
+                }
+                if pending_start {
+                    // Preserve the pending collector decision: active gates
+                    // dispatch once; ended gates stay silent. No history exists
+                    // to suppress or manufacture.
+                    continue;
+                }
+                if !timing_changed
+                    && old_loop == new_loop
+                    && !midi_layout_changed
+                    && route.pending.is_none()
+                    && previous
+                        .routes
+                        .iter()
+                        .any(|old| old.id == route.id && old.pending.is_none())
+                    && matches!(route.owner, RouteOwner::Arrangement)
+                    && candidate.source_frame < source_frame
+                    && mutable_prefix_restoration(previous, &self.revision, candidate)
+                {
+                    add_or_extend_suppression(
+                        &mut self.suppression_scratch,
+                        self.release_capacity,
+                        MidiOccurrenceSuppression::mutable(
+                            candidate.signature,
+                            candidate.end_frame,
+                        ),
+                    )?;
+                    continue;
+                }
+                let shortening = (!timing_changed
+                    && old_loop == new_loop
+                    && !midi_layout_changed
+                    && matches!(route.owner, RouteOwner::Arrangement))
+                .then(|| {
+                    mutable_prefix_shortening(
+                        previous,
+                        &self.revision,
+                        candidate,
+                        self.mutable_instruments[receiver]
+                            .as_ref()
+                            .map_or(0, |runtime| runtime.max_release_tail_frames()),
+                    )
+                })
+                .flatten();
+                if let Some(shortening) = shortening {
+                    add_or_extend_suppression(
+                        &mut self.suppression_scratch,
+                        self.release_capacity,
+                        MidiOccurrenceSuppression::mutable_shortening(
+                            candidate.signature,
+                            candidate.end_frame,
+                            shortening.deadline_frame,
+                        ),
+                    )?;
+                    continue;
+                }
                 let proof_deadline =
                     mutable_proof_deadline(previous, route.id, candidate.signature);
                 let carried_deadline = previous
@@ -1778,7 +2840,20 @@ impl SessionPlayback {
                     })
                     .map(|entry| entry.until_frame)
                     .max();
-                let Some(old_deadline) = proof_deadline.into_iter().chain(carried_deadline).max()
+                let new_note = newly_authored_notes[new_index]
+                    && previous.revision.newly_authored_mutable_note(
+                        &self.revision,
+                        candidate.signature.key(),
+                        matches!(route.owner, RouteOwner::Session { .. }),
+                    );
+                let fresh_deadline = ((fresh_install || new_note || completed_source)
+                    && candidate.source_frame < source_frame)
+                    .then_some(candidate.end_frame);
+                let Some(old_deadline) = proof_deadline
+                    .into_iter()
+                    .chain(carried_deadline)
+                    .chain(fresh_deadline)
+                    .max()
                 else {
                     continue;
                 };
@@ -1793,22 +2868,35 @@ impl SessionPlayback {
             }
         }
         for entry in &previous.releases {
-            if entry.voice.end_frame() <= previous.performance_frame {
+            if entry.end_frame() <= previous.performance_frame {
                 continue;
             }
             if self.release_scratch.len() >= self.release_capacity {
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
-            let route_changed = midi_route_changed
-                .get(entry.location.track_index())
+            let contributor_index = previous
+                .routes
+                .iter()
+                .position(|route| route.id == entry.track_id);
+            let route_changed = contributor_index
+                .and_then(|index| midi_route_changed.get(index))
                 .copied()
                 .unwrap_or(false);
-            let remapped_gate = if route_changed {
+            let arrangement_remapped = arrangement_cut != previous.arrangement_frame
+                && entry.timeline == ReleaseTimeline::Arrangement;
+            let remapped_gate = if route_changed && !arrangement_remapped {
                 remap_release_gate(previous, self, entry, candidate_timing)?
             } else {
                 None
             };
-            let voice = if route_changed && entry.continuation.is_some() {
+            let voice = if arrangement_remapped {
+                // A retained release can have advanced while musical time was
+                // paused; cut at its actual source age, not the raw clock.
+                entry
+                    .voice
+                    .reconcile_at(entry.sample_frame(previous.performance_frame)?, None)
+                    .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?
+            } else if route_changed && entry.continuation.is_some() {
                 entry
                     .voice
                     .reconcile_at(previous.performance_frame, remapped_gate)
@@ -1820,23 +2908,41 @@ impl SessionPlayback {
                 continue;
             };
             let mut copied = *entry;
-            copied.voice = voice;
-            if route_changed && remapped_gate.is_none() {
+            copied.voice = if entry.timeline == ReleaseTimeline::Arrangement {
+                let wrap = self
+                    .active_loop_region_at(arrangement_cut)
+                    .map(|region| {
+                        region
+                            .end()
+                            .checked_sub(arrangement_cut)
+                            .and_then(|remaining| previous.performance_frame.checked_add(remaining))
+                            .ok_or(SessionPlaybackError::ArithmeticOverflow)
+                    })
+                    .transpose()?;
+                if let Some(wrap) = wrap.filter(|wrap| entry.end_frame() > *wrap) {
+                    voice.ending_by(entry.sample_frame(wrap)?)
+                } else {
+                    voice
+                }
+            } else {
+                voice
+            };
+            if arrangement_remapped || (route_changed && remapped_gate.is_none()) {
                 copied.continuation = None;
             }
-            let old_index = previous
-                .routes
-                .get(entry.location.track_index())
-                .filter(|route| route.id == entry.track_id)
-                .map(|_| entry.location.track_index());
+            let old_index = contributor_index;
             let new_index = old_index
                 .and_then(|index| track_map.get(index).copied())
                 .filter(|index| *index != usize::MAX);
-            if let Some(index) = new_index {
-                copied.location = ReleaseLocation::new(index, copied.location.tail_group())?;
+            // A captured suffix is an independent audio owner even when its
+            // contributor still exists. Contributor identity only maps MIDI;
+            // it must never move a retired group back into a current-track row.
+            let audio_index = if copied.location.tail_group().is_some() {
+                usize::MAX
             } else {
-                copied.location = ReleaseLocation::new(usize::MAX, copied.location.tail_group())?;
-            }
+                new_index.unwrap_or(usize::MAX)
+            };
+            copied.location = ReleaseLocation::new(audio_index, copied.location.tail_group())?;
             self.release_scratch.push(copied);
             if route_changed && let Some(continuation) = copied.continuation {
                 if self.suppression_scratch.len() >= self.release_capacity {
@@ -1863,14 +2969,15 @@ impl SessionPlayback {
                 if !midi_route_changed.get(old_index).copied().unwrap_or(false) {
                     continue;
                 }
-                let RouteOwner::Session { clip, launch } = old_route.owner else {
+                let RouteOwner::Session { clip, origin } = old_route.owner else {
                     continue;
                 };
-                let old_clip = previous
-                    .revision
-                    .session()
-                    .midi_clip_for_track(clip, old_route.id)
-                    .ok_or(SessionPlaybackError::UnknownClip)?;
+                let old_clip = crate::session_inventory::EffectiveSessionMidi::new(
+                    previous.revision.session(),
+                    previous.midi_admission.as_ref(),
+                )
+                .midi_clip_for_track(clip, old_route.id)
+                .ok_or(SessionPlaybackError::UnknownClip)?;
                 if !old_clip.instrument_enabled() {
                     continue;
                 }
@@ -1881,8 +2988,8 @@ impl SessionPlayback {
                 let old_template = old_clip.instrument_template();
                 if let Some(floor) = previous.historical_floor_for(old_index) {
                     old_template
-                        .query_after_onset(
-                            launch,
+                        .query_after_onset_with_origin(
+                            origin,
                             &old_clock,
                             previous.performance_frame,
                             end,
@@ -1892,8 +2999,8 @@ impl SessionPlayback {
                         .map_err(SessionPlaybackError::Midi)?;
                 } else {
                     old_template
-                        .query(
-                            launch,
+                        .query_with_origin(
+                            origin,
                             &old_clock,
                             previous.performance_frame,
                             end,
@@ -1916,16 +3023,17 @@ impl SessionPlayback {
                     if is_suppressed(previous, old_route.id, key) {
                         continue;
                     }
-                    let candidate_clip = self
-                        .revision
-                        .session()
-                        .midi_clip_for_track(clip, old_route.id);
+                    let candidate_clip = crate::session_inventory::EffectiveSessionMidi::new(
+                        self.revision.session(),
+                        self.midi_admission.as_ref(),
+                    )
+                    .midi_clip_for_track(clip, old_route.id);
                     let candidate_occurrence = candidate_clip
                         .filter(|candidate| {
                             candidate.track == old_route.id && candidate.instrument_enabled()
                         })
                         .and_then(|candidate| {
-                            candidate.occurrence(span.note, span.iteration, launch)
+                            candidate.occurrence_with_origin(span.note, span.iteration, origin)
                         });
                     let matches = candidate_occurrence.is_some_and(|occurrence| {
                         occurrence.onset == span.onset_beat
@@ -1955,9 +3063,7 @@ impl SessionPlayback {
                     // after proving occurrence AND actual instrument law.
                     let compatible_owner = previous
                         .revision
-                        .arrangement()
-                        .shared_contexts()
-                        .index_for_track(old_route.id)
+                        .analytic_context_for_track(old_route.id)
                         .is_some_and(|index| analytic_owner_matches[usize::from(index)]);
                     if !matches || !compatible_owner {
                         voice.detach(&previous.analytic_continuations);
@@ -1980,7 +3086,7 @@ impl SessionPlayback {
                         old_track,
                         previous.arrangement_frame,
                         previous.revision.gain_recording_track(),
-                        previous.gain_recording_override,
+                        previous.live_gain.audible(),
                     );
                     let continuation = matches.then_some(SessionContinuation {
                         key,
@@ -1995,10 +3101,25 @@ impl SessionPlayback {
                         self.release_capacity,
                         &mut next_order,
                         ReleaseEntry {
+                            timeline: ReleaseTimeline::Session,
+                            source_origin: ReleaseSourceOrigin::capture(
+                                &previous.revision,
+                                old_index,
+                            ),
+                            monitor_offset: 0,
                             location: ReleaseLocation::new(track_index, None)?,
                             track_id: old_route.id,
                             order: 0,
                             mix,
+                            clip_gain: super::clip_gain::at_cut(
+                                previous,
+                                old_index,
+                                old_route.owner,
+                                span.clip,
+                                previous.arrangement_frame,
+                                previous.performance_frame,
+                            )?
+                            .0,
                             continuation,
                             inline_tuning_owned: matches
                                 && matches!(
@@ -2078,12 +3199,28 @@ impl SessionPlayback {
         }
         let mut reserved_tail_voices = self.release_scratch.len();
         for (slot, tail) in previous.tail_mutable_instruments.iter().enumerate() {
+            if reenabled_release_receivers[slot].is_some() {
+                continue;
+            }
             let Some(tail) = tail
                 .as_ref()
                 .filter(|tail| !tail.runtime.committed_is_quiescent())
             else {
                 continue;
             };
+            if !tail.sends.is_empty()
+                && (self.compensation.is_some()
+                    || tail.sends.iter().any(|(id, _)| {
+                        !self
+                            .revision
+                            .arrangement()
+                            .return_buses()
+                            .iter()
+                            .any(|bus| bus.id == id)
+                    }))
+            {
+                return Err(SessionPlaybackError::DetachedReceiverHistoryUnavailable);
+            }
             let Some(active) = active_tail_groups.get_mut(slot) else {
                 return Err(SessionPlaybackError::DeviceRuntime);
             };
@@ -2124,6 +3261,7 @@ impl SessionPlayback {
         let mut old_track_tail_slots = [None; MAX_TRACKS];
         let mut old_track_mutable_tail_slots = [None; MAX_TRACKS];
         let mut cut_mutable_gateoffs = [false; MAX_TRACKS];
+        let mut retain_mutable_sends = [false; MAX_TRACKS];
         let mut old_track_tail_metadata: [Option<(usize, Option<hex_lattice::StereoMatrix>)>;
             MAX_TRACKS] = [None; MAX_TRACKS];
         let mut old_track_tail_output_active = [false; MAX_TRACKS];
@@ -2159,10 +3297,27 @@ impl SessionPlayback {
             &mut tail_runtime_bytes,
             &mut suffix_entry_count,
         )?;
-        if !self.main_chain.can_inherit_from_excluding_old_range(
-            &previous.main_chain,
-            return_tail_plan.main_excluded(previous.main_chain.len()),
-        ) {
+        if clock_transfer == 2
+            && self.compensation.is_none()
+            && self
+                .revision
+                .arrangement()
+                .signal_graph
+                .as_ref()
+                .is_some_and(|graph| !graph.needs_runtime())
+            && !return_tail_plan.requires_main_clock(&previous.return_effect_tails)?
+        {
+            // Rebind preflight proved identical pre-Main routing/delays. This
+            // candidate needs no routed/latency runtime and retains no live
+            // Main suffix, so the donor's extended clock has no remaining
+            // consumer. Leave its actual owner with the returning donor; do
+            // not keep that constructor (and its native sources) alive forever.
+            clock_transfer = 0;
+        }
+        // Live replacement can leave the incompatible original suffix with a
+        // preflighted tail owner. Validate only the histories actually carried
+        // into the candidate; an unchanged incompatible prefix still refuses.
+        if !return_tail_plan.can_inherit_main(&self.main_chain, &previous.main_chain) {
             return Err(SessionPlaybackError::DeviceRuntime);
         }
         return_tail_plan.validate_main(&self.return_effect_tails, &previous.main_chain)?;
@@ -2207,7 +3362,7 @@ impl SessionPlayback {
                     .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             }
             if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
-                || tail_runtime_bytes > crate::mutable_instrument::MAX_STATEFUL_RUNTIME_PAIR_BYTES
+                || tail_runtime_bytes > crate::mutable_instrument::MAX_GRAPH_RUNTIME_PAIR_BYTES
             {
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
@@ -2216,11 +3371,17 @@ impl SessionPlayback {
             if release.location.tail_group().is_some() {
                 continue;
             }
-            let Some(old_index) = previous
-                .routes
-                .iter()
-                .position(|route| route.id == release.track_id)
-            else {
+            let audio_plan = shared_sources::plan_release_audio_owner(
+                release,
+                previous,
+                self.revision.as_ref(),
+                &analytic_owner_matches,
+            )?;
+            if let Some(current) = audio_plan.current_receiver {
+                release.location = ReleaseLocation::new(current, None)?;
+                continue;
+            }
+            let Some(old_index) = audio_plan.old_receiver else {
                 continue;
             };
             let Some(old_chain) = previous.device_chains.get(old_index) else {
@@ -2234,7 +3395,7 @@ impl SessionPlayback {
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
             let suffix_start =
                 tail_runtime_suffix_start(old_chain, old_track.instrument_position())?;
-            if !old_track.instrument_suffix_needs_tail() {
+            if release.source_origin.is_none() && !old_track.instrument_suffix_needs_tail() {
                 continue;
             }
             let already_assigned = old_track_tail_slots
@@ -2283,8 +3444,7 @@ impl SessionPlayback {
                     .checked_add(old_chain.declared_pair_bytes())
                     .ok_or(SessionPlaybackError::ReleaseBankFull)?;
                 if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
-                    || tail_runtime_bytes
-                        > crate::mutable_instrument::MAX_STATEFUL_RUNTIME_PAIR_BYTES
+                    || tail_runtime_bytes > crate::mutable_instrument::MAX_GRAPH_RUNTIME_PAIR_BYTES
                     || suffix_entry_count > MAX_RETAINED_SUFFIX_ENTRIES
                 {
                     return Err(SessionPlaybackError::ReleaseBankFull);
@@ -2295,8 +3455,11 @@ impl SessionPlayback {
         }
 
         // A source can be silent while its committed effect suffix still has
-        // delayed or recursive output. Retain that old suffix even when no
-        // MIDI release owner is available to carry it.
+        // delayed or recursive output. Retain a detached old suffix even when
+        // no MIDI release owner is available to carry it. Track gain, balance,
+        // mute and solo only change the output mix: an otherwise compatible
+        // chain inherits history under those new controls, without capturing
+        // duplicate tails or consuming the finite retirement bank.
         for old_index in 0..previous.routes.len() {
             let old_route = previous
                 .routes
@@ -2342,6 +3505,12 @@ impl SessionPlayback {
                 let candidate_suffix_start = candidate_track.instrument_position();
                 let exact_chain_configuration = old_chain.len() == candidate_chain.len()
                     && old_chain.configuration_matches_range(candidate_chain, 0..old_chain.len());
+                // Appending the first lookahead suffix leaves this exact old
+                // prefix in the current chain. Transfer its history normally;
+                // classifying it as detached would duplicate/strand the tail.
+                let retained_prefix_extension = first_compensation
+                    && old_chain.len() < candidate_chain.len()
+                    && old_chain.configuration_matches_range(candidate_chain, 0..old_chain.len());
                 let retargetable_effect_configuration = !exact_chain_configuration
                     && old_chain.len() == candidate_chain.len()
                     && old_track.instrument_position() == candidate_suffix_start
@@ -2352,10 +3521,11 @@ impl SessionPlayback {
                         candidate_suffix_start..old_chain.len(),
                     );
                 old_track.instrument_position() != candidate_suffix_start
-                    || old_track.mix() != candidate_track.mix()
                     || old_track.instrument_suffix_matrix()
                         != candidate_track.instrument_suffix_matrix()
-                    || !(exact_chain_configuration || retargetable_effect_configuration)
+                    || !(exact_chain_configuration
+                        || retargetable_effect_configuration
+                        || retained_prefix_extension)
             });
             if !detached || old_chain.committed_range_is_quiescent(suffix_start..old_chain.len()) {
                 continue;
@@ -2383,7 +3553,7 @@ impl SessionPlayback {
                 .checked_add(old_chain.declared_pair_bytes())
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
-                || tail_runtime_bytes > crate::mutable_instrument::MAX_STATEFUL_RUNTIME_PAIR_BYTES
+                || tail_runtime_bytes > crate::mutable_instrument::MAX_GRAPH_RUNTIME_PAIR_BYTES
                 || suffix_entry_count > MAX_RETAINED_SUFFIX_ENTRIES
             {
                 return Err(SessionPlaybackError::ReleaseBankFull);
@@ -2431,12 +3601,13 @@ impl SessionPlayback {
                 .tracks()
                 .get(old_index)
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
-            let candidate_enabled = self
+            let candidate_track = self
                 .routes
                 .iter()
                 .position(|route| route.id == old_route.id)
-                .and_then(|new_index| self.revision.arrangement().tracks().get(new_index))
-                .is_some_and(|track| track.instrument_slot_enabled());
+                .and_then(|new_index| self.revision.arrangement().tracks().get(new_index));
+            let candidate_enabled =
+                candidate_track.is_some_and(|track| track.instrument_slot_enabled());
             if let Some(cutoff) = cut_mutable_gateoffs.get_mut(old_index) {
                 *cutoff = !candidate_enabled;
             } else {
@@ -2446,6 +3617,34 @@ impl SessionPlayback {
                 .device_chains
                 .get(old_index)
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            if !old_track.sends().is_empty()
+                && candidate_track.is_some_and(|track| {
+                    track.instrument_bypassed && track.instrument_id == old_track.instrument_id
+                })
+            {
+                let old_sends = crate::mutable_instrument::DetachedSourceSends::from_track(
+                    old_track,
+                    previous.revision.arrangement().return_buses(),
+                );
+                let candidate_sends = candidate_track.and_then(|track| {
+                    crate::mutable_instrument::DetachedSourceSends::from_track(
+                        track,
+                        self.revision.arrangement().return_buses(),
+                    )
+                });
+                if self.compensation.is_some()
+                    || previous.compensation.is_some()
+                    || old_sends.is_none()
+                    || old_sends != candidate_sends
+                    || old_track.has_gain_automation()
+                    || previous.track_faders[old_index].active()
+                    || previous.revision.gain_recording_track() == Some(old_route.id)
+                    || !old_chain.static_processing_matches(old_chain)
+                {
+                    return Err(SessionPlaybackError::DetachedReceiverHistoryUnavailable);
+                }
+                retain_mutable_sends[old_index] = true;
+            }
             let suffix_start =
                 tail_runtime_suffix_start(old_chain, old_track.instrument_position())?;
             *old_track_tail_output_active
@@ -2501,7 +3700,7 @@ impl SessionPlayback {
                 .checked_add(runtime.max_active_occurrences())
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
-                || tail_runtime_bytes > crate::mutable_instrument::MAX_STATEFUL_RUNTIME_PAIR_BYTES
+                || tail_runtime_bytes > crate::mutable_instrument::MAX_GRAPH_RUNTIME_PAIR_BYTES
                 || suffix_entry_count > MAX_RETAINED_SUFFIX_ENTRIES
                 || reserved_tail_voices > self.release_capacity
             {
@@ -2516,6 +3715,43 @@ impl SessionPlayback {
                 entry.order,
             )
         });
+
+        return_tail_plan.validate_retained_foreign_sources(
+            &previous.return_effect_tails,
+            &previous.return_chains,
+            &previous.main_chain,
+            |chain, start| validate_foreign_tail_sources(self, chain, start),
+        )?;
+        for (slot, active) in active_tail_groups.iter().copied().enumerate() {
+            if active {
+                let chain = previous
+                    .tail_groups
+                    .get(slot)
+                    .and_then(Option::as_ref)
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                let start = previous
+                    .tail_suffix_starts
+                    .get(slot)
+                    .copied()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                validate_foreign_tail_sources(self, chain, start)?;
+            }
+        }
+        for (index, slot) in old_track_tail_slots.iter().enumerate() {
+            if slot.is_some() {
+                let chain = previous
+                    .device_chains
+                    .get(index)
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                let start = old_track_tail_metadata
+                    .get(index)
+                    .copied()
+                    .flatten()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?
+                    .0;
+                validate_foreign_tail_sources(self, chain, start)?;
+            }
+        }
 
         // Check every candidate history copy against the final tail-retention
         // plan before any runtime owner is moved or mutated.
@@ -2574,7 +3810,13 @@ impl SessionPlayback {
         // These copies are private scratch. Every provider refusal precedes any
         // source/runtime mutation; bank samplers remain immutable and interned.
         for release in &mut self.release_scratch {
-            retune_inline_release(previous, &self.revision, &self.route_scratch, release)?;
+            retune_inline_release(
+                previous,
+                &self.revision,
+                &self.route_scratch,
+                arrangement_cut,
+                release,
+            )?;
             if !release.voice.sampler().is_current() {
                 continue;
             }
@@ -2631,10 +3873,12 @@ impl SessionPlayback {
                 continue;
             };
             let valid_clip = |clip| {
-                self.revision
-                    .session()
-                    .midi_clip(clip)
-                    .is_some_and(|clip| clip.track == id)
+                crate::session_inventory::EffectiveSessionMidi::new(
+                    self.revision.session(),
+                    self.midi_admission.as_ref(),
+                )
+                .midi_clip(clip)
+                .is_some_and(|clip| clip.track == id)
                     || self
                         .revision
                         .session()
@@ -2665,27 +3909,107 @@ impl SessionPlayback {
         let visible_state_changed = self.route_scratch != previous.routes
             || previous.performance_frame != self.performance_frame
             || timing_changed;
+        // Detached tails already contain their old track processing and fader.
+        // Group routing can safely adopt them only when their complete default
+        // path remains present. Refuse before transferring owners otherwise;
+        // the predecessor can drain and retry without losing its tail.
+        let old_graph = previous.revision.arrangement().signal_graph.as_deref();
+        let new_graph = self.revision.arrangement().signal_graph.as_deref();
+        let has_detached = self.release_scratch.iter().any(|release| {
+            release.location.track_index() >= self.routes.len()
+                || release.location.tail_group().is_some()
+        }) || old_track_tail_slots.iter().any(Option::is_some)
+            || active_tail_groups.iter().any(|active| *active);
+        if has_detached
+            && (old_graph.is_some_and(|graph| graph.has_group_outputs())
+                || new_graph.is_some_and(|graph| graph.has_group_outputs()))
+        {
+            let (Some(old), Some(new)) = (old_graph, new_graph) else {
+                return Err(SessionPlaybackError::GroupTailRoutingBusy);
+            };
+            // Release banks may contain many voices on one track. Validate
+            // the bounded ancestor/device path once per source owner.
+            let mut checked = [None; MAX_TRACKS];
+            let mut compatible = |id| {
+                let Some(index) = old.track_index(id) else {
+                    return false;
+                };
+                if previous
+                    .routes
+                    .get(index)
+                    .is_none_or(|route| route.id != id)
+                {
+                    return false;
+                }
+                let Some(slot) = checked.get_mut(index) else {
+                    return false;
+                };
+                if let Some(result) = *slot {
+                    return result;
+                }
+                let result = old.same_tail_path(
+                    new,
+                    previous.revision.arrangement(),
+                    self.revision.arrangement(),
+                    id,
+                );
+                *slot = Some(result);
+                result
+            };
+            if self.release_scratch.iter().any(|release| {
+                (release.location.track_index() >= self.routes.len()
+                    || release.location.tail_group().is_some())
+                    && !compatible(release.track_id)
+            }) || old_track_tail_slots
+                .iter()
+                .enumerate()
+                .any(|(index, slot)| {
+                    slot.is_some()
+                        && previous
+                            .routes
+                            .get(index)
+                            .is_none_or(|route| !compatible(route.id))
+                })
+                || active_tail_groups.iter().enumerate().any(|(slot, active)| {
+                    *active && previous.tail_track_ids[slot].is_none_or(|id| !compatible(id))
+                })
+            {
+                return Err(SessionPlaybackError::GroupTailRoutingBusy);
+            }
+        }
         if let Some(groups) = groups.as_mut() {
-            // This closed class carries only actual Utility chain owners.
-            // Analytic context/instrument/Return-tail moves remain unsupported.
+            // Closed chain owners and compensation swaps use the same actual
+            // origin journal. Analytic/instrument fanout remains unsupported.
             if !self.context_lease_plan.is_empty()
                 || previous.mutable_instruments.iter().any(Option::is_some)
                 || previous
                     .tail_mutable_instruments
                     .iter()
                     .any(Option::is_some)
-                || previous
-                    .return_effect_tails
-                    .slots()
-                    .iter()
-                    .any(Option::is_some)
                 || previous.retained_contexts.iter().any(Option::is_some)
-                || self.compensation.is_some()
-                || previous.compensation.is_some()
             {
                 return Err(SessionPlaybackError::DeviceRuntime);
             }
             use crate::audio_candidate::groups::Location as L;
+            return_tail_plan.plan_candidate_origins(
+                groups,
+                &previous.return_effect_tails,
+                &previous.return_chains,
+                &previous.main_chain,
+            )?;
+            if clock_transfer == 2 {
+                let old = previous
+                    .compensation
+                    .as_ref()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                let graph = self
+                    .revision
+                    .arrangement()
+                    .signal_graph
+                    .as_ref()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                groups.plan_compensation_swap(old, self.compensation.as_ref(), graph)?;
+            }
             for slot in 0..previous.tail_groups.len() {
                 if active_tail_groups.get(slot).copied().unwrap_or(false)
                     && previous.tail_groups[slot].is_some()
@@ -2706,6 +4030,45 @@ impl SessionPlayback {
                 }
             }
         }
+        // Pure inputs only: refuse before any commit, so the live path can
+        // restart instead of leaving the old graph applied.
+        // A detached old track suffix is summed straight into Main's input.
+        // Under compensation it may carry over only where that sum stays on
+        // Main's clock in both revisions, with the clock itself unchanged: no
+        // tempo map or loop edit remaps it (Pulse #4188).
+        let detached_tails_aligned = match (
+            previous.revision.arrangement().signal_graph.as_deref(),
+            self.revision.arrangement().signal_graph.as_deref(),
+        ) {
+            (Some(old), Some(new)) => {
+                !timing_changed
+                    && old_loop == new_loop
+                    && !new.has_group_outputs()
+                    && old.main_input_arrival() == new.main_input_arrival()
+                    && old_track_tail_slots
+                        .iter()
+                        .enumerate()
+                        .all(|(index, slot)| {
+                            slot.is_none() || old.detached_suffix_reaches_main_aligned(index)
+                        })
+            }
+            _ => false,
+        };
+        if (self.revision.arrangement().main_latency_frames() > 0
+            || previous.revision.arrangement().main_latency_frames() > 0)
+            && (return_tail_plan.captures_bus()
+                || old_track_mutable_tail_slots.iter().any(Option::is_some)
+                || (old_track_tail_slots.iter().any(Option::is_some) && !detached_tails_aligned)
+                || previous.tail_output_active.iter().any(|&active| active)
+                || previous
+                    .return_effect_tails
+                    .slots()
+                    .iter()
+                    .flatten()
+                    .any(|tail| tail.output_active && tail.return_id().is_some()))
+        {
+            return Err(SessionPlaybackError::Arrangement(COMPENSATED_TAILS_CHANGED));
+        }
         if let Some(demand) = demand {
             let generation = if visible_state_changed {
                 previous.route_state_generation.wrapping_add(1)
@@ -2713,15 +4076,21 @@ impl SessionPlayback {
                 previous.route_state_generation
             };
             demand.window = Some(
-                self.visit_stream_chunk_at(
+                self.visit_stream_chunk_with_history(
+                    demand.ordinary,
                     &self.route_scratch,
                     previous.performance_frame,
-                    previous.arrangement_frame,
+                    arrangement_cut,
                     generation,
-                    previous.arrangement_loop_pass,
+                    arrangement_cut_pass,
                     demand.playing.unwrap_or(previous.playing),
                     demand.maximum_frames,
                     &mut demand.visit,
+                    if clock_transfer == 0 {
+                        super::stream_demand::ScalarOriginHistory::Empty
+                    } else {
+                        super::stream_demand::ScalarOriginHistory::Current(previous)
+                    },
                 )
                 .map_err(|error| SessionPlaybackError::Arrangement(error.0))?,
             );
@@ -2731,29 +4100,17 @@ impl SessionPlayback {
         // may partially mutate candidate state before returning an error, so it
         // permanently consumes this candidate's single admission opportunity.
         self.candidate_admission_open = false;
-        for (new_index, bus) in self
-            .revision
-            .arrangement()
-            .return_buses()
-            .iter()
-            .enumerate()
-        {
-            let Some(old_index) = previous
-                .revision
-                .arrangement()
-                .return_buses()
-                .iter()
-                .position(|old_bus| old_bus.id == bus.id)
-            else {
-                continue;
-            };
-            if return_tail_plan.inherit_bus(new_index)
-                && let (Some(candidate), Some(old)) = (
-                    self.return_chains.get_mut(new_index),
-                    previous.return_chains.get(old_index),
-                )
-            {
-                candidate.inherit_from(old);
+
+        for (slot, receiver) in reenabled_release_receivers.into_iter().enumerate() {
+            if let Some(index) = receiver {
+                let tail = previous.tail_mutable_instruments[slot]
+                    .as_ref()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                self.mutable_instruments[index]
+                    .as_mut()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?
+                    .inherit_from(&tail.runtime)
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
             }
         }
         for (old_index, new_index) in analytic_import_new_for_old.iter().copied().enumerate() {
@@ -2833,62 +4190,7 @@ impl SessionPlayback {
                 .retarget_from(old_runtime, proof)
                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
         }
-        for (old_index, _) in previous.routes.iter().enumerate() {
-            let old_route = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
-            if let Some(new_index) = self
-                .routes
-                .iter()
-                .position(|new_route| new_route.id == old_route.id)
-            {
-                if let (Some(candidate), Some(old)) = (
-                    self.device_chains.get_mut(new_index),
-                    previous.device_chains.get(old_index),
-                ) {
-                    let excluded_old_range = if old_track_tail_slots
-                        .get(old_index)
-                        .copied()
-                        .flatten()
-                        .is_some()
-                    {
-                        let old_track = previous
-                            .revision
-                            .arrangement()
-                            .tracks()
-                            .get(old_index)
-                            .ok_or(SessionPlaybackError::UnknownTrack)?;
-                        let suffix_start =
-                            tail_runtime_suffix_start(old, old_track.instrument_position())?;
-                        Some(suffix_start..old.len())
-                    } else {
-                        None
-                    };
-                    if let Some(range) = excluded_old_range {
-                        candidate
-                            .inherit_from_excluding_old_range(old, range)
-                            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-                    } else {
-                        candidate.inherit_from(old);
-                    }
-                }
-            }
-        }
-        if (self.revision.arrangement().main_latency_frames() > 0
-            || previous.revision.arrangement().main_latency_frames() > 0)
-            && (return_tail_plan.captures_bus()
-                || old_track_mutable_tail_slots.iter().any(Option::is_some)
-                || old_track_tail_slots.iter().any(Option::is_some)
-                || previous.tail_output_active.iter().any(|&active| active)
-                || previous
-                    .return_effect_tails
-                    .slots()
-                    .iter()
-                    .flatten()
-                    .any(|tail| tail.output_active && tail.return_id().is_some()))
-        {
-            return Err(SessionPlaybackError::Arrangement(
-                "compensated processor tails require stopping transport before changing the chain",
-            ));
-        }
+
         // Actual retained owners, including unused prefix Vec capacity and both
         // transactional twins, must fit the existing complete runtime budget.
         let mut retained_bytes = return_tail_plan
@@ -2996,6 +4298,81 @@ impl SessionPlayback {
             &previous.return_chains,
             previous.revision.arrangement().return_buses(),
         )?;
+        // All admission/storage and source-lease checks precede destructive
+        // owned-history transfers. The donor remains untouched on refusal.
+        for (new_index, bus) in self
+            .revision
+            .arrangement()
+            .return_buses()
+            .iter()
+            .enumerate()
+        {
+            let Some(old_index) = previous
+                .revision
+                .arrangement()
+                .return_buses()
+                .iter()
+                .position(|old_bus| old_bus.id == bus.id)
+            else {
+                continue;
+            };
+            if return_tail_plan.inherit_bus(new_index)
+                && let (Some(candidate), Some(old)) = (
+                    self.return_chains.get_mut(new_index),
+                    previous.return_chains.get_mut(old_index),
+                )
+            {
+                candidate.transfer_history_from(old);
+            }
+        }
+        for (old_index, _) in previous.routes.iter().enumerate() {
+            let old_route = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
+            if let Some(new_index) = self
+                .routes
+                .iter()
+                .position(|new_route| new_route.id == old_route.id)
+                && let (Some(candidate), Some(old)) = (
+                    self.device_chains.get_mut(new_index),
+                    previous.device_chains.get_mut(old_index),
+                )
+            {
+                let excluded_old_range = if old_track_tail_slots
+                    .get(old_index)
+                    .copied()
+                    .flatten()
+                    .is_some()
+                {
+                    let old_track = previous
+                        .revision
+                        .arrangement()
+                        .tracks()
+                        .get(old_index)
+                        .ok_or(SessionPlaybackError::UnknownTrack)?;
+                    let suffix_start =
+                        tail_runtime_suffix_start(old, old_track.instrument_position())?;
+                    Some(suffix_start..old.len())
+                } else {
+                    None
+                };
+                if let Some(range) = excluded_old_range {
+                    candidate
+                        .transfer_history_excluding_old_range(old, range)
+                        .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                } else {
+                    candidate.transfer_history_from(old);
+                }
+            }
+        }
+        // The bypassed track saw no instrument signal. Its ordinary history
+        // transfer above cannot supply the detached suffix's committed state.
+        for (slot, receiver) in reenabled_release_receivers.into_iter().enumerate() {
+            if let Some(index) = receiver {
+                let tail = previous.tail_groups[slot]
+                    .as_mut()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                self.device_chains[index].transfer_history_from(tail);
+            }
+        }
         return_tail_plan.apply_carry(
             &mut self.return_effect_tails,
             &mut previous.return_effect_tails,
@@ -3072,6 +4449,7 @@ impl SessionPlayback {
                 )
                 && candidate.is_none()
             {
+                old_chain.begin_output_tail();
                 *candidate = Some(std::mem::replace(
                     old_chain,
                     hex_lattice::NativeRuntimeChain::empty(),
@@ -3090,11 +4468,11 @@ impl SessionPlayback {
                     self.tail_mixes.get_mut(slot),
                     previous.revision.arrangement().tracks().get(old_index),
                 ) {
-                    *tail_mix = gain_recording::effective_mix(
+                    *tail_mix = gain_recording::detached_mix(
+                        previous,
                         old_track,
+                        old_index,
                         previous.arrangement_frame,
-                        previous.revision.gain_recording_track(),
-                        previous.gain_recording_override,
                     );
                 }
                 if let (Some(start), Some((suffix_start, _))) = (
@@ -3119,23 +4497,54 @@ impl SessionPlayback {
             if let (Some(candidate), Some(track_id)) =
                 (self.tail_mutable_instruments.get_mut(slot), track_id)
                 && candidate.is_none()
-            {
-                if let Some(mut old_runtime) = previous
+                && let Some(mut old_runtime) = previous
                     .mutable_instruments
                     .get_mut(old_index)
                     .and_then(Option::take)
+            {
+                if cut_mutable_gateoffs
+                    .get(old_index)
+                    .copied()
+                    .unwrap_or(false)
                 {
-                    if cut_mutable_gateoffs
+                    old_runtime.cut_gate_deadlines_at(previous.performance_frame);
+                }
+                let sends = if retain_mutable_sends[old_index] {
+                    let arrangement = previous.revision.arrangement();
+                    let track = arrangement
+                        .tracks()
                         .get(old_index)
-                        .copied()
-                        .unwrap_or(false)
-                    {
-                        old_runtime.cut_gate_deadlines_at(previous.performance_frame);
-                    }
-                    *candidate = Some(MutableInstrumentTail {
-                        track_id,
-                        runtime: old_runtime,
-                    });
+                        .ok_or(SessionPlaybackError::UnknownTrack)?;
+                    crate::mutable_instrument::DetachedSourceSends::from_track(
+                        track,
+                        arrangement.return_buses(),
+                    )
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?
+                } else {
+                    Default::default()
+                };
+                *candidate = Some(MutableInstrumentTail {
+                    track_id,
+                    runtime: old_runtime,
+                    sends,
+                });
+            }
+        }
+        for (index, route) in self.route_scratch.iter().enumerate() {
+            let old_index = previous
+                .routes
+                .get(index)
+                .filter(|old| old.id == route.id)
+                .map(|_| index)
+                .or_else(|| previous.routes.iter().position(|old| old.id == route.id));
+            if let Some(old_index) = old_index {
+                self.track_faders[index] = previous.track_faders[old_index];
+                let track = &self.revision.arrangement().tracks()[index];
+                if !track.has_gain_automation() {
+                    self.track_faders[index].retarget(
+                        track.mix().channel_gain(),
+                        self.revision.arrangement().sample_rate(),
+                    );
                 }
             }
         }
@@ -3147,9 +4556,17 @@ impl SessionPlayback {
         self.release_order_scratch = next_order;
         std::mem::swap(&mut self.suppressions, &mut self.suppression_scratch);
         self.performance_frame = previous.performance_frame;
-        self.arrangement_frame = previous.arrangement_frame;
-        self.arrangement_loop_pass = previous.arrangement_loop_pass;
+        self.arrangement_frame = arrangement_cut;
+        self.arrangement_loop_pass = arrangement_cut_pass;
+        self.interactive_start_frame = previous.interactive_start_frame;
         self.playing = previous.playing;
+        // Streamed voices continuing the same source position keep their
+        // page-miss fade across the replacement (`crate::stream_miss_fade`).
+        self.stream_miss_fades = previous.stream_miss_fades;
+        // Preparing the first live input can activate a stopped candidate
+        // before this donor has ever monitored. Preserve that admission as
+        // well as existing release intent when a later edit removes the input.
+        self.monitor_source_releases |= previous.monitor_source_releases;
         self.capture_epoch = capture_epoch;
         previous.capture_epoch = previous_capture_epoch;
         self.anchor = candidate_anchor;
@@ -3167,29 +4584,153 @@ impl SessionPlayback {
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
             }
         } else if clock_transfer == 2 {
-            let graph = self
-                .revision
-                .arrangement()
-                .signal_graph
-                .as_ref()
-                .ok_or(SessionPlaybackError::DeviceRuntime)?;
-            std::mem::swap(&mut self.compensation, &mut previous.compensation);
-            if let Some(current) = self.compensation.as_mut() {
-                // Previous still owns its revision's old graph; delay_graph
-                // independently retains the actual ring/plan interpretation.
-                current
-                    .rebind_graph(Arc::clone(graph))
-                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-            }
+            self.swap_compensation_owner(previous)?;
         }
 
+        // All refusal checks precede these scalar ledger cuts. Keep each old
+        // runtime/DSP owner, including tails from earlier publications; release
+        // only proofs whose exact clip has become inactive in the candidate.
+        let revision = &self.revision;
+        let disconnected = shared_sources::disconnected_contributors(&previous.revision, revision);
+        let release_live_input = previous
+            .computer_keyboard
+            .as_ref()
+            .filter(|keyboard| keyboard.is_source_input())
+            .and_then(|old| {
+                let preserved = self.computer_keyboard.as_ref().is_some_and(|new| {
+                    new.requests_preservation_from(old) && new.can_preserve_from(old)
+                });
+                (!preserved).then(|| old.source_input_id()).flatten()
+            });
+        for runtime in self.mutable_instruments.iter_mut().flatten().chain(
+            self.tail_mutable_instruments
+                .iter_mut()
+                .flatten()
+                .map(|tail| &mut tail.runtime),
+        ) {
+            if let Some(input) = release_live_input {
+                runtime.request_live_input_release(input);
+            }
+            shared_sources::release_disconnected_contributors(
+                runtime,
+                &disconnected,
+                previous.performance_frame,
+            );
+            runtime.reconcile_gate_deadlines_at(previous.performance_frame, |signature| {
+                let key = signature.key();
+                let arrangement_key = || {
+                    previous
+                        .routes
+                        .iter()
+                        .position(|route| route.id == key.track)
+                        .is_some_and(|index| {
+                            effective_midi_route(&previous.revision, &previous.routes, index)
+                                .is_ok_and(|route| route.owner == RouteOwner::Arrangement)
+                        })
+                };
+                if revision.midi_clip_inactive(key.track, key.clip)
+                    || revision.midi_note_inactive(key.clip, key.note)
+                    || (arrangement_tempo_remap && arrangement_key())
+                    || (!timing_changed
+                        && old_loop == new_loop
+                        && !midi_layout_changed
+                        && key.loop_pass == previous.arrangement_loop_pass
+                        && arrangement_key()
+                        && previous
+                            .revision
+                            .retained_midi_prefix_end(revision, key)
+                            .is_some_and(|(end_beat, end)| {
+                                end <= previous.arrangement_frame
+                                    && signature.details().1 > end_beat
+                            }))
+                {
+                    return Some(previous.performance_frame);
+                }
+                let (onset, old_gate, pitch, channel, velocity) = signature.details();
+                self.suppressions
+                    .iter()
+                    .filter_map(|entry| {
+                        let candidate = entry.mutable_signature()?;
+                        let (new_onset, new_gate, new_pitch, new_channel, new_velocity) =
+                            candidate.details();
+                        (candidate.key() == key
+                            && (new_onset, new_pitch, new_channel, new_velocity)
+                                == (onset, pitch, channel, velocity)
+                            && new_gate < old_gate)
+                            .then(|| entry.gate_cutoff_frame())
+                            .flatten()
+                    })
+                    .min()
+            });
+        }
         if let Some(groups) = groups {
             groups.commit();
         }
-        self.main_chain.inherit_from(&previous.main_chain);
+        self.main_chain
+            .transfer_history_from(&mut previous.main_chain);
         Ok(report)
     }
 
+    /// Exact owning frontier after the caller has preflighted the mapped
+    /// clock and its origin transfer. The displaced owner stays in previous.
+    fn swap_compensation_owner(&mut self, previous: &mut Self) -> Result<(), SessionPlaybackError> {
+        let graph = self
+            .revision
+            .arrangement()
+            .signal_graph
+            .as_ref()
+            .ok_or(SessionPlaybackError::DeviceRuntime)?;
+        if previous
+            .compensation
+            .as_ref()
+            .is_none_or(|old| !old.can_rebind_graph(graph))
+        {
+            return Err(SessionPlaybackError::DeviceRuntime);
+        }
+        std::mem::swap(&mut self.compensation, &mut previous.compensation);
+        if let Some(current) = self.compensation.as_mut() {
+            current
+                .rebind_graph(Arc::clone(graph))
+                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+        }
+        Ok(())
+    }
+    #[cfg(test)]
+    pub(crate) fn test_swap_compensation_origins(
+        &mut self,
+        previous: &mut Self,
+        groups: &mut crate::audio_candidate::groups::Transfer<'_>,
+    ) -> Result<(usize, Option<usize>), SessionPlaybackError> {
+        let old = previous
+            .compensation
+            .as_ref()
+            .ok_or(SessionPlaybackError::DeviceRuntime)?;
+        let old_address = old.test_input_address();
+        let displaced = self
+            .compensation
+            .as_ref()
+            .map(|current| current.test_input_address());
+        let graph = self
+            .revision
+            .arrangement()
+            .signal_graph
+            .as_ref()
+            .ok_or(SessionPlaybackError::DeviceRuntime)?;
+        groups.plan_compensation_swap(old, self.compensation.as_ref(), graph)?;
+        self.swap_compensation_owner(previous)?;
+        assert_eq!(
+            self.compensation.as_ref().unwrap().test_input_address(),
+            old_address
+        );
+        assert_eq!(
+            previous
+                .compensation
+                .as_ref()
+                .map(|old| old.test_input_address()),
+            displaced
+        );
+        Ok((old_address, displaced))
+    }
     fn preflight_shared_context_leases(
         &mut self,
         previous: &Self,
@@ -3337,6 +4878,11 @@ fn mutable_proof_deadline(
 ) -> Option<u64> {
     let mut deadline = None;
     if let Some(index) = playback.routes.iter().position(|route| route.id == track) {
+        let index = playback
+            .revision
+            .source_routing()
+            .receiver_index(index)
+            .unwrap_or(index);
         for proof in playback
             .mutable_instruments
             .get(index)
@@ -3354,12 +4900,7 @@ fn mutable_proof_deadline(
             }
         }
     }
-    for tail in playback
-        .tail_mutable_instruments
-        .iter()
-        .flatten()
-        .filter(|tail| tail.track_id == track)
-    {
+    for tail in playback.tail_mutable_instruments.iter().flatten() {
         for proof in tail.runtime.proofs() {
             if proof.signature == signature
                 && proof.onset_frame < playback.performance_frame
@@ -3372,6 +4913,95 @@ fn mutable_proof_deadline(
         }
     }
     deadline
+}
+
+/// With equal canonical maps and equal beats at the cut, a first-pass loop
+/// edit can retain Arrangement voices until the earlier wrap. The periodic
+/// view returns the canonical inverse before its start, uses that same inverse
+/// at its admitted round-tripping start, and lifts canonical local beats by
+/// zero cycles until its end. Round-tripping beats for interior frames lie
+/// strictly between the endpoint beats by monotonicity of the forward map.
+/// The candidate anchor therefore has zero shift over the retained interval.
+/// No retained gate or tail may reach either wrap. Signature, source-law and
+/// occupancy checks still run before runtime transfer.
+fn first_pass_arrangement_loop_continuity(
+    candidate: &SessionPlayback,
+    previous: &SessionPlayback,
+) -> bool {
+    if previous.anchor.is_some()
+        || previous.computer_keyboard.is_some()
+        || candidate.computer_keyboard.is_some()
+        || previous.arrangement_loop_pass != 0
+        || previous.performance_frame != previous.arrangement_frame
+        || candidate.revision.arrangement().main_latency_frames() != 0
+        || previous.revision.arrangement().main_latency_frames() != 0
+        || previous
+            .tail_mutable_instruments
+            .iter()
+            .any(Option::is_some)
+    {
+        return false;
+    }
+    let boundary = [previous.loop_region(), candidate.loop_region()]
+        .into_iter()
+        .flatten()
+        .filter(|region| region.enabled())
+        .map(hex_project::LoopRegion::end)
+        .min()
+        .unwrap_or(u64::MAX);
+    if previous.performance_frame >= boundary {
+        return false;
+    }
+    for playback in [previous, candidate] {
+        for (index, route) in playback.routes.iter().enumerate() {
+            if route.owner != RouteOwner::Arrangement
+                || route.pending.is_some()
+                || playback.revision.source_routing().is_shared(index)
+            {
+                return false;
+            }
+        }
+    }
+    previous
+        .mutable_instruments
+        .iter()
+        .enumerate()
+        .all(|(index, runtime)| {
+            let Some(runtime) = runtime else {
+                return true;
+            };
+            let Some(route) = previous.routes.get(index) else {
+                return false;
+            };
+            previous
+                .revision
+                .mutable_arrangement_track_matches(&candidate.revision, route.id)
+                && !runtime.has_committed_live_occurrences()
+                && runtime.proofs().all(|proof| {
+                    proof.signature.key().loop_pass == 0
+                        && proof.gate_end_frame < boundary
+                        && proof.quiet_deadline_frame < boundary
+                })
+        })
+}
+
+/// Whether every proof belongs to a donor Arrangement route, so an edited
+/// base map can cut each held gate at the cut (Pulse #4117).
+fn arrangement_only_proofs(
+    previous: &SessionPlayback,
+    runtime: &MutableInstrumentTrackRuntime,
+) -> bool {
+    runtime.proofs().all(|proof| {
+        let track = proof.signature.key().track;
+        previous
+            .routes
+            .iter()
+            .position(|route| route.id == track)
+            .is_some_and(|index| {
+                effective_midi_route(&previous.revision, &previous.routes, index)
+                    .is_ok_and(|route| route.owner == RouteOwner::Arrangement)
+            })
+    })
 }
 
 fn mutable_key_has_live_proof(
@@ -3388,6 +5018,13 @@ fn mutable_key_has_live_proof(
         .routes
         .iter()
         .position(|route| route.id == track)
+        .map(|index| {
+            playback
+                .revision
+                .source_routing()
+                .receiver_index(index)
+                .unwrap_or(index)
+        })
         .and_then(|index| playback.mutable_instruments.get(index))
         .and_then(Option::as_ref)
         .is_some_and(|runtime| runtime.proofs().any(matches_key))
@@ -3395,7 +5032,6 @@ fn mutable_key_has_live_proof(
             .tail_mutable_instruments
             .iter()
             .flatten()
-            .filter(|tail| tail.track_id == track)
             .any(|tail| tail.runtime.proofs().any(matches_key))
 }
 
@@ -3421,7 +5057,7 @@ fn add_or_extend_suppression(
             entry.mutable_signature(),
         )
     }) {
-        existing.until_frame = existing.until_frame.max(entry.until_frame);
+        existing.merge_expiry_and_cutoff(entry);
         return Ok(());
     }
     if suppressions.len() >= capacity {
@@ -3448,7 +5084,7 @@ fn remap_release_gate(
     else {
         return Ok(None);
     };
-    let RouteOwner::Session { clip, launch } =
+    let RouteOwner::Session { clip, origin } =
         effective_midi_route(&previous.revision, &previous.routes, index)?.owner
     else {
         return Ok(None);
@@ -3456,11 +5092,11 @@ fn remap_release_gate(
     if clip != key.clip {
         return Ok(None);
     }
-    let Some(next) = candidate
-        .revision
-        .session()
-        .midi_clip_for_track(clip, entry.track_id)
-    else {
+    let Some(next) = crate::session_inventory::EffectiveSessionMidi::new(
+        candidate.revision.session(),
+        candidate.midi_admission.as_ref(),
+    )
+    .midi_clip_for_track(clip, entry.track_id) else {
         return Ok(None);
     };
     if next.track != entry.track_id {
@@ -3469,7 +5105,7 @@ fn remap_release_gate(
     if !next.instrument_enabled() {
         return Ok(None);
     }
-    let Some(occurrence) = next.occurrence(key.note, key.iteration, launch) else {
+    let Some(occurrence) = next.occurrence_with_origin(key.note, key.iteration, origin) else {
         return Ok(None);
     };
     let matches = occurrence.onset == continuation.onset_beat
@@ -3491,6 +5127,207 @@ fn remap_release_gate(
         .map_err(|_| SessionPlaybackError::TempoConversion)
 }
 
+/// Candidate scratch written by `cut_arrangement_voices_for_remap`.
+struct RemapCandidate<'a> {
+    revision: &'a PreparedRevision,
+    releases: &'a mut Vec<ReleaseEntry>,
+    suppressions: &'a mut Vec<MidiOccurrenceSuppression>,
+    capacity: usize,
+    cut: u64,
+    /// The candidate's active loop end at `cut`; occurrences wrap there.
+    loop_end: Option<u64>,
+}
+
+/// The defined discontinuity for a remapped Arrangement cut (Pulse #3935).
+/// Each analytic/inline Arrangement voice still held at the donor's cut is
+/// released there (its gate ends at the cut and only its release tail
+/// sounds). Candidate occurrences whose onset precedes the remapped cut
+/// are suppressed until they end, so nothing is chased or retriggered.
+/// Removed tracks and instrument edits keep their own release paths.
+fn cut_arrangement_voices_for_remap(
+    previous: &SessionPlayback,
+    candidate: RemapCandidate<'_>,
+    track_map: &[usize; MAX_TRACKS],
+    instrument_changed: &[bool; MAX_TRACKS],
+    next_order: &mut u64,
+) -> Result<(), SessionPlaybackError> {
+    let RemapCandidate {
+        revision,
+        releases,
+        suppressions,
+        capacity,
+        cut: candidate_cut,
+        loop_end,
+    } = candidate;
+    let old_cut = previous.arrangement_frame;
+    let performance = previous.performance_frame;
+    // The candidate's next pass starts at this performance frame.
+    let wrap_frame = loop_end
+        .map(|end| {
+            end.checked_sub(candidate_cut)
+                .and_then(|remaining| performance.checked_add(remaining))
+                .ok_or(SessionPlaybackError::ArithmeticOverflow)
+        })
+        .transpose()?;
+    for (old_index, _) in previous.routes.iter().enumerate() {
+        let old_route = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
+        if old_route.owner != RouteOwner::Arrangement {
+            continue;
+        }
+        let Some(new_index) = track_map
+            .get(old_index)
+            .copied()
+            .filter(|index| *index != usize::MAX)
+        else {
+            continue;
+        };
+        let mut failure = None;
+        if !instrument_changed.get(old_index).copied().unwrap_or(true)
+            && shared_sources::track_has_analytic_source(&previous.revision, old_index)
+        {
+            let old_track = previous
+                .revision
+                .arrangement()
+                .tracks()
+                .get(old_index)
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            old_track
+                .for_each_active_midi_span(old_cut, |span, sampler| {
+                    if failure.is_some() || span.start >= old_cut {
+                        return;
+                    }
+                    let key = ContinuationKey {
+                        clip: span.clip,
+                        note: span.note,
+                        iteration: span.iteration,
+                    };
+                    if is_suppressed(previous, old_route.id, key) {
+                        return;
+                    }
+                    let voice = match MidiReleaseVoice::from_finite_span(
+                        span.start,
+                        span.gate_end,
+                        span.end,
+                        sampler.detach(&previous.analytic_continuations),
+                        old_cut,
+                        performance,
+                    ) {
+                        // Its tail must not sound over the candidate's next
+                        // pass; unedited looped playback stops at the wrap.
+                        Ok(Some(voice)) => wrap_frame.map_or(voice, |wrap| voice.ending_by(wrap)),
+                        Ok(None) => return,
+                        Err(_) => {
+                            failure = Some(SessionPlaybackError::ArithmeticOverflow);
+                            return;
+                        }
+                    };
+                    let entry = (|| -> Result<ReleaseEntry, SessionPlaybackError> {
+                        Ok(ReleaseEntry {
+                            timeline: ReleaseTimeline::Arrangement,
+                            source_origin: ReleaseSourceOrigin::capture(
+                                &previous.revision,
+                                old_index,
+                            ),
+                            monitor_offset: 0,
+                            location: ReleaseLocation::new(new_index, None)?,
+                            track_id: old_route.id,
+                            order: 0,
+                            mix: gain_recording::effective_mix(
+                                old_track,
+                                old_cut,
+                                previous.revision.gain_recording_track(),
+                                previous.live_gain.audible(),
+                            ),
+                            clip_gain: super::clip_gain::at_cut(
+                                previous,
+                                old_index,
+                                old_route.owner,
+                                span.clip,
+                                old_cut,
+                                performance,
+                            )?
+                            .0,
+                            continuation: None,
+                            inline_tuning_owned: false,
+                            voice,
+                        })
+                    })();
+                    if let Err(error) = entry
+                        .and_then(|entry| append_release(releases, capacity, next_order, entry))
+                    {
+                        failure = Some(error);
+                    }
+                })
+                .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+        }
+        if failure.is_none() && shared_sources::track_has_analytic_source(revision, new_index) {
+            let new_track = revision
+                .arrangement()
+                .tracks()
+                .get(new_index)
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            new_track
+                .for_each_active_midi_span(candidate_cut, |span, _| {
+                    if failure.is_some() || span.start >= candidate_cut {
+                        return;
+                    }
+                    // The loop wrap ends this pass; a later pass is a new onset.
+                    let end = loop_end.map_or(span.end, |loop_end| span.end.min(loop_end));
+                    let Some(until_frame) =
+                        performance.checked_add(end.saturating_sub(candidate_cut))
+                    else {
+                        failure = Some(SessionPlaybackError::ArithmeticOverflow);
+                        return;
+                    };
+                    if let Err(error) = add_or_extend_suppression(
+                        suppressions,
+                        capacity,
+                        MidiOccurrenceSuppression::analytic(
+                            crate::mutable_instrument::MutableOccurrenceKey {
+                                track: old_route.id,
+                                clip: span.clip,
+                                note: span.note,
+                                iteration: span.iteration,
+                                loop_pass: 0,
+                            },
+                            until_frame,
+                        ),
+                    ) {
+                        failure = Some(error);
+                    }
+                })
+                .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+        }
+        if let Some(error) = failure {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+/// The candidate frame and loop pass at the donor cursor's Arrangement beat.
+/// A cursor inside the donor's active loop stays inside the candidate loop: a
+/// remapped frame at or after its end wraps as rendering would, one pass per
+/// whole loop length.
+fn candidate_arrangement_cut(
+    previous: &SessionPlayback,
+    candidate_timing: &impl crate::MidiTiming,
+    candidate_loop: Option<hex_project::LoopRegion>,
+) -> Result<(u64, u64), SessionPlaybackError> {
+    use crate::MidiTiming as _;
+    let beat = base_timing_for(previous.revision.session(), previous.periodic_tempo())
+        .frame_to_beat(previous.arrangement_frame)
+        .map_err(|_| SessionPlaybackError::TempoConversion)?;
+    let frame = candidate_timing
+        .beat_to_frame(beat)
+        .map_err(|_| SessionPlaybackError::TempoConversion)?;
+    let pass = previous.arrangement_loop_pass;
+    match candidate_loop.filter(|_| previous.active_loop_region().is_some()) {
+        Some(region) => super::render::normalize_loop_cursor(frame, region, pass),
+        None => Ok((frame, pass)),
+    }
+}
+
 fn inline_tuning_owner_matches(source: &crate::Track, target: &crate::Track) -> bool {
     source.instrument_id == target.instrument_id
         && source.instrument_state == target.instrument_state
@@ -3506,6 +5343,7 @@ fn retune_inline_release(
     previous: &SessionPlayback,
     candidate: &PreparedRevision,
     routes: &[TrackRoute],
+    candidate_cut: u64,
     release: &mut ReleaseEntry,
 ) -> Result<(), SessionPlaybackError> {
     use crate::midi_note_bank::PreparedMidiNote;
@@ -3543,7 +5381,7 @@ fn retune_inline_release(
         RouteOwner::Arrangement => {
             let mut sampler = None;
             target
-                .for_each_active_midi_span(previous.arrangement_frame, |span, prepared| {
+                .for_each_active_midi_span(candidate_cut, |span, prepared| {
                     if span.clip == owned.key.clip
                         && span.note == owned.key.note
                         && span.iteration == owned.key.iteration
@@ -3559,11 +5397,12 @@ fn retune_inline_release(
                 .map_err(|e| SessionPlaybackError::Arrangement(e.0))?;
             sampler
         }
-        RouteOwner::Session { clip, launch } => candidate
+        RouteOwner::Session { clip, origin } => candidate
             .session()
             .midi_clip_for_track(clip, release.track_id)
             .and_then(|clip| {
-                let occurrence = clip.occurrence(owned.key.note, owned.key.iteration, launch)?;
+                let occurrence =
+                    clip.occurrence_with_origin(owned.key.note, owned.key.iteration, origin)?;
                 if clip.id != owned.key.clip
                     || occurrence.onset != owned.onset_beat
                     || occurrence.gate_end != owned.gate_end_beat
@@ -3597,4 +5436,31 @@ fn retune_inline_release(
         .voice
         .set_sampler(PreparedMidiNote::Inline(continued));
     Ok(())
+}
+
+/// Strict-planner refusals for transitions whose history cannot carry over.
+/// The live publication path replaces them with a restart at the cursor.
+pub(crate) const MIDI_SOURCE_LAYOUT_CHANGED: &str = "midi source layout changed";
+pub(crate) const COMPENSATED_TIMING_CHANGED: &str = "compensated timing changed";
+pub(crate) const COMPENSATED_TAILS_CHANGED: &str =
+    "compensated processor tails cannot carry this chain change";
+
+/// Transition refusals the live reset handoff replaces. Capacity, budget,
+/// foreign-tail and source-custody refusals stay refusals: a restart would
+/// not satisfy what they protect.
+fn restartable(error: SessionPlaybackError) -> bool {
+    match error {
+        SessionPlaybackError::LatencyLayoutChanged
+        | SessionPlaybackError::MutableInstrumentChase
+        | SessionPlaybackError::MutableInstrumentActive
+        | SessionPlaybackError::MutableInstrumentLoopBoundsActive
+        | SessionPlaybackError::SourceHistoryUnavailable => true,
+        SessionPlaybackError::Arrangement(message) => [
+            MIDI_SOURCE_LAYOUT_CHANGED,
+            COMPENSATED_TIMING_CHANGED,
+            COMPENSATED_TAILS_CHANGED,
+        ]
+        .contains(&message),
+        _ => false,
+    }
 }

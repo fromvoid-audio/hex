@@ -93,6 +93,7 @@ fn browser_picker_compact_heading_paint_retains_every_source_row_and_settings_sl
         "browser-section-devices",
         "browser-section-projects",
         "browser-section-all",
+        "browser-section-vst3",
         "browser-control-⚙",
         "browser-place-0",
     ];
@@ -104,6 +105,7 @@ fn browser_picker_compact_heading_paint_retains_every_source_row_and_settings_sl
         "browser-picker-glyph-section-1",
         "browser-picker-glyph-section-2",
         "browser-picker-glyph-section-3",
+        "browser-picker-glyph-section-4",
         "browser-picker-glyph-place-0",
     ];
     let outer = visual.debug_bounds("browser-resize-handle").unwrap();
@@ -273,4 +275,171 @@ fn browser_picker_compact_drag_hysteresis_avoids_chatter_and_keeps_other_widths_
         );
         resize(visual, minimum + band * 0.5);
     }
+}
+
+#[gpui::test]
+fn help_toggle_preserves_collapsed_source_identification_query_focus_and_changelog(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _directory) = picker(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let minimum = f32::from(visual.debug_bounds("browser-control-⚙").unwrap().size.width) + 1.0;
+    resize(visual, minimum);
+    let deadline = crate::test_wait::hang_deadline();
+    while editor.read_with(visual, |view, _| view.state.is_none()) {
+        editor.update(visual, |view, cx| {
+            view.tick(cx);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "initial worker snapshot"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let revision = editor.read_with(visual, |view, _| {
+        view.state
+            .as_ref()
+            .map(|state| (state.revision, state.can_undo, state.can_redo))
+    });
+    let query = visual.debug_bounds("browser-search").unwrap().center();
+    visual.simulate_click(query, Modifiers::default());
+    for (index, enabled) in [false, true, false].into_iter().enumerate() {
+        assert_eq!(visual.update(|_, cx| crate::tooltips::enabled(cx)), enabled);
+        editor.update_in(visual, |view, window, cx| {
+            assert!(
+                view.browser
+                    .search
+                    .read(cx)
+                    .focus_handle()
+                    .is_focused(window)
+            );
+        });
+        for target in [
+            "browser-section-samples",
+            "browser-section-devices",
+            "browser-section-projects",
+            "browser-section-all",
+            "browser-section-vst3",
+            "browser-place-0",
+        ] {
+            let center = visual.debug_bounds(target).unwrap().center();
+            visual.simulate_mouse_move(center, None, Modifiers::default());
+            visual.run_until_parked();
+            visual
+                .executor()
+                .advance_clock(std::time::Duration::from_secs(1));
+            visual.run_until_parked();
+            assert!(
+                visual.debug_bounds("identification-tooltip").is_some(),
+                "{target}, enabled={enabled}"
+            );
+        }
+        assert_eq!(
+            editor.read_with(visual, |view, _| view.state.as_ref().map(|state| (
+                state.revision,
+                state.can_undo,
+                state.can_redo
+            ))),
+            revision
+        );
+        if index < 2 {
+            let button = visual.debug_bounds("help-tooltip-toggle").unwrap().center();
+            visual.simulate_click(button, Modifiers::default());
+            visual.run_until_parked();
+        }
+    }
+    let changelog = visual.debug_bounds("open-changelog").unwrap().center();
+    visual.simulate_click(changelog, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("changelog-notes").is_some());
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("changelog-notes").is_none());
+    let node = visual.update(|window, _| {
+        window
+            .accessibility_nodes()
+            .find(|node| node.descriptor.name.as_ref() == "help tooltips")
+            .unwrap()
+            .descriptor
+            .clone()
+    });
+    assert!(
+        visual.update(|window, cx| window.perform_accessibility_request(
+            &gpui::AccessibilityRequest {
+                id: node.id,
+                revision: node.revision,
+                action: gpui::AccessibilityAction::Focus
+            },
+            cx
+        ))
+    );
+    visual.run_until_parked();
+    assert!(visual.update(|window, _| {
+        window
+            .accessibility_nodes()
+            .find(|n| n.descriptor.id == node.id)
+            .unwrap()
+            .descriptor
+            .focused
+    }));
+    visual.simulate_keystrokes("shift-tab");
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_background("open-changelog"),
+        Some(gpui::Background::from(gpui::rgb(crate::theme::color(
+            crate::theme::PaletteRole::Hover
+        )))),
+        "previous tab stop is changelog"
+    );
+    visual.simulate_keystrokes("tab");
+    visual.run_until_parked();
+    assert!(
+        visual.update(|window, _| window
+            .accessibility_nodes()
+            .find(|n| n.descriptor.id == node.id)
+            .unwrap()
+            .descriptor
+            .focused),
+        "next tab stop is help"
+    );
+    for key in ["space", "enter"] {
+        visual.simulate_event(gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse(key).unwrap(),
+            is_held: true,
+        });
+        visual.run_until_parked();
+        assert!(
+            !visual.update(|_, cx| crate::tooltips::enabled(cx)),
+            "held activation stays off"
+        );
+    }
+    visual.simulate_keystrokes("space");
+    visual.run_until_parked();
+    assert!(
+        !visual.update(|_, cx| crate::tooltips::enabled(cx)),
+        "Space remains the global transport shortcut"
+    );
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert!(
+        visual.update(|_, cx| crate::tooltips::enabled(cx)),
+        "Enter activates the focused help toggle"
+    );
+    visual.simulate_keystrokes("shift-tab enter");
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("changelog-notes").is_some(),
+        "shift-tab reaches changelog"
+    );
+    assert_eq!(
+        editor.read_with(visual, |view, _| view.state.as_ref().map(|state| (
+            state.revision,
+            state.can_undo,
+            state.can_redo
+        ))),
+        revision
+    );
 }

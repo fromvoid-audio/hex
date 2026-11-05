@@ -40,6 +40,7 @@ struct CacheSlot {
     disposal: Disposal,
 }
 struct CellSlot {
+    active: bool,
     track: hex_project::TrackId,
     scene: hex_project::SceneId,
     clip: hex_project::ClipId,
@@ -48,6 +49,7 @@ struct CellSlot {
     handle: u64,
     start: u64,
     end: u64,
+    loop_range: Option<hex_project::SessionAudioLoop>,
     gain: hex_project::ClipGain,
     name: String,
     owner: Option<OwnedAudioSource>,
@@ -167,6 +169,31 @@ impl SessionSourceConstruction {
         bank: &OwnedAudioInputs,
         arrangement_handles: usize,
     ) -> Result<(), AudioStorageError> {
+        self.reserve_scoped(project, generation, bank, arrangement_handles, false)
+    }
+    pub(crate) fn reserve_current_sampler(
+        &mut self,
+        project: &Project,
+        generation: u64,
+        bank: &OwnedAudioInputs,
+        arrangement_handles: usize,
+        effects: bool,
+    ) -> Result<(), AudioStorageError> {
+        if !crate::native_device_resources::current_sampler::validate_project_with_effects(
+            project, effects,
+        )? {
+            return Err(AudioStorageError::UnsupportedGraph);
+        }
+        self.reserve_scoped(project, generation, bank, arrangement_handles, true)
+    }
+    fn reserve_scoped(
+        &mut self,
+        project: &Project,
+        generation: u64,
+        bank: &OwnedAudioInputs,
+        arrangement_handles: usize,
+        current_sampler: bool,
+    ) -> Result<(), AudioStorageError> {
         if !self.cells.is_empty() || !self.cache.is_empty() {
             return Err(AudioStorageError::Capacity);
         }
@@ -175,6 +202,7 @@ impl SessionSourceConstruction {
             .session_cells()
             .iter()
             .try_fold(0_usize, |n, cell| match cell.content() {
+                SessionCellContent::Midi(_) if current_sampler => Ok(n),
                 SessionCellContent::Midi(_) => Err(AudioStorageError::UnsupportedGraph),
                 SessionCellContent::Audio(_) => n.checked_add(1).ok_or(AudioStorageError::Overflow),
                 SessionCellContent::Stop => Ok(n),
@@ -242,15 +270,14 @@ impl SessionSourceConstruction {
             {
                 return Err(AudioStorageError::SourceMismatch);
             }
-            if let SourceKind::Streamed(meta) = &owner.kind {
-                if meta.key().generation() != generation
+            if let SourceKind::Streamed(meta) = &owner.kind
+                && (meta.key().generation() != generation
                     || meta.key().asset() != asset.id()
                     || meta.source_rate() != asset.source_sample_rate()
                     || meta.source_frames() != asset.source_frames()
-                    || meta.conversion_version() != asset.conversion_version()
-                {
-                    return Err(AudioStorageError::SourceMismatch);
-                }
+                    || meta.conversion_version() != asset.conversion_version())
+            {
+                return Err(AudioStorageError::SourceMismatch);
             }
             if clip.name().trim().is_empty()
                 || clip.name().len() > hex_project::MAX_NAME_BYTES
@@ -280,6 +307,7 @@ impl SessionSourceConstruction {
             // reserved directly in the persistent cell before source cloning.
             let index = self.cells.len();
             self.cells.push(CellSlot {
+                active: clip.active(),
                 track: cell.track(),
                 scene: cell.scene(),
                 clip: clip.id(),
@@ -288,6 +316,7 @@ impl SessionSourceConstruction {
                 handle: handle()?,
                 start: clip.source_start(),
                 end: clip.source_end(),
+                loop_range: clip.loop_range(),
                 gain: clip.gain(),
                 name: String::new(),
                 owner: None,
@@ -511,6 +540,7 @@ impl SessionSourceConstruction {
         l.vec(cache)?;
         for row in cells {
             let CellSlot {
+                active: _,
                 track: _,
                 scene: _,
                 clip: _,
@@ -519,6 +549,7 @@ impl SessionSourceConstruction {
                 handle: _,
                 start: _,
                 end: _,
+                loop_range: _,
                 gain: _,
                 name,
                 owner,

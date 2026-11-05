@@ -1,0 +1,760 @@
+//! Native source control entry points; actual owners stay inside CandidateRoot.
+use super::*;
+use crate::{
+    NativeSourceDataReservation, NativeSourcePreparationProgress, NativeSourcePreparationReturn,
+};
+use hex_lattice::ProcessorInstanceIdentity;
+use hex_lattice_contract::{ForeignProcessorBinding as Binding, NativeDeviceState};
+use hex_plugin_host::native;
+use hex_plugin_scan::macos::build_identity::InstanceBuild;
+
+pub(super) enum NativeEpochRuntimeTarget {
+    Constructor(crate::candidate_custody::NativeEpochTarget),
+    Ordinary(AppliedAudioSource),
+}
+
+impl PublicationControl {
+    /// Query actual SDK controller metadata through the original Root effect
+    /// or loan worker. Busy/preparing/quiescent/closing sources refuse without
+    /// replacing them. Normally stopped transport uses its joined original
+    /// worker. An admitted token is returned even if close races admission;
+    /// the caller retains it until its exact terminal or worker release. A
+    /// token does not imply that the source remains open. Neither admission nor
+    /// copied metadata grants edit authority.
+    pub fn begin_native_source_controller_query_on_control(
+        &mut self,
+        binding: Binding,
+        query: hex_plugin_host::protocol::ParameterPageQuery,
+    ) -> Result<crate::plugin_worker::NativeWorkerControllerQuery, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native controller output is closing");
+        }
+        self.candidate_root
+            .begin_native_controller_query(binding, query)
+    }
+    /// Consume only the exact source/worker query terminal. Recheck the owning
+    /// document/device context before using these copied observations in UI.
+    /// Source revocation wins over a late result; close suppresses delivery.
+    pub fn poll_native_source_controller_query_on_control(
+        &mut self,
+        binding: Binding,
+        request: &crate::plugin_worker::NativeWorkerControllerQuery,
+    ) -> Result<crate::plugin_worker::NativeWorkerControllerProgress, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native controller output is closing");
+        }
+        let result = self
+            .candidate_root
+            .poll_native_controller_query(binding, request)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native controller output is closing");
+        }
+        Ok(result)
+    }
+    /// Request/read ordered native controller callbacks through the actual
+    /// original effect or loan control. None is pending; Some consumes at most
+    /// eight receipts. Call regularly while observing an editor: bounded full
+    /// queues backpressure, never coalesce gesture boundaries. Wrong/closed/
+    /// revoked sources refuse. Native receipts grant no canonical automation or
+    /// future-liveness authority; source terminal cancels pending observations.
+    pub fn poll_native_source_parameter_edits_on_control(
+        &mut self,
+        binding: Binding,
+    ) -> Result<Option<hex_plugin_host::protocol::ParameterEdits>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native edit output is closing");
+        }
+        let result = self.candidate_root.native_source_parameter_edits(binding)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native edit output is closing");
+        }
+        Ok(result)
+    }
+    /// Observe the exact live worker's edit receipts and uncovered latency
+    /// restart. Opt in only when the consumer can restore the stopped source.
+    pub fn poll_native_source_recovery_edits_on_control(
+        &mut self,
+        binding: Binding,
+    ) -> Result<Option<hex_plugin_host::protocol::RecoveryEdits>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native edit output is closing");
+        }
+        self.candidate_root.native_source_recovery_edits(binding)
+    }
+    /// Inspect latest processor parameter values through the actual original
+    /// Root-held effect or its unique loan control. Wrong/closed/revoked sources
+    /// refuse; busy is a read refusal, not consumption or transport cancellation.
+    /// Values and their worker prefix are processing observations, not authored
+    /// edits, final callback delivery or graph/canonical installation authority.
+    pub fn native_source_parameter_values_on_control(
+        &self,
+        binding: Binding,
+    ) -> Result<crate::plugin_worker::NativeParameterValues, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native parameter output is closing");
+        }
+        let result = self
+            .candidate_root
+            .native_source_parameter_values(binding)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native parameter output is closing");
+        }
+        Ok(result)
+    }
+    /// Admit one capture through the original Root-held effect/control,
+    /// including an active callback loan or normally ended transport. Stopped
+    /// capture requires the original worker's joined healthy terminal and leaves
+    /// transport revoked. No graph/endpoint is returned or
+    /// replaced. The caller owns/accounting for its correlation token and must
+    /// retire it on the exact terminal, including source close/refusal.
+    pub fn begin_native_source_state_capture_on_control(
+        &mut self,
+        binding: Binding,
+    ) -> Result<crate::plugin_worker::NativeWorkerCapture, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        self.candidate_root.begin_live_native_capture(binding)
+    }
+    /// Current state is copied data only, never canonical/source installation.
+    /// Root binding/token checks do not prove the latest document/editor or
+    /// applied graph context when a source is reused. Recheck that owning
+    /// context before using data in a save; preserve confirmed state on error.
+    pub fn poll_native_source_state_capture_on_control(
+        &mut self,
+        binding: Binding,
+        request: &crate::plugin_worker::NativeWorkerCapture,
+    ) -> Result<crate::plugin_worker::NativeWorkerCaptureProgress, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        let result = self
+            .candidate_root
+            .poll_live_native_capture(binding, request)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        Ok(result)
+    }
+    /// Nondefault deterministic fixture control: original worker's observed
+    /// completion prefix. Neither queueing, readiness nor custody authority.
+    #[cfg(feature = "allocation-probe")]
+    pub fn native_source_completed_blocks(&self, binding: Binding) -> Option<u64> {
+        self.candidate_root.native_source_completed_blocks(binding)
+    }
+    /// Nonblocking actual source-pair observation: (endpoint loan outstanding,
+    /// transport live). A queued loan stays outstanding until actual control
+    /// ingestion; a returned/revoked pair is not made live by querying it.
+    /// None includes contention/stale/retiring/closed sources. This is not
+    /// endpoint installation, graph admission, or callback readiness authority.
+    pub fn native_source_endpoint_status(&self, binding: Binding) -> Option<(bool, bool)> {
+        if self.status.closing.load(Acquire) {
+            return None;
+        }
+        self.candidate_root.native_source_endpoint_status(binding)
+    }
+    /// Nonblocking observation of this original endpoint's actual callback
+    /// installation, independent of queue admission. None includes a stale,
+    /// retiring/closed source or control contention. True grants neither graph
+    /// application nor transport readiness: normal publication still validates
+    /// the actual source/pair, including any later Stop or refusal.
+    pub fn native_source_endpoint_installed(&self, binding: Binding) -> Option<bool> {
+        if self.status.closing.load(Acquire) {
+            return None;
+        }
+        self.candidate_root
+            .native_source_endpoint_installed(binding)
+    }
+    /// Exclude transport/publication while the callback acknowledges the exact
+    /// current native runtime after the admitted command prefix. This witness
+    /// grants no source ownership and does not acknowledge graph/endpoint return.
+    pub fn request_native_epoch_fence(
+        &self,
+        expected: AppliedAudioSource,
+    ) -> Result<StoppedEditFence, &'static str> {
+        self.request_native_epoch_source_fence(expected, false)
+    }
+    /// Fence the exact current ordinary graph while renewing original loaded
+    /// sources, including sources removed by Undo whose tail has already ended.
+    /// Stop may remove the last foreign runtime before acknowledgement; the
+    /// actual ordinary graph/source must still match. Constructor/sampler and
+    /// verified-streaming paths retain their existing fences. Readiness grants
+    /// no return or renewal: original graph and endpoint ingestion remain required.
+    pub fn request_ordinary_native_epoch_fence(
+        &self,
+        expected: AppliedAudioSource,
+    ) -> Result<StoppedEditFence, &'static str> {
+        self.request_native_epoch_source_fence(expected, true)
+    }
+    fn request_native_epoch_source_fence(
+        &self,
+        expected: AppliedAudioSource,
+        ordinary: bool,
+    ) -> Result<StoppedEditFence, &'static str> {
+        self.status.retire_stopped_edit_on_control();
+        // Compensated stream windows currently reject the native bridge's
+        // positive latency. Do not admit renewal in a mode that cannot install
+        // its compensated successor; that window contract must be extended first.
+        if self.status.verified_streaming_mode.load(Acquire) {
+            return Err("native epoch renewal requires resident playback");
+        }
+        if !self.native_custody
+            || self.status.closing.load(Acquire)
+            || self.status.publication_pending.load(Acquire)
+            || self.status.publication_pending.recording_active()
+            || if ordinary {
+                self.status.applied_audio_source().is_some()
+                    || !self.candidate_root.ordinary_streams_configured()
+                    || self.status.recording_source() != Some(expected)
+            } else {
+                self.status.native_effect_source() != Some(expected)
+            }
+        {
+            return Err("native epoch output is not current or publication is pending");
+        }
+        if !self.status.publication_pending.reserve_native_epoch() {
+            return Err("native epoch publication or recording is pending");
+        }
+        let result = if ordinary {
+            self.status.sampler_edit.begin_ordinary_native_epoch_source(
+                expected,
+                self.status.admitted_ticket.load(Acquire),
+            )
+        } else {
+            self.status.sampler_edit.begin_source(
+                expected,
+                self.status.admitted_ticket.load(Acquire),
+                false,
+                false,
+                true,
+            )
+        };
+        match result {
+            Ok(token) => Ok(token),
+            Err(reason) => {
+                self.status.publication_pending.release_native_epoch();
+                Err(reason)
+            }
+        }
+    }
+
+    /// Queue return of exactly this stopped runtime and its original native
+    /// endpoints through the existing carriers. Keep the stopped fence held
+    /// through renewal/successor installation. Enqueue success is not return:
+    /// source renewal still requires control ingestion and all graph refs gone.
+    pub fn return_stopped_native_epoch_runtime(
+        &mut self,
+        ticket: &crate::AudioCandidateTicket,
+        fence: StoppedEditFence,
+    ) -> Result<(), &'static str> {
+        if !self.native_custody
+            || self.status.closing.load(Acquire)
+            || self.status.publication_pending.load(Acquire)
+            || self
+                .status
+                .sampler_edit
+                .native_epoch_context(fence)
+                .is_none()
+            || self.stopped_edit_fence_state(fence) != StoppedEditFenceState::Ready
+        {
+            return Err("native epoch requires an observed stopped source fence");
+        }
+        let target = ticket
+            .native_epoch_target(self.candidate_root.root_id())
+            .ok_or("native epoch runtime belongs to another output")?;
+        let chunk = self
+            .publications
+            .write_chunk_uninit(1)
+            .map_err(|_| "native epoch publication is busy")?;
+        chunk.fill_from_iter(std::iter::once(QueuedPublication::NativeEpoch {
+            target: NativeEpochRuntimeTarget::Constructor(target),
+            fence,
+        }));
+        Ok(())
+    }
+    /// Return exactly the callback-observed ordinary native graph under its
+    /// ready fence. Success queues only a scalar request; Root still requires
+    /// actual graph destruction and original endpoint ingestion before renewal.
+    pub fn return_stopped_ordinary_native_epoch_runtime(
+        &mut self,
+        source: AppliedAudioSource,
+        fence: StoppedEditFence,
+    ) -> Result<(), &'static str> {
+        // The same still-held operation may need another fresh epoch when Stop
+        // revokes a newly prepared cohort before successor installation. There
+        // is no current graph in that case, but actual endpoint return is still
+        // required; the callback independently proves this vacant frontier.
+        let vacant = self.status.native_effect_source().is_none()
+            && self.status.recording_source().is_none()
+            && self.status.applied_revision.load(Acquire) == source.audio_revision;
+        if !self.native_custody
+            || !self.candidate_root.ordinary_streams_configured()
+            || self.status.closing.load(Acquire)
+            || self.status.publication_pending.load(Acquire)
+            || (self.status.native_effect_source() != Some(source)
+                && !(self.status.sampler_edit.ordinary_native_epoch_active()
+                    && self.status.applied_audio_source().is_none()
+                    && self.status.recording_source() == Some(source))
+                && !vacant)
+            || source.output_identity != self.candidate_root.root_id()
+            || self.status.sampler_edit.native_epoch_context(fence) != Some(source.context)
+        {
+            return Err("ordinary native epoch requires its observed stopped source");
+        }
+        let chunk = self
+            .publications
+            .write_chunk_uninit(1)
+            .map_err(|_| "native epoch publication is busy")?;
+        chunk.fill_from_iter(std::iter::once(QueuedPublication::NativeEpoch {
+            target: NativeEpochRuntimeTarget::Ordinary(source),
+            fence,
+        }));
+        Ok(())
+    }
+    /// Renew custody of this exact loaded source after its original callback
+    /// endpoint and every old graph reference returned. The new binding is a
+    /// pending operation: query facts, complete with actual presentation, then
+    /// construct/loan fresh paired endpoints before proposing a successor graph.
+    pub fn quiesce_native_source_preparation(
+        &mut self,
+        previous: Binding,
+        graph: u64,
+    ) -> Result<Binding, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native epoch output is closing");
+        }
+        self.candidate_root
+            .quiesce_native_source_preparation(previous, graph)
+    }
+    /// Reactivate this exact renewed reservation's stopped component and
+    /// replace its facts before planning presentation and completing the epoch.
+    /// May reset effect history. Some returns fresh facts, None retains a
+    /// failed native owner for disposal, and Err refuses admission or close.
+    /// The caller must rebuild compensation before publishing the successor.
+    /// This operation runs only on control after actual graph and endpoint return.
+    pub fn reactivate_native_source_on_control(
+        &mut self,
+        binding: Binding,
+    ) -> Result<Option<hex_plugin_host::protocol::Facts>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native reactivation output is closing");
+        }
+        let result = self.candidate_root.reactivate_native_source(binding)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native reactivation output is closing");
+        }
+        Ok(result)
+    }
+    /// Settle latency restarts on this exact stopped source reservation
+    /// before completing its new epoch and preparing compensation.
+    pub fn settle_native_latency_on_control(
+        &mut self,
+        binding: Binding,
+    ) -> Result<Option<hex_plugin_host::protocol::Facts>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native reactivation output is closing");
+        }
+        self.candidate_root.settle_native_latency(binding)
+    }
+    /// Capture the original quiescent owner after actual graph/endpoint return.
+    /// `binding` names Root's renewed reservation; the helper still acknowledges
+    /// its old physical binding until the normal completion/resume transaction.
+    /// Some is fresh bounded data only; None means native failure/close retained
+    /// for normal progress/error/disposal recovery. Err is synchronous refusal.
+    /// Keep last confirmed state on either refusal. Caller owns/accounting for
+    /// the copied envelope; this does not install it or grant publication.
+    pub fn capture_native_source_state_on_control(
+        &mut self,
+        binding: Binding,
+        is_cancelled: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<NativeDeviceState>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        self.candidate_root
+            .capture_native_source_state(binding, is_cancelled)
+    }
+    /// Apply parameter-only changes to Root's actual quiescent source after
+    /// graph and endpoint return. Binding names the renewed reservation; the
+    /// helper still validates its old physical epoch until normal resume.
+    /// Some is stopped DSP/controller readback, not a canonical edit or resume.
+    /// None is native failure/close retained for ordinary disposal; Err refuses
+    /// admission. Keep confirmed state on either refusal and recheck document
+    /// context before consuming the result. Never call on the audio callback.
+    pub fn flush_native_source_parameters_on_control(
+        &mut self,
+        binding: Binding,
+        parameters: &hex_plugin_host::transport::Parameters,
+        is_cancelled: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<hex_plugin_host::protocol::FlushedParameters>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native parameter output is closing");
+        }
+        let result = self.candidate_root.flush_native_source_parameters(
+            binding,
+            parameters,
+            is_cancelled,
+        )?;
+        if self.status.closing.load(Acquire) {
+            return Err("native parameter output is closing");
+        }
+        Ok(result)
+    }
+    /// Reserve fixed cells and per-cell variable DATA allowances before exposing
+    /// the output. The whole pool's allowances remain charged, including vacant
+    /// cells, so other admissions cannot spend that capacity. This is not actual
+    /// producer/resource sealing and cannot grant graph/publication eligibility.
+    pub fn configure_native_source_preparation(
+        &mut self,
+        capacity: usize,
+        limits: NativeSourceDataReservation,
+    ) -> Result<(), &'static str> {
+        if !self.native_custody
+            || self.revision != 0
+            || self.status.client_exposed.load(Acquire)
+            || self.status.closing.load(Acquire)
+        {
+            return Err("native preparation requires a vacant native output");
+        }
+        if self.device_resources.is_some() {
+            let graphs = self
+                .publications
+                .buffer()
+                .capacity()
+                .checked_add(RETIRED)
+                .and_then(|n| n.checked_add(5))
+                .ok_or("ordinary native graph capacity overflow")?;
+            self.candidate_root
+                .configure_ordinary_native_references(graphs)?;
+        }
+        self.candidate_root
+            .configure_native_source_preparation(capacity, limits)
+    }
+    /// Check the existing native source reservation on control before staging
+    /// a bounded cohort. Unavailable or contended custody refuses this check.
+    /// Subsequent preparation must still pass each original admission.
+    pub fn has_vacant_native_source_slots_on_control(&self, needed: usize) -> bool {
+        self.native_custody
+            && !self.status.closing.load(Acquire)
+            && self.candidate_root.has_vacant_native_source_slots(needed)
+    }
+    /// Run source preparation on the existing control worker, never UI/audio.
+    /// Success parks the actual owner in Root even after refusal/close. The
+    /// initial binding and cancellation pair are created by Root before spawn.
+    /// Callers cancel by exact binding; no descriptor-owning token escapes.
+    #[allow(clippy::too_many_arguments)] // Complete typed native request; no separate caller cancellation owner.
+    pub fn begin_native_source_preparation(
+        &mut self,
+        identity: ProcessorInstanceIdentity,
+        graph: u64,
+        build: &InstanceBuild,
+        source: native::Source,
+        preparation: native::Preparation,
+        restore: Option<NativeDeviceState>,
+        trust: native::TrustUserCode,
+    ) -> Result<Binding, &'static str> {
+        if !self.native_custody
+            || self.status.closing.load(Acquire)
+            || preparation.sample_rate != f64::from(self.rate)
+            || self.requested_physical_callback_frames != Some(preparation.quantum)
+        {
+            return Err("native preparation output profile differs or is closing");
+        }
+        self.candidate_root.begin_native_source_preparation(
+            identity,
+            graph,
+            build,
+            source,
+            preparation,
+            restore,
+            trust,
+        )
+    }
+    /// Supply the presentation plan. The exact Pending becomes a Root-held Prepared or retained
+    /// refusal. Ok acknowledges custody only; inspect progress/error separately.
+    /// Run on the existing control worker. This does not publish a graph.
+    pub fn complete_native_source_preparation(
+        &mut self,
+        binding: Binding,
+        presentation: impl Into<hex_plugin_host::protocol::PresentationPlan>,
+    ) -> Result<(), &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native preparation output is closing");
+        }
+        self.candidate_root
+            .complete_native_source_preparation(binding, presentation)
+    }
+    /// Construct the actual copied-transport worker/callback pair inside Root.
+    /// Ok acknowledges retained custody, including constructor refusal. Neither
+    /// the pair nor its facts grant graph/publication admission yet.
+    pub fn start_native_effect(&mut self, binding: Binding) -> Result<(), &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native preparation output is closing");
+        }
+        self.candidate_root.start_native_effect(binding)
+    }
+    /// Run pure graph compilation with definitions borrowed from these exact
+    /// Root-owned effect pairs. This does not transfer endpoints or authorize
+    /// publication. The visitor runs on the existing control worker.
+    pub fn with_native_effect_definition<R>(
+        &self,
+        bindings: &[Binding],
+        prepare: impl FnOnce(&crate::plugin_effects::NativeEffectDefinition<'_>) -> Result<R, String>,
+    ) -> Result<R, String> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native effect output is closing".into());
+        }
+        self.candidate_root
+            .with_native_effect_definition(bindings, prepare)
+    }
+    /// Borrow selected actual Root source definitions while preparing inside
+    /// this same Root's reserved cell. One Work guard covers both sides; no
+    /// nested acquisition, source extraction or independent lifecycle exists.
+    pub fn prepare_audio_candidate_with_native_sources_on_control(
+        &mut self,
+        token: crate::AudioCandidatePreparationToken,
+        bindings: &[Binding],
+        prepare: impl FnOnce(
+            &mut hex_engine::AudioCandidatePreparation,
+            &hex_engine::AudioCandidateEffects<'_, '_>,
+        ) -> Result<(), hex_engine::AudioStorageError>,
+    ) -> Result<crate::AudioCandidatePreparationProgress, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native effect output is closing");
+        }
+        self.candidate_root
+            .with_native_runtime_preparation(token, bindings, prepare)
+    }
+    /// Copy the original restored envelope, or actual initial capture for a
+    /// fresh source. Read-only state is never Root/graph admission authority.
+    pub fn native_source_prepared_state(&self, binding: Binding) -> Option<NativeDeviceState> {
+        self.candidate_root.native_source_prepared_state(binding)
+    }
+    /// Copy bounded original source metadata on control. This borrows the exact
+    /// constructed worker owner even while its endpoint is loaned; no native
+    /// resource, state capture or permission is returned. New preparation still
+    /// revalidates files and constructs an independent source through this Root.
+    pub fn native_source_metadata(
+        &self,
+        binding: Binding,
+    ) -> Result<crate::plugin_effects::EffectSourceMetadata, String> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native source control is closing".into());
+        }
+        self.candidate_root.native_source_metadata(binding)
+    }
+    pub fn native_source_preparation_progress(
+        &self,
+        binding: Binding,
+    ) -> Option<NativeSourcePreparationProgress> {
+        self.candidate_root
+            .native_source_preparation_progress(binding)
+    }
+    /// Record retirement of this exact source. Original graph references defer
+    /// endpoint return and worker disposal; a true result needs no retry.
+    /// False records no request: inspect progress and retry a still-live source
+    /// when the control executor is busy. Unknown or terminal bindings refuse.
+    pub fn retire_native_source_preparation(&mut self, binding: Binding) -> bool {
+        self.candidate_root
+            .retire_native_source_preparation(binding)
+    }
+    /// Observe the original construction/cleanup failure without taking its
+    /// owner or treating an unresolved child as a recoverable return.
+    pub fn native_source_preparation_error(&self, binding: Binding) -> Option<String> {
+        self.candidate_root.native_source_preparation_error(binding)
+    }
+    /// Observe the same original diagnostic without confusing control contention
+    /// with a successfully observed absence of error. Busy is nondestructive;
+    /// stale bindings refuse. This read grants no source/terminal custody.
+    pub fn try_native_source_preparation_error(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<String>, &'static str> {
+        self.candidate_root
+            .try_native_source_preparation_error(binding)
+    }
+    pub fn recover_native_source_preparation(
+        &mut self,
+        binding: Binding,
+    ) -> Option<NativeSourcePreparationReturn> {
+        self.candidate_root
+            .recover_native_source_preparation(binding)
+    }
+}
+
+impl PublicationControl {
+    /// Queue the unique actual endpoint; the existing Root keeps its worker.
+    /// Queue acceptance grants no graph, canonical edit or disposal authority.
+    /// A full queue refuses before extracting the original constructor pair.
+    pub fn publish_native_source_endpoint(&mut self, binding: Binding) -> Result<(), &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native preparation output is closing");
+        }
+        let chunk = self
+            .publications
+            .write_chunk_uninit(1)
+            .map_err(|_| "native endpoint publication is busy")?;
+        let endpoint = self.candidate_root.loan_native_endpoint(binding)?;
+        chunk.fill_from_iter(std::iter::once(QueuedPublication::Native(endpoint)));
+        Ok(())
+    }
+}
+impl Callback {
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn native_root_for_control_fixture(
+        &self,
+    ) -> crate::candidate_custody::CandidateRoot {
+        self.candidate_root.clone()
+    }
+    /// Read-only headless control query, outside rendering/allocation probes.
+    /// This grants no readiness, endpoint loan, graph admission or native ACK.
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn native_workers_idle_on_control(&self) -> Option<bool> {
+        self.native_sources
+            .workers_idle_on_control(&self.candidate_root)
+    }
+    pub(super) fn current_native_epoch_fence_source(&self) -> Option<AppliedAudioSource> {
+        if !self.status.sampler_edit.ordinary_native_epoch_active() {
+            return self.current_native_epoch_source();
+        }
+        let active = self.active.as_ref().and_then(ActivePublication::legacy)?;
+        active.source_context.map(|context| AppliedAudioSource {
+            context,
+            audio_revision: active.revision,
+            output_identity: self.candidate_root.root_id(),
+        })
+    }
+    pub(super) fn current_native_epoch_source(&self) -> Option<AppliedAudioSource> {
+        match self.active.as_ref()? {
+            ActivePublication::Eligible(active) => active.applied_audio_source(),
+            ActivePublication::Legacy(active)
+                if self.native_sources.ordinary_runtime_requires_sources() =>
+            {
+                active.source_context.map(|context| AppliedAudioSource {
+                    context,
+                    audio_revision: active.revision,
+                    output_identity: self.candidate_root.root_id(),
+                })
+            }
+            _ => None,
+        }
+    }
+    pub(super) fn return_native_epoch_runtime(
+        &mut self,
+        target: NativeEpochRuntimeTarget,
+        fence: StoppedEditFence,
+    ) {
+        let target = match target {
+            NativeEpochRuntimeTarget::Constructor(target) => target,
+            NativeEpochRuntimeTarget::Ordinary(source) => {
+                self.return_ordinary_native_epoch_runtime(source, fence);
+                return;
+            }
+        };
+        let Some(ActivePublication::Eligible(active)) = self.active.as_ref() else {
+            return;
+        };
+        let Some(source) = active.applied_audio_source() else {
+            return;
+        };
+        if self
+            .status
+            .sampler_edit
+            .native_epoch_context(fence)
+            .is_none()
+            || !active.matches_native_epoch_target(&target)
+            || !self.status.sampler_edit.matches_source(fence, source)
+            || active
+                .runtime()
+                .and_then(|runtime| runtime.status())
+                .is_none_or(|s| s.playing)
+            || !self.native_sources.has_endpoints()
+        {
+            return;
+        }
+        // begin_block reserved return capacity before popping this scalar
+        // request. Only fixed moves occur; all original destruction is control.
+        self.cancel_active_stream_action();
+        if let Some(ActivePublication::Eligible(mut active)) = self.active.take() {
+            active.clear_stream_roles(&mut self.domain_pages);
+            self.native_sources.request_epoch_return();
+            self.return_publication(ReturnedPublication::Eligible(
+                active.return_stopped_native_epoch(),
+            ));
+            self.status.applied_source.publish(None);
+            self.publish_active_routes(true);
+            self.publish_transport();
+        }
+    }
+    fn return_ordinary_native_epoch_runtime(
+        &mut self,
+        source: AppliedAudioSource,
+        fence: StoppedEditFence,
+    ) {
+        if !self.status.sampler_edit.matches_source(fence, source)
+            || self
+                .status
+                .sampler_edit
+                .native_epoch_context(fence)
+                .is_none()
+            || !self.native_sources.has_endpoints()
+        {
+            return;
+        }
+        if self.active.is_none() {
+            if self.status.applied_revision.load(Acquire) == source.audio_revision
+                && !self.status.publication_pending.load(Acquire)
+            {
+                self.native_sources.refresh_runtime_requirements(None);
+                self.native_sources.request_epoch_return();
+            }
+            return;
+        }
+        if self.current_native_epoch_fence_source() != Some(source)
+            || self
+                .active
+                .as_ref()
+                .and_then(ActivePublication::legacy)
+                .is_none_or(|active| active.playback.playing())
+        {
+            return;
+        }
+        self.cancel_active_stream_action();
+        if let Some(ActivePublication::Legacy(mut active)) = self.active.take() {
+            if let Some(mut streams) = active.stream_view() {
+                streams.clear_stream_roles(&mut self.domain_pages);
+            }
+            self.native_sources.refresh_runtime_requirements(None);
+            self.native_sources.request_epoch_return();
+            self.return_graph(active);
+            self.status.applied_source.publish(None);
+            self.publish_active_routes(true);
+            self.publish_transport();
+        }
+    }
+    pub(super) fn return_requested_native_sources(&mut self) {
+        for index in 0..hex_lattice::MAX_STATEFUL_PROCESSORS {
+            if self.held_retirement.is_some() || self.retired.is_full() {
+                return;
+            }
+            let Some(endpoint) = self.native_sources.take_requested(index) else {
+                continue;
+            };
+            self.return_publication(ReturnedPublication::Native(endpoint));
+        }
+    }
+    pub(crate) fn has_native_source_endpoints(&self) -> bool {
+        self.native_sources.has_endpoints()
+    }
+    pub(crate) fn extract_native_source_endpoints_on_control(
+        &mut self,
+        destination: &mut [Option<crate::candidate_custody::NativeEndpointEnvelope>;
+                 hex_lattice::MAX_STATEFUL_PROCESSORS],
+    ) -> bool {
+        self.native_sources
+            .extract(self.candidate_root.root_id(), destination)
+    }
+}
+
+#[cfg(test)]
+mod tests;

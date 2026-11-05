@@ -8,18 +8,18 @@ use hex_session::service::{Event, Request, Service};
 use std::time::{Duration, Instant};
 
 fn next(service: &Service) -> Event {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
             return event;
         }
-        assert!(Instant::now() < until);
+        assert!(Instant::now() < until, "session event did not arrive");
         std::thread::sleep(Duration::from_millis(2));
     }
 }
 fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(&mut *visual, |v, cx| {
             if v.tick(cx) {
@@ -31,7 +31,10 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
             visual.run_until_parked();
             return;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            Instant::now() < until,
+            "editor worker requests did not drain"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
@@ -1139,6 +1142,14 @@ fn check_partial_clamped_pan(cx: &mut TestAppContext, midi: bool) {
 fn audio_event_outside_release_only_owns_focus_during_its_actual_gesture(cx: &mut TestAppContext) {
     let (handle, editor, track, clip, _files) = fixture(cx, false, None);
     let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let header = visual
+        .debug_bounds(Box::leak(
+            format!("clip-name-{}", clip.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    visual.simulate_click(header.center(), Modifiers::default());
+    visual.run_until_parked();
     editor.update(&mut visual, |v, _| {
         assert!(v.enqueue(Request::Edit(Command::SetClipLooping {
             clip,

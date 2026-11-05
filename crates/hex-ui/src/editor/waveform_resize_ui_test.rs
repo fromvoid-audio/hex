@@ -41,6 +41,7 @@ fn trim_preview_requires_matching_accepted_processing_root(_cx: &mut TestAppCont
         waveform: Arc::clone(&peaks),
         offset: 0,
         length: 96_000,
+        preview_root: None,
     };
     let tempo = canonical.project().tempo_map().clone();
     let request = super::WaveformPreview {
@@ -257,6 +258,7 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                             waveform: Arc::clone(&prepared_peaks),
                             offset,
                             length: original.clip(clip).unwrap().duration(),
+                            preview_root: None,
                         },
                     );
                 }
@@ -268,6 +270,7 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                         comparison_audio: None,
                         project: Arc::clone(&old.project),
                         waveforms: BTreeMap::from([(asset, Arc::clone(&peaks))]),
+                        source_overviews: Default::default(),
                         audio_clip_waveforms: prepared,
                         midi_preview: Arc::clone(&old.midi_preview),
                         gain_preview: old.gain_preview.clone(),
@@ -324,10 +327,18 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                         assert_eq!(rendered.len(), 1, "only the actual preview waveform is painted");
                         let preview = drag.preview.borrow();
                         let preview = &preview.as_ref().unwrap().clip;
-                        let expected_mapping = preview.audio_edit().filter(|_| !stretch).map(|edit| {
-                            let (_, _, offset, _) = edit.projected_domain(original.tempo_map()).unwrap();
-                            (preview.start(), offset)
-                        });
+                        // A repeating clip's right edge drags its outer repeat
+                        // (Pulse #3778); repeats paint through the occurrence
+                        // path, not a single prepared crop mapping.
+                        let outer_repeat = looping && edge == TrimEdge::Right && !stretch;
+                        let expected_mapping = preview
+                            .audio_edit()
+                            .filter(|_| !stretch && !outer_repeat)
+                            .map(|edit| {
+                                let (_, _, offset, _) =
+                                    edit.projected_domain(original.tempo_map()).unwrap();
+                                (preview.start(), offset)
+                            });
                         let root_matches = Arc::ptr_eq(&rendered[0].source, expected_source);
                         if !rendered[0].spans.iter().all(|span| *span > 1.0)
                             || !root_matches || rendered[0].prepared != expected_mapping
@@ -372,5 +383,357 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
         failures.is_empty(),
         "waveform disappeared or used the wrong root/crop:\n{}",
         failures.join("\n")
+    );
+}
+
+#[gpui::test]
+fn silent_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack(cx: &mut TestAppContext) {
+    check_silent_left_prefix_through_ack(cx, &[(false, false), (true, false), (true, true)], false);
+}
+
+#[gpui::test]
+fn musical_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack(
+    cx: &mut TestAppContext,
+) {
+    check_silent_left_prefix_through_ack(cx, &[(true, false)], true);
+}
+
+fn check_silent_left_prefix_through_ack(
+    cx: &mut TestAppContext,
+    cases: &[(bool, bool)],
+    musical: bool,
+) {
+    use crate::editor::clip_drag_ui_test::{pump_move, trim_grab_point, upper_rail_owned_fixture};
+    use hex_session::service::Request;
+    for &(processed, once) in cases {
+        let (_files, handle, editor) = upper_rail_owned_fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        let (track, clip) = editor.read_with(&visual, |v, _| {
+            let track = &v.state.as_ref().unwrap().project.tracks()[0];
+            (track.id(), track.clips()[0].id())
+        });
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::MoveClip {
+                clip,
+                track,
+                start: 48_000
+            })))
+        });
+        pump_move(&editor, &mut visual);
+        if processed {
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(Command::SetAudioClipSourceGain {
+                    clip,
+                    points: vec![hex_project::SourceGainPoint {
+                        frame: 0,
+                        gain_q16: hex_project::SOURCE_GAIN_UNITY
+                    }]
+                })))
+            });
+            pump_move(&editor, &mut visual);
+        }
+        if processed {
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(Command::SetAudioClipPitch {
+                    clip,
+                    cents: 137
+                })))
+            });
+            pump_move(&editor, &mut visual);
+        }
+        if musical {
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(Command::SetAudioClipMusical {
+                    clip,
+                    enabled: true
+                })));
+            });
+            pump_move(&editor, &mut visual);
+        }
+        if once {
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(Command::ResizeAudioClipView {
+                    clip,
+                    operation: hex_project::AudioViewResizeOperation::CycleRange {
+                        start: 0,
+                        end: 72_000,
+                        looping: false,
+                    },
+                })))
+            });
+            pump_move(&editor, &mut visual);
+        }
+        let (before, source) = editor.update(&mut visual, |v, cx| {
+            v.viewport = Some(crate::editor::viewport::Viewport {
+                start: 0,
+                length: 192_000,
+            });
+            v.snap_grid = SnapGrid::Off;
+            let state = v.state.as_ref().unwrap();
+            let source = if once {
+                Arc::clone(
+                    &state.audio_clip_waveforms[&clip]
+                        .preview_root
+                        .as_ref()
+                        .unwrap()
+                        .waveform,
+                )
+            } else if processed {
+                Arc::clone(&state.audio_clip_waveforms[&clip].waveform)
+            } else {
+                Arc::clone(&state.waveforms[&state.project.clip(clip).unwrap().asset()])
+            };
+            cx.notify();
+            (state.project.snapshot(), source)
+        });
+        visual.run_until_parked();
+        let selector: &'static str =
+            Box::leak(format!("clip-trim-left-{}", clip.value()).into_boxed_str());
+        let down = trim_grab_point(visual.debug_bounds(selector).unwrap());
+        let end = down - point(px(40.0), px(0.0));
+        // Escape after moving into the new prefix cannot submit a partial edit.
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_keystrokes("escape");
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+        });
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let preview = editor.read_with(&visual, |v, _| {
+            v.active_trim_drag
+                .as_ref()
+                .unwrap()
+                .preview
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .clip
+                .clone()
+        });
+        assert!(preview.start() < 48_000);
+        assert_eq!(preview.start() + preview.duration(), 144_000);
+        let held = visual.debug_bounds("trim-live-preview").unwrap();
+        for released in [false, true] {
+            if released {
+                visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+            }
+            for _ in 0..3 {
+                editor.update(&mut visual, |v, cx| {
+                    v.clip_content_cache = Default::default();
+                    v.waveform_geometry_cache.borrow_mut().clear();
+                    cx.notify();
+                });
+                visual.run_until_parked();
+                assert_eq!(visual.debug_bounds("trim-live-preview"), Some(held));
+                editor.read_with(&visual, |v, _| {
+                    assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+                    let waveforms = v.waveform_geometry_cache.borrow().rendered_waveforms();
+                    assert_eq!(
+                        waveforms.len(),
+                        1,
+                        "prefix preview must retain the accepted waveform"
+                    );
+                    assert!(Arc::ptr_eq(&waveforms[0].source, &source));
+                    assert!(
+                        waveforms[0].spans.iter().all(|s| *s > 1.0),
+                        "nonzero audio must stay visible after adding leading silence"
+                    );
+                    if processed && !once && !musical {
+                        assert_eq!(waveforms[0].prepared, Some((48_000, 0)));
+                    }
+                });
+            }
+        }
+        pump_move(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert!(v.pending_trim.is_none());
+            assert_eq!(v.state.as_ref().unwrap().project.clip(clip), Some(&preview));
+        });
+        editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+        pump_move(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+        });
+        editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
+        pump_move(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.clip(clip), Some(&preview))
+        });
+    }
+}
+
+#[gpui::test]
+fn prefix_waveform_accepts_only_the_canonical_source_and_matching_prepared_extent(
+    _cx: &mut TestAppContext,
+) {
+    let (project, track, _, clip) = crate::editor::clip_drag_ui_test::audio_project();
+    let mut canonical = Editor::new(project, 16).unwrap();
+    canonical
+        .execute(Command::MoveClip {
+            clip,
+            track,
+            start: 48_000,
+        })
+        .unwrap();
+    canonical
+        .execute(Command::SetAudioClipSourceGain {
+            clip,
+            points: vec![hex_project::SourceGainPoint {
+                frame: 0,
+                gain_q16: 2 * hex_project::SOURCE_GAIN_UNITY,
+            }],
+        })
+        .unwrap();
+    let original = canonical.project().clip(clip).unwrap().clone();
+    let tempo = canonical.project().tempo_map();
+    let preview = original
+        .preview_edge_trim_with_tempo(TrimEdge::Left, 24_000, 96_000, tempo)
+        .unwrap();
+    let peaks = Arc::new(
+        CachedWaveform::from_peaks(
+            96_000,
+            vec![
+                [CachedPeak {
+                    min: -0.5,
+                    max: 0.5
+                }; 2];
+                64
+            ],
+        )
+        .unwrap(),
+    );
+    let accepted = AudioClipWaveform {
+        waveform: Arc::clone(&peaks),
+        offset: 0,
+        length: 96_000,
+        preview_root: None,
+    };
+    let request = super::WaveformPreview {
+        original: &original,
+        preview: &preview,
+        tempo,
+        asset: None,
+        prepared: Some(&accepted),
+    };
+    let check =
+        |request| super::prefix_waveform_view(request, 24_000, 144_000, Default::default(), None);
+    assert!(check(request).is_some());
+    assert!(
+        check(super::WaveformPreview {
+            prepared: None,
+            ..request
+        })
+        .is_none()
+    );
+    let stale = AudioClipWaveform {
+        offset: 1,
+        ..accepted.clone()
+    };
+    assert!(
+        check(super::WaveformPreview {
+            prepared: Some(&stale),
+            ..request
+        })
+        .is_none()
+    );
+    let stale = AudioClipWaveform {
+        length: 95_999,
+        ..accepted.clone()
+    };
+    assert!(
+        check(super::WaveformPreview {
+            prepared: Some(&stale),
+            ..request
+        })
+        .is_none()
+    );
+    let foreign = AudioClipWaveform {
+        preview_root: Some(hex_session::service::AudioPreviewWaveform {
+            waveform: Arc::clone(&peaks),
+            origin: 0,
+        }),
+        ..accepted.clone()
+    };
+    assert!(
+        check(super::WaveformPreview {
+            prepared: Some(&foreign),
+            ..request
+        })
+        .is_none()
+    );
+    let mut snapshot = preview.retained_snapshot();
+    Arc::make_mut(&mut snapshot.edit.as_mut().unwrap().domain).source_gain[0].gain_q16 =
+        3 * hex_project::SOURCE_GAIN_UNITY;
+    let wrong = canonical
+        .project()
+        .restore_retained_audio_root(1, snapshot, Arc::new(tempo.clone()))
+        .unwrap()
+        .clip;
+    assert!(
+        check(super::WaveformPreview {
+            preview: &wrong,
+            ..request
+        })
+        .is_none(),
+        "an arbitrary changed root cannot borrow accepted peaks"
+    );
+}
+
+#[gpui::test]
+fn plain_lower_fade_prefix_uses_the_same_raw_source_mapping(_cx: &mut TestAppContext) {
+    let (project, track, _, clip) = crate::editor::clip_drag_ui_test::audio_project();
+    let mut canonical = Editor::new(project, 8).unwrap();
+    canonical
+        .execute(Command::MoveClip {
+            clip,
+            track,
+            start: 48_000,
+        })
+        .unwrap();
+    canonical
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 137,
+            fade_out: 211,
+        })
+        .unwrap();
+    let original = canonical.project().clip(clip).unwrap();
+    let tempo = canonical.project().tempo_map();
+    let preview = original
+        .preview_fade_edge_trim(TrimEdge::Left, 24_000, 96_000, tempo)
+        .unwrap();
+    let peaks = Arc::new(
+        CachedWaveform::from_peaks(
+            96_000,
+            vec![
+                [CachedPeak {
+                    min: -0.5,
+                    max: 0.5
+                }; 2];
+                64
+            ],
+        )
+        .unwrap(),
+    );
+    assert!(
+        super::prefix_waveform_view(
+            super::WaveformPreview {
+                original,
+                preview: &preview,
+                tempo,
+                asset: Some(&peaks),
+                prepared: None
+            },
+            24_000,
+            144_000,
+            Default::default(),
+            None
+        )
+        .is_some()
     );
 }

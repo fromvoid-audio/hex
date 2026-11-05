@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import shutil
+import signal
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -25,6 +26,68 @@ SIGNED = {"identifier": delivery.IDENTITY, "team_identifier": SIGNING["team_iden
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_update_runtime_import_does_not_load_build_tools(self):
+        spec = importlib.util.spec_from_file_location(
+            "hex_update_runtime", Path(__file__).resolve().parents[1] / "hex-test-build.py")
+        runtime = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = runtime
+        try:
+            spec.loader.exec_module(runtime)
+            self.assertFalse(hasattr(runtime, "ci"))
+            self.assertFalse(hasattr(runtime, "changelog"))
+            self.assertTrue(callable(runtime.apply_after_approved_parent_exit))
+            self.assertIsNot(runtime.DeliveryError, delivery.DeliveryError)
+        finally:
+            sys.modules.pop(spec.name, None)
+
+    def test_full_checkpoint_delivery_requires_unchanged_original_report_and_log(self):
+        # Synthetic full-plan certificates exercise the consumer, not app CI.
+        runner = delivery.ci.LocalCiRunner(self.root)
+        tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
+        runner.summary["start_tree"] = tree
+        folder = self.root / "artifacts/local-ci/original"
+        folder.mkdir(parents=True)
+        log = folder / "01-guard.log"
+        log.write_text("guard passed\n")
+        steps = delivery.ci.FULL_STEPS
+        passed = [{"step_id": s.step_id, "argv": list(s.argv), "status": "passed",
+                   "exit_code": 0, "error": None, "test_results": {"python_executions": [1]}}
+                  for s in steps]
+        passed[0]["log"] = str(log.relative_to(self.root))
+        original = {"schema_version": 2, "mode": "full", "status": "failed", "stale": False,
+                    "minimum_free_bytes": 2 * 1024 ** 3,
+                    "exit_code": 2, "commit": tree["commit"], "dirty": False,
+                    "start_tree": tree, "end_tree": tree, "disk_error": "capacity refusal",
+                    "disk_refusal": {"before_step": 1},
+                    "steps": [passed[0], *[{"step_id": s.step_id, "argv": list(s.argv),
+                              "status": "not_run", "log": None, "exit_code": None} for s in steps[1:]]]}
+        target = {"target_identity": {"device": 1, "inode": 2}, "dependency_inputs": {"fixture": True}}
+        checkpoint = delivery.ci.ci_checkpoint
+        original["checkpoint"] = checkpoint.seal(self.root, original, steps, {}, target)
+        source = folder / "summary.json"
+        source.write_text(json.dumps(original))
+        lineage = {"report": str(source), "sha256": checkpoint.file_digest(source),
+                   "passed_count": 1, "logs": original["checkpoint"]["logs"]}
+        complete = {**original, "status": "passed", "exit_code": 0, "resume": lineage,
+                    "target_cache": {"dependency_inputs": target["dependency_inputs"]},
+                    "steps": [*checkpoint.inherited_steps(original, lineage), *passed[1:]]}
+        complete.pop("checkpoint")
+        report = self.root / "completed.json"
+        report.write_text(json.dumps(complete))
+        with patch.object(runner, "_capture_repository_state", return_value=True):
+            delivery.validate_ci(report, runner, tree["commit"])
+            log.write_text("changed\n")
+            with self.assertRaisesRegex(delivery.DeliveryError, "inherited"):
+                delivery.validate_ci(report, runner, tree["commit"])
+            log.write_text("guard passed\n")
+            source.write_text(source.read_text() + "\n")
+            with self.assertRaisesRegex(delivery.DeliveryError, "inherited"):
+                delivery.validate_ci(report, runner, tree["commit"])
+            complete.pop("resume")
+            report.write_text(json.dumps(complete))
+            with self.assertRaisesRegex(delivery.DeliveryError, "lineage"):
+                delivery.validate_ci(report, runner, tree["commit"])
+
     def test_current_review_malformed_ci_report_is_explicit_refusal(self):
         runner = delivery.ci.LocalCiRunner(self.root)
         tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
@@ -259,6 +322,20 @@ class DeliveryTests(unittest.TestCase):
         delivery.recover(self.app)
         self.assertFalse(self.workspace.exists())
 
+    def test_publication_verifier_timeout_restores_old_app(self):
+        self.bundle(self.app, b"old")
+        self.bundle(self.stage)
+        original = delivery.verify
+        def timeout_installed(path):
+            if path == self.app:
+                raise subprocess.TimeoutExpired("codesign", 30)
+            return original(path)
+        with patch.object(delivery, "verify", side_effect=timeout_installed):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                delivery.activate(self.app, self.stage)
+        self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+        self.assertEqual((self.stage / "Contents/MacOS/hex").read_bytes(), b"new")
+
     def test_interruption_after_publication_finishes_cleanup(self):
         self.bundle(self.app, b"old")
         self.bundle(self.stage)
@@ -374,6 +451,41 @@ class DeliveryTests(unittest.TestCase):
     def test_production_build_assembles_and_replaces_stable_app(self):
         self.assert_production_build(build_only=False)
 
+    def test_default_build_stages_discovery_in_the_installed_app(self):
+        self.assert_production_build(build_only=False, discovery=True)
+
+    def test_discovery_input_builds_by_default_and_verifies_the_exact_candidate(self):
+        candidate = "a" * 40
+        args = SimpleNamespace(candidate=candidate, vst3_discovery_receipt=None,
+                               vst3_sdk=None, without_vst3_discovery=False)
+        sdk = self.root / "sdk"
+        output = self.root / "vst3-discovery"
+        receipt = output / "controlled-macos.json"
+        builder = Mock()
+        builder.build.return_value = receipt
+        with patch.dict(os.environ, {"HEX_VST3_SDK": str(sdk)}), \
+                patch.object(delivery, "discovery_builder", return_value=builder), \
+                patch.object(delivery, "validate_discovery_input") as verify:
+            self.assertEqual(delivery.prepare_discovery_input(args, self.root), receipt)
+            builder.build.assert_called_once_with(sdk, output, discovery_only=True)
+            verify.assert_called_once_with(receipt, candidate)
+            verify.reset_mock()
+            args.vst3_discovery_receipt = receipt
+            self.assertEqual(delivery.prepare_discovery_input(args, self.root), receipt)
+            builder.build.assert_called_once()
+            verify.assert_called_once_with(receipt, candidate)
+
+    def test_default_discovery_refuses_missing_sdk_and_allows_explicit_omission(self):
+        args = SimpleNamespace(candidate="a" * 40, vst3_discovery_receipt=None,
+                               vst3_sdk=None, without_vst3_discovery=False)
+        with patch.dict(os.environ, {"HEX_VST3_SDK": ""}), \
+                patch.object(delivery, "discovery_builder") as builder:
+            with self.assertRaisesRegex(delivery.DeliveryError, "HEX_VST3_SDK"):
+                delivery.prepare_discovery_input(args, self.root)
+            args.without_vst3_discovery = True
+            self.assertIsNone(delivery.prepare_discovery_input(args, self.root))
+            builder.assert_not_called()
+
     def test_finder_metadata_after_custody_deletion_publishes_matching_receipt(self):
         self.assert_production_build(build_only=False, finder_metadata=True)
 
@@ -413,7 +525,134 @@ class DeliveryTests(unittest.TestCase):
     def test_build_only_source_drift_during_signing_preserves_installed_app(self):
         self.assert_production_build(build_only=True, drift="signing")
 
-    def assert_production_build(self, *, build_only, drift=False, finder_metadata=False, rmdir_member=None):
+    def test_full_ci_receipt_reaches_stable_app_publication(self):
+        self.assert_production_build(build_only=False, validate_ci_receipt=True)
+
+    def test_full_ci_receipt_refuses_source_drift_before_publication(self):
+        self.assert_production_build(build_only=False, validate_ci_receipt=True, drift="build")
+
+    def test_supervisor_packaging_seals_fixed_runtime_and_rejects_changed_binary(self):
+        self.stage.mkdir()
+        policy = {"version": 1, "interpreter": "/fixed/python", "interpreter_sha256": "a" * 64,
+                  "interpreter_device": 1, "interpreter_inode": 2}
+        helper_signature = {"identifier": delivery.UPDATE_HELPER_ID, "team_identifier": SIGNING["team_identifier"]}
+        commands = []
+        def native(argv, **kwargs):
+            commands.append(argv)
+            if argv[0] == "/usr/bin/swiftc":
+                binary = Path(argv[argv.index("-o") + 1])
+                binary.write_bytes(b"native helper fixture")
+                binary.chmod(0o755)
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+        with patch.object(delivery, "_python_runtime_identity", return_value=policy), \
+                patch.object(delivery, "native_signature", return_value=helper_signature), \
+                patch.object(delivery.subprocess, "run", side_effect=native):
+            evidence = delivery.stage_update_supervisor(self.stage, SIGNING)
+            helper = self.stage / delivery.UPDATE_HELPER
+            self.assertEqual(evidence["identifier"], delivery.UPDATE_HELPER_ID)
+            self.assertEqual(json.loads((helper / "Contents/Resources/policy.json").read_text()), policy)
+            self.assertTrue((helper / "Contents/Resources/entry.py").is_file())
+            self.assertTrue((helper / "Contents/Resources/runtime/scripts/hex-test-build.py").is_file())
+            self.assertTrue(any(argv[:2] == ["/usr/bin/codesign", "--verify"] for argv in commands))
+            delivery.verify_update_supervisor(self.stage, {"update_supervisor": evidence, "signing": SIGNING})
+            (helper / "Contents/MacOS/hex-update").write_bytes(b"tampered")
+            with self.assertRaisesRegex(delivery.DeliveryError, "executable changed"):
+                delivery.verify_update_supervisor(self.stage, {"update_supervisor": evidence, "signing": SIGNING})
+
+    def test_runtime_verifies_new_candidate_native_source_not_old_runtime_source(self):
+        self.stage.mkdir()
+        native = delivery.discovery_builder()
+        candidate_root = self.stage / delivery.UPDATE_HELPER / "Contents/Resources/runtime/crates/hex-plugin-scan/native"
+        candidate_root.mkdir(parents=True)
+        for name in native.SOURCES:
+            shutil.copy2(delivery.ROOT / "crates/hex-plugin-scan/native" / name, candidate_root / name)
+        changed = candidate_root / native.SOURCES[1]
+        changed.write_bytes(changed.read_bytes() + b"\n// newer candidate\n")
+        receipt = {"update_supervisor": {"native_sources": list(native.SOURCES), "native_sdk_pins": native.PINS}}
+        digest, pins = delivery.candidate_native_provenance(self.stage, receipt)
+        self.assertNotEqual(digest, native.source_digest())
+        app = self.stage / "Contents/Helpers" / delivery.DISCOVERY_APP
+        for path in (app / "Contents/MacOS/hex-vst3-factory-scan", app / "Contents/Resources/sdk-notices.json",
+                     app / "Contents/_CodeSignature/CodeResources"):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"fixture")
+        info = app / "Contents/Info.plist"
+        info.write_bytes(plistlib.dumps({"CFBundleExecutable": "hex-vst3-factory-scan",
+                                        "CFBundleIdentifier": "org.portalsurfer.hex.vst3.discovery"}))
+        packaged = self.stage / delivery.DISCOVERY_RECEIPT
+        packaged.parent.mkdir(parents=True, exist_ok=True)
+        data = {"version": 1, "platform": "darwin-arm64", "scope": "native-macos-factory-discovery",
+                "sdk_pins": pins, "source_sha256": digest, "source_commit": "a" * 40,
+                "source_dirty": False, "package_layout": "hex-app-discovery-v1",
+                "factory_fixtures": [], "factory_scan_fault_helper": None,
+                "bundle_files": native.inventory(app)}
+        packaged.write_text(json.dumps(data))
+        with patch.object(native, "macho"), patch.object(delivery, "discovery_builder", return_value=native):
+            with self.assertRaisesRegex(ValueError, "stale bootstrap"):
+                delivery.validate_discovery_input(packaged, "a" * 40, packaged=True)
+            self.assertEqual(delivery.validate_discovery_input(packaged, "a" * 40, packaged=True,
+                                                               provenance=(digest, pins)), data)
+            (app / "Contents/Resources/sdk-notices.json").write_bytes(b"tampered")
+            with self.assertRaisesRegex(ValueError, "changed bundle"):
+                delivery.validate_discovery_input(packaged, "a" * 40, packaged=True,
+                                                  provenance=(digest, pins))
+
+    def test_prepare_two_candidates_while_installed_app_is_running(self):
+        self.assert_production_build(build_only=False, prepare_only=True)
+
+    def test_post_publication_receipt_failure_reports_installed_app(self):
+        self.assert_production_build(build_only=False, prepare_only=True, followup_failure=True)
+
+    def test_pending_store_requires_target_ownership_and_preserves_unknown_contents(self):
+        pending = delivery.pending_candidate(self.app)
+        self.assertEqual(pending, self.root / ".hex-pending-update/hex.app")
+        self.assertEqual(delivery.pending_candidate(self.app), pending)
+        foreign = pending.parent / "user-data"
+        foreign.write_text("preserve")
+        with self.assertRaisesRegex(delivery.DeliveryError, "unexpected"):
+            delivery.pending_candidate(self.app)
+        self.assertEqual(foreign.read_text(), "preserve")
+        foreign.unlink()
+        (pending.parent / "owner.json").write_text('{"schema":1,"target":"other"}')
+        with self.assertRaisesRegex(delivery.DeliveryError, "not owned"):
+            delivery.pending_candidate(self.app)
+
+    def test_pending_preparation_refuses_unqualified_evidence(self):
+        self.workspace.rmdir()
+        source = self.root / "repo"
+        (source / "scripts").mkdir(parents=True)
+        (source / "scripts/hex-test-build.json").write_text(json.dumps({"app_path": "hex.app", "signing": SIGNING}))
+        args = SimpleNamespace(build_only=True, prepare_only=True, dev_profile=False)
+        with patch.object(delivery, "ROOT", source), patch.object(delivery.sys, "platform", "darwin"), \
+                patch.dict(os.environ, {"HEX_DEV_APP_PATH": str(self.app)}):
+            with self.assertRaisesRegex(delivery.DeliveryError, "full exact-source CI"):
+                delivery.build(args)
+        self.assertFalse((self.root / ".hex-pending-update").exists())
+
+    def test_pending_release_recovery_still_refuses_running_installed_app(self):
+        self.bundle(self.app, b"old")
+        source = self.root / "repo"
+        (source / "scripts").mkdir(parents=True)
+        (source / "scripts/hex-test-build.json").write_text(json.dumps({"app_path": "hex.app", "signing": SIGNING}))
+        args = SimpleNamespace(build_only=False, prepare_only=True, dev_profile=False,
+                               adopt_release_target=True)
+        def tool(argv, root=source):
+            if argv[:2] == ["git", "rev-parse"]:
+                return str(source / ".git")
+            if argv[0] == "ps":
+                return f"123 {self.app}/Contents/MacOS/hex"
+            return ""
+        with patch.object(delivery, "ROOT", source), patch.object(delivery.sys, "platform", "darwin"), \
+                patch.dict(os.environ, {"HEX_DEV_APP_PATH": str(self.app)}), \
+                patch.object(delivery, "run", side_effect=tool):
+            with self.assertRaisesRegex(delivery.DeliveryError, "running"):
+                delivery.build(args)
+        self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+        self.assertFalse((self.root / ".hex-pending-update").exists())
+
+    def assert_production_build(self, *, build_only, drift=False, finder_metadata=False, rmdir_member=None,
+                                prepare_only=False, followup_failure=False, validate_ci_receipt=False,
+                                discovery=False):
         # Exercise real assembly/receipt/activation with native external tools
         # substituted. A missing Contents parent failed actual post-merge delivery.
         self.bundle(self.app, b"old")
@@ -445,6 +684,20 @@ class DeliveryTests(unittest.TestCase):
         runner = delivery.ci.LocalCiRunner(source)
         runner.summary["start_tree"] = {"commit":candidate, "dirty":False, "dirty_files":[],
                                         "content_sha256":"d" * 64}
+        dependency_inputs = {"fixture": "guarded input identity"}
+        if validate_ci_receipt:
+            # Synthetic full-plan evidence exercises the real receipt consumer;
+            # it is not a claim that these fixture steps ran product CI.
+            tree = runner.summary["start_tree"]
+            report.write_text(json.dumps({
+                "schema_version": 2, "mode": "full", "status": "passed", "stale": False,
+                "exit_code": 0, "commit": candidate, "dirty": False,
+                "start_tree": tree, "end_tree": tree,
+                "target_cache": {"dependency_inputs": dependency_inputs},
+                "steps": [{"step_id": step.step_id, "argv": list(step.argv), "status": "passed",
+                           "test_results": {"python_executions": [1]}}
+                          for step in delivery.ci.FULL_STEPS],
+            }))
         runner.summary["runtime_inputs"] = {"version": 1, "sha256": "d" * 64, "symlinks": []}
         runner.cargo_identity = {"target_directory":str(target.parent.parent)}
         runner.target_lock = None if rmdir_member else SimpleNamespace(release=Mock(return_value=None))
@@ -452,6 +705,10 @@ class DeliveryTests(unittest.TestCase):
         runner.git_identity = {"workspace_root":str(source), "git_common_dir":str(source / ".git"), "commit":candidate}
         scope = [{"name":"hex-desktop", "version":"0.1.0", "spec":"hex-desktop@0.1.0"}]
         runner.cargo_identity["workspace_packages"] = scope
+        # The substituted metadata query must populate the same complete package
+        # view as production before name-scoped cleanup can be proven safe.
+        runner._release_metadata = {"workspace_members": [scope[0]["spec"]], "packages": [
+            {"id": scope[0]["spec"], "name": "hex-desktop", "source": None}]}
         _, dev_owner = delivery.ci.target_state_paths(target.parent.parent, runner.target_state_dir)
         owner = dev_owner.with_name(dev_owner.name.replace(".owner.json", ".release-owner.json"))
         event = {"reason":"compiler-artifact", "executable":str(executable),
@@ -461,11 +718,26 @@ class DeliveryTests(unittest.TestCase):
                 return str(source / ".git")
             if argv[:2] == ["cargo", "metadata"]:
                 return json.dumps({"packages":[{"name":"hex-desktop", "version":"0.1.0"}]})
+            if prepare_only and argv[0] == "ps":
+                return f"123 {self.app}/Contents/MacOS/hex"
             return ""
         args = SimpleNamespace(ci_report=None if build_only else report, candidate=candidate, build_only=build_only,
-                               included=included, checklist=checklist)
+                               included=included, checklist=checklist, prepare_only=prepare_only,
+                               vst3_discovery_receipt=None, vst3_sdk=self.root / "sdk",
+                               without_vst3_discovery=not discovery)
+        scanner = {"path": str(target / "hex-vst3-scan-macos")}
+        native_input = self.root / "controlled-macos.json"
+        discovery_evidence = {"source": candidate}
+        def stage_discovery(app, native, exact_source, artifact, _signing):
+            self.assertEqual((native, exact_source, artifact), (native_input, candidate, scanner))
+            helper = app / delivery.DISCOVERY_ROOT / delivery.DISCOVERY_SCANNER
+            helper.parent.mkdir(parents=True)
+            helper.write_bytes(b"scanner fixture")
+            return discovery_evidence
+
         @contextmanager
         def artifact_guard(*args, **kwargs):
+            self.assertEqual(kwargs.get("discovery", False), discovery)
             if rmdir_member:
                 # Real durable pending/ready publication and target lock, with
                 # only compilation/native tools substituted in this fixture.
@@ -482,35 +754,143 @@ class DeliveryTests(unittest.TestCase):
                     "profile":"release", "source":runner.summary["start_tree"], "packages":[],
                     "target_directory":str(target.parent.parent), "owner_path":"fixture-owner",
                     "lock_path":"fixture-lock", "action":"reuse", "cleanup_status":"not_needed",
-                    "artifact":{"path":str(executable), "sha256":delivery.sha(executable)}}
+                    "artifact":{"path":str(executable), "sha256":delivery.sha(executable)},
+                    "discovery_scanner":scanner}
             finally:
                 runner.target_lock.release()
         def capture(key):
             runner.summary[key] = dict(runner.summary["start_tree"])
             return True
+        ci_check = (patch.object(delivery, "validate_ci", wraps=delivery.validate_ci) if validate_ci_receipt else
+                    patch.object(delivery, "validate_ci", return_value={},
+                                 side_effect=AssertionError("CI required for build-only") if build_only else None))
         with patch.object(delivery, "ROOT", source), \
                 patch.object(delivery.sys, "platform", "darwin"), \
                 patch.dict(os.environ, {"HEX_DEV_APP_PATH":str(self.app)}), \
                 patch.object(delivery.ci, "LocalCiRunner", return_value=runner), \
-                patch.object(delivery, "validate_ci", return_value={},
-                             side_effect=AssertionError("CI required for build-only") if build_only else None), \
+                ci_check as checked_ci, \
                 patch.object(runner, "run", side_effect=AssertionError("tests during packaging")), \
                 patch.object(runner, "_capture_repository_state", side_effect=capture), \
-                patch.object(runner, "_resolve_cargo_identity", return_value=True), \
+                patch.multiple(runner, _resolve_cargo_identity=Mock(return_value=True),
+                               _dependency_context=Mock(return_value=dependency_inputs)), \
                 patch.object(runner, "_release_scope", return_value=scope), \
                 patch.object(delivery.ci.build_inputs, "workspace_snapshot", return_value={"packages": [], "observed_ns": 1}), \
                 patch.object(runner, "_path_dependency_inputs", return_value=[]), \
                 patch.object(runner, "_check_disk_headroom", return_value=True), \
-                patch.object(delivery, "optimized_artifact", side_effect=artifact_guard), \
+                patch.object(delivery.ci.ci_target_storage, "inspect", return_value={
+                    "platform": "darwin", "status": "identified", "filesystem_type": "apfs"}), \
+                patch.multiple(delivery, optimized_artifact=Mock(side_effect=artifact_guard),
+                               stage_update_supervisor=Mock(return_value=None),
+                               discovery_builder=Mock(return_value=Mock(build=Mock(return_value=native_input))),
+                               validate_discovery_input=Mock(),
+                               stage_discovery=Mock(side_effect=stage_discovery),
+                               verify_discovery_package=Mock()), \
                 patch.object(delivery, "native_signature", return_value=SIGNED), \
                 patch.object(delivery, "run", side_effect=tool), \
                 patch.object(delivery.subprocess, "run", return_value=SimpleNamespace(stdout=json.dumps(event), returncode=0)):
+            if prepare_only:
+                pending = self.root / ".hex-pending-update/hex.app"
+                # The installed app's publication lock is independent of the
+                # pending store and remains held throughout this preparation.
+                with delivery.activation_lock(self.app):
+                    first = delivery.build(args)
+                self.assertEqual(first["app_path"], str(self.app))
+                self.assertEqual(first["verification"], {"mode": "full-ci", "tests": "passed"})
+                self.assertEqual(first["pending_target_identity"]["executable_sha256"],
+                                 delivery.sha(self.app / "Contents/MacOS/hex"))
+                self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+                self.assertEqual((pending / "Contents/MacOS/hex").read_bytes(), b"optimized fixture")
+                self.assertEqual(sidecar.read_bytes(), b"old adjacent receipt")
+                executable.write_bytes(b"second optimized fixture")
+                runner.output_dir = runner.output_dir.parent / "second-pending"
+                second = delivery.build(args)
+                self.assertNotEqual(first["input_executable_sha256"], second["input_executable_sha256"])
+                self.assertEqual((pending / "Contents/MacOS/hex").read_bytes(), b"second optimized fixture")
+                self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+                runner.output_dir = runner.output_dir.parent / "failed-pending"
+                with patch.object(delivery, "sign_bundle", side_effect=subprocess.CalledProcessError(1, ["codesign"])):
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        delivery.build(args)
+                self.assertEqual((pending / "Contents/MacOS/hex").read_bytes(), b"second optimized fixture")
+                self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+                runner.output_dir = runner.output_dir.parent / "changed-target"
+                def change_target(_stage, _signing):
+                    (self.app / "Contents/MacOS/hex").write_bytes(b"external replacement")
+                with patch.object(delivery, "sign_bundle", side_effect=change_target):
+                    with self.assertRaisesRegex(delivery.DeliveryError, "installed app changed"):
+                        delivery.build(args)
+                self.assertEqual((pending / "Contents/MacOS/hex").read_bytes(), b"second optimized fixture")
+                self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"external replacement")
+                selected = delivery.sha(pending / "Contents/Resources/test-build.json")
+                with patch.object(delivery, "run", return_value=""):
+                    with self.assertRaisesRegex(delivery.DeliveryError, "changed since preparation"):
+                        delivery._apply_verified_pending(self.app, selected)
+                    (self.app / "Contents/MacOS/hex").write_bytes(b"old")
+                    with self.assertRaisesRegex(delivery.DeliveryError, "selection changed"):
+                        delivery._apply_verified_pending(self.app, "0" * 64)
+                    changed_signature = {**SIGNED, "designated_requirement": "different requirement"}
+                    with patch.object(delivery, "native_signature", side_effect=[SIGNED, SIGNED, changed_signature]):
+                        with self.assertRaisesRegex(delivery.DeliveryError, "signing requirement"):
+                            delivery._apply_verified_pending(self.app, selected)
+                    with delivery.activation_lock(self.app):
+                        with self.assertRaisesRegex(delivery.DeliveryError, "another test-build"):
+                            delivery._apply_verified_pending(self.app, selected)
+                with self.assertRaisesRegex(delivery.DeliveryError, "running"):
+                    delivery._apply_verified_pending(self.app, selected)
+                self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+                receipt_path = pending / "Contents/Resources/test-build.json"
+                receipt_bytes = receipt_path.read_bytes()
+                original_copy = shutil.copytree
+                def change_selection_during_copy(source, destination, *args, **kwargs):
+                    result = original_copy(source, destination, *args, **kwargs)
+                    if source == pending:
+                        receipt_path.write_bytes(b"superseded")
+                    return result
+                with patch.object(delivery, "run", return_value=""), \
+                        patch.object(delivery.shutil, "copytree", side_effect=change_selection_during_copy):
+                    with self.assertRaisesRegex(delivery.DeliveryError, "changed during publication"):
+                        delivery._apply_verified_pending(self.app, selected)
+                self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+                receipt_path.write_bytes(receipt_bytes)
+                original_verify = delivery.verify
+                def fail_installed_verification(path):
+                    if path == self.app and (path / "Contents/MacOS/hex").read_bytes() == b"second optimized fixture":
+                        raise delivery.DeliveryError("injected installed verification failure")
+                    return original_verify(path)
+                with patch.object(delivery, "run", return_value=""), \
+                        patch.object(delivery, "verify", side_effect=fail_installed_verification):
+                    with self.assertRaisesRegex(delivery.DeliveryError, "injected installed"):
+                        delivery._apply_verified_pending(self.app, selected)
+                self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+                if followup_failure:
+                    original_write = delivery.write_json
+                    def fail_sidecar(path, value):
+                        if path == sidecar:
+                            raise OSError("sidecar unavailable")
+                        return original_write(path, value)
+                    with patch.object(delivery, "run", return_value=""), patch.object(delivery, "write_json", side_effect=fail_sidecar):
+                        with self.assertRaisesRegex(delivery.PublicationFollowupFailed, "update installed"):
+                            delivery._apply_verified_pending(self.app, selected)
+                    self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"second optimized fixture")
+                    self.assertEqual(sidecar.read_bytes(), b"old adjacent receipt")
+                    return
+                with patch.object(delivery, "run", return_value=""):
+                    installed = delivery._apply_verified_pending(self.app, selected)
+                self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"second optimized fixture")
+                self.assertEqual(installed["candidate"], candidate)
+                self.assertFalse(delivery.install_workspace(self.app).exists())
+                return
             if drift == "build":
-                with self.assertRaisesRegex(delivery.DeliveryError, "source is dirty, changed"):
-                    delivery.build(args)
+                error = "full exact-source local CI evidence" if validate_ci_receipt else "source is dirty, changed"
+                with patch.object(delivery, "activate") as activate:
+                    with self.assertRaisesRegex(delivery.DeliveryError, error):
+                        delivery.build(args)
+                    activate.assert_not_called()
                 self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
                 self.assertFalse(self.workspace.exists())
                 runner.target_lock.release.assert_called_once()
+                if validate_ci_receipt:
+                    self.assertGreaterEqual(checked_ci.call_count, 3)
                 return
             if drift == "signing":
                 def change_source(*_args):
@@ -598,6 +978,7 @@ class DeliveryTests(unittest.TestCase):
                         delivery.recover(self.app)
                 else:
                     receipt = delivery.build(args)
+                    self.assertEqual(receipt["diagnostic_capabilities"], ["actions-v1", "audio-v1"])
                     if rmdir_member:
                         self.assertEqual(rmdir_calls, 2)
             if finder_metadata in ("unknown", "symlink"):
@@ -610,6 +991,10 @@ class DeliveryTests(unittest.TestCase):
                 receipt = delivery.build(args)
                 self.assertEqual(foreign.read_bytes(), b"user project")
             verified = delivery.verify(self.app)
+            if validate_ci_receipt:
+                self.assertGreaterEqual(checked_ci.call_count, 3)
+                self.assertEqual(json.loads((self.app / "Contents/Resources/local-ci-summary.json").read_text())["start_tree"],
+                                 tree)
             wrong = {**verified, "signing": {**SIGNING, "certificate_sha1": "0" * 40}}
             delivery.write_json(self.app / "Contents/Resources/test-build.json", wrong)
             with self.assertRaisesRegex(delivery.DeliveryError, "configured certificate"):
@@ -617,6 +1002,10 @@ class DeliveryTests(unittest.TestCase):
             delivery.write_json(self.app / "Contents/Resources/test-build.json", verified)
         self.assertEqual(verified["source"], candidate)
         self.assertEqual(verified["profile"], "release")
+        if discovery:
+            self.assertEqual(verified["vst3_discovery"], discovery_evidence)
+            self.assertEqual((self.app / delivery.DISCOVERY_ROOT / delivery.DISCOVERY_SCANNER).read_bytes(),
+                             b"scanner fixture")
         self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"optimized fixture")
         self.assertEqual((self.app / "Contents/Resources/USER-TEST.md").read_text(), checklist.read_text())
         if build_only:
@@ -711,7 +1100,8 @@ class DeliveryTests(unittest.TestCase):
             with self.assertRaisesRegex(delivery.DeliveryError, "differs"):
                 delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
             resolve.return_value = plan
-            evidence["steps"][0]["test_results"] = {"python_executions": [2], "python_skipped": [2]}
+            next(s for s in evidence["steps"] if s["step_id"] == "runner-tests")["test_results"] = {
+                "python_executions": [2], "python_skipped": [2]}
             delivery.write_json(report, evidence)
             with self.assertRaisesRegex(delivery.DeliveryError, "no executed"):
                 delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
@@ -730,7 +1120,7 @@ class DeliveryTests(unittest.TestCase):
         impact = delivery.ci.ci_plan.python_tests
         selected = impact.select("merge", ["crates/hex-engine/src/lib.rs"],
             [{"name": "hex-engine", "manifest": "crates/hex-engine/Cargo.toml"}],
-            delivery.ci.ci_plan.UI_PACKAGES, sorted(impact.REVIEWED_MODULES))
+            delivery.ci.ci_plan.UI_PACKAGES, sorted(impact.REVIEWED_MODULES), env={})
         plan = {"scope": "full", "profile": "merge", "qualifies_merge": True,
                 "source": tree["commit"], "base": "base", "python_tests": selected}
         dependencies = {"fixture": "same guarded inputs"}
@@ -870,7 +1260,14 @@ class ReleaseCargoTests(unittest.TestCase):
             (root / "app/Cargo.toml").write_text(manifest)
             (root / "app/src/main.rs").write_text('fn main() { println!("{}", fixture_api::value() + external_helper::suffix()); }\n')
             def command(argv, cwd=root, env=None):
-                result = subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True)
+                # Only the newly built, disposable fixture executable is bounded
+                # here. A stall is a failure, never a retry or a passing result.
+                executable = len(argv) == 1 and Path(argv[0]).is_absolute()
+                try:
+                    result = subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True,
+                                            timeout=120 if executable else None)
+                except subprocess.TimeoutExpired:
+                    self.fail(f"fixture executable did not finish within 120 seconds: {argv[0]}")
                 self.assertEqual(result.returncode, 0, result.stderr)
                 return result.stdout.strip()
             command(["git", "init", "-q"])
@@ -908,6 +1305,8 @@ class ReleaseCargoTests(unittest.TestCase):
                     shutil.copy2(binary, base / (name + "-retained-binary"))
                 self.assertIsNone(instance.target_lock)
                 self.assertEqual(ownership["state"], "ready")
+                if ownership.get("cleanup_log"):
+                    self.assertNotIn("qualifier", Path(ownership["cleanup_log"]).read_text())
                 self.assertEqual(checks, ["before-build", "artifact"])
                 return ownership
             first = build(root, "release-a", "16")
@@ -1074,6 +1473,116 @@ class ReleaseCargoTests(unittest.TestCase):
             self.assertEqual(owner.read_bytes(), owner_before)
             print("real release A -> B -> A: APIs, additive dependency output, cache preservation, and removed/renamed/version refusal verified", flush=True)
 
+
+
+@unittest.skipUnless(os.environ.get("HEX_VST3_DISCOVERY_RECEIPT") and os.environ.get("HEX_VST3_PACKAGE_SCANNER")
+                     and os.environ.get("HEX_VST3_PACKAGE_FIXTURES"), "explicit native package qualification inputs required")
+class NativeDiscoveryPackageTests(unittest.TestCase):
+    """Real nested signing/lookup/protocol fixtures; never starts the Hex UI."""
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="hex-discovery-package-")
+        self.addCleanup(self.temporary.cleanup)
+        self.app = Path(self.temporary.name).resolve() / "hex.app"
+        self.contents = self.app / "Contents"
+        (self.contents / "MacOS").mkdir(parents=True)
+        (self.contents / "Resources").mkdir()
+        self.input = Path(os.environ["HEX_VST3_DISCOVERY_RECEIPT"]).resolve()
+        self.scanner = Path(os.environ["HEX_VST3_PACKAGE_SCANNER"]).resolve()
+        self.fixtures = Path(os.environ["HEX_VST3_PACKAGE_FIXTURES"]).resolve()
+        self.candidate = json.loads(self.input.read_text())["source_commit"]
+        self.signing = delivery.signing_configuration(json.loads((delivery.ROOT / "scripts/hex-test-build.json").read_text()))
+        # Original isolated package fixture, not a playable desktop/user-test app.
+        shutil.copy2(self.scanner, self.contents / "MacOS/hex")
+        (self.contents / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleExecutable": "hex", "CFBundleIdentifier": delivery.IDENTITY, "CFBundlePackageType": "APPL"}))
+        evidence = delivery.stage_discovery(self.app, self.input, self.candidate,
+                                           {"path": str(self.scanner), "sha256": delivery.sha(self.scanner)}, self.signing)
+        self.receipt = {"schema": 2, "profile": "release", "source": self.candidate,
+                        "signing": self.signing, "vst3_discovery": evidence}
+        self.seal()
+
+    def seal(self):
+        self.receipt["files"] = delivery.inventory(self.app, signed_payload=True)
+        delivery.write_json(self.contents / "Resources/test-build.json", self.receipt)
+        delivery.sign_bundle(self.app, self.signing)
+        delivery.verify(self.app)
+
+    def scan(self, name="normal"):
+        executable = self.app / delivery.DISCOVERY_ROOT / delivery.DISCOVERY_SCANNER
+        module = self.fixtures / "hex-vst3-host.app/Contents/Resources/factory-fixtures" / (name + ".vst3")
+        process = subprocess.Popen([str(executable), "--bundled", "--trust-user-code", str(module), "3000"],
+                                   cwd="/", env={"PATH": "/no-checkout-or-tools"}, stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # communicate cannot be retried with new input after its first call.
+        # Initial stdin remains open so cancellation is available if needed.
+        try:
+            out, err = process.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            process.send_signal(signal.SIGTERM)  # standalone scoped cancellation, never group kill
+            try:
+                process.communicate(timeout=30)
+            except subprocess.TimeoutExpired:
+                self.fail(f"owned scanner {process.pid} retained after cancellation; no forced termination")
+            self.fail("packaged original fixture exceeded qualification deadline")
+        return process.returncode, out, err
+
+    def test_signed_package_scans_thin_and_universal_outside_checkout(self):
+        for name in ("normal", "universal"):
+            code, out, err = self.scan(name)
+            self.assertEqual(code, 0, err.decode(errors="replace"))
+            report = json.loads(out)
+            self.assertIsNone(report["error"])
+            self.assertTrue(report["cleanup"]["direct_reaped"])
+            self.assertEqual(report["cleanup"]["direct_exit_code"], 0)
+            self.assertEqual(len(report["discovery"]["classes"]), 2)
+            self.assertNotIn(b"forbidden ordinary instance", report["stderr"].encode())
+
+    def test_missing_changed_and_stale_package_refuse_before_selected_module_load(self):
+        root = self.app / delivery.DISCOVERY_ROOT
+        helper = root / "hex-vst3-host.app/Contents/MacOS/hex-vst3-factory-scan"
+        original = helper.read_bytes()
+        for change in ("missing", "changed"):
+            if change == "missing":
+                helper.unlink()
+            else:
+                helper.write_bytes(original + b"changed")
+            code, out, err = self.scan("load-crash")
+            self.assertEqual(code, 1)
+            self.assertEqual(out, b"")
+            self.assertIn(b"factory scan refused", err)
+            helper.write_bytes(original)
+            helper.chmod(0o755)
+        receipt = self.app / delivery.DISCOVERY_RECEIPT
+        data = json.loads(receipt.read_text())
+        data["source_commit"] = "0" * 40
+        delivery.write_json(receipt, data)
+        self.receipt["vst3_discovery"]["receipt_sha256"] = delivery.sha(receipt)
+        # Re-seal caller-owned fixture to reach the source-binding refusal.
+        self.receipt["files"] = delivery.inventory(self.app, signed_payload=True)
+        delivery.write_json(self.contents / "Resources/test-build.json", self.receipt)
+        delivery.sign_bundle(self.app, self.signing)
+        code, out, err = self.scan("load-crash")
+        self.assertEqual((code, out), (1, b""))
+        self.assertIn(b"stale native discovery package source", err)
+
+    def test_resealed_real_wrong_architecture_helper_is_rejected_before_load(self):
+        root = self.app / delivery.DISCOVERY_ROOT
+        helper_app = root / "hex-vst3-host.app"
+        helper = helper_app / "Contents/MacOS/hex-vst3-factory-scan"
+        wrong = self.fixtures / "hex-vst3-host.app/Contents/Resources/factory-fixtures/wrong-architecture.vst3/Contents/MacOS/fixture"
+        shutil.copy2(wrong, helper)
+        delivery.sign_discovery(helper_app, "org.portalsurfer.hex.vst3.discovery", self.signing)
+        receipt = self.app / delivery.DISCOVERY_RECEIPT
+        data = json.loads(receipt.read_text())
+        data["bundle_files"] = delivery.discovery_builder().inventory(helper_app)
+        delivery.write_json(receipt, data)
+        self.receipt["vst3_discovery"]["receipt_sha256"] = delivery.sha(receipt)
+        self.receipt["files"] = delivery.inventory(self.app, signed_payload=True)
+        delivery.write_json(self.contents / "Resources/test-build.json", self.receipt)
+        delivery.sign_bundle(self.app, self.signing)
+        code, out, err = self.scan("load-crash")
+        self.assertEqual((code, out), (1, b""))
+        self.assertIn(b"factory scan refused", err)
 
 if __name__ == "__main__":
     unittest.main()

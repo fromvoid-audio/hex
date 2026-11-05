@@ -3,6 +3,179 @@ use super::midi_scene::{self, NoteGeometry};
 use hex_project::NoteId;
 use std::sync::Arc;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct MarqueeContext {
+    pub(super) scene: midi_scene::SceneKey,
+    pub(super) bounds: super::midi_stroke::CanvasBounds,
+    pub(super) selection_epoch: u64,
+}
+
+/// Cancellable live selection, retaining an immutable baseline for additive hits and rollback.
+/// Context identity includes geometry and selection, so a stale preview cannot win.
+#[derive(Clone)]
+pub(super) struct Marquee {
+    first: [f32; 2],
+    last: [f32; 2],
+    context: MarqueeContext,
+    additive: bool,
+    baseline: MidiSelection,
+    hits: Arc<[NoteId]>,
+    highlighted: Arc<[NoteId]>,
+}
+
+impl Marquee {
+    pub(super) fn begin(
+        context: MarqueeContext,
+        first: [f32; 2],
+        additive: bool,
+        selection: &MidiSelection,
+    ) -> Option<Self> {
+        if !context.bounds.is_valid()
+            || context.scene.beat_span == 0
+            || context.scene.beat_start
+                != midi_scene::clamp_start(context.scene.beat_start, context.scene.beat_span)
+            || context
+                .scene
+                .beat_start
+                .checked_add(i128::from(context.scene.beat_span))
+                .is_none()
+            || !midi_scene::valid_pitch_range(context.scene.pitch_low, context.scene.pitch_rows)
+            || !first.into_iter().all(f32::is_finite)
+            || first[0] < 0.0
+            || first[0] >= context.bounds.width
+            || first[1] < 0.0
+            || first[1] >= context.bounds.height
+            || context.selection_epoch != selection.epoch()
+        {
+            return None;
+        }
+        Some(Self {
+            first,
+            last: first,
+            context,
+            additive,
+            baseline: selection.clone(),
+            hits: Arc::from([]),
+            highlighted: if additive {
+                selection.shared_ids()
+            } else {
+                Arc::from([])
+            },
+        })
+    }
+
+    pub(super) fn is_current(&self, context: MarqueeContext) -> bool {
+        self.context == context && context.bounds.is_valid()
+    }
+
+    pub(super) fn highlighted(&self) -> Arc<[NoteId]> {
+        Arc::clone(&self.highlighted)
+    }
+
+    pub(super) fn rectangle(&self) -> ([f32; 2], [f32; 2]) {
+        (self.first, self.last)
+    }
+
+    pub(super) fn update(
+        &mut self,
+        context: MarqueeContext,
+        selection: &MidiSelection,
+        scene: &midi_scene::MidiScene,
+        last: [f32; 2],
+    ) -> Result<bool, &'static str> {
+        if scene.key() != context.scene {
+            return Err("midi marquee changed · selection canceled");
+        }
+        self.update_with_hits(context, selection, last, |first, last| {
+            marquee_hits(
+                scene.notes(),
+                first,
+                last,
+                context.bounds.width,
+                context.bounds.height,
+                context.scene.pitch_rows,
+            )
+        })
+    }
+
+    pub(super) fn context(&self) -> MarqueeContext {
+        self.context
+    }
+
+    /// Surfaces supply their own bounded hit geometry; selection, additive preview,
+    /// epoch validation and release stay with this single selection owner.
+    /// The supplier returns sorted, unique canonical note IDs.
+    pub(super) fn update_with_hits(
+        &mut self,
+        context: MarqueeContext,
+        selection: &MidiSelection,
+        last: [f32; 2],
+        hits: impl FnOnce([f32; 2], [f32; 2]) -> Result<Vec<NoteId>, &'static str>,
+    ) -> Result<bool, &'static str> {
+        if !self.is_current(context)
+            || selection.epoch() != context.selection_epoch
+            || !last.into_iter().all(f32::is_finite)
+        {
+            return Err("midi marquee changed · selection canceled");
+        }
+        let changed = self.last != last;
+        self.last = last;
+        let hits = if self.has_range() {
+            hits(self.first, last)?
+        } else {
+            Vec::new()
+        };
+        if self.hits.as_ref() != hits.as_slice() {
+            // Reuse immutable paint data while motion stays over the same hit set.
+            let hits: Arc<[NoteId]> = Arc::from(hits);
+            let highlighted = if self.additive {
+                let mut preview = self.baseline.clone();
+                preview.add_many(&hits)?;
+                preview.shared_ids()
+            } else {
+                Arc::clone(&hits)
+            };
+            self.hits = hits;
+            self.highlighted = highlighted;
+        }
+        Ok(changed)
+    }
+
+    pub(super) fn hits(&self) -> Arc<[NoteId]> {
+        Arc::clone(&self.hits)
+    }
+
+    pub(super) fn apply_live(
+        &mut self,
+        selection: &mut MidiSelection,
+    ) -> Result<bool, &'static str> {
+        if selection.epoch() != self.context.selection_epoch {
+            return Err("midi marquee selection changed · capture canceled");
+        }
+        let primary = if self.additive {
+            self.baseline
+                .primary
+                .or_else(|| self.highlighted.last().copied())
+        } else {
+            self.highlighted.first().copied()
+        };
+        let changed = selection.replace_shared(Arc::clone(&self.highlighted), primary);
+        self.context.selection_epoch = selection.epoch();
+        Ok(changed)
+    }
+
+    pub(super) fn restore_baseline(self, selection: &mut MidiSelection) -> bool {
+        if selection.epoch() != self.context.selection_epoch {
+            return false;
+        }
+        selection.replace_shared(self.baseline.ids, self.baseline.primary)
+    }
+
+    fn has_range(&self) -> bool {
+        (self.first[0] - self.last[0]).abs() >= 3.0 || (self.first[1] - self.last[1]).abs() >= 3.0
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct MidiSelection {
     ids: Arc<[NoteId]>,
@@ -126,6 +299,20 @@ impl MidiSelection {
         self.replace(next, primary)
     }
 
+    /// Canonical creation selects its complete authored set, with the returned last ID primary.
+    pub(super) fn select_created(
+        &mut self,
+        mut ids: Vec<NoteId>,
+        primary: NoteId,
+    ) -> Result<bool, &'static str> {
+        ids.sort_unstable();
+        ids.dedup();
+        if ids.binary_search(&primary).is_err() {
+            return Err("created midi primary is missing");
+        }
+        self.replace(ids, Some(primary))
+    }
+
     pub(super) fn retain_valid(
         &mut self,
         valid_ids: impl IntoIterator<Item = NoteId>,
@@ -173,6 +360,17 @@ impl MidiSelection {
         Ok(true)
     }
 
+    // Both callers supply an already validated, sorted immutable selection bank.
+    fn replace_shared(&mut self, ids: Arc<[NoteId]>, primary: Option<NoteId>) -> bool {
+        if (Arc::ptr_eq(&self.ids, &ids) || self.ids == ids) && self.primary == primary {
+            return false;
+        }
+        self.ids = ids;
+        self.primary = primary;
+        self.bump_epoch();
+        true
+    }
+
     fn bump_epoch(&mut self) {
         self.epoch = self.epoch.wrapping_add(1);
     }
@@ -184,12 +382,14 @@ pub(super) fn marquee_hits(
     last: [f32; 2],
     width: f32,
     height: f32,
+    pitch_rows: u8,
 ) -> Result<Vec<NoteId>, &'static str> {
     if !first.into_iter().chain(last).all(f32::is_finite)
         || !width.is_finite()
         || !height.is_finite()
         || width <= 0.0
         || height <= 0.0
+        || pitch_rows == 0
     {
         return Ok(Vec::new());
     }
@@ -206,7 +406,7 @@ pub(super) fn marquee_hits(
         let (left, right) =
             midi_scene::pixel_bounds(*note, width).ok_or("invalid midi scene width")?;
         let top = note.y * height;
-        let bottom = top + height / midi_scene::ROWS as f32;
+        let bottom = top + height / f32::from(pitch_rows);
         if right >= rect[0] && left <= rect[2] && bottom >= rect[1] && top <= rect[3] {
             hits.push(note.id);
         }
@@ -295,6 +495,7 @@ mod tests {
         let notes = [
             NoteGeometry {
                 id: ids[0],
+                active: true,
                 start: 0,
                 duration: 1,
                 pitch: 71,
@@ -308,6 +509,7 @@ mod tests {
             },
             NoteGeometry {
                 id: ids[1],
+                active: true,
                 start: 1,
                 duration: 1,
                 pitch: 70,
@@ -321,7 +523,7 @@ mod tests {
             },
         ];
         assert_eq!(
-            marquee_hits(&notes, [29.0, 4.0], [21.0, 7.0], 100.0, 240.0).unwrap(),
+            marquee_hits(&notes, [29.0, 4.0], [21.0, 7.0], 100.0, 240.0, 24).unwrap(),
             [ids[0]]
         );
     }

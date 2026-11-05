@@ -1,6 +1,6 @@
 //! Arbitrary byte evidence, not generated Ableton-format or musical fixtures.
 use hex_project::{Command, Created, Editor, ImportProvenance, MAX_IMPORT_DOCUMENT_BYTES, Project};
-use hex_storage::{MAX_DOCUMENT_BYTES, decode, encode, load, save_new};
+use hex_storage::{LEGACY_READER_DOCUMENT_BYTES, decode, encode, load, save_new};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -70,7 +70,7 @@ fn bounded_envelopes_and_versions_are_strict() {
     );
     let maximum = project(vec![255; MAX_IMPORT_DOCUMENT_BYTES]);
     let bytes = encode(&maximum).unwrap();
-    assert!(bytes.len() < MAX_DOCUMENT_BYTES);
+    assert!(bytes.len() < LEGACY_READER_DOCUMENT_BYTES);
     assert_eq!(decode(&bytes).unwrap(), maximum);
     let base: Value = serde_json::from_slice(&encode(&project(vec![1])).unwrap()).unwrap();
     for (key, value) in [
@@ -95,50 +95,30 @@ fn bounded_envelopes_and_versions_are_strict() {
     oversized["import_provenance"]["original_bytes"] =
         json!(vec![0; MAX_IMPORT_DOCUMENT_BYTES + 1]);
     let oversized = serde_json::to_vec(&oversized).unwrap();
-    assert!(oversized.len() < MAX_DOCUMENT_BYTES);
+    assert!(oversized.len() < LEGACY_READER_DOCUMENT_BYTES);
     assert!(decode(&oversized).is_err());
 }
 
 #[test]
-fn schema_seventeen_migrates_absent_and_rejects_provenance_backport() {
+fn current_provenance_is_required_even_when_empty() {
     let empty = Project::new(48_000).unwrap();
-    assert!(empty.import_provenance().is_none());
-    let mut legacy: Value = serde_json::from_slice(&encode(&empty).unwrap()).unwrap();
-    assert_eq!(legacy["version"], 33);
-    assert!(legacy["import_provenance"].is_null());
-    legacy["version"] = json!(17);
-    legacy.as_object_mut().unwrap().remove("main_devices");
-    legacy.as_object_mut().unwrap().remove("tuning");
-    legacy.as_object_mut().unwrap().remove("device_assets");
-    legacy.as_object_mut().unwrap().remove("track_colors");
-    legacy.as_object_mut().unwrap().remove("accented_clips");
-    legacy.as_object_mut().unwrap().remove("audio_clip_state");
-    legacy.as_object_mut().unwrap().remove("fade_shapes");
-    legacy.as_object_mut().unwrap().remove("audio_event_state");
-
-    legacy.as_object_mut().unwrap().remove("clip_names");
-    legacy.as_object_mut().unwrap().remove("audio_feeds");
-    legacy.as_object_mut().unwrap().remove("midi_routes");
-    legacy.as_object_mut().unwrap().remove("routing");
-    // A strict older reader refuses the new field even if null.
-    assert!(decode(&serde_json::to_vec(&legacy).unwrap()).is_err());
-    legacy.as_object_mut().unwrap().remove("import_provenance");
-    let migrated = decode(&serde_json::to_vec(&legacy).unwrap()).unwrap();
-    assert_eq!(migrated, empty);
-    assert!(migrated.import_provenance().is_none());
-    legacy["import_provenance"] =
-        json!({"kind":"ableton-live-set","version":1,"adapter_version":1,"original_bytes":[42]});
-    assert!(decode(&serde_json::to_vec(&legacy).unwrap()).is_err());
+    let bytes = encode(&empty).unwrap();
+    assert_eq!(decode(&bytes).unwrap(), empty);
+    let mut missing: Value = serde_json::from_slice(&bytes).unwrap();
+    missing.as_object_mut().unwrap().remove("import_provenance");
+    assert!(decode(&serde_json::to_vec(&missing).unwrap()).is_err());
 }
 
+/// Maximal import evidence survives beside a source. Documents above the
+/// former 8 MiB reader limit are covered by the save/replace/recover test below.
 #[test]
-fn combined_document_limit_refuses_publication_without_dropping_provenance() {
+fn maximal_provenance_preserves_original_bytes_and_source_identity() {
     let mut editor = Editor::new(project(vec![255; MAX_IMPORT_DOCUMENT_BYTES]), 1).unwrap();
     assert!(matches!(
         editor
             .execute(Command::ImportAudioTrack {
                 name: "original".into(),
-                path: "x".repeat(MAX_DOCUMENT_BYTES).into(),
+                path: "original.wav".into(),
                 sample_rate: 48_000,
                 frames: 100,
             })
@@ -146,7 +126,8 @@ fn combined_document_limit_refuses_publication_without_dropping_provenance() {
         Created::Imported { .. }
     ));
     let candidate = editor.project();
-    assert!(encode(candidate).is_err());
+    let bytes = encode(candidate).expect("maximal provenance encodes");
+    assert_eq!(decode(&bytes).unwrap(), *candidate);
     assert_eq!(
         candidate
             .import_provenance()
@@ -155,4 +136,89 @@ fn combined_document_limit_refuses_publication_without_dropping_provenance() {
             .len(),
         MAX_IMPORT_DOCUMENT_BYTES
     );
+}
+
+#[test]
+fn large_documents_save_replace_recover_and_checkpoint_without_truncation() {
+    use hex_storage::{
+        Journal, JournalRestartToken, load_journal, load_recovery, load_with_token,
+        replace_existing, restart_journal,
+    };
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
+    editor
+        .execute(Command::ImportAudioTrack {
+            name: "original".into(),
+            path: "x".repeat(LEGACY_READER_DOCUMENT_BYTES + 1).into(),
+            sample_rate: 48_000,
+            frames: 100,
+        })
+        .unwrap();
+    let large = editor.project();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("hex-large-{}-{stamp}", std::process::id()));
+    fs::create_dir(&dir).unwrap();
+    let path = dir.join("large.hex");
+    let small = Project::new(48_000).unwrap();
+    save_new(&path, &small).unwrap();
+    let (_, small_token) = load_with_token(&path).unwrap();
+    assert!(!small_token.requires_save_confirmation(&small).unwrap());
+    assert!(small_token.requires_save_confirmation(large).unwrap());
+    // An explicit ceiling uses the same rule: only crossing it from at/below asks.
+    let small_len = fs::read(&path).unwrap().len();
+    assert!(
+        !small_token
+            .requires_save_confirmation_within(&small, small_len)
+            .unwrap()
+    );
+    let mut grown = Editor::new(small.clone(), 1).unwrap();
+    grown
+        .execute(Command::AddTrack { name: "t".into() })
+        .unwrap();
+    assert!(
+        small_token
+            .requires_save_confirmation_within(grown.project(), small_len)
+            .unwrap()
+    );
+    // Already above the ceiling: no new compatibility loss to confirm.
+    assert!(
+        !small_token
+            .requires_save_confirmation_within(large, small_len - 1)
+            .unwrap()
+    );
+    replace_existing(&path, &small_token, large).unwrap();
+    let (reopened, token) = load_with_token(&path).unwrap();
+    assert_eq!(reopened, *large);
+    token.check_unchanged(&path).unwrap();
+    assert!(!token.requires_save_confirmation(large).unwrap());
+    assert_eq!(load_recovery(&path).unwrap().project, small);
+    replace_existing(&path, &token, large).unwrap();
+    assert_eq!(load_recovery(&path).unwrap().project, *large);
+    assert!(replace_existing(&path, &small_token, &small).is_err());
+    assert_eq!(load(&path).unwrap(), *large);
+    let copy = dir.join("copy.hex");
+    save_new(&copy, large).unwrap();
+    assert_eq!(load(&copy).unwrap(), *large);
+    let slot = dir.join("autosave");
+    let mut journal = Journal::open(slot.clone()).unwrap();
+    journal.checkpoint(large).unwrap();
+    assert_eq!(load_journal(&slot).unwrap(), *large);
+    drop(journal);
+    Journal::open(slot.clone()).unwrap();
+    // A recognized future envelope is preserved verbatim before a fresh large
+    // checkpoint. Restart uses the same framing and exact-byte slot ownership.
+    let mut unavailable = fs::read(&slot).unwrap();
+    unavailable[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
+    fs::write(&slot, &unavailable).unwrap();
+    let restart = JournalRestartToken::capture(slot.clone()).unwrap();
+    let outcome = restart_journal(&restart, large);
+    outcome.result.unwrap();
+    assert_eq!(
+        fs::read(outcome.preserved_path.unwrap()).unwrap(),
+        unavailable
+    );
+    assert_eq!(load_journal(&slot).unwrap(), *large);
+    fs::remove_dir_all(dir).unwrap();
 }

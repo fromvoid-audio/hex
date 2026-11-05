@@ -408,9 +408,24 @@ fn second_registered_definition_compiles_through_generic_registry() {
 fn registered_stateful_device_processes_the_summed_track_once() {
     let (mut editor, asset, track) = imported_audio_project();
     add_device(&mut editor, track, TestDevice.default_state().unwrap());
+    let Created::Track(source) = editor
+        .execute(Command::AddTrack {
+            name: "dry source".into(),
+        })
+        .unwrap()
+    else {
+        panic!("source track")
+    };
+    editor
+        .execute(Command::SetAudioFeed {
+            source: hex_project::RoutingOwner::Track(source),
+            destination: track,
+            gain: 1.0,
+        })
+        .unwrap();
     editor
         .execute(Command::PlaceClip {
-            track,
+            track: source,
             asset,
             start: 0,
             duration: 1,
@@ -427,9 +442,10 @@ fn registered_stateful_device_processes_the_summed_track_once() {
     renderer.play();
     let mut output = [[0.0; 2]; 1];
     renderer.render(&mut output).unwrap();
-    // The clips sum to [0.5, -1.0], the matrix swaps them, then the one
-    // stateful pass squares the summed signal: [-1, .5] -> [1, .25].
-    assert_eq!(output, [[1.0, 0.25]]);
+    // Local audio and its incoming feed sum to [.5, -1], then one matrix
+    // and stateful pass gives [1, .25]. The independent dry source also reaches
+    // Main as [.25, -.5]; it never passes through the owner's processor twice.
+    assert_eq!(output, [[1.25, -0.25]]);
 }
 
 #[test]
@@ -465,7 +481,7 @@ fn independent_nonlinear_runtimes_keep_order_history_and_partition_exactness() {
     let mut old = NativeRuntimeChain::new(vec![instance(9, default.clone(), 48_000)]).unwrap();
     old.begin_block();
     let mut prefix = [[0.0, 3.0]];
-    old.process_block(&mut prefix);
+    old.process_block(&mut prefix).unwrap();
     old.commit_block();
     assert_eq!(prefix, [[9.0, 0.0]]);
 
@@ -477,7 +493,7 @@ fn independent_nonlinear_runtimes_keep_order_history_and_partition_exactness() {
     compatible.inherit_from(&old);
     compatible.begin_block();
     let mut continued = [[0.0, 2.0]];
-    compatible.process_block(&mut continued);
+    compatible.process_block(&mut continued).unwrap();
     compatible.commit_block();
     assert_eq!(continued, [[3.5, 1.5]]);
 
@@ -489,7 +505,7 @@ fn independent_nonlinear_runtimes_keep_order_history_and_partition_exactness() {
     rate_changed.inherit_from(&old);
     rate_changed.begin_block();
     let mut fresh = [[0.0, 2.0]];
-    rate_changed.process_block(&mut fresh);
+    rate_changed.process_block(&mut fresh).unwrap();
     rate_changed.commit_block();
     assert_eq!(fresh, [[2.0, 0.0]]);
 
@@ -506,14 +522,14 @@ fn independent_nonlinear_runtimes_keep_order_history_and_partition_exactness() {
     let mut whole = make_pair();
     whole.begin_block();
     let mut whole_frames = input;
-    whole.process_block(&mut whole_frames);
+    whole.process_block(&mut whole_frames).unwrap();
     whole.commit_block();
 
     let mut partitioned = make_pair();
     partitioned.begin_block();
     let mut split_frames = input;
-    partitioned.process_block(&mut split_frames[..1]);
-    partitioned.process_block(&mut split_frames[1..]);
+    partitioned.process_block(&mut split_frames[..1]).unwrap();
+    partitioned.process_block(&mut split_frames[1..]).unwrap();
     partitioned.commit_block();
     assert_eq!(whole_frames, split_frames);
     assert_eq!(whole_frames, [[0.03125, 0.5], [0.125, 0.625]]);
@@ -793,18 +809,27 @@ fn host_trim_is_post_device_and_meters_preserve_serial_signal_boundaries() {
     assert!((output[0][1] + 0.5 * gain * input_gain).abs() < 1e-6);
     assert_eq!(
         first_meter.take_peaks(),
-        [0.5 * input_gain, gain * input_gain]
+        hex_engine::DevicePeaks {
+            input: 0.5 * input_gain,
+            output: [0.5 * gain * input_gain, gain * input_gain],
+        }
     );
     assert_eq!(
         second_meter.take_peaks(),
-        [gain * input_gain, gain * input_gain * 0.5]
+        hex_engine::DevicePeaks {
+            input: gain * input_gain,
+            output: [0.25 * gain * input_gain, gain * input_gain * 0.5],
+        }
     );
     // A renderer sharing prepared data cannot contaminate native UI readings.
     let mut export = Playback::try_from_prepared_with_session(prepared).unwrap();
     export.apply(PlaybackCommand::Play);
     export.render(&mut output).unwrap();
-    assert_eq!(first_meter.take_peaks(), [0.0; 2]);
-    assert_eq!(second_meter.take_peaks(), [0.0; 2]);
+    assert_eq!(first_meter.take_peaks(), hex_engine::DevicePeaks::default());
+    assert_eq!(
+        second_meter.take_peaks(),
+        hex_engine::DevicePeaks::default()
+    );
     editor
         .execute(Command::SetDeviceBypass {
             device: first,

@@ -5,6 +5,18 @@ use std::path::Path;
 
 pub(super) const TITLE_HEIGHT: f32 = 22.0;
 pub(super) const TOOLBAR_HEIGHT: f32 = 26.0;
+// Keep every transport action, full view name and useful output status at the
+// minimum window width. Reserve the wide line for the longest input policy,
+// position readout and output/loading indicators as well as fixed controls.
+pub(super) const WIDE_TOOLBAR_MIN_WIDTH: f32 = 1_200.0;
+pub(super) fn toolbar_height(width: f32) -> f32 {
+    if width < WIDE_TOOLBAR_MIN_WIDTH {
+        // Two full rows plus the existing bottom divider.
+        TOOLBAR_HEIGHT * 2.0 + 1.0
+    } else {
+        TOOLBAR_HEIGHT
+    }
+}
 pub(super) const CONTROL_SIZE: f32 = 20.0;
 
 pub(super) fn project_title(document_path: Option<&Path>) -> String {
@@ -24,8 +36,10 @@ pub(super) enum TitlebarControl {
 
 pub(super) fn title_bar(
     title: impl AsRef<str>,
+    cpu_meter: impl IntoElement,
     on_control: impl Fn(TitlebarControl) -> Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
 ) -> Stateful<Div> {
+    let title_inset = crate::build_info::HEADER_INSET.max(theme::TITLEBAR_LEADING_INSET);
     let controls = [
         (TitlebarControl::Close, "close window", 0xe65c4f),
         (TitlebarControl::Minimize, "minimize window", 0xd8a63b),
@@ -65,6 +79,7 @@ pub(super) fn title_bar(
                 .cursor_pointer()
                 .tooltip(move |_, cx| {
                     cx.new(|_| super::transport::MiniTooltip {
+                        kind: crate::tooltips::Kind::Identification,
                         description: tooltip.into(),
                     })
                     .into()
@@ -95,16 +110,16 @@ pub(super) fn title_bar(
         .justify_center()
         // Equal padding on both sides keeps the title centered while protecting
         // the first row beneath macOS traffic lights.
-        .px(px(
-            crate::build_info::HEADER_INSET.max(theme::TITLEBAR_LEADING_INSET)
-        ))
+        .px(px(title_inset + 68.0))
         .border_b_1()
         .border_color(rgb(theme::color(theme::PaletteRole::Border)))
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
         .on_click(|event, window, cx| {
+            // Follow the macOS "double-click a window's title bar to" setting
+            // (zoom, minimize or nothing) rather than forcing fullscreen.
             if event.standard_click() && event.click_count() == 2 {
                 cx.stop_propagation();
-                window.toggle_fullscreen();
+                window.titlebar_double_click();
             }
         })
         .child(lights)
@@ -116,6 +131,7 @@ pub(super) fn title_bar(
                 .h_full()
                 .flex()
                 .items_center()
+                .children([cpu_meter])
                 .child(crate::build_info::editor_label()),
         )
         .child(
@@ -142,7 +158,7 @@ pub(super) fn toolbar_row() -> Stateful<Div> {
         .flex_shrink_0()
         .flex()
         .items_center()
-        .gap(px(1.0))
+        // Contiguous compact controls keep the audio status readable at minimum width.
         // The toolbar is below the title row and does not need the traffic-light inset.
         .pr_2()
         .border_b_1()
@@ -180,7 +196,51 @@ mod ui_tests {
     use std::sync::Arc;
 
     #[gpui::test]
-    fn title_double_click_enters_and_exits_fullscreen(cx: &mut TestAppContext) {
+    fn cpu_meter_click_resets_the_visible_overload(cx: &mut TestAppContext) {
+        let (handle, editor) = super::super::clip_drag_ui_test::editor_window(
+            cx,
+            Project::new(48_000).expect("project"),
+            Arc::default(),
+        );
+        editor.update(cx, |view, cx| {
+            let now = std::time::Instant::now();
+            let sample = hex_audio::cpu_meter::CpuSample {
+                elapsed: 10,
+                budget: 100,
+                peak: 10_000,
+                frames: 256,
+                rate: 48_000,
+            };
+            view.cpu_meter.observe(Some((1, sample, 0)), now);
+            view.cpu_meter.observe(Some((1, sample, 1)), now);
+            assert!(view.cpu_meter.warning());
+            cx.notify();
+        });
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let bounds = visual.debug_bounds("editor-cpu-meter").expect("cpu meter");
+        let position = point(
+            bounds.origin.x + bounds.size.width / 2.0,
+            bounds.origin.y + bounds.size.height / 2.0,
+        );
+        visual.simulate_event(MouseDownEvent {
+            position,
+            modifiers: Default::default(),
+            button: MouseButton::Left,
+            click_count: 1,
+            first_mouse: false,
+        });
+        visual.simulate_event(MouseUpEvent {
+            position,
+            modifiers: Default::default(),
+            button: MouseButton::Left,
+            click_count: 1,
+        });
+        assert!(!editor.read_with(cx, |view, _| view.cpu_meter.warning()));
+    }
+
+    #[gpui::test]
+    fn title_double_click_never_toggles_fullscreen(cx: &mut TestAppContext) {
         let (handle, _editor) = super::super::clip_drag_ui_test::editor_window(
             cx,
             Project::new(48_000).expect("project"),
@@ -193,13 +253,13 @@ mod ui_tests {
             title.origin.x + title.size.width / 2.0,
             title.origin.y + title.size.height / 2.0,
         );
-        for (button, click_count, expected) in [
-            (MouseButton::Left, 1, false),
-            (MouseButton::Right, 2, false),
-            (MouseButton::Left, 2, true),
-            (MouseButton::Left, 3, true),
-            (MouseButton::Left, 1, true),
-            (MouseButton::Left, 2, false),
+        // The test platform's titlebar action is a no-op; the macOS action
+        // follows the system zoom/minimize setting and never enters fullscreen.
+        for (button, click_count) in [
+            (MouseButton::Left, 1),
+            (MouseButton::Right, 2),
+            (MouseButton::Left, 2),
+            (MouseButton::Left, 3),
         ] {
             visual.simulate_event(MouseDownEvent {
                 position,
@@ -214,7 +274,7 @@ mod ui_tests {
                 button,
                 click_count,
             });
-            assert_eq!(visual.update(|window, _| window.is_fullscreen()), expected);
+            assert!(!visual.update(|window, _| window.is_fullscreen()));
         }
     }
 
@@ -235,6 +295,7 @@ mod ui_tests {
                 comparison_audio: None,
                 project: Arc::clone(&current.project),
                 waveforms: Default::default(),
+                source_overviews: Default::default(),
                 audio_clip_waveforms: std::collections::BTreeMap::new(),
                 midi_preview: Arc::clone(&current.midi_preview),
                 gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -263,12 +324,18 @@ mod ui_tests {
             let version = visual
                 .debug_bounds("application-build-version")
                 .expect("build version remains visible at minimum width");
+            let cpu = visual
+                .debug_bounds("editor-cpu-meter")
+                .expect("cpu meter remains visible at minimum width");
             let debug = visual
                 .debug_bounds("open-session-log")
                 .expect("debug button remains visible beside the version");
             let changelog = visual
                 .debug_bounds("open-changelog")
                 .expect("changelog button");
+            let help = visual
+                .debug_bounds("help-tooltip-toggle")
+                .expect("help button");
             let toolbar = visual
                 .debug_bounds("editor-toolbar")
                 .expect("compact toolbar row");
@@ -293,21 +360,26 @@ mod ui_tests {
             let title_center = f32::from(title_label.origin.x + title_label.size.width / 2.0);
             let window_center = f32::from(window.origin.x + window.size.width / 2.0);
             assert!((f32::from(title.size.height) - super::TITLE_HEIGHT).abs() < 1.0);
-            assert!((f32::from(toolbar.size.height) - super::TOOLBAR_HEIGHT).abs() < 1.0);
+            assert!(
+                (f32::from(toolbar.size.height)
+                    - super::toolbar_height(f32::from(window.size.width)))
+                .abs()
+                    < 1.0
+            );
             assert!((toolbar_top - title_bottom).abs() < 1.0);
             assert!((title_center - window_center).abs() < 1.0);
-            assert!(title_label.origin.x + title_label.size.width <= version.origin.x);
+            assert!(title_label.origin.x + title_label.size.width + px(8.0) <= cpu.origin.x);
+            assert!(cpu.origin.x + cpu.size.width <= version.origin.x);
             assert!(version.size.width > px(0.0));
             assert!(
-                (f32::from(
-                    window.origin.x + window.size.width - changelog.origin.x - changelog.size.width
-                ) - 8.0)
+                (f32::from(window.origin.x + window.size.width - help.origin.x - help.size.width)
+                    - 8.0)
                     .abs()
                     < 1.0
             );
             assert!(version.origin.y >= title.origin.y);
             assert!(version.origin.y + version.size.height <= title.origin.y + title.size.height);
-            // Changelog is the rightmost control; Log remains its compact neighbor.
+            // Help is rightmost; Changelog and Log retain their compact neighbors.
             assert_eq!(
                 debug.origin.x - (version.origin.x + version.size.width),
                 px(4.0)
@@ -316,6 +388,13 @@ mod ui_tests {
                 changelog.origin.x - (debug.origin.x + debug.size.width),
                 px(4.0)
             );
+            assert_eq!(
+                help.origin.x - (changelog.origin.x + changelog.size.width),
+                px(4.0)
+            );
+            assert_eq!(help.size, gpui::size(px(20.0), px(20.0)));
+            assert!(help.origin.y >= title.origin.y);
+            assert!(help.bottom() <= title.bottom());
             assert!(changelog.size.width > px(0.0));
             assert_eq!(changelog.size.height, px(super::CONTROL_SIZE));
             assert!(changelog.origin.y >= title.origin.y);
@@ -369,7 +448,9 @@ mod ui_tests {
     fn compact_toolbar_keeps_names_status_and_controls_visible_in_both_workspaces(
         cx: &mut TestAppContext,
     ) {
+        let _output_fixture_guard = crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
         use super::super::EditorMode;
+        use hex_project::InputQuantization::{Adaptive, Off, Sixteenth};
         let (handle, editor) = super::super::clip_drag_ui_test::editor_window(
             cx,
             Project::new(48_000).unwrap(),
@@ -378,7 +459,7 @@ mod ui_tests {
         let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
         let mut visual = VisualTestContext::from_window(handle, cx);
         // The existing headless control carrier supplies labels without OS audio.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline = crate::test_wait::hang_deadline();
         let (mut output, _backend) = loop {
             match hex_audio::worker_fixture::open(48_000) {
                 Ok(output) => break output,
@@ -423,10 +504,27 @@ mod ui_tests {
                         cx.notify();
                     })
                 });
-                for width in [880.0, 881.0, 960.0, 1440.0, 880.0] {
+                for (width, input) in [
+                    (880.0, Off),
+                    (881.0, Adaptive),
+                    (960.0, Sixteenth),
+                    (999.0, Adaptive),
+                    (1_000.0, Off),
+                    (super::WIDE_TOOLBAR_MIN_WIDTH - 1.0, Adaptive),
+                    (super::WIDE_TOOLBAR_MIN_WIDTH, Adaptive),
+                    (super::WIDE_TOOLBAR_MIN_WIDTH, Off),
+                    (super::WIDE_TOOLBAR_MIN_WIDTH, Sixteenth),
+                    (1440.0, Adaptive),
+                    (880.0, Off),
+                ] {
+                    editor.update(&mut visual, |view, cx| {
+                        view.set_input_quantization(input);
+                        cx.notify();
+                    });
                     visual.simulate_resize(size(px(width), px(540.0)));
                     visual.run_until_parked();
                     let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
+                    assert_eq!(toolbar.size.height, px(super::toolbar_height(width)));
                     let name = visual
                         .debug_bounds(match mode {
                             EditorMode::Arrangement => "arrange view",
@@ -448,7 +546,33 @@ mod ui_tests {
                     assert!(restart.right() <= status.left());
                     assert!(status.right() <= toolbar.right() - px(8.0));
                     assert!(status.size.height <= toolbar.size.height);
+                    let policy = visual.debug_bounds("input-quantization").unwrap();
+                    let label_chars = format!("in {} ▾", input.label()).chars().count();
+                    assert!(
+                        policy.size.width >= name.size.width * (label_chars as f32 / 12.0),
+                        "the complete input policy label remains visible"
+                    );
                     for selector in [
+                        "arrange-zoom-fit",
+                        "arrange-zoom-back",
+                        "section-autoplay-toggle",
+                        "global-launch-quantization",
+                        "input-quantization",
+                        "section-focus-control",
+                    ] {
+                        let control = visual.debug_bounds(selector).unwrap();
+                        assert!(control.size.width >= px(19.0) && control.size.height >= px(20.0));
+                        assert!(
+                            control.left() >= toolbar.left()
+                                && control.right() <= toolbar.right()
+                                && control.top() >= toolbar.top()
+                                && control.bottom() <= toolbar.bottom()
+                                && (control.bottom() <= name.top()
+                                    || control.right() <= name.left())
+                        );
+                    }
+                    for selector in [
+                        "project tuning · cmd+alt+t",
                         "import audio · cmd+i",
                         "show arrange view · tab",
                         "show console view · tab",
@@ -460,7 +584,10 @@ mod ui_tests {
                             size(px(super::CONTROL_SIZE), px(super::CONTROL_SIZE))
                         );
                         assert!(
-                            control.left() >= toolbar.left() && control.right() <= toolbar.right()
+                            control.left() >= toolbar.left()
+                                && control.right() <= toolbar.right()
+                                && control.top() >= toolbar.top()
+                                && control.bottom() <= toolbar.bottom()
                         );
                     }
                     editor.read_with(&visual, |view, _| {
@@ -471,6 +598,64 @@ mod ui_tests {
                 }
             }
         }
+        editor.update(&mut visual, |view, _| view.audio = None);
+    }
+    #[gpui::test]
+    fn failed_session_startup_replaces_loading_with_a_visible_error(cx: &mut TestAppContext) {
+        use super::super::EditorView;
+        use gpui::AppContext;
+        struct OfflineSink;
+        impl hex_session::service::WorkerAudioSink for OfflineSink {
+            fn initialize(&mut self, _: &std::sync::atomic::AtomicBool) -> Result<u32, String> {
+                Err("fixture device unavailable".into())
+            }
+            fn canonical_changed(
+                &mut self,
+                _: std::sync::Arc<hex_session::service::CanonicalAudioSourceSnapshot>,
+            ) {
+            }
+            fn poll(&mut self) {}
+            fn close(&mut self) {}
+        }
+        // History capacity 0 makes the worker's session construction fail.
+        let service =
+            hex_session::service::Service::with_audio_sink(0, 0, None, Box::new(OfflineSink))
+                .unwrap();
+        let handle = *cx.add_window(|_, _| gpui::Empty);
+        let editor = cx
+            .update_window(handle, |_, window, cx| {
+                window.replace_root(cx, |window, cx| {
+                    EditorView::new(window, cx, service, Err("offline startup test".into()))
+                })
+            })
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            let error = editor.update(&mut visual, |v, cx| {
+                if v.tick(cx) {
+                    cx.notify();
+                }
+                v.error.as_deref().map(str::to_owned)
+            });
+            if let Some(error) = error {
+                assert_eq!(
+                    error,
+                    "project session could not start: project edit failed: \
+                     history capacity must be 1..128 · restart hex to try again"
+                );
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "startup failure never surfaced"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| assert!(v.state.is_none()));
+        assert!(visual.debug_bounds("project loading").is_none());
+        assert!(visual.debug_bounds("editor-status-message").is_some());
     }
     #[gpui::test]
     fn compact_toolbar_startup_loading_and_real_service_ready_keep_both_indicators(
@@ -501,7 +686,7 @@ mod ui_tests {
         let mut ready: Option<Arc<hex_session::service::ViewState>> = None;
         for loading in [true, false] {
             if !loading {
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                let deadline = crate::test_wait::hang_deadline();
                 loop {
                     let installed = editor.update(&mut visual, |v, cx| {
                         if v.tick(cx) {
@@ -525,7 +710,17 @@ mod ui_tests {
                     v.set_mode(mode);
                     cx.notify();
                 });
-                for width in [880.0, 881.0, 960.0, 1440.0, 880.0] {
+                for width in [
+                    880.0,
+                    881.0,
+                    960.0,
+                    999.0,
+                    1_000.0,
+                    super::WIDE_TOOLBAR_MIN_WIDTH - 1.0,
+                    super::WIDE_TOOLBAR_MIN_WIDTH,
+                    1440.0,
+                    880.0,
+                ] {
                     visual.simulate_resize(size(px(width), px(540.0)));
                     visual.run_until_parked();
                     let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
@@ -583,7 +778,10 @@ mod ui_tests {
                             size(px(super::CONTROL_SIZE), px(super::CONTROL_SIZE))
                         );
                         assert!(
-                            control.left() >= toolbar.left() && control.right() <= toolbar.right()
+                            control.left() >= toolbar.left()
+                                && control.right() <= toolbar.right()
+                                && control.top() >= toolbar.top()
+                                && control.bottom() <= toolbar.bottom()
                         );
                     }
                     editor.read_with(&visual, |v, _| {

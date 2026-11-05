@@ -1,4 +1,6 @@
 use super::*;
+#[path = "capture_tests/render_work_tests.rs"]
+mod render_work_tests;
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 use hex_project::{ReturnTrackSnapshot, SendLevelSnapshot};
 
@@ -16,6 +18,7 @@ fn audio_fixture_project(sends: bool, return_muted: bool, solo: bool) -> Project
         track.soloed = solo && id == 1;
         track.content = TrackContentSnapshot::Hybrid {
             audio_clips: vec![ClipSnapshot {
+                active: true,
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
                 edit: None,
@@ -56,6 +59,7 @@ fn audio_fixture_project(sends: bool, return_muted: bool, solo: bool) -> Project
             gain: 0.25,
             muted: return_muted,
             devices: vec![DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: 21,
                 bypassed: false,
@@ -118,6 +122,31 @@ fn metered_analytic_capture_applies_track_gain_once_and_preserves_main_pcm() {
 }
 
 #[test]
+fn track_meter_reports_post_fader_audio_including_zero_gain_and_mute() {
+    for (gain, muted) in [(1.0, false), (0.25, false), (0.0, false), (1.0, true)] {
+        let mut snapshot = audio_fixture_project(false, false, false).snapshot();
+        snapshot.tracks[0].gain = gain;
+        snapshot.tracks[0].muted = muted;
+        let project = Project::from_snapshot(snapshot).unwrap();
+        let revision = prepare_audio(&project);
+        let observation =
+            crate::PreparedPlaybackObservation::prepare_on_control(&revision).unwrap();
+        let mut runtime = linear(revision);
+        runtime.set_device_metering(true);
+        runtime.render(&mut [[0.0; 2]; 64]).unwrap();
+        let actual = observation
+            .track_output_meter(project.tracks()[0].id())
+            .unwrap()
+            .take_track_output();
+        let expected = if muted { 0.0 } else { 0.4 * 0.5 * gain };
+        assert!(
+            (actual - expected).abs() < 1e-7,
+            "gain={gain} muted={muted} actual={actual} expected={expected}"
+        );
+    }
+}
+
+#[test]
 fn nonlinear_track_and_shared_return_capture_follow_actual_processing_order() {
     for metered in [false, true] {
         use hex_devices::saturator::{SATURATOR_DEFINITION, parameter};
@@ -135,6 +164,7 @@ fn nonlinear_track_and_shared_return_capture_follow_actual_processing_order() {
         };
         let mut snapshot = audio_fixture_project(true, false, false).snapshot();
         snapshot.tracks[0].devices.push(DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: 22,
             bypassed: false,
@@ -143,6 +173,7 @@ fn nonlinear_track_and_shared_return_capture_follow_actual_processing_order() {
         snapshot.return_tracks[0].devices.insert(
             0,
             DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: 23,
                 bypassed: false,
@@ -173,18 +204,55 @@ fn nonlinear_track_and_shared_return_capture_follow_actual_processing_order() {
         let mut expected = main;
         reference.render(&mut expected).unwrap();
         assert_eq!(main, expected);
-        for index in 0..512 {
-            let a = if index < 3 { [0.0; 2] } else { [0.25, -0.5] };
-            let b = if index < 3 {
-                [0.0; 2]
-            } else {
-                [0.4 * 0.75, -0.2 * 0.375]
-            };
-            let input = [a[0] * 0.5 + b[0], a[1] * 0.5 + b[1]];
-            let drive = 10.0_f64.powf(9.0 / 20.0);
-            let clipped = input.map(|sample| (f64::from(sample) * drive).clamp(-1.0, 1.0) as f32);
-            let mono = (clipped[0] + clipped[1]) * 0.5 * 0.25;
-            assert_eq!(capture.output(0).unwrap()[index], a);
+        // Oracle: standalone oversampled runtimes in processing order. Each
+        // device output is silent before its origin reaches the playback
+        // epoch; the track tap is delayed to Main's arrival (22 frames) and
+        // the dry track waits on its send edge for the track Saturator.
+        let saturate = |drive, input: &[Frame], input_arrival: usize| {
+            let prepared = hex_devices::saturator::SaturatorDefinition::prepare_owned(
+                &digital(drive),
+                48_000,
+                &[],
+            )
+            .unwrap();
+            let arrival = input_arrival
+                + hex_lattice::PreparedNativeProcessor::algorithmic_latency_frames(&prepared)
+                    .unwrap() as usize;
+            let mut frames = input.to_vec();
+            hex_lattice::PreparedNativeProcessor::create_runtime(&prepared)
+                .process_block(&mut frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            frames[..arrival].fill([0.0; 2]);
+            (frames, arrival)
+        };
+        let delayed = |frames: &[Frame], index: usize, delay: usize| {
+            index
+                .checked_sub(delay)
+                .map_or([0.0; 2], |index| frames[index])
+        };
+        let source: Vec<Frame> = (0..512)
+            .map(|index| if index < 3 { [0.0; 2] } else { [0.4, -0.2] })
+            .collect();
+        let (track_wet, track_arrival) = saturate(24.0, &source, 0);
+        let a: Vec<Frame> = track_wet
+            .iter()
+            .map(|f| [f[0] * 0.25, f[1] * 0.5])
+            .collect();
+        let b: Vec<Frame> = source.iter().map(|f| [f[0] * 0.75, f[1] * 0.375]).collect();
+        let sent: Vec<Frame> = (0..512)
+            .map(|index| {
+                let b = delayed(&b, index, track_arrival);
+                [a[index][0] * 0.5 + b[0], a[index][1] * 0.5 + b[1]]
+            })
+            .collect();
+        let (return_wet, return_arrival) = saturate(9.0, &sent, track_arrival);
+        assert_eq!((track_arrival, return_arrival), (11, 22));
+        assert!(a.iter().any(|frame| frame[0] > 0.24));
+        for (index, wet) in return_wet.iter().enumerate() {
+            let mono = (wet[0] + wet[1]) * 0.5 * 0.25;
+            assert_eq!(
+                capture.output(0).unwrap()[index],
+                delayed(&a, index, return_arrival - track_arrival)
+            );
             assert!((capture.output(1).unwrap()[index][0] - mono).abs() < 1e-7);
             assert_eq!(
                 capture.output(1).unwrap()[index][0],
@@ -199,6 +267,7 @@ fn selected_outputs_keep_shared_unselected_sends_and_independent_post_mix_pcm() 
     for (muted, solo) in [(false, false), (true, false), (false, true)] {
         let revision = audio_fixture(true, muted, solo);
         let mut runtime = linear(Arc::clone(&revision));
+        runtime.set_device_metering(true);
         let mut main_only = linear(Arc::clone(&revision));
         let track = runtime.routes[0].id;
         let bus = revision.arrangement().return_buses()[0].id;
@@ -216,6 +285,23 @@ fn selected_outputs_keep_shared_unselected_sends_and_independent_post_mix_pcm() 
         runtime
             .render_with_capture(&mut main, &mut capture)
             .unwrap();
+        let observation =
+            crate::PreparedPlaybackObservation::prepare_on_control(&revision).unwrap();
+        for (index, meter) in [
+            observation.return_output_meter(bus).unwrap(),
+            observation.track_output_meter(track).unwrap(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let expected = capture
+                .output(index)
+                .unwrap()
+                .iter()
+                .flatten()
+                .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+            assert_eq!(meter.take_track_output(), expected);
+        }
         assert_eq!(capture.valid_frames(), 512);
         let mut expected_main = [[0.0; 2]; 512];
         main_only.render(&mut expected_main).unwrap();
@@ -501,11 +587,12 @@ fn analytic_hybrid_fixture() -> (Project, BTreeMap<hex_project::AssetId, crate::
     let base = with_test_instrument(&project(1.0, 0, 1 << 26), device_type, 0);
     let mut snapshot = base.snapshot();
     snapshot.session = SessionSnapshot::default();
-    snapshot.next_id = 100;
+    snapshot.next_id = 90;
     snapshot.master_gain = 0.25;
     snapshot.tracks[0].gain = 0.5;
     snapshot.tracks[0].balance = -0.5;
     snapshot.assets = vec![AssetSnapshot {
+        original_source: None,
         id: 80,
         path: "hybrid.wav".into(),
         source_sample_rate: 48_000,
@@ -520,6 +607,7 @@ fn analytic_hybrid_fixture() -> (Project, BTreeMap<hex_project::AssetId, crate::
     snapshot.tracks[0].content = TrackContentSnapshot::Hybrid {
         midi_clips,
         audio_clips: vec![ClipSnapshot {
+            active: true,
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),
             edit: None,
@@ -535,12 +623,63 @@ fn analytic_hybrid_fixture() -> (Project, BTreeMap<hex_project::AssetId, crate::
             fade: ClipFade::neutral(512).unwrap(),
         }],
     };
+    routed_midi_fixture::separate_midi(&mut snapshot, 0);
     let project = Project::from_snapshot(snapshot).unwrap();
     let media = BTreeMap::from([(
         project.assets().next().unwrap().id(),
         crate::Audio::new(48_000, vec![[0.4, -0.2]; 32]).unwrap(),
     )]);
     (project, media)
+}
+
+#[test]
+fn loop_end_fades_audio_without_fading_the_hybrid_instrument() {
+    let device_type = hex_lattice_contract::DeviceTypeId::from_static("test.capture.analytic");
+    let definition = ContinuityInstrumentDefinition {
+        id: device_type,
+        levels: [0.25, 0.5],
+        release_frames: 4,
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let (project, media) = analytic_hybrid_fixture();
+    let mut snapshot = project.snapshot();
+    snapshot.loop_region = Some(LoopRegion::new(0, 64, true).unwrap());
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let asset = project.assets().next().unwrap().id();
+    let silent_media = BTreeMap::from([(
+        asset,
+        crate::Audio::new(48_000, vec![[0.0; 2]; 32]).unwrap(),
+    )]);
+    let prepare = |media| {
+        Arc::new(
+            PreparedRevision::prepare_with_instrument_registry(
+                &project,
+                media,
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+                &registry,
+            )
+            .unwrap(),
+        )
+    };
+    let mut hybrid = SessionPlayback::new(prepare(&media)).unwrap();
+    let mut midi_only = SessionPlayback::new(prepare(&silent_media)).unwrap();
+    hybrid.apply(SessionPlaybackCommand::Play).unwrap();
+    midi_only.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual = [[0.0; 2]; 128];
+    let mut instrument = [[0.0; 2]; 128];
+    hybrid.render(&mut actual).unwrap();
+    midi_only.render(&mut instrument).unwrap();
+    for seam in [63, 127] {
+        assert_ne!(instrument[seam], [0.0; 2], "instrument remains audible");
+        assert_eq!(actual[seam], instrument[seam], "audio fades independently");
+        assert_ne!(
+            actual[seam - 1],
+            instrument[seam - 1],
+            "audio is still fading before the seam"
+        );
+    }
 }
 
 #[test]
@@ -641,16 +780,18 @@ fn hybrid_metered_capture_preserves_prefix_suffix_send_return_processing_order()
         routed.next_id = 110;
         routed.tracks[0].devices = vec![
             DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: 100,
                 bypassed: false,
                 state: prefix,
             },
             DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: 101,
                 bypassed: false,
-                state: suffix,
+                state: suffix.clone(),
             },
         ];
         routed.tracks[0].instrument_position = Some(1);
@@ -664,6 +805,7 @@ fn hybrid_metered_capture_preserves_prefix_suffix_send_return_processing_order()
             gain: 0.25,
             muted: false,
             devices: vec![DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: 103,
                 bypassed: false,
@@ -704,14 +846,31 @@ fn hybrid_metered_capture_preserves_prefix_suffix_send_return_processing_order()
         let mut unobserved_pcm = routed_main;
         unobserved.render(&mut unobserved_pcm).unwrap();
         assert_eq!(routed_main, unobserved_pcm);
+        // Oracle: the suffix is a standalone oversampled Saturator runtime
+        // over prefix + instrument. Its declared latency delays every later
+        // stage equally, and its output is silent before the playback epoch.
         let gain = 2.0_f32;
+        let suffix_input: Vec<Frame> = (0..routed_main.len())
+            .map(|index| {
+                let audio = if index < 3 { [0.0; 2] } else { [0.4_f32, -0.2] };
+                let level = if index < 379 { 0.25 } else { 0.0 };
+                audio.map(|sample| sample * gain + level)
+            })
+            .collect();
+        let prepared_suffix =
+            hex_devices::saturator::SaturatorDefinition::prepare_owned(&suffix, 48_000, &[])
+                .unwrap();
+        let latency =
+            hex_lattice::PreparedNativeProcessor::algorithmic_latency_frames(&prepared_suffix)
+                .unwrap() as usize;
+        assert_eq!(latency, 11);
+        let mut suffix_output = suffix_input;
+        hex_lattice::PreparedNativeProcessor::create_runtime(&prepared_suffix)
+            .process_block(&mut suffix_output, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        suffix_output[..latency].fill([0.0; 2]);
+        assert!(suffix_output.iter().any(|frame| frame[0] > 0.9));
         for (index, main_frame) in routed_main.iter().enumerate() {
-            let audio = if index < 3 { [0.0; 2] } else { [0.4_f32, -0.2] };
-            let level = if index < 379 { 0.25 } else { 0.0 };
-            let processed = audio.map(|sample| {
-                ((f64::from(sample * gain + level)) * 10.0_f64.powf(6.0 / 20.0)).clamp(-1.0, 1.0)
-                    as f32
-            });
+            let processed = suffix_output[index];
             let track = [processed[0] * 0.5, processed[1] * 0.25];
             let returned = track.map(|sample| sample * 0.5 * 0.25);
             for channel in 0..2 {
@@ -795,6 +954,12 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
             )
             .unwrap(),
         );
+        let observation =
+            crate::PreparedPlaybackObservation::prepare_on_control(&retarget_revision).unwrap();
+        observation
+            .track_output_meter(project.tracks()[0].id())
+            .unwrap()
+            .take_track_output();
         let mut retarget = SessionPlayback::new(retarget_revision).unwrap();
         retarget.set_device_metering(metered);
         retarget.try_inherit_state_from(&mut gain_source).unwrap();
@@ -811,19 +976,62 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
             .render_with_capture(&mut retarget_main, &mut retarget_capture)
             .unwrap();
         for (index, frame) in retarget_capture.output(0).unwrap().iter().enumerate() {
-            let expected = [(0.4 + 0.25) * 0.125, (-0.2 + 0.25) * 0.25];
-            assert_eq!(*frame, expected);
-            assert_eq!(retarget_main[index], expected.map(|sample| sample * 0.25));
+            let progress = (index + 1) as f32 / 240.0;
+            let expected = [
+                (0.4 + 0.25) * (0.5 - 0.375 * progress),
+                (-0.2 + 0.25) * 0.25,
+            ];
+            for channel in 0..2 {
+                assert!((frame[channel] - expected[channel]).abs() < 1e-6);
+                assert!((retarget_main[index][channel] - expected[channel] * 0.25).abs() < 1e-6);
+            }
         }
-        // Actual public inheritance of a removed analytic owner, not a synthetic
-        // capture-only release. The old held gate is released at the cut.
-        let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        if metered {
+            let observed = observation
+                .track_output_meter(project.tracks()[0].id())
+                .unwrap()
+                .take_track_output();
+            assert!(
+                (observed - (0.4 + 0.25) * (0.5 - 0.375 / 240.0)).abs() < 1e-6,
+                "track meter must follow the new post-fader gain: {observed}"
+            );
+        }
+        // Owner removal uses a local MIDI source, preserving the current
+        // handoff contract that does not replace a live routed source layout.
+        // The routed hybrid path and exact audio sum are checked above.
+        let mut local = project.snapshot();
+        let TrackContentSnapshot::Hybrid { midi_clips, .. } = &mut local.tracks[1].content else {
+            panic!("routed source")
+        };
+        let midi_clips = std::mem::take(midi_clips);
+        local.tracks[0].content = TrackContentSnapshot::Hybrid {
+            audio_clips: Vec::new(),
+            midi_clips,
+        };
+        local.tracks.truncate(1);
+        local.midi_routes.clear();
+        let local = Project::from_snapshot(local).unwrap();
+        let local_revision = Arc::new(
+            PreparedRevision::prepare_with_instrument_registry(
+                &local,
+                &media,
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+                &registry,
+            )
+            .unwrap(),
+        );
+        let mut old = SessionPlayback::new(local_revision).unwrap();
         old.set_device_metering(metered);
         old.apply(SessionPlaybackCommand::Play).unwrap();
         old.render(&mut [[0.0; 2]; 128]).unwrap();
         let id = project.tracks()[0].id();
-        let mut removed = project.snapshot();
+        let mut removed = local.snapshot();
         removed.tracks.clear();
+        for source in &mut removed.native_sources {
+            source.receiver = None;
+        }
+        removed.midi_routes.clear();
         let removed = Project::from_snapshot(removed).unwrap();
         let removed_revision = Arc::new(
             PreparedRevision::prepare_with_instrument_registry(
@@ -988,6 +1196,7 @@ fn owned_effect_revision(compensated: bool) -> Arc<PreparedRevision> {
     use hex_lattice::conformance::owned_delay;
     let mut snapshot = audio_fixture_project(true, false, false).snapshot();
     snapshot.tracks[0].devices = vec![DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: 31,
         bypassed: false,
@@ -995,6 +1204,7 @@ fn owned_effect_revision(compensated: bool) -> Arc<PreparedRevision> {
     }];
     if compensated {
         snapshot.tracks[1].devices = vec![DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: 32,
             bypassed: false,
@@ -1002,6 +1212,7 @@ fn owned_effect_revision(compensated: bool) -> Arc<PreparedRevision> {
         }];
     }
     snapshot.return_tracks[0].devices = vec![DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: 21,
         bypassed: false,
@@ -1045,12 +1256,17 @@ fn owned_track_and_return_late_abort_close_transactions_before_retry_or_handoff(
             let mut chain =
                 hex_lattice::NativeRuntimeChain::new_prepared(bus.device_chain.to_vec()).unwrap();
             chain.begin_block();
-            chain.process_block(&mut [[0.6, -0.3]; 3]);
+            chain.process_block(&mut [[0.6, -0.3]; 3]).unwrap();
             chain.commit_block();
             value.return_effect_tails.slots_mut()[0] = Some(
                 super::return_effect_tails::ReturnEffectTail::new(chain, bus),
             );
         }
+        tested.set_device_metering(true);
+        let observation =
+            crate::PreparedPlaybackObservation::prepare_on_control(&revision).unwrap();
+        let track_id = tested.routes[0].id;
+        let return_id = revision.arrangement().return_buses()[0].id;
         tested.arrangement_frame = u64::MAX - 300;
         let mut observed = 0;
         let mut actual = [[9.0; 2]; 512];
@@ -1067,6 +1283,20 @@ fn owned_track_and_return_late_abort_close_transactions_before_retry_or_handoff(
             "failure must follow speculative effect processing"
         );
         assert_eq!(actual, [[0.0; 2]; 512]);
+        assert_eq!(
+            observation
+                .track_output_meter(track_id)
+                .unwrap()
+                .take_track_output(),
+            0.0
+        );
+        assert_eq!(
+            observation
+                .return_output_meter(return_id)
+                .unwrap()
+                .take_track_output(),
+            0.0
+        );
         assert_eq!(tested.performance_frame, 4);
         let candidate = linear(revision);
         // This provider forbids inheriting an open transaction. A next-begin
@@ -1209,14 +1439,20 @@ fn live_project_taps_preserve_pcm_and_independent_tracks_across_loop_wraps() {
         for index in 0..1536 {
             let frame = if looping { index % 1024 } else { index };
             let sounding = (3..1027).contains(&frame);
-            let a = if sounding { [0.1, -0.1] } else { [0.0; 2] };
-            let b = if sounding { [0.3, -0.075] } else { [0.0; 2] };
+            let fade = if looping && frame >= 896 {
+                (1023 - frame) as f32 / 127.0
+            } else {
+                1.0
+            };
+            let level = |at: usize| f32::from(u8::from(sounding)) * [0.1, 0.3][at] * fade;
+            let a = [level(0), -level(0)];
+            let b = [level(1), -level(1) * 0.25];
             for channel in 0..2 {
                 assert!((tracks[0][index][channel] - a[channel]).abs() < 1e-6);
                 assert!((tracks[1][index][channel] - b[channel]).abs() < 1e-6);
             }
             // Shared Return is independent of the direct track stems.
-            if sounding {
+            if sounding && fade > 0.0 {
                 assert_ne!(master[index], [a[0] + b[0], a[1] + b[1]]);
             }
         }
@@ -1231,4 +1467,114 @@ fn live_project_selection_refuses_unsorted_duplicate_and_unbounded_id_lists() {
     }
     assert!(ProjectOutputTap::new(&[1; hex_project::MAX_TRACKS + 1], &mut observer).is_none());
     assert!(ProjectOutputTap::new(&[], &mut observer).is_some());
+}
+
+#[test]
+fn solo_overrides_mute_for_launched_session_audio_without_changing_authored_flags() {
+    for solo in [false, true] {
+        let mut snapshot = audio_project(0, 32, 4).snapshot();
+        snapshot.tracks[0].muted = true;
+        snapshot.tracks[0].soloed = solo;
+        let project = Project::from_snapshot(snapshot).unwrap();
+        let prepared = prepare_audio(&project);
+        let clip = prepared.session().audio_clips()[0].id;
+        let mut runtime = SessionPlayback::new(prepared).unwrap();
+        runtime
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut pcm = [[0.; 2]; 8];
+        for chunk in pcm.chunks_mut(3) {
+            runtime.render(chunk).unwrap();
+        }
+        assert_eq!(pcm, [if solo { [0.4, -0.2] } else { [0., 0.] }; 8]);
+        assert!(project.tracks()[0].muted());
+        assert_eq!(project.tracks()[0].soloed(), solo);
+    }
+}
+
+#[test]
+fn removed_midi_contributor_cannot_capture_a_separate_shared_source_stem() {
+    use hex_project::{Command, Created, Editor};
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(receiver) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "receiver".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("receiver")
+    };
+    let source = editor
+        .project()
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let Created::Track(contributor) = editor
+        .execute(Command::AddMidiTrack {
+            name: "midi".into(),
+        })
+        .unwrap()
+    else {
+        panic!("contributor")
+    };
+    editor
+        .execute(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source),
+        })
+        .unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track: contributor,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            velocity: 100,
+            channel: 0,
+        })
+        .unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut old = SessionPlayback::new(revision(editor.project(), Arc::clone(&table))).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 128]).unwrap();
+    editor.execute(Command::RemoveTrack(contributor)).unwrap();
+    let mut candidate = SessionPlayback::new(revision(editor.project(), table)).unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
+    assert!(
+        matches!(
+            candidate.output_capture_plan(&[OutputCaptureId::Track(contributor)], 8),
+            Err(OutputCaptureError::MissingOwner)
+        ),
+        "MIDI identity does not establish an independently separable audio stem"
+    );
+    let plan = candidate
+        .output_capture_plan(&[OutputCaptureId::Track(receiver)], 8)
+        .unwrap();
+    let mut main = [[0.0; 2]; 8];
+    let mut track = main;
+    let mut buffers: [&mut [Frame]; 1] = [&mut track];
+    let mut capture = OutputCapture::new(&plan, &mut buffers);
+    candidate
+        .render_with_capture(&mut main, &mut capture)
+        .unwrap();
+    assert_eq!(main, capture.output(0).unwrap());
+    assert!(main.iter().flatten().any(|sample| sample.abs() > 0.000_001));
 }

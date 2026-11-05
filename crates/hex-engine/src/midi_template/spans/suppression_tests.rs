@@ -62,7 +62,7 @@ fn key() -> MutableOccurrenceKey {
 #[test]
 fn original_and_compact_layouts_are_compiled_and_analytic_details_are_canonical() {
     assert_eq!(size_of::<Original>(), 120);
-    assert_eq!(size_of::<MidiOccurrenceSuppression>(), 72);
+    assert_eq!(size_of::<MidiOccurrenceSuppression>(), 80);
     assert_eq!(align_of::<MidiOccurrenceSuppression>(), 8);
     assert_eq!(offset_of!(MidiOccurrenceSuppression, until_frame), 40);
     assert_eq!(offset_of!(MidiOccurrenceSuppression, onset_beat), 48);
@@ -70,7 +70,7 @@ fn original_and_compact_layouts_are_compiled_and_analytic_details_are_canonical(
     assert_eq!(offset_of!(MidiOccurrenceSuppression, padding), 68);
     assert_eq!(
         2 * 16_384 * (size_of::<Original>() - size_of::<MidiOccurrenceSuppression>()),
-        1_572_864
+        1_310_720
     );
     let analytic = MidiOccurrenceSuppression::analytic(key(), u64::MAX);
     assert_eq!(analytic.mutable_signature(), None);

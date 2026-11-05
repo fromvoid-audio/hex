@@ -85,7 +85,7 @@ impl ClipGroupMovePreview {
                 if let Some(edit) = preview
                     .edit
                     .as_mut()
-                    .filter(|edit| edit.musical_start.is_some())
+                    .filter(|edit| edit.live_musical_start().is_some())
                 {
                     // Detach only the placement shell ONCE. The retained domain
                     // (processing recipe, events, fades) remains shared.
@@ -214,6 +214,24 @@ impl ClipGroupMovePreview {
         let requested = i128::from(destination) - i128::from(anchor.frame);
         let delta = requested.max(-i128::from(self.earliest));
         let track_delta = target_index as i128 - anchor.track as i128;
+        // Must match `Project::preview_clip_group_move`: all-MIDI groups use one
+        // exact beat delta rather than a frame round trip.
+        let beat_delta = match position {
+            ClipGroupPosition::Midi(beat) if self.originals.iter().all(|o| o.midi) => {
+                let earliest = self
+                    .originals
+                    .iter()
+                    .map(|o| o.beat)
+                    .min()
+                    .unwrap_or(anchor.beat);
+                Some(super::clip_group::midi_beat_delta(
+                    anchor.beat,
+                    beat,
+                    earliest,
+                ))
+            }
+            _ => None,
+        };
         for (index, (original, preview)) in self.originals.iter().zip(&mut self.storage).enumerate()
         {
             let target = usize::try_from(original.track as i128 + track_delta)
@@ -226,7 +244,7 @@ impl ClipGroupMovePreview {
                     if let Some(edit) = clip
                         .edit
                         .as_mut()
-                        .filter(|edit| edit.musical_start.is_some())
+                        .filter(|edit| edit.live_musical_start().is_some())
                     {
                         // A borrowed preview may be cloned by a caller. Never
                         // silently allocate another shell on the pointer path.
@@ -240,15 +258,20 @@ impl ClipGroupMovePreview {
                         .ok_or(Invalid("group audio end overflow"))?;
                 }
                 ClipGroupContent::Midi(clip) => {
-                    clip.start = super::clip_group::midi_start(
-                        project,
-                        original.beat,
-                        frame,
-                        delta,
-                        requested,
-                        index == self.anchor,
-                        position,
-                    )?;
+                    clip.start = match beat_delta {
+                        Some(beat_delta) => {
+                            super::clip_group::shifted_beat(original.beat, beat_delta)?
+                        }
+                        None => super::clip_group::midi_start(
+                            project,
+                            original.beat,
+                            frame,
+                            delta,
+                            requested,
+                            index == self.anchor,
+                            position,
+                        )?,
+                    };
                     let end = BeatTime::from_raw(
                         clip.start()
                             .raw()

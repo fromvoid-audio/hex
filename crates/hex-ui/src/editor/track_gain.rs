@@ -6,8 +6,8 @@ use hex_lattice_contract::ParameterValue;
 use hex_project::{ReturnId, ReturnTrack, Track, TrackId};
 use hex_session::device_gesture::GestureTarget;
 use hex_widgets::{
-    NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlEvent,
-    NumericControlKind, NumericDragAxis, NumericEventPhase, NumericScale, NumericSpec,
+    NumericControl, NumericControlConfig, NumericControlEvent, NumericControlKind,
+    NumericControlPresentation, NumericEventPhase, NumericScale, NumericSpec,
 };
 use std::{cell::Cell, collections::BTreeMap, rc::Rc};
 
@@ -20,6 +20,30 @@ pub(super) struct Controls {
     revision: Option<u64>,
     bindings: BTreeMap<TrackId, Binding>,
     mixer: BTreeMap<MixerKey, Binding>,
+}
+
+impl Controls {
+    /// Keep an unfinished numeric draft attached to its original track when
+    /// the Console selection changes before the draft can be completed.
+    pub(super) fn pending_track_gain(&self, generation: u64, cx: &gpui::App) -> Option<TrackId> {
+        if self.generation != generation {
+            return None;
+        }
+        self.bindings
+            .iter()
+            .find_map(|(id, binding)| binding.entity.read(cx).is_interacting().then_some(*id))
+    }
+    /// Read-only admission check; drafts remain with their numeric owners.
+    /// Unlike finalization, it does not collect bindings or commit values.
+    pub(super) fn has_pending_draft(&self, cx: &gpui::App) -> bool {
+        self.bindings
+            .values()
+            .chain(self.mixer.values())
+            .any(|binding| {
+                let control = binding.entity.read(cx);
+                control.is_interacting() || control.is_editing()
+            })
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -72,7 +96,7 @@ fn automated(track: &Track) -> bool {
     !track.gain_envelope().is_empty() || !track.gain_lane().spans().is_empty()
 }
 
-fn retire_stale(view: &mut EditorView, cx: &mut Context<EditorView>) {
+pub(super) fn retire_stale(view: &mut EditorView, cx: &mut Context<EditorView>) {
     let Some(state) = view.state.as_ref() else {
         return;
     };
@@ -95,7 +119,7 @@ fn retire_stale(view: &mut EditorView, cx: &mut Context<EditorView>) {
         if let Some(binding) = view.track_gain_controls.bindings.remove(&track) {
             if device_panel::owns_numeric_gesture(
                 view,
-                GestureTarget::TrackGain { track },
+                binding_target(view, track, &binding.lease),
                 &binding.lease,
             ) {
                 let _ = view.cancel_device_gesture();
@@ -136,7 +160,7 @@ pub(super) fn controls_for_finalize(
         .iter()
         .map(|(track, binding)| {
             (
-                GestureTarget::TrackGain { track: *track },
+                binding_target(view, *track, &binding.lease),
                 binding.entity.clone(),
             )
         })
@@ -147,6 +171,52 @@ pub(super) fn controls_for_finalize(
                 .map(|(key, binding)| (key.target(), binding.entity.clone())),
         )
         .collect()
+}
+
+fn binding_target(
+    view: &EditorView,
+    track: TrackId,
+    lease: &device_panel::NumericGestureLease,
+) -> GestureTarget {
+    view.device_gesture
+        .snapshot()
+        .filter(|active| {
+            Some(active.key) == lease.get()
+                && active.key.generation == view.project_generation
+                && active.target.track_gain_anchor() == Some(track)
+        })
+        .map_or(GestureTarget::TrackGain { track }, |active| active.target)
+}
+
+fn dispatch_track_gain(
+    view: &mut EditorView,
+    track: TrackId,
+    lease: &device_panel::NumericGestureLease,
+    phase: NumericEventPhase,
+    value: ParameterValue,
+) -> Result<(), &'static str> {
+    if phase == NumericEventPhase::Begin
+        && let Some(state) = view.state.as_ref()
+        && view.track_selection.contains(track)
+        && state
+            .project
+            .track(track)
+            .is_some_and(|track| track.gain() > 0.0)
+    {
+        let selected = view.track_selection.ordered(&state.project);
+        if selected.len() > 1 {
+            let group = hex_project::RelativeTrackGains::capture(&state.project, track, &selected)
+                .map_err(|error| error.0)?;
+            if group.len() > 1 {
+                view.device_gesture
+                    .begin_track_gains(view.project_generation, group)?;
+                lease.set(view.device_gesture.snapshot().map(|active| active.key));
+                return Ok(());
+            }
+        }
+    }
+    let target = binding_target(view, track, lease);
+    device_panel::dispatch_bound_numeric_gesture(view, target, lease, phase, value)
 }
 
 impl EditorView {
@@ -165,7 +235,6 @@ impl EditorView {
                 .debug_selector(move || format!("track-volume-auto-{}", id.value()))
                 .child(theme::text("auto"));
         }
-        let target = GestureTarget::TrackGain { track: id };
         let generation = self.project_generation;
         if let std::collections::btree_map::Entry::Vacant(entry) =
             self.track_gain_controls.bindings.entry(id)
@@ -185,14 +254,14 @@ impl EditorView {
                     NumericControlKind::HorizontalSlider,
                     spec,
                     f64::from(track.gain()),
-                    device_panel::control_style(),
+                    theme::control_style(),
                 )
             });
             let Ok(config) = config else { return div() };
             let entity = cx.new(|cx| {
                 NumericControl::from_config(
                     cx,
-                    config.with_appearance(NumericControlAppearance::FilledSlider),
+                    config.with_presentation(NumericControlPresentation::FilledSlider),
                 )
             });
             let lease: device_panel::NumericGestureLease = Rc::new(Cell::new(None));
@@ -205,11 +274,9 @@ impl EditorView {
                     }
                     if event.phase == NumericEventPhase::Begin {
                         // Gesture pumping bypasses ordinary edit admission while recording.
-                        let reason = if view.document_audio_mode
-                            != hex_session::DocumentAudioMode::Resident
+                        let reason = if view.gain_recorder.blocks_edits()
+                            || view.midi_recorder.blocks_edits()
                         {
-                            Some("live track volume is unavailable in this project mode")
-                        } else if view.gain_recorder.blocks_edits() {
                             Some("finish gain recording before changing track volume")
                         } else if view
                             .state
@@ -230,9 +297,9 @@ impl EditorView {
                             return;
                         }
                     }
-                    if let Err(reason) = device_panel::dispatch_bound_numeric_gesture(
+                    if let Err(reason) = dispatch_track_gain(
                         view,
-                        target,
+                        id,
                         &captured,
                         event.phase,
                         ParameterValue::Float(event.value as f32),
@@ -253,21 +320,16 @@ impl EditorView {
         }
         let active = self
             .device_gesture
-            .snapshot()
-            .filter(|active| active.target == target)
-            .and_then(|active| match active.value {
-                ParameterValue::Float(gain) => Some(gain),
-                _ => None,
-            });
-        let enabled = self.document_audio_mode == hex_session::DocumentAudioMode::Resident
-            && !automated(track)
+            .preview_track_gain(self.project_generation, id);
+        let enabled = !automated(track)
             && !self.gain_recorder.blocks_edits()
+            && !self.midi_recorder.blocks_edits()
             && !self.opening_project
             && !self.close_prompt_open;
         let binding = &self.track_gain_controls.bindings[&id];
         binding.entity.update(cx, |control, cx| {
             control.set_enabled(enabled, cx);
-            let _ = control.set_external_style(device_panel::control_style(), cx);
+            let _ = control.set_external_style(theme::control_style(), cx);
             let _ = control.set_external_value(f64::from(active.unwrap_or(track.gain())), cx);
         });
         div()
@@ -337,16 +399,11 @@ impl EditorView {
                 NumericControlKind::HorizontalSlider,
                 spec,
                 f64::from(canonical),
-                device_panel::control_style(),
+                theme::control_style(),
             ) else {
                 return div();
             };
-            let config = config.with_appearance(NumericControlAppearance::FilledSlider);
-            let config = if matches!(key, MixerKey::Balance(_)) {
-                config.with_drag_axis(NumericDragAxis::Vertical)
-            } else {
-                config
-            };
+            let config = config.with_presentation(NumericControlPresentation::FilledSlider);
             let entity = cx.new(|cx| NumericControl::from_config(cx, config));
             let lease: device_panel::NumericGestureLease = Rc::new(Cell::new(None));
             let captured = lease.clone();
@@ -358,7 +415,8 @@ impl EditorView {
                     }
                     if event.phase == NumericEventPhase::Begin
                         && (view.document_audio_mode != hex_session::DocumentAudioMode::Resident
-                            || view.gain_recorder.blocks_edits()
+                            || (view.gain_recorder.blocks_edits()
+                                || view.midi_recorder.blocks_edits())
                             || view.edit_pending())
                     {
                         view.error = Some(
@@ -400,12 +458,13 @@ impl EditorView {
             });
         let enabled = self.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && !self.gain_recorder.blocks_edits()
+            && !self.midi_recorder.blocks_edits()
             && !self.opening_project
             && !self.close_prompt_open;
         let binding = &self.track_gain_controls.mixer[&key];
         binding.entity.update(cx, |control, cx| {
             control.set_enabled(enabled, cx);
-            let _ = control.set_external_style(device_panel::control_style(), cx);
+            let _ = control.set_external_style(theme::control_style(), cx);
             let _ = control.set_external_value(f64::from(active.unwrap_or(canonical)), cx);
         });
         div()

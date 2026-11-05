@@ -1,11 +1,22 @@
-//! Constructor-owned runtime custody, independent of cost/admission authority.
-//! Teardown follows original177 claims_teardown's Pending-before-take protocol.
+//! Constructor-owned runtime custody, separate from cost and publication authority.
+//!
+//! The actual root, preparation incarnation and runtime identity travel together; caller scalars,
+//! equal graph values and raw Playback owners cannot manufacture that association. The constructor
+//! admits only its explicitly implemented closed classes, not every device accepted by the
+//! ordinary registry. Origin books follow real owner moves; copying compatible DSP history does
+//! not transfer source custody. Every destructive frontier records Pending before taking an owner.
+//! Only a normal return from the actual destructor closes that frontier; failure retains the first
+//! payload and remaining owners without retry or invented completion.
 mod claimed;
 mod draft;
+#[cfg(test)]
+mod grouped_audio_tests;
 mod preparation;
 mod reservation;
+#[cfg(test)]
+mod reverb_tests;
 pub use draft::AudioCandidateDraft;
-pub use preparation::AudioCandidatePreparation;
+pub use preparation::{AudioCandidateEffects, AudioCandidatePreparation};
 pub use reservation::AudioCandidateReservationQuote;
 mod storage;
 pub use storage::AudioCandidateConstructorSummary;
@@ -16,7 +27,7 @@ use crate::{
 };
 pub use claimed::{
     AudioCandidateAnchors, AudioCandidateConstructorClaims, AudioCandidateRuntimeStatus,
-    AudioCandidateSplitRefusal, ClaimedAudioCandidateRuntime,
+    AudioCandidateSplitRefusal, ClaimedAudioCandidateRuntime, StreamPlayback,
 };
 pub use groups::{AudioCandidateRuntimeDisposed, AudioCandidateTransfer};
 use std::{
@@ -49,6 +60,7 @@ mod tests {
         let mut owner = AudioCandidateOwner::try_new_on_control(custody, token)
             .ok()
             .unwrap();
+        assert_eq!(owner.foreign_nodes_on_control().unwrap().count(), 0);
         let locations: std::collections::BTreeSet<_> = owner
             .inner
             .groups
@@ -276,8 +288,15 @@ struct Group {
     closed: bool,
     origin: Option<groups::Origin>,
 }
+mod current_sampler;
 struct RuntimeOwner {
     playback: Playback,
+    sampler_sources: Option<(
+        crate::owned_shared::OwnedShared<
+            crate::native_device_resources::current_sampler::CurrentSamplerSources,
+        >,
+        u64,
+    )>,
     #[cfg(any(test, feature = "instrument-test-support"))]
     probe: Option<RuntimeDropProbe>,
 }
@@ -300,6 +319,14 @@ pub struct AudioCandidateOwner {
     inner: Box<CandidateState>,
 }
 impl AudioCandidateOwner {
+    /// Read-only scalar identity for actual opaque runtime custody probes.
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub fn test_runtime_address(&self) -> Option<usize> {
+        self.inner
+            .runtime
+            .as_deref()
+            .map(|r| r as *const RuntimeOwner as usize)
+    }
     /// Control-only headless observer on the actual nested Runtime Box Drop.
     /// Returns a scalar address only; no pointer, Playback or owning handle escapes.
     #[cfg(any(test, feature = "instrument-test-support"))]
@@ -330,8 +357,7 @@ impl AudioCandidateOwner {
             .as_mut()
             .ok_or(crate::Invalid("candidate runtime unavailable"))?;
         runtime
-            .playback
-            .try_apply_action(action)
+            .apply_action(action)
             .map_err(|_| crate::Invalid("candidate action refused"))
     }
     #[cfg(any(test, feature = "instrument-test-support"))]
@@ -341,7 +367,7 @@ impl AudioCandidateOwner {
             .runtime
             .as_mut()
             .ok_or(crate::Invalid("candidate runtime unavailable"))?;
-        runtime.playback.render(output)
+        runtime.render_with_signal_observers(output, None, None)
     }
     #[cfg(any(test, feature = "instrument-test-support"))]
     pub fn test_transport(&self) -> Option<(u64, u64, bool)> {
@@ -400,6 +426,66 @@ impl AudioCandidateOwner {
     }
     pub fn recover_inputs_on_control(&mut self) -> Option<OwnedAudioInputs> {
         self.inner.recover_inputs_on_control()
+    }
+    #[cfg(test)]
+    pub(crate) fn test_render_with_foreign(
+        &mut self,
+        output: &mut [crate::Frame],
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), crate::Invalid> {
+        self.inner
+            .runtime
+            .as_mut()
+            .ok_or(crate::Invalid("candidate runtime unavailable"))?
+            .render_with_foreign_processors(output, None, None, None, foreign)
+    }
+    /// Borrow foreign nodes from the original prepared root on the control lane.
+    /// Configuration, processor identity and foreign binding remain separate
+    /// fields of the actual prepared instance; no caller summary is accepted.
+    /// This read-only view neither transfers native resources nor proves source
+    /// admission. The audio owner must match every node to its retained source
+    /// and keep that source alive through the original graph's terminal custody.
+    /// Bypassed nodes are included because their endpoints still advance.
+    pub fn foreign_nodes_on_control(
+        &self,
+    ) -> Result<impl Iterator<Item = &hex_lattice::PreparedRuntimeInstance>, AudioStorageError>
+    {
+        let revision = self.inner.custody.candidate_root_view(&self.inner.token)?;
+        let arrangement = revision.arrangement();
+        Ok(arrangement
+            .tracks
+            .iter()
+            .flat_map(|track| track.device_chain.iter())
+            .chain(
+                arrangement
+                    .return_buses
+                    .iter()
+                    .flat_map(|bus| bus.device_chain.iter()),
+            )
+            .chain(arrangement.main_device_chain.iter())
+            .filter(|node| {
+                matches!(
+                    node.definition,
+                    Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
+                )
+            }))
+    }
+    /// Query the original closed constructor, never a caller-provided summary.
+    /// Source/endpoint admission remains the native audio owner's responsibility.
+    pub fn requires_effect_graph_custody_on_control(&self) -> Result<bool, AudioStorageError> {
+        let revision = self.inner.custody.candidate_root_view(&self.inner.token)?;
+        Ok(!revision.arrangement().main_device_chain.is_empty()
+            || revision
+                .arrangement()
+                .return_buses
+                .iter()
+                .any(|r| !r.device_chain.is_empty())
+            || revision
+                .arrangement()
+                .signal_graph
+                .as_ref()
+                .is_some_and(|g| g.needs_runtime())
+            || self.foreign_nodes_on_control()?.next().is_some())
     }
     pub fn dispose_original_inputs_on_control(&mut self) -> Result<(), AudioStorageError> {
         self.inner.dispose_original_inputs_on_control()
@@ -626,15 +712,18 @@ fn validate_runtime_groups(
     runtime
         .playback
         .visit_candidate_groups(&mut |kind, member, present| {
-            validate_supported_location(kind, present && kind != 1)?;
-            if kind == 1 && present && groups.get(index).is_none_or(|g| g.origin.is_none()) {
+            validate_supported_location(kind, present && !matches!(kind, 1 | 5))?;
+            if matches!(kind, 1 | 5)
+                && present
+                && groups.get(index).is_none_or(|g| g.origin.is_none())
+            {
                 return Err(AudioStorageError::UnsupportedGraph);
             }
             if groups.get(index).is_none_or(|g| {
                 g.location != (kind, member)
                     || g.present != present
                     || g.closed
-                    || (kind == 1 && present && g.origin.is_none())
+                    || (matches!(kind, 1 | 5) && present && g.origin.is_none())
             }) {
                 return Err(AudioStorageError::SourceMismatch);
             }
@@ -647,14 +736,16 @@ fn validate_runtime_groups(
     Ok(())
 }
 
-// Closed constructor class: no effects/instruments/MIDI, no retained tails or
-// analytic-context fanout, and no signal-graph compensation. Enumeration includes
+// Explicit closed constructor classes permit known fresh chains, sampler and
+// compensation storage. Fresh tails and analytic-context fanout remain
+// unsupported; retained chain tails require original transfer origins.
+// Enumeration includes
 // every vacant slot; absence is validated, never converted into an owner group.
 fn validate_supported_location(kind: u8, present: bool) -> Result<(), AudioStorageError> {
     match kind {
-        0 | 4 | 7 | 9..=12 => Ok(()),
-        1 | 2 | 3 | 5 | 6 | 8 | 13 if !present => Ok(()),
-        1 | 2 | 3 | 5 | 6 | 8 | 13 => Err(AudioStorageError::UnsupportedGraph),
+        0 | 2 | 4 | 7 | 8 | 9..=12 | 14 => Ok(()),
+        1 | 3 | 5 | 6 | 13 if !present => Ok(()),
+        1 | 3 | 5 | 6 | 13 => Err(AudioStorageError::UnsupportedGraph),
         _ => Err(AudioStorageError::SourceMismatch),
     }
 }

@@ -7,21 +7,64 @@ publish.workspace = true
 
 [features]
 # Instrumented headless tests only; never referenced by production code.
-allocation-probe = ["hex-engine/instrument-test-support"]
+allocation-probe = ["hex-engine/instrument-test-support", "hex-plugin-host/allocation-probe"]
+stream-test-support = ["hex-stream/test-support"]
 
 [dependencies]
+hex-plugin-host = { path = "../hex-plugin-host" }
+hex-plugin-scan = { path = "../hex-plugin-scan" }
+hex-plugin-state = { path = "../hex-plugin-state" }
+hex-lattice = { path = "../hex-lattice" }
+hex-lattice-contract = { path = "../hex-lattice-contract" }
 hex-engine = { path = "../hex-engine" }
 hex-stream = { path = "../hex-stream" }
 cpal = "=0.17.3"
 rtrb = "=0.3.4"
 
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+# Safe per-thread scheduling request; no callback calls or extra worker owner.
+qos-threads = "=0.1.3"
+
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dev-dependencies]
+# Explicit optimized headless profiles only; queried outside callback probes.
+rustix = { version = "=1.1.5", features = ["time"] }
+
 [dev-dependencies]
+hex-plugin-host = { path = "../hex-plugin-host", features = ["test-support"] }
+# Real provider/pair allocation probes only; no production device dependency.
+hex-devices = { path = "../hex-devices" }
 hex-tuning = { path = "../hex-tuning" }
 hex-media = { path = "../hex-media" }
 hex-project = { path = "../hex-project" }
-hex-lattice-contract = { path = "../hex-lattice-contract" }
+# Actual completed automation files in native readiness/allocation tests only.
+hex-storage = { path = "../hex-storage" }
 hex-lattice = { path = "../hex-lattice", features = ["conformance"] }
 allocation-counter = "=0.8.1"
 
 [lints]
 workspace = true
+
+[[example]]
+name = "profile_stream_callback"
+required-features = ["allocation-probe"]
+
+# Cargo gates these targets before linking and launching empty harnesses.
+[[test]]
+name = "allocation_probes"
+required-features = ["allocation-probe"]
+
+[[test]]
+name = "allocation_probe_calibration"
+required-features = ["allocation-probe"]
+
+[[test]]
+name = "callback_stage_clocks"
+required-features = ["allocation-probe"]
+
+[[test]]
+name = "device_comparison"
+required-features = ["allocation-probe"]
+
+[[test]]
+name = "stream_pressure_boundary"
+required-features = ["allocation-probe", "stream-test-support"]

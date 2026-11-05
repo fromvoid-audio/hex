@@ -46,6 +46,7 @@ mod enable_continuation;
 mod feedback_runtime;
 mod lfo;
 mod lfo_runtime;
+mod occurrence_gain;
 mod tuning;
 const LEGACY_STATE_VERSION: u32 = 1;
 const CORE_FIELDS: usize = 32;

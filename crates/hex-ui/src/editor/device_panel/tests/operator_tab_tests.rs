@@ -339,7 +339,7 @@ fn operator_section_activation_and_invalid_draft_keep_focus_and_state(cx: &mut T
     visual.run_until_parked();
     for (page, key) in [
         (operator_panel::OperatorPage::Lfo, "enter"),
-        (operator_panel::OperatorPage::Oscillator, "space"),
+        (operator_panel::OperatorPage::Oscillator, "enter"),
     ] {
         let target = editor.read_with(cx, |view, _| {
             view.device_panel.operator_navigation_focus
@@ -355,30 +355,28 @@ fn operator_section_activation_and_invalid_draft_keep_focus_and_state(cx: &mut T
         assert_eq!(focused(&mut visual), target);
     }
     // Badge keyboard activation is navigation only. Mouse enable toggles
-    // must not leak into Enter/Space or create a canonical history operation.
+    // must not leak into Enter or create a canonical history operation.
     for operator in 0..4 {
-        for key in ["enter", "space"] {
-            let target = editor.read_with(cx, |view, _| {
-                view.device_panel.operator_navigation_focus[&(
-                    device,
-                    operator_panel::NavigationTarget::Oscillator(operator),
-                )]
-                    .clone()
-            });
-            visual.update(|window, _| target.focus(window));
-            visual.simulate_keystrokes(key);
-            visual.run_until_parked();
-            editor.read_with(cx, |view, _| {
-                assert_eq!(
-                    view.device_panel.operator_pages[&device].selected_operator,
-                    operator
-                );
-                assert_eq!(view.state.as_ref().unwrap().revision, revision);
-                assert_eq!(view.state.as_ref().unwrap().project, original);
-                assert_eq!(view.worker_requests_pending, 0);
-            });
-            assert_eq!(focused(&mut visual), target);
-        }
+        let target = editor.read_with(cx, |view, _| {
+            view.device_panel.operator_navigation_focus[&(
+                device,
+                operator_panel::NavigationTarget::Oscillator(operator),
+            )]
+                .clone()
+        });
+        visual.update(|window, _| target.focus(window));
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert_eq!(
+                view.device_panel.operator_pages[&device].selected_operator,
+                operator
+            );
+            assert_eq!(view.state.as_ref().unwrap().revision, revision);
+            assert_eq!(view.state.as_ref().unwrap().project, original);
+            assert_eq!(view.worker_requests_pending, 0);
+        });
+        assert_eq!(focused(&mut visual), target);
     }
     let parameter = hex_lattice_contract::ParameterId::from_static(2);
     enter_typed_value(&mut visual, device, parameter, "invalid");

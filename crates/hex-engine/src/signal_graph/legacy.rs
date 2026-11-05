@@ -9,6 +9,10 @@ impl RendererRuntime {
         output: &mut [Frame],
         mut pages: Option<&mut P>,
     ) -> Result<(), Invalid> {
+        let volume_clock = project.midi_volume_timing();
+        let volume_timing = volume_clock
+            .as_ref()
+            .map(|clock| clock as &dyn crate::prepared_tempo::MidiTempoBreaks);
         for chain in self
             .device_chains
             .iter_mut()
@@ -39,6 +43,10 @@ impl RendererRuntime {
                 compensation
                     .delays
                     .push_transport_stamp(TransportStamp {
+                        tempo_micro_bpm: project
+                            .tempo_map
+                            .as_ref()
+                            .map(|map| map.tempo_at(beat).micro_bpm()),
                         performance_frame: frame,
                         transport_is_running: true,
                         arrangement_frame: frame,
@@ -58,12 +66,17 @@ impl RendererRuntime {
                             let track = &project.tracks[index];
                             let mut audio = [[0.0; 2]];
                             let mut generator = [[0.0; 2]];
-                            if let Some(pages) = pages.as_deref_mut() {
-                                track.render_audio_range_with_pages(frame, end, &mut audio, pages);
-                            } else {
-                                track.render_audio_range(frame, end, &mut audio);
+                            if track.audio_content_enabled() {
+                                track.render_raw_audio(frame, &mut audio, pages.as_deref_mut())?;
                             }
-                            track.render_instrument_range(frame, end, &mut generator, None);
+                            crate::render_source_generators(
+                                project,
+                                index,
+                                frame,
+                                end,
+                                &mut generator,
+                                volume_timing,
+                            )?;
                             let processed = compensation.process_track(
                                 index,
                                 track,
@@ -75,9 +88,7 @@ impl RendererRuntime {
                                 &mut None,
                             )?;
                             let mixed = compensation.fader(track, index, None, processed)?;
-                            let main =
-                                compensation.edge(compensation.graph.tracks[index].main, mixed)?;
-                            compensation.main[index] = main;
+                            compensation.route_track_output(index, mixed)?;
                             for feed_index in 0..compensation.graph.tracks[index].audio_feeds.len()
                             {
                                 let feed =
@@ -100,10 +111,9 @@ impl RendererRuntime {
                         Owner::Return(index) => {
                             let bus = &project.return_buses[index];
                             let mut returned = self.return_scratch[index][0];
-                            compensation.effects(
-                                &compensation.graph.returns[index].devices,
+                            compensation.process_return(
+                                index,
                                 &mut self.return_chains[index],
-                                0,
                                 &mut returned,
                                 offset,
                                 &mut None,

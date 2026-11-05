@@ -25,7 +25,7 @@ fn scratch() -> Scratch {
     Scratch(path)
 }
 fn next(editor: &Entity<EditorView>, cx: &TestAppContext) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         match editor.read_with(cx, |view, _| view.service.try_event()) {
             Ok(event) => return event,
@@ -87,7 +87,7 @@ fn preview(editor: &Entity<EditorView>, cx: &mut TestAppContext) {
     });
 }
 fn settle(editor: &Entity<EditorView>, cx: &mut TestAppContext) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(cx, |view, cx| {
             view.tick(cx);
@@ -280,25 +280,28 @@ fn review_lifecycle_failed_tuning_terminal_refuses_save_as_and_deferred_export(
 fn review_final_empty_project_replacement_confirms_active_tuning_draft(cx: &mut TestAppContext) {
     for new_project in [false, true] {
         let scratch = scratch();
-        let (_, editor) = window(cx);
+        let (handle, editor) = window(cx);
         preview(&editor, cx);
-        editor.update(cx, |view, _| {
-            let mode = hex_session::DocumentAudioMode::Resident;
-            if new_project {
-                view.new_project(mode);
-                assert_eq!(view.pending_new_mode, Some(mode));
-            } else {
-                let path = scratch.0.join("other.sqlite");
-                view.choose_project(path.clone(), mode);
-                assert_eq!(view.pending_open_path.as_ref(), Some(&path));
-            }
-            assert!(
-                !view.opening_project,
-                "first request must obtain replacement confirmation"
-            );
-            assert!(!view.tuning.client.has_pending_terminal());
-            assert_eq!(view.tuning.client.snapshot().unwrap().tuning, tuning(333.0));
-        });
+        cx.update_window(handle, |_, window, cx| {
+            editor.update(cx, |view, cx| {
+                let mode = hex_session::DocumentAudioMode::Resident;
+                if new_project {
+                    view.new_project(mode, window, cx);
+                    assert!(view.project_open.busy());
+                } else {
+                    let path = scratch.0.join("other.sqlite");
+                    view.choose_project(path.clone(), mode);
+                    assert_eq!(view.pending_open_path.as_ref(), Some(&path));
+                }
+                assert!(
+                    !view.opening_project,
+                    "first request must obtain replacement confirmation"
+                );
+                assert!(!view.tuning.client.has_pending_terminal());
+                assert_eq!(view.tuning.client.snapshot().unwrap().tuning, tuning(333.0));
+            })
+        })
+        .unwrap();
     }
 }
 #[gpui::test]
@@ -315,6 +318,7 @@ fn review_final_period_refusal_preserves_the_draft_and_reports_recovery(cx: &mut
             NumericControlEvent {
                 phase: NumericEventPhase::Commit,
                 value: 600.0,
+                gesture: None,
             },
             cx,
         );
@@ -329,6 +333,7 @@ fn review_final_period_refusal_preserves_the_draft_and_reports_recovery(cx: &mut
             NumericControlEvent {
                 phase: NumericEventPhase::Commit,
                 value: 1800.0,
+                gesture: None,
             },
             cx,
         );
@@ -492,7 +497,7 @@ fn review_audition_worker_failure_survives_the_normal_tick(cx: &mut TestAppConte
             })
         })
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     while !input.is_cancelled() {
         assert!(Instant::now() < deadline, "worker did not refuse audition");
         std::thread::sleep(Duration::from_millis(2));

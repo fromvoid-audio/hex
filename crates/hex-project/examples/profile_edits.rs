@@ -12,6 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut clips = Vec::new();
         for clip in 0..100 {
             clips.push(ClipSnapshot {
+                active: true,
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
                 edit: None,
@@ -29,6 +30,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             next_id += 1;
         }
         tracks.push(TrackSnapshot {
+            group_output_mutes: Vec::new(),
+            tags: Vec::new(),
+            kind: hex_project::TrackKind::Ordinary,
+            parent_group: None,
             color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
@@ -46,16 +51,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             sends: Vec::new(),
         });
     }
-    let project = Project::from_snapshot(Snapshot {
+    let project = Project::from_legacy_snapshot(Snapshot {
+        automatic_track_names: Vec::new(),
+        retained_source_paths: Vec::new(),
+        aliases: Default::default(),
+        native_sources: Vec::new(),
+        arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
+        sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
         next_id,
         assets: vec![AssetSnapshot {
+            original_source: None,
             id: 1,
             path: "generated/shared.wav".into(),
             source_sample_rate: 48_000,

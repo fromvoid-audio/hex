@@ -1,3 +1,4 @@
+use crate::diagnostics::ActionTraceContext as _;
 use crate::theme;
 use gpui::{Context, FocusHandle, Window, actions, div, prelude::*, px, rgb};
 use hex_audio::AudioOutput;
@@ -125,15 +126,18 @@ impl Render for Daw {
             .font_family(theme::FONT_FAMILY)
             .track_focus(&self.focus)
             .key_context("daw")
-            .on_action(cx.listener(|this, _: &TogglePlay, _, cx| {
+            .on_action(cx.trace(|this, _: &TogglePlay, _, cx| {
                 this.toggle();
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &Stop, _, cx| {
+            .on_action(cx.trace(|this, _: &Stop, _, cx| {
                 this.stop();
                 cx.notify();
             }))
-            .on_action(|_: &Quit, _, cx| cx.quit())
+            .on_action(|_: &Quit, _, cx| {
+                let _scope = crate::diagnostics::action_scope(cx, "hex::Quit");
+                cx.quit();
+            })
             .child(self.transport(cx, beat))
             .child(
                 div()

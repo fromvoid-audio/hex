@@ -136,11 +136,13 @@ fn schema25_combines_roots_session_gain_routes_lanes_provenance_and_host_trims()
         track: source,
         points: vec![
             GainPoint {
+                incoming_gain: None,
                 beat: BeatTime::ZERO,
                 gain: 0.25,
                 outgoing: GainInterpolation::Linear,
             },
             GainPoint {
+                incoming_gain: None,
                 beat: BeatTime::ONE,
                 gain: 0.75,
                 outgoing: GainInterpolation::Step,
@@ -159,7 +161,7 @@ fn schema25_combines_roots_session_gain_routes_lanes_provenance_and_host_trims()
         .unwrap()
         .with_output_gain_millidb(-2_000)
         .unwrap();
-    let project = Project::from_snapshot(snapshot).unwrap();
+    let project = Project::from_legacy_snapshot(snapshot).unwrap();
     let bytes = encode(&project).unwrap();
     assert_eq!(decode(&bytes).unwrap(), project);
     assert!(encode_schema20(&project).is_err());
@@ -226,126 +228,9 @@ fn state_table_requires_exact_audio_id_bijection_and_strict_nullable_fields() {
         old.as_object_mut().unwrap().remove("main_devices");
         old.as_object_mut().unwrap().remove("tuning");
         old.as_object_mut().unwrap().remove("device_assets");
+        old.as_object_mut().unwrap().remove("asset_sources");
         old.as_object_mut().unwrap().remove("track_colors");
         old.as_object_mut().unwrap().remove("accented_clips");
         assert!(decode(&serde_json::to_vec(&old).unwrap()).is_err());
     }
-}
-fn development(version: u32) -> Value {
-    let mut doc: Value = serde_json::from_slice(&encode(&fixture(version == 21)).unwrap()).unwrap();
-    doc.as_object_mut().unwrap().remove("tuning");
-    doc.as_object_mut().unwrap().remove("device_assets");
-    doc.as_object_mut().unwrap().remove("clip_names");
-    doc.as_object_mut().unwrap().remove("fade_shapes");
-    let states = doc
-        .as_object_mut()
-        .unwrap()
-        .remove("audio_clip_state")
-        .unwrap();
-    for state in states.as_array().unwrap() {
-        let id = state["clip"].as_u64().unwrap();
-        let mut found = false;
-        for track in doc["tracks"].as_array_mut().unwrap() {
-            for clip in track["audio_clips"].as_array_mut().unwrap() {
-                if clip["id"] == id {
-                    clip["gain_millidb"] = state["gain_millidb"].clone();
-                    if version == 21 {
-                        clip["audio_edit"] = state["audio_edit"].clone();
-                    }
-                    found = true;
-                }
-            }
-        }
-        if !found {
-            for cell in doc["session"]["cells"].as_array_mut().unwrap() {
-                if cell["content"]["kind"] == "audio" && cell["content"]["clip"]["id"] == id {
-                    cell["content"]["clip"]["gain_millidb"] = state["gain_millidb"].clone();
-                }
-            }
-        }
-    }
-    doc.as_object_mut().unwrap().remove("audio_event_state");
-    doc.as_object_mut().unwrap().remove("track_colors");
-    doc.as_object_mut().unwrap().remove("accented_clips");
-    for key in ["import_provenance", "routing", "audio_feeds", "midi_routes"] {
-        doc.as_object_mut().unwrap().remove(key);
-    }
-    for track in doc["tracks"].as_array_mut().unwrap() {
-        for key in ["gain_envelope", "gain_touch_epoch", "gain_touch_spans"] {
-            track.as_object_mut().unwrap().remove(key);
-        }
-    }
-    doc["version"] = json!(version);
-    doc.as_object_mut().unwrap().remove("main_devices");
-    doc.as_object_mut().unwrap().remove("track_colors");
-    doc.as_object_mut().unwrap().remove("accented_clips");
-    doc
-}
-#[test]
-fn private20_21_dispatch_is_explicit_strict_and_migrates_both_audio_kinds() {
-    for version in [20, 21] {
-        // These private envelopes omit track colors; their authored expected
-        // project is neutral while the current-format fixtures stay colored.
-        let mut expected = Editor::new(fixture(version == 21), 8).unwrap();
-        let track = expected.project().tracks()[0].id();
-        expected
-            .execute(Command::SetTrackColor {
-                track,
-                color: hex_project::ElementColor::Gray,
-            })
-            .unwrap();
-        let doc = development(version);
-        let restored = decode(&serde_json::to_vec(&doc).unwrap()).unwrap();
-        assert_eq!(restored, *expected.project());
-        for edit in 0..5 {
-            let mut bad = doc.clone();
-            match edit {
-                0 => bad["routing"] = Value::Null,
-                1 => {
-                    bad["routing"] = json!([]);
-                    bad["import_provenance"] = Value::Null;
-                }
-                2 => {
-                    bad["tracks"][0]["audio_clips"][0]
-                        .as_object_mut()
-                        .unwrap()
-                        .remove("gain_millidb");
-                }
-                3 => {
-                    if version == 21 {
-                        bad["tracks"][0]["audio_clips"][0]
-                            .as_object_mut()
-                            .unwrap()
-                            .remove("audio_edit");
-                    } else {
-                        bad["tracks"][0]["audio_clips"][0]["audio_edit"] = Value::Null;
-                    }
-                }
-                _ => bad["tracks"][0]["gain_envelope"] = json!([]),
-            }
-            assert!(
-                decode(&serde_json::to_vec(&bad).unwrap()).is_err(),
-                "{version} case {edit}"
-            );
-        }
-        let mut empty = doc;
-        empty["tracks"][0]["audio_clips"] = json!([]);
-        empty["session"]["cells"] = json!([]);
-        assert!(decode(&serde_json::to_vec(&empty).unwrap()).is_err());
-    }
-    // A real schema24 document keeps its strict historical nested shape and neutral gain.
-    let neutral = Project::new(16_000).unwrap();
-    let mut old: Value = serde_json::from_slice(&encode(&neutral).unwrap()).unwrap();
-    old["version"] = json!(24);
-    old.as_object_mut().unwrap().remove("main_devices");
-    old.as_object_mut().unwrap().remove("tuning");
-    old.as_object_mut().unwrap().remove("device_assets");
-    old.as_object_mut().unwrap().remove("track_colors");
-    old.as_object_mut().unwrap().remove("accented_clips");
-    old.as_object_mut().unwrap().remove("audio_clip_state");
-    old.as_object_mut().unwrap().remove("fade_shapes");
-    old.as_object_mut().unwrap().remove("audio_event_state");
-
-    old.as_object_mut().unwrap().remove("clip_names");
-    assert_eq!(decode(&serde_json::to_vec(&old).unwrap()).unwrap(), neutral);
 }

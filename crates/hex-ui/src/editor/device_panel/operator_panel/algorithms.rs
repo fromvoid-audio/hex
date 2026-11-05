@@ -61,6 +61,7 @@ pub(super) fn selector(
                 .cursor(gpui::CursorStyle::PointingHand)
                 .tooltip(move |_, cx| {
                     cx.new(|_| crate::editor::transport::MiniTooltip {
+                        kind: crate::tooltips::Kind::Identification,
                         description: theme::text(format!("algorithm {choice}")),
                     })
                     .into()

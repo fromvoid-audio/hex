@@ -1,4 +1,13 @@
-//! Bounded filesystem listings and persistent sample discovery.
+//! # Purpose
+//! Own bounded folder listings and a persistent derived sample-discovery catalog while preserving
+//! original paths.
+//!
+//! # Dependencies
+//! Uses only the standard library; filesystem/catalog work runs on control workers.
+//!
+//! # Does not own
+//! Does not decode audio, mutate projects, navigate UI or perform callback work. Catalog records
+//! do not establish media readiness or source custody.
 
 pub mod catalog;
 
@@ -143,7 +152,7 @@ pub fn scan_directory(directory: impl AsRef<Path>) -> Result<DirectoryListing, S
         }
     }
 
-    entries.sort_by(compare_entries);
+    sort_entries(&mut entries, false);
     let enumeration_truncated = if enumerated_entries == MAX_ENUMERATED_ENTRIES {
         iterator
             .next()
@@ -178,15 +187,42 @@ fn is_project(extension: Option<&OsStr>) -> bool {
     extension.is_some_and(|extension| extension.to_string_lossy().eq_ignore_ascii_case("hex"))
 }
 
-fn compare_entries(left: &LibraryEntry, right: &LibraryEntry) -> Ordering {
-    let kind_order = |kind| match kind {
+/// Fold display names once, leaving original names and native paths untouched.
+/// `with_path` adds the catalog's native-path tie break; folder ties retain input order.
+fn sort_entries(entries: &mut [LibraryEntry], with_path: bool) {
+    let rank = |kind| match kind {
         EntryKind::Directory => 0_u8,
         EntryKind::WaveAudio | EntryKind::Project => 1,
     };
-    kind_order(left.kind)
-        .cmp(&kind_order(right.kind))
-        .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
-        .then_with(|| left.name.cmp(&right.name))
+    let mut keys: Vec<_> = entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| (rank(entry.kind), entry.name.to_lowercase(), index))
+        .collect();
+    keys.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| entries[a.2].name.cmp(&entries[b.2].name))
+            .then_with(|| {
+                if with_path {
+                    entries[a.2].path.cmp(&entries[b.2].path)
+                } else {
+                    Ordering::Equal
+                }
+            })
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    // Keys contain an enumeration permutation. Swaps displace earlier originals;
+    // their processed indices redirect to the slot now containing that original.
+    // Following those redirects always reaches an unprocessed slot in bounds.
+    for i in 0..keys.len() {
+        let mut index = keys[i].2;
+        while index < i {
+            index = keys[index].2;
+        }
+        keys[i].2 = index;
+        entries.swap(i, index);
+    }
 }
 
 #[cfg(test)]

@@ -43,6 +43,84 @@ impl DomainSources {
             members,
         })
     }
+    /// Precommit ordinary projection uses the same source definitions as the
+    /// verified constructor; these facts are not a reader or a page loan.
+    pub(super) fn capture_files(
+        input: &hex_session::service::ResidentFileInput<'_>,
+        catalog_generation: u64,
+    ) -> Result<Self, String> {
+        if catalog_generation == 0
+            || input.files.len() > hex_stream::StreamConfig::initial().max_sources
+        {
+            return Err("ordinary source projection exceeds its reservation".into());
+        }
+        let mut members = Vec::new();
+        members
+            .try_reserve_exact(input.files.len())
+            .map_err(|_| "could not reserve source projection")?;
+        for (asset, file) in input.files {
+            members.push(Member {
+                file: (*file).clone(),
+                metadata: file
+                    .source_metadata(*asset, catalog_generation)
+                    .map_err(|e| e.to_string())?,
+            });
+        }
+        Ok(Self {
+            project_generation: input.context.project_generation,
+            catalog_generation,
+            members,
+        })
+    }
+    pub(super) fn matches_files(
+        &self,
+        input: &hex_session::service::ResidentFileInput<'_>,
+    ) -> bool {
+        self.project_generation == input.context.project_generation
+            && input.files.iter().all(|(id, file)| {
+                self.members
+                    .iter()
+                    .any(|member| member.metadata.key().asset() == *id && &member.file == *file)
+            })
+    }
+    pub(super) fn file_metadata(
+        &self,
+        input: &hex_session::service::ResidentFileInput<'_>,
+    ) -> Result<hex_session::service::ResidentFileMetadata, String> {
+        if !self.matches_files(input) {
+            return Err("ordinary source projection differs".into());
+        }
+        let sources = input
+            .files
+            .iter()
+            .map(|(id, _)| {
+                let key = hex_engine::StreamSourceKey::new(self.catalog_generation, *id);
+                self.metadata_for(key)
+                    .cloned()
+                    .map(|metadata| (*id, std::sync::Arc::new(metadata)))
+                    .ok_or_else(|| "ordinary source metadata missing".to_owned())
+            })
+            .collect::<Result<_, _>>()?;
+        hex_session::service::ResidentFileMetadata::new(self.catalog_generation, sources)
+    }
+    pub(super) fn covers_files(
+        &self,
+        input: &hex_session::service::ResidentFileInput<'_>,
+        token: hex_audio::AudioCandidateDomainToken,
+        control: &hex_audio::prepared::PublicationControl,
+    ) -> bool {
+        control.audio_candidate_domain_is_sealed(token)
+            && self.matches_files(input)
+            && input.files.iter().all(|(id, _)| {
+                self.metadata_for(hex_engine::StreamSourceKey::new(
+                    self.catalog_generation,
+                    *id,
+                ))
+                .is_some_and(|metadata| {
+                    control.audio_candidate_domain_covers_source(token, metadata)
+                })
+            })
+    }
     #[cfg(test)]
     pub(super) fn is_empty(&self) -> bool {
         self.members.is_empty()
@@ -52,17 +130,24 @@ impl DomainSources {
     }
     /// Definitions reopen independently on the source worker. The complete
     /// captured fingerprint/format remains expected; no silent byte refresh.
+    /// Each carries the session's already-verified page manifest, so a rebuild
+    /// reopens an unchanged file from its header pages instead of re-hashing
+    /// it. A changed length/mtime falls back to a full re-hash, which must
+    /// still match the captured fingerprint.
     pub(super) fn definitions(&self) -> Result<Vec<hex_stream::SourceDefinition>, String> {
         let mut definitions = Vec::new();
         definitions
             .try_reserve_exact(self.members.len())
             .map_err(|_| "could not reserve source definitions")?;
         for member in &self.members {
-            definitions.push(hex_stream::SourceDefinition::new(
-                member.file.path().to_path_buf(),
-                member.metadata.clone(),
-                member.file.reader_limits(),
-            ));
+            definitions.push(
+                hex_stream::SourceDefinition::new(
+                    member.file.path().to_path_buf(),
+                    member.metadata.clone(),
+                    member.file.reader_limits(),
+                )
+                .with_verified_manifest(member.file.verified_manifest().clone()),
+            );
         }
         Ok(definitions)
     }

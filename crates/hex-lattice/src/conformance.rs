@@ -178,6 +178,7 @@ fn chain(
         definition,
         "runtime admission",
         NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+            automation: Default::default(),
             meter: Arc::new(DeviceMeter::default()),
             owner: ProcessorChainOwner::Track(1),
             device_id: 1,
@@ -191,20 +192,25 @@ fn chain(
     )
 }
 fn render(
+    definition: &dyn NativeDeviceDefinition,
     chain: &mut NativeRuntimeChain,
     input: &[StereoFrame],
     partitions: &[usize],
-) -> Vec<StereoFrame> {
+) -> Result<Vec<StereoFrame>, ConformanceFailure> {
     let mut output = input.to_vec();
     let mut offset = 0;
     for &length in partitions {
         let end = offset + length;
         chain.begin_block();
-        chain.process_block(&mut output[offset..end]);
+        contract(
+            definition,
+            "effect processing",
+            chain.process_block(&mut output[offset..end]),
+        )?;
         chain.commit_block();
         offset = end;
     }
-    output
+    Ok(output)
 }
 fn same(left: &[StereoFrame], right: &[StereoFrame], tolerance: f32) -> bool {
     left.len() == right.len()
@@ -238,24 +244,58 @@ pub fn check_effect(
             }
         })
         .collect();
-    let expected = render(&mut whole, &input, &[513]);
-    let partitioned = render(&mut chunks, &input, &[1, 7, 31, 3, 257, 214]);
+    let expected = render(definition, &mut whole, &input, &[513])?;
+    let partitioned = render(definition, &mut chunks, &input, &[1, 7, 31, 3, 257, 214])?;
     if !same(&expected, &partitioned, 1.0e-6) {
         return Err(fail(definition, "finite partition agreement"));
     }
     chunks.reset();
-    if !same(&expected, &render(&mut chunks, &input, &[513]), 0.0) {
+    if !same(
+        &expected,
+        &render(definition, &mut chunks, &input, &[513])?,
+        0.0,
+    ) {
         return Err(fail(definition, "reset reproducibility"));
     }
     let mut bypass = chain(definition, state, sample_rate, true)?;
-    if !same(&input, &render(&mut bypass, &input, &[513]), 0.0) {
+    // Ordinary bypass has zero effective latency; opted-in fixed-latency
+    // bypass retains its declared dry delay. Check every sample exactly,
+    // including zero startup history, rather than skipping aligned providers.
+    let latency = contract(
+        definition,
+        "bypass latency query",
+        bypass.algorithmic_latency_frames_for_entry(0),
+    )?
+    .ok_or_else(|| fail(definition, "unknown bypass latency"))?;
+    let latency = usize::try_from(latency).map_err(|_| fail(definition, "bypass latency range"))?;
+    let delayed_dry: Vec<_> = (0..input.len())
+        .map(|i| {
+            i.checked_sub(latency)
+                .and_then(|source| input.get(source))
+                .copied()
+                .unwrap_or_default()
+        })
+        .collect();
+    if !same(
+        &delayed_dry,
+        &render(definition, &mut bypass, &input, &[513])?,
+        0.0,
+    ) {
         return Err(fail(definition, "bypass changes samples"));
     }
     let mut abandoned = input.clone();
     chunks.begin_block();
-    chunks.process_block(&mut abandoned); // deliberately no commit
-    let continuation = render(&mut whole, &input, &[513]);
-    if !same(&continuation, &render(&mut chunks, &input, &[513]), 0.0) {
+    contract(
+        definition,
+        "abandoned effect processing",
+        chunks.process_block(&mut abandoned),
+    )?; // deliberately no commit
+    let continuation = render(definition, &mut whole, &input, &[513])?;
+    if !same(
+        &continuation,
+        &render(definition, &mut chunks, &input, &[513])?,
+        0.0,
+    ) {
         return Err(fail(
             definition,
             "abandoned render changed committed history",
@@ -267,8 +307,8 @@ pub fn check_effect(
     }
     inherited.inherit_from(&whole);
     if !same(
-        &render(&mut whole, &input, &[513]),
-        &render(&mut inherited, &input, &[513]),
+        &render(definition, &mut whole, &input, &[513])?,
+        &render(definition, &mut inherited, &input, &[513])?,
         0.0,
     ) {
         return Err(fail(definition, "history inheritance changes continuation"));
@@ -428,3 +468,8 @@ mod tests;
 /// Registered original fixture for owned-effect host proofs, never a browser device.
 pub mod owned_delay;
 pub mod resource_pcm;
+/// Original pass-through fixture for bounded live-transition admission.
+pub mod transition_fixture;
+
+/// Small original aux-key runtime for host contract and allocation probes.
+pub mod auxiliary;

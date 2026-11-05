@@ -5,6 +5,7 @@ fn beat(raw: u64) -> BeatTime {
 }
 fn point(raw: u64, gain: f32) -> GainPoint {
     GainPoint {
+        incoming_gain: None,
         beat: beat(raw),
         gain,
         outgoing: GainInterpolation::Linear,
@@ -12,6 +13,7 @@ fn point(raw: u64, gain: f32) -> GainPoint {
 }
 fn span(start: u64, end: u64, epoch: u64, events: &[(u64, f32)]) -> GainTouchSpan {
     GainTouchSpan {
+        source_start: beat(start),
         start: beat(start),
         end: beat(end),
         context: GainTouchContext {

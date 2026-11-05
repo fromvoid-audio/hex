@@ -2,7 +2,7 @@ use super::*;
 use crate::theme;
 use gpui::{Div, div, prelude::*, px};
 use hex_widgets::{
-    NumericControlAppearance, NumericControlConfig, NumericControlEvent, NumericControlKind,
+    NumericControlConfig, NumericControlEvent, NumericControlKind, NumericControlPresentation,
     NumericEventPhase, NumericScale, NumericSpec,
 };
 
@@ -37,17 +37,18 @@ pub(super) fn numeric(view: &mut EditorView, cx: &mut Context<EditorView>) -> Di
                     NumericControlKind::HorizontalSlider,
                     spec,
                     value,
-                    super::super::device_panel::control_style(),
+                    theme::control_style(),
                 )
             });
         let config = match config {
-            Ok(config) => config.with_appearance(NumericControlAppearance::InlineValue),
+            Ok(config) => config.with_presentation(NumericControlPresentation::InlineValue),
             Err(reason) => {
                 view.gain_lane.error = Some(reason.to_string());
                 return div();
             }
         };
         let entity = cx.new(|cx| NumericControl::from_config(cx, config));
+        let edit_state = entity.read(cx).edit_state();
         let subscription =
             cx.subscribe(&entity, move |view, _, event: &NumericControlEvent, cx| {
                 if view.project_generation != generation
@@ -85,6 +86,7 @@ pub(super) fn numeric(view: &mut EditorView, cx: &mut Context<EditorView>) -> Di
             });
         *slot = Some(NumericBinding {
             entity,
+            edit_state,
             _subscription: subscription,
             key,
         });

@@ -443,7 +443,7 @@ pub fn source_hash() -> String {
         h.update(bytes);
         h.update([0]);
     }
-    format!("{h:x}", h = h.finalize())
+    crate::digest_hex(h.finalize().into())
 }
 impl BuildReceipt {
     pub fn validate(&self, scanner: &[u8]) -> Result<(), String> {

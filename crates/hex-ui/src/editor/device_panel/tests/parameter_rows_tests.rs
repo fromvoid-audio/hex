@@ -71,6 +71,7 @@ fn exercise(
             audio_clip_waveforms: old.audio_clip_waveforms.clone(),
             project: Arc::new(model.project().clone()),
             waveforms: Default::default(),
+            source_overviews: Default::default(),
             midi_preview: old.midi_preview.clone(),
             gain_preview: old.gain_preview.clone(),
             timeline_frames: old.timeline_frames,

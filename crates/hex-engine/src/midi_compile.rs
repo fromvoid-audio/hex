@@ -1,4 +1,12 @@
-//! Bounded control-side compilation of MIDI edges and stateless note spans.
+//! Bounded control-side compilation of MIDI edges and prepared note spans.
+//!
+//! Validate/count projected occurrences before allocating banks. Convert absolute on/off beats
+//! independently through canonical timing, refuse zero-frame gates and sort equal-frame note-offs
+//! before note-ons with stable authored identity ordering. Prepared event edges alone produce no
+//! audio. Rendering borrows admitted fixed span/query storage; no per-sample beat conversion,
+//! voice preparation or note bank allocation belongs on callback. Named occurrence/edge/runtime
+//! limits here and in mutable_instrument are independent bounds, not physical device-deadline
+//! evidence.
 use crate::Invalid;
 use hex_lattice::PreparedNativeInstrument;
 use hex_project::{BeatTime, ClipId, MidiClip, MidiNote, NoteId, Project, Track, TrackId};
@@ -16,6 +24,11 @@ pub(crate) struct MutableInstrumentLimits {
     pub(crate) max_events_per_query: usize,
     pub(crate) max_active_occurrences: usize,
     pub(crate) max_release_tail_frames: u64,
+    /// Both immutable host declarations are required for exact per-note volume.
+    pub(crate) supports_clip_volume: bool,
+    /// The factory's `steals_releasing_voices` declaration: its voice slots
+    /// bound held density only, while releases still bound the proof ledger.
+    pub(crate) steals_releasing_voices: bool,
 }
 
 impl MutableInstrumentLimits {
@@ -37,6 +50,9 @@ impl MutableInstrumentLimits {
             max_events_per_query,
             max_active_occurrences,
             max_release_tail_frames: factory.max_release_tail_frames(),
+            supports_clip_volume: factory.supports_occurrence_gain()
+                && factory.supports_active_occurrence_ids(),
+            steals_releasing_voices: factory.steals_releasing_voices(),
         })
     }
 }
@@ -76,7 +92,7 @@ pub fn midi_events(project: &Project) -> Result<Vec<CompiledMidiEvent>, Invalid>
         .try_reserve_exact(edge_count)
         .map_err(|_| Invalid("could not reserve midi event storage"))?;
     for (track_index, track) in project.tracks().iter().enumerate() {
-        for clip in track.midi_clips() {
+        for clip in track.midi_clips().iter().filter(|clip| clip.active()) {
             append_clip(project, track_index, track.id(), clip, &mut ordered)?;
         }
     }
@@ -106,9 +122,14 @@ pub fn midi_events(project: &Project) -> Result<Vec<CompiledMidiEvent>, Invalid>
 /// project-wide MIDI event or instrument span buffer.
 pub(crate) fn count_project_occurrences(project: &Project) -> Result<usize, Invalid> {
     let mut total = 0_usize;
-    for clip in project.tracks().iter().flat_map(Track::midi_clips) {
+    for clip in project
+        .tracks()
+        .iter()
+        .flat_map(Track::midi_clips)
+        .filter(|clip| clip.active())
+    {
         let source = clip.source_playback().map_err(|error| Invalid(error.0))?;
-        for note in clip.notes() {
+        for note in clip.notes().iter().filter(|note| note.active()) {
             let count = source
                 .note_occurrences(note.start(), note.duration())
                 .map_err(|error| Invalid(error.0))?
@@ -133,34 +154,41 @@ fn append_clip(
     clip: &MidiClip,
     events: &mut Vec<(usize, CompiledMidiEvent)>,
 ) -> Result<(), Invalid> {
-    for_each_clip_occurrence(project, clip, |note, iteration, onset, off, _, _| {
-        for (frame, kind) in [
-            (onset, MidiEventKind::NoteOn),
-            (off, MidiEventKind::NoteOff),
-        ] {
-            events.push((
-                track_index,
-                CompiledMidiEvent {
-                    frame,
-                    kind,
-                    track,
-                    clip: clip.id(),
-                    note: note.id(),
-                    iteration,
-                    pitch: note.pitch(),
-                    channel: note.channel(),
-                    velocity: note.velocity(),
-                },
-            ));
-        }
-        Ok(())
-    })
+    for_each_clip_occurrence(
+        project,
+        clip,
+        |note, iteration, onset, off, _, _, playable| {
+            if !note.active() || !playable {
+                return Ok(());
+            }
+            for (frame, kind) in [
+                (onset, MidiEventKind::NoteOn),
+                (off, MidiEventKind::NoteOff),
+            ] {
+                events.push((
+                    track_index,
+                    CompiledMidiEvent {
+                        frame,
+                        kind,
+                        track,
+                        clip: clip.id(),
+                        note: note.id(),
+                        iteration,
+                        pitch: note.pitch(),
+                        channel: note.channel(),
+                        velocity: note.velocity(),
+                    },
+                ));
+            }
+            Ok(())
+        },
+    )
 }
 
 fn for_each_clip_occurrence(
     project: &Project,
     clip: &MidiClip,
-    mut visit: impl FnMut(&MidiNote, u64, u64, u64, BeatTime, BeatTime) -> Result<(), Invalid>,
+    mut visit: impl FnMut(&MidiNote, u64, u64, u64, BeatTime, BeatTime, bool) -> Result<(), Invalid>,
 ) -> Result<(), Invalid> {
     let source = clip.source_playback().map_err(|error| Invalid(error.0))?;
     for note in clip.notes() {
@@ -184,9 +212,16 @@ fn for_each_clip_occurrence(
                 .tempo_map()
                 .beat_to_frame(BeatTime::from_raw(off_raw))
                 .map_err(|_| Invalid("midi note offset exceeds frame range"))?;
-            if off <= onset {
+            // An inactive authored note remains available to the editor but
+            // produces no gate. Its valid beat duration may quantize to zero
+            // frames without making the playable project unpreparable.
+            let clamped = occurrence.gate_duration() < note.duration();
+            if off < onset || (off == onset && note.active() && !clamped) {
                 return Err(Invalid("midi note duration quantizes to zero frames"));
             }
+            // A clamp can leave a positive beat gate with no representable
+            // frame. Keep it in preview accounting, but schedule no note edges.
+            let playable = off > onset;
             visit(
                 note,
                 occurrence.iteration(),
@@ -194,6 +229,7 @@ fn for_each_clip_occurrence(
                 off,
                 BeatTime::from_raw(onset_raw),
                 BeatTime::from_raw(off_raw),
+                playable,
             )?;
         }
     }
@@ -239,12 +275,96 @@ pub(crate) fn compile_instrument_track(
     mutable_limits: Option<MutableInstrumentLimits>,
     shared_context: Option<(u16, &crate::shared_analytic::SharedContextOwner)>,
     shared_contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+    previews: Option<&mut Vec<crate::MidiClipPreview>>,
+) -> Result<Option<crate::InstrumentTrack>, Invalid> {
+    compile_instrument_track_with_empty_bank(
+        project,
+        track,
+        instrument,
+        mutable_limits,
+        shared_context,
+        shared_contexts,
+        previews,
+        crate::midi_note_bank::PreparedMidiNoteBank::empty,
+    )
+}
+
+#[cfg(test)]
+thread_local! { pub(crate) static CURRENT_SAMPLER_COMPILER_ENTRIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+/// The actual native constructor owns the bank declaration at allocation birth.
+/// Reuse the same validated occurrence compiler; no alternate MIDI scheduler.
+pub(crate) fn compile_current_sampler_track(
+    project: &Project,
+    track: &Track,
+    prepared: &hex_devices::sampler::PreparedSamplerRuntime,
+    contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+    declaration: &mut Option<crate::owned_shared::SharedDeclaration>,
+) -> Result<Option<crate::InstrumentTrack>, Invalid> {
+    #[cfg(test)]
+    CURRENT_SAMPLER_COMPILER_ENTRIES.with(|n| n.set(n.get() + 1));
+    if declaration.is_some() {
+        return Err(Invalid("native midi bank destination is occupied"));
+    }
+    let limits = MutableInstrumentLimits::from_factory(prepared)?;
+    let instrument =
+        hex_devices::sampler::catalog::PreparedSamplerInstrument::from_runtime_on_control(
+            prepared.clone(),
+        );
+    compile_instrument_track_with_empty_bank(
+        project,
+        track,
+        Some(&instrument),
+        Some(limits),
+        None,
+        contexts,
+        None,
+        || {
+            let bank = crate::owned_shared::OwnedShared::new_owned(
+                crate::midi_note_bank::PreparedMidiNoteBank::empty_value(),
+            );
+            let (bank, paired) = bank.into_paired_parts_on_control();
+            *declaration = Some(paired);
+            bank
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_instrument_track_with_empty_bank(
+    project: &Project,
+    track: &Track,
+    instrument: Option<&dyn PreparedNativeInstrument>,
+    mutable_limits: Option<MutableInstrumentLimits>,
+    shared_context: Option<(u16, &crate::shared_analytic::SharedContextOwner)>,
+    shared_contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
     mut previews: Option<&mut Vec<crate::MidiClipPreview>>,
+    empty_bank: impl FnOnce() -> Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
 ) -> Result<Option<crate::InstrumentTrack>, Invalid> {
     // MIDI clip timing and editor previews are project data even when the
     // selected instrument is absent or bypassed; only note sampling is silent.
     if track.midi_clips().is_empty() {
         return Ok(None);
+    }
+    let volumes = if track
+        .midi_clips()
+        .iter()
+        .any(|clip| !clip.volume().is_unity())
+    {
+        let max =
+            crate::PreparedTempoMap::validate_canonical(project.tempo_map(), project.sample_rate())
+                .map_err(|_| Invalid("invalid clip volume preparation timing"))?;
+        let timing =
+            crate::prepared_tempo::CanonicalMidiTiming::for_validated(project.tempo_map(), max);
+        crate::midi_clip_volume::arrangement::PreparedArrangementVolumes::prepare(
+            project, track, &timing,
+        )?
+    } else {
+        None
+    };
+    if volumes.is_some() && mutable_limits.is_some_and(|limits| !limits.supports_clip_volume) {
+        return Err(Invalid(
+            "clip volume is unsupported by this mutable instrument mode",
+        ));
     }
     let mut keys = crate::midi_note_bank::PreparedMidiNoteBank::empty_keys();
     let mut clip_counts = Vec::new();
@@ -254,6 +374,7 @@ pub(crate) fn compile_instrument_track(
     let mut span_count = 0_usize;
     for clip in track.midi_clips() {
         let mut clip_count = 0_usize;
+        let mut playable_count = 0_usize;
         let source = clip.source_playback().map_err(|error| Invalid(error.0))?;
         for note in clip.notes() {
             let count = source
@@ -262,7 +383,7 @@ pub(crate) fn compile_instrument_track(
                 .count();
             let count = usize::try_from(count)
                 .map_err(|_| Invalid("compiled midi occurrence count overflow"))?;
-            if count != 0 && instrument.is_some() {
+            if clip.active() && note.active() && count != 0 && instrument.is_some() {
                 crate::midi_note_bank::PreparedMidiNoteBank::add_key(
                     &mut keys,
                     note.pitch(),
@@ -272,9 +393,14 @@ pub(crate) fn compile_instrument_track(
             clip_count = clip_count
                 .checked_add(count)
                 .ok_or(Invalid("compiled midi occurrence count overflow"))?;
+            if note.active() {
+                playable_count = playable_count
+                    .checked_add(count)
+                    .ok_or(Invalid("compiled midi occurrence count overflow"))?;
+            }
         }
         span_count = span_count
-            .checked_add(clip_count)
+            .checked_add(if clip.active() { playable_count } else { 0 })
             .ok_or(Invalid("compiled midi occurrence count overflow"))?;
         clip_counts.push(clip_count);
     }
@@ -324,24 +450,82 @@ pub(crate) fn compile_instrument_track(
         } else {
             None
         };
+        if !clip.active() {
+            // Inactive sources retain bounded editor samples, but do not
+            // enumerate their skipped loops or prepare playable occurrences.
+            if let (Some(previews), Some((ordinals, mut samples))) =
+                (previews.as_deref_mut(), preview)
+            {
+                let mut base = 0usize;
+                let mut selected = 0usize;
+                for note in clip.notes() {
+                    let plan = source
+                        .note_occurrences(note.start(), note.duration())
+                        .map_err(|e| Invalid(e.0))?;
+                    let count = usize::try_from(plan.count())
+                        .map_err(|_| Invalid("midi preview occurrence count overflow"))?;
+                    let limit = base
+                        .checked_add(count)
+                        .ok_or(Invalid("midi preview occurrence count overflow"))?;
+                    while let Some(&ordinal) =
+                        ordinals.get(selected).filter(|&&ordinal| ordinal < limit)
+                    {
+                        let hit = plan
+                            .iter()
+                            .nth(ordinal - base)
+                            .ok_or(Invalid("midi preview occurrence is missing"))?;
+                        let onset = clip
+                            .start()
+                            .raw()
+                            .checked_add(hit.timeline_start().raw())
+                            .ok_or(Invalid("midi preview onset overflow"))?;
+                        let end = onset
+                            .checked_add(hit.gate_duration().raw())
+                            .ok_or(Invalid("midi preview gate overflow"))?;
+                        samples.push(crate::MidiPreviewSample {
+                            frame_start: project
+                                .tempo_map()
+                                .beat_to_frame(BeatTime::from_raw(onset))
+                                .map_err(|e| Invalid(e.0))?,
+                            frame_gate_end: project
+                                .tempo_map()
+                                .beat_to_frame(BeatTime::from_raw(end))
+                                .map_err(|e| Invalid(e.0))?,
+                            pitch: note.pitch(),
+                        });
+                        selected += 1;
+                    }
+                    base = limit;
+                }
+                previews.push(crate::MidiClipPreview {
+                    clip_id: clip.id(),
+                    frame_start: clip_start_frame,
+                    frame_end: clip_end,
+                    authored_note_count: clip.notes().len(),
+                    occurrence_count,
+                    samples,
+                });
+            }
+            continue;
+        }
         let mut emitted = 0_usize;
         for_each_clip_occurrence(
             project,
             clip,
-            |note, iteration, start, gate_end, onset_beat, off_beat| {
-                if let Some((ordinals, samples)) = preview.as_mut() {
-                    if ordinals.get(samples.len()).copied() == Some(emitted) {
-                        samples.push(crate::MidiPreviewSample {
-                            frame_start: start,
-                            frame_gate_end: gate_end,
-                            pitch: note.pitch(),
-                        });
-                    }
+            |note, iteration, start, gate_end, onset_beat, off_beat, playable| {
+                if let Some((ordinals, samples)) = preview.as_mut()
+                    && ordinals.get(samples.len()).copied() == Some(emitted)
+                {
+                    samples.push(crate::MidiPreviewSample {
+                        frame_start: start,
+                        frame_gate_end: gate_end,
+                        pitch: note.pitch(),
+                    });
                 }
                 emitted = emitted
                     .checked_add(1)
                     .ok_or(Invalid("compiled midi occurrence count overflow"))?;
-                if instrument.is_some() {
+                if clip.active() && note.active() && playable && instrument.is_some() {
                     let (sampler_index, end) = if mutable {
                         let tail = mutable_limits
                             .ok_or(Invalid("mutable instrument limits are missing"))?
@@ -419,9 +603,10 @@ pub(crate) fn compile_instrument_track(
         nodes,
         root,
         timeline_end,
-        bank: bank.unwrap_or_else(crate::midi_note_bank::PreparedMidiNoteBank::empty),
+        bank: bank.unwrap_or_else(empty_bank),
         shared_contexts,
         mutable,
+        volumes,
     }))
 }
 
@@ -450,32 +635,29 @@ fn validate_density<S: DensitySpan>(
     let onset_frames = spans.iter().map(DensitySpan::start).collect::<Vec<_>>();
     validate_onset_density(&onset_frames)?;
 
-    let mut edges = Vec::with_capacity(spans.len() * 2);
-    for span in spans {
-        edges.push((span.start(), true));
-        edges.push((span.end(), false));
-    }
-    edges.sort_unstable_by_key(|(frame, is_start)| (*frame, *is_start));
-    let mut active = 0_usize;
-    for (_, is_start) in edges {
-        if is_start {
-            active += 1;
-            let max_voices = mutable_limits.map_or(MAX_SIMULTANEOUS_VOICES_PER_TRACK, |limits| {
-                limits
-                    .max_active_occurrences
-                    .min(MAX_SIMULTANEOUS_VOICES_PER_TRACK)
-            });
-            if active > max_voices {
-                let message = if mutable_limits.is_some() {
-                    "midi voice density exceeds the instrument capacity per track"
-                } else {
-                    "midi voice density exceeds 64 simultaneous voices per track"
-                };
-                return Err(Invalid(message));
-            }
-        } else {
-            active -= 1;
+    let max_voices = mutable_limits.map_or(MAX_SIMULTANEOUS_VOICES_PER_TRACK, |limits| {
+        limits
+            .max_active_occurrences
+            .min(MAX_SIMULTANEOUS_VOICES_PER_TRACK)
+    });
+    let message = if mutable_limits.is_some() {
+        "midi voice density exceeds the instrument capacity per track"
+    } else {
+        "midi voice density exceeds 64 simultaneous voices per track"
+    };
+    if mutable_limits.is_some_and(|limits| limits.steals_releasing_voices) {
+        // Stolen releases leave the instrument's slots but keep their proofs:
+        // slots bound held density, the per-track ledger bounds releases.
+        if maximum_overlap(spans, DensitySpan::gate_end) > max_voices {
+            return Err(Invalid(message));
         }
+        if maximum_overlap(spans, DensitySpan::end) > MAX_SIMULTANEOUS_VOICES_PER_TRACK {
+            return Err(Invalid(
+                "midi voice density exceeds 64 simultaneous voices per track",
+            ));
+        }
+    } else if maximum_overlap(spans, DensitySpan::end) > max_voices {
+        return Err(Invalid(message));
     }
     if let Some(limits) = mutable_limits {
         validate_event_density(
@@ -486,6 +668,28 @@ fn validate_density<S: DensitySpan>(
         )?;
     }
     Ok(())
+}
+
+/// Greatest number of half-open `[start, end)` spans sounding together; an
+/// end at a frame precedes a start at the same frame.
+fn maximum_overlap<S: DensitySpan>(spans: &[S], end: fn(&S) -> u64) -> usize {
+    let mut edges = Vec::with_capacity(spans.len() * 2);
+    for span in spans {
+        edges.push((span.start(), true));
+        edges.push((end(span), false));
+    }
+    edges.sort_unstable_by_key(|(frame, is_start)| (*frame, *is_start));
+    let mut active = 0_usize;
+    let mut maximum = 0_usize;
+    for (_, is_start) in edges {
+        if is_start {
+            active += 1;
+            maximum = maximum.max(active);
+        } else {
+            active = active.saturating_sub(1);
+        }
+    }
+    maximum
 }
 
 fn validate_event_density<S: DensitySpan>(spans: &[S], max_events: usize) -> Result<(), Invalid> {
@@ -616,6 +820,8 @@ mod declared_capacity_tests {
             max_events_per_query: events,
             max_active_occurrences: voices,
             max_release_tail_frames: 0,
+            supports_clip_volume: false,
+            steals_releasing_voices: false,
         }
     }
 
@@ -684,5 +890,57 @@ mod declared_capacity_tests {
             validate_density(&adjacent_boundary_spans, Some(limits(256, 64))),
             Ok(())
         );
+    }
+
+    #[test]
+    fn stealing_capacity_bounds_held_gates_and_the_ledger_bounds_releases() {
+        let stealing = |voices| MutableInstrumentLimits {
+            steals_releasing_voices: true,
+            ..limits(256, voices)
+        };
+        // One-voice retrigger: each release overlaps the next gate.
+        let retrigger = (0..64)
+            .map(|index| Span {
+                start: index * 100,
+                gate_end: index * 100 + 100,
+                end: index * 100 + 150,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            validate_density(&retrigger, Some(limits(256, 1))),
+            Err(Invalid(
+                "midi voice density exceeds the instrument capacity per track",
+            ))
+        );
+        assert_eq!(validate_density(&retrigger, Some(stealing(1))), Ok(()));
+
+        let mut held = retrigger.clone();
+        held.push(Span {
+            start: 50,
+            gate_end: 60,
+            end: 60,
+        });
+        assert_eq!(
+            validate_density(&held, Some(stealing(1))),
+            Err(Invalid(
+                "midi voice density exceeds the instrument capacity per track",
+            ))
+        );
+
+        // 65 short gates whose releases all overlap exceed the proof ledger.
+        let releases = (0..65)
+            .map(|index| Span {
+                start: index,
+                gate_end: index + 1,
+                end: 1000,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            validate_density(&releases, Some(stealing(1))),
+            Err(Invalid(
+                "midi voice density exceeds 64 simultaneous voices per track",
+            ))
+        );
+        assert_eq!(validate_density(&releases[..64], Some(stealing(1))), Ok(()));
     }
 }

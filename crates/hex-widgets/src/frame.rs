@@ -187,10 +187,13 @@ pub fn device_display(style: ControlStyle) -> Div {
         .gap(px(DEVICE_SECTION_RADIUS))
 }
 
-/// Canonical device frame. Title/actions retain caller input handlers. The idle
+/// Canonical housing for all production and sandbox devices; bodies supply slots
+/// instead of recreating the housing. Title/actions retain caller input handlers. The idle
 /// header and surround use the same surface, without an intervening border.
 /// `leading_control` precedes the flexible title; trailing actions follow it.
-/// The caller owns control state, commands and input; no decorative toggle is added.
+/// The caller owns device commands and supplies a stable parent element identity.
+/// Shared housing toggles own only transient macro/modulator placeholder visibility;
+/// they never alter device state. Open panels share a scroll region with the body.
 /// Use `device_body` for rounded lower-surface/content containment.
 pub fn device_frame(
     title: impl IntoElement,
@@ -211,8 +214,13 @@ pub fn device_frame(
         .bg(rgb(style.controls.surface))
         .rounded(px(radius))
         .overflow_hidden()
-        .child(device_header(title, style, leading_control, header_actions))
-        .child(body)
+        .child(crate::device_housing::Housing {
+            body: body.into_any_element(),
+            title: title.into_any_element(),
+            leading: leading_control.into_any_element(),
+            actions: header_actions.into_any_element(),
+            style,
+        })
 }
 
 /// Canonical header composition, also available to custom surrounds. Insets clip

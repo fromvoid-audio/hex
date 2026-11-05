@@ -102,3 +102,50 @@ fn point_pages_clamp_to_current_clip_and_modes_dispatch_real_typed_commands() {
     assert_eq!(points.len(), 2);
     assert!(points.contains(&retained));
 }
+
+#[test]
+fn numeric_pitch_keeps_absolute_single_and_relative_selection_units() {
+    let mut model =
+        hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+    let hex_project::Created::Imported { clip, .. } = model
+        .execute(Command::ImportAudioTrack {
+            name: "pitch".into(),
+            path: "pitch.wav".into(),
+            sample_rate: 48_000,
+            frames: 48_000,
+        })
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    model
+        .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+        .unwrap();
+    assert!(
+        matches!(pitch_command(model.project(),clip,237.,false).unwrap(),Command::SetAudioClipPitch {clip:id,cents:237} if id==clip)
+    );
+    assert!(
+        matches!(pitch_command(model.project(),clip,237.,true).unwrap(),Command::EditClips {clips,edit:hex_project::ClipEdit::PitchBy {cents:100}} if clips==vec![clip])
+    );
+    for value in [f64::NAN, f64::INFINITY, -4801., 4801., 0.5] {
+        assert!(pitch_command(model.project(), clip, value, false).is_err());
+    }
+    for value in [-4800., 0., 4800.] {
+        let command = pitch_command(model.project(), clip, value, false).unwrap();
+        let mut oracle = hex_project::Editor::new(model.project().clone(), 8).unwrap();
+        oracle.execute(command).unwrap();
+        assert_eq!(
+            f64::from(
+                oracle
+                    .project()
+                    .clip(clip)
+                    .unwrap()
+                    .audio_edit()
+                    .unwrap()
+                    .domain
+                    .pitch_cents
+            ),
+            value
+        );
+    }
+}

@@ -1,5 +1,28 @@
-use hex_project::{ClipFade, ClipId, Command, Created, Editor, Project};
+use hex_project::{Clip, ClipFade, ClipId, Command, Created, Editor, Project};
 use std::path::PathBuf;
+
+// Audible envelope of one part: an inner event fade (root clock) times the
+// part's clip fade. A cut ramp lives on the event so no clip fade overhangs.
+fn envelope_gain(part: &Clip, frame: u64) -> f32 {
+    let Some(edit) = part.audio_edit() else {
+        return part.fade().gain_at(frame);
+    };
+    let root = edit.view_start + frame;
+    let events = part.audio_events();
+    let event = events
+        .events
+        .iter()
+        .find(|event| event.start <= root && root < event.end)
+        .expect("event under the view");
+    let inner = event.fade.map_or(1.0, |fade| {
+        fade.shape()
+            .gain_at(event.source_start + (root - event.start) - fade.source_start())
+    });
+    let outer = root
+        .checked_sub(edit.domain.fade_start)
+        .map_or(0.0, |age| edit.domain.fade.gain_at(age));
+    inner * outer
+}
 
 fn editor_with_clip(duration: u64) -> (Editor, ClipId) {
     let mut editor = Editor::new(Project::new(48_000).expect("project"), 16).expect("editor");
@@ -208,13 +231,19 @@ fn recursive_split_preserves_every_sample_of_original_envelope() {
         .unwrap();
     let segments = editor.project().tracks()[0].clips();
     assert_eq!(segments.len(), 3);
+    // The first cut crossed the fade in: its part keeps no overhanging clip fade.
+    assert_eq!(
+        (
+            segments[0].retained_fade().span(),
+            segments[0].retained_fade().offset()
+        ),
+        (4, 0)
+    );
     let mut absolute = 0;
     for segment in segments {
-        assert_eq!(segment.fade().span(), 11);
-        assert_eq!(segment.fade().offset(), absolute);
         for local in 0..segment.duration() {
             assert_eq!(
-                segment.fade().gain_at(local),
+                envelope_gain(segment, local),
                 original.gain_at(absolute + local)
             );
         }
@@ -276,7 +305,7 @@ fn shaped_fades_have_independent_silent_endpoints_curves_and_split_continuity() 
     for part in editor.project().tracks()[0].clips() {
         for frame in 0..part.duration() {
             assert_eq!(
-                part.fade().gain_at(frame),
+                envelope_gain(part, frame),
                 fade.gain_at(part.start() + frame)
             );
         }
@@ -292,4 +321,145 @@ fn shaped_fades_have_independent_silent_endpoints_curves_and_split_continuity() 
         (10, 10, 10, 10)
     );
     assert_eq!((trimmed.in_curve(), trimmed.out_curve()), (500, -500));
+}
+
+#[test]
+fn two_axis_fades_are_independent_monotone_and_preserve_centered_legacy_pcm() {
+    for curve in [-1000, -500, 0, 500, 1000] {
+        let original = ClipFade::new(1001, 0, 1001, 0)
+            .unwrap()
+            .with_shape(0, 0, curve, 0)
+            .unwrap();
+        for frame in 0..=1000 {
+            let t = frame as f64 / 1000.0;
+            let c = f64::from(curve);
+            let legacy = if curve == 0 {
+                t
+            } else {
+                t * (1001.0 - c) / (1001.0 + c - 2.0 * c * t)
+            } as f32;
+            assert_eq!(original.gain_at(frame), legacy);
+        }
+        for position in [1, 100, 137, 250, 321, 500, 750, 900, 999] {
+            let fade_in = original.with_curve_positions(position, 500).unwrap();
+            let fade_out = ClipFade::new(1001, 0, 0, 1001)
+                .unwrap()
+                .with_shape(0, 0, 0, curve)
+                .unwrap()
+                .with_curve_positions(500, 1000 - position)
+                .unwrap();
+            let mut prior = 0.0;
+            for frame in 0..=1000 {
+                let gain = fade_in.gain_at(frame);
+                assert!(gain.is_finite() && (0.0..=1.0).contains(&gain));
+                assert!(
+                    gain >= prior,
+                    "curve {curve}, position {position}, frame {frame}"
+                );
+                assert_eq!(gain, fade_out.gain_at(1000 - frame));
+                prior = gain;
+            }
+            assert_eq!((fade_in.gain_at(0), fade_in.gain_at(1000)), (0.0, 1.0));
+            let anchor = fade_in.gain_at(u64::from(position));
+            assert_eq!(fade_in.curve_midpoint_gain(false) as f32, anchor);
+            assert_eq!(fade_out.curve_midpoint_gain(true) as f32, anchor);
+            assert!((anchor - (1001.0 - f32::from(curve)) / 2002.0).abs() < 1e-6);
+            for gain in [0.25, 0.5, 0.75] {
+                let x = fade_in.position_at_gain(false, gain).unwrap();
+                let frame = (x * 1000.0).round() as u64;
+                // The inverse agrees with the evaluated frame within sampling error.
+                let below = fade_in.gain_at(frame.saturating_sub(1));
+                let above = fade_in.gain_at((frame + 1).min(1000));
+                assert!(below <= gain as f32 + 1e-6 && above >= gain as f32 - 1e-6);
+            }
+        }
+    }
+    let fade = ClipFade::new(1001, 0, 1001, 0).unwrap();
+    let early = fade.with_curve_positions(250, 500).unwrap();
+    let late = fade.with_curve_positions(750, 500).unwrap();
+    assert_eq!(early.gain_at(250), 0.5);
+    assert!(late.gain_at(250) < fade.gain_at(250));
+    assert!(early.gain_at(500) > fade.gain_at(500));
+    let bent = early.with_shape(0, 0, 500, 0).unwrap();
+    assert!((bent.gain_at(250) - 501.0 / 2002.0).abs() < 1e-7);
+    // A single rational bend cannot reproduce the independently movable interior
+    // slope: at the same half-gain point the time-warped ramp has different tails.
+    assert_ne!(early.gain_at(750), bent.gain_at(750));
+    for invalid in [0, 1000, u16::MAX] {
+        assert!(fade.with_curve_positions(invalid, 500).is_err());
+        assert!(fade.with_curve_positions(500, invalid).is_err());
+    }
+    assert!(fade.position_at_gain(false, f64::NAN).is_none());
+}
+
+#[test]
+fn two_axis_command_history_split_and_reanchor_retain_shape() {
+    let (mut editor, clip) = editor_with_clip(101);
+    let fade = ClipFade::new(101, 0, 41, 31)
+        .unwrap()
+        .with_shape(10, 10, 200, -300)
+        .unwrap()
+        .with_curve_positions(250, 700)
+        .unwrap();
+    let before = editor.project().clone();
+    editor
+        .execute(Command::SetClipFadeEnvelope { clip, fade })
+        .unwrap();
+    let after = editor.project().clone();
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &before);
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &after);
+    editor
+        .execute(Command::SplitClip { clip, frame: 35 })
+        .unwrap();
+    let parts = editor.project().tracks()[0].clips();
+    // The crossed fade in moves to the inner event; the fade out stays local.
+    let inner = parts[0].audio_events().events[0].fade.unwrap().shape();
+    assert_eq!((inner.in_position(), inner.in_curve()), (250, 200));
+    assert_eq!(
+        (
+            parts[1].retained_fade().out_position(),
+            parts[1].retained_fade().out_curve()
+        ),
+        (700, -300)
+    );
+    for part in parts {
+        for frame in 0..part.duration() {
+            assert_eq!(
+                envelope_gain(part, frame),
+                fade.gain_at(part.start() + frame)
+            );
+        }
+    }
+    let fit = fade.reanchor(20).unwrap();
+    assert_eq!((fit.in_position(), fit.out_position()), (250, 700));
+}
+
+#[test]
+fn off_center_shapes_concentrate_transitions_with_long_quiet_or_loud_tails() {
+    let early = ClipFade::new(1001, 0, 0, 1001)
+        .unwrap()
+        .with_shape(0, 0, 0, -500)
+        .unwrap()
+        .with_curve_positions(500, 150)
+        .unwrap();
+    assert!((early.gain_at(150) - 1501.0 / 2002.0).abs() < 1e-6);
+    assert!(
+        early.gain_at(500) < 0.1,
+        "early S fade must settle into its quiet tail"
+    );
+    assert!(early.gain_at(750) < 0.005);
+    let late = ClipFade::new(1001, 0, 0, 1001)
+        .unwrap()
+        .with_shape(0, 0, 0, 500)
+        .unwrap()
+        .with_curve_positions(500, 850)
+        .unwrap();
+    assert!(late.gain_at(250) > 0.995);
+    assert!(
+        late.gain_at(500) > 0.9,
+        "late S fade retains its loud opening"
+    );
+    assert!((late.gain_at(850) - 501.0 / 2002.0).abs() < 1e-6);
 }

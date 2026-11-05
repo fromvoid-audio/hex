@@ -201,6 +201,7 @@ mod ui {
                 comparison_audio: None,
                 project: Arc::clone(&state.project),
                 waveforms: state.waveforms.clone(),
+                source_overviews: state.source_overviews.clone(),
                 audio_clip_waveforms: state.audio_clip_waveforms.clone(),
                 midi_preview: Arc::clone(&state.midi_preview),
                 gain_preview: state.gain_preview.clone(),

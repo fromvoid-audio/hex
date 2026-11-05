@@ -1,8 +1,10 @@
 //! Console placement is resolved on control-side candidate metadata, never by ID guesses.
 use crate::{SessionError, import_batch::AudioBatchDestination};
-use hex_project::{Command, Created, Editor, Project, SceneId, SessionCellContent, TrackId};
+use hex_project::{
+    Command, Created, Editor, Project, SceneId, SessionCellContent, SessionSceneTarget, TrackId,
+};
 
-/// One browser audio payload targets one stable cell or inserts one scene row.
+/// One source targets a stable cell/row, or creates one normal track and an explicit scene target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConsoleDestination {
     Cell {
@@ -13,6 +15,17 @@ pub enum ConsoleDestination {
         track: TrackId,
         before: Option<SceneId>,
     },
+    NewTrack {
+        before_track: Option<TrackId>,
+        scene: SessionSceneTarget,
+    },
+}
+
+impl ConsoleDestination {
+    /// The same read-only policy used by UI preview and worker admission.
+    pub fn validate(self, project: &Project) -> Result<(), SessionError> {
+        validate(project, self, 1)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -34,10 +47,23 @@ pub(crate) fn validate(
     let (track, scene) = match target {
         ConsoleDestination::Cell { track, scene } => (track, Some(scene)),
         ConsoleDestination::InsertScene { track, before } => {
-            if project.scenes().len() >= hex_project::MAX_SCENES {
-                return Err(SessionError::Invalid("scene limit reached"));
-            }
+            SessionSceneTarget::Insert { before }.validate(project)?;
             (track, before)
+        }
+        ConsoleDestination::NewTrack {
+            before_track,
+            scene,
+        } => {
+            if project.tracks().len() >= hex_project::MAX_TRACKS {
+                return Err(SessionError::Invalid("track limit reached"));
+            }
+            if before_track.is_some_and(|id| project.track(id).is_none()) {
+                return Err(SessionError::Invalid(
+                    "track insertion anchor no longer exists",
+                ));
+            }
+            scene.validate(project)?;
+            return Ok(());
         }
     };
     project
@@ -53,6 +79,8 @@ pub(crate) fn prefix(
     project: &Project,
     destination: AudioBatchDestination,
     count: usize,
+    track_name: &str,
+    new_track_gain: Option<f32>,
 ) -> Result<(Vec<Command>, Option<ResolvedCell>), SessionError> {
     let AudioBatchDestination::Console(target) = destination else {
         return Ok((Vec::new(), None));
@@ -60,7 +88,7 @@ pub(crate) fn prefix(
     validate(project, target, count)?;
     let mut commands = Vec::new();
     commands
-        .try_reserve_exact(1)
+        .try_reserve_exact(3)
         .map_err(|_| SessionError::Allocation)?;
     let cell = match target {
         ConsoleDestination::Cell { track, scene } => {
@@ -84,6 +112,44 @@ pub(crate) fn prefix(
                 ));
             };
             commands.push(command);
+            ResolvedCell { track, scene }
+        }
+        ConsoleDestination::NewTrack {
+            before_track,
+            scene,
+        } => {
+            let mut projected = Editor::new(project.clone(), 1)?;
+            let command = Command::InsertTrack {
+                name: track_name.into(),
+                before_track,
+            };
+            let Created::Track(track) = projected.execute(command.clone())? else {
+                return Err(SessionError::Invalid(
+                    "console insertion did not create a track",
+                ));
+            };
+            commands.push(command);
+            if let Some(gain) = new_track_gain {
+                let gain_command = Command::Gain { track, gain };
+                projected.execute(gain_command.clone())?;
+                commands.push(gain_command);
+            }
+            let scene = match scene {
+                SessionSceneTarget::Existing(scene) => scene,
+                SessionSceneTarget::Insert { before } => {
+                    let command = Command::InsertScene {
+                        name: format!("scene {}", project.scenes().len() + 1),
+                        before,
+                    };
+                    let Created::Scene(scene) = projected.execute(command.clone())? else {
+                        return Err(SessionError::Invalid(
+                            "console insertion did not create a scene",
+                        ));
+                    };
+                    commands.push(command);
+                    scene
+                }
+            };
             ResolvedCell { track, scene }
         }
     };

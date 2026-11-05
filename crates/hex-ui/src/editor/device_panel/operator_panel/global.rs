@@ -72,6 +72,7 @@ pub(super) fn expression_routing(
     ))
     .tooltip(|_, cx| {
         cx.new(|_| crate::editor::transport::MiniTooltip {
+            kind: crate::tooltips::Kind::Identification,
             description: theme::text(
                 "legacy preserves saved playback; choose operator to enable global controls",
             ),

@@ -8,11 +8,11 @@ impl Drop for BrowserRoot {
 }
 // Match the existing exclusive output lease for these private headless fixtures.
 // No global environment/settings mutation, backend redesign or lease bypass.
-pub(super) fn status_fixture_guard() -> std::sync::MutexGuard<'static, ()> {
-    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    SERIAL
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+/// The process-wide headless output's single test serializer. A second,
+/// independent mutex let its holders open or retire the output concurrently
+/// with `serial_output` holders, stalling retirement (Pulse #3857).
+pub(in crate::editor) fn status_fixture_guard() -> std::sync::MutexGuard<'static, ()> {
+    hex_audio::worker_fixture::serial_output()
 }
 pub(super) fn headless_status_output() -> (
     hex_audio::WorkerPreparedOutput,
@@ -20,7 +20,7 @@ pub(super) fn headless_status_output() -> (
 ) {
     // Drop retires the previous headless carriers on the existing lifecycle
     // worker. Wait only for that bounded teardown, never open an OS backend.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         match hex_audio::worker_fixture::open(48_000) {
             Ok(output) => return output,
@@ -44,12 +44,19 @@ pub(super) fn bounded_window(
 ) -> (gpui::AnyWindowHandle, gpui::Entity<EditorView>, BrowserRoot) {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    let root = BrowserRoot(std::env::temp_dir().join(format!(
-        "hex-eq-layout-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    )));
-    std::fs::create_dir(&root.0).unwrap();
+    // A reused PID can meet a leftover directory; take the next free name.
+    let root = loop {
+        let path = std::env::temp_dir().join(format!(
+            "hex-eq-layout-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        match std::fs::create_dir(&path) {
+            Ok(()) => break BrowserRoot(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!("create eq layout root: {error}"),
+        }
+    };
     std::fs::create_dir(root.0.join("samples")).unwrap();
     #[cfg(target_os = "macos")]
     cx.use_native_text_system()
@@ -119,6 +126,14 @@ fn eq_axis_labels_are_logarithmic_nonoverlapping_and_keep_the_plot_hit_map(
             format!("eq-response-{}-plot", device.value()).into_boxed_str(),
         ))
         .unwrap();
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("eq-response-{}-axis-x-0", device.value()).into_boxed_str(),
+            ))
+            .is_some(),
+        "the 20 hz endpoint must not collide with a nonexistent previous label"
+    );
     let mut labels = Vec::new();
     for i in 0..32 {
         if let Some(bounds) = visual.debug_bounds(Box::leak(
@@ -178,7 +193,7 @@ fn eq_default_spectrum_intent_and_explicit_toggle_do_not_edit_or_fake_audio(
             (true, true)
         );
         assert!(view.audio.is_none());
-        assert!(view.device_panel.spectrum_result.is_none());
+        assert!(view.device_panel.spectrum_results.is_empty());
     });
     let toggle = visual
         .debug_bounds(selector("eq8-spectrum", device))
@@ -196,7 +211,7 @@ fn eq_default_spectrum_intent_and_explicit_toggle_do_not_edit_or_fake_audio(
             "explicit Off must not claim it is waiting for capture"
         );
         assert!(view.audio.is_none());
-        assert!(view.device_panel.spectrum_result.is_none());
+        assert!(view.device_panel.spectrum_results.is_empty());
         assert_eq!(view.state.as_ref().unwrap().project, original);
         assert!(view.pending_requests.is_empty());
     });
@@ -208,7 +223,7 @@ fn eq_default_spectrum_intent_and_explicit_toggle_do_not_edit_or_fake_audio(
             view.device_panel.message.as_deref(),
             Some("spectrum waits for available current project audio")
         );
-        assert!(view.device_panel.spectrum_result.is_none());
+        assert!(view.device_panel.spectrum_results.is_empty());
     });
     // The previously explicit On selection may activate once a valid fixture
     // publication becomes available, without retaining an obsolete wait error.
@@ -335,7 +350,7 @@ fn eq_real_selectors_keep_popup_anchor_keyboard_cancel_and_canonical_history(
 #[gpui::test]
 fn eq_shared_inline_width_preserves_default_and_rejects_invalid_geometry(cx: &mut TestAppContext) {
     use hex_widgets::{
-        NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlKind,
+        NumericControl, NumericControlConfig, NumericControlKind, NumericControlPresentation,
         NumericScale, NumericSpec,
     };
     let config = NumericControlConfig::new(
@@ -355,7 +370,7 @@ fn eq_shared_inline_width_preserves_default_and_rejects_invalid_geometry(cx: &mu
         theme::device_style(theme::DeviceStyleRole::Readout),
     )
     .unwrap()
-    .with_appearance(NumericControlAppearance::InlineValue);
+    .with_presentation(NumericControlPresentation::InlineValue);
     let window = cx.add_window(|_, cx| NumericControl::from_config(cx, config));
     let handle = *window;
     let control = window.root(cx).unwrap();
@@ -538,7 +553,344 @@ fn eq_long_numbers_channel_names_and_cut_slopes_fit_and_edit_through_real_contro
 }
 
 #[gpui::test]
-fn eq_two_device_selection_focus_off_and_removed_targets_use_one_real_control_channel(
+fn visible_eq_capture_survives_focus_on_another_visible_eq(cx: &mut TestAppContext) {
+    let (service, _, track, first) = fixture(false);
+    service
+        .submit(Request::AddNativeDevice {
+            track,
+            class: NativeDeviceClass::Effect,
+            type_id: Box::new(EQ_TYPE_ID),
+            before: None,
+        })
+        .unwrap();
+    let state = receive_service_event(&service).state;
+    let second = state.project.track(track).unwrap().devices()[1].id();
+    let original = state.project.clone();
+    let (handle, editor, _root) = bounded_window(cx, service, state, track);
+    let (control, mut callback) = hex_audio::spectrum_target::channel();
+    editor.update(cx, |v, cx| {
+        v.device_panel.eq_spectrum.test_channel = Some(control);
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.simulate_resize(size(px(3200.0), px(650.0)));
+    visual.run_until_parked();
+    let focus = editor.update(cx, |v, cx| v.device_panel.chain_window.focus(first, cx));
+    visual.update(|window, _| focus.focus(window));
+    visual.run_until_parked();
+    let first_target = editor.read_with(cx, |v, _| {
+        v.device_panel
+            .eq_spectrum
+            .test_channel
+            .as_ref()
+            .unwrap()
+            .desired()
+            .unwrap()
+    });
+    assert_eq!(first_target.identity.device_id, first.value());
+    callback.begin_block();
+    let focus = editor.update(cx, |v, cx| v.device_panel.chain_window.focus(second, cx));
+    visual.update(|window, _| focus.focus(window));
+    for _ in 0..2 {
+        editor.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+        let viewport = visual.update(|window, _| window.viewport_size());
+        for device in [first, second] {
+            let graph = visual
+                .debug_bounds(selector("eq-response", device))
+                .unwrap();
+            assert!(graph.left() >= px(0.0) && graph.right() <= viewport.width);
+        }
+        editor.read_with(cx, |v, _| {
+            assert_eq!(v.device_panel.selected_device, Some(second));
+            assert_eq!(v.state.as_ref().unwrap().project, original);
+            assert_eq!(
+                v.device_panel
+                    .eq_spectrum
+                    .test_channel
+                    .as_ref()
+                    .unwrap()
+                    .desired(),
+                Some(first_target),
+                "focus must not replace another visible eq's live capture"
+            );
+        });
+    }
+}
+
+// Exercise the real off-control FFT producer rather than inventing display
+// bins. Native multi-target callback/PCM ownership is checked in hex-audio;
+// this fixture checks its published-results consumer after completed paints.
+fn analyzed_tone(
+    target: hex_audio::spectrum_target::SpectrumTarget,
+    frequency: f32,
+    amplitude: f32,
+    captured_at: std::time::Instant,
+) -> hex_audio::spectrum_worker::PublishedSpectra {
+    use hex_audio::spectrum_worker::{CaptureOutcome, SpectrumStamp, spawn_spectrum_worker};
+    let stamp = SpectrumStamp {
+        target: target.token,
+        generation: target.project_generation,
+        sample_rate_hz: target.sample_rate_hz,
+        applied_revision: target.activation_floor,
+    };
+    let (mut capture, mut reader, reaper) = spawn_spectrum_worker(stamp).unwrap();
+    for chunk in 0..16 {
+        let frames: [[f32; 2]; 256] = std::array::from_fn(|i| {
+            let phase = std::f32::consts::TAU * frequency * (chunk * 256 + i) as f32
+                / target.sample_rate_hz as f32;
+            [phase.sin() * amplitude; 2]
+        });
+        assert!(matches!(
+            capture.submit_pair_at(stamp, &frames, &frames, captured_at),
+            CaptureOutcome::Queued { .. }
+        ));
+    }
+    let deadline = captured_at + std::time::Duration::from_secs(2);
+    let pair = loop {
+        if let Some(pair) = reader.try_latest_pair_at(captured_at) {
+            break pair;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "real FFT result missing"
+        );
+        std::thread::yield_now();
+    };
+    assert_eq!(pair.output.captured_at, captured_at);
+    drop(capture);
+    reaper.shutdown_and_join().unwrap();
+    pair
+}
+
+#[gpui::test]
+fn both_visible_eq_curves_advance_from_real_fft_results_without_focus_stealing(
+    cx: &mut TestAppContext,
+) {
+    let (service, _, track, first) = fixture(false);
+    service
+        .submit(Request::AddNativeDevice {
+            track,
+            class: NativeDeviceClass::Effect,
+            type_id: Box::new(EQ_TYPE_ID),
+            before: None,
+        })
+        .unwrap();
+    let state = receive_service_event(&service).state;
+    let second = state.project.track(track).unwrap().devices()[1].id();
+    let original = state.project.clone();
+    let (handle, editor, _root) = bounded_window(cx, service, state, track);
+    let (control, _callback) = hex_audio::spectrum_target::channel();
+    editor.update(cx, |view, cx| {
+        view.device_panel.eq_spectrum.test_channel = Some(control);
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.simulate_resize(size(px(3200.0), px(650.0)));
+    visual.run_until_parked();
+    let focus = editor.update(cx, |v, cx| v.device_panel.chain_window.focus(second, cx));
+    visual.update(|window, _| focus.focus(window));
+    visual.run_until_parked();
+    let targets: Vec<_> = editor.read_with(cx, |v, _| {
+        v.device_panel
+            .eq_spectrum
+            .test_channel
+            .as_ref()
+            .unwrap()
+            .desired_targets()
+            .iter()
+            .map(|(_, t)| t)
+            .collect()
+    });
+    assert_eq!(targets.len(), 2);
+    let graphs = editor.read_with(cx, |v, _| {
+        [
+            eq_panel::graph_for_test(v, first),
+            eq_panel::graph_for_test(v, second),
+        ]
+    });
+    let mut previous: Option<Vec<Vec<[f32; 2]>>> = None;
+    for amplitude in [0.05, 0.4] {
+        // Fix the consumer clock, never the result bytes or capture timestamp.
+        // Scheduling under parallel test load must not turn this presentation
+        // assertion into a native 100ms deadline claim. Expiry is checked below.
+        let captured_at = std::time::Instant::now();
+        let pairs: Vec<_> = targets
+            .iter()
+            .enumerate()
+            .map(|(i, target)| {
+                analyzed_tone(
+                    *target,
+                    if i == 0 { 440.0 } else { 1760.0 },
+                    amplitude,
+                    captured_at,
+                )
+            })
+            .collect();
+        editor.update(cx, |v, cx| {
+            v.device_panel.eq_spectrum.test_now = Some(captured_at);
+            v.device_panel.spectrum_results.extend(
+                pairs
+                    .iter()
+                    .cloned()
+                    .map(|pair| (pair.output.stamp.target, pair)),
+            );
+            cx.notify();
+        });
+        for _ in 0..2 {
+            visual.run_until_parked();
+            editor.update(cx, |_, cx| cx.notify());
+        }
+        let curves: Vec<_> = graphs
+            .iter()
+            .map(|graph| {
+                graph.read_with(cx, |g, _| {
+                    let [output, input] = g.analyzer_layers();
+                    let output = output.expect("fresh output survived completed repaint");
+                    assert_eq!(
+                        Some(output),
+                        input,
+                        "equal PCM has aligned input and output"
+                    );
+                    output.to_vec()
+                })
+            })
+            .collect();
+        assert_ne!(curves[0], curves[1], "independent tones remain distinct");
+        if let Some(previous) = previous {
+            for (current, previous) in curves.iter().zip(previous) {
+                assert_ne!(*current, previous, "both visible EQs advance");
+            }
+        }
+        previous = Some(curves);
+        editor.update(cx, |v, cx| {
+            v.device_panel.eq_spectrum.test_now = Some(
+                captured_at
+                    + hex_audio::spectrum_worker::DISPLAY_STALE_AFTER
+                    + std::time::Duration::from_nanos(1),
+            );
+            cx.notify();
+        });
+        visual.run_until_parked();
+        for graph in &graphs {
+            graph.read_with(cx, |graph, _| {
+                assert_eq!(graph.analyzer_layers(), [None, None], "stale curves clear");
+            });
+        }
+        editor.read_with(cx, |v, _| {
+            assert_eq!(v.device_panel.selected_device, Some(second));
+            assert_eq!(v.state.as_ref().unwrap().project, original);
+        });
+    }
+}
+
+#[gpui::test]
+fn visible_eq_bus_membership_follows_mounted_cards_and_panel_custody(cx: &mut TestAppContext) {
+    for main in [false, true] {
+        let cx = &mut cx.new_app();
+        let (service, _, track, _) = fixture(false);
+        service
+            .submit(Request::Edit(Command::AddReturnTrack {
+                name: "analyzer bus".into(),
+            }))
+            .unwrap();
+        let mut state = receive_service_event(&service).state;
+        let return_track = state.project.return_tracks()[0].id();
+        for _ in 0..8 {
+            let authored = EqState::default().encode().unwrap();
+            let command = if main {
+                Command::InsertMainDevice {
+                    before: None,
+                    state: authored,
+                }
+            } else {
+                Command::InsertReturnDevice {
+                    return_track,
+                    before: None,
+                    state: authored,
+                }
+            };
+            service.submit(Request::Edit(command)).unwrap();
+            state = receive_service_event(&service).state;
+        }
+        let original = state.project.clone();
+        let devices: Vec<_> = if main {
+            state.project.main_devices()
+        } else {
+            state.project.return_tracks()[0].devices()
+        }
+        .iter()
+        .map(|d| d.id())
+        .collect();
+        let owner = if main {
+            hex_engine::ProcessorChainOwner::Main
+        } else {
+            hex_engine::ProcessorChainOwner::Return(return_track.value())
+        };
+        let (handle, editor, _root) = bounded_window(cx, service, state, track);
+        let (control, mut callback) = hex_audio::spectrum_target::channel();
+        editor.update(cx, |v, cx| {
+            v.device_panel.eq_spectrum.test_channel = Some(control);
+            v.selected_track = None;
+            v.focused_return = (!main).then_some(return_track);
+            v.device_panel.main_selected = main.then_some(v.project_generation);
+            cx.notify();
+        });
+        let visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(size(px(900.0), px(650.0)));
+        visual.run_until_parked();
+        callback.begin_block();
+        let initial = *callback.current_targets().unwrap();
+        assert!(!initial.is_empty() && initial.len() < devices.len());
+        assert!(initial.iter().all(|(_, t)| t.identity.owner == owner));
+        assert!(
+            initial
+                .iter()
+                .any(|(_, t)| t.identity.device_id == devices[0].value())
+        );
+        editor.update(cx, |v, cx| {
+            v.device_panel
+                .chain_window
+                .scroll
+                .set_offset(point(px(-10000.0), px(0.0)));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        callback.begin_block();
+        let end = callback.current_targets().unwrap();
+        assert!(!end.is_empty() && end.len() < devices.len());
+        assert!(
+            end.iter()
+                .any(|(_, t)| t.identity.device_id == devices[7].value())
+        );
+        assert!(
+            !end.iter()
+                .any(|(_, t)| t.identity.device_id == devices[0].value())
+        );
+        editor.update(cx, |v, cx| {
+            v.clip_view_open = false;
+            reconcile_eq_spectrum(v);
+            assert!(
+                v.device_panel
+                    .eq_spectrum
+                    .test_channel
+                    .as_ref()
+                    .unwrap()
+                    .desired_targets()
+                    .is_empty()
+            );
+            assert_eq!(v.state.as_ref().unwrap().project, original);
+            cx.notify();
+        });
+        callback.begin_block();
+        assert!(callback.current_targets().unwrap().is_empty());
+    }
+}
+
+#[gpui::test]
+fn eq_visible_membership_focus_off_owner_changes_and_removal_use_one_real_control_channel(
     cx: &mut TestAppContext,
 ) {
     let (service, _, track, first) = fixture(false);
@@ -559,58 +911,72 @@ fn eq_two_device_selection_focus_off_and_removed_targets_use_one_real_control_ch
         .unwrap();
     let event = receive_service_event(&service);
     let Created::Track(other) = event.created.unwrap() else {
-        panic!()
+        panic!("track");
     };
-    let state = event.state;
-    let original = state.project.clone();
-    let (handle, editor, _root) = bounded_window(cx, service, state, track);
+    let original = event.state.project.clone();
+    let (handle, editor, _root) = bounded_window(cx, service, event.state, track);
     let (control, mut callback) = hex_audio::spectrum_target::channel();
-    editor.update(cx, |view, cx| {
-        view.device_panel.eq_spectrum.test_channel = Some(control);
+    editor.update(cx, |v, cx| {
+        v.device_panel.eq_spectrum.test_channel = Some(control);
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, _| window.activate_window());
-    visual.simulate_resize(size(px(1800.0), px(650.0)));
+    visual.simulate_resize(size(px(3200.0), px(650.0)));
     visual.run_until_parked();
     let desired = |editor: &Entity<EditorView>, cx: &TestAppContext| {
-        editor.read_with(cx, |view, _| {
-            view.device_panel
+        editor.read_with(cx, |v, _| {
+            *v.device_panel
                 .eq_spectrum
                 .test_channel
                 .as_ref()
                 .unwrap()
-                .desired()
+                .desired_targets()
         })
     };
-    assert!(
-        desired(&editor, cx).is_none(),
-        "passive mounting cannot select a tap"
+    let admit =
+        |editor: &Entity<EditorView>,
+         cx: &mut TestAppContext,
+         callback: &mut hex_audio::spectrum_target::SpectrumTargetCallback| {
+            callback.begin_block();
+            editor.update(cx, |v, _| {
+                v.device_panel
+                    .eq_spectrum
+                    .test_channel
+                    .as_mut()
+                    .unwrap()
+                    .retry_pending();
+            });
+            callback.begin_block();
+        };
+    let initial = desired(&editor, cx);
+    assert_eq!(
+        initial.len(),
+        2,
+        "mounted enabled EQs do not wait for selection"
     );
-    // Scroll the real horizontal chain: the second sidebar can lie beyond
-    // the viewport even though its overscanned card has debug bounds.
-    editor.update(cx, |view, cx| {
-        view.device_panel
-            .chain_window
-            .scroll
-            .set_offset(point(px(-1200.0), px(0.0)));
-        cx.notify();
+    editor.read_with(cx, |v, _| {
+        assert!(
+            v.device_panel.selected_device.is_none(),
+            "mounting never selects a card"
+        )
     });
-    visual.run_until_parked();
+    admit(&editor, cx, &mut callback);
     let hover = visual
         .debug_bounds(selector("eq8-spectrum", second))
         .unwrap();
     visual.simulate_mouse_move(hover.center(), None, Modifiers::default());
     visual.run_until_parked();
-    assert!(
-        desired(&editor, cx).is_none(),
-        "hover cannot choose capture"
+    assert_eq!(
+        desired(&editor, cx),
+        initial,
+        "hover does not change membership"
     );
-    // The real channel accepts valid IDs, while UI custody rejects mismatched
-    // owner/project context before it can be presented as current.
+    // Wrong owner and generation cannot survive reconciliation. Restoring the
+    // visible set is distinct from preserving the rejected foreign token.
     for (owner, generation_offset) in [(other.value(), 0), (track.value(), 1)] {
-        editor.update(cx, |view, cx| {
-            view.device_panel
+        editor.update(cx, |v, cx| {
+            v.device_panel
                 .eq_spectrum
                 .test_channel
                 .as_mut()
@@ -621,7 +987,7 @@ fn eq_two_device_selection_focus_off_and_removed_targets_use_one_real_control_ch
                         first.value(),
                         EQ_TYPE_ID,
                     ),
-                    view.project_generation + generation_offset,
+                    v.project_generation + generation_offset,
                     1,
                     48_000,
                 )
@@ -629,133 +995,70 @@ fn eq_two_device_selection_focus_off_and_removed_targets_use_one_real_control_ch
             cx.notify();
         });
         visual.run_until_parked();
-        assert!(
-            desired(&editor, cx).is_none(),
-            "invalid context must retire"
-        );
+        let restored = desired(&editor, cx);
+        assert_eq!(restored.len(), 2);
+        assert!(restored.iter().all(|(_, t)| t.identity.owner
+            == hex_engine::ProcessorChainOwner::Track(track.value())
+            && t.project_generation == editor.read_with(cx, |v, _| v.project_generation)));
+        admit(&editor, cx, &mut callback);
     }
-    // Real graph/card focus entry, not a synthetic selected-device assignment.
-    let focus = editor.update(cx, |view, cx| {
-        view.device_panel.chain_window.focus(first, cx)
-    });
-    visual.update(|window, _| focus.focus(window));
-    visual.run_until_parked();
-    let actual_focus = visual.update(|window, cx| focus.contains_focused(window, cx));
-    assert!(actual_focus, "fixture must actually focus the first card");
-    editor.read_with(cx, |view, _| {
-        assert_eq!(
-            view.device_panel.selected_device,
-            Some(first),
-            "actual card focus must deliver explicit selection"
-        )
-    });
-    let first_target = desired(&editor, cx).expect("first focused eq defaults on");
-    assert_eq!(first_target.identity.device_id, first.value());
-    callback.begin_block();
-    assert_eq!(callback.current(), Some(first_target));
-    let focus = editor.update(cx, |view, cx| {
-        view.device_panel.chain_window.focus(second, cx)
-    });
-    visual.update(|window, _| focus.focus(window));
-    visual.run_until_parked();
-    let second_target = desired(&editor, cx).expect("second focus follows selection");
-    assert_eq!(second_target.identity.device_id, second.value());
-    assert_ne!(first_target.token, second_target.token);
-    assert!(
-        callback.current().is_none(),
-        "old callback tap invalidates immediately"
-    );
-    callback.begin_block();
-    assert_eq!(callback.current(), Some(second_target));
-    let toggle = visual
-        .debug_bounds(selector("eq8-spectrum", second))
-        .unwrap();
-    let viewport = visual.update(|window, _| window.viewport_size());
-    assert!(
-        toggle.center().x >= px(0.0) && toggle.center().x < viewport.width,
-        "actual Spectrum click must be visible: {toggle:?} in {viewport:?}"
-    );
-    visual.simulate_click(toggle.center(), Modifiers::default());
-    visual.run_until_parked();
-    assert!(desired(&editor, cx).is_none());
-    assert!(!editor.read_with(cx, |view, _| {
-        eq_panel::spectrum_intent_for_test(view, second).0
-    }));
-    editor.update(cx, |view, cx| {
-        view.selected_track = Some(other);
-        cx.notify();
-    });
-    visual.run_until_parked();
-    editor.update(cx, |view, cx| {
-        view.selected_track = Some(track);
-        cx.notify();
-    });
-    visual.run_until_parked();
-    assert!(
-        !editor.read_with(cx, |view, _| eq_panel::spectrum_intent_for_test(
-            view, second
-        )
-        .0),
-        "explicit Off survives actual owner/panel replacement"
-    );
-    editor.update(cx, |view, cx| {
-        view.device_panel
-            .chain_window
-            .scroll
-            .set_offset(point(px(-1200.0), px(0.0)));
-        cx.notify();
-    });
-    visual.run_until_parked();
-    let focus = editor.update(cx, |view, cx| {
-        view.device_panel.chain_window.focus(first, cx)
-    });
-    visual.update(|window, _| focus.focus(window));
-    visual.run_until_parked();
-    assert_eq!(
-        desired(&editor, cx).unwrap().identity.device_id,
-        first.value()
-    );
-    let focus = editor.update(cx, |view, cx| {
-        view.device_panel.chain_window.focus(second, cx)
-    });
-    visual.update(|window, _| focus.focus(window));
-    visual.run_until_parked();
-    assert!(
-        desired(&editor, cx).is_none(),
-        "explicit Off survives focus round trip"
-    );
+    let accepted = desired(&editor, cx);
+    for device in [first, second] {
+        let focus = editor.update(cx, |v, cx| v.device_panel.chain_window.focus(device, cx));
+        visual.update(|window, _| focus.focus(window));
+        visual.run_until_parked();
+        assert_eq!(desired(&editor, cx), accepted);
+        assert_eq!(callback.current_targets(), Some(&accepted));
+        editor.read_with(cx, |v, _| {
+            assert_eq!(v.device_panel.selected_device, Some(device))
+        });
+    }
     let toggle = visual
         .debug_bounds(selector("eq8-spectrum", second))
         .unwrap();
     visual.simulate_click(toggle.center(), Modifiers::default());
     visual.run_until_parked();
-    assert_eq!(
-        desired(&editor, cx).unwrap().identity.device_id,
-        second.value()
+    admit(&editor, cx, &mut callback);
+    let remaining = desired(&editor, cx);
+    assert_eq!(remaining.len(), 1);
+    let first_identity = hex_engine::PostNodeIdentity::new(
+        hex_engine::ProcessorChainOwner::Track(track.value()),
+        first.value(),
+        EQ_TYPE_ID,
     );
-    editor.read_with(cx, |view, _| {
-        assert!(view.audio.is_none());
-        assert_eq!(view.state.as_ref().unwrap().project, original);
-        assert!(view.pending_requests.is_empty());
+    assert_eq!(
+        remaining.find(first_identity),
+        accepted.find(first_identity)
+    );
+    editor.read_with(cx, |v, _| {
+        assert!(!eq_panel::spectrum_intent_for_test(v, second).0);
+        assert_eq!(v.state.as_ref().unwrap().project, original);
+        assert!(v.pending_requests.is_empty());
     });
-    // Actual canonical removal: retained target must be retired, never rebound
-    // by a removed panel's subscription or an obsolete frame.
-    editor.update(cx, |view, cx| {
-        view.enqueue_device_barrier(Request::Edit(Command::RemoveDevice(second)));
-        cx.notify();
+    for owner in [other, track] {
+        editor.update(cx, |v, cx| {
+            v.selected_track = Some(owner);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        admit(&editor, cx, &mut callback);
+        assert_eq!(desired(&editor, cx).len(), usize::from(owner == track));
+    }
+    editor.read_with(cx, |v, _| {
+        assert!(
+            !eq_panel::spectrum_intent_for_test(v, second).0,
+            "explicit Off survives owner changes"
+        )
     });
-    pump_until(&editor, cx, |view| {
-        settled(view)
-            && view
-                .state
-                .as_ref()
-                .unwrap()
-                .project
-                .device(second)
-                .is_none()
+    editor.update(cx, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::RemoveDevice(first))))
+    });
+    pump_until(&editor, cx, |v| {
+        settled(v) && v.state.as_ref().unwrap().project.device(first).is_none()
     });
     visual.run_until_parked();
-    assert!(desired(&editor, cx).is_none());
+    admit(&editor, cx, &mut callback);
+    assert!(desired(&editor, cx).is_empty());
     assert!(callback.current().is_none());
 }
 
@@ -802,7 +1105,7 @@ fn eq_analyzer_status_closed_public_client_is_visible_without_changing_intent(
             Some("spectrum unavailable: audio output is closed")
         );
         assert!(eq_panel::spectrum_intent_for_test(view, device).0);
-        assert!(view.device_panel.spectrum_result.is_none());
+        assert!(view.device_panel.spectrum_results.is_empty());
         assert!(view.audio.is_none());
         assert_eq!(view.state.as_ref().unwrap().project, original);
         assert!(view.pending_requests.is_empty());
@@ -815,7 +1118,9 @@ fn eq_analyzer_status_closed_public_client_is_visible_without_changing_intent(
 }
 
 #[gpui::test]
-fn eq_analyzer_status_off_selection_clears_only_analyzer_waiting(cx: &mut TestAppContext) {
+fn eq_analyzer_off_focus_retains_other_waiting_intent_and_unrelated_errors(
+    cx: &mut TestAppContext,
+) {
     let (service, _, track, first) = fixture(false);
     service
         .submit(Request::AddNativeDevice {
@@ -880,9 +1185,10 @@ fn eq_analyzer_status_off_selection_clears_only_analyzer_waiting(cx: &mut TestAp
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(view.device_panel.selected_device, Some(second));
-        assert!(
-            view.device_panel.message.is_none(),
-            "intentionally Off is not waiting"
+        assert_eq!(
+            view.device_panel.message.as_deref(),
+            Some("spectrum waits for available current project audio"),
+            "focus on an Off EQ cannot hide another mounted EQ's pending intent"
         );
     });
     editor.update(cx, |view, cx| {
@@ -896,7 +1202,7 @@ fn eq_analyzer_status_off_selection_clears_only_analyzer_waiting(cx: &mut TestAp
             Some("could not save project")
         );
         assert!(!eq_panel::spectrum_intent_for_test(view, second).0);
-        assert!(view.device_panel.spectrum_result.is_none());
+        assert!(view.device_panel.spectrum_results.is_empty());
         assert!(view.audio.is_none());
         assert_eq!(view.state.as_ref().unwrap().project, original);
         assert!(view.pending_requests.is_empty());
@@ -1080,7 +1386,7 @@ fn eq_production_rail_screenshot_sizes_keep_controls_disjoint_and_slope_popup_op
 }
 
 #[gpui::test]
-fn eq_review_selection_of_non_eq_retires_actual_public_capture_target(cx: &mut TestAppContext) {
+fn eq_review_selection_of_non_eq_retains_visible_public_capture_target(cx: &mut TestAppContext) {
     let (service, _, track, eq) = fixture(false);
     service
         .submit(Request::AddNativeDevice {
@@ -1127,23 +1433,24 @@ fn eq_review_selection_of_non_eq_retires_actual_public_capture_target(cx: &mut T
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(view.device_panel.selected_device, Some(utility));
-        assert!(
+        assert_eq!(
             view.device_panel
                 .eq_spectrum
                 .test_channel
                 .as_ref()
                 .unwrap()
-                .desired()
-                .is_none(),
-            "non-eq selection must retire the previous eq capture"
+                .desired(),
+            Some(target),
+            "selecting another card cannot retire a mounted EQ's capture"
         );
-        assert!(view.device_panel.spectrum_result.is_none());
+        assert!(view.device_panel.spectrum_results.is_empty());
         assert_eq!(view.state.as_ref().unwrap().project, before);
         assert!(view.audio.is_none());
     });
-    assert!(
-        callback.current().is_none(),
-        "retirement invalidates the accepted tap immediately"
+    assert_eq!(
+        callback.current(),
+        Some(target),
+        "the admitted EQ remains active"
     );
 }
 
@@ -1424,7 +1731,7 @@ fn eq_status_review_setup_rate_and_pending_contexts_remain_distinct(cx: &mut Tes
                     .is_none()
             );
             assert_eq!(view.state.as_ref().unwrap().project, before);
-            assert!(view.device_panel.spectrum_result.is_none());
+            assert!(view.device_panel.spectrum_results.is_empty());
         });
         editor.update(cx, |view, _| view.audio.take());
         drop(backend);
@@ -1590,22 +1897,28 @@ fn eq_status_review_off_sparse_preserves_legacy_public_target_and_clears_own(
     visual.run_until_parked();
     callback.begin_block();
     let own = callback
-        .current()
-        .expect("deliberate sparse On chooses own target");
+        .current_targets()
+        .unwrap()
+        .iter()
+        .find_map(|(_, target)| (target.identity.device_id == sparse.value()).then_some(target))
+        .expect("sparse On adds an independent target");
+    assert_eq!(callback.current_targets().unwrap().len(), 2);
     assert_eq!(own.identity.device_id, sparse.value());
     assert_eq!(own.identity.device_type, EQ_TYPE_ID);
     visual.simulate_click(toggle.center(), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(
-            view.device_panel
-                .eq_spectrum
-                .test_channel
-                .as_ref()
-                .unwrap()
-                .desired()
-                .is_none(),
-            "own Off retires own target"
+        let targets = view
+            .device_panel
+            .eq_spectrum
+            .test_channel
+            .as_ref()
+            .unwrap()
+            .desired_targets();
+        assert_eq!(targets.len(), 1, "Off removes only its own target");
+        assert_eq!(
+            targets.find(identity).map(|(_, target)| target),
+            Some(legacy_target)
         );
         assert!(view.audio.is_none());
         assert_eq!(view.state.as_ref().unwrap().project, before);
@@ -1682,7 +1995,7 @@ fn recovery_retires_endpoint_status(cx: &mut TestAppContext, setup_failure: bool
                 "retired endpoint: setup={setup_failure}, unrelated={unrelated}"
             );
             assert_eq!(view.state.as_ref().unwrap().project, before);
-            assert!(view.device_panel.spectrum_result.is_none());
+            assert!(view.device_panel.spectrum_results.is_empty());
             assert!(eq_panel::spectrum_intent_for_test(view, device).0);
         });
         drop(backend);

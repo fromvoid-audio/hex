@@ -110,7 +110,7 @@ fn cell_height(parameter: &NativeDeviceParameterView) -> f32 {
 /// Reconcile all cached descriptors, including horizontally/vertically hidden ones.
 /// This never creates an entity for a parameter that has not mounted.
 pub(super) fn reconcile(view: &mut EditorView, cx: &mut Context<EditorView>) {
-    let mut descriptors: HashMap<_, _> = view
+    let descriptors: HashMap<_, _> = view
         .device_panel
         .views
         .iter()
@@ -134,23 +134,6 @@ pub(super) fn reconcile(view: &mut EditorView, cx: &mut Context<EditorView>) {
             })
         })
         .collect();
-    // Host input/output gain are not device-owned row descriptors. Preserve
-    // both cached entities even for unavailable DSP metadata, until the actual
-    // owner/type retires.
-    for (device, (class, state, _)) in &view.device_panel.views {
-        for descriptor in [
-            hex_engine::DEVICE_INPUT_GAIN,
-            hex_engine::DEVICE_OUTPUT_GAIN,
-        ] {
-            descriptors.insert(
-                ParameterKey {
-                    device: *device,
-                    parameter: descriptor.id,
-                },
-                (*class, state.type_id(), descriptor, true, true),
-            );
-        }
-    }
     let stale: Vec<_> =
         view.device_panel
             .controls
@@ -212,9 +195,11 @@ pub(super) fn pinned(view: &EditorView, key: ParameterKey, window: &Window, cx: 
                     first,
                     second,
                 } => device == key.device && (first == key.parameter || second == key.parameter),
-                GestureTarget::DeviceParameterSnapshot { device } => device == key.device,
+                GestureTarget::DeviceParameterSnapshot { device }
+                | GestureTarget::EqNodeCreation { device } => device == key.device,
                 GestureTarget::ReturnSend { .. }
                 | GestureTarget::TrackGain { .. }
+                | GestureTarget::TrackGains { .. }
                 | GestureTarget::TrackBalance { .. }
                 | GestureTarget::ReturnGain { .. } => false,
             })

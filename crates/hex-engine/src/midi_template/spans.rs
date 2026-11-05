@@ -1,11 +1,16 @@
 //! Prepared, stateless source-note spans for ongoing MIDI instruments.
 use super::{
-    MIDI_TEMPLATE_QUERY_FRAMES, MidiTemplateError, PreparedMidiSourceTemplate, SourceSpan,
-    require_positive_frame_advance,
+    MIDI_TEMPLATE_QUERY_FRAMES, MidiTemplateError, PreparedMidiSourceTemplate, SessionMidiOrigin,
+    SourceSpan, require_positive_frame_advance,
 };
+mod current_sampler;
 mod density;
+mod gates;
+mod volume;
 use crate::{MidiTiming, PreparedTempoMap, PreparedTrackMix, midi_note_bank::PreparedMidiNote};
-use density::admit_voice_density;
+pub(crate) use current_sampler::CurrentSamplerEventCustody;
+use density::{admit_held_voice_density, admit_voice_density};
+pub(crate) use gates::PreparedMidiGateTemplate;
 use hex_devices::SineTable;
 use hex_lattice::{PreparedAnalyticNote, PreparedNativeInstrument};
 use hex_project::{BeatTime, TempoMap};
@@ -32,6 +37,16 @@ pub(crate) fn admit_transport_loop_density(
     release_raw: u64,
 ) -> Result<usize, MidiTemplateError> {
     density::admit_transport_loop_density(intro, repeats, first_pass, period, release_raw)
+}
+
+/// Held-only transport-loop density for instruments that steal releasing voices.
+pub(crate) fn admit_held_transport_loop_density(
+    intro: &[TransportDensitySpan],
+    repeats: &[TransportDensitySpan],
+    first_pass: u64,
+    period: u64,
+) -> Result<usize, MidiTemplateError> {
+    density::admit_held_transport_loop_density(intro, repeats, first_pass, period)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -64,6 +79,8 @@ pub struct PreparedMidiInstrumentTemplate {
     sample_rate: u32,
     admitted_max_micro_bpm: u64,
     first_pass: u64,
+    intro_iteration: u64,
+    repeat_iteration: u64,
     period: Option<u64>,
     release_raw: u64,
     intro: Vec<VoiceSpan>,
@@ -73,6 +90,7 @@ pub struct PreparedMidiInstrumentTemplate {
     intro_root: Option<usize>,
     repeat_root: Option<usize>,
     max_active_voices: usize,
+    admitted_voices: usize,
     max_query_onsets: usize,
     max_span_hits: usize,
     max_query_visits: usize,
@@ -153,6 +171,9 @@ pub(crate) struct MidiOccurrenceSuppression {
     velocity: u8,
     kind: u8,
     padding: [u8; 4],
+    // Only kind2 carries an admitted retained-prefix gate cut. Separate from
+    // suppression expiry: merging expiry must never delay the NoteOff.
+    gate_cutoff_frame: u64,
 }
 
 impl MidiOccurrenceSuppression {
@@ -174,6 +195,7 @@ impl MidiOccurrenceSuppression {
             velocity: 0,
             kind: 0,
             padding: [0; 4],
+            gate_cutoff_frame: 0,
         }
     }
 
@@ -193,12 +215,40 @@ impl MidiOccurrenceSuppression {
         }
     }
 
+    pub(crate) const fn mutable_shortening(
+        signature: crate::mutable_instrument::MutableOccurrenceSignature,
+        until_frame: u64,
+        gate_cutoff_frame: u64,
+    ) -> Self {
+        Self {
+            kind: 2,
+            gate_cutoff_frame,
+            ..Self::mutable(signature, until_frame)
+        }
+    }
+    pub(crate) const fn gate_cutoff_frame(self) -> Option<u64> {
+        if self.kind == 2 {
+            Some(self.gate_cutoff_frame)
+        } else {
+            None
+        }
+    }
+    pub(crate) fn merge_expiry_and_cutoff(&mut self, entry: Self) {
+        self.until_frame = self.until_frame.max(entry.until_frame);
+        if let Some(cutoff) = entry.gate_cutoff_frame() {
+            self.gate_cutoff_frame = self
+                .gate_cutoff_frame()
+                .map_or(cutoff, |old| old.min(cutoff));
+            self.kind = 2;
+        }
+    }
+
     /// Exact original value, including every key/beat/MIDI bit. No allocation
     /// or provider lookup, and no integer/beat/velocity precision reduction.
     pub(crate) const fn mutable_signature(
         self,
     ) -> Option<crate::mutable_instrument::MutableOccurrenceSignature> {
-        if self.kind == 1 {
+        if self.kind == 1 || self.kind == 2 {
             Some(
                 crate::mutable_instrument::MutableOccurrenceSignature::from_parts(
                     crate::mutable_instrument::MutableOccurrenceKey {
@@ -330,6 +380,19 @@ impl MidiReleaseVoice {
         retained: &[Option<std::sync::Arc<crate::shared_analytic::SharedContextOwner>>],
         transitions: &[Option<hex_lattice::AnalyticContinuation>],
     ) -> Result<Option<[f32; 2]>, crate::Invalid> {
+        self.sample_at_with_clock(frame, frame, contexts, retained, transitions)
+    }
+
+    /// Source age may advance while transport is paused. The parameter clock
+    /// remains musical time so a held revision ramp freezes until Play resumes.
+    pub(crate) fn sample_at_with_clock(
+        &self,
+        frame: u64,
+        parameter_frame: u64,
+        contexts: &crate::shared_analytic::SharedAnalyticContextTable,
+        retained: &[Option<std::sync::Arc<crate::shared_analytic::SharedContextOwner>>],
+        transitions: &[Option<hex_lattice::AnalyticContinuation>],
+    ) -> Result<Option<[f32; 2]>, crate::Invalid> {
         if frame < self.start_frame || frame >= self.end_frame {
             return Ok(None);
         }
@@ -338,7 +401,7 @@ impl MidiReleaseVoice {
                 contexts,
                 retained,
                 transitions,
-                frame,
+                parameter_frame,
                 frame - self.start_frame,
                 self.gate_end_frame - self.start_frame,
             )
@@ -383,6 +446,17 @@ impl MidiReleaseVoice {
             end_frame,
             voice: self.voice,
         }))
+    }
+
+    /// End this voice no later than performance `frame`, a loop wrap.
+    /// Unedited looped playback stops an occurrence at the wrap, so a voice
+    /// released before it must not sound over the next pass.
+    pub(crate) fn ending_by(self, frame: u64) -> Self {
+        Self {
+            gate_end_frame: self.gate_end_frame.min(frame),
+            end_frame: self.end_frame.min(frame),
+            ..self
+        }
     }
 
     pub(crate) fn from_finite_span(
@@ -495,7 +569,7 @@ impl MidiReleaseVoice {
 /// Borrowed timing and oscillator context for additive ongoing-source renders.
 /// The context owns no buffers or graph state and performs no preparation.
 pub struct MidiInstrumentRenderContext<'a, T: MidiTiming + ?Sized = PreparedTempoMap> {
-    launch: BeatTime,
+    origin: SessionMidiOrigin,
     timing: &'a T,
     onset_floor_exclusive: Option<BeatTime>,
     suppressions: &'a [MidiOccurrenceSuppression],
@@ -511,9 +585,14 @@ impl<T: MidiTiming + ?Sized> Clone for MidiInstrumentRenderContext<'_, T> {
 }
 
 impl<'a, T: MidiTiming + ?Sized> MidiInstrumentRenderContext<'a, T> {
-    pub fn new(launch: BeatTime, timing: &'a T, _table: &'a SineTable) -> Self {
+    pub fn new(launch: BeatTime, timing: &'a T, table: &'a SineTable) -> Self {
+        Self::with_origin(SessionMidiOrigin::launch(launch), timing, table)
+    }
+    /// Keep timing and output span metadata on the global performance clock;
+    /// only the elapsed source origin changes, with no historical-note chase.
+    pub fn with_origin(origin: SessionMidiOrigin, timing: &'a T, _table: &'a SineTable) -> Self {
         Self {
-            launch,
+            origin,
             timing,
             onset_floor_exclusive: None,
             suppressions: &[],
@@ -609,6 +688,71 @@ impl MidiSpanBuffer {
 }
 
 impl PreparedMidiInstrumentTemplate {
+    pub(crate) fn readmission_quote(&self) -> Result<(usize, usize), MidiTemplateError> {
+        let spans = self
+            .intro
+            .len()
+            .checked_add(self.repeats.len())
+            .ok_or(MidiTemplateError::ArithmeticOverflow)?;
+        let retained = std::mem::size_of::<Self>()
+            .checked_add(
+                spans
+                    .checked_mul(
+                        std::mem::size_of::<VoiceSpan>() + std::mem::size_of::<IntervalNode>(),
+                    )
+                    .ok_or(MidiTemplateError::ArithmeticOverflow)?,
+            )
+            .ok_or(MidiTemplateError::ArithmeticOverflow)?;
+        let scratch = density::current_sampler_workspace_quote(spans)
+            .map_err(|_| MidiTemplateError::ArithmeticOverflow)?;
+        Ok((retained, scratch))
+    }
+
+    pub(crate) fn retained_readmission_bytes(&self) -> Option<usize> {
+        std::mem::size_of::<Self>()
+            .checked_add(
+                self.intro
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<VoiceSpan>())?,
+            )?
+            .checked_add(
+                self.repeats
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<VoiceSpan>())?,
+            )?
+            .checked_add(
+                self.intro_nodes
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<IntervalNode>())?,
+            )?
+            .checked_add(
+                self.repeat_nodes
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<IntervalNode>())?,
+            )
+    }
+
+    pub(crate) fn reprepare_for_source_on_control(
+        &self,
+        source: &PreparedMidiSourceTemplate,
+        limits: Option<crate::midi_compile::MutableInstrumentLimits>,
+    ) -> Result<Self, MidiTemplateError> {
+        let result = Self::prepare_with_bank_mode(
+            source,
+            std::sync::Arc::clone(&self.bank),
+            std::sync::Arc::clone(&self.shared_contexts),
+            self.event_source.then_some(self.release_frames),
+            self.event_source,
+            limits,
+        )?;
+        if result
+            .retained_readmission_bytes()
+            .is_none_or(|bytes| bytes > self.readmission_quote().map_or(0, |quote| quote.0))
+        {
+            return Err(MidiTemplateError::Allocation);
+        }
+        Ok(result)
+    }
     /// Prepare original sine voices and interval indexes from an already
     /// admitted ongoing source template. Authored notes are never rescanned.
     pub fn prepare(
@@ -741,6 +885,7 @@ impl PreparedMidiInstrumentTemplate {
             source.period,
             release_raw,
         )?;
+        let mut admitted_voices = max_active_voices;
         if let Some(limits) = mutable_limits {
             let max_events = limits
                 .max_events_per_query
@@ -753,7 +898,14 @@ impl PreparedMidiInstrumentTemplate {
             let max_voices = limits
                 .max_active_occurrences
                 .min(crate::midi_compile::MAX_SIMULTANEOUS_VOICES_PER_TRACK);
-            if max_active_voices > max_voices {
+            // A stealing instrument frees releasing slots on demand, so its
+            // slots bound held density only; releases still bound the proof
+            // ledger and span buffers through `max_active_voices`.
+            if limits.steals_releasing_voices {
+                admitted_voices =
+                    admit_held_voice_density(&intro, &repeats, source.first_pass, source.period)?;
+            }
+            if admitted_voices > max_voices {
                 return Err(MidiTemplateError::InvalidSource(
                     "mutable midi source exceeds instrument voice capacity",
                 ));
@@ -805,6 +957,8 @@ impl PreparedMidiInstrumentTemplate {
             sample_rate: source.sample_rate,
             admitted_max_micro_bpm: source.admitted_max_micro_bpm,
             first_pass: source.first_pass,
+            intro_iteration: source.intro_iteration,
+            repeat_iteration: source.repeat_iteration,
             period: source.period,
             release_raw,
             intro,
@@ -814,6 +968,7 @@ impl PreparedMidiInstrumentTemplate {
             intro_root,
             repeat_root,
             max_active_voices,
+            admitted_voices,
             max_query_onsets,
             max_span_hits,
             max_query_visits: if has_sources {
@@ -836,6 +991,13 @@ impl PreparedMidiInstrumentTemplate {
 
     pub fn max_active_voices(&self) -> usize {
         self.max_active_voices
+    }
+
+    /// Voice slots this template occupies in its admitted instrument: held
+    /// density for an instrument that steals releasing voices, otherwise
+    /// `max_active_voices` (releases included).
+    pub(crate) fn admitted_voices(&self) -> usize {
+        self.admitted_voices
     }
 
     pub(crate) fn note_bank(&self) -> &std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank> {
@@ -881,12 +1043,30 @@ impl PreparedMidiInstrumentTemplate {
         end_frame: u64,
         buffer: &mut MidiSpanBuffer,
     ) -> Result<(), MidiTemplateError> {
-        self.query_with_onset_floor(launch, timing, start_frame, end_frame, buffer, None)
+        self.query_with_origin(
+            SessionMidiOrigin::launch(launch),
+            timing,
+            start_frame,
+            end_frame,
+            buffer,
+        )
     }
 
-    pub(crate) fn query_after_onset<T: MidiTiming + ?Sized>(
+    /// Query spans from an inclusive elapsed cue without shifting MidiTiming.
+    pub fn query_with_origin<T: MidiTiming + ?Sized>(
         &self,
-        launch: BeatTime,
+        origin: SessionMidiOrigin,
+        timing: &T,
+        start_frame: u64,
+        end_frame: u64,
+        buffer: &mut MidiSpanBuffer,
+    ) -> Result<(), MidiTemplateError> {
+        self.query_with_onset_floor(origin, timing, start_frame, end_frame, buffer, None)
+    }
+
+    pub(crate) fn query_after_onset_with_origin<T: MidiTiming + ?Sized>(
+        &self,
+        origin: SessionMidiOrigin,
         timing: &T,
         start_frame: u64,
         end_frame: u64,
@@ -894,7 +1074,7 @@ impl PreparedMidiInstrumentTemplate {
         onset_floor_exclusive: BeatTime,
     ) -> Result<(), MidiTemplateError> {
         self.query_with_onset_floor(
-            launch,
+            origin,
             timing,
             start_frame,
             end_frame,
@@ -905,7 +1085,7 @@ impl PreparedMidiInstrumentTemplate {
 
     fn query_with_onset_floor<T: MidiTiming + ?Sized>(
         &self,
-        launch: BeatTime,
+        origin: SessionMidiOrigin,
         timing: &T,
         start_frame: u64,
         end_frame: u64,
@@ -913,8 +1093,8 @@ impl PreparedMidiInstrumentTemplate {
         onset_floor_exclusive: Option<BeatTime>,
     ) -> Result<(), MidiTemplateError> {
         buffer.len = 0;
-        let result = self.query_inner(
-            launch,
+        let result = self.query_view().query_inner(
+            origin,
             timing,
             start_frame,
             end_frame,
@@ -932,6 +1112,26 @@ impl PreparedMidiInstrumentTemplate {
     pub fn render<T: MidiTiming + ?Sized>(
         &self,
         launch: BeatTime,
+        timing: &T,
+        table: &SineTable,
+        start_frame: u64,
+        output: &mut [[f32; 2]],
+        buffer: &mut MidiSpanBuffer,
+    ) -> Result<(), MidiTemplateError> {
+        self.render_with_origin(
+            SessionMidiOrigin::launch(launch),
+            timing,
+            table,
+            start_frame,
+            output,
+            buffer,
+        )
+    }
+
+    /// Direct analytic render from a source-elapsed cue on global timing.
+    pub fn render_with_origin<T: MidiTiming + ?Sized>(
+        &self,
+        origin: SessionMidiOrigin,
         timing: &T,
         _table: &SineTable,
         start_frame: u64,
@@ -956,7 +1156,7 @@ impl PreparedMidiInstrumentTemplate {
             buffer.len = 0;
             return Err(MidiTemplateError::ArithmeticOverflow);
         };
-        if let Err(error) = self.query(launch, timing, start_frame, end, buffer) {
+        if let Err(error) = self.query_with_origin(origin, timing, start_frame, end, buffer) {
             output.fill([0.0; 2]);
             return Err(error);
         }
@@ -997,11 +1197,62 @@ impl PreparedMidiInstrumentTemplate {
         output: &mut [[f32; 2]],
         buffer: &mut MidiSpanBuffer,
     ) -> Result<(), MidiTemplateError> {
+        self.prepare_additive_spans(context, start_frame, output.len(), buffer)?;
+        self.render_additive_spans(context, mix, start_frame, output, buffer, None)
+    }
+
+    /// Clip-owned gain uses the same effective global clock and source origin
+    /// as the note query. Template-only public rendering deliberately stays unity.
+    pub(crate) fn render_additive_with_volume<
+        T: crate::prepared_tempo::MidiTempoBreaks + ?Sized,
+    >(
+        &self,
+        context: MidiInstrumentRenderContext<'_, T>,
+        mix: PreparedTrackMix,
+        start_frame: u64,
+        output: &mut [[f32; 2]],
+        buffer: &mut MidiSpanBuffer,
+        program: Option<&crate::midi_clip_volume::PreparedMidiClipVolume>,
+    ) -> Result<(), MidiTemplateError> {
+        self.prepare_additive_spans(context, start_frame, output.len(), buffer)?;
+        if mix.muted() {
+            return Ok(());
+        }
+        // Query only actual voice windows, before touching the destination.
+        let gains = match program
+            .map(|program| {
+                volume::prepare_gains(
+                    program,
+                    context.origin,
+                    context.timing,
+                    start_frame,
+                    output.len(),
+                    buffer,
+                )
+            })
+            .transpose()
+        {
+            Ok(gains) => gains.flatten(),
+            Err(error) => {
+                buffer.len = 0;
+                return Err(error);
+            }
+        };
+        self.render_additive_spans(context, mix, start_frame, output, buffer, gains.as_ref())
+    }
+
+    fn prepare_additive_spans<T: MidiTiming + ?Sized>(
+        &self,
+        context: MidiInstrumentRenderContext<'_, T>,
+        start_frame: u64,
+        frames: usize,
+        buffer: &mut MidiSpanBuffer,
+    ) -> Result<(), MidiTemplateError> {
         if self.event_source {
             buffer.len = 0;
             return Err(MidiTemplateError::MutableEventsNotAnalytic);
         }
-        let width = match u64::try_from(output.len()) {
+        let width = match u64::try_from(frames) {
             Ok(width) => width,
             Err(_) => {
                 buffer.len = 0;
@@ -1016,7 +1267,7 @@ impl PreparedMidiInstrumentTemplate {
             }
         };
         self.query_with_onset_floor(
-            context.launch,
+            context.origin,
             context.timing,
             start_frame,
             end_frame,
@@ -1024,12 +1275,25 @@ impl PreparedMidiInstrumentTemplate {
             context.onset_floor_exclusive,
         )?;
         buffer.suppress_carried(context.suppressions, start_frame);
+        Ok(())
+    }
+
+    fn render_additive_spans<T: MidiTiming + ?Sized>(
+        &self,
+        context: MidiInstrumentRenderContext<'_, T>,
+        mix: PreparedTrackMix,
+        start_frame: u64,
+        output: &mut [[f32; 2]],
+        buffer: &MidiSpanBuffer,
+        gains: Option<&[f64; MIDI_TEMPLATE_QUERY_FRAMES as usize]>,
+    ) -> Result<(), MidiTemplateError> {
         if mix.muted() {
             return Ok(());
         }
 
         for (frame_offset, output_frame) in output.iter_mut().enumerate() {
             let frame = start_frame + frame_offset as u64;
+            let gain = gains.map_or(1.0, |gains| gains[frame_offset]);
             for span in buffer.spans() {
                 if frame >= span.start_frame && frame < span.end_frame {
                     let Some(voice) = span.voice else { continue };
@@ -1047,289 +1311,24 @@ impl PreparedMidiInstrumentTemplate {
                                 "analytic continuation sample was refused",
                             )
                         })?;
+                    let contribution = if gain == 1.0 {
+                        contribution
+                    } else {
+                        [
+                            (f64::from(contribution[0]) * gain) as f32,
+                            (f64::from(contribution[1]) * gain) as f32,
+                        ]
+                    };
                     mix.add_frame(output_frame, contribution);
                 }
             }
         }
         Ok(())
     }
-
-    fn query_inner<T: MidiTiming + ?Sized>(
-        &self,
-        launch: BeatTime,
-        timing: &T,
-        start_frame: u64,
-        end_frame: u64,
-        buffer: &mut MidiSpanBuffer,
-        onset_floor_exclusive: Option<BeatTime>,
-    ) -> Result<(), MidiTemplateError> {
-        if start_frame > end_frame {
-            return Err(MidiTemplateError::InvalidFrameRange);
-        }
-        if end_frame - start_frame > MIDI_TEMPLATE_QUERY_FRAMES {
-            return Err(MidiTemplateError::QueryTooWide);
-        }
-        if timing.sample_rate() != self.sample_rate {
-            return Err(MidiTemplateError::TempoRateMismatch);
-        }
-        if timing.max_micro_bpm() > self.admitted_max_micro_bpm {
-            return Err(MidiTemplateError::TempoMapTooFast);
-        }
-        if start_frame == end_frame {
-            return Ok(());
-        }
-        let lower = timing
-            .beat_lower_bound_for_frame(start_frame)
-            .map_err(|_| MidiTemplateError::TempoConversion)?;
-        let upper = timing
-            .beat_lower_bound_for_frame(end_frame)
-            .map_err(|_| MidiTemplateError::TempoConversion)?;
-        if upper <= u128::from(launch.raw()) {
-            return Ok(());
-        }
-        if lower == TempoMap::BEAT_RANGE_SENTINEL {
-            return Err(MidiTemplateError::BeatDomainExhausted);
-        }
-        let launch_raw = u128::from(launch.raw());
-        let relative_start = lower.saturating_sub(launch_raw);
-        let relative_end = upper.saturating_sub(launch_raw);
-        if relative_start >= relative_end {
-            return Ok(());
-        }
-        let low = relative_start;
-        let high = relative_end;
-        let mut context = QueryContext {
-            launch_raw,
-            timing,
-            start_frame,
-            end_frame,
-            buffer,
-            visits: 0,
-            onset_floor_exclusive: onset_floor_exclusive.map(BeatTime::raw),
-        };
-        self.append_intervals(
-            &self.intro,
-            &self.intro_nodes,
-            self.intro_root,
-            0,
-            low,
-            high,
-            0,
-            &mut context,
-        )?;
-        if let Some(period) = self.period {
-            self.append_periods(low, high, period, &mut context)?;
-        }
-        context.buffer.slots[..context.buffer.len].sort_unstable_by_key(|span| {
-            span.map_or((u64::MAX, u64::MAX, u64::MAX, u64::MAX, u64::MAX), |span| {
-                (
-                    span.start_frame,
-                    span.track.value(),
-                    span.clip.value(),
-                    span.note.value(),
-                    span.iteration,
-                )
-            })
-        });
-        Ok(())
-    }
-
-    fn append_periods<T: MidiTiming + ?Sized>(
-        &self,
-        low: u128,
-        high: u128,
-        period: u64,
-        context: &mut QueryContext<'_, T>,
-    ) -> Result<(), MidiTemplateError> {
-        if self.repeats.is_empty() || high <= u128::from(self.first_pass) {
-            return Ok(());
-        }
-        let period = u128::from(period);
-        let first_pass = u128::from(self.first_pass);
-        let earliest_base = low.saturating_sub(period + u128::from(self.release_raw));
-        let first_iteration = if earliest_base <= first_pass {
-            0
-        } else {
-            (earliest_base - first_pass) / period
-        };
-        let last_iteration = (high - 1 - first_pass) / period;
-        if first_iteration > last_iteration {
-            return Ok(());
-        }
-        let count = last_iteration - first_iteration + 1;
-        if count > MIDI_SPAN_MAX_PERIOD_WINDOWS {
-            return Err(MidiTemplateError::SpanPeriodWorkBoundExceeded);
-        }
-        let mut iteration = first_iteration;
-        while iteration <= last_iteration {
-            let base = first_pass
-                .checked_add(
-                    iteration
-                        .checked_mul(period)
-                        .ok_or(MidiTemplateError::BeatDomainExhausted)?,
-                )
-                .ok_or(MidiTemplateError::BeatDomainExhausted)?;
-            let repeat_number = u64::try_from(iteration)
-                .map_err(|_| MidiTemplateError::BeatDomainExhausted)?
-                .checked_add(1)
-                .ok_or(MidiTemplateError::BeatDomainExhausted)?;
-            self.append_intervals(
-                &self.repeats,
-                &self.repeat_nodes,
-                self.repeat_root,
-                base,
-                low,
-                high,
-                repeat_number,
-                context,
-            )?;
-            iteration = iteration
-                .checked_add(1)
-                .ok_or(MidiTemplateError::BeatDomainExhausted)?;
-        }
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn append_intervals<T: MidiTiming + ?Sized>(
-        &self,
-        spans: &[VoiceSpan],
-        nodes: &[IntervalNode],
-        root: Option<usize>,
-        base: u128,
-        low: u128,
-        high: u128,
-        iteration: u64,
-        context: &mut QueryContext<'_, T>,
-    ) -> Result<(), MidiTemplateError> {
-        let Some(root) = root else {
-            return Ok(());
-        };
-        let mut stack = [0_usize; 64];
-        let mut stack_len = 1;
-        stack[0] = root;
-        while stack_len > 0 {
-            stack_len -= 1;
-            let node_index = stack[stack_len];
-            context.visits += 1;
-            if context.visits > MIDI_SPAN_MAX_QUERY_VISITS {
-                return Err(MidiTemplateError::SpanVisitBoundExceeded);
-            }
-            let node = nodes[node_index];
-            let span = spans[node.span];
-            let start = base
-                .checked_add(u128::from(span.start))
-                .ok_or(MidiTemplateError::BeatDomainExhausted)?;
-            let end = base
-                .checked_add(span.raw_end)
-                .ok_or(MidiTemplateError::BeatDomainExhausted)?;
-            if start < high && end > low {
-                self.push_span(span, base, iteration, context)?;
-            }
-            // The stored min-start/max-end aggregates prune the interval
-            // reporter on both sides of the raw query range. The admission
-            // proof bounds raw candidates before exact frame filtering.
-            let local_low = low.saturating_sub(base);
-            let local_high = high.saturating_sub(base);
-            let may_intersect = |child: usize| {
-                u128::from(nodes[child].min_start) < local_high && nodes[child].max_end > local_low
-            };
-            if let Some(left) = node.left.filter(|left| may_intersect(*left)) {
-                if stack_len >= stack.len() {
-                    return Err(MidiTemplateError::SpanVisitBoundExceeded);
-                }
-                stack[stack_len] = left;
-                stack_len += 1;
-            }
-            if let Some(right) = node.right.filter(|right| may_intersect(*right)) {
-                if stack_len >= stack.len() {
-                    return Err(MidiTemplateError::SpanVisitBoundExceeded);
-                }
-                stack[stack_len] = right;
-                stack_len += 1;
-            }
-        }
-        Ok(())
-    }
-
-    fn push_span<T: MidiTiming + ?Sized>(
-        &self,
-        span: VoiceSpan,
-        base: u128,
-        iteration: u64,
-        context: &mut QueryContext<'_, T>,
-    ) -> Result<(), MidiTemplateError> {
-        let start_relative = base
-            .checked_add(u128::from(span.start))
-            .ok_or(MidiTemplateError::BeatDomainExhausted)?;
-        let gate_relative = base
-            .checked_add(u128::from(span.gate_end))
-            .ok_or(MidiTemplateError::BeatDomainExhausted)?;
-        let start_raw = context
-            .launch_raw
-            .checked_add(start_relative)
-            .ok_or(MidiTemplateError::BeatDomainExhausted)?;
-        let gate_raw = context
-            .launch_raw
-            .checked_add(gate_relative)
-            .ok_or(MidiTemplateError::BeatDomainExhausted)?;
-        if context
-            .onset_floor_exclusive
-            .is_some_and(|floor| start_raw < u128::from(floor))
-        {
-            return Ok(());
-        }
-        let start_raw =
-            u64::try_from(start_raw).map_err(|_| MidiTemplateError::BeatDomainExhausted)?;
-        let gate_raw =
-            u64::try_from(gate_raw).map_err(|_| MidiTemplateError::BeatDomainExhausted)?;
-        let onset = context
-            .timing
-            .beat_to_frame(BeatTime::from_raw(start_raw))
-            .map_err(|_| MidiTemplateError::TempoConversion)?;
-        let gate_end = context
-            .timing
-            .beat_to_frame(BeatTime::from_raw(gate_raw))
-            .map_err(|_| MidiTemplateError::TempoConversion)?;
-        let voice =
-            if self.event_source {
-                None
-            } else {
-                Some(self.bank.sampler(span.sampler_index).ok_or(
-                    MidiTemplateError::InvalidSource("midi note sampler index is invalid"),
-                )?)
-            };
-        let end = gate_end
-            .checked_add(self.release_frames)
-            .ok_or(MidiTemplateError::ArithmeticOverflow)?;
-        if onset >= context.end_frame || end <= context.start_frame {
-            return Ok(());
-        }
-        if context.buffer.len >= MIDI_SPAN_BUFFER_CAPACITY {
-            return Err(MidiTemplateError::TooManySpans);
-        }
-        context.buffer.slots[context.buffer.len] = Some(MidiRenderSpan {
-            start_frame: onset,
-            gate_end_frame: gate_end,
-            end_frame: end,
-            onset_beat: BeatTime::from_raw(start_raw),
-            gate_end_beat: BeatTime::from_raw(gate_raw),
-            pitch: span.pitch,
-            channel: span.channel,
-            velocity: span.velocity,
-            track: self.track,
-            clip: self.clip,
-            note: span.note,
-            iteration,
-            voice,
-        });
-        context.buffer.len += 1;
-        Ok(())
-    }
 }
 
 struct QueryContext<'a, T: MidiTiming + ?Sized> {
-    launch_raw: u128,
+    origin: SessionMidiOrigin,
     timing: &'a T,
     start_frame: u64,
     end_frame: u64,

@@ -69,6 +69,26 @@ fn browser_drag_fixture(
     (handle, editor, tracks[0], directory, path)
 }
 
+#[gpui::test]
+fn consumed_browser_search_key_is_redacted_from_action_diagnostics(cx: &mut TestAppContext) {
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+    let mut log = hex_diagnostics::SessionLog::start(directory.0.join("diagnostics")).unwrap();
+    cx.update(|cx| {
+        crate::diagnostics::install_session_log(cx, Ok(log.handle()));
+        crate::diagnostics::install_action_diagnostics(cx, true);
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, cx| editor.read(cx).browser.search.read(cx).focus(window));
+    visual.simulate_keystrokes("q->密");
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(view.browser.search.read(cx).text(), "密");
+    });
+    log.shutdown().unwrap();
+    let contents = std::fs::read_to_string(log.path()).unwrap();
+    assert!(contents.contains("stage=key key=\\\"redacted\\\""));
+    assert!(!contents.contains("密"));
+}
+
 fn browser_drag_fixture_with_tracks(
     cx: &mut TestAppContext,
     names: &[&str],
@@ -104,11 +124,15 @@ fn browser_drag_fixture_with_tracks(
                 EditorView::new(window, cx, service, Err("offline ui test".into()))
             });
             editor.update(cx, |view, cx| {
+                // Fixed geometry for pointer/drop tests; the normal navigation
+                // allowance is tested by the arranger navigation regressions.
+                view.viewport = Some(super::super::viewport::Viewport::fit(384_000));
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
                     comparison_audio: None,
                     project: Arc::new(model.project().clone()),
                     waveforms: Default::default(),
+                    source_overviews: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
                     gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -209,7 +233,7 @@ fn command_f_opens_all_search_and_replaces_query_from_editor_and_results(cx: &mu
     cx.simulate_keystrokes(handle, "cmd-f");
     cx.simulate_input(handle, "utility");
     editor.read_with(cx, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "utility");
+        assert_eq!(view.browser.search.read(cx).text(), "utility");
         assert!(view.browser_visible_entries(cx).is_empty());
         let devices = view.browser_visible_devices(cx);
         assert_eq!(devices.len(), 1);
@@ -233,11 +257,11 @@ fn command_f_opens_all_search_and_replaces_query_from_editor_and_results(cx: &mu
     cx.simulate_keystrokes(handle, "cmd-f");
     cx.simulate_input(handle, "loop");
     editor.read_with(cx, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "loop")
+        assert_eq!(view.browser.search.read(cx).text(), "loop")
     });
     cx.simulate_keystrokes(handle, "escape");
     editor.read_with(cx, |view, cx| {
-        assert!(view.browser.search.read(cx).content.is_empty())
+        assert!(view.browser.search.read(cx).text().is_empty())
     });
 }
 
@@ -261,7 +285,7 @@ fn command_f_commits_clip_name_draft_then_routes_typing_to_browser(cx: &mut Test
         assert!(view.clip_name_edit.is_none());
         assert!(matches!(&view.last_enqueued_edit,
             Some(Command::RenameClip { clip: target, name }) if *target == clip && name == "verse"));
-        assert_eq!(view.browser.search.read(cx).content, "utility");
+        assert_eq!(view.browser.search.read(cx).text(), "utility");
         assert_eq!(view.browser.section, BrowserSection::All);
     });
 }
@@ -284,7 +308,7 @@ fn command_f_replaces_entire_query_during_ime_composition(cx: &mut TestAppContex
     cx.simulate_keystrokes(handle, "cmd-f");
     cx.simulate_input(handle, "utility");
     editor.read_with(cx, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "utility");
+        assert_eq!(view.browser.search.read(cx).text(), "utility");
     });
 }
 
@@ -311,6 +335,8 @@ fn command_f_caret_movement_preserves_result_scroll(cx: &mut TestAppContext) {
         cx.notify();
     });
     visual.run_until_parked();
+    let first_device = "browser-device-instrument-hex.instrument.sampler";
+    assert!(visual.debug_bounds(first_device).is_none());
     assert!(visual.debug_bounds("browser-entry-20").is_some());
     assert!(visual.debug_bounds("browser-entry-0").is_none());
     visual.simulate_keystrokes("left shift-left");
@@ -323,11 +349,11 @@ fn command_f_caret_movement_preserves_result_scroll(cx: &mut TestAppContext) {
     visual.simulate_keystrokes("end backspace");
     visual.run_until_parked();
     assert!(
-        visual.debug_bounds("browser-entry-0").is_some(),
-        "changed query reveals its first result"
+        visual.debug_bounds(first_device).is_some(),
+        "changed query reveals its first device result"
     );
     editor.read_with(visual, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "sampl");
+        assert_eq!(view.browser.search.read(cx).text(), "sampl");
         assert!(!view.browser.results_focused);
     });
 }
@@ -383,14 +409,14 @@ fn command_f_category_click_keeps_query_but_moves_real_focus_in_session(cx: &mut
         });
         visual.simulate_input("y");
         editor.read_with(visual, |view, cx| {
-            assert_eq!(view.browser.search.read(cx).content, "utilit")
+            assert_eq!(view.browser.search.read(cx).text(), "utilit")
         });
         let field = visual.debug_bounds("browser-search").unwrap();
         visual.simulate_click(field.center(), Modifiers::default());
         visual.simulate_keystrokes("right");
         visual.simulate_input("y");
         editor.read_with(visual, |view, cx| {
-            assert_eq!(view.browser.search.read(cx).content, "utility")
+            assert_eq!(view.browser.search.read(cx).text(), "utility")
         });
     }
     visual.simulate_keystrokes("down enter");
@@ -432,9 +458,12 @@ fn command_f_escape_keeps_navigation_until_explicit_text_entry(cx: &mut TestAppC
             );
         });
     });
-    visual.simulate_input("ignored");
+    // Unbound printable keys leave result navigation untouched. `r` now has
+    // its explicit random-sample action in this context.
+    visual.simulate_input("text");
     editor.read_with(visual, |view, cx| {
-        assert!(view.browser.search.read(cx).content.is_empty())
+        assert!(view.browser.search.read(cx).text().is_empty());
+        assert_eq!(view.browser.playback_generation, generation);
     });
     let field = visual.debug_bounds("browser-search").unwrap();
     visual.simulate_click(field.center(), Modifiers::default());
@@ -445,7 +474,7 @@ fn command_f_escape_keeps_navigation_until_explicit_text_entry(cx: &mut TestAppC
             view.browser.playback_generation, generation,
             "Right in the search field must only move the caret"
         );
-        assert_eq!(view.browser.search.read(cx).content, "loop");
+        assert_eq!(view.browser.search.read(cx).text(), "loop");
     });
 }
 
@@ -495,7 +524,7 @@ fn command_f_scan_completion_preserves_selected_device(cx: &mut TestAppContext) 
             "utility",
             "late files must not retarget device selection"
         );
-        assert_eq!(view.browser.selected_index, 1);
+        assert_eq!(view.browser.selected_index, 0);
     });
     cx.simulate_keystrokes(handle, "enter");
     editor.read_with(cx, |view, _| {
@@ -533,7 +562,7 @@ fn command_f_device_click_retains_browser_keys_in_session(cx: &mut TestAppContex
             "browser enter must not launch session playback"
         );
         assert!(view.status.contains("drag a browser device"));
-        assert!(view.browser.search.read(cx).content.is_empty());
+        assert!(view.browser.search.read(cx).text().is_empty());
     });
 }
 
@@ -610,6 +639,7 @@ fn browser_search_owns_typing_and_blocks_editor_shortcuts(cx: &mut TestAppContex
                     comparison_audio: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
+                    source_overviews: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
                     gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -632,7 +662,7 @@ fn browser_search_owns_typing_and_blocks_editor_shortcuts(cx: &mut TestAppContex
     cx.simulate_keystrokes(handle, "shift-a space cmd-shift-t");
 
     editor.read_with(cx, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "a ");
+        assert_eq!(view.browser.search.read(cx).text(), "a ");
         assert!(
             view.pending_requests.is_empty(),
             "search focus must suppress add-track"
@@ -669,6 +699,7 @@ fn device_browser_lists_registered_devices_and_drag_starts_without_track_focus(
                     comparison_audio: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
+                    source_overviews: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
                     gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -822,6 +853,7 @@ fn browser_project_open_queues_selected_path_without_second_click_confirmation(
                     comparison_audio: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
+                    source_overviews: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
                     gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -1228,7 +1260,7 @@ fn browser_sample_drop_between_tracks_shows_only_insertion_line_and_keeps_snappe
     assert_eq!(first.origin.x, body.origin.x);
     assert_eq!(
         first.size.width,
-        body.size.width - px(super::super::tracks::TRACK_HEADER_WIDTH)
+        body.size.width - editor.read_with(cx, |view, _| px(view.track_header_width()))
     );
     let pointer_start = (((f32::from(target.x) - f32::from(first.origin.x))
         / f32::from(first.size.width))
@@ -1431,7 +1463,7 @@ fn browser_sample_drop_below_last_track_appends_with_line_and_locked_ghost(
             .clone()
             .expect("prepared sample duration");
         let viewport = view.visible_viewport(384_000);
-        let timeline_width = body.size.width - px(super::super::tracks::TRACK_HEADER_WIDTH);
+        let timeline_width = body.size.width - px(view.track_header_width());
         let left = body.origin.x
             + px(
                 (start.saturating_sub(viewport.start) as f64 / viewport.length as f64
@@ -1522,16 +1554,30 @@ fn browser_sample_drop_in_empty_arrangement_creates_bottom_track(cx: &mut TestAp
     assert!(
         (ghost.origin.x
             - body.origin.x
-            - px((start as f64 / 384_000.0 * f64::from(body.size.width - px(176.0))) as f32))
+            - px((start as f64 / 384_000.0
+                * f64::from(
+                    body.size.width - editor.read_with(cx, |view, _| px(view.track_header_width()))
+                )) as f32))
         .abs()
             <= px(1.0)
     );
     assert!((ghost.origin.y - body.origin.y).abs() <= px(1.0));
+    // The pointer-down audition is still playing when the sample lands.
+    editor.update(cx, |view, _| {
+        view.browser.playback_phase = hex_audio::sample_preview::Phase::Playing;
+        view.browser.playback_output = Some((1, 1));
+        view.browser.playback_path = Some(path.clone());
+    });
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.last_enqueued_import_to_new_track,
             Some((path.clone(), None, start))
+        );
+        assert!(view.browser.playback_output.is_none(), "drop stops preview");
+        assert_eq!(
+            view.browser.playback_phase,
+            hex_audio::sample_preview::Phase::Idle
         );
     });
     visual.run_until_parked();
@@ -1657,7 +1703,10 @@ fn arrangement_wheel_zoom_is_pointer_anchored_and_does_not_escape_its_timeline(
         .debug_bounds("arrangement-grid-line-0")
         .expect("grid starts at the visible timeline origin");
     assert_eq!(grid.origin.x, body.origin.x);
-    assert_eq!(grid.size.width + px(176.0), body.size.width);
+    assert_eq!(
+        grid.size.width + editor.read_with(cx, |view, _| px(view.track_header_width())),
+        body.size.width
+    );
     assert_eq!(first_grid_line.origin.x, ruler.origin.x);
     let pointer = point(
         ruler.origin.x + ruler.size.width * 0.37,
@@ -1898,7 +1947,7 @@ fn physical_wheel_delta_normalizes_pixels_and_lines_without_mutating_raw_delta()
 
 #[gpui::test]
 fn empty_arrangement_keeps_the_grid_aligned_with_the_ruler(cx: &mut TestAppContext) {
-    let (handle, _editor, tracks, _directory, _) = browser_drag_fixture_with_tracks(cx, &[]);
+    let (handle, editor, tracks, _directory, _) = browser_drag_fixture_with_tracks(cx, &[]);
     assert!(tracks.is_empty());
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
@@ -1919,7 +1968,10 @@ fn empty_arrangement_keeps_the_grid_aligned_with_the_ruler(cx: &mut TestAppConte
         "four-adaptive-unit shading spans the empty Arrangement timeline"
     );
     assert_eq!(grid.origin.x, body.origin.x);
-    assert_eq!(grid.size.width + px(176.0), body.size.width);
+    assert_eq!(
+        grid.size.width + editor.read_with(cx, |view, _| px(view.track_header_width())),
+        body.size.width
+    );
     assert_eq!(line.origin.x, ruler.origin.x);
 }
 
@@ -1961,7 +2013,7 @@ fn arrangement_overview_shows_the_project_and_click_centers_a_clamped_viewport(
         view.visible_viewport(state.timeline_frames)
     });
     assert_eq!(after.length, 96_000);
-    assert_eq!(after.end(), Some(384_000));
+    assert_eq!(after.end(), Some(672_000));
     assert!(after.start > before.start);
 }
 
@@ -2005,7 +2057,8 @@ fn middle_drag_pans_both_arrangement_axes_until_release(cx: &mut TestAppContext)
             view.track_scroll.max_offset(),
         )
     });
-    let timeline_width = f32::from(body.size.width - px(176.0));
+    let timeline_width =
+        f32::from(body.size.width - editor.read_with(cx, |view, _| px(view.track_header_width())));
     let expected_delta = (90.0 * initial.length as f64 / f64::from(timeline_width)).round() as i128;
     assert_eq!(
         panned,
@@ -2142,7 +2195,9 @@ fn browser_audio_drag_rejects_changed_snap_or_viewport(cx: &mut TestAppContext) 
 }
 
 #[gpui::test]
-fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestAppContext) {
+fn clip_and_sample_drags_clear_unavailable_targets_and_recover_from_invalid_pointer(
+    cx: &mut TestAppContext,
+) {
     use hex_session::service::AudioPreview;
     use hex_session::{CachedPeak as Peak, CachedWaveform as Waveform};
     use std::cell::Cell;
@@ -2177,6 +2232,7 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
             comparison_audio: None,
             project: Arc::new(project.project().clone()),
             waveforms: current.waveforms.clone(),
+            source_overviews: current.source_overviews.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -2236,7 +2292,7 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
                 length: clip.length(),
             },
             grab_offset: Rc::new(Cell::new(Some(0))),
-            origin_pointer_x: Rc::new(Cell::new(None)),
+            capture: Rc::new(Cell::new(None)),
             viewport_start: viewport.start,
             viewport_length: viewport.length,
             scroll: Default::default(),
@@ -2306,6 +2362,63 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
             clip_drag.destination.get(),
             Some(ClipDropDestination::ExistingTrack(track))
         );
+        for (invalid, origin) in [
+            (f32::NAN, None),
+            (f32::INFINITY, None),
+            (f32::NEG_INFINITY, None),
+            (-f32::MAX, Some(f32::MAX)),
+        ] {
+            for target_y in [lane_point.y, lane.top()] {
+                clip_drag.capture.set(None);
+                let (valid, hovered) = view.clip_drag_drop_position(
+                    &clip_drag,
+                    f32::from(lane_point.x),
+                    f32::from(target_y),
+                );
+                assert!(hovered);
+                assert!(clip_drag.destination.get().is_some());
+                if target_y == lane_point.y {
+                    assert!(valid.is_some());
+                } else {
+                    assert!(matches!(
+                        clip_drag.destination.get(),
+                        Some(ClipDropDestination::NewTrack { .. })
+                    ));
+                    assert!(clip_drag.insertion_line_y.get().is_some());
+                }
+                clip_drag.capture.set(origin.and_then(|x| {
+                    hex_widgets::RectangleCapture::begin(
+                        super::drag::ClipPointerKey {
+                            generation: clip_drag.project_generation,
+                            clip: clip_drag.clip,
+                        },
+                        hex_widgets::RectanglePart::Body,
+                        x,
+                        true,
+                    )
+                }));
+                let held = clip_drag.capture.get();
+                let (rejected, hovered) =
+                    view.clip_drag_drop_position(&clip_drag, invalid, f32::from(target_y));
+                assert!(rejected.is_none() && !hovered);
+                assert!(
+                    clip_drag.destination.get().is_none(),
+                    "invalid pointer must clear the previous target"
+                );
+                assert!(clip_drag.insertion_line_y.get().is_none());
+                assert_eq!(clip_drag.capture.get(), held, "retain the finite press");
+                let (recovered, hovered) = view.clip_drag_drop_position(
+                    &clip_drag,
+                    f32::from(lane_point.x),
+                    f32::from(lane_point.y),
+                );
+                assert!(recovered.is_some() && hovered);
+                assert_eq!(
+                    clip_drag.destination.get(),
+                    Some(ClipDropDestination::ExistingTrack(track))
+                );
+            }
+        }
         clip_drag.preview.set(preview);
         let (preview, lane_hovered) = view.clip_drag_drop_position(
             &clip_drag,
@@ -2415,6 +2528,60 @@ fn browser_preferences_coalesce_background_saves_and_preserve_corrupt_files(
         std::fs::read(&preferences_path).expect("corrupt file remains"),
         corrupt
     );
+}
+
+#[gpui::test]
+fn browser_places_failed_save_survives_a_later_queued_success(cx: &mut TestAppContext) {
+    use gpui::VisualTestContext;
+    let directory = PreferencesTestDirectory::new();
+    let corrupt_path = directory.0.join("corrupt.json");
+    let good_path = directory.0.join("browser.json");
+    let bootstrap = cx.add_window(|_, _| Empty);
+    let handle = *bootstrap;
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            let service = Service::new(48_000, 32, 8_000_000).expect("test service");
+            window.replace_root(cx, |window, cx| {
+                EditorView::new_for_test(
+                    window,
+                    cx,
+                    service,
+                    Err("offline test".into()),
+                    corrupt_path.clone(),
+                    directory.0.join("recent-projects.json"),
+                )
+            })
+        })
+        .expect("editor window");
+    let visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    // Corrupt preferences are preserved, so the first save fails.
+    std::fs::write(&corrupt_path, b"not valid browser preferences").expect("corrupt fixture");
+    let first = directory.0.join("first-folder");
+    let second = directory.0.join("second-folder");
+    editor.update(cx, |view, cx| {
+        view.browser.places.push(first.clone());
+        view.queue_browser_places_save(cx);
+        // The queued save targets a writable file and succeeds.
+        view.browser.set_test_preferences_path(good_path.clone());
+        view.browser.places.push(second.clone());
+        view.queue_browser_places_save(cx);
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        hex_preferences::load(&good_path)
+            .expect("queued save")
+            .additional(),
+        &[first, second]
+    );
+    editor.read_with(cx, |view, _| {
+        let status = view.browser.places_status.as_deref().unwrap_or_default();
+        assert!(
+            status.contains("could not save browser places")
+                && status.contains("a later save succeeded"),
+            "earlier failure must stay visible after a queued success: {status:?}"
+        );
+    });
 }
 
 #[gpui::test]
@@ -2533,7 +2700,7 @@ fn browser_click_and_right_request_preview_without_import_search_arrows_keep_car
     visual.simulate_mouse_up(search.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_keystrokes("right l o left right o");
     editor.read_with(visual, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "loo");
+        assert_eq!(view.browser.search.read(cx).text(), "loo");
         assert_eq!(view.browser.playback_generation, 3);
     });
     std::fs::write(directory.0.join("second.wav"), mono_pcm_wav(16)).unwrap();
@@ -2583,14 +2750,60 @@ fn browser_right_opens_selected_folder_without_sample_or_project_commands(cx: &m
         }];
         cx.notify();
     });
+    visual.run_until_parked();
+    let disclosure = visual.debug_bounds("browser-disclosure-0").unwrap();
+    assert_eq!(
+        editor.read_with(visual, |view, _| view.browser.tree.disclosure(&folder)),
+        super::tree::Disclosure::Collapsed
+    );
+    struct RestoreTheme(hex_preferences::ThemePreferences);
+    impl Drop for RestoreTheme {
+        fn drop(&mut self) {
+            crate::theme::apply_preferences(self.0);
+        }
+    }
+    let original = crate::theme::preferences();
+    let _restore = RestoreTheme(original);
+    for (background, text) in [(0x20, 0xe0), (0xe0, 0x20)] {
+        let mut preferences = original;
+        preferences.background = hex_preferences::RgbColor::new(background, background, background);
+        preferences.text = hex_preferences::RgbColor::new(text, text, text);
+        crate::theme::apply_preferences(preferences);
+        editor.update(visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        let expected = gpui::Hsla::from(gpui::rgb(crate::theme::color(
+            crate::theme::PaletteRole::Muted,
+        )));
+        assert!(
+            visual
+                .rendered_monochrome_colors("browser-disclosure-0")
+                .contains(&expected)
+        );
+        assert_eq!(
+            visual.debug_bounds("browser-disclosure-0"),
+            Some(disclosure)
+        );
+    }
     let row = visual.debug_bounds("browser-entry-0").unwrap();
     visual.simulate_mouse_down(row.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_keystrokes("right");
     visual.run_until_parked();
+    assert!(
+        !visual
+            .rendered_monochrome_colors("browser-disclosure-0")
+            .is_empty()
+    );
+    assert_eq!(
+        visual.debug_bounds("browser-disclosure-0"),
+        Some(disclosure)
+    );
     editor.read_with(visual, |view, cx| {
         assert_eq!(view.browser.directory, directory.0);
-        assert_eq!(view.browser.tree.icon(&folder), "▾");
+        assert_eq!(
+            view.browser.tree.disclosure(&folder),
+            super::tree::Disclosure::Expanded
+        );
         assert_eq!(view.browser_visible_entries(cx)[1].path, child);
         assert_eq!(view.browser.playback_generation, 0);
         assert!(view.pending_requests.is_empty());
@@ -2712,7 +2925,7 @@ fn samples_catalog_combines_roots_and_active_place_indexed_search(cx: &mut TestA
         view.browser.places = vec![first.0.clone(), second.0.clone()];
         view.browser.section = BrowserSection::Samples;
         view.browser.search.update(cx, |input, cx| {
-            input.content = "loop".into();
+            input.set_text("loop", cx);
             cx.notify();
         });
         view.refresh_sample_catalog(cx);
@@ -2732,7 +2945,7 @@ fn samples_catalog_combines_roots_and_active_place_indexed_search(cx: &mut TestA
         assert!(entries.iter().any(|entry| entry.path == other));
         view.select_browser_source(BrowserSection::Place(second.0.clone()), cx);
         view.browser.search.update(cx, |input, cx| {
-            input.content = "DRUMS loop".into();
+            input.set_text("DRUMS loop", cx);
             cx.notify();
         });
         assert!(view.browser_visible_entries(cx).is_empty());
@@ -2881,7 +3094,9 @@ fn all_search_unions_samples_folder_and_devices_and_preserves_identity_on_refres
             .position(|(_, entry)| entry.name.to_lowercase() == "utility")
             .unwrap();
         let identity = (devices[device_index].0, devices[device_index].1.type_id);
-        view.browser.selected_index = entries.len() + device_index;
+        view.browser.selected_index = view
+            .browser_history_index(&super::BrowserItemKey::Device(identity.0, identity.1), cx)
+            .unwrap();
         view.browser.results_focused = true;
         cx.notify();
         identity
@@ -2967,14 +3182,58 @@ fn browser_audition_strip_is_one_bounded_row(cx: &mut TestAppContext) {
         let waveform = visual
             .debug_bounds("browser-audition-waveform")
             .expect("tiny waveform");
+        let volume = visual
+            .debug_bounds("browser-audition-volume")
+            .expect("volume slider");
         assert_eq!(row.size.height, px(22.0));
         assert!(row.top() >= preview.top() && row.bottom() <= preview.bottom());
         assert!(auto.right() <= transport.left() && transport.right() <= waveform.left());
-        assert!(auto.left() >= row.left() && waveform.right() <= row.right());
-        for control in [auto, transport, waveform] {
+        assert!(waveform.right() <= volume.left());
+        assert_eq!(volume.right(), row.right());
+        assert!(auto.left() >= row.left());
+        for control in [auto, transport, waveform, volume] {
             assert!(control.top() >= row.top() && control.bottom() <= row.bottom());
         }
     }
+}
+
+#[gpui::test]
+fn browser_audition_volume_drag_preserves_playback_position_and_selection_level(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+    std::fs::write(directory.0.join("next.wav"), mono_pcm_wav(16)).unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |view, cx| {
+        view.browser.auto_audition = false;
+        view.refresh_browser_tree(cx);
+        view.browser.playback_fraction = 0.25;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let volume = visual.debug_bounds("browser-audition-volume").unwrap();
+    let down = volume.center();
+    let quieter = down + point(px(0.0), px(11.0));
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(quieter, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_mouse_up(quieter, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.browser.audition_gain, 0.5);
+        assert_eq!(view.browser.playback_generation, 0);
+        assert_eq!(view.browser.playback_fraction, 0.25);
+        assert!(!view.browser.audition_gain_dragging);
+    });
+
+    let next = visual.debug_bounds("browser-entry-1").unwrap().center();
+    visual.simulate_mouse_down(next, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(next, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.browser.selected_index, 1);
+        assert_eq!(view.browser.audition_gain, 0.5);
+        assert_eq!(view.browser.playback_generation, 0);
+    });
 }
 
 #[gpui::test]
@@ -3180,6 +3439,67 @@ fn browser_result_reset_cancels_preparing_and_playing_audition(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn browser_superseded_preview_preparations_are_cancelled(cx: &mut TestAppContext) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    std::fs::write(directory.0.join("second.wav"), mono_pcm_wav(16)).unwrap();
+    editor.update(&mut visual, |view, cx| {
+        view.refresh_browser_tree(cx);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, cx| {
+        // An audition still decoding when the selection moves on is cancelled.
+        let audition = Arc::new(AtomicBool::new(false));
+        view.browser.playback_in_flight = Some(Arc::clone(&audition));
+        view.browser.results_focused = false;
+        view.browser.selected_index = 0;
+        view.move_browser_selection(true, cx);
+        assert!(audition.load(Ordering::Relaxed), "new selection cancels it");
+        let stopped = Arc::new(AtomicBool::new(false));
+        view.browser.playback_in_flight = Some(Arc::clone(&stopped));
+        view.cancel_browser_sample_playback();
+        assert!(stopped.load(Ordering::Relaxed), "stop cancels it");
+        view.browser.playback_in_flight = None;
+
+        let key = |name: &str| super::PreviewKey {
+            path: directory.0.join(name),
+            sample_rate: 48_000,
+        };
+        let job = |key| super::PreviewRequest {
+            key,
+            slot: super::PreviewSlot::default(),
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
+        let selected = job(key("selected.wav"));
+        view.browser.preview_selected = Some(selected.key.clone());
+        view.browser.preview_in_flight = Some(selected.clone());
+        view.queue_browser_audio_preview(key("hovered.wav"), super::PreviewSlot::default(), cx);
+        assert!(
+            !selected.cancel.load(Ordering::Relaxed),
+            "the selected row keeps its waveform job"
+        );
+        let hovered = job(key("hovered.wav"));
+        view.browser.preview_in_flight = Some(hovered.clone());
+        view.queue_browser_audio_preview(key("later.wav"), super::PreviewSlot::default(), cx);
+        assert!(
+            hovered.cancel.load(Ordering::Relaxed),
+            "a superseded hover waveform job is cancelled"
+        );
+        assert_eq!(
+            view.browser
+                .preview_pending
+                .as_ref()
+                .map(|pending| &pending.key),
+            Some(&key("later.wav"))
+        );
+        view.browser.preview_in_flight = None;
+        view.browser.preview_pending = None;
+    });
+}
+
+#[gpui::test]
 fn browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable(
     cx: &mut TestAppContext,
 ) {
@@ -3191,7 +3511,11 @@ fn browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable(
         )
         .unwrap();
     }
-    let metadata = Rc::new(hex_session::service::prepare_audio_preview(&path, 48_000).unwrap());
+    let metadata = Rc::new(
+        hex_session::service::PreviewSources::default()
+            .prepare_waveform(&path, 48_000, &std::sync::atomic::AtomicBool::new(false))
+            .unwrap(),
+    );
     let mut visual = VisualTestContext::from_window(handle, cx);
     editor.update(&mut visual, |view, cx| {
         view.browser.auto_audition = false;
@@ -3265,6 +3589,21 @@ fn browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable(
                 ));
                 assert!(view.browser.preview_in_flight.is_none());
                 assert!(view.browser.preview_pending.is_none());
+                let source = super::super::overview_waveform::Source::Browser(Arc::clone(
+                    &slot.metadata.borrow().as_ref().unwrap().waveform,
+                ));
+                let expected = super::super::waveform::waveform_column_count(
+                    f32::from(waveform.size.width),
+                    2.0,
+                );
+                assert!(expected > 48, "browser paint must use detailed columns");
+                assert_eq!(
+                    view.overview_waveform_cache
+                        .borrow()
+                        .prepared_columns(&source, waveform, 2.0),
+                    Some(expected),
+                    "actual browser canvas must populate its geometry cache at rendered bounds"
+                );
                 assert_eq!(view.browser.playback_generation, 0, "hover cannot audition");
                 assert!(Arc::ptr_eq(view.state.as_ref().unwrap(), &canonical));
                 assert!(view.pending_audio_commands.is_empty());
@@ -3276,6 +3615,38 @@ fn browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable(
                 waveform
             );
         }
+    }
+    // Actual GPUI TestWindow is fixed at 2x; 1x geometry has a separate oracle,
+    // while native 1x visual acceptance remains a distinct check.
+    let scale = visual.update(|window, _| window.scale_factor());
+    assert_eq!(scale, 2.0);
+    for width in [960.0, 1280.0] {
+        visual.simulate_resize(gpui::size(gpui::px(width), gpui::px(700.0)));
+        visual.run_until_parked();
+        let waveform = visual.debug_bounds("browser-audition-waveform").unwrap();
+        editor.read_with(&visual, |view, _| {
+            let key = view.browser.preview_selected.as_ref().unwrap();
+            let slot = &view.browser.preview_cache[key];
+            let metadata = slot.metadata.borrow();
+            let source = super::super::overview_waveform::Source::Browser(Arc::clone(
+                &metadata.as_ref().unwrap().waveform,
+            ));
+            let expected = super::super::waveform::waveform_column_count(
+                f32::from(waveform.size.width),
+                scale,
+            );
+            assert_eq!(
+                view.overview_waveform_cache
+                    .borrow()
+                    .prepared_columns(&source, waveform, scale),
+                Some(expected),
+                "browser resize must repaint the detailed waveform at its actual new bounds"
+            );
+            assert_eq!(
+                view.browser.playback_generation, 0,
+                "resize cannot audition"
+            );
+        });
     }
 }
 
@@ -3531,7 +3902,7 @@ fn browser_offline_and_removed_place_never_shows_stale_or_second_source(cx: &mut
         view.browser.home = first.0.clone();
         view.browser.samples.replace(catalog);
         view.browser.search.update(cx, |input, cx| {
-            input.content = "ghost".into();
+            input.set_text("ghost", cx);
             cx.notify();
         });
         view.select_browser_source(BrowserSection::Place(offline.0.clone()), cx);
@@ -3578,7 +3949,7 @@ fn browser_source_transition_discards_late_scan_and_keeps_query_and_keyboard_sco
     editor.update(&mut visual, |view, cx| {
         view.browser.auto_audition = false;
         view.browser.search.update(cx, |input, cx| {
-            input.content = "loop".into();
+            input.set_text("loop", cx);
             cx.notify();
         });
         view.browser.scans = Default::default();
@@ -3592,7 +3963,7 @@ fn browser_source_transition_discards_late_scan_and_keeps_query_and_keyboard_sco
         assert!(view.browser_visible_entries(cx).is_empty());
         assert_eq!(view.browser.section, BrowserSection::Collection(0));
         view.select_browser_source(BrowserSection::Samples, cx);
-        assert_eq!(view.browser.search.read(cx).content, "loop");
+        assert_eq!(view.browser.search.read(cx).text(), "loop");
         cx.notify();
     });
     visual.run_until_parked();
@@ -3604,7 +3975,7 @@ fn browser_source_transition_discards_late_scan_and_keeps_query_and_keyboard_sco
     editor.read_with(&visual, |view, cx| {
         assert!(view.browser.results_focused);
         assert_eq!(view.browser_visible_entries(cx).len(), 1);
-        assert_eq!(view.browser.search.read(cx).content, "loop");
+        assert_eq!(view.browser.search.read(cx).text(), "loop");
         let a = view.browser_visible_entries(cx);
         let b = view.browser_visible_entries(cx);
         assert!(
@@ -3615,7 +3986,7 @@ fn browser_source_transition_discards_late_scan_and_keeps_query_and_keyboard_sco
     visual.simulate_keystrokes("cmd-f");
     editor.read_with(&visual, |view, cx| {
         assert_eq!(view.browser.section, BrowserSection::All);
-        assert_eq!(view.browser.search.read(cx).content, "loop");
+        assert_eq!(view.browser.search.read(cx).text(), "loop");
     });
 }
 
@@ -4016,7 +4387,7 @@ fn browser_tree_same_name_files_keep_distinct_preview_paths_and_bounded_labels(
     editor.update(&mut visual, |view, cx| {
         view.select_browser_source(BrowserSection::Samples, cx);
         view.browser.search.update(cx, |input, cx| {
-            input.content = "kick".into();
+            input.set_text("kick", cx);
             cx.notify();
         });
     });
@@ -4046,7 +4417,7 @@ fn browser_samples_count_tracks_hierarchy_items_and_flat_sample_matches(cx: &mut
         view.browser.section = BrowserSection::Samples;
         view.browser
             .search
-            .update(cx, |input, _| input.content.clear());
+            .update(cx, |input, cx| input.set_text("", cx));
         view.browser.samples.replace(Default::default());
         view.browser.tree.source_changed();
         assert_eq!(view.browser_visible_entries(cx).len(), 2);
@@ -4072,7 +4443,7 @@ fn browser_samples_count_tracks_hierarchy_items_and_flat_sample_matches(cx: &mut
     });
     editor.update(&mut visual, |view, cx| {
         view.browser.search.update(cx, |input, cx| {
-            input.content = "kick".into();
+            input.set_text("kick", cx);
             cx.notify();
         });
         view.refresh_sample_catalog(cx);
@@ -4085,7 +4456,7 @@ fn browser_samples_count_tracks_hierarchy_items_and_flat_sample_matches(cx: &mut
     editor.update(&mut visual, |view, cx| {
         view.browser
             .search
-            .update(cx, |input, _| input.content = "missing".into());
+            .update(cx, |input, cx| input.set_text("missing", cx));
         assert!(view.browser_visible_entries(cx).is_empty());
         assert_eq!(view.sample_results_count_text(cx), "0 samples");
     });
@@ -4116,7 +4487,7 @@ fn place_correctness_reselect_gates_cached_rows_and_old_audition_callbacks(
         );
         view.browser
             .search
-            .update(cx, |input, _| input.content = "loop".into());
+            .update(cx, |input, cx| input.set_text("loop", cx));
         assert!(
             view.browser_visible_entries(cx).is_empty(),
             "query exposes cached offline index before availability returns"
@@ -4158,7 +4529,7 @@ fn place_correctness_refresh_retains_identity_only_after_current_success(cx: &mu
         view.browser.error = None;
         view.browser
             .search
-            .update(cx, |input, _| input.content = "loop".into());
+            .update(cx, |input, cx| input.set_text("loop", cx));
         view.browser.results_focused = true;
         view.browser.selected_index = 0;
         view.browser.scans = Default::default();
@@ -4228,7 +4599,7 @@ fn browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query(cx: &mut
     });
     editor.update(&mut visual, |view, cx| {
         view.browser.search.update(cx, |input, cx| {
-            input.content = "loop".into();
+            input.set_text("loop", cx);
             cx.notify();
         });
     });
@@ -4336,6 +4707,7 @@ fn place_icon_preferences_window(
                         directory.0.join("icon-theme.json"),
                         directory.0.join("project-directory.json"),
                     ),
+                    None,
                     crate::editor::test_environment::Inputs {
                         home: Some(home),
                         ..Default::default()
@@ -4365,8 +4737,14 @@ fn browser_place_icons_input_persistence_identity_fallback_and_geometry(cx: &mut
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     editor.read_with(visual, |view, _| {
-        assert_eq!(view.browser_place_glyph(&first), "□");
-        assert_eq!(view.browser_place_glyph(&unknown), "□");
+        assert_eq!(
+            view.browser_place_icon_path(&first),
+            "icons/browser-place/folder.svg"
+        );
+        assert_eq!(
+            view.browser_place_icon_path(&unknown),
+            "icons/browser-place/folder.svg"
+        );
         assert!(
             view.browser
                 .places_status
@@ -4398,7 +4776,10 @@ fn browser_place_icons_input_persistence_identity_fallback_and_geometry(cx: &mut
                     .focus_handle()
                     .is_focused(window)
             );
-            assert_eq!(view.browser_place_glyph(&first), "♫");
+            assert_eq!(
+                view.browser_place_icon_path(&first),
+                "icons/browser-place/samples.svg"
+            );
             assert_eq!(view.browser.section, BrowserSection::All);
             assert_eq!(view.browser.playback_generation, generation);
             assert!(view.pending_requests.is_empty());
@@ -4429,7 +4810,11 @@ fn browser_place_icons_input_persistence_identity_fallback_and_geometry(cx: &mut
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let control = visual.debug_bounds("browser-control-⚙").unwrap();
-    for (index, expected) in [(2, "□"), (3, "♫"), (4, "♫")] {
+    for (index, expected) in [
+        (2, "icons/browser-place/folder.svg"),
+        (3, "icons/browser-place/samples.svg"),
+        (4, "icons/browser-place/samples.svg"),
+    ] {
         let row = visual
             .debug_bounds(Box::leak(format!("browser-place-{index}").into_boxed_str()))
             .unwrap();
@@ -4442,7 +4827,7 @@ fn browser_place_icons_input_persistence_identity_fallback_and_geometry(cx: &mut
         assert!(glyph.left() >= row.left() && glyph.right() <= row.right());
         editor.read_with(visual, |view, _| {
             assert_eq!(
-                view.browser_place_glyph(&view.browser.places[index]),
+                view.browser_place_icon_path(&view.browser.places[index]),
                 expected
             )
         });
@@ -4466,9 +4851,18 @@ fn browser_place_icons_input_persistence_identity_fallback_and_geometry(cx: &mut
     let reopened_visual = &mut VisualTestContext::from_window(reopened_handle, cx);
     reopened_visual.run_until_parked();
     reopened.read_with(reopened_visual, |view, _| {
-        assert_eq!(view.browser_place_glyph(&first), "♫");
-        assert_eq!(view.browser_place_glyph(&second), "♫");
-        assert_eq!(view.browser_place_glyph(&unknown), "□");
+        assert_eq!(
+            view.browser_place_icon_path(&first),
+            "icons/browser-place/samples.svg"
+        );
+        assert_eq!(
+            view.browser_place_icon_path(&second),
+            "icons/browser-place/samples.svg"
+        );
+        assert_eq!(
+            view.browser_place_icon_path(&unknown),
+            "icons/browser-place/folder.svg"
+        );
         assert_eq!(
             view.browser.place_icons.get(&unknown).map(String::as_str),
             Some("future-icon")
@@ -4611,7 +5005,10 @@ fn browser_place_icons_catalog_uses_same_bounds_expanded_and_collapsed(cx: &mut 
                 view.browser
                     .place_icons
                     .insert(path.clone(), "samples".into());
-                assert_eq!(view.browser_place_glyph(&path), "□");
+                assert_eq!(
+                    view.browser_place_icon_path(&path),
+                    "icons/browser-place/folder.svg"
+                );
                 view.open_browser_place_icons(path, point(px(0.0), px(0.0)), window, cx);
                 assert!(
                     view.context_menu.is_none(),
@@ -4635,13 +5032,13 @@ fn browser_place_icons_catalog_uses_same_bounds_expanded_and_collapsed(cx: &mut 
         visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
         for (index, (id, glyph)) in [
-            (None, "□"),
-            (Some("samples"), "♫"),
-            (Some("devices"), "⌘"),
-            (Some("projects"), "▤"),
-            (Some("collection"), "◈"),
-            (Some("waveform"), "≋"),
-            (Some("search"), "⌕"),
+            (None, "icons/browser-place/folder.svg"),
+            (Some("samples"), "icons/browser-place/samples.svg"),
+            (Some("devices"), "icons/browser-place/devices.svg"),
+            (Some("projects"), "icons/browser-place/projects.svg"),
+            (Some("collection"), "icons/browser-place/collection.svg"),
+            (Some("waveform"), "icons/browser-place/waveform.svg"),
+            (Some("search"), "icons/browser-place/search.svg"),
         ]
         .into_iter()
         .enumerate()
@@ -4663,7 +5060,7 @@ fn browser_place_icons_catalog_uses_same_bounds_expanded_and_collapsed(cx: &mut 
             assert!(bounds.left() >= row.left() && bounds.right() <= row.right());
             assert!(f32::from(bounds.center().y - row.center().y).abs() <= 0.5);
             editor.read_with(visual, |view, _| {
-                assert_eq!(view.browser_place_glyph(&directory.0), glyph)
+                assert_eq!(view.browser_place_icon_path(&directory.0), glyph)
             });
             assert_eq!(
                 hex_preferences::load(&directory.0.join("icon-preferences.json"))
@@ -4861,8 +5258,14 @@ fn browser_place_icon_grid_uses_clicked_row_reset_and_reopens(cx: &mut TestAppCo
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     reopened.read_with(visual, |view, _| {
-        assert_eq!(view.browser_place_glyph(&first), "□");
-        assert_eq!(view.browser_place_glyph(&second), "≋");
+        assert_eq!(
+            view.browser_place_icon_path(&first),
+            "icons/browser-place/folder.svg"
+        );
+        assert_eq!(
+            view.browser_place_icon_path(&second),
+            "icons/browser-place/waveform.svg"
+        );
     });
 }
 
@@ -4984,7 +5387,10 @@ fn unhighlighted_arrow_action(cx: &mut TestAppContext, sample: bool, escape: boo
             visual.simulate_keystrokes("right");
             visual.run_until_parked();
             editor.read_with(&visual, |v, _| {
-                assert!((v.browser.tree.icon(&samples.join("a")) == "▾"))
+                assert!(
+                    (v.browser.tree.disclosure(&samples.join("a"))
+                        == super::tree::Disclosure::Expanded)
+                )
             });
         }
         visual.simulate_keystrokes("escape");
@@ -5000,14 +5406,14 @@ fn unhighlighted_arrow_action(cx: &mut TestAppContext, sample: bool, escape: boo
     let before = editor.read_with(&visual, |v, _| {
         (
             v.browser.playback_generation,
-            v.browser.tree.icon(&samples.join("a")),
+            v.browser.tree.disclosure(&samples.join("a")),
             v.browser.tree.requests_started,
         )
     });
     visual.simulate_keystrokes(if left { "left" } else { "right" });
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        let after = (v.browser.playback_generation, v.browser.tree.icon(&samples.join("a")), v.browser.tree.requests_started);
+        let after = (v.browser.playback_generation, v.browser.tree.disclosure(&samples.join("a")), v.browser.tree.requests_started);
         eprintln!("ACTUAL_UNHIGHLIGHTED_ROW sample={sample} escape={escape} left={left} before={before:?} after={after:?}");
         assert_eq!(after, before, "unhighlighted navigation must not dispatch a row action");
         assert!(v.pending_requests.is_empty() && v.pending_audio_commands.is_empty());
@@ -5066,13 +5472,19 @@ fn browser_arrows_selected_controls(cx: &mut TestAppContext) {
             if sample {
                 assert!(v.browser.playback_generation > before);
             } else {
-                assert_eq!(v.browser.tree.icon(&samples.join("a")), "▾");
+                assert_eq!(
+                    v.browser.tree.disclosure(&samples.join("a")),
+                    super::tree::Disclosure::Expanded
+                );
             }
         });
         if !sample {
             visual.simulate_keystrokes("left");
             editor.read_with(&visual, |v, _| {
-                assert_ne!(v.browser.tree.icon(&samples.join("a")), "▾")
+                assert_ne!(
+                    v.browser.tree.disclosure(&samples.join("a")),
+                    super::tree::Disclosure::Expanded
+                )
             });
         }
     }
@@ -5117,7 +5529,7 @@ fn browser_arrows_up_down_enter_results_and_command_f_keeps_text_input(cx: &mut 
     visual.simulate_keystrokes("right");
     visual.simulate_input("x");
     editor.read_with(&visual, |v, cx| {
-        assert_eq!(v.browser.search.read(cx).content, "loopx");
+        assert_eq!(v.browser.search.read(cx).text(), "loopx");
         assert_eq!(v.browser.playback_generation, before);
         assert!(v.pending_requests.is_empty() && v.pending_audio_commands.is_empty());
     });
@@ -5128,3 +5540,200 @@ mod divider_paint;
 
 #[path = "browser_instrument_enter_ui_test.rs"]
 mod instrument_enter;
+
+#[path = "browser_sampler_drop_ui_test.rs"]
+mod sampler_drop;
+
+#[gpui::test]
+fn sampler_menu_captures_stale_target_and_correlates_cancel_without_duplicate_load(
+    cx: &mut TestAppContext,
+) {
+    use super::super::context_menu::EditorContextAction;
+    let (handle, editor, tracks, _directory, path) =
+        browser_drag_fixture_with_tracks(cx, &["target", "other"]);
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |view, cx| {
+            let state = view.state.as_ref().unwrap();
+            let mut model = Editor::new((*state.project).clone(), 4).unwrap();
+            model
+                .execute(Command::InsertInstrument {
+                    track: tracks[0],
+                    state: hex_engine::default_native_device_state_for_class(
+                        hex_engine::NativeDeviceClass::Instrument,
+                        hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sampler"),
+                    )
+                    .unwrap(),
+                })
+                .unwrap();
+            let Created::Clip(clip) = model
+                .execute(Command::PlaceMidiClip {
+                    track: tracks[0],
+                    start: hex_project::BeatTime::ZERO,
+                    length: hex_project::BeatTime::ONE,
+                })
+                .unwrap()
+            else {
+                panic!("clip")
+            };
+            model
+                .execute(Command::AddMidiNote {
+                    clip,
+                    start: hex_project::BeatTime::ZERO,
+                    duration: hex_project::BeatTime::ONE,
+                    pitch: 60,
+                    channel: 0,
+                    velocity: 127,
+                })
+                .unwrap();
+            view.state = Some(Arc::new(ViewState {
+                canonical_audio_source: None,
+                comparison_audio: None,
+                project: Arc::new(model.project().clone()),
+                waveforms: Default::default(),
+                source_overviews: Default::default(),
+                audio_clip_waveforms: Default::default(),
+                midi_preview: Arc::default(),
+                gain_preview: state.gain_preview.clone(),
+                timeline_frames: state.timeline_frames,
+                can_undo: state.can_undo,
+                can_redo: state.can_redo,
+                revision: state.revision,
+                unsaved: state.unsaved,
+                document_path: state.document_path.clone(),
+            }));
+            view.selected_track = Some(tracks[0]);
+            view.open_first_sampler_menu(path, point(px(20.0), px(100.0)), window, cx);
+            let EditorContextAction::LoadFirstSampler(target) =
+                view.context_menu.as_ref().unwrap().items[0].action.clone()
+            else {
+                panic!("sampler menu action")
+            };
+            assert_eq!(
+                view.context_menu.as_ref().unwrap().items[0].label,
+                "load into sampler"
+            );
+            assert!(
+                target
+                    .replacement
+                    .as_ref()
+                    .is_some_and(|(_, state)| hex_engine::is_empty_sampler_state_on_control(state))
+            );
+            assert!(
+                !view.first_sampler_current(),
+                "an empty sampler has no loaded audio requirement"
+            );
+            let generation = view.project_generation;
+            let pending = view.worker_requests_pending;
+            view.project_generation += 1;
+            view.load_first_sampler(target.clone(), cx);
+            assert_eq!(
+                view.worker_requests_pending, pending,
+                "stale menu must not enqueue"
+            );
+            assert!(!view.first_sampler_pending_matches(1));
+            view.project_generation = generation;
+            view.load_first_sampler(target.clone(), cx);
+            assert!(view.first_sampler_pending_matches(1));
+            let pending = view.worker_requests_pending;
+            view.selected_track = Some(tracks[1]);
+            view.load_first_sampler(target, cx);
+            assert_eq!(
+                view.worker_requests_pending, pending,
+                "double action must not enqueue"
+            );
+            view.cancel_first_sampler_load(Some(1));
+            view.first_sampler_load_complete(
+                Some(hex_session::service::SamplerLoadCompletion {
+                    request_id: 2,
+                    project_generation: generation,
+                    track: tracks[0],
+                }),
+                false,
+            );
+            assert!(
+                view.first_sampler_pending_matches(1),
+                "unrelated completion cannot clear intent"
+            );
+            view.first_sampler_load_complete(
+                Some(hex_session::service::SamplerLoadCompletion {
+                    request_id: 1,
+                    project_generation: generation,
+                    track: tracks[0],
+                }),
+                false,
+            );
+            assert!(!view.first_sampler_pending_matches(1));
+            assert_eq!(view.status, "sampler load cancelled");
+            assert_eq!(view.selected_track, Some(tracks[1]));
+        });
+    })
+    .unwrap();
+}
+
+#[path = "browser_plugin_ui_test.rs"]
+mod plugin_browser;
+
+#[path = "browser_reveal_ui_test.rs"]
+mod reveal;
+
+#[gpui::test]
+fn browser_file_result_vectors_paint_in_light_and_dark_themes(cx: &mut TestAppContext) {
+    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    editor.update(cx, |view, cx| {
+        view.browser.open = true;
+        view.browser
+            .listing
+            .as_mut()
+            .unwrap()
+            .entries
+            .push(LibraryEntry {
+                name: "project.hex".into(),
+                path: view.browser.directory.join("project.hex"),
+                kind: EntryKind::Project,
+            });
+        view.browser.samples.invalidate_listing();
+        view.browser.tree.source_changed();
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let bounds = [
+        visual.debug_bounds("browser-file-icon-0").unwrap(),
+        visual.debug_bounds("browser-file-icon-1").unwrap(),
+    ];
+    struct RestoreTheme(hex_preferences::ThemePreferences);
+    impl Drop for RestoreTheme {
+        fn drop(&mut self) {
+            crate::theme::apply_preferences(self.0);
+        }
+    }
+    let original = crate::theme::preferences();
+    let _restore = RestoreTheme(original);
+    for (background, text) in [(0x20, 0xe0), (0xe0, 0x20)] {
+        let mut preferences = original;
+        preferences.background = hex_preferences::RgbColor::new(background, background, background);
+        preferences.text = hex_preferences::RgbColor::new(text, text, text);
+        crate::theme::apply_preferences(preferences);
+        editor.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+        let expected = gpui::Hsla::from(gpui::rgb(crate::theme::color(
+            crate::theme::PaletteRole::Muted,
+        )));
+        for (index, selector) in ["browser-file-icon-0", "browser-file-icon-1"]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(visual.debug_bounds(selector), Some(bounds[index]));
+            assert!(
+                visual
+                    .rendered_monochrome_colors(selector)
+                    .contains(&expected)
+            );
+        }
+    }
+}
+
+#[path = "browser_random_ui_test.rs"]
+mod random_ui_tests;
+#[path = "browser_scrollbar_ui_test.rs"]
+mod scrollbar_ui_tests;

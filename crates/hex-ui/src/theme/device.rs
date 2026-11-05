@@ -1,6 +1,6 @@
 //! Product-owned device roles. Widgets receive resolved colors, never identities.
 use super::{PaletteRole, color, readable_text};
-use hex_widgets::{ControlStyle, DeviceActionStyle, DeviceFrameStyle};
+use hex_widgets::{ActionStyle, ControlStyle, DeviceFrameStyle};
 
 /// Visual purpose, independent of device type, layout and parameter identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,9 +27,14 @@ pub(crate) fn device_style(role: DeviceStyleRole) -> ControlStyle {
         text: readable_text(surface, text),
         muted: color(PaletteRole::Muted),
         accent: color(PaletteRole::Secondary),
+        accent_text: readable_text(color(PaletteRole::Secondary), text),
+        numeric_fill: color(PaletteRole::Border),
+        hover_text: readable_text(color(PaletteRole::Hover), text),
         focus_marker: text,
         dial_rail: color(PaletteRole::Border),
         hover: color(PaletteRole::Hover),
+        selection: color(PaletteRole::Secondary),
+        invalid: color(PaletteRole::Primary),
         font_size: 9.0,
         text_case: hex_widgets::TextCase::Lowercase,
     };
@@ -54,13 +59,26 @@ pub(crate) fn device_style(role: DeviceStyleRole) -> ControlStyle {
             }
         }
     }
+    style.numeric_fill = [0.35, 0.30, 0.25, 0.20, 0.15, 0.10, 0.0]
+        .into_iter()
+        .map(|opacity| super::mix(style.rail, style.accent, opacity))
+        .find(|fill| super::contrast_ratio(*fill, style.text) >= 4.5)
+        .unwrap_or(style.rail);
+    // Text selection sits behind field text on `raised`; keep that text readable.
+    style.selection = [0.4, 0.3, 0.2, 0.1]
+        .into_iter()
+        .map(|opacity| super::mix(style.raised, style.accent, opacity))
+        .find(|fill| super::contrast_ratio(*fill, style.text) >= 4.5)
+        .unwrap_or(style.raised);
     style
 }
 
 /// One selected-header policy for every instrument, effect and return shell.
 /// Header paint is isolated from the neutral body and uses a readable foreground.
+/// The reserved shell stroke stays neutral and visible in every selection state.
 pub(crate) fn device_frame_style(selected: bool) -> DeviceFrameStyle {
-    let style = device_style(DeviceStyleRole::Layout);
+    let mut style = device_style(DeviceStyleRole::Layout);
+    style.border = color(PaletteRole::Border);
     let frame = style.with_device_selection(selected);
     if selected {
         frame.with_header_colors(style.accent, readable_text(style.accent, style.text))
@@ -121,6 +139,9 @@ mod tests {
             assert_eq!(control.hover, color(PaletteRole::Hover));
             assert_eq!(control.focus_marker, palette.text.packed());
             assert_eq!(control.accent, palette.secondary.packed());
+            assert_eq!(control.invalid, palette.primary.packed());
+            assert_ne!(control.selection, control.raised);
+            assert!(super::super::contrast_ratio(control.selection, control.text) >= 4.5);
             assert_eq!(oscillator_identity_color(0), Some(0xe2cf25));
             assert_eq!(oscillator_identity_color(3), Some(0xf18428));
             assert_eq!(oscillator_identity_color(4), None);
@@ -134,46 +155,64 @@ mod tests {
 #[derive(Clone, Copy)]
 pub(crate) enum DeviceActionRole {
     Normal,
-    Muted,
     Destructive,
+    Enabled,
+    Bypassed,
 }
 
-pub(crate) fn device_header_action_style(
-    selected: bool,
-    role: DeviceActionRole,
-) -> DeviceActionStyle {
+pub(crate) fn device_header_action_style(selected: bool, role: DeviceActionRole) -> ActionStyle {
+    // Power is a canonical device state, independent of the selected header.
+    // Keep the accent on hover too, so focus/hover cannot suggest a bypass edit.
     let layout = device_style(DeviceStyleRole::Layout);
-    let background = if selected {
-        layout.accent
-    } else {
-        layout.surface
+    let background = match role {
+        DeviceActionRole::Enabled => color(PaletteRole::Primary),
+        DeviceActionRole::Bypassed => color(PaletteRole::Border),
+        _ if selected => layout.accent,
+        _ => layout.surface,
     };
     let preferred = color(match role {
-        DeviceActionRole::Normal => PaletteRole::Text,
-        DeviceActionRole::Muted => PaletteRole::Muted,
+        DeviceActionRole::Normal | DeviceActionRole::Enabled => PaletteRole::Text,
+        DeviceActionRole::Bypassed => PaletteRole::Muted,
         DeviceActionRole::Destructive => PaletteRole::Primary,
     });
-    let hover_background = color(PaletteRole::Hover);
-    DeviceActionStyle {
+    let hover_background = if matches!(role, DeviceActionRole::Enabled) {
+        super::mix(background, color(PaletteRole::Text), 0.12)
+    } else {
+        color(PaletteRole::Hover)
+    };
+    ActionStyle {
         background,
         text: readable_text(background, preferred),
         hover_background,
-        hover_text: readable_text(hover_background, preferred),
+        hover_text: Some(readable_text(hover_background, preferred)),
     }
 }
 
-pub(crate) fn device_segment_style(selected: bool) -> DeviceActionStyle {
+/// Existing enabled-red/bypassed-gray palette tokens for the boolean header
+/// indicator. Selection and transient input never replace the acknowledged color.
+pub(crate) fn device_enable_colors() -> (u32, u32) {
+    (
+        device_header_action_style(false, DeviceActionRole::Enabled).background,
+        device_header_action_style(false, DeviceActionRole::Bypassed).background,
+    )
+}
+
+pub(crate) fn device_segment_style(selected: bool) -> ActionStyle {
     let background = color(if selected {
         PaletteRole::Secondary
     } else {
         PaletteRole::Raised
     });
-    let hover_background = color(PaletteRole::Hover);
-    DeviceActionStyle {
+    let hover_background = if selected {
+        background
+    } else {
+        color(PaletteRole::Hover)
+    };
+    ActionStyle {
         background,
         text: readable_text(background, color(PaletteRole::Text)),
         hover_background,
-        hover_text: readable_text(hover_background, color(PaletteRole::Text)),
+        hover_text: Some(readable_text(hover_background, color(PaletteRole::Text))),
     }
 }
 
@@ -214,24 +253,48 @@ mod action_tests {
             },
         ] {
             super::super::apply_preferences(palette);
+            let controls = device_style(DeviceStyleRole::Control);
+            assert!(super::super::contrast_ratio(controls.accent, controls.accent_text) >= 4.5);
+            assert!(super::super::contrast_ratio(controls.hover, controls.hover_text) >= 4.5);
+            // Filled numeric rails paint accent at 35% over the rail; text must
+            // remain readable both above the fill and above the empty rail.
+            let filled = controls.numeric_fill;
+            assert!(super::super::contrast_ratio(controls.rail, controls.text) >= 4.5);
+            assert!(super::super::contrast_ratio(filled, controls.text) >= 4.5);
+            let workspace = super::super::action_style();
+            assert!(super::super::contrast_ratio(workspace.background, workspace.text) >= 4.5);
+            assert!(
+                super::super::contrast_ratio(
+                    workspace.hover_background,
+                    workspace.hover_text.unwrap_or(workspace.text)
+                ) >= 4.5
+            );
             for selected in [false, true] {
                 for role in [
                     DeviceActionRole::Normal,
-                    DeviceActionRole::Muted,
                     DeviceActionRole::Destructive,
+                    DeviceActionRole::Enabled,
+                    DeviceActionRole::Bypassed,
                 ] {
                     let style = device_header_action_style(selected, role);
                     assert!(super::super::contrast_ratio(style.background, style.text) >= 4.5);
                     assert!(
-                        super::super::contrast_ratio(style.hover_background, style.hover_text)
-                            >= 4.5
+                        super::super::contrast_ratio(
+                            style.hover_background,
+                            style.hover_text.unwrap_or(style.text)
+                        ) >= 4.5
                     );
                 }
                 let segment = device_segment_style(selected);
+                if selected {
+                    assert_eq!(segment.hover_background, segment.background);
+                }
                 assert!(super::super::contrast_ratio(segment.background, segment.text) >= 4.5);
                 assert!(
-                    super::super::contrast_ratio(segment.hover_background, segment.hover_text)
-                        >= 4.5
+                    super::super::contrast_ratio(
+                        segment.hover_background,
+                        segment.hover_text.unwrap_or(segment.text)
+                    ) >= 4.5
                 );
             }
         }

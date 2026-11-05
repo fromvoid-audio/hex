@@ -11,6 +11,9 @@ struct Attempt {
     opened: bool,
     restored: bool,
     seek_ticket: Option<u64>,
+    seek_outcome: Option<hex_audio::prepared::ActionOutcome>,
+    prepared_seek: Option<u64>,
+    prepared_revision: Option<u64>,
 }
 
 impl RecoveryState {
@@ -29,6 +32,9 @@ impl RecoveryState {
             opened: false,
             restored: false,
             seek_ticket: None,
+            seek_outcome: None,
+            prepared_seek: None,
+            prepared_revision: None,
         });
         Ok(generation)
     }
@@ -72,6 +78,7 @@ impl RecoveryState {
                 attempt.opened
                     && attempt.restored
                     && attempt.seek_ticket.is_none()
+                    && attempt.prepared_seek.is_none()
                     && graph_is_current
             })
             .map(|attempt| attempt.position)
@@ -80,7 +87,93 @@ impl RecoveryState {
     pub(super) fn seeking(&mut self, ticket: u64) {
         if let Some(attempt) = self.active.as_mut() {
             attempt.seek_ticket = Some(ticket);
+            attempt.seek_outcome = None;
         }
+    }
+
+    pub(super) fn observe_receipt(&mut self, receipt: hex_audio::prepared::ActionOutcomeReceipt) {
+        if let Some(attempt) = self.active.as_mut()
+            && attempt.seek_ticket == Some(receipt.ticket)
+        {
+            attempt.seek_outcome = Some(receipt.outcome);
+        }
+    }
+
+    pub(super) fn seek_failed(&self) -> bool {
+        self.active
+            .as_ref()
+            .and_then(|attempt| attempt.seek_outcome)
+            .is_some_and(|outcome| outcome != hex_audio::prepared::ActionOutcome::Applied)
+    }
+
+    /// Only this recovery attempt may admit a stopped prepared cursor restore. User seeks and
+    /// stale attempts retain their ordinary recovery barrier.
+    pub(super) fn permits_seek(&self, generation: Option<u64>) -> bool {
+        match (&self.active, generation) {
+            (None, None) => true,
+            (Some(attempt), Some(generation)) => {
+                attempt.generation == generation && attempt.opened && attempt.restored
+            }
+            _ => false,
+        }
+    }
+
+    pub(super) fn prepared_seeking(&mut self, generation: u64, request: u64) -> bool {
+        let Some(attempt) = self.active.as_mut().filter(|a| {
+            a.generation == generation
+                && a.opened
+                && a.restored
+                && a.seek_ticket.is_none()
+                && a.prepared_seek.is_none()
+        }) else {
+            return false;
+        };
+        attempt.prepared_seek = Some(request);
+        true
+    }
+
+    pub(super) fn prepared_request(&self) -> Option<u64> {
+        self.active.as_ref()?.prepared_seek
+    }
+
+    pub(super) fn prepared_published(&mut self, request: u64, revision: u64) {
+        if let Some(attempt) = self
+            .active
+            .as_mut()
+            .filter(|a| a.prepared_seek == Some(request))
+        {
+            attempt.prepared_revision = Some(revision);
+        }
+    }
+
+    pub(super) fn prepared_revision(&self) -> Option<u64> {
+        self.active.as_ref()?.prepared_revision
+    }
+
+    /// Exact tagged view metadata plus this output's actual applied counter establishes restore.
+    /// Neither a submitted graph nor a command ticket proves a prepared seek was installed.
+    pub(super) fn complete_prepared(
+        &mut self,
+        graph_is_current: bool,
+        audible: Option<(u64, u64)>,
+        applied_revision: u64,
+        position: u64,
+        playing: bool,
+    ) -> bool {
+        let ready = self.active.as_ref().is_some_and(|attempt| {
+            attempt.opened
+                && attempt.restored
+                && graph_is_current
+                && !playing
+                && position == attempt.position
+                && audible.is_some_and(|(request, revision)| {
+                    attempt.prepared_seek == Some(request) && revision == applied_revision
+                })
+        });
+        if ready {
+            self.active = None;
+        }
+        ready
     }
 
     pub(super) fn complete(
@@ -106,10 +199,34 @@ impl RecoveryState {
         ready
     }
 
+    pub(super) fn complete_exact(
+        &mut self,
+        graph_is_current: bool,
+        position: u64,
+        playing: bool,
+    ) -> bool {
+        let ready = self.active.as_ref().is_some_and(|attempt| {
+            attempt.opened
+                && attempt.restored
+                && graph_is_current
+                && !playing
+                && position == attempt.position
+                && attempt.seek_ticket.is_some()
+                && attempt.seek_outcome == Some(hex_audio::prepared::ActionOutcome::Applied)
+        });
+        if ready {
+            self.active = None;
+        }
+        ready
+    }
+
     pub(super) fn stop(&mut self) {
         if let Some(attempt) = self.active.as_mut() {
             attempt.position = 0;
             attempt.seek_ticket = None;
+            attempt.seek_outcome = None;
+            attempt.prepared_seek = None;
+            attempt.prepared_revision = None;
         }
     }
 
@@ -121,6 +238,74 @@ impl RecoveryState {
 #[cfg(test)]
 mod tests {
     use super::RecoveryState;
+
+    #[test]
+    fn recovery_requires_exact_success_not_a_later_terminal() {
+        use hex_audio::prepared::{ActionOutcome, ActionOutcomeReceipt};
+        let mut state = RecoveryState::default();
+        let generation = state.begin(64).unwrap();
+        assert!(state.opened(generation));
+        assert!(state.restored(generation));
+        state.seeking(3);
+        state.observe_receipt(ActionOutcomeReceipt {
+            ticket: 4,
+            outcome: ActionOutcome::Applied,
+        });
+        assert!(!state.complete_exact(true, 64, false));
+        state.observe_receipt(ActionOutcomeReceipt {
+            ticket: 3,
+            outcome: ActionOutcome::Rejected(hex_engine::PlaybackActionRejection::OutputFailed),
+        });
+        assert!(state.seek_failed());
+        assert!(!state.complete_exact(true, 64, false));
+    }
+
+    #[test]
+    fn prepared_recovery_requires_exact_attempt_request_and_actual_stopped_ack() {
+        let mut state = RecoveryState::default();
+        let generation = state.begin(129).unwrap();
+        assert!(!state.permits_seek(None));
+        assert!(!state.permits_seek(Some(generation)));
+        state.opened(generation);
+        state.restored(generation);
+        assert!(state.permits_seek(Some(generation)));
+        assert!(!state.permits_seek(Some(generation + 1)));
+        assert!(!state.prepared_seeking(generation + 1, 7));
+        assert!(state.prepared_seeking(generation, 7));
+        assert!(!state.prepared_seeking(generation, 8));
+        assert_eq!(state.seek_needed(true), None);
+        assert!(
+            !state.complete(true, u64::MAX, 129, false),
+            "command tickets cannot apply prepared recovery"
+        );
+        assert!(!state.complete_prepared(true, None, 9, 129, false));
+        assert!(!state.complete_prepared(true, Some((8, 9)), 9, 129, false));
+        assert!(!state.complete_prepared(true, Some((7, 9)), 8, 129, false));
+        assert!(!state.complete_prepared(true, Some((7, 9)), 10, 129, false));
+        assert!(!state.complete_prepared(true, Some((7, 9)), 9, 128, false));
+        assert!(!state.complete_prepared(true, Some((7, 9)), 9, 129, true));
+        assert!(!state.complete_prepared(false, Some((7, 9)), 9, 129, false));
+        state.prepared_published(8, 10);
+        assert_eq!(state.prepared_revision(), None);
+        state.prepared_published(7, 9);
+        assert_eq!(state.prepared_revision(), Some(9));
+        assert!(state.complete_prepared(true, Some((7, 9)), 9, 129, false));
+        assert!(state.permits_seek(None));
+        assert!(!state.permits_seek(Some(generation)));
+
+        let next = state.begin(129).unwrap();
+        state.opened(next);
+        state.restored(next);
+        state.prepared_seeking(next, 11);
+        state.prepared_published(11, 12);
+        state.stop();
+        assert_eq!(state.prepared_request(), None);
+        assert_eq!(state.prepared_revision(), None);
+        assert_eq!(state.seek_needed(true), Some(0));
+        assert!(!state.complete_prepared(true, Some((11, 12)), 12, 129, false));
+        state.seeking(13);
+        assert!(state.complete(true, 13, 0, false));
+    }
 
     #[test]
     fn obsolete_completion_and_old_acknowledgments_do_not_enable_play() {

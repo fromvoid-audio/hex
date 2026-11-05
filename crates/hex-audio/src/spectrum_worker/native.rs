@@ -5,6 +5,7 @@ use super::*;
 pub(crate) struct NativeSpectrumIdentity {
     capture_buffer: usize,
     stop: usize,
+    result_cache: usize,
     pub(super) sample_rate: u32,
     project: Option<(usize, usize)>,
 }
@@ -17,7 +18,8 @@ impl NativeSpectrumReceipt {
     pub(super) fn new(
         producer: &Producer<CaptureBatch>,
         stop: &Arc<AtomicBool>,
-        core: &SpectrumCore,
+        cores: &[SpectrumCore],
+        latest_targets: &[Option<PublishedSpectra>],
         sample_rate: u32,
         project_capture: Option<&project::ProjectCapture>,
         project_worker: Option<&project::ProjectWorker>,
@@ -25,8 +27,15 @@ impl NativeSpectrumReceipt {
         use crate::native_callback_owner::ChannelStorage;
         // Capture and Reader inline values are already in their actual callback
         // and client Boxes. Reaper lives separately in the lifecycle bundle.
-        let data_bytes = core
-            .data_bytes()?
+        if cores.len() != MAX_SPECTRUM_TARGETS || latest_targets.len() != MAX_SPECTRUM_TARGETS {
+            return None;
+        }
+        let data_bytes = cores
+            .iter()
+            .try_fold(std::mem::size_of::<Box<[SpectrumCore]>>(), |bytes, core| {
+                bytes.checked_add(core.data_bytes()?)
+            })?
+            .checked_add(std::mem::size_of_val(latest_targets))?
             .checked_add(std::mem::size_of::<Option<SpectrumReaper>>())?;
         let mut storage = ChannelStorage::ring(producer.buffer())?
             .plus(ChannelStorage::paired_payload(stop.as_ref()))?
@@ -49,6 +58,7 @@ impl NativeSpectrumReceipt {
             identity: NativeSpectrumIdentity {
                 capture_buffer: producer.buffer() as *const _ as usize,
                 stop: Arc::as_ptr(stop) as usize,
+                result_cache: latest_targets.as_ptr() as usize,
                 sample_rate,
                 project,
             },
@@ -60,7 +70,7 @@ impl SpectrumCapture {
     pub(crate) fn native_receipt(&self) -> Option<NativeSpectrumReceipt> {
         let Self {
             producer,
-            next_sequence: _,
+            next_sequences: _,
             exhausted: _,
             native,
             project,
@@ -76,10 +86,15 @@ impl SpectrumReader {
         let Self {
             results: _,
             latest: _,
+            latest_targets,
             native,
             project,
         } = self;
-        native.filter(|identity| identity.project == project.as_ref().map(|p| p.ring_identity()))
+        native.filter(|identity| {
+            identity.project == project.as_ref().map(|p| p.ring_identity())
+                && latest_targets.len() == MAX_SPECTRUM_TARGETS
+                && identity.result_cache == latest_targets.as_ptr() as usize
+        })
     }
 }
 impl SpectrumReaper {
@@ -103,26 +118,20 @@ impl SpectrumCore {
             context: _,
             kernel,
             kernel_rate: _,
-            rolling,
-            ordered,
-            input_rolling,
-            input_ordered,
-            write_index: _,
-            filled: _,
+            output_window,
+            input_window,
             last_sequence: _,
             latest_stamp: _,
             captured_at: _,
             last_analysis_at: _,
-            output_envelope: _,
-            input_envelope: _,
+            output_ballistics: _,
+            input_ballistics: _,
             envelope_at: _,
             dirty_since_analysis: _,
         } = self;
         std::mem::size_of_val(self)
-            .checked_add(std::mem::size_of_val(rolling.as_ref()))?
-            .checked_add(std::mem::size_of_val(ordered.as_ref()))?
-            .checked_add(std::mem::size_of_val(input_rolling.as_ref()))?
-            .checked_add(std::mem::size_of_val(input_ordered.as_ref()))?
+            .checked_add(output_window.heap_data_bytes()?)?
+            .checked_add(input_window.heap_data_bytes()?)?
             .checked_add(kernel.as_ref()?.heap_data_bytes()?)
     }
 }
@@ -132,9 +141,29 @@ pub(crate) fn spawn_native_spectrum_worker(
     spawn_worker(initial, true, None)
 }
 
+/// Finite normal native spectrum constructor payload, including project pool.
+pub(crate) fn constructor_storage_quote() -> Option<usize> {
+    use crate::native_callback_owner::ChannelStorage;
+    let core = std::mem::size_of::<SpectrumCore>()
+        .checked_add(2usize.checked_mul(SpectrumWindow::heap_storage_quote()?)?)?
+        .checked_add(SpectrumKernel::heap_storage_quote()?)?;
+    core.checked_mul(MAX_SPECTRUM_TARGETS)?
+        .checked_add(std::mem::size_of::<Box<[SpectrumCore]>>())?
+        .checked_add(
+            MAX_SPECTRUM_TARGETS.checked_mul(std::mem::size_of::<Option<PublishedSpectra>>())?,
+        )?
+        .checked_add(std::mem::size_of::<Option<SpectrumReaper>>())?
+        .checked_add(ChannelStorage::ring_bytes::<CaptureBatch>(
+            CAPTURE_QUEUE_CAPACITY,
+        )?)?
+        .checked_add(std::mem::size_of::<AtomicBool>())?
+        .checked_add(project::constructor_storage_quote()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spectrum::{BASS_FFT_SIZE, FFT_SIZE};
     use std::sync::atomic::AtomicUsize;
     fn stamp(rate: u32) -> SpectrumStamp {
         SpectrumStamp {
@@ -145,7 +174,7 @@ mod tests {
         }
     }
     #[test]
-    fn fixed_factory_declares_actual_eight_boxes_and_rejects_wrong_rate_without_queue_admission() {
+    fn fixed_factory_declares_all_target_windows_and_rejects_wrong_rate_without_queue_admission() {
         let (mut capture, reader, mut reaper) = spawn_native_spectrum_worker(stamp(48000)).unwrap();
         let receipt = capture.native_receipt().unwrap();
         assert_eq!(reader.native_identity(), Some(receipt.identity));
@@ -157,18 +186,21 @@ mod tests {
             ),
             (6, 12)
         );
-        // Four stereo signal-window boxes plus the kernel's window, real,
-        // imaginary and one-sided power boxes, excluding headers and queue.
-        let worker_payload = 4 * FFT_SIZE * std::mem::size_of::<[f32; 2]>()
-            + 3 * FFT_SIZE * std::mem::size_of::<f64>()
-            + (FFT_SIZE / 2 + 1) * std::mem::size_of::<f64>();
-        assert!(receipt.storage.data_bytes > worker_payload);
+        // Two signal windows (full-rate and bass rings) plus both stages'
+        // window, real and imaginary boxes, excluding headers and queue.
+        let worker_payload = 2 * (FFT_SIZE + BASS_FFT_SIZE) * std::mem::size_of::<[f32; 2]>()
+            + 3 * (FFT_SIZE + BASS_FFT_SIZE) * std::mem::size_of::<f64>();
+        assert!(receipt.storage.data_bytes > worker_payload * MAX_SPECTRUM_TARGETS);
+        assert_eq!(
+            Some(receipt.storage.data_bytes),
+            constructor_storage_quote()
+        );
         let mut submit = || {
             assert_eq!(
                 capture.submit(stamp(44100), &[[0.5; 2]; 32]),
                 CaptureOutcome::InvalidBatch { sequence: 0 }
             );
-            assert_eq!(capture.next_sequence, 1); // refusal deliberately leaves a gap
+            assert_eq!(capture.next_sequences[0], 1); // refusal deliberately leaves a gap
             for sequence in 1..=16 {
                 assert_eq!(
                     capture.submit_pair(stamp(48000), &[[0.2, -0.2]; 256], &[[0.5; 2]; 256]),
@@ -230,6 +262,9 @@ mod tests {
         std::mem::swap(&mut ar.project, &mut br.project);
         assert!(ar.native_identity().is_none() && br.native_identity().is_none());
         std::mem::swap(&mut ar.project, &mut br.project);
+        std::mem::swap(&mut ar.latest_targets, &mut br.latest_targets);
+        assert!(ar.native_identity().is_none() && br.native_identity().is_none());
+        std::mem::swap(&mut ar.latest_targets, &mut br.latest_targets);
         std::mem::swap(&mut a.project, &mut b.project);
         assert!(a.native_receipt().is_none() && b.native_receipt().is_none());
         std::mem::swap(&mut a.project, &mut b.project);

@@ -1,4 +1,5 @@
-//! Bounded control-to-callback selection for one EQ8 post-node spectrum tap.
+//! Bounded atomic control-to-callback membership for visible EQ post-node taps.
+mod targets;
 use crate::spectrum_worker::SpectrumTargetId;
 use hex_engine::{PostNodeIdentity, ProcessorChainOwner};
 use rtrb::{Consumer, Producer, RingBuffer};
@@ -9,6 +10,7 @@ use std::sync::{
         Ordering::{Acquire, Release},
     },
 };
+pub use targets::{MAX_SPECTRUM_TARGETS, SpectrumTargetRequest, SpectrumTargets};
 
 pub const TARGET_COMMAND_CAPACITY: usize = 8;
 pub const MAX_TARGET_COMMANDS_PER_BLOCK: usize = 8;
@@ -40,12 +42,15 @@ pub enum TargetError {
     UnsupportedSampleRate(u32),
     EpochExhausted,
     TokenExhausted,
+    TooManyTargets,
+    DuplicateTarget,
+    InconsistentContext,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TargetCommand {
     epoch: u64,
-    target: Option<SpectrumTarget>,
+    targets: SpectrumTargets,
 }
 
 /// Control-side target publisher. A failed queue push retains the latest full
@@ -54,19 +59,19 @@ struct TargetCommand {
 pub struct SpectrumTargetControl {
     producer: Producer<TargetCommand>,
     desired_epoch: Arc<AtomicU64>,
-    desired: Option<SpectrumTarget>,
+    desired: SpectrumTargets,
     next_epoch: u64,
     next_token: u64,
     pending: Option<TargetCommand>,
     terminal: Option<TargetError>,
 }
 
-/// Callback-side bounded command receiver and currently selected EQ8 owner.
+/// Callback-side bounded command receiver and admitted visible EQ membership.
 pub struct SpectrumTargetCallback {
     consumer: Consumer<TargetCommand>,
     desired_epoch: Arc<AtomicU64>,
     active_epoch: u64,
-    active: Option<SpectrumTarget>,
+    active: SpectrumTargets,
     future: Option<TargetCommand>,
 }
 
@@ -77,7 +82,7 @@ pub fn channel() -> (SpectrumTargetControl, SpectrumTargetCallback) {
         SpectrumTargetControl {
             producer,
             desired_epoch: Arc::clone(&desired_epoch),
-            desired: None,
+            desired: SpectrumTargets::empty(),
             next_epoch: 1,
             next_token: 1,
             pending: None,
@@ -87,19 +92,51 @@ pub fn channel() -> (SpectrumTargetControl, SpectrumTargetCallback) {
             consumer,
             desired_epoch,
             active_epoch: 0,
-            active: None,
+            active: SpectrumTargets::empty(),
             future: None,
         },
     )
 }
 
 impl SpectrumTargetControl {
+    /// First slot for callers that explicitly select a single target.
     pub fn desired(&self) -> Option<SpectrumTarget> {
-        self.desired
+        self.desired.iter().next().map(|(_, target)| target)
+    }
+    pub fn desired_targets(&self) -> &SpectrumTargets {
+        &self.desired
     }
 
-    /// Select a device. Repeating the same selection reuses its opaque token;
-    /// selecting a different device or project generation creates a new token.
+    /// Publish a complete desired set. Unchanged requests retain tokens and
+    /// slots; invalid input leaves the accepted set intact. Full queues retain
+    /// the newest whole set and immediately invalidate the old callback epoch.
+    pub fn set_targets(
+        &mut self,
+        requests: &[SpectrumTargetRequest],
+    ) -> Result<TargetUpdate, TargetError> {
+        if let Some(error) = self.terminal {
+            return Err(error);
+        }
+        let (targets, next_token) = match self.desired.replacing(requests, self.next_token) {
+            Ok(next) => next,
+            Err(error @ TargetError::TokenExhausted) => {
+                self.fail_closed(error);
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
+        if targets == self.desired {
+            return Ok(self.retry_pending());
+        }
+        let epoch = self.reserve_epoch()?;
+        self.next_token = next_token;
+        self.desired = targets;
+        self.pending = Some(TargetCommand { epoch, targets });
+        self.desired_epoch.store(epoch, Release);
+        Ok(self.retry_pending())
+    }
+
+    /// Select exactly one target through the same whole-set protocol.
     pub fn select(
         &mut self,
         identity: PostNodeIdentity,
@@ -107,74 +144,20 @@ impl SpectrumTargetControl {
         activation_floor: u64,
         sample_rate_hz: u32,
     ) -> Result<(SpectrumTarget, TargetUpdate), TargetError> {
-        if identity.device_id == 0 {
-            return Err(TargetError::InvalidDevice);
-        }
-        if match identity.owner {
-            ProcessorChainOwner::Track(id) | ProcessorChainOwner::Return(id) => id == 0,
-            ProcessorChainOwner::Main => false,
-        } {
-            return Err(TargetError::InvalidOwner);
-        }
-        if !matches!(identity.device_type.as_str(), Ok("hex.eq8" | "hex.eq")) {
-            return Err(TargetError::WrongDeviceType);
-        }
-        if activation_floor == 0 {
-            return Err(TargetError::InvalidActivationFloor);
-        }
-        if !(8_000..=192_000).contains(&sample_rate_hz) {
-            return Err(TargetError::UnsupportedSampleRate(sample_rate_hz));
-        }
-        if let Some(error) = self.terminal {
-            return Err(error);
-        }
-        if let Some(current) = self.desired
-            && current.identity == identity
-            && current.project_generation == project_generation
-            && current.activation_floor == activation_floor
-            && current.sample_rate_hz == sample_rate_hz
-        {
-            return Ok((current, self.retry_pending()));
-        }
-        let token = self.next_token;
-        let Some(next_token) = token.checked_add(1) else {
-            self.fail_closed(TargetError::TokenExhausted);
-            return Err(TargetError::TokenExhausted);
-        };
-        self.next_token = next_token;
-        let epoch = self.reserve_epoch()?;
-        let target = SpectrumTarget {
-            token: SpectrumTargetId(token),
+        let update = self.set_targets(&[SpectrumTargetRequest {
             identity,
             project_generation,
             activation_floor,
             sample_rate_hz,
-        };
-        self.desired = Some(target);
-        self.pending = Some(TargetCommand {
-            epoch,
-            target: Some(target),
-        });
-        self.desired_epoch.store(epoch, Release);
-        Ok((target, self.retry_pending()))
+        }])?;
+        self.desired()
+            .map(|target| (target, update))
+            .ok_or(TargetError::InvalidDevice)
     }
 
-    /// Disable the analyzer and invalidate any callback-held target immediately.
+    /// Disable every tap and invalidate callback-held targets immediately.
     pub fn clear(&mut self) -> Result<TargetUpdate, TargetError> {
-        if let Some(error) = self.terminal {
-            return Err(error);
-        }
-        if self.desired.is_none() && self.pending.is_none() {
-            return Ok(TargetUpdate::Queued);
-        }
-        let epoch = self.reserve_epoch()?;
-        self.desired = None;
-        self.pending = Some(TargetCommand {
-            epoch,
-            target: None,
-        });
-        self.desired_epoch.store(epoch, Release);
-        Ok(self.retry_pending())
+        self.set_targets(&[])
     }
 
     /// Retry a previously full queue. Call from the control/UI pump, never from
@@ -206,7 +189,7 @@ impl SpectrumTargetControl {
     }
 
     fn fail_closed(&mut self, error: TargetError) {
-        self.desired = None;
+        self.desired = SpectrumTargets::empty();
         self.pending = None;
         self.terminal = Some(error);
         // MAX is reserved as the terminal invalidation epoch and is never
@@ -234,7 +217,7 @@ impl SpectrumTargetCallback {
 
     fn begin_block_after_epoch_load(&mut self, observed_epoch: u64) {
         if observed_epoch != self.active_epoch {
-            self.active = None;
+            self.active = SpectrumTargets::empty();
             self.active_epoch = observed_epoch;
         }
         for _ in 0..MAX_TARGET_COMMANDS_PER_BLOCK {
@@ -254,12 +237,12 @@ impl SpectrumTargetCallback {
 
         let current_epoch = self.desired_epoch.load(Acquire);
         if current_epoch != self.active_epoch {
-            self.active = None;
+            self.active = SpectrumTargets::empty();
             self.active_epoch = current_epoch;
         }
         match self.future {
             Some(command) if command.epoch == current_epoch => {
-                self.active = command.target;
+                self.active = command.targets;
                 self.future = None;
             }
             Some(command) if command.epoch < current_epoch => self.future = None,
@@ -267,16 +250,27 @@ impl SpectrumTargetCallback {
         }
     }
 
-    /// Return the selected target only while it remains the desired epoch.
+    /// Return active membership only while the complete desired epoch matches.
+    pub fn current_targets(&self) -> Option<&SpectrumTargets> {
+        (self.desired_epoch.load(Acquire) == self.active_epoch).then_some(&self.active)
+    }
     pub fn current(&self) -> Option<SpectrumTarget> {
-        (self.desired_epoch.load(Acquire) == self.active_epoch)
-            .then_some(self.active)
-            .flatten()
+        self.current_targets()?
+            .iter()
+            .next()
+            .map(|(_, target)| target)
     }
 
     pub fn current_epoch(&self) -> u64 {
         self.active_epoch
     }
+}
+
+/// Fresh fixed channel payload quote; opaque allocator/OS costs are excluded.
+pub(crate) fn constructor_storage_quote() -> Option<usize> {
+    use crate::native_callback_owner::ChannelStorage;
+    ChannelStorage::ring_bytes::<TargetCommand>(TARGET_COMMAND_CAPACITY)?
+        .checked_add(std::mem::size_of::<AtomicU64>())
 }
 
 #[cfg(test)]
@@ -301,6 +295,102 @@ mod tests {
             )
             .unwrap()
             .0
+    }
+
+    fn request(device: u64) -> SpectrumTargetRequest {
+        SpectrumTargetRequest {
+            identity: identity(device, ProcessorChainOwner::Track(1)),
+            project_generation: 7,
+            activation_floor: 1,
+            sample_rate_hz: 48_000,
+        }
+    }
+
+    #[test]
+    fn complete_chain_membership_preserves_slots_and_tokens_across_focus_order_and_removal() {
+        assert_eq!(MAX_SPECTRUM_TARGETS, hex_project::MAX_DEVICES_PER_TRACK);
+        let (mut control, mut callback) = channel();
+        let mut requests: Vec<_> = (1..=MAX_SPECTRUM_TARGETS as u64).map(request).collect();
+        control.set_targets(&requests).unwrap();
+        callback.begin_block();
+        let original = *callback.current_targets().unwrap();
+        assert_eq!(original.len(), MAX_SPECTRUM_TARGETS);
+        for (slot, target) in original.iter() {
+            assert_eq!(original.find(target.identity), Some((slot, target)));
+        }
+        requests.reverse();
+        control.set_targets(&requests).unwrap();
+        assert_eq!(
+            callback.current_targets(),
+            Some(&original),
+            "order is not membership"
+        );
+        requests.retain(|request| request.identity.device_id > 2);
+        control.set_targets(&requests).unwrap();
+        assert!(
+            callback.current_targets().is_none(),
+            "publish invalidates the entire old epoch"
+        );
+        callback.begin_block();
+        assert_eq!(
+            callback.current_targets().unwrap().len(),
+            MAX_SPECTRUM_TARGETS - 2
+        );
+        requests.extend([request(65), request(66)]);
+        control.set_targets(&requests).unwrap();
+        callback.begin_block();
+        let current = callback.current_targets().unwrap();
+        for (slot, target) in original.iter().filter(|(_, t)| t.identity.device_id > 2) {
+            assert_eq!(
+                current.get(slot),
+                Some(target),
+                "unrelated windows keep their capture identity"
+            );
+        }
+        assert!(current.find(request(1).identity).is_none());
+        assert!(current.find(request(65).identity).is_some());
+        assert_eq!(current.len(), MAX_SPECTRUM_TARGETS);
+    }
+
+    #[test]
+    fn malformed_sets_are_atomic_and_full_queues_retry_the_latest_whole_membership() {
+        let (mut control, mut callback) = channel();
+        control.set_targets(&[request(1), request(2)]).unwrap();
+        callback.begin_block();
+        let original = *control.desired_targets();
+        let mut foreign = request(3);
+        foreign.project_generation += 1;
+        for (requests, error) in [
+            (vec![request(1), request(1)], TargetError::DuplicateTarget),
+            (vec![request(1), foreign], TargetError::InconsistentContext),
+            (
+                (1..=MAX_SPECTRUM_TARGETS as u64 + 1).map(request).collect(),
+                TargetError::TooManyTargets,
+            ),
+        ] {
+            assert_eq!(control.set_targets(&requests), Err(error));
+            assert_eq!(control.desired_targets(), &original);
+            assert_eq!(callback.current_targets(), Some(&original));
+        }
+        for i in 0..TARGET_COMMAND_CAPACITY {
+            control
+                .set_targets(&[request(10 + i as u64), request(100 + i as u64)])
+                .unwrap();
+        }
+        assert_eq!(
+            control
+                .set_targets(&[request(300), request(400), request(500)])
+                .unwrap(),
+            TargetUpdate::PendingQueueFull
+        );
+        assert!(callback.current_targets().is_none());
+        callback.begin_block();
+        assert_eq!(control.retry_pending(), TargetUpdate::Queued);
+        callback.begin_block();
+        let current = callback.current_targets().unwrap();
+        assert_eq!(current, control.desired_targets());
+        assert_eq!(current.len(), 3);
+        assert!(current.find(request(500).identity).is_some());
     }
 
     #[test]

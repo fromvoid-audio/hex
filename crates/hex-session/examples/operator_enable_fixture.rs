@@ -66,12 +66,6 @@ fn project(mode: Mode) -> Result<Project, Box<dyn Error>> {
     else {
         return Err("midi track creation returned no track id".into());
     };
-    let instrument = editor
-        .project()
-        .track(track)
-        .and_then(|track| track.instrument())
-        .ok_or("new midi track has no instrument")?;
-    let device = instrument.id();
     let mut state = hex_engine::default_native_device_state_for_class(
         NativeDeviceClass::Instrument,
         DeviceTypeId::from_static("hex.instrument.operator"),
@@ -116,7 +110,7 @@ fn project(mode: Mode) -> Result<Project, Box<dyn Error>> {
             state = patch(&state, 87, ParameterValue::Float(35.0))?;
         }
     }
-    editor.execute(Command::ReplaceDeviceState { device, state })?;
+    editor.execute(Command::InsertInstrument { track, state })?;
     // Keep the output conservative for a diagnostic patch with four carriers.
     editor.execute(Command::MasterGain { gain: 0.5 })?;
 

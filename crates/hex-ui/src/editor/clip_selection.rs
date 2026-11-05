@@ -23,7 +23,8 @@ impl ClipSelection {
         }
     }
     fn select(&mut self, project: &Project, track: TrackId, clip: ClipId, modifiers: Modifiers) {
-        if modifiers.shift
+        let intent = hex_widgets::RectangleSelectionPolicy::Range.intent(modifiers);
+        if let hex_widgets::RectangleSelection::Range { additive } = intent
             && let Some((anchor_track, anchor_clip)) = self.anchor
             && anchor_track == track
         {
@@ -31,7 +32,7 @@ impl ClipSelection {
             if let Some(a) = ordered.iter().position(|id| *id == anchor_clip)
                 && let Some(b) = ordered.iter().position(|id| *id == clip)
             {
-                let mut members = if modifiers.platform {
+                let mut members = if additive {
                     self.members.clone()
                 } else {
                     BTreeSet::new()
@@ -41,7 +42,11 @@ impl ClipSelection {
                 return;
             }
         }
-        if modifiers.platform {
+        if matches!(
+            intent,
+            hex_widgets::RectangleSelection::Toggle
+                | hex_widgets::RectangleSelection::Range { additive: true }
+        ) {
             let mut members = self.members.clone();
             if !members.remove(&clip) {
                 members.insert(clip);
@@ -103,9 +108,14 @@ fn ordered_clips(project: &Project, track: TrackId) -> Vec<ClipId> {
 }
 impl EditorView {
     /// Select only actual committed copy births, never the integer ID range.
-    pub(super) fn select_copied_group(&mut self, first: ClipId, last: ClipId, count: usize) {
+    pub(super) fn select_copied_group(
+        &mut self,
+        first: ClipId,
+        last: ClipId,
+        count: usize,
+    ) -> bool {
         let Some(state) = &self.state else {
-            return;
+            return false;
         };
         let mut members = BTreeSet::new();
         let mut primary = None;
@@ -124,10 +134,10 @@ impl EditorView {
             }
         }
         if members.len() != count || !members.contains(&last) {
-            return;
+            return false;
         }
         let Some((track, clip)) = primary else {
-            return;
+            return false;
         };
         self.clip_selection.apply_members(members);
         self.clip_selection.anchor = Some((track, clip));
@@ -137,8 +147,9 @@ impl EditorView {
         self.midi_selection.clear();
         self.midi_note_gesture = None;
         self.midi_group_gesture = None;
-        self.piano_beat_start = hex_project::BeatTime::ZERO;
+        self.piano_beat_start = 0;
         self.midi_hit_cycle = None;
+        true
     }
     pub(super) fn reconcile_clip_selection(&mut self) {
         // A lane/header focus change clears the visible clip selection. A later
@@ -169,6 +180,49 @@ impl EditorView {
             vec![primary]
         }
     }
+    /// Whole-clip selection supplies Play's start, as in Live: the earliest
+    /// selected Arrangement clip start in frames, across tracks. Audio starts
+    /// are frame-anchored; MIDI beat starts convert through the tempo map, and
+    /// one that maps beyond the frame range is skipped. An offscreen start still
+    /// applies and the viewport does not move. Stale and Session IDs are ignored.
+    /// A non-empty time selection outranks this in `playback_start_frame`; a
+    /// point cursor placed inside the selected clip afterwards keeps its frame,
+    /// so split-at-cursor stays visible. While this applies the point cursor is
+    /// hidden but retained, and returns when the clip selection clears.
+    pub(super) fn selected_clip_play_start(&self) -> Option<u64> {
+        let primary = self.selected_clip?;
+        // Any newly placed cursor restores the ordinary precedence below.
+        if self.loop_start_over_clip == Some(primary) && self.edit_cursor.is_none() {
+            return None;
+        }
+        if self.edit_cursor_in_selected_clip == Some(primary)
+            && self
+                .edit_cursor
+                .is_some_and(|cursor| cursor.generation == self.project_generation)
+        {
+            return None;
+        }
+        let project = &self.state.as_ref()?.project;
+        let tempo = project.tempo_map();
+        project
+            .tracks()
+            .iter()
+            .flat_map(|track| {
+                let audio = track
+                    .clips()
+                    .iter()
+                    .filter(|clip| self.clip_is_selected(clip.id()))
+                    .map(|clip| Some(clip.start()));
+                let midi = track
+                    .midi_clips()
+                    .iter()
+                    .filter(|clip| self.clip_is_selected(clip.id()))
+                    .map(|clip| tempo.beat_to_frame(clip.start()).ok());
+                audio.chain(midi)
+            })
+            .flatten()
+            .min()
+    }
     pub(super) fn select_clip_header(
         &mut self,
         track: TrackId,
@@ -183,12 +237,29 @@ impl EditorView {
             return;
         }
         // A deliberate whole-clip header click supersedes an unrelated time
-        // rectangle; body gestures retain their separate range-copy contract.
+        // rectangle and a cursor placed inside the clip; body gestures retain
+        // their separate range-copy contract.
         self.time_selection = None;
+        self.edit_cursor_in_selected_clip = None;
+        self.loop_start_over_clip = None;
         self.time_selection_project_scope = false;
         let mut next_focus = None;
         if let Some(state) = &self.state {
             selection.select(&state.project, track, clip, modifiers);
+            if modifiers.shift
+                && (self.arrangement_focus.projection.enabled
+                    || self.arrangement_focus.projection.filtering())
+                && self.mode == super::EditorMode::Arrangement
+            {
+                selection.apply_members(
+                    selection
+                        .members
+                        .iter()
+                        .copied()
+                        .filter(|id| self.arrangement_clip_visible(*id))
+                        .collect(),
+                );
+            }
             if !selection.members.contains(&clip) {
                 self.selected_clip = None;
                 if let Some(primary) = selection.members.iter().next_back().copied() {
@@ -479,5 +550,33 @@ mod tests {
             selected(&editor, &mut visual),
             BTreeSet::from([clips[0], clips[1], clips[3], clips[4]])
         );
+    }
+    #[test]
+    fn additive_range_on_another_track_preserves_toggle_fallback() {
+        let (project, clips, other) = fixture();
+        let owner = |clip| {
+            project
+                .tracks()
+                .iter()
+                .find(|track| {
+                    track.clips().iter().any(|c| c.id() == clip)
+                        || track.midi_clips().iter().any(|c| c.id() == clip)
+                })
+                .unwrap()
+                .id()
+        };
+        let mut selection = super::ClipSelection::default();
+        selection.only(owner(clips[0]), clips[0]);
+        let modifiers = Modifiers {
+            platform: true,
+            shift: true,
+            ..Default::default()
+        };
+        selection.select(&project, owner(other), other, modifiers);
+        assert_eq!(selection.members, BTreeSet::from([clips[0], other]));
+        // If the range anchor has been invalidated, command+shift still toggles.
+        selection.anchor = None;
+        selection.select(&project, owner(other), other, modifiers);
+        assert_eq!(selection.members, BTreeSet::from([clips[0]]));
     }
 }

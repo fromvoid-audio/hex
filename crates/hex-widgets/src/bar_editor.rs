@@ -1,10 +1,14 @@
-//! Bounded normalized bar editor. Domain values and stroke interpolation belong to the owner.
+//! Bounded normalized bar editor. Domain values and paint interpolation belong
+//! to the owner. Clear events identify the inclusive, bounded crossed columns;
+//! owners set those values to canonical zero in the same gesture transaction.
+//! A held stroke owns the shared Window pointer lease; cancellation emits its
+//! existing typed intent, independently of canonical acknowledgement/history.
 use crate::ControlStyle;
 use gpui::{
-    App, Bounds, ContentMask, Context, Element, ElementId, Entity, EventEmitter, FocusHandle,
-    Focusable, GlobalElementId, LayoutId, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PathBuilder, Pixels, Point, SharedString, Style, Subscription, Window, canvas,
-    div, point, prelude::*, px, rgb,
+    App, Bounds, ContentMask, Context, CursorStyle, Element, ElementId, Entity, EventEmitter,
+    FocusHandle, Focusable, GlobalElementId, LayoutId, Modifiers, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, Point, SharedString, Style, Subscription,
+    Window, canvas, div, point, prelude::*, px, rgb,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,10 +19,23 @@ pub enum BarEditorPhase {
     Cancel,
 }
 #[derive(Clone, Copy, Debug)]
+pub enum BarEditorMode {
+    Paint,
+    Clear,
+}
+#[derive(Clone, Copy, Debug)]
 pub struct BarEditorEvent {
     pub phase: BarEditorPhase,
     pub position: [f32; 2],
     pub modifiers: Modifiers,
+    pub mode: BarEditorMode,
+    /// Inclusive crossed column indices, each strictly below the visible count.
+    pub columns: [usize; 2],
+}
+#[derive(Clone, Copy)]
+struct Stroke {
+    modifiers: Modifiers,
+    button: MouseButton,
 }
 /// Fixed 64-column storage; the owner chooses a visible prefix.
 pub struct BarEditor {
@@ -27,7 +44,8 @@ pub struct BarEditor {
     count: usize,
     style: ControlStyle,
     bounds: Option<Bounds<Pixels>>,
-    drag: Option<Modifiers>,
+    drag: Option<Stroke>,
+    enabled: bool,
     last: [f32; 2],
     selected: usize,
     focus: FocusHandle,
@@ -42,10 +60,21 @@ impl BarEditor {
             style,
             bounds: None,
             drag: None,
+            enabled: true,
             last: [0.0; 2],
             selected: 0,
             focus: cx.focus_handle().tab_index(0).tab_stop(true),
             blur: None,
+        }
+    }
+    /// Disabling cancels an active preview before refusing further input.
+    pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.enabled != enabled {
+            if !enabled {
+                self.cancel(cx);
+            }
+            self.enabled = enabled;
+            cx.notify();
         }
     }
     pub fn set_values(
@@ -71,11 +100,13 @@ impl BarEditor {
         Ok(())
     }
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
-        if let Some(modifiers) = self.drag.take() {
+        if let Some(stroke) = self.drag.take() {
             cx.emit(BarEditorEvent {
                 phase: BarEditorPhase::Cancel,
                 position: self.last,
-                modifiers,
+                modifiers: stroke.modifiers,
+                mode: stroke.mode(),
+                columns: [self.selected; 2],
             });
             cx.notify();
         }
@@ -85,65 +116,135 @@ impl BarEditor {
         if b.size.width <= px(0.0) || b.size.height <= px(0.0) {
             return None;
         }
-        Some([
-            ((point.x - b.origin.x) / b.size.width).clamp(0.0, 1.0),
-            (1.0 - (point.y - b.origin.y) / b.size.height).clamp(0.0, 1.0),
-        ])
+        let position = [
+            (point.x - b.origin.x) / b.size.width,
+            1.0 - (point.y - b.origin.y) / b.size.height,
+        ];
+        position
+            .iter()
+            .all(|v| v.is_finite())
+            .then(|| position.map(|v| v.clamp(0.0, 1.0)))
     }
     fn emit(
         &mut self,
         phase: BarEditorPhase,
         position: [f32; 2],
         modifiers: Modifiers,
+        mode: BarEditorMode,
         cx: &mut Context<Self>,
     ) {
+        let selected = ((position[0] * self.count as f32) as usize).min(self.count - 1);
+        let columns = if matches!(phase, BarEditorPhase::Begin) {
+            [selected; 2]
+        } else {
+            [self.selected.min(selected), self.selected.max(selected)]
+        };
+        let position = if matches!(mode, BarEditorMode::Clear) {
+            [position[0], 0.0]
+        } else {
+            position
+        };
         self.last = position;
-        self.selected = ((position[0] * self.count as f32) as usize).min(self.count - 1);
+        self.selected = selected;
         cx.emit(BarEditorEvent {
             phase,
             position,
             modifiers,
+            mode,
+            columns,
         });
         cx.notify();
     }
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.drag.is_some() {
+        if !self.enabled
+            || self.drag.is_some()
+            || !matches!(event.button, MouseButton::Left | MouseButton::Right)
+        {
             return;
         }
         if let Some(position) = self.position(event.position) {
-            self.drag = Some(event.modifiers);
+            let owner = cx.entity().downgrade();
+            let cancelled = owner.clone();
+            if !window.capture_pointer(
+                cx.entity_id(),
+                event.button,
+                CursorStyle::Arrow,
+                move |event, _, cx| {
+                    let _ = owner.update(cx, |editor, cx| {
+                        if let Some(event) = event.downcast_ref::<MouseMoveEvent>() {
+                            editor.pointer_move(event, cx);
+                        } else if let Some(event) = event.downcast_ref::<MouseUpEvent>() {
+                            editor.pointer_up(event, cx);
+                        }
+                    });
+                },
+                move |_, cx| {
+                    let _ = cancelled.update(cx, |editor, cx| editor.cancel(cx));
+                },
+                cx,
+            ) {
+                return;
+            }
+            let stroke = Stroke {
+                modifiers: event.modifiers,
+                button: event.button,
+            };
+            self.drag = Some(stroke);
             self.focus.focus(window);
-            self.emit(BarEditorPhase::Begin, position, event.modifiers, cx);
+            self.emit(
+                BarEditorPhase::Begin,
+                position,
+                event.modifiers,
+                stroke.mode(),
+                cx,
+            );
             cx.stop_propagation();
         }
     }
     fn pointer_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) -> bool {
-        let Some(modifiers) = self.drag else {
+        let Some(stroke) = self.drag else {
             return false;
         };
-        if event.pressed_button != Some(MouseButton::Left) {
+        if event.pressed_button != Some(stroke.button) {
             self.cancel(cx);
             return true;
         }
         if let Some(position) = self.position(event.position) {
-            self.emit(BarEditorPhase::Change, position, modifiers, cx);
+            self.emit(
+                BarEditorPhase::Change,
+                position,
+                stroke.modifiers,
+                stroke.mode(),
+                cx,
+            );
         }
         true
     }
     fn pointer_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) -> bool {
-        if event.button != MouseButton::Left {
-            return false;
-        }
-        let Some(modifiers) = self.drag.take() else {
+        let Some(stroke) = self.drag else {
             return false;
         };
+        if event.button != stroke.button {
+            return false;
+        }
+        self.drag = None;
         self.emit(
             BarEditorPhase::Commit,
             self.position(event.position).unwrap_or(self.last),
-            modifiers,
+            stroke.modifiers,
+            stroke.mode(),
             cx,
         );
         true
+    }
+}
+impl Stroke {
+    fn mode(self) -> BarEditorMode {
+        if self.button == MouseButton::Right {
+            BarEditorMode::Clear
+        } else {
+            BarEditorMode::Paint
+        }
     }
 }
 impl EventEmitter<BarEditorEvent> for BarEditor {}
@@ -171,7 +272,15 @@ impl gpui::Render for BarEditor {
             .w_full()
             .h_full()
             .track_focus(&self.focus)
+            .when(!self.enabled, |element| element.opacity(0.5))
             .on_key_down(cx.listener(|editor, event: &gpui::KeyDownEvent, _, cx| {
+                if !editor.enabled {
+                    return;
+                }
+                if editor.drag.is_some() && event.keystroke.key != "escape" {
+                    cx.stop_propagation();
+                    return;
+                }
                 match event.keystroke.key.as_str() {
                     "escape" => editor.cancel(cx),
                     "left" => editor.selected = editor.selected.saturating_sub(1),
@@ -185,8 +294,20 @@ impl gpui::Render for BarEditor {
                             })
                         .clamp(0.0, 1.0);
                         let p = [(editor.selected as f32 + 0.5) / editor.count as f32, y];
-                        editor.emit(BarEditorPhase::Begin, p, event.keystroke.modifiers, cx);
-                        editor.emit(BarEditorPhase::Commit, p, event.keystroke.modifiers, cx);
+                        editor.emit(
+                            BarEditorPhase::Begin,
+                            p,
+                            event.keystroke.modifiers,
+                            BarEditorMode::Paint,
+                            cx,
+                        );
+                        editor.emit(
+                            BarEditorPhase::Commit,
+                            p,
+                            event.keystroke.modifiers,
+                            BarEditorMode::Paint,
+                            cx,
+                        );
                     }
                     _ => return,
                 }
@@ -194,6 +315,7 @@ impl gpui::Render for BarEditor {
                 cx.stop_propagation();
             }))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::mouse_down))
             .child(
                 canvas(
                     |_, _, _| (),
@@ -299,29 +421,14 @@ impl Element for BarEditorCaptureElement {
         _: &mut Self::RequestLayoutState,
         _: &mut Self::PrepaintState,
         window: &mut Window,
-        _: &mut App,
+        cx: &mut App,
     ) {
-        let entity = self.entity.clone();
-        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-            if !phase.capture() {
-                return;
-            }
-            let handled = entity.update(cx, |graph, cx| graph.pointer_move(event, cx));
-            if handled {
-                cx.stop_propagation();
-                window.refresh();
-            }
-        });
-        let entity = self.entity.clone();
-        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-            if !phase.capture() {
-                return;
-            }
-            let handled = entity.update(cx, |graph, cx| graph.pointer_up(event, cx));
-            if handled {
-                cx.stop_propagation();
-                window.refresh();
-            }
-        });
+        if self.entity.read(cx).drag.is_some() {
+            window.renew_pointer_capture(self.entity.entity_id(), CursorStyle::Arrow);
+        }
     }
 }
+
+#[cfg(test)]
+#[path = "bar_editor_tests.rs"]
+mod tests;

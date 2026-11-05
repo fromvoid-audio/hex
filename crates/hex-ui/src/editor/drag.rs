@@ -4,6 +4,7 @@ use gpui::{Context, Window};
 use hex_project::Command;
 use hex_project::{BeatTime, ClipId, Project, TrackId, TrimEdge};
 use hex_session::service::{AudioPreview, Request};
+use hex_widgets::{RectangleCapture, RectanglePart};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -44,7 +45,7 @@ pub(super) struct ClipDrag {
     pub(super) group: Rc<RefCell<ClipDragGroup>>,
     pub(super) position: ClipPosition,
     pub(super) grab_offset: Rc<Cell<Option<u64>>>,
-    pub(super) origin_pointer_x: Rc<Cell<Option<f32>>>,
+    pub(super) capture: Rc<Cell<Option<PointerDown>>>,
     pub(super) viewport_start: u64,
     pub(super) viewport_length: u64,
     pub(super) scroll: super::drag_autoscroll::DragScroll,
@@ -58,6 +59,20 @@ pub(super) struct ClipDrag {
     pub(super) ghost_waveform: Option<std::sync::Arc<hex_session::CachedWaveform>>,
     pub(super) lane_hovered: Rc<Cell<bool>>,
     pub(super) last_pointer: Rc<Cell<Option<(f32, f32)>>>,
+}
+
+impl ClipDrag {
+    pub(super) fn alias_copy(&self) -> bool {
+        self.copy_modifier.get() && self.snap_modifier.get()
+    }
+
+    pub(super) fn retire(&self) {
+        self.preview.set(None);
+        self.group.borrow_mut().capture = None;
+        self.destination.set(None);
+        self.insertion_line_y.set(None);
+        self.lane_hovered.set(false);
+    }
 }
 
 /// In-window drag payload for a WAV file from the library browser.
@@ -95,12 +110,13 @@ pub(super) struct NativeDeviceDropTarget {
     pub(super) replace: Option<hex_project::DeviceId>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum NativeDeviceDragSource {
     Browser {
         class: hex_engine::NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
     },
+    PluginEffect(std::sync::Arc<hex_plugin_catalog::EffectSelection>),
     Existing {
         device: hex_project::DeviceId,
         class: hex_engine::NativeDeviceClass,
@@ -185,28 +201,32 @@ fn lane_contains_pointer(pointer_x: f32, pointer_y: f32, lane: LaneBounds) -> bo
         && pointer_y < bottom
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct PointerDown {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ClipPointerKey {
     pub(super) generation: u64,
     pub(super) clip: ClipId,
-    pub(super) edge: Option<TrimEdge>,
-    pub(super) x: f32,
 }
-
+pub(super) type PointerDown = RectangleCapture<ClipPointerKey>;
+pub(super) fn rectangle_part(edge: Option<TrimEdge>) -> RectanglePart {
+    match edge {
+        None => RectanglePart::Body,
+        Some(TrimEdge::Left) => RectanglePart::Leading,
+        Some(TrimEdge::Right) => RectanglePart::Trailing,
+    }
+}
+#[cfg(test)]
 fn take_pointer_down(
     pending: &mut Option<PointerDown>,
     generation: u64,
     clip: ClipId,
     edge: Option<TrimEdge>,
 ) -> Option<f32> {
-    let matches = pending.is_some_and(|down| {
-        down.generation == generation && down.clip == clip && down.edge == edge
-    });
-    if matches {
-        pending.take().map(|down| down.x)
-    } else {
-        None
-    }
+    PointerDown::take_matching(
+        pending,
+        ClipPointerKey { generation, clip },
+        rectangle_part(edge),
+    )
+    .map(|capture| capture.origin_x)
 }
 
 /// Convert the pointer's position in the visible part of a clip to its offset
@@ -311,10 +331,9 @@ fn candidate_position(
         ClipPosition::Midi { length, .. } => {
             if drag.scroll.get().viewport.is_none()
                 && target_track == Some(drag.source_track)
-                && drag
-                    .origin_pointer_x
-                    .get()
-                    .is_some_and(|origin| (pointer_x - origin).abs() < 0.5)
+                && drag.capture.get().is_some_and(|mut capture| {
+                    capture.update(pointer_x).is_some() && !capture.displaced(0.5)
+                })
             {
                 return Some(drag.position);
             }
@@ -481,7 +500,7 @@ pub(super) fn is_noop(drag: &ClipDrag, state: &DropState<'_>) -> bool {
     drag.source_track == state.target_track && drag.position == state.position
 }
 
-fn group_position(position: ClipPosition) -> hex_project::ClipGroupPosition {
+pub(super) fn group_position(position: ClipPosition) -> hex_project::ClipGroupPosition {
     match position {
         ClipPosition::Audio { start, .. } => hex_project::ClipGroupPosition::Audio(start),
         ClipPosition::Midi { start, .. } => hex_project::ClipGroupPosition::Midi(start),
@@ -523,15 +542,18 @@ fn move_to_new_track_command(
     name: String,
     before_track: Option<TrackId>,
     position: ClipPosition,
+    gain: f32,
 ) -> Command {
     match position {
         ClipPosition::Audio { start, .. } => Command::MoveClipToNewTrack {
+            initial_gain: Some(gain),
             clip,
             name,
             before_track,
             start,
         },
         ClipPosition::Midi { start, .. } => Command::MoveMidiClipToNewTrack {
+            initial_gain: Some(gain),
             clip,
             name,
             before_track,
@@ -545,15 +567,18 @@ fn copy_to_new_track_command(
     name: String,
     before_track: Option<TrackId>,
     position: ClipPosition,
+    gain: f32,
 ) -> Command {
     match position {
         ClipPosition::Audio { start, .. } => Command::CopyClipToNewTrack {
+            initial_gain: Some(gain),
             clip,
             name,
             before_track,
             start,
         },
         ClipPosition::Midi { start, .. } => Command::CopyMidiClipToNewTrack {
+            initial_gain: Some(gain),
             clip,
             name,
             before_track,
@@ -570,12 +595,12 @@ impl super::EditorView {
         edge: Option<TrimEdge>,
         x: f32,
     ) {
-        self.pointer_down = x.is_finite().then_some(PointerDown {
-            generation,
-            clip,
-            edge,
+        self.pointer_down = PointerDown::begin(
+            ClipPointerKey { generation, clip },
+            rectangle_part(edge),
             x,
-        });
+            true,
+        );
     }
 
     pub(super) fn take_pointer_down(
@@ -583,8 +608,12 @@ impl super::EditorView {
         generation: u64,
         clip: ClipId,
         edge: Option<TrimEdge>,
-    ) -> Option<f32> {
-        take_pointer_down(&mut self.pointer_down, generation, clip, edge)
+    ) -> Option<PointerDown> {
+        PointerDown::take_matching(
+            &mut self.pointer_down,
+            ClipPointerKey { generation, clip },
+            rectangle_part(edge),
+        )
     }
 
     pub(super) fn clear_pointer_down(
@@ -593,11 +622,11 @@ impl super::EditorView {
         clip: ClipId,
         edge: Option<TrimEdge>,
     ) {
-        if self.pointer_down.is_some_and(|down| {
-            down.generation == generation && down.clip == clip && down.edge == edge
-        }) {
-            self.pointer_down = None;
-        }
+        PointerDown::take_matching(
+            &mut self.pointer_down,
+            ClipPointerKey { generation, clip },
+            rectangle_part(edge),
+        );
     }
 
     pub(super) fn drag_start_is_current(&self, drag: &ClipDrag) -> bool {
@@ -607,11 +636,10 @@ impl super::EditorView {
             {
                 return false;
             }
-            if self.opening_project
-                || self.close_prompt_open
-                || self.worker_requests_pending != 0
-                || !self.pending_requests.is_empty()
-            {
+            // Source validity follows the installed canonical state. Harmless
+            // worker work does not retire a held gesture; existing-track release
+            // also validates this captured revision on the worker before editing.
+            if self.opening_project || self.close_prompt_open {
                 return false;
             }
             let Some(state) = self.state.as_ref() else {
@@ -715,6 +743,11 @@ impl super::EditorView {
         pointer_y: f32,
     ) -> (Option<DropPreview>, bool) {
         drag.group.borrow_mut().invalidate();
+        let Some(pointer_x) = hex_widgets::rectangle_pointer(&drag.capture, pointer_x) else {
+            drag.destination.set(None);
+            drag.insertion_line_y.set(None);
+            return (None, false);
+        };
         if !self.drag_start_is_current(drag) {
             drag.destination.set(None);
             drag.insertion_line_y.set(None);
@@ -759,6 +792,28 @@ impl super::EditorView {
         (None, false)
     }
 
+    /// Track destinations include attached automation rows, while clip editing
+    /// continues to use the separately measured body bounds in `drag_lanes`.
+    /// Both bounds publish together under the current painted body's epoch.
+    pub(super) fn painted_track_drop_lane(&self, track: TrackId) -> Option<LaneBounds> {
+        if !self.arrangement_track_visible(track)
+            || self.drag_lane_epochs.get(&track) != Some(&self.drag_layout_generation)
+        {
+            return None;
+        }
+        self.track_drop_lanes.get(&track).copied()
+    }
+    pub(super) fn hovered_track_drop_target(
+        &self,
+        x: f32,
+        y: f32,
+    ) -> Option<(TrackId, LaneBounds)> {
+        self.drag_lanes.keys().find_map(|track| {
+            let lane = self.painted_track_drop_lane(*track)?;
+            lane_contains_pointer(x, y, lane).then_some((*track, lane))
+        })
+    }
+
     pub(super) fn hovered_drag_target(
         &self,
         pointer_x: f32,
@@ -767,7 +822,8 @@ impl super::EditorView {
         self.drag_lanes
             .iter()
             .filter(|(track, _)| {
-                self.drag_lane_epochs.get(track) == Some(&self.drag_layout_generation)
+                self.arrangement_track_visible(**track)
+                    && self.drag_lane_epochs.get(track) == Some(&self.drag_layout_generation)
             })
             .find_map(|(track, lane)| {
                 lane_contains_pointer(pointer_x, pointer_y, *lane).then_some((*track, *lane))
@@ -775,14 +831,11 @@ impl super::EditorView {
     }
 
     pub(super) fn retire_active_clip_drag(&mut self) -> bool {
+        self.drag_bounce_held = false;
         let Some(drag) = self.active_clip_drag.take() else {
             return false;
         };
-        drag.preview.set(None);
-        drag.group.borrow_mut().capture = None;
-        drag.destination.set(None);
-        drag.insertion_line_y.set(None);
-        drag.lane_hovered.set(false);
+        drag.retire();
         true
     }
 
@@ -882,18 +935,80 @@ impl super::EditorView {
             cx.notify();
             return;
         }
+        let gain = match self.track_defaults.captured_gain() {
+            Ok(gain) => gain,
+            Err(error) => {
+                self.error = Some(error.into());
+                self.clear_clip_drag(drag.project_generation, drag.clip);
+                cx.notify();
+                return;
+            }
+        };
         let count = self
             .state
             .as_ref()
             .map_or(0, |state| state.project.tracks().len());
         let name = format!("track {}", count + 1);
-        let command = if drag.copy_modifier.get() {
-            copy_to_new_track_command(drag.clip, name, before_track, position)
+        if drag.alias_copy() {
+            let command = Command::DuplicateAliasClipToNewTrack {
+                initial_gain: Some(gain),
+                clip: drag.clip,
+                name,
+                before_track,
+                position: group_position(position),
+            };
+            let copy_intent = super::group_copy::Pending::capture(self, &command);
+            let Some(source) = self
+                .state
+                .as_ref()
+                .map(|state| std::sync::Arc::clone(&state.project))
+            else {
+                self.clear_clip_drag(drag.project_generation, drag.clip);
+                return;
+            };
+            self.pending_clip_move = self
+                .active_clip_drag
+                .take()
+                .map(|drag| super::pending_clip_move::Pending::new(drag, command.clone(), source));
+            let before_pending = self.worker_requests_pending;
+            if self.enqueue(Request::MoveExistingClips {
+                project_generation: drag.project_generation,
+                revision: drag.revision,
+                command,
+            }) {
+                if let Some(mut intent) = copy_intent {
+                    if self.worker_requests_pending > before_pending {
+                        intent.submitted(self.worker_requests_pending);
+                    }
+                    self.pending_group_copy = Some(intent);
+                }
+            } else {
+                self.retire_pending_clip_move();
+                self.clear_clip_drag(drag.project_generation, drag.clip);
+            }
         } else {
-            move_to_new_track_command(drag.clip, name, before_track, position)
-        };
-        self.clear_clip_drag(drag.project_generation, drag.clip);
-        self.enqueue(Request::Edit(command));
+            let command = if drag.copy_modifier.get() {
+                copy_to_new_track_command(drag.clip, name, before_track, position, gain)
+            } else {
+                move_to_new_track_command(drag.clip, name, before_track, position, gain)
+            };
+            let Some(source) = self
+                .state
+                .as_ref()
+                .map(|state| std::sync::Arc::clone(&state.project))
+            else {
+                self.clear_clip_drag(drag.project_generation, drag.clip);
+                return;
+            };
+            self.pending_clip_move = self
+                .active_clip_drag
+                .take()
+                .map(|drag| super::pending_clip_move::Pending::new(drag, command.clone(), source));
+            if !self.enqueue(Request::Edit(command)) {
+                self.retire_pending_clip_move();
+                self.clear_clip_drag(drag.project_generation, drag.clip);
+            }
+        }
         cx.notify();
     }
 
@@ -907,7 +1022,10 @@ impl super::EditorView {
         self.arrangement_device_preview = None;
         self.retire_active_clip_drag();
         self.active_browser_audio_drag = None;
-        if matches!(drag.source, NativeDeviceDragSource::Browser { .. }) {
+        if matches!(
+            drag.source,
+            NativeDeviceDragSource::Browser { .. } | NativeDeviceDragSource::PluginEffect(_)
+        ) {
             // Make the native-device receiver visible as soon as a catalog drag
             // becomes active. Keep the selected track/clip untouched: a missing
             // target remains an empty device pane and the eventual drop can refuse.
@@ -928,7 +1046,9 @@ impl super::EditorView {
             return false;
         }
         match drag.source {
-            NativeDeviceDragSource::Browser { .. } => true,
+            NativeDeviceDragSource::Browser { .. } | NativeDeviceDragSource::PluginEffect(_) => {
+                true
+            }
             NativeDeviceDragSource::Existing {
                 device,
                 class,
@@ -975,6 +1095,7 @@ impl super::EditorView {
         {
             self.arrangement_device_preview = None;
             self.active_native_device_drag = None;
+            self.device_panel.drag_copy = None;
         }
         drag.destination.set(None);
         drag.return_destination.set(None);
@@ -985,6 +1106,7 @@ impl super::EditorView {
         let Some(drag) = self.active_native_device_drag.take() else {
             return false;
         };
+        self.device_panel.drag_copy = None;
         drag.destination.set(None);
         drag.return_destination.set(None);
         true
@@ -1032,14 +1154,14 @@ impl super::EditorView {
             return None;
         }
         let state = self.state.as_ref()?;
-        let tracks = state.project.tracks();
+        let tracks = self.arrangement_track_indices();
         if tracks.is_empty() {
             return Some((None, timeline, pointer_y));
         }
 
-        let first = tracks.first()?;
+        let first = state.project.tracks().get(*tracks.first()?)?;
         if self.drag_lane_epochs.get(&first.id()) == Some(&self.drag_layout_generation) {
-            let first_lane = *self.drag_lanes.get(&first.id())?;
+            let first_lane = self.painted_track_drop_lane(first.id())?;
             // Reserve the same narrow insertion band at the first row's top,
             // without adding empty layout space above the tracks.
             if first_lane.top >= body.top && pointer_y <= first_lane.top + 3.0 {
@@ -1048,26 +1170,26 @@ impl super::EditorView {
         }
 
         for index in 1..tracks.len() {
-            let previous = tracks.get(index - 1)?;
-            let next = tracks.get(index)?;
+            let previous = state.project.tracks().get(*tracks.get(index - 1)?)?;
+            let next = state.project.tracks().get(*tracks.get(index)?)?;
             if self.drag_lane_epochs.get(&previous.id()) != Some(&self.drag_layout_generation)
                 || self.drag_lane_epochs.get(&next.id()) != Some(&self.drag_layout_generation)
             {
                 continue;
             }
-            let previous_lane = *self.drag_lanes.get(&previous.id())?;
-            let next_lane = *self.drag_lanes.get(&next.id())?;
+            let previous_lane = self.painted_track_drop_lane(previous.id())?;
+            let next_lane = self.painted_track_drop_lane(next.id())?;
             let boundary = (previous_lane.top + previous_lane.height + next_lane.top) * 0.5;
             if (pointer_y - boundary).abs() <= 3.0 {
                 return Some((Some(next.id()), timeline, boundary));
             }
         }
 
-        let last = tracks.last()?;
+        let last = state.project.tracks().get(*tracks.last()?)?;
         if self.drag_lane_epochs.get(&last.id()) != Some(&self.drag_layout_generation) {
             return None;
         }
-        let last_lane = *self.drag_lanes.get(&last.id())?;
+        let last_lane = self.painted_track_drop_lane(last.id())?;
         let bottom = last_lane.top + last_lane.height;
         if pointer_y >= bottom && pointer_y < body.top + body.height {
             return Some((None, timeline, bottom));
@@ -1285,7 +1407,9 @@ impl super::EditorView {
                 start,
             },
         };
-        self.enqueue(request);
+        if self.enqueue(request) {
+            self.stop_browser_preview_for_drop();
+        }
         self.status = "importing sample to arrangement".into();
         self.active_browser_audio_drag = None;
         cx.notify();
@@ -1300,11 +1424,10 @@ impl super::EditorView {
     ) {
         drag.snap_modifier.set(window.modifiers().platform);
         drag.copy_modifier.set(window.modifiers().alt);
-        if drag.group.borrow().ids.len() > 1
-            && !self
-                .active_clip_drag
-                .as_ref()
-                .is_some_and(|active| Rc::ptr_eq(&active.group, &drag.group))
+        if !self
+            .active_clip_drag
+            .as_ref()
+            .is_some_and(|active| Rc::ptr_eq(&active.group, &drag.group))
         {
             return;
         }
@@ -1313,18 +1436,24 @@ impl super::EditorView {
             clear(self);
             return;
         }
-        if self.worker_requests_pending != 0 || !self.pending_requests.is_empty() {
-            self.error = Some("clip move canceled · project work pending".into());
-            clear(self);
-            cx.notify();
-            return;
-        }
         let pointer = window.mouse_position();
         let pointer = (f32::from(pointer.x), f32::from(pointer.y));
         if self
             .painted_track_insertion_target(pointer.0, pointer.1)
             .is_some()
         {
+            if self.worker_requests_pending != 0 || !self.pending_requests.is_empty() {
+                self.error = Some("clip move canceled · project work pending".into());
+                clear(self);
+                cx.notify();
+                return;
+            }
+            if self.drag_bounce_held {
+                self.error = Some("bounce drop needs an existing track".into());
+                clear(self);
+                cx.notify();
+                return;
+            }
             self.drop_clip_to_new_track(drag, window, cx);
             return;
         }
@@ -1383,11 +1512,23 @@ impl super::EditorView {
             cx.notify();
             return;
         }
+        if std::mem::take(&mut self.drag_bounce_held) {
+            self.drop_clip_bounce(drag, target_track, preview);
+            cx.notify();
+            return;
+        }
         if is_noop(drag, &drop_state) {
             clear(self);
             return;
         }
-        let command = if drag.group.borrow().ids.len() > 1 {
+        let command = if drag.alias_copy() {
+            Command::DuplicateAliasClipsAt {
+                clips: drag.group.borrow().ids.clone(),
+                anchor: drag.clip,
+                track: target_track,
+                position: group_position(preview.position),
+            }
+        } else if drag.group.borrow().ids.len() > 1 {
             Command::MoveClipsWithOverwrite {
                 clips: drag.group.borrow().ids.clone(),
                 anchor: drag.clip,
@@ -1401,15 +1542,31 @@ impl super::EditorView {
             move_command(drag.clip, target_track, preview.position)
         };
         let copy_intent = super::group_copy::Pending::capture(self, &command);
-        clear(self);
+        // Input capture ends here. Keep the frozen destination for moves AND
+        // copies until the shared receipt observes this edit's real terminal.
+        drag.preview.set(Some(preview));
+        self.pending_clip_move = self.active_clip_drag.take().map(|drag| {
+            super::pending_clip_move::Pending::new(
+                drag,
+                command.clone(),
+                std::sync::Arc::clone(&state.project),
+            )
+        });
         let before_pending = self.worker_requests_pending;
-        if self.enqueue(Request::Edit(command)) {
+        if self.enqueue(Request::MoveExistingClips {
+            project_generation: drag.project_generation,
+            revision: drag.revision,
+            command,
+        }) {
             if let Some(mut intent) = copy_intent {
                 if self.worker_requests_pending > before_pending {
                     intent.submitted(self.worker_requests_pending);
                 }
                 self.pending_group_copy = Some(intent);
             }
+        } else {
+            self.retire_pending_clip_move();
+            clear(self);
         }
         cx.notify();
     }
@@ -1582,7 +1739,7 @@ mod tests {
                 duration: 100,
             },
             grab_offset: Rc::new(Cell::new(Some(50))),
-            origin_pointer_x: Rc::new(Cell::new(None)),
+            capture: Rc::new(Cell::new(None)),
             viewport_start: 0,
             viewport_length: 1_000,
             scroll: Default::default(),
@@ -1611,7 +1768,7 @@ mod tests {
                 length: BeatTime::from_quarters(4).expect("clip length"),
             },
             grab_offset: Rc::new(Cell::new(Some(BeatTime::ONE.raw()))),
-            origin_pointer_x: Rc::new(Cell::new(None)),
+            capture: Rc::new(Cell::new(None)),
             viewport_start: 0,
             viewport_length: 288_000,
             scroll: Default::default(),
@@ -1678,12 +1835,15 @@ mod tests {
     #[test]
     fn move_grab_offset_uses_mouse_down_instead_of_threshold_crossing_position() {
         let (_, _, _, clip) = fixture();
-        let mut pending = Some(PointerDown {
-            generation: 3,
-            clip,
-            edge: None,
-            x: 790.0,
-        });
+        let mut pending = PointerDown::begin(
+            super::ClipPointerKey {
+                generation: 3,
+                clip,
+            },
+            hex_widgets::RectanglePart::Body,
+            790.0,
+            true,
+        );
         let threshold_crossing_x = 725.0;
         let captured_down_x =
             take_pointer_down(&mut pending, 3, clip, None).expect("captured original mouse-down");
@@ -1718,12 +1878,15 @@ mod tests {
         let (_, _, _, clip) = fixture();
         // The pending gesture lives on EditorView; replacing element callbacks on a
         // redraw does not replace this state. A trim handle consumes only its edge.
-        let mut pending = Some(PointerDown {
-            generation: 3,
-            clip,
-            edge: Some(TrimEdge::Right),
-            x: 790.0,
-        });
+        let mut pending = PointerDown::begin(
+            super::ClipPointerKey {
+                generation: 3,
+                clip,
+            },
+            hex_widgets::RectanglePart::Trailing,
+            790.0,
+            true,
+        );
         assert_eq!(
             take_pointer_down(&mut pending, 3, clip, Some(TrimEdge::Left)),
             None
@@ -1858,7 +2021,15 @@ mod tests {
             }
         ));
         payload.snap_grid = SnapGrid::Off;
-        payload.origin_pointer_x.set(Some(120.0));
+        payload.capture.set(PointerDown::begin(
+            super::ClipPointerKey {
+                generation: payload.project_generation,
+                clip: payload.clip,
+            },
+            hex_widgets::RectanglePart::Body,
+            120.0,
+            true,
+        ));
         assert_eq!(
             candidate_position(editor.project(), &payload, Some(source), 120.25, lane),
             Some(expected),
@@ -2077,4 +2248,4 @@ mod tests {
 
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "group_drag_ui_test.rs"]
-mod group_drag_ui_test;
+pub(super) mod group_drag_ui_test;

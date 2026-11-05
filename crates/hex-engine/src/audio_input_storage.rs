@@ -227,6 +227,14 @@ impl OwnedAudioInputs {
     }
 }
 impl AudioInputStorageAndObligations {
+    pub(crate) fn visit_owned_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), AudioStorageError> {
+        ledger.inputs(&self.inputs)?;
+        ledger.vec(&self.allocations)?;
+        ledger.vec(&self.obligations)
+    }
     pub fn summary(&self) -> AudioInputStorageSummary {
         self.summary
     }

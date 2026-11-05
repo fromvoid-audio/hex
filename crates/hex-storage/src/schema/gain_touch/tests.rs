@@ -14,11 +14,13 @@ fn fixture() -> Project {
         track,
         points: vec![
             GainPoint {
+                incoming_gain: None,
                 beat: BeatTime::ZERO,
                 gain: 0.2,
                 outgoing: GainInterpolation::Linear,
             },
             GainPoint {
+                incoming_gain: None,
                 beat: BeatTime::from_raw(100),
                 gain: 0.8,
                 outgoing: GainInterpolation::Step,
@@ -30,6 +32,7 @@ fn fixture() -> Project {
 }
 fn touch() -> GainTouchSpan {
     GainTouchSpan {
+        source_start: BeatTime::from_raw(20),
         start: BeatTime::from_raw(20),
         end: BeatTime::from_raw(80),
         context: GainTouchContext {
@@ -66,7 +69,7 @@ fn proposed_doc() -> DocumentV22 {
     doc
 }
 #[test]
-fn span_roundtrip_preserves_canonical_value_through_schema22_and_current_writer() {
+fn span_roundtrip_preserves_canonical_value_through_current_writer() {
     let doc = proposed_doc();
     let bytes = serde_json::to_vec(&doc).unwrap();
     let snapshot = serde_json::from_slice::<DocumentV22>(&bytes)
@@ -80,12 +83,12 @@ fn span_roundtrip_preserves_canonical_value_through_schema22_and_current_writer(
     assert_eq!(snapshot.tracks[0].gain_touch_spans, vec![touch()]);
     assert_eq!(snapshot.tracks[0].gain_touch_epoch, 1);
     assert!(snapshot.validate_gain_lanes().is_ok());
-    let restored = crate::decode(&bytes).unwrap();
+    let restored = Project::from_snapshot(snapshot.clone()).unwrap();
     assert_eq!(restored.snapshot(), snapshot);
     let current = crate::encode(&restored).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&current).unwrap()["version"],
-        33
+        crate::CURRENT_SCHEMA_VERSION
     );
     assert_eq!(crate::decode(&current).unwrap(), restored);
     assert_eq!(
@@ -163,7 +166,7 @@ fn decoder_limits_count_endpoints_and_base_points_together() {
     }
 }
 #[test]
-fn empty_span_migrations_preserve_existing_base_and_high_water_old_writers_refuse_loss() {
+fn empty_spans_preserve_existing_base_and_high_water_old_writers_refuse_loss() {
     let project = fixture();
     // This case intentionally authors old-writer-compatible input; ordinary
     // new-track fixtures keep their automatically assigned non-gray colors.
@@ -176,28 +179,23 @@ fn empty_span_migrations_preserve_existing_base_and_high_water_old_writers_refus
         })
         .unwrap();
     let project = editor.project().clone();
-    for bytes in [
-        crate::encode(&project).unwrap(),
-        crate::encode_schema22(&project).unwrap(),
-    ] {
-        let restored = crate::decode(&bytes).unwrap();
-        assert_eq!(restored, project);
-        assert!(
-            restored
-                .track(project.tracks()[0].id())
-                .unwrap()
-                .gain_lane()
-                .spans()
-                .is_empty()
-        );
-    }
+    let restored = crate::decode(&crate::encode(&project).unwrap()).unwrap();
+    assert_eq!(restored, project);
+    assert!(
+        restored
+            .track(project.tracks()[0].id())
+            .unwrap()
+            .gain_lane()
+            .spans()
+            .is_empty()
+    );
     let mut snapshot = project.snapshot();
     snapshot.tracks[0].gain_touch_epoch = 9;
     let project = Project::from_snapshot(snapshot).unwrap();
     let encoded = crate::encode(&project).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&encoded).unwrap()["version"],
-        33
+        crate::CURRENT_SCHEMA_VERSION
     );
     assert_eq!(crate::decode(&encoded).unwrap(), project);
     assert!(super::super::gain_envelopes::DocumentV21::from_project(&project).is_err());
@@ -210,6 +208,7 @@ fn proposed_trim_fragment_roundtrip_retains_original_held_event_identity() {
     let lane = GainLane::new(base, vec![touch()], 1).unwrap();
     let mut replacement = touch();
     replacement.start = BeatTime::from_raw(30);
+    replacement.source_start = replacement.start;
     replacement.end = BeatTime::from_raw(40);
     replacement.context.recording_epoch = 2;
     replacement.context.gesture_serial = 2;
@@ -237,5 +236,11 @@ fn proposed_trim_fragment_roundtrip_retains_original_held_event_identity() {
         snapshot.tracks[0].gain_touch_spans[2].steps[0].source_sequence,
         1
     );
-    assert_eq!(crate::decode(&bytes).unwrap().snapshot(), snapshot);
+    let project = Project::from_snapshot(snapshot.clone()).unwrap();
+    assert_eq!(
+        crate::decode(&crate::encode(&project).unwrap())
+            .unwrap()
+            .snapshot(),
+        snapshot
+    );
 }

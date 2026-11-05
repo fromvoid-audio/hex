@@ -20,10 +20,10 @@ pub(super) fn envelope(
 }
 impl Workspace {
     fn insert(
-        extents: &mut [Vec<StreamPageExtent>; 2],
+        extents: &mut [Vec<StreamResourceExtent>; 2],
         limit: usize,
         index: usize,
-        extent: StreamPageExtent,
+        extent: StreamResourceExtent,
     ) -> Result<(), hex_engine::Invalid> {
         let rows = &mut extents[index];
         match rows.binary_search_by_key(&(extent.source, extent.page_index), |row| {
@@ -55,7 +55,7 @@ impl Workspace {
         }
     }
 }
-impl State {
+impl StateView<'_> {
     pub(in crate::candidate_custody::eligible::publication) fn cancel_stream_pending(
         &mut self,
         domains: &mut [Option<DomainEnvelope>; 2],
@@ -66,7 +66,7 @@ impl State {
     }
     pub(in crate::candidate_custody::eligible::publication) fn prepare_stream_window(
         &mut self,
-        previous: Option<&mut State>,
+        previous: Option<&mut StateView<'_>>,
         request: &mut StreamInstall<'_>,
         role: ProtectionRole,
     ) -> Result<Option<hex_engine::StreamChunkWindow>, hex_engine::Invalid> {
@@ -74,7 +74,7 @@ impl State {
     }
     pub(super) fn prepare_stream_window_at(
         &mut self,
-        previous: Option<&mut State>,
+        mut previous: Option<&mut StateView<'_>>,
         request: &mut StreamInstall<'_>,
         role: ProtectionRole,
         due: Option<u64>,
@@ -85,6 +85,9 @@ impl State {
             .as_mut()
             .filter(|w| w.valid())
             .ok_or(hex_engine::Invalid("stream demand workspace unavailable"))?;
+        workspace.handoff_diagnostic = None;
+        workspace.source_changed = false;
+        workspace.capacity_conflict = false;
         let runtime = self
             .runtime
             .as_mut()
@@ -99,19 +102,25 @@ impl State {
             .sample_rate()
             .ok_or(hex_engine::Invalid("stream rate unavailable"))?;
         let predecessor = if role == ProtectionRole::Candidate {
-            previous.as_ref().map(|old| old.stamp.owner)
+            previous.as_ref().map(|old| old.correlation.owner)
         } else {
             workspace.predecessor
         };
-        for rows in &mut workspace.extents {
-            rows.clear();
-        }
-        let window = {
+        // A larger transaction may cover more distinct pages than the fixed
+        // readiness reservation. At most nine pure attempts halve the 256-frame
+        // maximum to one, without allocating or publishing a partial intent.
+        // Failure at one frame retains the existing refusal.
+        let mut frames = request.frames.min(256);
+        let window = loop {
+            for rows in &mut workspace.extents {
+                rows.clear();
+            }
             let domains = &*request.domains;
             let staged = workspace.pending_action.as_ref();
             let extents = &mut workspace.extents;
             let limit = workspace.limit;
-            let mut visit = |extent: StreamPageExtent| {
+            let overflow = std::cell::Cell::new(false);
+            let mut visit = |extent: StreamResourceExtent| {
                 let index = refs
                     .iter()
                     .flatten()
@@ -121,41 +130,69 @@ impl State {
                             .and_then(Option::as_ref)
                             .filter(|pages| pages.inner.token == *token)
                             .and_then(|pages| pages.inner.loan.as_ref())
-                            .is_some_and(|loan| loan.covers_key(extent.source))
+                            .is_some_and(|loan| loan.covers_resource_key(extent.source))
                             .then_some(token.slot)
                     })
                     .ok_or(hex_engine::Invalid(
                         "stream demand source lacks actual domain",
                     ))?;
-                Workspace::insert(extents, limit, index, extent)
+                let result = Workspace::insert(extents, limit, index, extent);
+                if result.is_err() {
+                    overflow.set(true);
+                }
+                result
             };
-            if let Some(due) = due {
-                runtime.visit_pending_stream_chunk(due, request.frames, &mut visit)?
-            } else if let Some(previous) = previous {
-                runtime
-                    .preview_stream_handoff(
-                        previous
-                            .runtime
-                            .as_mut()
-                            .ok_or(hex_engine::Invalid("stream predecessor unavailable"))?,
-                        request.frames,
-                        request.pending_play.then_some(true),
-                        &mut visit,
-                    )
-                    .map_err(|_| hex_engine::Invalid("stream handoff demand refused"))?
-            } else if let Some(staged) = staged.filter(|_| role == ProtectionRole::Transition) {
-                runtime.visit_prepared_stream_action(
-                    &staged.prepared,
-                    request.frames,
-                    &mut visit,
-                )?
-            } else {
-                runtime.visit_next_stream_chunk(
-                    request.frames,
+            let planned = if let Some(due) = due {
+                runtime.visit_pending_stream_chunk(due, frames, &mut visit)
+            } else if let Some(previous) = previous.as_deref_mut() {
+                match runtime.preview_stream_handoff(
+                    previous
+                        .runtime
+                        .as_mut()
+                        .ok_or(hex_engine::Invalid("stream predecessor unavailable"))?,
+                    frames,
                     request.pending_play.then_some(true),
                     &mut visit,
-                )?
+                ) {
+                    Ok(window) => Ok(window),
+                    Err(_) if overflow.get() => {
+                        Err(hex_engine::Invalid("exact stream demand capacity exceeded"))
+                    }
+                    Err(error)
+                        if error.is_transient()
+                            || matches!(
+                                error,
+                                hex_engine::PlaybackHandoffError::Session(
+                                    hex_engine::SessionPlaybackError::ForeignTailSourceBusy
+                                )
+                            ) =>
+                    {
+                        // Preview has the same temporary release/tail pressure
+                        // as the actual handoff. Keep the exact candidate in its
+                        // deferred carrier and let the predecessor drain before
+                        // replanning; this is not a page-readiness rejection.
+                        workspace.cancel_pending(refs, request.domains);
+                        return Ok(None);
+                    }
+                    Err(error) => {
+                        workspace.handoff_diagnostic = Some(error);
+                        return Err(hex_engine::Invalid("stream handoff demand refused"));
+                    }
+                }
+            } else if let Some(staged) = staged.filter(|_| role == ProtectionRole::Transition) {
+                runtime.visit_prepared_stream_action(&staged.prepared, frames, &mut visit)
+            } else {
+                runtime.visit_next_stream_chunk(
+                    frames,
+                    request.pending_play.then_some(true),
+                    &mut visit,
+                )
+            };
+            if overflow.get() && frames > 1 {
+                frames = frames.div_ceil(2);
+                continue;
             }
+            break planned?;
         };
         if request.frames == 0
             && (request.pending_play
@@ -197,24 +234,33 @@ impl State {
                 let Some(failure) = loan.take_failure() else {
                     break;
                 };
-                failed_window |= rows
+                // Pool pressure is retryable after ready pages are pumped and
+                // stale buffers returned. Consuming its receipt releases the
+                // failed pending key; continue bounded service below. Actual
+                // source/read failures still refuse the affected window.
+                let demanded = rows
                     .iter()
                     .any(|row| row.source == failure.key && row.page_index == failure.page_index);
+                failed_window |=
+                    failure.kind != hex_stream::StreamFailureKind::CapacityExhausted && demanded;
+                workspace.source_changed |= demanded
+                    && failure.kind == hex_stream::StreamFailureKind::SourceChanged
+                    && matches!(failure.key, hex_engine::StreamResourceKey::Audio(_));
                 pages.inner.last_failure = Some(failure);
             }
             if failed_window {
                 return Err(hex_engine::Invalid("stream worker readiness failed"));
             }
             if let Some(stamp) = stamps[token.slot] {
-                let same = stamp.artifact == self.stamp.owner
+                let same = stamp.artifact == self.correlation.owner
                     && stamp.project_generation == context.project_generation
                     && stamp.editor_revision == context.editor_revision
-                    && stamp.device_epoch == self.stamp.root
+                    && stamp.device_epoch == self.correlation.root
                     && stamp.device_rate == rate
                     && stamp.predecessor == predecessor
                     && stamp.admitted_command_prefix == request.command_prefix
                     && stamp.window == window;
-                if !same || !loan.matches_intent(role, stamp, rows) {
+                if !same || !loan.matches_resource_intent(role, stamp, rows) {
                     let _ = loan.cancel(role, stamp.request_epoch);
                     stamps[token.slot] = None;
                 }
@@ -227,30 +273,32 @@ impl State {
                     .ok_or(hex_engine::Invalid("stream request epoch exhausted"))?;
                 let stamp = ReadinessStamp {
                     request_epoch: epoch,
-                    artifact: self.stamp.owner,
+                    artifact: self.correlation.owner,
                     project_generation: context.project_generation,
                     editor_revision: context.editor_revision,
-                    device_epoch: self.stamp.root,
+                    device_epoch: self.correlation.root,
                     device_rate: rate,
                     predecessor,
                     admitted_command_prefix: request.command_prefix,
                     window,
                 };
-                loan.submit(role, stamp, rows)
-                    .map_err(|_| hex_engine::Invalid("stream protection reservation refused"))?;
+                if let Err(refusal) = loan.submit_resources(role, stamp, rows) {
+                    workspace.capacity_conflict = refusal == hex_stream::ReadinessRefusal::Capacity;
+                    return Err(hex_engine::Invalid("stream protection reservation refused"));
+                }
                 pages.inner.epoch = epoch;
                 stamps[token.slot] = Some(stamp);
             }
             let stamp =
                 stamps[token.slot].ok_or(hex_engine::Invalid("stream intent unavailable"))?;
-            if !loan.is_protected(role, stamp, rows) {
+            if !loan.is_resource_protected(role, stamp, rows) {
                 match loan
                     .service(role, stamp, workspace.limit, workspace.limit)
                     .map_err(|_| hex_engine::Invalid("stream readiness service refused"))?
                 {
                     ReadinessProgress::Pending => complete = false,
                     ReadinessProgress::InstalledProtected => {
-                        if !loan.acknowledge(role, stamp, rows) {
+                        if !loan.acknowledge_resources(role, stamp, rows) {
                             return Err(hex_engine::Invalid("stream readiness receipt differs"));
                         }
                     }
@@ -267,7 +315,9 @@ impl State {
                 .inner
                 .loan
                 .as_ref()
-                .is_some_and(|loan| loan.can_promote(role, stamp, &workspace.extents[token.slot]))
+                .is_some_and(|loan| {
+                    loan.can_promote_resources(role, stamp, &workspace.extents[token.slot])
+                })
             {
                 return Err(hex_engine::Invalid("stream protected role cannot commit"));
             }
@@ -278,7 +328,7 @@ impl State {
         Ok(Some(window))
     }
     pub(in crate::candidate_custody::eligible::publication) fn prepare_stream_commit<'a>(
-        &self,
+        &mut self,
         domains: &'a mut [Option<DomainEnvelope>; 2],
     ) -> Result<[Option<hex_stream::PreparedRolePromotion<'a>>; 2], hex_engine::Invalid> {
         let workspace = self
@@ -305,7 +355,7 @@ impl State {
                 .filter(|pages| pages.inner.token == token)
                 .and_then(|pages| pages.inner.loan.as_mut())
                 .ok_or(hex_engine::Invalid("stream exact loan unavailable"))?;
-            loan.prepare_promotion(role, stamp, &workspace.extents[index])
+            loan.prepare_resource_promotion(role, stamp, &workspace.extents[index])
                 .map(Some)
                 .ok_or(hex_engine::Invalid("stream protected commit refused"))
         };
@@ -323,7 +373,7 @@ impl State {
     }
 }
 
-impl State {
+impl StateView<'_> {
     pub(in crate::candidate_custody::eligible::publication) fn clear_stream_roles(
         &mut self,
         domains: &mut [Option<DomainEnvelope>; 2],
@@ -356,7 +406,31 @@ impl hex_engine::MediaPages for PagePair<'_> {
         }
         self.right.as_mut()?.page(key, index)
     }
+    fn scalar_page(
+        &mut self,
+        key: hex_engine::ScalarSourceKey,
+        index: u64,
+    ) -> Option<hex_engine::BorrowedScalarPage<'_>> {
+        if let Some(page) = self
+            .left
+            .as_mut()
+            .and_then(|pages| pages.scalar_page(key, index))
+        {
+            return Some(page);
+        }
+        self.right.as_mut()?.scalar_page(key, index)
+    }
+    fn request_scalar_page(&mut self, _key: hex_engine::ScalarSourceKey, _index: u64) {}
     fn request_page(&mut self, _key: hex_engine::StreamSourceKey, _index: u64) {}
+    fn prefetch_page(&mut self, key: hex_engine::StreamSourceKey, index: u64) {
+        // Each endpoint ignores sources outside its catalog.
+        for pages in [self.left.as_mut(), self.right.as_mut()]
+            .into_iter()
+            .flatten()
+        {
+            pages.prefetch_page(key, index);
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StreamProgress {
@@ -367,17 +441,17 @@ pub(crate) struct StreamOutcome {
     pub(crate) progress: StreamProgress,
     pub(crate) play_applied: bool,
     pub(crate) readiness_refused: bool,
+    pub(crate) source_changed: bool,
     pub(crate) fault: Option<hex_engine::Invalid>,
     pub(crate) action_rejection: Option<(u64, hex_engine::PlaybackActionRejection)>,
+    pub(crate) action_applied: Option<u64>,
     pub(crate) activated: Option<u64>,
 }
-impl Active {
-    pub(crate) fn streaming_enabled(&self) -> bool {
-        self.state.streaming.is_some()
-    }
+impl ActiveView<'_> {
     pub(crate) fn clear_stream_roles(&mut self, domains: &mut [Option<DomainEnvelope>; 2]) {
         self.state.clear_stream_roles(domains);
     }
+    #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn render_streamed(
         &mut self,
         domains: &mut [Option<DomainEnvelope>; 2],
@@ -386,16 +460,20 @@ impl Active {
         output: &mut [hex_engine::Frame],
         observer: Option<&mut hex_engine::NodeSignalObserver<'_>>,
     ) -> StreamOutcome {
-        self.render_streamed_with_project(
+        self.render_streamed_with_foreign(
             domains,
             pending_play,
             command_prefix,
             output,
             observer,
             None,
+            None,
         )
     }
-    pub(crate) fn render_streamed_with_project(
+    // The window/transport arguments and borrowed observation lanes have
+    // independent owners; foreign endpoints add no stored or adopted resource.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn render_streamed_with_foreign(
         &mut self,
         domains: &mut [Option<DomainEnvelope>; 2],
         pending_play: bool,
@@ -403,15 +481,23 @@ impl Active {
         output: &mut [hex_engine::Frame],
         mut observer: Option<&mut hex_engine::NodeSignalObserver<'_>>,
         mut project: Option<&mut hex_engine::ProjectOutputTap<'_, '_>>,
+        mut foreign: Option<&mut dyn hex_lattice::ForeignProcessors>,
     ) -> StreamOutcome {
+        if let Some(workspace) = self.state.streaming.as_mut() {
+            workspace.capacity_conflict = false;
+        }
         let mut request = StreamInstall {
             domains,
             pending_play: false,
             command_prefix,
             frames: output.len(),
         };
-        let action_rejection = match self.resolve_stream_action(&mut request) {
-            super::actions::ActionResolution::Ready(rejection) => rejection,
+        let (action_applied, action_rejection) = match self.resolve_stream_action(&mut request) {
+            super::actions::ActionResolution::Ready(Some((ticket, Ok(())))) => (Some(ticket), None),
+            super::actions::ActionResolution::Ready(Some((ticket, Err(reason)))) => {
+                (None, Some((ticket, reason)))
+            }
+            super::actions::ActionResolution::Ready(None) => (None, None),
             super::actions::ActionResolution::Pending => {
                 output.fill([0.0; 2]);
                 return StreamOutcome {
@@ -420,8 +506,10 @@ impl Active {
                     },
                     play_applied: false,
                     readiness_refused: false,
+                    source_changed: false,
                     fault: None,
                     action_rejection: None,
+                    action_applied: None,
                     activated: None,
                 };
             }
@@ -440,6 +528,11 @@ impl Active {
             let mut planned =
                 self.state
                     .prepare_stream_window(None, &mut request, ProtectionRole::Transition);
+            let mut source_changed = self
+                .state
+                .streaming
+                .as_mut()
+                .is_some_and(|workspace| std::mem::take(&mut workspace.source_changed));
             if !matches!(planned, Ok(Some(_))) && self.revoke_launch_prewarm(request.domains) {
                 if let Some(scheduled) = self
                     .state
@@ -458,12 +551,23 @@ impl Active {
                     &mut request,
                     ProtectionRole::Transition,
                 );
+                source_changed |= self
+                    .state
+                    .streaming
+                    .as_mut()
+                    .is_some_and(|workspace| std::mem::take(&mut workspace.source_changed));
             }
             let window = match planned {
                 Ok(Some(window)) => window,
                 result => {
                     let refused = result.is_err();
-                    self.state.cancel_stream_pending(domains);
+                    // Keep partial ready pages under their exact pending intent
+                    // across buffering callbacks. Changed demand or commands
+                    // invalidate the stamp on the next preparation; failures
+                    // still release it immediately.
+                    if refused {
+                        self.state.cancel_stream_pending(domains);
+                    }
                     output[committed..].fill([0.0; 2]);
                     return StreamOutcome {
                         progress: StreamProgress::Buffering {
@@ -471,8 +575,10 @@ impl Active {
                         },
                         play_applied,
                         readiness_refused: refused,
+                        source_changed,
                         fault: None,
                         action_rejection,
+                        action_applied,
                         activated,
                     };
                 }
@@ -487,8 +593,10 @@ impl Active {
                         },
                         play_applied,
                         readiness_refused: true,
+                        source_changed: false,
                         fault: None,
                         action_rejection,
+                        action_applied,
                         activated,
                     };
                 }
@@ -501,7 +609,7 @@ impl Active {
                     .ok_or(hex_engine::Invalid("stream current owner missing"))
                     .and_then(|runtime| {
                         runtime
-                            .apply_action(hex_engine::PlaybackAction::Transport(
+                            .apply_declicked_action(hex_engine::PlaybackAction::Transport(
                                 hex_engine::PlaybackCommand::Play,
                             ))
                             .map_err(|_| hex_engine::Invalid("ready stream Play refused"))
@@ -514,14 +622,27 @@ impl Active {
                         },
                         play_applied,
                         readiness_refused: false,
+                        source_changed: false,
                         fault: Some(error),
                         action_rejection,
+                        action_applied,
                         activated,
                     };
                 }
                 play_applied = true;
             }
-            if window.frames == 0 {
+            let rendered_frames = if window.frames == 0
+                && self
+                    .state
+                    .runtime
+                    .as_ref()
+                    .is_some_and(|runtime| runtime.renders_when_paused())
+            {
+                output.len() - committed
+            } else {
+                window.frames
+            };
+            if rendered_frames == 0 {
                 output[committed..].fill([0.0; 2]);
             } else {
                 let (left, right) = promotions.split_at_mut(1);
@@ -563,12 +684,24 @@ impl Active {
                     .as_mut()
                     .ok_or(hex_engine::Invalid("stream current owner missing"))
                     .and_then(|runtime| {
-                        runtime.render_with_pages_and_signal_observers(
-                            &mut output[committed..committed + window.frames],
-                            &mut pages,
-                            observer,
-                            project_tap.as_mut(),
-                        )
+                        if let Some(foreign) = foreign.as_mut() {
+                            let mut window =
+                                crate::prepared::NativeEffectWindow::new(&mut **foreign, committed);
+                            runtime.render_with_foreign_processors(
+                                &mut output[committed..committed + rendered_frames],
+                                Some(&mut pages),
+                                observer,
+                                project_tap.as_mut(),
+                                &mut window,
+                            )
+                        } else {
+                            runtime.render_with_pages_and_signal_observers(
+                                &mut output[committed..committed + rendered_frames],
+                                &mut pages,
+                                observer,
+                                project_tap.as_mut(),
+                            )
+                        }
                     });
                 if let Err(error) = rendered {
                     output[committed..].fill([0.0; 2]);
@@ -578,12 +711,14 @@ impl Active {
                         },
                         play_applied,
                         readiness_refused: false,
+                        source_changed: false,
                         fault: Some(error),
                         action_rejection,
+                        action_applied,
                         activated,
                     };
                 }
-                committed += window.frames;
+                committed += rendered_frames;
             }
             for promotion in promotions.into_iter().flatten() {
                 promotion.commit();
@@ -608,8 +743,10 @@ impl Active {
             progress: StreamProgress::Complete,
             play_applied,
             readiness_refused: false,
+            source_changed: false,
             fault: None,
             action_rejection,
+            action_applied,
             activated,
         }
     }

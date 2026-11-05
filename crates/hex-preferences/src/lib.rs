@@ -1,4 +1,29 @@
-//! Bounded, versioned preferences independent of project documents.
+//! # Purpose
+//! Own bounded versioned application preferences independent of project documents and history.
+//!
+//! # Dependencies
+//! Uses serde/serde_json and the standard library for recoverable settings publication.
+//!
+//! # Does not own
+//! Does not mutate projects, decode media or run filesystem work on UI/audio callbacks. Preserve
+//! original paths and malformed settings instead of silently replacing user data.
+
+mod track_defaults;
+pub use track_defaults::{
+    TrackDefaults, load_track_defaults, save_track_defaults, track_defaults_path,
+};
+
+mod audio_import;
+pub use audio_import::{
+    AudioImportPreferences, audio_import_preferences_path, load_audio_import_preferences,
+    save_audio_import_preferences,
+};
+
+mod midi_input;
+pub use midi_input::{
+    MidiInputPort, MidiInputPreferences, load_midi_input_preferences, midi_input_preferences_path,
+    save_midi_input_preferences,
+};
 
 mod project_directory;
 pub use project_directory::{load_project_directory, save_project_directory};
@@ -117,6 +142,26 @@ pub struct BrowserPlaces {
     icons: BTreeMap<PathBuf, String>,
     builtins: BTreeMap<BrowserBuiltin, BuiltinPreference>,
     hidden_places: HashSet<PathBuf>,
+    pub vst3_scan_sources: Vst3ScanSources,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Vst3ScanSources {
+    pub system: bool,
+    pub user: bool,
+    pub custom_enabled: bool,
+    pub custom_folder: Option<PathBuf>,
+}
+
+impl Default for Vst3ScanSources {
+    fn default() -> Self {
+        Self {
+            system: true,
+            user: true,
+            custom_enabled: false,
+            custom_folder: None,
+        }
+    }
 }
 
 impl BrowserPlaces {
@@ -155,6 +200,7 @@ impl BrowserPlaces {
             icons: BTreeMap::new(),
             builtins: BTreeMap::new(),
             hidden_places: HashSet::new(),
+            vst3_scan_sources: Vst3ScanSources::default(),
         })
     }
 
@@ -204,6 +250,49 @@ impl BrowserPlaces {
 
     pub fn additional(&self) -> &[PathBuf] {
         &self.additional
+    }
+
+    /// Point an existing place at a moved folder, keeping its position, icon and
+    /// hidden state. Refuses an unknown source or a destination that is already a
+    /// place so two entries never alias one folder.
+    pub fn relocate(&mut self, old: &Path, new: PathBuf) -> Result<(), PreferencesError> {
+        if new.as_os_str().is_empty() {
+            return Err(PreferencesError::EmptyPath);
+        }
+        validate_path_length(&new)?;
+        if self.additional.contains(&new) {
+            return Err(PreferencesError::InvalidDocument(
+                "relocated folder is already a place".into(),
+            ));
+        }
+        let index = self
+            .additional
+            .iter()
+            .position(|place| place == old)
+            .ok_or_else(|| {
+                PreferencesError::InvalidDocument("relocated source has no matching place".into())
+            })?;
+        let total = self
+            .additional
+            .iter()
+            .enumerate()
+            .filter(|(position, _)| *position != index)
+            .try_fold(native_path_len(&new), |total, (_, path)| {
+                total.checked_add(native_path_len(path))
+            });
+        if total.is_none_or(|total| total > MAX_TOTAL_PATH_BYTES) {
+            return Err(PreferencesError::DocumentTooLarge {
+                maximum: MAX_DOCUMENT_BYTES,
+            });
+        }
+        if let Some(icon) = self.icons.remove(old) {
+            self.icons.insert(new.clone(), icon);
+        }
+        if self.hidden_places.remove(old) {
+            self.hidden_places.insert(new.clone());
+        }
+        self.additional[index] = new;
+        Ok(())
     }
 
     /// A bounded opaque bundled-icon identifier, keyed by the original native path.
@@ -384,6 +473,18 @@ pub fn load(path: &Path) -> Result<BrowserPlaces, PreferencesError> {
         .map(StoredPath::into_path)
         .collect::<Result<Vec<_>, _>>()?;
     let mut places = BrowserPlaces::new(paths)?;
+    if let Some(scan) = document.vst3_scan_sources {
+        let custom_folder = scan.custom_folder.map(StoredPath::into_path).transpose()?;
+        if let Some(path) = custom_folder.as_deref() {
+            validate_saved_path(path)?;
+        }
+        places.vst3_scan_sources = Vst3ScanSources {
+            system: scan.system,
+            user: scan.user,
+            custom_enabled: scan.custom_enabled,
+            custom_folder,
+        };
+    }
     if document.place_icons.len() > MAX_USER_PLACES {
         return Err(PreferencesError::InvalidDocument(
             "too many place icons".into(),
@@ -549,6 +650,25 @@ pub fn save(path: &Path, places: &BrowserPlaces) -> Result<(), PreferencesError>
     }
     let document = Document {
         version: DOCUMENT_VERSION,
+        vst3_scan_sources: (places.vst3_scan_sources != Vst3ScanSources::default())
+            .then(|| {
+                let scan = &places.vst3_scan_sources;
+                let custom_folder = scan
+                    .custom_folder
+                    .as_deref()
+                    .map(|path| {
+                        validate_saved_path(path)?;
+                        StoredPath::from_path(path)
+                    })
+                    .transpose()?;
+                Ok::<_, PreferencesError>(StoredVst3ScanSources {
+                    system: scan.system,
+                    user: scan.user,
+                    custom_enabled: scan.custom_enabled,
+                    custom_folder,
+                })
+            })
+            .transpose()?,
         builtin_sources: places
             .builtins
             .iter()
@@ -714,6 +834,17 @@ struct Document {
     builtin_sources: Vec<StoredBuiltinPreference>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     hidden_places: Vec<StoredPath>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vst3_scan_sources: Option<StoredVst3ScanSources>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredVst3ScanSources {
+    system: bool,
+    user: bool,
+    custom_enabled: bool,
+    custom_folder: Option<StoredPath>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -833,6 +964,23 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn vst3_scan_sources_default_for_older_preferences_and_round_trip() {
+        let directory = TestDirectory::new();
+        let config = directory.0.join("browser.json");
+        fs::write(&config, br#"{"version":1,"additional_places":[]}"#).unwrap();
+        let mut places = load(&config).unwrap();
+        assert_eq!(places.vst3_scan_sources, Vst3ScanSources::default());
+        places.vst3_scan_sources = Vst3ScanSources {
+            system: false,
+            user: true,
+            custom_enabled: false,
+            custom_folder: Some(PathBuf::from("/offline/plug-ins")),
+        };
+        save(&config, &places).unwrap();
+        assert_eq!(load(&config).unwrap(), places);
     }
 
     #[test]
@@ -1214,6 +1362,39 @@ mod tests {
             !first.exists() && !second.exists(),
             "preferences must not create source folders"
         );
+    }
+
+    #[test]
+    fn relocating_a_place_keeps_order_icon_and_hidden_state_and_refuses_aliases() {
+        let directory = TestDirectory::new();
+        let config = directory.0.join("browser.json");
+        let [first, moved, last, new] =
+            ["first", "old/samples", "last", "new/samples"].map(|name| directory.0.join(name));
+        let mut places = BrowserPlaces::new([first.clone(), moved.clone(), last.clone()]).unwrap();
+        places.set_icon(&moved, Some("samples")).unwrap();
+        places.set_place_hidden(&moved, true).unwrap();
+        places.relocate(&moved, new.clone()).unwrap();
+        assert_eq!(
+            places.additional(),
+            &[first.clone(), new.clone(), last.clone()]
+        );
+        assert_eq!(places.icon(&new), Some("samples"));
+        assert_eq!(places.icon(&moved), None);
+        assert!(places.place_hidden(&new) && !places.place_hidden(&moved));
+        save(&config, &places).unwrap();
+        assert_eq!(load(&config).unwrap(), places);
+
+        let unchanged = places.clone();
+        assert!(places.relocate(&new, last.clone()).is_err());
+        assert!(places.relocate(&moved, directory.0.join("other")).is_err());
+        assert!(places.relocate(&new, PathBuf::new()).is_err());
+        assert!(
+            places
+                .relocate(&new, PathBuf::from("/".repeat(MAX_PATH_BYTES + 1)))
+                .is_err()
+        );
+        assert_eq!(places, unchanged, "refused relocation leaves places intact");
+        assert!(!new.exists(), "preferences never create or move folders");
     }
 
     #[test]

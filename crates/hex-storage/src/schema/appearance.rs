@@ -143,7 +143,13 @@ impl DocumentV27 {
         })
     }
     pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-        let doc: Self = serde_json::from_slice(bytes)?;
+        Self::decode_document(serde_json::from_slice(bytes)?)
+    }
+    /// Decode the envelope an upper migration layer already parsed and adapted.
+    pub(super) fn decode_value(value: serde_json::Value) -> Result<Project, StorageError> {
+        Self::decode_document(serde_json::from_value(value)?)
+    }
+    fn decode_document(doc: Self) -> Result<Project, StorageError> {
         if doc.format != "hex-project" || doc.version != 27 {
             return Err(StorageError::Invalid(
                 "unsupported project format or version",
@@ -220,7 +226,7 @@ impl DocumentV27 {
                 "appearance references missing track or clip",
             ));
         }
-        Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
     }
 }
 pub(crate) fn refuse_legacy(project: &Project) -> Result<(), StorageError> {

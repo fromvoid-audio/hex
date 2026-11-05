@@ -1,0 +1,752 @@
+// Original flexible-bus SDK oracle. No third-party DSP or installed module.
+#define HEX_LIFECYCLE_FIXTURE 1
+#include "macos_fixture.cpp"
+#include "pluginterfaces/vst/ivstparameterchanges.h"
+#include "pluginterfaces/vst/ivsteditcontroller.h"
+#include <cmath>
+#include <algorithm>
+#include <array>
+#include <stdexcept>
+#include <string>
+#include <csignal>
+#include <unistd.h>
+#include <limits>
+#include <pthread.h>
+#include <cstdio>
+#include <cstdlib>
+#include "pluginterfaces/base/ibstream.h"
+#ifndef HEX_FIXTURE_RESIDUAL_ECHO
+#define HEX_FIXTURE_RESIDUAL_ECHO 0
+#endif
+#ifndef HEX_FIXTURE_INFINITE_TAIL
+#define HEX_FIXTURE_INFINITE_TAIL 0
+#endif
+#ifndef HEX_INSTANCE_VARIANT
+#define HEX_INSTANCE_VARIANT 0
+#endif
+
+namespace {
+struct Observation {
+    std::atomic<int> violations{0}, created{0}, initialized{0}, terminated{0};
+    std::atomic<int> arrangements{0}, setups{0}, activations{0}, starts{0}, stops{0}, blocks{0}, flushes{0};
+} observed;
+int next_mode=0,next_fault=HEX_INSTANCE_VARIANT;
+bool control() { const bool valid=pthread_main_np()!=0; if (!valid) ++observed.violations; return valid; }
+const TUID processing_id={0x48,0x45,0x58,0x50,1,2,3,4,5,6,7,8,9,10,11,12};
+
+struct RestoreObservation {
+    int component_set=0,controller_component=0,controller_set=0,info_reads=0,value_reads=0;
+    int component_gain=0,controller_gain=0,scroll=7,latency=0,phase=0;
+    int component_get=0,controller_get=0,controller_created=0,controller_terminated=0,controller_destroyed=0;
+} restoration;
+static int bits(float value) { int result=0;std::memcpy(&result,&value,4);return result; }
+static void publish_trace(const char* path,const int* values,size_t count) {
+    if (!path || std::strlen(path)>4096) return;
+    const auto pending=std::string(path)+".next";
+    auto* output=std::fopen(pending.c_str(),"wb");if (!output) return;
+    const bool written=std::fwrite(values,sizeof(int),count,output)==count;
+    if (std::fclose(output)==0 && written) std::rename(pending.c_str(),path);
+}
+static bool module_event(char event) {
+    const auto* path=std::getenv("HEX_ORIGINAL_INSTANCE_MODULE_EVENTS");
+    if(!path) return true;
+    if(!std::strlen(path) || std::strlen(path)>4096) return false;
+    auto* output=std::fopen(path,"ab");if(!output) return false;
+    const bool written=std::fputc(event,output)!=EOF;
+    return std::fclose(output)==0 && written;
+}
+static void trace(int stage,int factory_refs=-1) {
+    // Opt-in original fixture control observations, atomically published so a
+    // guardian exit cannot truncate the last completed phase. Normal DSP does
+    // no file I/O; only explicit fault barriers trace on processing entry.
+    const int values[]={stage,observed.violations,observed.created,observed.initialized,observed.terminated,
+        observed.arrangements,observed.setups,observed.activations,observed.starts,observed.stops,
+        observed.blocks,observed.flushes,static_cast<int>(objects.load()),factory_refs};
+    publish_trace(std::getenv("HEX_ORIGINAL_INSTANCE_TRACE"),values,14);
+    const int restored[]={restoration.component_set,restoration.controller_component,restoration.controller_set,
+        restoration.info_reads,restoration.value_reads,restoration.component_gain,restoration.controller_gain,
+        restoration.scroll,restoration.latency,restoration.phase,restoration.component_get,restoration.controller_get,
+        restoration.controller_created,restoration.controller_terminated,restoration.controller_destroyed};
+    publish_trace(std::getenv("HEX_ORIGINAL_RESTORE_TRACE"),restored,15);
+}
+static void fault_hang(int stage) {
+    trace(stage);
+    const auto* release=std::getenv("HEX_ORIGINAL_INSTANCE_RELEASE");
+    if (!release || std::strlen(release)>4096) { for (;;) ::pause(); }
+    while (::access(release,F_OK)!=0) ::usleep(1000);
+}
+static void fault_crash(int stage) { trace(stage);std::raise(SIGSEGV);std::_Exit(70); }
+struct MainThreadTail { bool enabled=false;~MainThreadTail(){if(enabled)fault_hang(13);} };
+static void arm_main_thread_tail(){static thread_local MainThreadTail tail;tail.enabled=true;}
+const TUID restore_controller_id={0x48,0x45,0x58,0x43,1,2,3,4,5,6,7,8,9,10,11,12};
+// Original one-parameter SDK fixtures preserve the same opaque state shape.
+// Distinct variants exercise actual metadata and processing, not host guesses.
+static ParamID parameter_id(int variant) { return variant==80 || variant==89 || variant==92?0u:7u; }
+static int32 parameter_inventory_size() {
+    const auto* shape=std::getenv("HEX_ORIGINAL_PARAMETER_INVENTORY");
+    if(!shape) return 1;
+    if(!std::strcmp(shape,"519") || !std::strcmp(shape,"duplicate")) return 519;
+    if(!std::strcmp(shape,"577")) return 577;
+    return 1;
+}
+static double parameter_value(int variant,double value) {
+    if(variant==81) return std::round(value*3.0)/3.0;
+    if(variant==82) return value>=0.5?1.0:0.0;
+    return value;
+}
+// The latency fixture invokes one additional restart synchronously during
+// activation. Its controller owns this borrowed handler on the main lane.
+IComponentHandler* latency_handler=nullptr;
+class RestoreController final : public IEditController {
+    std::atomic<uint32> refs{1};
+    const int fault=next_fault;
+    const int32 inventory_size=parameter_inventory_size();
+    FUnknown* context=nullptr;
+    IComponentHandler* handler=nullptr;
+    float component_gain=0;uint32 scroll=7;
+    CFRunLoopTimerRef edit_timer=nullptr;bool edits_sent=false;
+    static void edit_tick(CFRunLoopTimerRef,void* context) {
+        auto* self=static_cast<RestoreController*>(context);
+        const auto* release=std::getenv("HEX_ORIGINAL_INSTANCE_RELEASE");
+        if(!self || self->edits_sent || !release || std::strlen(release)>4096 || ::access(release,F_OK)!=0) return;
+        self->edits_sent=true;CFRunLoopTimerInvalidate(self->edit_timer);
+        if(self->fault==105) {
+            self->handler->restartComponent(kLatencyChanged);
+            return;
+        }
+        const auto id=parameter_id(self->fault);
+        if(self->fault==86) self->handler->performEdit(id,0.75);
+        else {
+            self->handler->beginEdit(id);self->component_gain=3.0;
+            const int repeats=self->fault==87?9:1;
+            for(int n=0;n<repeats;++n) self->handler->performEdit(id,0.75);
+            self->handler->endEdit(id);
+        }
+        trace(25);
+    }
+public:
+    RestoreController() { ++objects;++restoration.controller_created; }
+    ~RestoreController() {
+        if(edit_timer) {CFRunLoopTimerInvalidate(edit_timer);CFRelease(edit_timer);}
+        if (!control() || context || handler) ++observed.violations;
+        --objects;++restoration.controller_destroyed;
+    }
+    uint32 PLUGIN_API addRef() override { return ++refs; }
+    uint32 PLUGIN_API release() override { const auto value=--refs;if(!value)delete this;return value; }
+    tresult PLUGIN_API queryInterface(const TUID iid,void** out) override {
+        if (!iid || !out) return kInvalidArgument;*out=nullptr;
+        if (!same(iid,INLINE_UID_OF(FUnknown)) && !same(iid,INLINE_UID_OF(IEditController))) return kNoInterface;
+        *out=static_cast<IEditController*>(this);addRef();return kResultOk;
+    }
+    tresult PLUGIN_API initialize(FUnknown* host) override {
+        if (!control() || context || !host) return kResultFalse;
+        context=host;context->addRef();return kResultOk;
+    }
+    tresult PLUGIN_API terminate() override {
+        if (!control() || !context || handler) return kResultFalse;
+        context->release();context=nullptr;++restoration.controller_terminated;return kResultOk;
+    }
+    tresult PLUGIN_API setComponentHandler(IComponentHandler* value) override {
+        if (!control() || !context || (value && handler)) return kResultFalse;
+        if(value)value->addRef();if(handler)handler->release();handler=value;
+        if(fault==104 || fault==105) latency_handler=handler;
+        if(value && ((fault>=85 && fault<=89) || fault==105)) {
+            CFRunLoopTimerContext timer_context{};timer_context.info=this;
+            edit_timer=CFRunLoopTimerCreate(nullptr,CFAbsoluteTimeGetCurrent(),0.001,0,0,edit_tick,&timer_context);
+            if(!edit_timer) return kResultFalse;
+            CFRunLoopAddTimer(CFRunLoopGetMain(),edit_timer,kCFRunLoopDefaultMode);
+        }
+        if(!value && edit_timer) CFRunLoopTimerInvalidate(edit_timer);
+        return kResultOk;
+    }
+    tresult PLUGIN_API setComponentState(IBStream* stream) override {
+        if (!control() || !context || !handler || !stream) return kResultFalse;
+        ++restoration.controller_component;trace(17);
+        if(fault==42)return kResultFalse;
+        if(fault==43)throw std::runtime_error("original controller synchronization exception");
+        if(fault==44)fault_crash(17);
+        if(fault==45)fault_hang(17);
+        std::array<unsigned char,32> data{};int32 read=0;
+        if(stream->read(data.data(),data.size(),&read)!=kResultOk || read!=32 || std::memcmp(data.data(),"HXPS",4)) return kResultFalse;
+        if (restoration.component_set && restoration.phase!=1) {++observed.violations;return kResultFalse;}
+        std::memcpy(&component_gain,data.data()+8,4);
+        if(!std::isfinite(component_gain) || component_gain<0 || component_gain>4)return kResultFalse;
+        if((fault==110 || fault==111) && handler->restartComponent(kLatencyChanged)!=kResultOk) return kResultFalse;
+        if(fault==53)stream->write(data.data(),1,nullptr); // ignored illegal write must still invalidate stream
+        restoration.controller_gain=bits(component_gain);restoration.phase=2;trace(17);return kResultOk;
+    }
+    tresult PLUGIN_API setState(IBStream* stream) override {
+        if (!control() || !context || !handler || !stream || restoration.phase!=2) return kResultFalse;
+        ++restoration.controller_set;trace(18);
+        if(fault==46)return kResultFalse;
+        if(fault==47)throw std::runtime_error("original controller state exception");
+        if(fault==48)fault_crash(18);
+        if(fault==49)fault_hang(18);
+        std::array<unsigned char,8> data{};int32 read=0;
+        if(stream->read(data.data(),data.size(),&read)!=kResultOk || read!=8 || std::memcmp(data.data(),"HXCT",4))return kResultFalse;
+        std::memcpy(&scroll,data.data()+4,4);
+        if(fault==54)stream->write(data.data(),1,nullptr);
+        restoration.scroll=static_cast<int>(scroll);restoration.phase=3;trace(18);return kResultOk;
+    }
+    tresult PLUGIN_API getState(IBStream* stream) override {
+        if (!control() || !context || !handler || !stream) return kResultFalse;
+        ++restoration.controller_get;
+        if(fault==96 && restoration.controller_get==2) {
+            std::array<unsigned char,5000> huge{};return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
+        }
+        // Original sensitivity fixture: an edit admitted during a live SDK
+        // state read must not let that pre-edit component snapshot escape.
+        if(fault==90 && restoration.controller_get>1 && !edits_sent) {
+            edits_sent=true;
+            handler->beginEdit(parameter_id(fault));component_gain=3.0;
+            handler->performEdit(parameter_id(fault),0.75);
+            handler->endEdit(parameter_id(fault));trace(25);
+        }
+        std::array<unsigned char,8> data{};std::memcpy(data.data(),"HXCT",4);std::memcpy(data.data()+4,&scroll,4);
+        int32 written=0;const auto result=stream->write(data.data(),data.size(),&written);
+        trace(20);return result==kResultOk && written==8?kResultOk:kResultFalse;
+    }
+    int32 PLUGIN_API getParameterCount() override { return control() && context?inventory_size:-1; }
+    tresult PLUGIN_API getParameterInfo(int32 index,ParameterInfo& info) override {
+        if (!control() || !context || index<0 || index>=inventory_size) return kInvalidArgument;
+        ++restoration.info_reads;info={};info.id=parameter_id(fault);info.defaultNormalizedValue=fault==81?1.0/3.0:(fault==82?0.0:0.25);
+        // Keep the low gain ID last to exercise SDK page order separately
+        // from the host's sorted processing lookup.
+        if(inventory_size>1 && index<inventory_size-1) {
+            const auto* shape=std::getenv("HEX_ORIGINAL_PARAMETER_INVENTORY");
+            if(index!=inventory_size-2 || !shape || std::strcmp(shape,"duplicate"))
+                info.id=static_cast<ParamID>(1001+index);
+            info.flags=ParameterInfo::kIsReadOnly;
+            const char16_t name[]=u"observed";
+            std::memcpy(info.title,name,sizeof(name));std::memcpy(info.shortTitle,name,sizeof(name));
+            return kResultOk;
+        }
+        if(fault==80 || fault==81 || fault==82 || fault==91 || fault==92) info.flags=ParameterInfo::kCanAutomate;
+        if(fault==91 || fault==92) {const char16_t unit[]=u"ratio";std::memcpy(info.units,unit,sizeof(unit));}
+        if(fault==81) info.stepCount=3;
+        if(fault==82) {info.stepCount=1;info.flags|=ParameterInfo::kIsBypass;}
+        if(fault==83 || fault==84 || fault==88) info.flags=ParameterInfo::kIsReadOnly;
+        if(fault==84) info.flags|=ParameterInfo::kIsHidden;
+        const char16_t name[]=u"gain";std::memcpy(info.title,name,sizeof(name));std::memcpy(info.shortTitle,name,sizeof(name));return kResultOk;
+    }
+    ParamValue PLUGIN_API getParamNormalized(ParamID id) override {
+        if(control() && context && id>1000 && id<static_cast<ParamID>(1000+inventory_size)) return 0.25;
+        if (!control() || !context || id!=parameter_id(fault)) {++observed.violations;return 0;}
+        ++restoration.value_reads;trace(19);
+        if(fault==57)fault_hang(19);
+        return fault==56?std::numeric_limits<double>::quiet_NaN():component_gain/4.0;
+    }
+    tresult PLUGIN_API getParamStringByValue(ParamID id,ParamValue value,String128 text) override {
+        if(fault!=91 && fault!=92 && fault!=93) return kNotImplemented;
+        if(!control() || !context || id!=parameter_id(fault) || !std::isfinite(value) || value<0 || value>1) return kInvalidArgument;
+        // Only the explicit controller-page query invokes formatting. Holding
+        // this foreign main-lane getter must not hold the PCM worker or permit
+        // stop/unload beneath its live SDK frame.
+        if(fault==93) fault_hang(26);
+        char formatted[32]{};
+        if(value==0.25) std::strcpy(formatted,"unity");
+        else if(value==0.5) std::strcpy(formatted,"double");
+        else std::snprintf(formatted,sizeof(formatted),"%.3f x",value*4.0);
+        std::memset(text,0,sizeof(String128));
+        for(size_t n=0;n<std::strlen(formatted);++n) text[n]=static_cast<TChar>(formatted[n]);
+        return kResultOk;
+    }
+    tresult PLUGIN_API getParamValueByString(ParamID id,TChar* text,ParamValue& value) override {
+        if(fault!=91 && fault!=92 && fault!=94) return kNotImplemented;
+        if(!control() || !context || id!=parameter_id(fault) || !text) return kInvalidArgument;
+        if(fault==94) {value=std::numeric_limits<double>::quiet_NaN();return kResultOk;}
+        char input[32]{};size_t n=0;
+        for(;n<31 && text[n];++n) {if(text[n]>127) return kResultFalse;input[n]=static_cast<char>(text[n]);}
+        if(text[n]) return kResultFalse;
+        if(!std::strcmp(input,"unity")) value=0.25;
+        else if(!std::strcmp(input,"double")) value=0.5;
+        else {
+            char* end=nullptr;const auto plain=std::strtod(input,&end);
+            if(end==input || !end || std::strcmp(end," x") || !std::isfinite(plain) || plain<0 || plain>4) return kResultFalse;
+            value=plain/4.0;
+        }
+        return kResultOk;
+    }
+    ParamValue PLUGIN_API normalizedParamToPlain(ParamID id,ParamValue value) override {
+        if(fault!=91 && fault!=92) return value;
+        if(!control() || !context || id!=parameter_id(fault)) {++observed.violations;return std::numeric_limits<double>::quiet_NaN();}
+        return value*4.0;
+    }
+    ParamValue PLUGIN_API plainParamToNormalized(ParamID id,ParamValue value) override {
+        if(fault!=91 && fault!=92) return value;
+        if(!control() || !context || id!=parameter_id(fault)) {++observed.violations;return std::numeric_limits<double>::quiet_NaN();}
+        return value/4.0;
+    }
+    tresult PLUGIN_API setParamNormalized(ParamID id,ParamValue value) override {
+        if(!control() || !context || !handler || id!=parameter_id(fault) || !std::isfinite(value) || value<0 || value>1)
+            return kInvalidArgument;
+        if(fault==76 && observed.flushes.load()) return kResultFalse;
+        component_gain=static_cast<float>(parameter_value(fault,value)*4.0);
+        if(fault==104 && observed.blocks) {
+            const auto extra=value==0.25?kIoChanged:kParamValuesChanged;
+            handler->restartComponent(kLatencyChanged|extra);
+        }
+        restoration.controller_gain=bits(component_gain);trace(21);return kResultOk;
+    }
+    IPlugView* PLUGIN_API createView(FIDString) override { return nullptr; }
+};
+class ProcessingProcessor final : public Processor,public IAudioPresentationLatency {
+    const int mode=next_mode,fault=next_fault;
+    bool initialized=false, arranged=false, setup=false, active=false;
+    std::atomic<bool> processing{false};
+    bool input=false,output=false,thread_bound=false;
+    bool auxiliary_disabled=false;
+    bool activation_restart_sent=false;
+    bool activated_once=false;
+    int32 inputs=2,outputs=2,maximum=0,precision=kSample32;
+    std::atomic<int32> block{0};
+    double sample_rate=0;
+    std::atomic<float> gain{1};
+    uint32 input_latency=0,output_latency=0,restored_latency=0;
+    std::array<std::array<double,2>,32> delay{};uint32 delay_cursor=0;
+#if HEX_FIXTURE_RESIDUAL_ECHO
+    std::array<std::array<double,2>,3> residual{};uint32 residual_cursor=0;
+#endif
+    IBStream* retained_stream=nullptr;
+    pthread_t worker{};
+    bool same_worker() const { return !thread_bound || pthread_equal(worker,pthread_self()); }
+public:
+    ProcessingProcessor() {
+        if(fault==81) gain.store(4.0f/3.0f);
+        if(fault==82) gain.store(0);
+        ++observed.created;
+    }
+    ~ProcessingProcessor() {
+        if (initialized || active || processing) ++observed.violations;
+        if (retained_stream && fault!=16 && fault!=52) retained_stream->release();
+    }
+    uint32 PLUGIN_API addRef() override { return Processor::addRef(); }
+    uint32 PLUGIN_API release() override { return Processor::release(); }
+    tresult PLUGIN_API queryInterface(const TUID iid,void** out) override {
+        if (!out || !iid) return kInvalidArgument;
+        if ((fault==112 || fault==113) && same(iid,INLINE_UID_OF(IEditController))) {
+            *out=nullptr;return fault==112?kResultFalse:kResultOk;
+        }
+        if (fault==114 && same(iid,INLINE_UID_OF(IAudioProcessor))) {
+            *out=nullptr;return kResultFalse;
+        }
+        if (same(iid,INLINE_UID_OF(IAudioPresentationLatency))) {
+            if (fault==112) { *out=nullptr;return kResultFalse; }
+            *out=static_cast<IAudioPresentationLatency*>(this);addRef();return kResultOk;
+        }
+        return Processor::queryInterface(iid,out);
+    }
+    uint32 presentation_calls=0;
+    uint32 PLUGIN_API getLatencySamples() override {
+        if(!control()) return std::numeric_limits<uint32>::max();
+        if(fault==66 && observed.stops) fault_hang(21);
+        trace(presentation_calls?15:14); // actual facts phase versus applied presentation
+        if(fault==68 && observed.stops && presentation_calls>2) return restored_latency+1;
+        return fault==36 && presentation_calls?7:(fault>=37?restored_latency:0);
+    }
+    uint32 PLUGIN_API getTailSamples() override {
+        if(!control()) return kInfiniteTail;
+        const auto* value=std::getenv(presentation_calls?"HEX_ORIGINAL_TAIL_AFTER_PRESENTATION":"HEX_ORIGINAL_TAIL_FRAMES");
+        if(observed.stops && std::getenv("HEX_ORIGINAL_TAIL_WHEN_QUIESCENT"))
+            value=std::getenv("HEX_ORIGINAL_TAIL_WHEN_QUIESCENT");
+        if(presentation_calls>2 && std::getenv("HEX_ORIGINAL_TAIL_AFTER_RESUME"))
+            value=std::getenv("HEX_ORIGINAL_TAIL_AFTER_RESUME");
+        if(!value) value=std::getenv("HEX_ORIGINAL_TAIL_FRAMES");
+        if(!value) return HEX_FIXTURE_INFINITE_TAIL?kInfiniteTail:(HEX_FIXTURE_RESIDUAL_ECHO?3:kNoTail);
+        char* end=nullptr;const auto frames=std::strtoull(value,&end,10);
+        if(!*value || !end || *end || frames>std::numeric_limits<uint32>::max()) return kInfiniteTail;
+        return static_cast<uint32>(frames);
+    }
+    tresult PLUGIN_API setAudioPresentationLatencySamples(BusDirection direction,int32 index,uint32 value) override {
+        if (!control() || !active || processing || index || (direction!=kInput && direction!=kOutput) ||
+            (direction==kInput && !inputs) || fault==17) return kResultFalse;
+        if(fault==67 && observed.stops) fault_hang(22);
+        ++presentation_calls;
+        (direction==kInput?input_latency:output_latency)=value;return kResultOk;
+    }
+    tresult PLUGIN_API getControllerClassId(TUID id) override {
+        if(!control() || !initialized)return kResultFalse;
+        if(fault<37 || fault==55)return kResultFalse;
+        std::memcpy(id,restore_controller_id,16);return kResultOk;
+    }
+    tresult PLUGIN_API setState(IBStream* stream) override {
+        if(!control() || !initialized || active || arranged || setup || processing || !stream)return kResultFalse;
+        ++restoration.component_set;trace(16);
+        if(fault==38)return kResultFalse;
+        if(fault==39)throw std::runtime_error("original component state exception");
+        if(fault==40)fault_crash(16);
+        if(fault==41)fault_hang(16);
+        std::array<unsigned char,32> data{};int32 read=0;
+        if(stream->read(data.data(),data.size(),&read)!=kResultOk || read!=32 || std::memcmp(data.data(),"HXPS",4))return kResultFalse;
+        float restored_gain=0;std::memcpy(&restored_gain,data.data()+8,4);std::memcpy(&restored_latency,data.data()+4,4);
+        if(!std::isfinite(restored_gain) || restored_gain<0 || restored_gain>4 || restored_latency>32 || (fault<37 && restored_latency))return kResultFalse;
+        gain.store(restored_gain);
+        if(fault==50)stream->write(data.data(),1,nullptr);
+        if(fault==51 || fault==52) {stream->addRef();retained_stream=stream;}
+        restoration.component_gain=bits(restored_gain);restoration.latency=static_cast<int>(restored_latency);restoration.phase=1;
+        trace(16);return kResultOk;
+    }
+    tresult PLUGIN_API getState(IBStream* stream) override {
+        if (!control() || !active || !stream) return kResultFalse;
+        ++restoration.component_get;
+        // Original current-state capture fault controls leave startup valid.
+        if(restoration.component_get>1) {
+            if(fault==95 && restoration.component_get==2) {
+                std::array<unsigned char,5000> huge{};return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
+            }
+            if(fault==97 && restoration.component_get==2) {
+                std::array<unsigned char,5000> huge{};
+                stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
+                stream->seek(-1,IBStream::kIBSeekSet,nullptr);return kResultOk;
+            }
+            if(fault==98 && restoration.component_get==2) {
+                std::array<unsigned char,5000> huge{};
+                stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
+                return kInternalError;
+            }
+            if(fault==69) return kResultFalse;
+            if(fault==70) throw std::runtime_error("original SDK current capture exception");
+            if(fault==71) fault_hang(22);
+        }
+        if (fault==35) arm_main_thread_tail();
+        if (fault==34) fault_hang(12);
+        if (fault==26) { trace(7);throw std::runtime_error("original SDK state exception"); }
+        if (fault==15) { std::array<unsigned char,4001> huge{};return stream->write(huge.data(),4001,nullptr); }
+        if (fault==23) {
+            stream->seek(std::numeric_limits<int64>::min(),IBStream::kIBSeekCur,nullptr);
+            stream->seek(std::numeric_limits<int64>::max(),IBStream::kIBSeekSet,nullptr);
+            return kResultOk; // rejected stream operations must not masquerade as captured state
+        }
+        if (fault==24) stream->release(); // original invalid-reference sensitivity control
+        if (fault==16) { stream->addRef();retained_stream=stream; }
+        std::array<unsigned char,32> bytes{};std::memcpy(bytes.data(),"HXPS",4);
+        const uint32 count=fault>=37?restored_latency:static_cast<uint32>(block);std::memcpy(bytes.data()+4,&count,4);
+        const auto captured_gain=gain.load();
+        std::memcpy(bytes.data()+8,&captured_gain,4);std::memcpy(bytes.data()+12,&sample_rate,8);
+        bytes[20]=static_cast<unsigned char>(inputs);bytes[21]=static_cast<unsigned char>(outputs);
+        std::memcpy(bytes.data()+24,&input_latency,4);std::memcpy(bytes.data()+28,&output_latency,4);
+        ISizeableStream* sized=nullptr;
+        if (stream->queryInterface(INLINE_UID_OF(ISizeableStream),reinterpret_cast<void**>(&sized))!=kResultOk || !sized)
+            return kResultFalse;
+        const bool sized_ok=sized->setStreamSize(32)==kResultOk;sized->release();
+        int32 written=0;
+        const bool ok=sized_ok && stream->seek(4,IBStream::kIBSeekSet,nullptr)==kResultOk &&
+            stream->write(bytes.data()+4,28,&written)==kResultOk && written==28 &&
+            stream->seek(0,IBStream::kIBSeekSet,nullptr)==kResultOk && stream->write(bytes.data(),4,&written)==kResultOk && written==4;
+        trace(4);return ok?kResultOk:kResultFalse;
+    }
+    tresult PLUGIN_API initialize(FUnknown* host) override {
+        if (!control() || initialized || !host) return kResultFalse;
+        const auto result=Processor::initialize(host);
+        if (result==kResultOk) { initialized=true; ++observed.initialized; }
+        return result;
+    }
+    tresult PLUGIN_API terminate() override {
+        if (!control() || !initialized || active || processing) return kResultFalse;
+        const auto result=Processor::terminate();
+        if (result==kResultOk) { initialized=false; ++observed.terminated;trace(5); }
+        return result;
+    }
+    int32 PLUGIN_API getBusCount(MediaType media,BusDirection direction) override {
+        if (!control() || !initialized || media!=kAudio) return 0;
+        if (fault==5) return 2;
+        if (fault==106 && direction==kInput) return 2;
+        return direction==kInput && mode==1?0:1;
+    }
+    tresult PLUGIN_API getBusInfo(MediaType media,BusDirection direction,int32 index,BusInfo& info) override {
+        const bool auxiliary=fault==106 && media==kAudio && direction==kInput && index==1;
+        if (!control() || (index && !auxiliary) || !getBusCount(media,direction)) return kInvalidArgument;
+        info={};info.mediaType=kAudio;info.direction=direction;info.busType=kMain;
+        info.channelCount=direction==kInput?inputs:outputs;
+        if (auxiliary) { info.busType=kAux;info.channelCount=2; }
+        if (fault==12 && arranged) ++info.channelCount;
+        info.flags=BusInfo::kDefaultActive;
+        const char16_t name[]=u"main";std::memcpy(info.name,name,sizeof(name));
+        return kResultOk;
+    }
+    tresult PLUGIN_API getBusArrangement(BusDirection direction,int32 index,SpeakerArrangement& value) override {
+        if (control() && fault==106 && direction==kInput && index==1) {
+            value=SpeakerArr::kStereo;return kResultOk;
+        }
+        if (!control() || index || !getBusCount(kAudio,direction)) return kInvalidArgument;
+        value=(direction==kInput?inputs:outputs)==1?SpeakerArr::kMono:SpeakerArr::kStereo;
+        return kResultOk;
+    }
+    tresult PLUGIN_API canProcessSampleSize(int32 size) override {
+        if (!control() || !initialized || fault==6) return kResultFalse;
+        return size==kSample32 || (mode==2 && size==kSample64)?kResultOk:kResultFalse;
+    }
+    tresult PLUGIN_API setBusArrangements(SpeakerArrangement* in,int32 ni,SpeakerArrangement* out,int32 no) override {
+        if (!control() || !initialized || active || processing || ni!=(fault==106?2:(mode==1?0:1)) || no!=1 ||
+            !out || (ni && !in)) return kInvalidArgument;
+        if (fault==106 && in[1]!=SpeakerArr::kStereo) return kResultFalse;
+        const auto count=[](SpeakerArrangement value)->int32 {
+            return value==SpeakerArr::kMono?1:(value==SpeakerArr::kStereo?2:0);
+        };
+        const int32 requested_input=ni?count(in[0]):0,requested_output=count(out[0]);
+        if (!requested_output || (ni && !requested_input)) return kResultFalse;
+        ++observed.arrangements;
+        inputs=requested_input;outputs=requested_output;arranged=true;
+        if (fault==1 || fault==2) { inputs=1;outputs=1; }
+        return fault==1?kResultFalse:kResultOk; // real refusal can mutate arrangement
+    }
+    tresult PLUGIN_API setupProcessing(ProcessSetup& request) override {
+        if (!control() || !arranged || active || processing || request.processMode!=kRealtime ||
+            (request.symbolicSampleSize!=kSample32 && !(mode==2 && request.symbolicSampleSize==kSample64)) ||
+            request.maxSamplesPerBlock<1 || request.maxSamplesPerBlock>256 ||
+            (request.sampleRate!=44100 && request.sampleRate!=48000 && request.sampleRate!=96000)) return kResultFalse;
+        ++observed.setups;
+        sample_rate=request.sampleRate;maximum=request.maxSamplesPerBlock;precision=request.symbolicSampleSize;
+        if (fault==3) { sample_rate=12345;return kResultFalse; }
+        setup=true;return kResultOk;
+    }
+    tresult PLUGIN_API activateBus(MediaType media,BusDirection direction,int32 index,TBool enabled) override {
+        if (control() && setup && !active && !processing && fault==106 && media==kAudio && direction==kInput && index==1) {
+            if (enabled) return kResultFalse;
+            auxiliary_disabled=true;return kResultOk;
+        }
+        if (!control() || !setup || active || processing || index || !getBusCount(media,direction)) return kResultFalse;
+        ++observed.activations;
+        if (enabled && fault==7) return kResultFalse;
+        (direction==kInput?input:output)=enabled;return kResultOk;
+    }
+    tresult PLUGIN_API setActive(TBool enabled) override {
+        if (!enabled && fault==25) trace(7); // sensitivity: teardown after unknown startup
+        if (!control() || !setup || processing) return kResultFalse;
+        if (enabled && fault==106 && !auxiliary_disabled) return kResultFalse;
+        if (enabled && fault==111) {
+            if (activated_once) restored_latency=7;
+            activated_once=true;
+        }
+        if(observed.stops) {
+            if(fault>=100 && fault<=103 && !module_event(enabled?'A':'D')) return kResultFalse;
+            if((fault==100 && !enabled) || (fault==101 && enabled)) { trace(24);return kResultFalse; }
+            if((fault==102 && !enabled) || (fault==103 && enabled)) {
+                trace(25);throw std::runtime_error("original SDK reactivation exception");
+            }
+            if((fault==99 || fault==104 || fault==105) && enabled && !active) {
+                restored_latency=7;delay={};delay_cursor=0;
+                if((fault==104 || fault==105) && !activation_restart_sent && latency_handler) {
+                    activation_restart_sent=true;
+                    latency_handler->restartComponent(kLatencyChanged);
+                }
+            }
+        }
+        active=enabled;return kResultOk;
+    }
+    tresult PLUGIN_API setProcessing(TBool enabled) override {
+        if (!active || (enabled?processing.load():(!processing || !same_worker()))) return kResultFalse;
+        if (pthread_main_np()) { ++observed.violations;return kResultFalse; }
+        if (enabled && fault==18) return kResultFalse;
+        if(!enabled) {
+            if(fault==58) return kResultFalse;
+            if(fault==59) throw std::runtime_error("original SDK quiescence exception");
+            if(fault==60) fault_crash(20);
+            if(fault==61) fault_hang(20);
+        } else if(observed.starts) {
+            if(fault==62) return kResultFalse;
+            if(fault==63) throw std::runtime_error("original SDK resume exception");
+            if(fault==64) fault_crash(23);
+            if(fault==65) fault_hang(23);
+        }
+        if (enabled) { worker=pthread_self();thread_bound=true;++observed.starts; }
+        else ++observed.stops;
+        processing=enabled;
+        if (enabled && fault==33) fault_hang(11);
+        if (enabled && fault==25) throw std::runtime_error("original SDK startup exception");
+        return kResultOk;
+    }
+    tresult PLUGIN_API process(ProcessData& data) override {
+        if (pthread_main_np() || !same_worker() || !active || !std::isfinite(sample_rate) || data.processMode!=kRealtime ||
+            data.symbolicSampleSize!=precision) { ++observed.violations;return kResultFalse; }
+        if (!data.numSamples && !data.numInputs && !data.numOutputs && !data.inputs && !data.outputs) {
+            if (processing || !data.inputParameterChanges || data.inputParameterChanges->getParameterCount()!=1)
+                return kInvalidArgument;
+            auto* queue=data.inputParameterChanges->getParameterData(0);
+            int32 offset=-1;ParamValue value=-1;
+            if (!queue || queue->getParameterId()!=(fault>=37?parameter_id(fault):0x1234u) || queue->getPointCount()!=1 ||
+                queue->getPoint(0,offset,value)!=kResultOk || offset || !std::isfinite(value) || value<0 || value>1)
+                return kInvalidArgument;
+            ++observed.flushes;
+            if (fault==11 || fault==72) return kResultFalse;
+            if(fault==73) throw std::runtime_error("original stopped parameter flush exception");
+            if(fault==74) fault_hang(24);
+            if(fault==75) data.numSamples=1;
+            if(fault==77) data.inputParameterChanges->addRef();
+            value=parameter_value(fault,value);
+            gain=static_cast<float>(value*(fault>=37?4.0:1.0));
+            if(fault>=37 && data.outputParameterChanges) {
+                int32 index=-1;const ParamID id=parameter_id(fault);
+                auto* feedback=data.outputParameterChanges->addParameterData(id,index);
+                if(!feedback || feedback->addPoint(0,value,index)!=kResultOk) return kResultFalse;
+            }
+            return kResultOk;
+        }
+        if (!processing || data.numSamples<1 || data.numSamples>maximum || data.inputEvents ||
+            data.numInputs!=(mode==1 || (!input && data.numInputs==0)?0:1) ||
+            data.numOutputs!=(!output && data.numOutputs==0?0:1)) return kInvalidArgument;
+        if (data.numInputs && (!data.inputs || data.inputs[0].numChannels!=inputs ||
+            (precision==kSample32?!data.inputs[0].channelBuffers32:!data.inputs[0].channelBuffers64)))
+            return kInvalidArgument;
+        if (data.numOutputs && (!data.outputs || data.outputs[0].numChannels!=outputs ||
+            (precision==kSample32?!data.outputs[0].channelBuffers32:!data.outputs[0].channelBuffers64)))
+            return kInvalidArgument;
+        // Independent SDK automation oracle. The previous block's final value
+        // is the implicit point at -1; jumps require adjacent old/new points.
+        std::array<std::pair<int32,ParamValue>,64> points{};int32 point_count=0;
+        if(data.inputParameterChanges) {
+            if(data.inputParameterChanges->getParameterCount()!=1) return kInvalidArgument;
+            auto* queue=data.inputParameterChanges->getParameterData(0);
+            if(!queue || queue->getParameterId()!=parameter_id(fault)) return kInvalidArgument;
+            point_count=queue->getPointCount();
+            if(point_count<1 || point_count>static_cast<int32>(points.size())) return kInvalidArgument;
+            for(int32 n=0;n<point_count;++n) {
+                auto& point=points[static_cast<size_t>(n)];
+                if(queue->getPoint(n,point.first,point.second)!=kResultOk || point.first<0 ||
+                    point.first>=data.numSamples || !std::isfinite(point.second) || point.second<0 || point.second>1 ||
+                    (n && points[static_cast<size_t>(n-1)].first>=point.first)) return kInvalidArgument;
+            }
+        }
+        ++observed.blocks; // count attempted foreign DSP, including a refusal
+        if (fault==28) fault_hang(9);
+        if (fault==31) fault_crash(9);
+        if (fault==10) return kResultFalse;
+        const float scale=0.5f+static_cast<float>(block)*0.125f;
+        int32 next_point=0,left_offset=-1;double left_value=static_cast<double>(gain.load())/4.0;
+        double current_gain=gain.load();
+        bool silent=true;
+        for (int32 frame=0;frame<data.numSamples;++frame) {
+            if(point_count) {
+                while(next_point<point_count && points[static_cast<size_t>(next_point)].first<frame) {
+                    left_offset=points[static_cast<size_t>(next_point)].first;
+                    left_value=points[static_cast<size_t>(next_point)].second;++next_point;
+                }
+                double value=left_value;
+                if(next_point<point_count) {
+                    const auto& right_point=points[static_cast<size_t>(next_point)];
+                    value+=(right_point.second-left_value)*static_cast<double>(frame-left_offset)/
+                        static_cast<double>(right_point.first-left_offset);
+                }
+                current_gain=parameter_value(fault,value)*4.0;
+            }
+            // Independent internal change at offset0; later host automation
+            // still reaches its endpoint at the end of this actual SDK block.
+            if(fault==79 && point_count && frame==0) current_gain=1.0;
+            if(fault==83 || fault==84) current_gain=2.0;
+            // Read all inputs for this sample before writing any aliased output.
+            const double left=mode==1?0.25:(input?(precision==kSample32?data.inputs[0].channelBuffers32[0][frame]:data.inputs[0].channelBuffers64[0][frame]):0.0);
+            const double right=mode==1?0.25:(input && inputs==2?(precision==kSample32?data.inputs[0].channelBuffers32[1][frame]:data.inputs[0].channelBuffers64[1][frame]):left);
+            if (output) for (int32 channel=0;channel<outputs;++channel) {
+                double value=(channel?right:left)*(fault==82?(current_gain>=2.0?1.0:scale):scale*current_gain);
+#if HEX_FIXTURE_RESIDUAL_ECHO
+                // Original three-frame FIR echo. Store the immediate sample,
+                // not the summed result: zero input has a genuinely finite tail.
+                const auto immediate=value;
+                value+=residual[residual_cursor][channel]*0.25;
+                residual[residual_cursor][channel]=immediate;
+#endif
+                if(fault>=37 && restored_latency) {
+                    std::swap(value,delay[delay_cursor][channel]);
+                }
+                if (precision==kSample32) {
+                    auto* destination=data.outputs[0].channelBuffers32[channel];if (!destination) return kInvalidArgument;
+                    destination[frame]=fault==4?std::numeric_limits<float>::quiet_NaN():static_cast<float>(value);
+                } else {
+                    auto* destination=data.outputs[0].channelBuffers64[channel];if (!destination) return kInvalidArgument;
+                    destination[frame]=fault==4?std::numeric_limits<double>::quiet_NaN():value;
+                }
+                silent=silent && value==0;
+            }
+            if(fault>=37 && restored_latency)delay_cursor=(delay_cursor+1)%restored_latency;
+#if HEX_FIXTURE_RESIDUAL_ECHO
+            residual_cursor=(residual_cursor+1)%residual.size();
+#endif
+        }
+        if(point_count || fault==83 || fault==84) {
+            gain.store(static_cast<float>(current_gain));
+            if(data.outputParameterChanges && fault!=78) {
+                int32 index=-1;const ParamID id=parameter_id(fault);
+                auto* queue=data.outputParameterChanges->addParameterData(id,index);
+                if(!queue || queue->addPoint(fault==79 || fault==83 || fault==84?0:data.numSamples-1,fault==79?0.25:current_gain/4.0,index)!=kResultOk) return kResultFalse;
+            }
+        }
+        if (output) data.outputs[0].silenceFlags=silent || fault==9?((uint64(1)<<outputs)-1):0;
+        if (fault==8 && output) data.outputs[0].numChannels=3;
+        if (fault==13) data.numSamples=8192;
+        ++block;return kResultOk;
+    }
+};
+
+class ProcessingFactory final : public IPluginFactory {
+    std::atomic<uint32> refs{0};
+public:
+    uint32 count() const { return refs.load(); }
+    tresult PLUGIN_API queryInterface(const TUID iid,void** out) override {
+        if (!out) return kInvalidArgument;*out=nullptr;
+        if (!same(iid,INLINE_UID_OF(FUnknown)) && !same(iid,INLINE_UID_OF(IPluginFactory))) return kNoInterface;
+        *out=static_cast<IPluginFactory*>(this);addRef();return kResultOk;
+    }
+    uint32 PLUGIN_API addRef() override { return ++refs; }
+    uint32 PLUGIN_API release() override { return --refs; }
+    tresult PLUGIN_API getFactoryInfo(PFactoryInfo* out) override {
+        if (!out) return kInvalidArgument;
+        *out=PFactoryInfo("hex original fixtures","https://invalid.example","fixture@invalid.example",0);return kResultOk;
+    }
+    int32 PLUGIN_API countClasses() override { return next_fault>=37 && next_fault!=55?2:1; }
+    tresult PLUGIN_API getClassInfo(int32 index,PClassInfo* out) override {
+        if (!out || index<0 || index>=countClasses()) return kInvalidArgument;
+        if(index==1) {*out=PClassInfo(restore_controller_id,PClassInfo::kManyInstances,"Component Controller Class","hex original restore controller");return kResultOk;}
+        *out=PClassInfo(processing_id,PClassInfo::kManyInstances,"Audio Module Class","hex original processing fixture");return kResultOk;
+    }
+    tresult PLUGIN_API createInstance(FIDString cid,FIDString iid,void** out) override {
+        if (!out) return kInvalidArgument;*out=nullptr;
+        if (!cid || !iid) return kInvalidArgument;
+        if(next_fault>=37 && next_fault!=55 && same(cid,restore_controller_id)) {
+            auto* object=new(std::nothrow) RestoreController();if(!object)return kOutOfMemory;
+            const auto result=object->queryInterface(iid,out);object->release();return result;
+        }
+        if(!same(cid,processing_id))return kInvalidArgument;
+        auto* object=new(std::nothrow) ProcessingProcessor();if (!object) return kOutOfMemory;
+        const auto result=object->queryInterface(iid,out);object->release();return result;
+    }
+} processing_factory;
+} // namespace
+
+extern "C" __attribute__((visibility("default"))) bool HexProcessingConfigure(int mode,int fault) {
+    if (!control() || mode<0 || mode>2 || fault<0 || fault>13) return false;
+    next_mode=mode;next_fault=fault;return true;
+}
+extern "C" __attribute__((visibility("default"))) int HexProcessingObservation(int* out,int capacity) {
+    if (!control() || !out || capacity<13) return -1;
+    const int values[]={observed.violations,observed.created,observed.initialized,observed.terminated,
+        observed.arrangements,observed.setups,observed.activations,observed.starts,observed.stops,
+        observed.blocks,observed.flushes,static_cast<int>(objects.load()),static_cast<int>(processing_factory.count())};
+    std::copy(std::begin(values),std::end(values),out);return 13;
+}
+extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) {
+    // Supported fault control belongs only to this original SDK fixture.
+    // The production helper never reads this environment variable.
+    const auto* selected=std::getenv("HEX_ORIGINAL_INSTANCE_VARIANT");
+    if (selected) {
+        const auto length=std::strlen(selected);if (!length || length>3) return false;
+        int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
+        if (value>114) return false;next_fault=value;
+    }
+    if(!module_event('E')) return false;
+    trace(1,0);
+    if (next_fault==27) fault_hang(8);
+    if (next_fault==30) fault_crash(8);
+    if (next_fault==21) for (int n=0;n<4096;++n) { std::fputs("owned SDK stdout noise\n",stdout);std::fputs("owned SDK stderr noise\n",stderr); }
+    if (next_fault==22 && std::fgetc(stdin)!=EOF) return false;
+    return next_fault!=19;
+}
+extern "C" __attribute__((visibility("default"))) bool bundleExit() {
+    if(!module_event('X')) return false;
+    trace(6,static_cast<int>(processing_factory.count()));
+    if (next_fault==29) fault_hang(10);
+    if (next_fault==32) fault_crash(10);
+    return next_fault!=20 && objects.load()==0 && processing_factory.count()==0;
+}
+extern "C" __attribute__((visibility("default"))) IPluginFactory* GetPluginFactory() {
+    processing_factory.addRef();return &processing_factory;
+}

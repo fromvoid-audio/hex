@@ -7,6 +7,10 @@
 //! containing this owned map must be retired away from the callback so its
 //! backing point and prefix vectors are never freed there.
 use hex_project::{BeatTime, LoopRegion, MAX_TEMPO_POINTS, TempoMap};
+mod borrowed;
+pub(crate) use borrowed::CanonicalMidiTiming;
+mod breaks;
+pub(crate) use breaks::{MidiTempoBreaks, TempoBreaks};
 mod persistent;
 
 /// Maximum canonical tempo segments admitted into a prepared graph.
@@ -47,8 +51,13 @@ impl std::fmt::Display for PreparedTempoError {
 }
 
 /// Small event-boundary timing contract shared by canonical and periodic maps.
-/// Callers should use it at block/event boundaries, never per sample.
+/// Beat conversion is for block/event boundaries. The optional local-tempo
+/// query also serves native effects at sample offsets through a bounded map lookup.
 pub trait MidiTiming {
+    /// Optional exact local tempo, excluding any constant beat-origin shift.
+    fn tempo_micro_bpm_at_frame(&self, _frame: u64) -> Option<u32> {
+        None
+    }
     fn sample_rate(&self) -> u32;
     fn max_micro_bpm(&self) -> u64;
     fn beat_to_frame(&self, beat: BeatTime) -> Result<u64, PreparedTempoError>;
@@ -73,6 +82,28 @@ pub struct PreparedTempoMap {
 }
 
 impl PreparedTempoMap {
+    pub(crate) fn observation_copy(&self) -> Result<Self, crate::Invalid> {
+        let mut copy = hex_project::TempoMapCopyCustody::new();
+        copy.prepare_from(&self.canonical)
+            .map_err(|_| crate::Invalid("could not copy activity timing"))?;
+        let mut map = None;
+        copy.transfer_into(&mut map)
+            .map_err(|_| crate::Invalid("could not retain activity timing"))?;
+        Ok(Self {
+            canonical: map.ok_or(crate::Invalid("activity timing is unavailable"))?,
+            max_micro_bpm: self.max_micro_bpm,
+        })
+    }
+    pub(crate) fn observation_heap_bytes(&self) -> Option<usize> {
+        self.canonical
+            .owned_allocation_layout()
+            .checked_backing_bytes()
+    }
+    pub(crate) fn observation_copy_quote(&self) -> Option<usize> {
+        self.canonical.points().len().checked_mul(
+            std::mem::size_of::<hex_project::TempoPoint>() + std::mem::size_of::<u128>(),
+        )
+    }
     /// Move a validated canonical map into playback-owned prepared state.
     pub fn prepare(
         canonical: TempoMap,
@@ -130,19 +161,7 @@ impl PreparedTempoMap {
     }
 
     pub(crate) fn same_map(&self, other: &Self) -> bool {
-        self.canonical == other.canonical
-    }
-
-    fn max_micro_bpm_in_range(&self, start: BeatTime, end: BeatTime) -> u32 {
-        let active = self.canonical.tempo_at(start).micro_bpm();
-        self.canonical
-            .points()
-            .iter()
-            .filter(|point| point.beat() >= start && point.beat() < end)
-            .map(|point| point.tempo().micro_bpm())
-            .max()
-            .unwrap_or(active)
-            .max(active)
+        self.canonical.proves_same_clock(&other.canonical)
     }
 
     /// Convert a Q32.32 quarter-note beat to its canonical nearest frame.
@@ -174,6 +193,11 @@ impl PreparedTempoMap {
 }
 
 impl MidiTiming for PreparedTempoMap {
+    fn tempo_micro_bpm_at_frame(&self, frame: u64) -> Option<u32> {
+        SessionBaseTimingView::Canonical(self)
+            .micro_bpm_at_frame(frame)
+            .ok()
+    }
     fn sample_rate(&self) -> u32 {
         self.sample_rate()
     }
@@ -248,8 +272,10 @@ impl PreparedPeriodicSessionTempo {
                 ))?;
         let denominator = u128::from(frame_period) << 32;
         let rate = numerator / denominator + u128::from(numerator % denominator != 0);
-        let loop_max = map.max_micro_bpm_in_range(start_beat, end_beat);
-        let admitted_max_micro_bpm = u64::try_from(rate.max(u128::from(loop_max)))
+        // The same published source can also play a canonical first pass from
+        // a cursor beyond the loop. Admit both reachable clocks on control;
+        // this upper bound does not change the periodic mapping itself.
+        let admitted_max_micro_bpm = u64::try_from(rate.max(u128::from(map.max_micro_bpm())))
             .map_err(|_| PreparedTempoError::InvalidLoop("session tempo loop rate overflow"))?;
         Ok(Self {
             start_frame,
@@ -298,10 +324,25 @@ pub(crate) struct PeriodicSessionTempoView<'a> {
 /// the new base clock translated so both revisions identify the cut as the
 /// same musical position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct SessionClockAnchor {
-    pub(crate) cut_frame: u64,
-    pub(crate) old_beat: BeatTime,
-    pub(crate) new_beat: BeatTime,
+pub struct SessionClockAnchor {
+    /// Performance frame at which this prepared-revision translation was established.
+    pub cut_frame: u64,
+    /// Global performance beat preserved from the preceding clock.
+    pub old_beat: BeatTime,
+    /// Same frame expressed in the current canonical/periodic base clock.
+    pub new_beat: BeatTime,
+}
+
+impl SessionClockAnchor {
+    /// Decode the existing scalar clock translation at a telemetry boundary.
+    /// Every u64 beat value is a representable Q32.32 coordinate.
+    pub const fn from_raw(cut_frame: u64, old_beat_raw: u64, new_beat_raw: u64) -> Self {
+        Self {
+            cut_frame,
+            old_beat: BeatTime::from_raw(old_beat_raw),
+            new_beat: BeatTime::from_raw(new_beat_raw),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -318,25 +359,24 @@ impl AnchoredSessionTempoView<'_> {
         AnchoredSessionTempoView { base, anchor }
     }
 
-    fn shift_raw(&self, raw: u128, old_side: bool) -> Result<u128, PreparedTempoError> {
-        let offset =
-            i128::from(self.anchor.old_beat.raw()) - i128::from(self.anchor.new_beat.raw());
-        let shift = if old_side { offset } else { -offset };
+    /// Translate a base-clock raw beat into the anchored performance clock.
+    /// The signed result may precede beat zero; callers decide whether that is
+    /// an error (a point conversion) or saturates (a lower bound).
+    fn shift_raw(&self, raw: u128) -> Result<i128, PreparedTempoError> {
+        let shift = i128::from(self.anchor.old_beat.raw()) - i128::from(self.anchor.new_beat.raw());
         let raw = i128::try_from(raw)
             .map_err(|_| PreparedTempoError::FrameToBeat("anchored beat conversion overflow"))?;
-        let shifted = raw
-            .checked_add(shift)
+        raw.checked_add(shift)
             .ok_or(PreparedTempoError::FrameToBeat(
                 "anchored beat conversion overflow",
-            ))?;
-        if shifted < 0 {
-            return Ok(0);
-        }
-        Ok((shifted as u128).min(TempoMap::BEAT_RANGE_SENTINEL))
+            ))
     }
 }
 
 impl MidiTiming for AnchoredSessionTempoView<'_> {
+    fn tempo_micro_bpm_at_frame(&self, frame: u64) -> Option<u32> {
+        self.base.micro_bpm_at_frame(frame).ok()
+    }
     fn sample_rate(&self) -> u32 {
         self.base.sample_rate()
     }
@@ -353,14 +393,28 @@ impl MidiTiming for AnchoredSessionTempoView<'_> {
     }
     fn frame_to_beat(&self, frame: u64) -> Result<BeatTime, PreparedTempoError> {
         let raw = self.base.frame_to_beat(frame)?.raw();
-        let raw = self.shift_raw(u128::from(raw), true)?;
+        // A frame whose anchored beat precedes zero has no beat; refuse it,
+        // as `beat_to_frame` refuses the inverse, instead of reporting beat 0.
+        let raw = self.shift_raw(u128::from(raw))?;
+        if raw < 0 {
+            return Err(PreparedTempoError::FrameToBeat(
+                "anchored frame precedes the beat domain",
+            ));
+        }
         let raw = u64::try_from(raw).map_err(|_| {
             PreparedTempoError::FrameToBeat("anchored beat exceeds the beat domain")
         })?;
         Ok(BeatTime::from_raw(raw))
     }
     fn beat_lower_bound_for_frame(&self, frame: u64) -> Result<u128, PreparedTempoError> {
-        self.shift_raw(self.base.beat_lower_bound_for_frame(frame)?, true)
+        // The anchored clock is the base clock translated, so it stays
+        // monotonic. A negative translated bound means every beat in the
+        // domain already reaches `frame`; beat zero is then the exact first
+        // such beat, not an approximation.
+        let raw = self.shift_raw(self.base.beat_lower_bound_for_frame(frame)?)?;
+        Ok(u128::try_from(raw)
+            .unwrap_or(0)
+            .min(TempoMap::BEAT_RANGE_SENTINEL))
     }
 }
 
@@ -417,10 +471,11 @@ impl PeriodicSessionTempoView<'_> {
 
     fn scoped_local_inverse(&self, frame: u64) -> Result<BeatTime, PreparedTempoError> {
         let candidate = self.canonical.frame_to_beat(frame);
-        if let Ok(beat) = candidate {
-            if beat >= self.cycle.start_beat && beat < self.cycle.end_beat {
-                return Ok(beat);
-            }
+        if let Ok(beat) = candidate
+            && beat >= self.cycle.start_beat
+            && beat < self.cycle.end_beat
+        {
+            return Ok(beat);
         }
         let lower = self.canonical.beat_lower_bound_for_frame(frame)?;
         let upper_frame = frame.checked_add(1).ok_or(PreparedTempoError::FrameToBeat(
@@ -445,6 +500,11 @@ impl PeriodicSessionTempoView<'_> {
 }
 
 impl MidiTiming for PeriodicSessionTempoView<'_> {
+    fn tempo_micro_bpm_at_frame(&self, frame: u64) -> Option<u32> {
+        SessionBaseTimingView::Periodic(*self)
+            .micro_bpm_at_frame(frame)
+            .ok()
+    }
     fn sample_rate(&self) -> u32 {
         self.canonical.sample_rate()
     }
@@ -550,6 +610,9 @@ pub(crate) enum SessionBaseTimingView<'a> {
 }
 
 impl MidiTiming for SessionBaseTimingView<'_> {
+    fn tempo_micro_bpm_at_frame(&self, frame: u64) -> Option<u32> {
+        self.micro_bpm_at_frame(frame).ok()
+    }
     fn sample_rate(&self) -> u32 {
         match self {
             Self::Canonical(map) => map.sample_rate(),
@@ -629,6 +692,9 @@ impl<'a> SessionTimingView<'a> {
 }
 
 impl MidiTiming for SessionTimingView<'_> {
+    fn tempo_micro_bpm_at_frame(&self, frame: u64) -> Option<u32> {
+        self.micro_bpm_at_frame(frame).ok()
+    }
     fn sample_rate(&self) -> u32 {
         match self {
             Self::Canonical(map) => map.sample_rate(),
@@ -912,8 +978,7 @@ mod tests {
         low
     }
 
-    #[test]
-    fn periodic_clock_matches_forward_binary_search_through_many_cycles() {
+    fn periodic_clock_fixture() -> (PreparedTempoMap, LoopRegion, PreparedPeriodicSessionTempo) {
         let canonical = TempoMap::new(
             48_000,
             vec![
@@ -925,11 +990,19 @@ mod tests {
             ],
         )
         .unwrap();
-        let prepared = PreparedTempoMap::prepare(canonical.clone(), 48_000).unwrap();
+        let prepared = PreparedTempoMap::prepare(canonical, 48_000).unwrap();
         let loop_region = LoopRegion::new(1_237, 91_111, true).unwrap();
         let cycle = PreparedPeriodicSessionTempo::prepare(&prepared, loop_region).unwrap();
+        (prepared, loop_region, cycle)
+    }
+
+    #[test]
+    fn periodic_clock_boundaries_match_canonical_tempo() {
+        let (prepared, _loop_region, cycle) = periodic_clock_fixture();
         let view = cycle.view(&prepared);
-        assert_eq!(view.max_micro_bpm(), 150_000_000);
+        // Admission covers a later absolute cursor too; the coordinate checks
+        // below still prove that the 600 BPM marker never enters loop cycles.
+        assert_eq!(view.max_micro_bpm(), 600_000_000);
 
         assert_eq!(view.beat_to_frame(cycle.start_beat()).unwrap(), 1_237);
         assert_eq!(view.beat_to_frame(cycle.end_beat()).unwrap(), 91_111);
@@ -960,10 +1033,20 @@ mod tests {
                 assert_eq!(actual, expected);
             }
         }
+    }
 
+    // Partition the original exhaustive range without gaps or overlap. Each
+    // frame retains the independent full-range binary-search oracle.
+    fn check_periodic_clock_frame_partition(partition: u64) {
+        const PARTITIONS: u64 = 64;
+        let (prepared, loop_region, cycle) = periodic_clock_fixture();
+        let view = cycle.view(&prepared);
         let start = loop_region.start().saturating_sub(2);
-        let end = loop_region.start() + cycle.frame_period() * 9 + 2;
-        for frame in start..=end {
+        let end_exclusive = loop_region.start() + cycle.frame_period() * 9 + 3;
+        let count = end_exclusive - start;
+        let partition_start = start + count * partition / PARTITIONS;
+        let partition_end = start + count * (partition + 1) / PARTITIONS;
+        for frame in partition_start..partition_end {
             let actual = view.beat_lower_bound_for_frame(frame).unwrap();
             let expected = lower_bound_oracle(&view, frame);
             assert_eq!(actual, expected, "lower bound at frame {frame}");
@@ -981,20 +1064,87 @@ mod tests {
                     let second_cycle_end =
                         u128::from(cycle.start_beat().raw()) + 2 * u128::from(cycle.beat_period());
                     assert!(u128::from(beat.raw()) < second_cycle_end);
+                    if frame < loop_region.end() {
+                        assert!(beat < cycle.end_beat());
+                    }
                 }
             }
         }
-
-        // Every representable interior loop frame has a center inverse that
-        // round-trips through the periodic forward map, including frames where
-        // canonical quantized tempo boundaries share a frame.
-        for frame in loop_region.start() + 1..loop_region.end() {
-            let center = view.frame_to_beat(frame).unwrap();
-            assert_eq!(view.beat_to_frame(center).unwrap(), frame);
-            assert!(center >= cycle.start_beat());
-            assert!(center < cycle.end_beat());
-        }
     }
+
+    macro_rules! periodic_clock_partition {
+        ($name:ident, $partition:expr) => {
+            #[test]
+            fn $name() {
+                check_periodic_clock_frame_partition($partition);
+            }
+        };
+    }
+
+    periodic_clock_partition!(periodic_clock_frames_00, 0);
+    periodic_clock_partition!(periodic_clock_frames_01, 1);
+    periodic_clock_partition!(periodic_clock_frames_02, 2);
+    periodic_clock_partition!(periodic_clock_frames_03, 3);
+    periodic_clock_partition!(periodic_clock_frames_04, 4);
+    periodic_clock_partition!(periodic_clock_frames_05, 5);
+    periodic_clock_partition!(periodic_clock_frames_06, 6);
+    periodic_clock_partition!(periodic_clock_frames_07, 7);
+    periodic_clock_partition!(periodic_clock_frames_08, 8);
+    periodic_clock_partition!(periodic_clock_frames_09, 9);
+    periodic_clock_partition!(periodic_clock_frames_10, 10);
+    periodic_clock_partition!(periodic_clock_frames_11, 11);
+    periodic_clock_partition!(periodic_clock_frames_12, 12);
+    periodic_clock_partition!(periodic_clock_frames_13, 13);
+    periodic_clock_partition!(periodic_clock_frames_14, 14);
+    periodic_clock_partition!(periodic_clock_frames_15, 15);
+    periodic_clock_partition!(periodic_clock_frames_16, 16);
+    periodic_clock_partition!(periodic_clock_frames_17, 17);
+    periodic_clock_partition!(periodic_clock_frames_18, 18);
+    periodic_clock_partition!(periodic_clock_frames_19, 19);
+    periodic_clock_partition!(periodic_clock_frames_20, 20);
+    periodic_clock_partition!(periodic_clock_frames_21, 21);
+    periodic_clock_partition!(periodic_clock_frames_22, 22);
+    periodic_clock_partition!(periodic_clock_frames_23, 23);
+    periodic_clock_partition!(periodic_clock_frames_24, 24);
+    periodic_clock_partition!(periodic_clock_frames_25, 25);
+    periodic_clock_partition!(periodic_clock_frames_26, 26);
+    periodic_clock_partition!(periodic_clock_frames_27, 27);
+    periodic_clock_partition!(periodic_clock_frames_28, 28);
+    periodic_clock_partition!(periodic_clock_frames_29, 29);
+    periodic_clock_partition!(periodic_clock_frames_30, 30);
+    periodic_clock_partition!(periodic_clock_frames_31, 31);
+    periodic_clock_partition!(periodic_clock_frames_32, 32);
+    periodic_clock_partition!(periodic_clock_frames_33, 33);
+    periodic_clock_partition!(periodic_clock_frames_34, 34);
+    periodic_clock_partition!(periodic_clock_frames_35, 35);
+    periodic_clock_partition!(periodic_clock_frames_36, 36);
+    periodic_clock_partition!(periodic_clock_frames_37, 37);
+    periodic_clock_partition!(periodic_clock_frames_38, 38);
+    periodic_clock_partition!(periodic_clock_frames_39, 39);
+    periodic_clock_partition!(periodic_clock_frames_40, 40);
+    periodic_clock_partition!(periodic_clock_frames_41, 41);
+    periodic_clock_partition!(periodic_clock_frames_42, 42);
+    periodic_clock_partition!(periodic_clock_frames_43, 43);
+    periodic_clock_partition!(periodic_clock_frames_44, 44);
+    periodic_clock_partition!(periodic_clock_frames_45, 45);
+    periodic_clock_partition!(periodic_clock_frames_46, 46);
+    periodic_clock_partition!(periodic_clock_frames_47, 47);
+    periodic_clock_partition!(periodic_clock_frames_48, 48);
+    periodic_clock_partition!(periodic_clock_frames_49, 49);
+    periodic_clock_partition!(periodic_clock_frames_50, 50);
+    periodic_clock_partition!(periodic_clock_frames_51, 51);
+    periodic_clock_partition!(periodic_clock_frames_52, 52);
+    periodic_clock_partition!(periodic_clock_frames_53, 53);
+    periodic_clock_partition!(periodic_clock_frames_54, 54);
+    periodic_clock_partition!(periodic_clock_frames_55, 55);
+    periodic_clock_partition!(periodic_clock_frames_56, 56);
+    periodic_clock_partition!(periodic_clock_frames_57, 57);
+    periodic_clock_partition!(periodic_clock_frames_58, 58);
+    periodic_clock_partition!(periodic_clock_frames_59, 59);
+    periodic_clock_partition!(periodic_clock_frames_60, 60);
+    periodic_clock_partition!(periodic_clock_frames_61, 61);
+    periodic_clock_partition!(periodic_clock_frames_62, 62);
+    periodic_clock_partition!(periodic_clock_frames_63, 63);
 
     #[test]
     fn periodic_lower_bound_seam_uses_previous_cycle_tail() {
@@ -1148,5 +1298,35 @@ mod tests {
             assert_eq!(i128::from(effective.raw()), expected_raw);
             assert_eq!(anchored.beat_to_frame(effective).unwrap(), frame);
         }
+    }
+
+    #[test]
+    fn anchored_clock_rejects_frames_before_its_beat_domain() {
+        let map = PreparedTempoMap::prepare(
+            TempoMap::constant(48_000, tempo(120_000_000)).unwrap(),
+            48_000,
+        )
+        .unwrap();
+        let anchored = super::AnchoredSessionTempoView::new(
+            super::SessionBaseTimingView::Canonical(&map),
+            super::SessionClockAnchor {
+                cut_frame: 24_000,
+                old_beat: BeatTime::ZERO,
+                new_beat: BeatTime::ONE,
+            },
+        );
+        // Frames before the cut precede anchored beat zero: both directions refuse.
+        assert!(anchored.frame_to_beat(0).is_err());
+        assert!(anchored.frame_to_beat(23_999).is_err());
+        assert_eq!(anchored.frame_to_beat(24_000).unwrap(), BeatTime::ZERO);
+        assert_eq!(anchored.beat_to_frame(BeatTime::ZERO).unwrap(), 24_000);
+        // The lower bound is the first domain beat reaching the frame. Beat
+        // zero reaches every frame up to the cut, so it is exact there.
+        assert_eq!(anchored.beat_lower_bound_for_frame(0).unwrap(), 0);
+        assert_eq!(anchored.beat_lower_bound_for_frame(24_000).unwrap(), 0);
+        let after_cut = anchored.beat_lower_bound_for_frame(24_001).unwrap();
+        assert!(after_cut > 0);
+        let after_cut = BeatTime::from_raw(u64::try_from(after_cut).unwrap());
+        assert!(anchored.beat_to_frame(after_cut).unwrap() >= 24_001);
     }
 }

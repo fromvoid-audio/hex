@@ -12,6 +12,8 @@ use crate::{
 };
 use std::mem;
 mod cleanup;
+pub(crate) mod current_midi;
+mod current_sampler;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SessionAssemblyCapacity {
@@ -26,6 +28,8 @@ pub struct SessionAssemblyCapacity {
     pub meter_copy_bytes: usize,
     pub meter_bytes: usize,
     pub meter_owned_allocations: usize,
+    pub sampler_factory_bytes: usize,
+    pub sampler_midi_bytes: usize,
 }
 impl SessionAssemblyCapacity {
     pub(crate) fn bytes(self) -> Result<usize, AudioStorageError> {
@@ -39,6 +43,8 @@ impl SessionAssemblyCapacity {
             self.pair_bytes,
             self.meter_copy_bytes,
             self.meter_bytes,
+            self.sampler_factory_bytes,
+            self.sampler_midi_bytes,
         ]
         .into_iter()
         .try_fold(0_usize, |n, b| {
@@ -48,6 +54,7 @@ impl SessionAssemblyCapacity {
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ClipPlan {
+    pub(crate) active: bool,
     pub(crate) source_row: usize,
     pub(crate) bank_source: usize,
     pub(crate) handle: u64,
@@ -57,6 +64,7 @@ pub(crate) struct ClipPlan {
     pub(crate) asset: AssetId,
     pub(crate) start: u64,
     pub(crate) end: u64,
+    pub(crate) loop_range: Option<hex_project::SessionAudioLoop>,
     pub(crate) gain: hex_project::ClipGain,
 }
 pub(crate) struct SceneRangePlan {
@@ -97,6 +105,7 @@ impl AudioTarget {
         };
         // No fallible call/destructor between source split and persistent install.
         self.clip = Some(PreparedSessionAudioClip {
+            active: self.plan.active,
             id: self.plan.clip,
             track: self.plan.track,
             scene: self.plan.scene,
@@ -104,6 +113,7 @@ impl AudioTarget {
             asset: self.plan.asset,
             source_start: self.plan.start,
             source_end: self.plan.end,
+            loop_range: self.plan.loop_range,
             gain: self.plan.gain.linear(),
             source,
         });
@@ -120,12 +130,14 @@ impl AudioTarget {
             .ok_or(AudioStorageError::SourceMismatch)?;
         if self.actual_handle != Some(self.plan.handle)
             || *asset != self.plan.asset
+            || clip.active != self.plan.active
             || clip.id != self.plan.clip
             || clip.track != self.plan.track
             || clip.scene != self.plan.scene
             || clip.asset != self.plan.asset
             || clip.source_start != self.plan.start
             || clip.source_end != self.plan.end
+            || clip.loop_range != self.plan.loop_range
             || clip.gain != self.plan.gain.linear()
         {
             return Err(AudioStorageError::SourceMismatch);
@@ -178,6 +190,10 @@ pub(crate) struct SessionAssembly {
     growth: usize,
     unused_midi: Vec<PreparedSessionMidiClip>,
     unused_mutable: Vec<PreparedMutableTrackInstrument>,
+    sampler_factories: Vec<current_sampler::FactoryBinding>,
+    sampler_midi: Vec<current_midi::MidiTarget>,
+    sampler_midi_scope: Option<u64>,
+    sampler_context_address: Option<usize>,
     name_pending: bool,
     scene_cursor: usize,
     track_cursor: usize,
@@ -290,8 +306,8 @@ impl SessionAssembly {
         if self.inventory.is_some() && external.is_some() {
             return Err(AudioStorageError::SourceMismatch);
         }
-        if let Some(i) = self.inventory.as_ref().or(external) {
-            if self.scenes.capacity() != 0
+        if let Some(i) = self.inventory.as_ref().or(external)
+            && (self.scenes.capacity() != 0
                 || self.tracks.capacity() != 0
                 || self.cells.capacity() != 0
                 || self.indices.capacity() != 0
@@ -307,21 +323,21 @@ impl SessionAssembly {
                 || self.meter.is_some()
                 || i.routed_midi_clips.capacity() != 0
                 || i.midi_source_roots.capacity() != 0
-                || !i.midi_clips.is_empty()
-                || i.midi_clips.capacity() != 0
-                || !i.mutable_instruments.is_empty()
-                || i.mutable_instruments.capacity() != 0
-                || i.mutable_history_retarget_storage_bytes != 0
-                || i.midi_note_bank_storage_bytes != 0
-                || i.midi_note_bank_reference_count != 0
-                || i.work != SessionWorkEnvelope::default()
-            {
-                return Err(AudioStorageError::UnknownStorage);
-            }
-        }
-        if self.unused_midi.capacity() != 0 || self.unused_mutable.capacity() != 0 {
+                || i.mutable_history_retarget_storage_bytes != 0)
+        {
             return Err(AudioStorageError::UnknownStorage);
         }
+        let sampler_midi_bytes = self.current_sampler_midi_bytes(external)?;
+        if let Some(i) = self.inventory.as_ref().or(external) {
+            let (work, bank, refs) = self.current_sampler_midi_facts(external)?;
+            if i.work != work
+                || i.midi_note_bank_storage_bytes != bank
+                || i.midi_note_bank_reference_count != refs
+            {
+                return Err(AudioStorageError::SourceMismatch);
+            }
+        }
+        let sampler_factory_bytes = self.current_sampler_bytes(external)?;
         let copy_meter = self.meter_copy.capacity();
         let meter_copy_bytes = copy_meter
             .layout
@@ -366,6 +382,8 @@ impl SessionAssembly {
                 )
             };
         let report = SessionAssemblyCapacity {
+            sampler_factory_bytes,
+            sampler_midi_bytes,
             meter_copy_bytes,
             meter_bytes,
             meter_owned_allocations,
@@ -465,19 +483,19 @@ impl SessionAssembly {
         }
         #[cfg(test)]
         {
-            if self.wrong_handle {
-                if let Some(row) = self.pairs.first_mut() {
-                    row.plan.handle = row
-                        .plan
-                        .handle
-                        .checked_add(1)
-                        .ok_or(AudioStorageError::Overflow)?;
-                }
+            if self.wrong_handle
+                && let Some(row) = self.pairs.first_mut()
+            {
+                row.plan.handle = row
+                    .plan
+                    .handle
+                    .checked_add(1)
+                    .ok_or(AudioStorageError::Overflow)?;
             }
-            if self.occupy_name {
-                if let Some(scene) = self.scenes.first_mut() {
-                    scene.name = "occupied negative owner".into();
-                }
+            if self.occupy_name
+                && let Some(scene) = self.scenes.first_mut()
+            {
+                scene.name = "occupied negative owner".into();
             }
         }
         self.metadata_handles = handles;
@@ -592,6 +610,16 @@ impl SessionAssembly {
         {
             return Err(AudioStorageError::UnknownStorage);
         }
+        let (midi_work, midi_bank_bytes, midi_bank_refs) = self.current_sampler_midi_facts(None)?;
+        for track in &mut self.tracks {
+            track.work = self
+                .unused_midi
+                .iter()
+                .filter(|c| c.track == track.id)
+                .fold(SessionWorkEnvelope::default(), |n, c| {
+                    n.component_max(c.work)
+                });
+        }
         // No allocation/fallible helper after taking the first final owner.
         if let (Some(timing), Some(sine_table), Some(shared_contexts), Some(meter_map)) = (
             self.timing.take(),
@@ -613,14 +641,14 @@ impl SessionAssembly {
                 scene_cell_indices: mem::take(&mut self.indices),
                 scene_cell_ranges: mem::take(&mut self.ranges),
                 tracks: mem::take(&mut self.tracks),
-                midi_clips: Vec::new(),
-                mutable_instruments: Vec::new(),
+                midi_clips: mem::take(&mut self.unused_midi),
+                mutable_instruments: mem::take(&mut self.unused_mutable),
                 mutable_history_retarget_storage_bytes: 0,
                 audio_clips: mem::take(&mut self.audio),
-                work: SessionWorkEnvelope::default(),
+                work: midi_work,
                 contains_streamed_sources,
-                midi_note_bank_storage_bytes: 0,
-                midi_note_bank_reference_count: 0,
+                midi_note_bank_storage_bytes: midi_bank_bytes,
+                midi_note_bank_reference_count: midi_bank_refs,
                 shared_contexts,
             });
             self.phase = AssemblyPhase::Installed;
@@ -842,6 +870,10 @@ impl SessionAssembly {
             growth,
             unused_midi,
             unused_mutable,
+            sampler_factories,
+            sampler_midi: _,
+            sampler_midi_scope: _,
+            sampler_context_address: _,
             name_pending: _,
             scene_cursor: _,
             track_cursor: _,
@@ -870,6 +902,9 @@ impl SessionAssembly {
         l.vec(pairs)?;
         l.vec(unused_midi)?;
         l.vec(unused_mutable)?;
+        l.vec(sampler_factories)?;
+        self.visit_current_sampler_factories(l, external)?;
+        self.visit_current_sampler_midi(l, external)?;
         for scene in scenes {
             l.string(&scene.name)?;
         }
@@ -971,6 +1006,7 @@ impl SessionAssembly {
             }
             if let Some(clip) = clip.as_ref().or_else(|| clips.get(index)) {
                 let PreparedSessionAudioClip {
+                    active,
                     id,
                     track,
                     scene,
@@ -978,15 +1014,18 @@ impl SessionAssembly {
                     asset,
                     source_start,
                     source_end,
+                    loop_range,
                     gain,
                     source,
                 } = clip;
-                if *id != plan.clip
+                if *active != plan.active
+                    || *id != plan.clip
                     || *track != plan.track
                     || *scene != plan.scene
                     || *asset != plan.asset
                     || *source_start != plan.start
                     || *source_end != plan.end
+                    || *loop_range != plan.loop_range
                     || *gain != plan.gain.linear()
                     || *actual_handle != Some(plan.handle)
                 {

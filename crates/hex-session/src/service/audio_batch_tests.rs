@@ -1,10 +1,7 @@
 use super::*;
 use crate::import_batch_decode::{AudioBatchCancel, AudioBatchPhase};
-use std::{
-    fs,
-    sync::atomic::AtomicU64,
-    time::{Duration, Instant},
-};
+use crate::test_wait::HANG_BOUND;
+use std::{fs, sync::atomic::AtomicU64};
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Files(PathBuf);
 impl Files {
@@ -46,13 +43,10 @@ impl Drop for Files {
     }
 }
 fn event(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match service.try_event() {
-            Ok(e) => return e,
-            Err(TryRecvError::Empty) if Instant::now() < deadline => thread::yield_now(),
-            Err(error) => panic!("worker result absent: {error:?}"),
-        }
+    // Blocks on the event channel; the old 5 s yield-spin both raced and burnt CPU.
+    match service.events.recv_timeout(HANG_BOUND) {
+        Ok(e) => e,
+        Err(error) => panic!("worker result absent after {HANG_BOUND:?}: {error:?}"),
     }
 }
 fn service() -> (Service, Event) {
@@ -360,4 +354,222 @@ fn worker_conversion_failure_retains_mixed_case_source_without_history_or_media(
     assert!(refused.state.waveforms.is_empty());
     assert!(refused.playback.is_none());
     assert_eq!(control.progress().phase, AudioBatchPhase::Failed);
+}
+
+#[test]
+fn captured_beats_import_is_one_revision_with_source_local_markers_history_and_roundtrip() {
+    let files = Files::new();
+    let first = files.wav("long.wav", 48_000, &[8192; 24_000]);
+    let second = files.wav("short.wav", 48_000, &[-4096; 12_000]);
+    for (warp, members) in [
+        (hex_project::AudioImportWarp::Off, vec![first.clone()]),
+        (
+            hex_project::AudioImportWarp::Beats,
+            vec![first.clone(), second.clone()],
+        ),
+    ] {
+        let (s, initial) = service();
+        let (mut request, control) =
+            Request::audio_batch(members, new_tracks(), context(&initial.state)).unwrap();
+        if let Request::ImportAudioBatch { options, .. } = &mut request {
+            options.warp = warp;
+        }
+        s.submit(request).unwrap();
+        let mut imported = event(&s);
+        assert!(imported.error.is_none(), "{:?}", imported.error);
+        assert_eq!(imported.state.revision, initial.state.revision + 1);
+        let count = if warp == hex_project::AudioImportWarp::Beats {
+            2
+        } else {
+            1
+        };
+        assert_eq!(imported.state.project.tracks().len(), count);
+        for (index, track) in imported.state.project.tracks().iter().enumerate() {
+            let clip = &track.clips()[0];
+            let frames = if index == 0 { 24_000 } else { 12_000 };
+            assert_eq!(clip.duration(), frames);
+            if warp == hex_project::AudioImportWarp::Off {
+                assert!(clip.audio_edit().is_none());
+            } else {
+                let domain = &clip.audio_edit().unwrap().domain;
+                assert!(domain.warp_enabled);
+                let settings = domain.warp.as_ref().unwrap();
+                assert!(matches!(
+                    settings.mode,
+                    hex_project::WarpMode::Beats {
+                        preserve: hex_project::BeatsPreserve::Transients,
+                        tail: hex_project::BeatsTail::Forward,
+                        decay: 100
+                    }
+                ));
+                assert_eq!(settings.markers[0].source_frame, 0);
+                assert_eq!(settings.markers[1].source_frame, frames);
+                assert_eq!(settings.markers[0].beat, hex_project::BeatTime::ZERO);
+                assert_eq!(
+                    settings.markers[1].beat,
+                    if index == 0 {
+                        hex_project::BeatTime::ONE
+                    } else {
+                        hex_project::BeatTime::from_raw(hex_project::BeatTime::ONE.raw() / 2)
+                    }
+                );
+            }
+        }
+        let mut playback = imported.playback.take().unwrap();
+        playback.apply(hex_engine::playback::PlaybackCommand::Play);
+        let mut out = [[0.0; 2]; 32];
+        playback.render(&mut out).unwrap();
+        let expected = if count == 2 { 0.125 } else { 0.25 };
+        assert!(out.iter().all(|frame| (frame[0] - expected).abs() < 1e-6));
+        assert_eq!(control.progress().phase, AudioBatchPhase::Completed);
+        s.submit(Request::Undo).unwrap();
+        let undone = event(&s);
+        assert!(undone.state.project.tracks().is_empty());
+        assert_eq!(undone.state.project.assets().count(), 0);
+        assert_eq!(
+            undone.state.project.tempo_map(),
+            initial.state.project.tempo_map()
+        );
+        assert!(!undone.state.can_undo);
+        s.submit(Request::Redo).unwrap();
+        let redone = event(&s);
+        assert_eq!(redone.state.project, imported.state.project);
+        let document = files.0.join(format!("import-{count}.hex"));
+        s.submit(Request::SaveNew(document.clone())).unwrap();
+        let saved = event(&s);
+        assert!(saved.error.is_none(), "{:?}", saved.error);
+        s.submit(Request::Edit(Command::SetProjectTempo {
+            tempo: hex_project::Tempo::new(60_000_000).unwrap(),
+        }))
+        .unwrap();
+        let mut changed = event(&s);
+        assert!(changed.error.is_none(), "{:?}", changed.error);
+        for (old, new) in imported
+            .state
+            .project
+            .tracks()
+            .iter()
+            .zip(changed.state.project.tracks())
+        {
+            assert_eq!(
+                new.clips()[0].duration(),
+                old.clips()[0].duration() * if count == 2 { 2 } else { 1 }
+            );
+        }
+        let mut slower = changed.playback.take().unwrap();
+        slower.apply(hex_engine::playback::PlaybackCommand::Play);
+        let mut stretched = vec![[0.0; 2]; 24_032];
+        slower.render(&mut stretched).unwrap();
+        if count == 2 {
+            assert!(stretched[24_000..].iter().any(|frame| frame[0] > 0.1));
+        } else {
+            assert!(stretched[24_000..].iter().all(|frame| *frame == [0.0; 2]));
+        }
+        s.submit(Request::Open(document)).unwrap();
+        let reopened = event(&s);
+        assert!(reopened.error.is_none(), "{:?}", reopened.error);
+        assert_eq!(reopened.state.project, imported.state.project);
+        drop(s);
+    }
+}
+
+#[test]
+fn beats_batch_failure_and_cancel_preserve_the_complete_previous_state() {
+    let files = Files::new();
+    let good = files.wav("good.wav", 48_000, &[4096; 24_000]);
+    let bad = files.0.join("bad.wav");
+    fs::write(&bad, b"malformed").unwrap();
+    for cancel in [false, true] {
+        let (s, initial) = service();
+        let (mut request, control) = Request::audio_batch(
+            vec![good.clone(), bad.clone()],
+            new_tracks(),
+            context(&initial.state),
+        )
+        .unwrap();
+        if let Request::ImportAudioBatch { options, .. } = &mut request {
+            options.warp = hex_project::AudioImportWarp::Beats;
+        }
+        if cancel {
+            assert_eq!(control.request_cancel(), AudioBatchCancel::Requested);
+        }
+        s.submit(request).unwrap();
+        let refused = event(&s);
+        assert!(refused.error.is_some());
+        assert_eq!(refused.state.project, initial.state.project);
+        assert_eq!(refused.state.revision, initial.state.revision);
+        assert!(!refused.state.can_undo);
+        assert!(!refused.state.unsaved);
+        assert!(refused.state.waveforms.is_empty());
+        drop(s);
+    }
+}
+
+#[test]
+fn queued_legacy_off_import_keeps_overwrite_intent_after_an_unrelated_edit() {
+    let files = Files::new();
+    let original = files.wav("original.wav", 48_000, &[8192; 16]);
+    let replacement = files.wav("replacement.wav", 48_000, &[-4096; 8]);
+    for overwrite in [false, true] {
+        let (s, _) = service();
+        s.submit(Request::Import(original.clone())).unwrap();
+        let initial = event(&s);
+        assert!(initial.error.is_none(), "{:?}", initial.error);
+        let track = initial.state.project.tracks()[0].id();
+        // This owned legacy request was admitted with auto-warp Off. It carries
+        // no late application-preference read or newly imposed revision guard.
+        let queued = if overwrite {
+            Request::ImportToTrackWithOverwrite {
+                path: replacement.clone(),
+                track,
+                start: 4,
+            }
+        } else {
+            Request::ImportToTrack {
+                path: replacement.clone(),
+                track,
+                start: 4,
+            }
+        };
+        s.submit(Request::Edit(Command::RenameTrack {
+            track,
+            name: "queued rename".into(),
+        }))
+        .unwrap();
+        s.submit(queued).unwrap();
+        let renamed = event(&s);
+        assert!(renamed.error.is_none(), "{:?}", renamed.error);
+        let mut result = event(&s);
+        assert_eq!(renamed.state.revision, initial.state.revision + 1);
+        assert_eq!(result.state.project.tracks().len(), 1);
+        assert_eq!(result.state.project.tracks()[0].name(), "queued rename");
+        // Both legacy spellings already use the canonical Arrangement overwrite
+        // policy. Preserve that actual behavior instead of inventing a refusal.
+        assert!(result.error.is_none(), "{:?}", result.error);
+        assert_eq!(result.state.revision, renamed.state.revision + 1);
+        let clips = result.state.project.tracks()[0].clips();
+        assert_eq!(clips.len(), 3);
+        assert!(clips.iter().all(|clip| {
+            clip.audio_edit()
+                .is_none_or(|edit| !edit.domain.warp_enabled)
+        }));
+        let mut playback = result.playback.take().unwrap();
+        playback.apply(hex_engine::playback::PlaybackCommand::Play);
+        let mut pcm = [[0.0; 2]; 16];
+        playback.render(&mut pcm).unwrap();
+        assert!(pcm[..4].iter().all(|frame| *frame == [0.25; 2]));
+        assert!(pcm[4..12].iter().all(|frame| *frame == [-0.125; 2]));
+        assert!(pcm[12..].iter().all(|frame| *frame == [0.25; 2]));
+        s.submit(Request::Undo).unwrap();
+        let undone = event(&s);
+        assert!(undone.error.is_none(), "{:?}", undone.error);
+        assert_eq!(
+            undone.state.project.tracks(),
+            renamed.state.project.tracks()
+        );
+        s.submit(Request::Redo).unwrap();
+        let redone = event(&s);
+        assert_eq!(redone.state.project, result.state.project);
+        drop(s);
+    }
 }

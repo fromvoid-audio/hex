@@ -137,11 +137,13 @@ fn fixture_with_options(feeds: bool, automation: bool) -> Fixture {
                 track,
                 points: vec![
                     hex_project::GainPoint {
+                        incoming_gain: None,
                         beat: hex_project::BeatTime::ZERO,
                         gain: 0.25,
                         outgoing: hex_project::GainInterpolation::Linear,
                     },
                     hex_project::GainPoint {
+                        incoming_gain: None,
                         beat: hex_project::BeatTime::ONE,
                         gain: 1.5,
                         outgoing: hex_project::GainInterpolation::Step,
@@ -154,6 +156,7 @@ fn fixture_with_options(feeds: bool, automation: bool) -> Fixture {
     let id = snapshot.next_id;
     snapshot.next_id += 1;
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id,
         bypassed: false,
@@ -517,4 +520,103 @@ fn main_candidate_observation_streamed_pages_keeps_pcm_and_refusal_semantics() {
     assert_eq!(observed, output);
     assert_eq!(output, expected);
     assert_eq!(actual.position(), 512);
+}
+
+#[test]
+fn ordinary_exact_demand_covers_return_feed_render_and_keeps_resident_pcm_and_clocks() {
+    let mut f = fixture_with_options(true, true);
+    let context = hex_engine::AudioSourceContext {
+        project_generation: 7,
+        editor_revision: 9,
+    };
+    let mut actual = Playback::from_prepared(Arc::clone(&f.streamed));
+    let mut oracle = Playback::from_prepared(Arc::clone(&f.resident));
+    for runtime in [&mut actual, &mut oracle] {
+        runtime
+            .try_apply_action(hex_engine::PlaybackAction::Transport(PlaybackCommand::Play))
+            .unwrap();
+    }
+    struct Protected<'a> {
+        pages: &'a mut Pages,
+        extents: &'a [hex_engine::StreamResourceExtent],
+    }
+    impl MediaPages for Protected<'_> {
+        fn page(&mut self, key: StreamSourceKey, index: u64) -> Option<BorrowedMediaPage<'_>> {
+            assert!(
+                self.extents
+                    .iter()
+                    .any(|extent| extent.source == key.into() && extent.page_index == index),
+                "render read outside actual engine demand"
+            );
+            self.pages.page(key, index)
+        }
+        fn request_page(&mut self, _: StreamSourceKey, _: u64) {
+            panic!("all demanded pages are installed")
+        }
+    }
+    for command in [
+        None,
+        Some(SessionPlaybackCommand::LaunchClip {
+            clip: f.clip,
+            quantization: LaunchQuantization::Immediate,
+        }),
+        Some(SessionPlaybackCommand::BackToArrangement {
+            quantization: LaunchQuantization::Immediate,
+        }),
+    ] {
+        if let Some(command) = command {
+            for runtime in [&mut actual, &mut oracle] {
+                runtime
+                    .try_apply_action(hex_engine::PlaybackAction::Session(command))
+                    .unwrap();
+            }
+        }
+        for count in [1, 3, 17, 257] {
+            let mut expected = vec![[0.0; 2]; count];
+            oracle.render(&mut expected).unwrap();
+            let mut observed = vec![[0.0; 2]; count];
+            let mut offset = 0;
+            while offset < count {
+                let clock = (actual.position(), actual.performance_frame());
+                let mut extents = Vec::new();
+                let window = actual
+                    .stream_playback(context)
+                    .visit_next_stream_chunk(count - offset, None, &mut |extent| {
+                        extents.push(extent);
+                        Ok(())
+                    })
+                    .unwrap();
+                assert_eq!(
+                    window.frames,
+                    (count - offset).min(256),
+                    "this zero-latency return-feed fixture keeps the normal source quantum"
+                );
+                assert_eq!(
+                    (actual.position(), actual.performance_frame()),
+                    clock,
+                    "demand is read-only"
+                );
+                let mut pages = Protected {
+                    pages: &mut f.pages,
+                    extents: &extents,
+                };
+                actual
+                    .stream_playback(context)
+                    .render_with_pages_and_signal_observers(
+                        &mut observed[offset..offset + window.frames],
+                        &mut pages,
+                        None,
+                        None,
+                    )
+                    .unwrap();
+                offset += window.frames;
+            }
+            assert_eq!(observed, expected);
+            assert_eq!(
+                (actual.position(), actual.performance_frame()),
+                (oracle.position(), oracle.performance_frame())
+            );
+        }
+    }
+    assert_eq!(f.pages.requests, 0);
 }

@@ -3,7 +3,7 @@ use super::*;
 use hex_session::service::Request;
 
 fn receive_worker(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext, initial: bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(cx, |view, cx| {
             if view.tick(cx) {
@@ -222,7 +222,10 @@ fn browser_insert_quantized_toggle_uses_nearest_canonical_grid_and_snapshots_mod
             select_sample(&editor, visual);
         }
         editor.update(visual, |view, _| {
-            assert_eq!(view.browser.insert_quantized, quantized);
+            assert_eq!(
+                view.input_quantization != hex_project::InputQuantization::Off,
+                quantized
+            );
             view.snap_grid = SnapGrid::Quarter;
             view.offline_cursor = candidate;
         });
@@ -233,7 +236,11 @@ fn browser_insert_quantized_toggle_uses_nearest_canonical_grid_and_snapshots_mod
                 expected
             );
             view.snap_grid = SnapGrid::Off;
-            view.browser.insert_quantized = !quantized;
+            view.input_quantization = if !quantized {
+                hex_project::InputQuantization::Adaptive
+            } else {
+                hex_project::InputQuantization::Off
+            };
             view.offline_cursor = 123_456;
         });
         receive_worker(&editor, cx, false);
@@ -274,7 +281,7 @@ fn browser_insert_adaptive_grid_uses_tempo_meter_and_current_viewport(cx: &mut T
         let visual = &mut VisualTestContext::from_window(handle, cx);
         let track = select_sample(&editor, visual);
         let expected = editor.update(visual, |view, _| {
-            view.browser.insert_quantized = true;
+            view.input_quantization = hex_project::InputQuantization::Adaptive;
             view.snap_grid = SnapGrid::Adaptive;
             view.viewport = Some(crate::editor::Viewport {
                 start: 0,
@@ -334,11 +341,11 @@ fn browser_insert_refuses_stale_target_busy_session_grid_and_missing_file_atomic
                 2 => view.opening_project = true,
                 3 => view.mode = crate::editor::EditorMode::Session,
                 4 => {
-                    view.browser.insert_quantized = true;
+                    view.input_quantization = hex_project::InputQuantization::Adaptive;
                     view.snap_grid = SnapGrid::Off;
                 }
                 5 => {
-                    view.browser.insert_quantized = true;
+                    view.input_quantization = hex_project::InputQuantization::Adaptive;
                     view.drag_layout_generation = view.drag_layout_generation.wrapping_add(1);
                 }
                 6 => std::fs::remove_file(&path).unwrap(),
@@ -428,7 +435,7 @@ fn browser_insert_all_disabled_densities_refuse_actual_enter(cx: &mut TestAppCon
         std::iter::once(SnapGrid::Off).chain(AdaptiveGridDensity::ALL.map(SnapGrid::OffDensity))
     {
         editor.update(visual, |view, _| {
-            view.browser.insert_quantized = true;
+            view.input_quantization = hex_project::InputQuantization::Adaptive;
             view.snap_grid = grid;
             view.offline_cursor = 25_000;
             view.error = None;
@@ -477,7 +484,11 @@ fn browser_insert_active_densities_snap_and_disabled_unquantized_keeps_frame(
     for density in AdaptiveGridDensity::ALL {
         for quantized in [true, false] {
             let expected = editor.update(visual, |view, _| {
-                view.browser.insert_quantized = quantized;
+                view.input_quantization = if quantized {
+                    hex_project::InputQuantization::Adaptive
+                } else {
+                    hex_project::InputQuantization::Off
+                };
                 view.snap_grid = if quantized {
                     SnapGrid::AdaptiveDensity(density)
                 } else {
@@ -552,4 +563,79 @@ fn browser_insert_active_densities_snap_and_disabled_unquantized_keeps_frame(
             eprintln!("ACTUAL_DENSITY_INPUT {density:?} quantized={quantized} frame={expected}");
         }
     }
+}
+
+#[gpui::test]
+fn input_quantization_menu_controls_fixed_browser_insertion_and_freezes_pending_policy(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _directory, _path) = fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(visual, |view, cx| {
+        view.set_input_quantization(hex_project::InputQuantization::Adaptive);
+        cx.notify();
+    });
+    for width in [880.0, 1_000.0, 1_280.0] {
+        visual.simulate_resize(gpui::size(gpui::px(width), gpui::px(540.0)));
+        visual.run_until_parked();
+        for id in ["input-quantization", "arrange-zoom-back"] {
+            let bounds = visual.debug_bounds(id).unwrap();
+            assert!(
+                f32::from(bounds.origin.x) >= 0.0
+                    && f32::from(bounds.origin.x + bounds.size.width) <= width,
+                "{id} must remain inside the toolbar at {width}: {bounds:?}"
+            );
+        }
+    }
+    editor.update(visual, |view, cx| {
+        view.set_input_quantization(hex_project::InputQuantization::Off);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let control = visual.debug_bounds("input-quantization").unwrap();
+    visual.simulate_mouse_down(control.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(control.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(visual, |view, _| {
+        let menu = view.context_menu.as_ref().unwrap();
+        assert_eq!(
+            menu.items.iter().map(|item| item.label).collect::<Vec<_>>(),
+            ["off", "1/4", "1/8", "1/16", "adaptive"]
+        );
+        assert_eq!(menu.items.iter().filter(|item| item.checked).count(), 1);
+    });
+    visual.simulate_keystrokes("down down enter");
+    let track = select_sample(&editor, visual);
+    editor.update(visual, |view, _| {
+        assert_eq!(
+            view.input_quantization,
+            hex_project::InputQuantization::Eighth
+        );
+        view.snap_grid = crate::editor::musical_time::SnapGrid::Off;
+        view.offline_cursor = 15_600;
+    });
+    visual.simulate_keystrokes("enter");
+    editor.update(visual, |view, _| {
+        assert_eq!(
+            view.last_enqueued_import_to_track.as_ref().unwrap().2,
+            12_000
+        );
+        view.set_input_quantization(hex_project::InputQuantization::Sixteenth);
+        view.offline_cursor = 99_999;
+    });
+    receive_worker(&editor, visual, false);
+    editor.read_with(visual, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .clips()[0]
+                .start(),
+            12_000
+        );
+    });
 }

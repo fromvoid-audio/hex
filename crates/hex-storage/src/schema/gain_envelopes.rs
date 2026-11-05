@@ -50,9 +50,14 @@ struct TrackV21 {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct GainPointDto {
+    #[serde(deserialize_with = "required_incoming_gain")]
+    pub(super) incoming_gain: Option<f32>,
     pub(super) beat_raw: u64,
     pub(super) gain: f32,
     pub(super) outgoing: InterpolationDto,
+}
+fn required_incoming_gain<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f32>, D::Error> {
+    Option::deserialize(d)
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -143,6 +148,7 @@ impl DocumentV21 {
                     .gain_envelope()
                     .iter()
                     .map(|point| GainPointDto {
+                        incoming_gain: point.incoming_gain,
                         beat_raw: point.beat.raw(),
                         gain: point.gain,
                         outgoing: match point.outgoing {
@@ -193,6 +199,7 @@ impl DocumentV21 {
                 .gain_envelope
                 .into_iter()
                 .map(|point| GainPoint {
+                    incoming_gain: point.incoming_gain,
                     beat: BeatTime::from_raw(point.beat_raw),
                     gain: point.gain,
                     outgoing: match point.outgoing {
@@ -238,6 +245,6 @@ impl DocumentV21 {
         for (track, points) in snapshot.tracks.iter_mut().zip(envelopes) {
             track.gain_envelope = points;
         }
-        Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
     }
 }

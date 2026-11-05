@@ -1,6 +1,6 @@
 use super::*;
 use crate::editor::clip_drag_ui_test::{audio_project, editor_window};
-use gpui::{Modifiers, TestAppContext, VisualTestContext, point, size};
+use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, size};
 use hex_project::{Command, Created, Editor, ElementColor, Project};
 use hex_session::service::ViewState;
 use std::{
@@ -15,6 +15,7 @@ fn publish(view: &mut EditorView, project: Project) {
         comparison_audio: None,
         project: Arc::new(project),
         waveforms: old.waveforms.clone(),
+        source_overviews: old.source_overviews.clone(),
         audio_clip_waveforms: old.audio_clip_waveforms.clone(),
         midi_preview: Arc::clone(&old.midi_preview),
         gain_preview: old.gain_preview.clone(),
@@ -41,11 +42,9 @@ fn result(view: &EditorView, now: Instant) -> PublishedProjectSpectrum {
             .map(|i| hex_audio::spectrum::SpectrumFrame {
                 sample_rate_hz: 48_000,
                 bins_dbfs: [-6.0 - i as f32 * 0.25; hex_audio::spectrum::SPECTRUM_BANDS],
+                peak_dbfs: [-6.0 - i as f32 * 0.25; hex_audio::spectrum::SPECTRUM_BANDS],
             })
-            .collect::<Vec<_>>()
-            .into_boxed_slice()
-            .try_into()
-            .unwrap(),
+            .collect(),
     }
 }
 #[gpui::test]
@@ -200,6 +199,37 @@ fn project_spectrum_layers_preserve_all_members_colors_and_clear_replaced_contex
 }
 
 #[gpui::test]
+fn project_spectrum_cancel_narrow_resize_restores_wide_preferred_height(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (project, _, _, _) = audio_project();
+    let (handle, _) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(540.0)));
+    visual.run_until_parked();
+    let original = visual.debug_bounds("project-spectrum").unwrap().size.height;
+    visual.simulate_resize(size(px(880.0), px(540.0)));
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("project-spectrum").unwrap().size.height < original);
+    let grip = visual
+        .debug_bounds("project-spectrum-resize")
+        .unwrap()
+        .center();
+    visual.simulate_mouse_down(grip, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(grip.x, grip.y - px(10.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_keystrokes("escape");
+    visual.simulate_resize(size(px(1500.0), px(540.0)));
+    visual.run_until_parked();
+    assert_eq!(
+        visual.debug_bounds("project-spectrum").unwrap().size.height,
+        original
+    );
+}
+
+#[gpui::test]
 fn project_spectrum_collapse_resize_and_cancel_preserve_layout_and_history(
     cx: &mut TestAppContext,
 ) {
@@ -207,7 +237,14 @@ fn project_spectrum_collapse_resize_and_cancel_preserve_layout_and_history(
     let (project, _, _, _) = audio_project();
     let (handle, editor) = editor_window(cx, project, Arc::default());
     let mut visual = VisualTestContext::from_window(handle, cx);
-    for (width, height) in [(880.0, 540.0), (1500.0, 650.0)] {
+    for (width, height) in [
+        (880.0, 540.0),
+        (999.0, 540.0),
+        (1000.0, 540.0),
+        (super::super::header::WIDE_TOOLBAR_MIN_WIDTH - 1.0, 540.0),
+        (super::super::header::WIDE_TOOLBAR_MIN_WIDTH, 540.0),
+        (1500.0, 650.0),
+    ] {
         visual.simulate_resize(size(px(width), px(height)));
         visual.run_until_parked();
         let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
@@ -215,7 +252,7 @@ fn project_spectrum_collapse_resize_and_cancel_preserve_layout_and_history(
         assert!(panel.origin.y >= toolbar.bottom());
         assert!(
             panel.size.height >= px(72.0)
-                && panel.size.height <= px(bounded_height(5000.0, height))
+                && panel.size.height <= px(bounded_height(5000.0, size(px(width), px(height))))
         );
         let content = visual.debug_bounds("arrangement-content").unwrap();
         assert!(content.origin.y >= panel.bottom());
@@ -282,7 +319,7 @@ fn project_spectrum_collapse_resize_and_cancel_preserve_layout_and_history(
         visual.run_until_parked();
         assert_eq!(
             visual.debug_bounds("project-spectrum").unwrap().size.height,
-            px(bounded_height(5000.0, height))
+            px(bounded_height(5000.0, size(px(width), px(height))))
         );
         let toggle = visual
             .debug_bounds("project-spectrum-toggle")

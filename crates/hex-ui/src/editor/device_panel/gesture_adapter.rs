@@ -38,6 +38,12 @@ pub fn commit_owned_numeric_edit(
     target: GestureTarget,
     finalized: &NumericControlFinalValue,
 ) -> Result<(), &'static str> {
+    if !finalized.explicit_edit
+        && finalized.value == finalized.previous
+        && view.device_gesture.snapshot().is_none()
+    {
+        return Ok(());
+    }
     let previous = ParameterValue::Float(finalized.previous as f32);
     let value = ParameterValue::Float(finalized.value as f32);
     let active = view.device_gesture.snapshot();
@@ -66,15 +72,17 @@ pub fn commit_owned_numeric_edit(
                     _ => return Err("track gain requires a float value"),
                 },
             }),
-            GestureTarget::DeviceParameter { device, parameter } => Request::SetDeviceParameter {
-                device,
-                parameter,
-                value,
-            },
+            GestureTarget::DeviceParameter { device, parameter } => {
+                view.manual_device_parameter_request(device, parameter, value)?
+            }
+            GestureTarget::TrackGains { .. } => {
+                return Err("selected gains require their captured gesture");
+            }
             GestureTarget::DeviceParameterPair { .. } => {
                 return Err("paired parameter edits use the graph gesture");
             }
-            GestureTarget::DeviceParameterSnapshot { .. } => {
+            GestureTarget::DeviceParameterSnapshot { .. }
+            | GestureTarget::EqNodeCreation { .. } => {
                 return Err("snapshot parameter edits use the harmonic gesture");
             }
             GestureTarget::ReturnSend {
@@ -95,12 +103,14 @@ pub fn commit_owned_numeric_edit(
         return Err("device edit queue is full");
     }
     if active.is_some() {
-        view.change_device_gesture(value)?;
+        if finalized.explicit_edit || finalized.value != finalized.previous {
+            view.change_device_gesture(value)?;
+        }
         view.finish_device_gesture(value)?;
         return Ok(());
     }
     view.begin_device_gesture(target, previous)?;
-    if finalized.value != finalized.previous {
+    if finalized.explicit_edit || finalized.value != finalized.previous {
         view.change_device_gesture(value)?;
     }
     view.finish_device_gesture(value)
@@ -148,6 +158,9 @@ pub(super) fn commit_bound_numeric_edit(
     finalized: &NumericControlFinalValue,
 ) -> Result<(), &'static str> {
     let active = view.device_gesture.snapshot();
+    if active.is_none() && !finalized.explicit_edit && finalized.value == finalized.previous {
+        return Ok(());
+    }
     if active.is_none() {
         view.begin_device_gesture(target, ParameterValue::Float(finalized.previous as f32))?;
         lease.set(view.device_gesture.snapshot().map(|snapshot| snapshot.key));
@@ -157,17 +170,17 @@ pub(super) fn commit_bound_numeric_edit(
         let GestureTarget::DeviceParameter { device, parameter } = target else {
             return Err("bound numeric edit requires a device parameter");
         };
-        return if view.enqueue_device_barrier(Request::SetDeviceParameter {
+        return if view.enqueue_device_barrier(view.manual_device_parameter_request(
             device,
             parameter,
-            value: ParameterValue::Float(finalized.value as f32),
-        }) {
+            ParameterValue::Float(finalized.value as f32),
+        )?) {
             Ok(())
         } else {
             Err("device edit queue is full")
         };
     }
-    if finalized.value != finalized.previous {
+    if finalized.explicit_edit || finalized.value != finalized.previous {
         view.change_device_gesture(ParameterValue::Float(finalized.value as f32))?;
     }
     view.finish_device_gesture(ParameterValue::Float(finalized.value as f32))?;

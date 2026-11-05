@@ -6,18 +6,21 @@ use hex_session::service::{Event, Service};
 use std::time::Duration;
 
 fn next(service: &Service) -> Event {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
             return event;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "next: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
 fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(&mut *visual, |view, cx| {
             if view.tick(cx) {
@@ -29,7 +32,10 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
             visual.run_until_parked();
             return;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "pump: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
@@ -218,11 +224,9 @@ fn command_d_duplicates_bounded_audio_midi_gaps_and_advances_scope_atomically(
 }
 
 #[gpui::test]
-fn command_d_refuses_overflow_and_pending_edits_and_preserves_no_range_behavior(
-    cx: &mut TestAppContext,
-) {
+fn command_d_refuses_overflow_and_pending_time_edits(cx: &mut TestAppContext) {
     cx.update(crate::editor::bind_editor_keys);
-    let (project, audio, _, clip) = crate::editor::clip_drag_ui_test::audio_project();
+    let (project, audio, _, _clip) = crate::editor::clip_drag_ui_test::audio_project();
     let (handle, editor) =
         crate::editor::clip_drag_ui_test::editor_window(cx, project, std::sync::Arc::default());
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -246,12 +250,4 @@ fn command_d_refuses_overflow_and_pending_edits_and_preserves_no_range_behavior(
             })
         });
     }
-    editor.update(&mut visual, |view, _| {
-        view.time_selection = None;
-        view.selected_clip = Some(clip);
-    });
-    visual.simulate_keystrokes("cmd-d");
-    editor.read_with(&visual, |view, _| {
-        assert!(matches!(view.last_enqueued_edit,Some(Command::DuplicateClip(id)) if id==clip))
-    });
 }

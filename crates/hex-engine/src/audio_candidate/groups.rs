@@ -1,17 +1,25 @@
-//! Original177 owner_groups.rs provenance, restricted to actual Utility chains.
+//! Original177 owner_groups.rs provenance for actual closed runtime owners.
 //! Planning changes scalar scratch only. Ownership and origins commit together
-//! at the existing Session TrackChain/TailChain move frontier.
+//! at the existing Session chain/tail and compensation move frontiers.
 use super::{AudioCandidateIdentity, AudioStorageError, Group};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Location {
     TrackChain(usize),
     TailChain(usize),
+    ReturnChain(usize),
+    ReturnTail(usize),
+    MainChain,
+    Compensation,
 }
 impl Location {
     fn tuple(self) -> (u8, usize) {
         match self {
             Self::TrackChain(i) => (0, i),
             Self::TailChain(i) => (1, i),
+            Self::ReturnChain(i) => (4, i),
+            Self::ReturnTail(i) => (5, i),
+            Self::MainChain => (14, 0),
+            Self::Compensation => (8, 0),
         }
     }
 }
@@ -26,6 +34,8 @@ pub(super) struct TransferRow {
     source: usize,
     destination: usize,
     origin: Origin,
+    swap: bool,
+    displaced: Option<Origin>,
 }
 pub(crate) struct Transfer<'a> {
     candidate: &'a mut [Group],
@@ -89,19 +99,16 @@ impl<'a> Transfer<'a> {
         let view = actual_chain.storage_view();
         let mut bytes = view.entry_capacity_bytes().ok_or(invalid)?;
         for entry in view.entries() {
-            match (entry.primary_payload_bytes(), entry.scratch_payload_bytes()) {
-                (Some(a), Some(b))
-                    if entry
-                        .runtime_types_are::<hex_devices::utility_filters::UtilityFilterProcessor>(
-                        ) =>
-                {
-                    bytes = bytes
-                        .checked_add(a)
-                        .and_then(|n| n.checked_add(b))
-                        .ok_or(invalid)?;
-                }
-                (None, None) => {}
-                _ => return Err(invalid),
+            bytes = bytes
+                .checked_add(entry.automation().storage_bytes().ok_or(invalid)?)
+                .ok_or(invalid)?;
+            if let Some((a, b)) =
+                crate::native_effect_storage::pair_bytes(&entry).map_err(|_| invalid)?
+            {
+                bytes = bytes
+                    .checked_add(a)
+                    .and_then(|n| n.checked_add(b))
+                    .ok_or(invalid)?;
             }
         }
         let next_bytes = self
@@ -115,6 +122,66 @@ impl<'a> Transfer<'a> {
             source,
             destination,
             origin,
+            swap: false,
+            displaced: None,
+        });
+        self.planned_runtime_bytes = next_bytes;
+        Ok(())
+    }
+    /// The existing clock path swaps whole original owners, including a
+    /// possibly occupied recipient. Record the displaced origin as well; both
+    /// anchor books already participate in normal disposal fanout.
+    pub(crate) fn plan_compensation_swap(
+        &mut self,
+        old: &crate::signal_graph::SignalRuntime,
+        current: Option<&crate::signal_graph::SignalRuntime>,
+        graph: &std::sync::Arc<crate::signal_graph::SignalGraph>,
+    ) -> Result<(), crate::SessionPlaybackError> {
+        let invalid = crate::SessionPlaybackError::ReleaseBankFull;
+        let location = Location::Compensation.tuple();
+        let source = self
+            .previous
+            .iter()
+            .position(|g| g.location == location)
+            .ok_or(invalid)?;
+        let destination = self
+            .candidate
+            .iter()
+            .position(|g| g.location == location)
+            .ok_or(invalid)?;
+        let src = &self.previous[source];
+        let dst = &self.candidate[destination];
+        if src.closed
+            || dst.closed
+            || !src.present
+            || dst.present != current.is_some()
+            || dst.present != dst.origin.is_some()
+            || self.journal.len() == self.journal.capacity()
+            || self
+                .journal
+                .iter()
+                .any(|r| r.source == source || r.destination == destination)
+        {
+            return Err(invalid);
+        }
+        let origin = src.origin.ok_or(invalid)?;
+        // Charge the actual adopted storage conservatively on top of the
+        // constructor's reservation. No allocation accompanies this transfer;
+        // the retired runtime keeps the displaced original storage.
+        let bytes = old.storage_bytes_with_graph(graph).ok_or(invalid)?;
+        let next_bytes = self
+            .planned_runtime_bytes
+            .checked_add(bytes)
+            .ok_or(invalid)?;
+        if next_bytes > crate::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES {
+            return Err(invalid);
+        }
+        self.journal.push(TransferRow {
+            source,
+            destination,
+            origin,
+            swap: true,
+            displaced: dst.origin,
         });
         self.planned_runtime_bytes = next_bytes;
         Ok(())
@@ -123,11 +190,16 @@ impl<'a> Transfer<'a> {
         for row in self.journal.iter() {
             let source = &mut self.previous[row.source];
             let destination = &mut self.candidate[row.destination];
-            destination.origin = source.origin.take();
-            destination.present = true;
-            // A replaced TrackChain is an allocation-free empty inline shell;
-            // it owns no transferred origin. TailChain's Option becomes vacant.
-            source.present = source.location.0 == 0;
+            if row.swap {
+                std::mem::swap(&mut destination.origin, &mut source.origin);
+                std::mem::swap(&mut destination.present, &mut source.present);
+            } else {
+                destination.origin = source.origin.take();
+                destination.present = true;
+                // Track/Return vector cells retain empty inline shells. Main
+                // backing and tail Options become vacant; none retains an origin.
+                source.present = matches!(source.location.0, 0 | 4);
+            }
         }
         *self.runtime_bytes = self.planned_runtime_bytes;
     }
@@ -146,13 +218,22 @@ impl AudioCandidateTransfer {
         self.successor
     }
     pub fn moved_groups(&self) -> usize {
-        self.rows.len()
+        self.rows
+            .iter()
+            .map(|row| 1 + usize::from(row.displaced.is_some()))
+            .sum()
     }
     pub fn moved_groups_from(&self, origin: AudioCandidateIdentity) -> usize {
         self.rows
             .iter()
-            .filter(|row| row.origin.runtime == origin)
-            .count()
+            .map(|row| {
+                usize::from(row.origin.runtime == origin)
+                    + usize::from(
+                        row.displaced
+                            .is_some_and(|displaced| displaced.runtime == origin),
+                    )
+            })
+            .sum()
     }
 }
 #[derive(Clone, Copy)]
@@ -206,10 +287,10 @@ impl Archive {
             return Err(AudioStorageError::SourceMismatch);
         }
         for group in &proof.groups {
-            if let Some(origin) = group.origin.filter(|o| o.runtime == self.runtime) {
-                if !self.groups.iter().any(|g| g.origin == origin && !g.closed) {
-                    return Err(AudioStorageError::SourceMismatch);
-                }
+            if let Some(origin) = group.origin.filter(|o| o.runtime == self.runtime)
+                && !self.groups.iter().any(|g| g.origin == origin && !g.closed)
+            {
+                return Err(AudioStorageError::SourceMismatch);
             }
         }
         Ok(())
@@ -268,10 +349,10 @@ impl AudioCandidateRuntimeDisposed {
             }
         }
         for group in &self.groups {
-            if let Some(origin) = group.origin {
-                if !archives.clone().any(|a| a.runtime == origin.runtime) {
-                    return Err(AudioStorageError::SourceMismatch);
-                }
+            if let Some(origin) = group.origin
+                && !archives.clone().any(|a| a.runtime == origin.runtime)
+            {
+                return Err(AudioStorageError::SourceMismatch);
             }
         }
         for archive in archives {
@@ -315,14 +396,13 @@ impl AudioCandidateRuntimeDisposed {
             }
         }
         for group in &self.groups {
-            if let Some(origin) = group.origin {
-                if !owners
+            if let Some(origin) = group.origin
+                && !owners
                     .iter()
                     .flatten()
                     .any(|o| o.identity() == origin.runtime)
-                {
-                    return Err(AudioStorageError::SourceMismatch);
-                }
+            {
+                return Err(AudioStorageError::SourceMismatch);
             }
         }
         for owner in owners.iter().flatten() {
@@ -464,6 +544,7 @@ mod tests {
                 )
                 .unwrap();
             track.devices.push(hex_project::DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: snapshot.next_id,
                 bypassed: false,

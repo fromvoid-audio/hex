@@ -2,6 +2,17 @@
 //! Observed source files are not general resolved-source or runtime attestation.
 use sha2::{Digest, Sha256};
 use std::{env, fs, path::PathBuf};
+// SHA output arrays no longer implement LowerHex; keep durable 64-byte text.
+fn digest_hex(digest: [u8; 32]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(64);
+    for byte in digest {
+        output.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        output.push(char::from(DIGITS[usize::from(byte & 15)]));
+    }
+    output
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=../../Cargo.lock");
@@ -82,7 +93,7 @@ fn main() {
         let path = candidates[0].join(file);
         println!("cargo:rerun-if-changed={}", path.display());
         let Ok(bytes) = fs::read(path) else { return };
-        if format!("{:x}", Sha256::digest(bytes)) != pin {
+        if digest_hex(Sha256::digest(bytes).into()) != pin {
             return;
         }
     }

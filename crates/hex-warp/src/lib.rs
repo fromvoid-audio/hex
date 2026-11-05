@@ -1,8 +1,17 @@
-//! Pure control-side stereo preparation. No I/O, threads, callback work or project model.
+//! # Purpose
+//! Own pure control-side stereo sample preparation and warp kernels.
+//!
+//! # Dependencies
+//! Uses only the standard library; no project, UI or device dependency.
+//!
+//! # Does not own
+//! Does not own files, threads, canonical edits or realtime callback processing. Callers validate
+//! resource/work bounds and retain original source identity.
 mod beats;
 pub mod fft;
 mod granular;
 mod resample;
+pub use resample::{Resampler, V2_MAX_TAPS};
 mod spectral;
 use std::fmt;
 
@@ -142,6 +151,26 @@ pub struct MapSegment {
     pub source_start_q32: i128,
     pub source_end_q32: i128,
 }
+/// Validate one continuous output/source duration ratio before integer-frame
+/// quantization, using the same pitch and algorithm limits as prepared maps.
+/// Callers retain ownership of source validity, extents, resources and rendering.
+pub fn validate_stretch_ratio(ratio: f64, mode: Mode, pitch_cents: i16) -> Result<(), Error> {
+    if !(-4_800..=4_800).contains(&pitch_cents) || !ratio.is_finite() || ratio <= 0.0 {
+        return Err(Error::Invalid("invalid audio transform extent or pitch"));
+    }
+    let pitch = 2.0_f64.powf(f64::from(pitch_cents) / 1_200.0);
+    let compensated = if matches!(mode, Mode::RePitch) {
+        ratio
+    } else {
+        ratio * pitch
+    };
+    if !matches!(mode, Mode::Resample) && !(0.125 - 1e-9..=8.0 + 1e-9).contains(&compensated) {
+        return Err(Error::Invalid(
+            "warp stretch including pitch compensation must be within 1/8..8",
+        ));
+    }
+    Ok(())
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimeMap {
     segments: Vec<MapSegment>,
@@ -189,25 +218,10 @@ impl TimeMap {
     /// Metadata only; the existing map constructor owns extent/segment validity.
     /// This does not admit PCM, algorithm settings, scratch or render work.
     pub fn validate_stretch(&self, mode: Mode, pitch_cents: i16) -> Result<(), Error> {
-        if !(-4_800..=4_800).contains(&pitch_cents) {
-            return Err(Error::Invalid("invalid audio transform extent or pitch"));
-        }
-        let pitch = 2.0_f64.powf(f64::from(pitch_cents) / 1_200.0);
-        if !matches!(mode, Mode::Resample) {
-            for segment in self.segments() {
-                let ratio = (segment.output_end - segment.output_start) as f64 * Q32 as f64
-                    / (segment.source_end_q32 - segment.source_start_q32) as f64;
-                let compensated = if matches!(mode, Mode::RePitch) {
-                    ratio
-                } else {
-                    ratio * pitch
-                };
-                if !(0.125 - 1e-9..=8.0 + 1e-9).contains(&compensated) {
-                    return Err(Error::Invalid(
-                        "warp stretch including pitch compensation must be within 1/8..8",
-                    ));
-                }
-            }
+        for segment in self.segments() {
+            let ratio = (segment.output_end - segment.output_start) as f64 * Q32 as f64
+                / (segment.source_end_q32 - segment.source_start_q32) as f64;
+            validate_stretch_ratio(ratio, mode, pitch_cents)?;
         }
         Ok(())
     }
@@ -309,6 +323,7 @@ struct Work<'a> {
     used: u64,
     scratch: usize,
     base_scratch: usize,
+    resampler: Resampler,
 }
 impl Work<'_> {
     fn check(&mut self, amount: u64) -> Result<(), Error> {
@@ -349,7 +364,18 @@ fn finite(frame: [f64; 2]) -> Result<Frame, Error> {
     }
     Ok(frame)
 }
+/// Render with the frozen v1 reconstruction law.
 pub fn render(request: &Request<'_>, cancel: &mut dyn FnMut() -> bool) -> Result<Rendered, Error> {
+    render_with_resampler(request, Resampler::V1, cancel)
+}
+
+/// Render with an explicit reconstruction law. Every mode's fractional reads
+/// use it; analysis and grain/beat/spectral decisions are unchanged.
+pub fn render_with_resampler(
+    request: &Request<'_>,
+    resampler: Resampler,
+    cancel: &mut dyn FnMut() -> bool,
+) -> Result<Rendered, Error> {
     request.input.validate()?;
     if request.attacks.len() > MAX_POINTS
         || (!request.attacks.is_empty() && request.attacks.first() != Some(&0))
@@ -416,6 +442,7 @@ pub fn render(request: &Request<'_>, cancel: &mut dyn FnMut() -> bool) -> Result
         used: 0,
         scratch: base_scratch,
         base_scratch,
+        resampler,
     };
     work.check(0)?;
     let frames = match request.mode {

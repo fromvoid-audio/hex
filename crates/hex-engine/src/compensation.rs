@@ -8,6 +8,8 @@
 use crate::Frame;
 use std::{fmt, mem::size_of};
 
+mod block_origins;
+pub(crate) use block_origins::OriginWindow;
 mod delay;
 mod plan;
 pub use delay::DelayPair;
@@ -119,6 +121,8 @@ fn requested_ring_bytes<T>(capacity: usize) -> Result<usize, CompensationError> 
 /// Beat preserves exact Q32.32 quarter-note ticks; no project or runtime owner is retained.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TransportStamp {
+    /// Local source tempo; stays aligned with the same delayed content stamp.
+    pub tempo_micro_bpm: Option<u32>,
     /// Exact source performance-frame identity, independent of loop position.
     pub performance_frame: u64,
     /// Actual host transport state when this source frame entered the graph.
@@ -145,6 +149,39 @@ pub struct CompensationRuntime {
 }
 
 impl CompensationRuntime {
+    pub(crate) fn visit_owned_candidate_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        use crate::audio_storage::{Location, Owner};
+        let Self {
+            plan,
+            edges,
+            stamps,
+            storage_bytes: _,
+            transaction_active,
+        } = self;
+        if *transaction_active {
+            return Err(crate::AudioStorageError::SourceMismatch);
+        }
+        let count = || -> Result<usize, CompensationError> {
+            let mut bytes = add_bytes(plan.storage_bytes()?, vector_bytes(edges)?)?;
+            bytes = add_bytes(bytes, stamps.storage_bytes()?)?;
+            for edge in edges {
+                bytes = add_bytes(bytes, edge.owned_data_bytes()?)?;
+            }
+            Ok(bytes)
+        };
+        let bytes = count().map_err(|_| crate::AudioStorageError::Overflow)?;
+        // All DATA belongs to this private constructor: immutable plan Vecs,
+        // edge rows, each concrete ring pair and the one transport stamp pair.
+        // No owning handle or borrowed device/provider is present.
+        ledger.bytes(
+            Owner::exclusive(self),
+            Location("compensation-owned-data", 0),
+            bytes,
+        )
+    }
     /// Fallible control-only construction. Budgets charge actual Vec capacities,
     /// including the edge table and immutable plan, rather than requested lengths.
     pub fn new(plan: LatencyPlan, limits: CompensationLimits) -> Result<Self, CompensationError> {
@@ -266,6 +303,26 @@ impl CompensationRuntime {
 
     pub fn stamp_at_delay(&self, delay_frames: u32) -> Option<TransportStamp> {
         self.stamps.at_delay(delay_frames as usize).flatten()
+    }
+
+    /// Preview an upcoming stage's Arrangement frame before its stamp is pushed.
+    /// The supplied incoming projection belongs to the same planned clock as
+    /// the caller's eventual render. Historical stamps are read verbatim from
+    /// this owner's current transactional history; no clock is rebased here.
+    pub(crate) fn preview_stage_frame<E>(
+        history: Option<&Self>,
+        delay_frames: u32,
+        upcoming_offset: u64,
+        incoming: impl FnOnce(u64) -> Result<Option<u64>, E>,
+    ) -> Result<Option<u64>, E> {
+        let delay = u64::from(delay_frames);
+        if upcoming_offset >= delay {
+            incoming(upcoming_offset - delay)
+        } else {
+            Ok(history
+                .and_then(|history| history.stamp_at_delay((delay - upcoming_offset - 1) as u32))
+                .map(|stamp| stamp.arrangement_frame))
+        }
     }
 
     pub fn node_input_stamp(
