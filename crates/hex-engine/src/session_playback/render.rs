@@ -747,7 +747,7 @@ impl SessionPlayback {
         let mut resident_analytic_eligible = [false; MAX_TRACKS];
         let mut aligned = [false; MAX_TRACKS];
         let mut stamps = [None; 256];
-        let mut projected_origins = false;
+        let mut projected_history = None;
 
         while output_offset < output.len() {
             if let Some(region) = region {
@@ -807,19 +807,21 @@ impl SessionPlayback {
                     &mut resident_source_eligible,
                     &mut resident_analytic_eligible,
                 )?;
-                projected_origins = observer.is_none()
-                    && scalar.is_none()
-                    && self.prepare_native_origin_window(
+                projected_history = if observer.is_none() && scalar.is_none() {
+                    self.prepare_native_origin_window(
                         performance_frame,
                         arrangement_frame,
                         arrangement_loop_pass,
                         &mut stamps[..count],
-                    )?;
+                    )?
+                } else {
+                    None
+                };
                 self.align_resident_tracks(
                     arrangement_frame,
                     count,
                     &resident_source_eligible,
-                    projected_origins.then_some(&stamps[..count]),
+                    projected_history.map(|frames| (&stamps[..count], frames)),
                     &mut aligned,
                 )?;
                 resident_source_index = 0;
@@ -936,7 +938,7 @@ impl SessionPlayback {
                         index: resident_source_index,
                         audio: &resident_source_eligible,
                         analytic: &resident_analytic_eligible,
-                        stamps: projected_origins.then_some(&stamps[..resident_source_end]),
+                        stamps: projected_history.map(|_| &stamps[..resident_source_end]),
                         aligned: &aligned,
                     }),
                 )?;
