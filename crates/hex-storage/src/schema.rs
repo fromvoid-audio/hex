@@ -31,6 +31,7 @@ mod midi_clip_volume;
 pub(crate) mod midi_one_shot;
 mod migrations;
 pub(crate) mod musical_audio;
+pub(crate) mod musical_event_source;
 pub(crate) mod native_sources;
 pub(crate) mod nested_audio;
 pub(crate) mod note_activation;
@@ -45,6 +46,7 @@ pub(crate) mod session_audio_loops;
 pub(crate) mod sidechain;
 pub(crate) mod track_groups;
 pub(crate) mod track_name_origin;
+pub(crate) mod track_tags;
 pub(crate) mod tuning;
 pub(crate) mod warp_resampler;
 use crate::StorageError;
@@ -2073,6 +2075,7 @@ impl DocumentV13 {
             .into_iter()
             .map(|track| {
                 Ok(TrackSnapshot {
+                    tags: Vec::new(),
                     kind: hex_project::TrackKind::Ordinary,
                     parent_group: None,
                     color: hex_project::ElementColor::default(),
@@ -2447,6 +2450,7 @@ impl DocumentV10 {
                             ),
                         };
                         Ok(TrackSnapshot {
+                            tags: Vec::new(),
                             kind: hex_project::TrackKind::Ordinary,
                             parent_group: None,
                             color: hex_project::ElementColor::default(),
@@ -2600,6 +2604,7 @@ impl DocumentV9 {
                     }
                 };
                 Ok(TrackSnapshot {
+                    tags: Vec::new(),
                     kind: hex_project::TrackKind::Ordinary,
                     parent_group: None,
                     color: hex_project::ElementColor::default(),
@@ -2916,6 +2921,7 @@ fn tracks_legacy_into_snapshot(
         .into_iter()
         .map(|track| {
             Ok(TrackSnapshot {
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -2943,6 +2949,7 @@ fn tracks_v3_into_snapshot(tracks: Vec<TrackV3>) -> Result<Vec<TrackSnapshot>, S
         .into_iter()
         .map(|track| {
             Ok(TrackSnapshot {
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -2970,6 +2977,7 @@ fn tracks_v4_into_snapshot(tracks: Vec<TrackV4>) -> Result<Vec<TrackSnapshot>, S
         .into_iter()
         .map(|track| {
             Ok(TrackSnapshot {
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -3026,6 +3034,7 @@ fn tracks_v6_into_snapshot(tracks: Vec<TrackV6>) -> Result<Vec<TrackSnapshot>, S
                 })
                 .collect::<Result<Vec<_>, StorageError>>()?;
             Ok(TrackSnapshot {
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -3082,6 +3091,7 @@ fn tracks_v7_into_snapshot(tracks: Vec<TrackV7>) -> Result<Vec<TrackSnapshot>, S
                 })
                 .collect::<Result<Vec<_>, StorageError>>()?;
             Ok(TrackSnapshot {
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),

@@ -36,6 +36,7 @@ fn fixture(count: usize) -> Result<Project, Box<dyn Error>> {
     snapshot.tracks = (0..TRACKS)
         .map(|track| -> Result<TrackSnapshot, hex_project::Invalid> {
             Ok(TrackSnapshot {
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),

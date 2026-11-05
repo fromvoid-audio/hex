@@ -95,6 +95,7 @@ pub use audio_only_inputs::{
 pub mod native_device_resources;
 mod owned_shared;
 mod pcm_arc;
+mod sparse_audio;
 pub use midi_preview::persistent::{AudioPreviewCapacity, AudioPreviewMetadata};
 pub use native_device_view::{
     NativeDeviceCatalogEntry, NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView,
@@ -106,6 +107,7 @@ pub use native_device_view::{
     sampler_parameter_active_on_control, sampler_parameter_value_on_control,
     sampler_replacement_template_on_control, validate_sampler_replacement_on_control,
 };
+pub use sparse_audio::SparseFrameMap;
 
 mod device_automation;
 mod native_parameter_input;
@@ -569,6 +571,7 @@ struct ClipMetadata {
     source_phase: u64,
     fade: Option<hex_project::ClipFade>,
     streamed: Option<Arc<StreamedSourceMetadata>>,
+    sparse: Option<Arc<SparseFrameMap>>,
 }
 impl Clip {
     /// The frame range outside which this clip never renders.
@@ -648,6 +651,7 @@ impl Clip {
                 source_phase: 0,
                 fade: Some(fade),
                 streamed: None,
+                sparse: None,
             }))
         };
         Ok(Self {
@@ -673,6 +677,7 @@ impl Clip {
             if phase == 0
                 && metadata.fade.is_none()
                 && metadata.streamed.is_none()
+                && metadata.sparse.is_none()
                 && metadata.gain == 1.0
             {
                 self.metadata = None;
@@ -683,6 +688,7 @@ impl Clip {
                 source_phase: phase,
                 fade: None,
                 streamed: None,
+                sparse: None,
             }));
         }
         Ok(self)
@@ -696,6 +702,7 @@ impl Clip {
                 && metadata.source_phase == 0
                 && metadata.fade.is_none()
                 && metadata.streamed.is_none()
+                && metadata.sparse.is_none()
             {
                 self.metadata = None;
             }
@@ -705,9 +712,50 @@ impl Clip {
                 source_phase: 0,
                 fade: None,
                 streamed: None,
+                sparse: None,
             }));
         }
         self
+    }
+
+    fn sparse_region(
+        audio: Audio,
+        sparse: Arc<SparseFrameMap>,
+        start: u64,
+        duration: u64,
+        source_offset: u64,
+    ) -> Result<Self, Invalid> {
+        let end = start
+            .checked_add(duration)
+            .ok_or(Invalid("clip end overflow"))?;
+        let offset =
+            usize::try_from(source_offset).map_err(|_| Invalid("sparse audio offset overflow"))?;
+        let length =
+            usize::try_from(duration).map_err(|_| Invalid("sparse audio duration overflow"))?;
+        if length == 0
+            || offset
+                .checked_add(length)
+                .is_none_or(|end| end > sparse.extent())
+            || audio.frames().len() != sparse.packed_len()
+        {
+            return Err(Invalid("clip region exceeds sparse audio"));
+        }
+        Ok(Self {
+            active: true,
+            audio: Some(audio),
+            start,
+            end,
+            looping: false,
+            source_offset: offset,
+            source_length: length,
+            metadata: Some(Box::new(ClipMetadata {
+                gain: 1.0,
+                source_phase: 0,
+                fade: None,
+                streamed: None,
+                sparse: Some(sparse),
+            })),
+        })
     }
 
     fn at(&self, position: u64, source_phase: u64) -> Frame {
@@ -735,7 +783,13 @@ impl Clip {
             }
         };
         self.audio.as_ref().map_or([0.0; 2], |audio| {
-            audio.frames[self.source_offset + source_offset as usize]
+            let index = self.source_offset + source_offset as usize;
+            if let Some(map) = self.metadata.as_ref().and_then(|m| m.sparse.as_ref()) {
+                return map
+                    .packed_index(index)
+                    .map_or([0.0; 2], |i| audio.frames[i]);
+            }
+            audio.frames[index]
         })
     }
 
@@ -858,6 +912,7 @@ impl Clip {
                 source_phase: 0,
                 fade: (!fade.is_neutral()).then_some(fade),
                 streamed: Some(source),
+                sparse: None,
             })),
         })
     }
@@ -2067,6 +2122,25 @@ impl Track {
         let source_phase = metadata.map_or(0, |metadata| metadata.source_phase);
         let clip_gain = metadata.map_or(1.0, |metadata| metadata.gain);
         let fade = metadata.and_then(|metadata| metadata.fade.as_ref());
+        if let Some(map) = metadata.and_then(|metadata| metadata.sparse.as_ref())
+            && let Some(audio) = clip.audio.as_ref()
+        {
+            let first = clip.source_offset + (span_start - clip.start) as usize;
+            map.visit(first..first + output_end - output_start, |root, packed| {
+                let from = output_start + (root.start - first);
+                for (offset, sample) in audio.frames()[packed].iter().copied().enumerate() {
+                    let index = from + offset;
+                    source_mix.add_captured(
+                        &mut output[index],
+                        sample.map(|channel| channel * clip_gain),
+                        capture
+                            .as_deref_mut()
+                            .and_then(|frames| frames.get_mut(index)),
+                    );
+                }
+            });
+            return;
+        }
         if fade.is_none()
             && clip_gain == 1.0
             && capture.is_none()
@@ -2337,6 +2411,8 @@ pub struct PreparedAudioClipView {
     pub offset: u64,
     pub length: u64,
     pub repeat: Option<PreparedAudioRepeat>,
+    /// Maps logical root frames to packed PCM for a non-repeating source.
+    pub sparse: Option<Arc<SparseFrameMap>>,
 }
 
 /// Loop geometry of a prepared clip that plays a shared root instead of outer PCM.

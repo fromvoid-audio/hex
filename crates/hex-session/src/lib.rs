@@ -2062,6 +2062,31 @@ fn prepare_with_waveforms_using(
         let mut roots: Vec<(Audio, Shape, Arc<Waveform>)> = Vec::new();
         let mut next = BTreeMap::new();
         for view in prepared.arrangement().audio_clip_views() {
+            if let Some(map) = &view.sparse {
+                let waveform = if let Some(existing) = old.get(&view.clip).filter(|entry| {
+                    entry.waveform.bins.len() <= requested_bins
+                        && entry.waveform.shares_sparse_with(&view.audio, map)
+                }) {
+                    Arc::clone(&existing.waveform)
+                } else {
+                    Arc::new(
+                        waveform::summarize_sparse(&view.audio, Arc::clone(map), requested_bins)
+                            .map_err(|_| {
+                                hex_engine::Invalid("sparse waveform preparation failed")
+                            })?,
+                    )
+                };
+                next.insert(
+                    view.clip,
+                    service::AudioClipWaveform {
+                        waveform,
+                        offset: view.offset,
+                        length: view.length,
+                        preview_root: None,
+                    },
+                );
+                continue;
+            }
             let shape: Shape = view
                 .repeat
                 .map(|repeat| {
