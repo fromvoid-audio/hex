@@ -133,6 +133,9 @@ pub enum SessionPlaybackError {
     LatencyLayoutChanged,
     /// Active source history cannot be adopted by the replacement provider.
     SourceHistoryUnavailable,
+    /// The active detached receiver still owns effect history that must not
+    /// be replaced by a live reset/chase. The prior graph keeps rendering.
+    DetachedReceiverHistoryUnavailable,
     /// The exact foreign endpoint is still needed by an outgoing tail. A
     /// publication owner may retry pure handoff planning after real rendering
     /// advances that tail; it must not duplicate, reset or substitute the source.
@@ -186,7 +189,7 @@ impl SessionPlaybackError {
             Self::LatencyLayoutChanged => {
                 "latency layout could not change live · previous audio continues"
             }
-            Self::SourceHistoryUnavailable => {
+            Self::SourceHistoryUnavailable | Self::DetachedReceiverHistoryUnavailable => {
                 "source history cannot transfer live · previous audio continues"
             }
             Self::ForeignTailSourceBusy => {

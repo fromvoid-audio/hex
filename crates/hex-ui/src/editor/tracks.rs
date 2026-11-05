@@ -1553,6 +1553,7 @@ impl EditorView {
                 track.name(),
                 cx,
             ))
+            .children(self.track_tags_header(track, cx))
             .tooltip(move |_, cx| {
                 cx.new(|_| ClipTooltip {
                     kind: crate::tooltips::Kind::Identification,

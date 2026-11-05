@@ -1014,6 +1014,7 @@ fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
             },
         ],
         tracks: vec![TrackSnapshot {
+            tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),
@@ -1086,6 +1087,7 @@ fn mixed_audio_midi_project(source_start: u64, source_end: u64) -> Project {
     let mut snapshot = audio_project(source_start, source_end, 4).snapshot();
     snapshot.next_id = 12;
     snapshot.tracks.push(TrackSnapshot {
+        tags: Vec::new(),
         kind: hex_project::TrackKind::Ordinary,
         parent_group: None,
         color: hex_project::ElementColor::default(),
@@ -1185,6 +1187,7 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
         velocity: 100,
     });
     snapshot.tracks.push(TrackSnapshot {
+        tags: Vec::new(),
         kind: hex_project::TrackKind::Ordinary,
         parent_group: None,
         color: hex_project::ElementColor::default(),
@@ -1240,6 +1243,7 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
         next_id: 8,
         assets: Vec::new(),
         tracks: vec![TrackSnapshot {
+            tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),
@@ -5371,6 +5375,7 @@ fn held_eq8_audition_transfers_from_mutable_release_suffix_without_transferring_
     candidate.tail_groups[stale_slot] = Some(hex_lattice::NativeRuntimeChain::empty());
     candidate.tail_suffix_starts[stale_slot] = suffix_start;
     candidate.tail_mutable_instruments[stale_slot] = Some(MutableInstrumentTail {
+        sends: Default::default(),
         track_id,
         runtime: crate::mutable_instrument::MutableInstrumentTrackRuntime::new(
             &ZeroTailMutableFactory,
@@ -7762,6 +7767,7 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
         let session_clip = 24;
         let session_note = 25;
         snapshot.tracks.push(TrackSnapshot {
+            tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),
@@ -9948,6 +9954,7 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
     snapshot.next_id = 15;
     for (track_id, clip_id, note_id, gain) in [(7, 13, 14, 0.25), (10, 11, 12, 0.75)] {
         snapshot.tracks.push(TrackSnapshot {
+            tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),
@@ -10163,6 +10170,7 @@ fn moving_selected_clip_to_another_track_releases_old_route() {
 
     let mut snapshot = original.snapshot();
     snapshot.tracks.push(TrackSnapshot {
+        tags: Vec::new(),
         kind: hex_project::TrackKind::Ordinary,
         parent_group: None,
         color: hex_project::ElementColor::default(),

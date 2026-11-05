@@ -480,6 +480,10 @@ pub trait WorkerAudioSink: Send {
     /// from its actual canonical source and validated gesture. Metadata only;
     /// acceptance is not callback application or new source admission.
     fn verified_track_gain_source(&mut self, _source: Arc<VerifiedTrackGainSource>) {}
+    /// Worker-derived native-effect metadata, anchored to the canonical source.
+    /// A consumer uses its existing reserved builder; this grants no source,
+    /// output or callback owner. Offline/default sinks retain model editing.
+    fn verified_device_parameter_source(&mut self, _source: Arc<VerifiedDeviceParameterSource>) {}
     /// Synchronous private canonical/original PCM input; no borrow may survive.
     fn native_sampler_input(&mut self, _input: NativeSamplerInput<'_>) {}
     /// A bounded stopped Arrangement handshake, shared by structural edits and
@@ -614,6 +618,7 @@ pub(super) struct WorkerEvents {
     // Last delivered actor observation, not another editable gesture model.
     // It proves ownership when a terminal (including a retired refusal) arrives.
     last_verified_gain: Option<(crate::device_gesture::GestureKey, u64)>,
+    last_verified_device: Option<(crate::device_gesture::GestureKey, u64)>,
     startup_error: Option<String>,
     // At most one request parked on the stopped Arrangement lease (#4544).
     stopped_fence: super::stopped_arrangement::Fence,
@@ -731,6 +736,7 @@ impl WorkerEvents {
             audio,
             last_context: None,
             last_verified_gain: None,
+            last_verified_device: None,
             startup_error: None,
             stopped_fence: Default::default(),
             publication_wait: None,
@@ -844,12 +850,30 @@ impl WorkerEvents {
                 })
             }
         }
+        match VerifiedDeviceParameterSource::capture(&event, self.last_verified_device) {
+            Ok(Some(source)) => {
+                self.last_verified_device = source
+                    .preview_identity()
+                    .map(|identity| (identity.key, identity.sequence));
+                if let Some(audio) = self.audio.as_mut() {
+                    audio.verified_device_parameter_source(Arc::new(source));
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                event.error = Some(match event.error.take() {
+                    Some(previous) => format!("{previous}; {error}"),
+                    None => error.to_string(),
+                });
+            }
+        }
         self.last_verified_gain = event
             .active_device_gesture
             .filter(|active| {
                 matches!(
                     active.target,
                     crate::device_gesture::GestureTarget::TrackGain { .. }
+                        | crate::device_gesture::GestureTarget::TrackGains { .. }
                 ) && event
                     .state
                     .canonical_audio_source

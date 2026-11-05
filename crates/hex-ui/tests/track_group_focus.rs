@@ -124,7 +124,7 @@ fn matching_tracks_keep_nested_ancestors_and_revealed_track_context() {
         "a gap between selected subtrees remains a real move"
     );
     let ranges = [(48_000, 72_000)];
-    let visible = visibility::visible_tracks(project, &ranges, None);
+    let visible = visibility::visible_tracks(project, &ranges, None, None);
     assert_eq!(visible, BTreeSet::from([outer, inner, inside]));
     let ordered: Vec<_> = project
         .tracks()
@@ -134,11 +134,11 @@ fn matching_tracks_keep_nested_ancestors_and_revealed_track_context() {
         .collect();
     assert_eq!(ordered, [outer, inner, inside]);
     assert_eq!(
-        visibility::visible_tracks(project, &ranges, Some(outside)),
+        visibility::visible_tracks(project, &ranges, Some(outside), None),
         BTreeSet::from([outer, inner, inside, unrelated, outside])
     );
     assert!(
-        visibility::visible_tracks(project, &[], None).is_empty(),
+        visibility::visible_tracks(project, &[], None, None).is_empty(),
         "empty ranges use the caller's unfiltered path"
     );
     let mut projection = visibility::Projection::default();
@@ -378,4 +378,35 @@ fn section_projection_follows_canonical_tempo_range_and_removal() {
     state.rebuild(1, 4, f.model.project(), &f.sections[..1], None);
     assert!(state.enabled);
     assert_eq!(state.indices, [0, 1, 2, 3, 4]);
+}
+
+#[test]
+fn tag_and_section_filters_intersect_only_in_arrangement_and_never_change_project() {
+    let mut f = model();
+    let tag = hex_project::TrackTag::new("drums").unwrap();
+    for track in &f.tracks[..2] {
+        f.model
+            .execute(Command::SetTrackTags {
+                track: *track,
+                tags: vec![tag.clone()],
+            })
+            .unwrap();
+    }
+    let before = f.model.project().snapshot();
+    let mut projection = State::default();
+    projection.enabled = true;
+    projection.set_tag_filter(Some(tag));
+    projection.rebuild(1, 1, f.model.project(), &f.sections[..1], None);
+    assert_eq!(projection.indices, [1]);
+    assert_eq!(projection.console_indices, [0, 1]);
+    assert_eq!(f.model.project().snapshot(), before);
+    f.model
+        .execute(Command::SetTrackTags {
+            track: f.tracks[1],
+            tags: Vec::new(),
+        })
+        .unwrap();
+    projection.rebuild(1, 2, f.model.project(), &f.sections[..1], None);
+    assert!(projection.indices.is_empty());
+    assert_eq!(projection.console_indices, [0]);
 }

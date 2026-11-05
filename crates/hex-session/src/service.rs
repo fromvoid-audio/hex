@@ -325,6 +325,8 @@ pub struct SoloViewObservation {
     pub tracks: Vec<(hex_project::TrackId, bool)>,
 }
 
+mod verified_device_preview;
+pub use verified_device_preview::VerifiedDeviceParameterSource;
 mod verified_gain;
 pub use verified_gain::VerifiedTrackGainSource;
 
@@ -3661,6 +3663,7 @@ fn run_worker(
                         && matches!(
                             gesture,
                             GestureRequest::Begin { .. }
+                                | GestureRequest::BeginTrackGains { .. }
                                 | GestureRequest::BeginSnapshot { .. }
                                 | GestureRequest::BeginEqCreation { .. }
                         ) {

@@ -251,6 +251,36 @@ pub(crate) struct MutableInstrumentTrackRuntime {
 pub(crate) struct MutableInstrumentTail {
     pub(crate) track_id: TrackId,
     pub(crate) runtime: MutableInstrumentTrackRuntime,
+    pub(crate) sends: DetachedSourceSends,
+}
+
+/// Post-fader Return destinations for one detached source release. Stable
+/// Return IDs survive unrelated graph reordering. The fixed array carries no
+/// callback resource or additional processor owner.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct DetachedSourceSends(
+    [Option<(hex_project::ReturnId, f32)>; hex_project::MAX_RETURN_TRACKS],
+);
+
+impl DetachedSourceSends {
+    pub(crate) fn from_track(track: &crate::Track, returns: &[crate::ReturnBus]) -> Option<Self> {
+        let mut result = Self::default();
+        if track.sends().len() > result.0.len() {
+            return None;
+        }
+        for (destination, send) in result.0.iter_mut().zip(track.sends()) {
+            *destination = Some((returns.get(send.return_index)?.id, send.gain));
+        }
+        Some(result)
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (hex_project::ReturnId, f32)> + '_ {
+        self.0.iter().copied().map_while(std::convert::identity)
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.iter().next().is_none()
+    }
 }
 
 impl MutableInstrumentTrackRuntime {

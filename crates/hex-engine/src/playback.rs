@@ -243,7 +243,8 @@ impl PlaybackHandoffRejection {
                 Self::LatencyLayoutChanged
             }
             PlaybackHandoffError::Session(
-                crate::SessionPlaybackError::SourceHistoryUnavailable,
+                crate::SessionPlaybackError::SourceHistoryUnavailable
+                | crate::SessionPlaybackError::DetachedReceiverHistoryUnavailable,
             ) => Self::SourceHistoryUnavailable,
             PlaybackHandoffError::Session(crate::SessionPlaybackError::CandidateAlreadyUsed) => {
                 Self::SessionRuntime
@@ -1161,6 +1162,11 @@ impl Playback {
     pub fn invalidate_native_parameter_input(&mut self) {
         if let Some(runtime) = self.session_runtime.as_mut() {
             runtime.invalidate_native_parameter_input();
+        }
+    }
+    pub fn finish_native_parameter_input(&mut self) {
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            runtime.finish_native_parameter_input();
         }
     }
     pub fn take_native_parameter_application(

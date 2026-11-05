@@ -65,6 +65,7 @@ impl AudioContentView {
             && (matches!(p.outer_length, AudioDomainClock::Beats(_))
                 != matches!(edit.domain.clock, AudioDomainClock::Beats(_))
                 || p.outer_length.length() == 0
+                || matches!(p.mode, AudioViewMode::OnceWithLead(_))
                 || (p.mode == AudioViewMode::Repeat
                     && p.cycle_phase >= self.base_view_end - self.base_view_start))
         {

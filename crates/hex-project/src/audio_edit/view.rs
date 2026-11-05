@@ -11,6 +11,119 @@ mod ranges;
 pub enum AudioViewMode {
     Once,
     Repeat,
+    /// Finite musical read preceded by this many ticks in its placement clock.
+    /// The outer length includes the silence. The source crop and cycle phase
+    /// still describe the first readable frame.
+    OnceWithLead(u64),
+}
+
+impl AudioViewMode {
+    pub const fn leading_ticks(self) -> u64 {
+        match self {
+            Self::OnceWithLead(ticks) => ticks,
+            Self::Once | Self::Repeat => 0,
+        }
+    }
+}
+
+impl Clip {
+    /// Prepare an earlier gate for a finite musical read. The caller owns
+    /// Arrangement admission and must only install this projection once its
+    /// playback and editor consumers can represent the silent interval.
+    pub fn with_musical_leading_silence(
+        &self,
+        gate_start: u64,
+        tempo: &TempoMap,
+    ) -> Result<Self, Invalid> {
+        let edit = self
+            .audio_edit()
+            .filter(|edit| {
+                matches!(edit.domain.clock, AudioDomainClock::Beats(_))
+                    && edit.content_view.is_none()
+                    && edit
+                        .placement
+                        .is_none_or(|p| p.mode != AudioViewMode::Repeat)
+            })
+            .ok_or(Invalid("leading silence needs a finite musical one-shot"))?;
+        if gate_start >= self.start {
+            return Err(Invalid("leading gate must precede its current start"));
+        }
+        let old = AudioViewProjection::new(self, tempo)?.occurrence(0)?;
+        let processing = edit.processing_tempo(tempo);
+        let reference = edit.reference_for_processing_origin(edit.processing_origin()?)?;
+        let first = audio_projection_frame(processing, reference)?;
+        let displacement = i128::from(self.start) - first;
+        let new_reference =
+            audio_projection_beat(processing, i128::from(gate_start) - displacement)?;
+        let extension = u64::try_from(reference - new_reference)
+            .ok()
+            .filter(|extension| *extension != 0)
+            .ok_or(Invalid("leading gate has no musical extent"))?;
+        let placement = edit.placement.unwrap_or(AudioViewPlacement {
+            mode: AudioViewMode::Once,
+            outer_length: AudioDomainClock::Beats(BeatTime::from_raw(
+                edit.view_end - edit.view_start,
+            )),
+            cycle_phase: 0,
+        });
+        let leading = placement
+            .mode
+            .leading_ticks()
+            .checked_add(extension)
+            .ok_or(Invalid("leading gate exceeds musical range"))?;
+        let length = placement
+            .outer_length
+            .length()
+            .checked_add(extension)
+            .ok_or(Invalid("leading gate exceeds musical range"))?;
+
+        let mut result = self.clone();
+        let mut edit = edit.clone();
+        if edit.processing_projection.is_some() {
+            let gate = tempo.frame_to_beat(gate_start)?;
+            edit.set_reference_start_raw(Some(i128::from(gate.raw())))?;
+            edit.placement_start_offset =
+                i8::try_from(i128::from(gate_start) - i128::from(tempo.beat_to_frame(gate)?))
+                    .ok()
+                    .filter(|offset| (-1..=1).contains(offset))
+                    .ok_or(Invalid("leading gate exceeds its frame residual"))?;
+            edit.placement_end_offset = 0;
+        } else {
+            edit.set_reference_start_raw(Some(new_reference))?;
+        }
+        edit.placement = Some(AudioViewPlacement {
+            mode: AudioViewMode::OnceWithLead(leading),
+            outer_length: AudioDomainClock::Beats(BeatTime::from_raw(length)),
+            cycle_phase: placement.cycle_phase,
+        });
+        result.start = gate_start;
+        result.duration = self
+            .start
+            .checked_add(self.duration)
+            .and_then(|end| end.checked_sub(gate_start))
+            .ok_or(Invalid("leading gate exceeds Arrangement frames"))?;
+        result.fade = ClipFade::neutral(result.duration)?;
+        result.edit = Some(Arc::new(edit));
+        let new = AudioViewProjection::new(&result, tempo)?.occurrence(0)?;
+        if new
+            != (AudioViewOccurrence {
+                elapsed_start: old
+                    .elapsed_start
+                    .checked_add(extension)
+                    .ok_or(Invalid("leading gate exceeds musical range"))?,
+                elapsed_end: old
+                    .elapsed_end
+                    .checked_add(extension)
+                    .ok_or(Invalid("leading gate exceeds musical range"))?,
+                ..old
+            })
+        {
+            return Err(Invalid(
+                "leading gate would change the retained source read",
+            ));
+        }
+        Ok(result)
+    }
 }
 
 /// Copy-only placement; processing metadata and media remain in one domain.
@@ -53,6 +166,7 @@ pub struct AudioViewProjection<'a> {
     beat_clock: bool,
     domain_length: u64,
     start: i128,
+    first_read: i128,
     end: i128,
     view_start: u64,
     cycle: u64,
@@ -230,13 +344,20 @@ impl<'a> AudioViewProjection<'a> {
         if length == 0 || (mode == AudioViewMode::Repeat && phase >= cycle) {
             return Err(Invalid("audio outer length or cycle phase is invalid"));
         }
+        let leading = mode.leading_ticks();
+        if matches!(mode, AudioViewMode::OnceWithLead(_))
+            && (!beat_clock || leading == 0 || leading >= length || phase >= cycle)
+        {
+            return Err(Invalid("invalid leading musical one-shot placement"));
+        }
+        let first_read = start + i128::from(leading);
         let end = start
             .checked_add(i128::from(length))
             .ok_or(Invalid("audio outer end overflow"))?;
         // Exhausted Once views retain an unwrapped cursor. Do not subtract
         // phase from cycle or form a physical in-root position in this branch.
         let exhausted = mode == AudioViewMode::Once && phase >= cycle;
-        let first_end = start + i128::from(cycle) - i128::from(phase);
+        let first_end = first_read + i128::from(cycle) - i128::from(phase);
         let mut count = if exhausted {
             0
         } else if mode == AudioViewMode::Repeat && length > cycle - phase {
@@ -303,6 +424,7 @@ impl<'a> AudioViewProjection<'a> {
             beat_clock,
             domain_length: clock.length(),
             start,
+            first_read,
             end,
             view_start,
             cycle,
@@ -522,7 +644,7 @@ impl<'a> AudioViewProjection<'a> {
     /// Technical placement origin in the declared domain clock, even for
     /// silence. A retained occurrence may carry a separate processing origin.
     pub fn root_origin(&self) -> i128 {
-        self.start - i128::from(self.view_start) - i128::from(self.phase)
+        self.first_read - i128::from(self.view_start) - i128::from(self.phase)
     }
     fn frame(&self, position: i128) -> Result<i128, Invalid> {
         let frame = if self.beat_clock {
@@ -547,7 +669,7 @@ impl<'a> AudioViewProjection<'a> {
             .ok_or(Invalid("audio occurrence origin overflow"))?;
         let root_origin = self.root_origin() + offset;
         let begin = if source_index == 0 {
-            self.start
+            self.first_read
         } else {
             root_origin + i128::from(self.view_start)
         };
@@ -596,7 +718,7 @@ impl<'a> AudioViewProjection<'a> {
                 root_frame_length,
                 root_start,
                 root_end,
-                destination_start: if index == 0 {
+                destination_start: if index == 0 && self.first_read == self.start {
                     self.outer_frames.0
                 } else {
                     destination_start
@@ -616,7 +738,13 @@ impl<'a> AudioViewProjection<'a> {
         )?;
         let root_frame_length = u64::try_from(root_last - root_frame_origin)
             .map_err(|_| Invalid("audio root frame span is invalid"))?;
-        if root_frame_length == 0 || root_frame_length > MAX_AUDIO_DOMAIN_FRAMES {
+        if root_frame_length == 0
+            || (root_frame_length > MAX_AUDIO_DOMAIN_FRAMES
+                && !self
+                    .clip
+                    .audio_edit()
+                    .is_some_and(|edit| edit.accepts_projected_extent(root_frame_length)))
+        {
             return Err(Invalid(
                 "full audio root exceeds its frame limit or is empty",
             ));
@@ -761,6 +889,14 @@ pub fn preview_view_resize(
     tempo: &TempoMap,
     operation: AudioViewResizeOperation,
 ) -> Result<AudioViewResize, Invalid> {
+    if clip.audio_edit().is_some_and(|edit| {
+        edit.placement
+            .is_some_and(|placement| placement.mode.leading_ticks() != 0)
+    }) {
+        return Err(Invalid(
+            "audio loop markers are read-only on a leading one-shot",
+        ));
+    }
     if clip
         .audio_edit()
         .is_some_and(|edit| edit.processing_projection.is_some())
@@ -1061,6 +1197,11 @@ pub(super) fn trim_placement(
         .audio_edit()
         .ok_or(Invalid("audio placement has no root"))?;
     let mut placement = edit.placement.ok_or(Invalid("audio placement missing"))?;
+    if placement.mode.leading_ticks() != 0 {
+        return Err(Invalid(
+            "leading musical one-shot trimming is not supported yet",
+        ));
+    }
     AudioViewProjection::new(clip, tempo)?;
     let old_start = edit.reference_start_raw().unwrap_or(i128::from(clip.start));
     let position = if edit.reference_start_raw().is_some() {

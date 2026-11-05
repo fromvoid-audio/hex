@@ -1,6 +1,49 @@
 //! Source-owned kernel continuity, separate from track-local effect history.
 use super::*;
 
+/// A compensated or typed route can retain upstream frames independently of
+/// its current source. Until that route can carry the bypass transition, keep
+/// the applied graph rather than reset its delay and chase a held note.
+pub(super) fn compensated_long_source_bypass(
+    candidate: &SessionPlayback,
+    previous: &SessionPlayback,
+) -> bool {
+    if !previous.playing || (candidate.compensation.is_none() && previous.compensation.is_none()) {
+        return false;
+    }
+    let limit = u64::from(candidate.revision.arrangement().sample_rate().div_ceil(200));
+    previous
+        .mutable_instruments
+        .iter()
+        .enumerate()
+        .any(|(index, runtime)| {
+            let Some(runtime) = runtime.as_ref().filter(|runtime| {
+                runtime.max_release_tail_frames() > limit && !runtime.committed_is_quiescent()
+            }) else {
+                return false;
+            };
+            let Some(device) = runtime.expression_identity else {
+                return false;
+            };
+            let Some(old) = previous.revision.arrangement().tracks().get(index) else {
+                return false;
+            };
+            if old.instrument_bypassed || old.instrument_id != Some(device) {
+                return false;
+            }
+            candidate
+                .revision
+                .arrangement()
+                .tracks()
+                .iter()
+                .any(|track| {
+                    track.canonical_track_id() == old.canonical_track_id()
+                        && track.instrument_id == Some(device)
+                        && track.instrument_bypassed
+                })
+        })
+}
+
 /// A short, already-releasing source must finish before another kernel for
 /// the same device is admitted. The callback can retry while the old graph
 /// renders; held live inputs and long releases retain the existing policy.
@@ -31,9 +74,11 @@ pub(super) fn short_source_release_blocks_reenable(
     })
 }
 
-/// Plan a return from a detached release to the same dry receiver. Copying
+/// Plan a return from a detached release to the same receiver. Copying
 /// the committed kernel and its ledger admits future onsets immediately;
 /// the old tail stays in the retiring graph and cannot render a second copy.
+/// Live releases require committed NoteOffs; source inheritance retains their
+/// generations, IDs, allocator and render-age deadlines beside the same DSP pair.
 pub(super) fn reenabled_release_receivers(
     candidate: &SessionPlayback,
     previous: &SessionPlayback,
@@ -58,63 +103,105 @@ pub(super) fn reenabled_release_receivers(
         }) else {
             continue;
         };
+        let old_index = previous
+            .routes
+            .iter()
+            .position(|route| route.id == tail.track_id);
         let same_receiver = track.canonical_track_id() == Some(tail.track_id)
-            && previous
-                .routes
-                .iter()
-                .position(|route| route.id == tail.track_id)
-                .is_some_and(|old_index| {
-                    let old = &previous.revision.arrangement().tracks()[old_index];
-                    old.receives_source_audio()
-                        && old.instrument_bypassed
-                        && old.instrument_id == Some(device)
-                        && old.instrument_state == track.instrument_state
-                        && old.source_id() == track.source_id()
-                        && old.mix() == track.mix()
-                        && previous.device_chains[old_index].is_empty()
-                        && !previous.track_faders[old_index].active()
-                });
-        // A captured effect suffix, send or compensated path has its own
-        // history. A dry receiver can take the release only when its gain
-        // and ordered matrix reproduce the captured output path.
-        let same_dry_path = candidate.compensation.is_none()
-            && previous.compensation.is_none()
-            && track.sends().is_empty()
+            && old_index.is_some_and(|old_index| {
+                let old = &previous.revision.arrangement().tracks()[old_index];
+                old.receives_source_audio()
+                    && old.instrument_bypassed
+                    && old.instrument_id == Some(device)
+                    && old.instrument_state == track.instrument_state
+                    && old.source_id() == track.source_id()
+                    && old.mix() == track.mix()
+                    && old.instrument_position() == track.instrument_position()
+                    && source_release_chain_matches(
+                        track,
+                        &candidate.device_chains[index],
+                        &previous.device_chains[old_index],
+                    )
+                    && !previous.track_faders[old_index].active()
+            });
+        // Retain the exact ordered suffix and post-fader sends. A detached
+        // source cannot stand in for compensation and typed route histories.
+        let no_compensation = candidate.compensation.is_none() && previous.compensation.is_none();
+        let same_sends = crate::mutable_instrument::DetachedSourceSends::from_track(
+            track,
+            candidate.revision.arrangement().return_buses(),
+        ) == Some(tail.sends);
+        let detached_chain = previous.tail_groups[slot].as_ref();
+        let same_processing_path = no_compensation
+            && same_sends
             && !track.has_gain_automation()
             && candidate.revision.gain_recording_track() != Some(tail.track_id)
             && previous.revision.gain_recording_track() != Some(tail.track_id)
             && track.instrument_output_gain == 1.0
             && previous.tail_mixes[slot] == track.mix()
             && previous.tail_suffix_matrices[slot] == track.instrument_suffix_matrix()
-            && candidate.device_chains[index].is_empty()
-            && previous.tail_groups[slot]
-                .as_ref()
-                .is_some_and(|chain| chain.is_empty())
+            && tail_runtime_suffix_start(
+                &candidate.device_chains[index],
+                track.instrument_position(),
+            )
+            .is_ok_and(|start| previous.tail_suffix_starts[slot] == start)
+            && detached_chain.is_some_and(|chain| {
+                source_release_chain_matches(track, &candidate.device_chains[index], chain)
+            })
             && !previous.tail_output_active[slot]
             && !previous
                 .releases
                 .iter()
                 .any(|release| release.location.tail_group().map(usize::from) == Some(slot));
-        let released = tail.runtime.max_release_tail_frames() > short_limit
-            && !tail.runtime.has_committed_live_occurrences()
+        let long_release = tail.runtime.max_release_tail_frames() > short_limit;
+        let released = long_release
+            && tail.runtime.committed_live_gates_released()
             && tail.runtime.proofs().all(|note| {
                 note.note_off_sent || note.gate_end_frame <= previous.performance_frame
             });
         if timing_changed
             || !previous.playing
             || !same_receiver
-            || !same_dry_path
+            || !same_processing_path
             || !released
             || receivers.contains(&Some(index))
             || candidate.mutable_instruments[index]
                 .as_ref()
                 .is_none_or(|runtime| !runtime.can_inherit_from(&tail.runtime))
         {
+            if long_release
+                && !timing_changed
+                && previous.playing
+                && track.canonical_track_id() == Some(tail.track_id)
+                && old_index.is_some_and(|old_index| {
+                    let old = &previous.revision.arrangement().tracks()[old_index];
+                    old.instrument_bypassed && old.instrument_id == Some(device)
+                })
+                && (!no_compensation
+                    || !tail.sends.is_empty()
+                    || !track.sends().is_empty()
+                    || detached_chain.is_some_and(|chain| chain.stateful_count() != 0))
+            {
+                return Err(SessionPlaybackError::DetachedReceiverHistoryUnavailable);
+            }
             return Err(SessionPlaybackError::MutableInstrumentActive);
         }
         receivers[slot] = Some(index);
     }
     Ok(receivers)
+}
+
+fn source_release_chain_matches(
+    track: &crate::Track,
+    candidate: &hex_lattice::NativeRuntimeChain,
+    previous: &hex_lattice::NativeRuntimeChain,
+) -> bool {
+    candidate.static_processing_matches(previous)
+        // With no prefix or independent audio, this chain sees only the
+        // retained source. Its detached copy owns the live signal history.
+        || (track.instrument_position() == 0
+            && track.clips.is_empty()
+            && candidate.detached_source_history_matches(previous))
 }
 
 pub(super) struct SharedSourceHandoff {
@@ -1414,10 +1501,165 @@ mod tests {
             &resources,
         )
         .unwrap();
-        result
-            .prepare_computer_keyboard(f.editor.project(), f.contributor, Arc::clone(input))
-            .unwrap();
+        if !f
+            .editor
+            .project()
+            .track(f.contributor)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .bypassed()
+        {
+            result
+                .prepare_computer_keyboard(f.editor.project(), f.contributor, Arc::clone(input))
+                .unwrap();
+        }
         (result, revision)
+    }
+
+    #[test]
+    fn live_sampler_long_release_survives_reenable_without_reusing_input_ids() {
+        on_control(|| {
+            use crate::computer_keyboard::ComputerKeyboardInput;
+            use crate::playback::PlaybackCommand;
+            for (key_up, utility_gain_db) in [
+                ("before-disable", None),
+                ("while-disabled", None),
+                ("after-reenable", None),
+                ("after-reenable", Some(-6.0)),
+            ] {
+                let mut f = fixture();
+                let clips: Vec<_> = f
+                    .editor
+                    .project()
+                    .tracks()
+                    .iter()
+                    .flat_map(|track| track.midi_clips().iter().map(|clip| clip.id()))
+                    .collect();
+                for clip in clips {
+                    f.editor.execute(Command::RemoveMidiClip(clip)).unwrap();
+                }
+                let instrument = f
+                    .editor
+                    .project()
+                    .track(f.receiver)
+                    .unwrap()
+                    .instrument()
+                    .unwrap();
+                let device = instrument.id();
+                let mut state =
+                    hex_devices::sampler::state::SamplerState::from_native(instrument.state())
+                        .unwrap();
+                state.envelope.release_seconds = 0.1;
+                let state = state
+                    .to_native()
+                    .unwrap()
+                    .with_asset_references(instrument.state().asset_references().to_vec())
+                    .unwrap();
+                f.editor
+                    .execute(Command::ReplaceDeviceState { device, state })
+                    .unwrap();
+                if let Some(gain_db) = utility_gain_db {
+                    let state = hex_devices::utility::UTILITY_DEFINITION
+                        .default_state()
+                        .unwrap()
+                        .with_output_gain_db(gain_db)
+                        .unwrap();
+                    f.editor
+                        .execute(Command::InsertDevice {
+                            track: f.receiver,
+                            before: None,
+                            state,
+                        })
+                        .unwrap();
+                }
+                let input = Arc::new(ComputerKeyboardInput::default());
+                let oracle_input = Arc::new(ComputerKeyboardInput::default());
+                for keys in [&input, &oracle_input] {
+                    keys.set_key(0, Some((60, 127, 1))).unwrap();
+                }
+                let (mut actual, _) = live_playback(&f, &input);
+                let (mut oracle, _) = live_playback(&f, &oracle_input);
+                actual.apply(PlaybackCommand::Play);
+                oracle.apply(PlaybackCommand::Play);
+                let compare = |actual: &mut crate::playback::Playback,
+                               oracle: &mut crate::playback::Playback,
+                               frames: usize,
+                               phase: &str| {
+                    let mut a = vec![[0.0; 2]; frames];
+                    let mut b = a.clone();
+                    actual.render(&mut a).unwrap();
+                    oracle.render(&mut b).unwrap();
+                    assert_eq!(a, b, "{key_up}, utility={utility_gain_db:?}: {phase}");
+                    if phase == "held prefix" {
+                        assert!(a.iter().flatten().any(|x| x.abs() > 0.001));
+                    }
+                };
+                compare(&mut actual, &mut oracle, 129, "held prefix");
+                if key_up == "before-disable" {
+                    input.set_key(0, None).unwrap();
+                    oracle_input.set_key(0, None).unwrap();
+                    compare(&mut actual, &mut oracle, 13, "physical release");
+                } else {
+                    oracle_input.set_key(0, None).unwrap();
+                }
+                f.editor
+                    .execute(Command::SetDeviceBypass {
+                        device,
+                        bypassed: true,
+                    })
+                    .unwrap();
+                let (mut disabled, _) = live_playback(&f, &input);
+                disabled
+                    .try_inherit_runtime_in_control_context(&mut actual, Some(19), Some(19))
+                    .unwrap();
+                compare(&mut disabled, &mut oracle, 32, "disable release");
+                assert!(input.is_cancelled(), "disabled input is terminal");
+                if key_up == "while-disabled" {
+                    input.set_key(0, None).unwrap();
+                }
+                input.set_key(1, Some((67, 127, 2))).unwrap();
+                compare(
+                    &mut disabled,
+                    &mut oracle,
+                    7,
+                    "disabled key up and new press",
+                );
+                f.editor
+                    .execute(Command::SetDeviceBypass {
+                        device,
+                        bypassed: false,
+                    })
+                    .unwrap();
+                // Resident input attachment drops a bypassed source. A later
+                // activation gets a fresh root/generation, even if tokens repeat.
+                let fresh = Arc::new(ComputerKeyboardInput::default());
+                let (mut enabled, _) = live_playback(&f, &fresh);
+                enabled
+                    .try_inherit_runtime_in_control_context(&mut disabled, Some(19), Some(19))
+                    .unwrap();
+                compare(&mut enabled, &mut oracle, 13, "reenable release");
+                for keys in [&fresh, &oracle_input] {
+                    keys.set_key(1, Some((67, 127, 1))).unwrap();
+                }
+                compare(&mut enabled, &mut oracle, 13, "new physical key");
+                input.set_key(0, None).unwrap();
+                fresh.set_key(0, None).unwrap();
+                compare(
+                    &mut enabled,
+                    &mut oracle,
+                    13,
+                    "old key up cannot cut the new key",
+                );
+                for keys in [&fresh, &oracle_input] {
+                    keys.set_key(1, None).unwrap();
+                }
+                compare(&mut enabled, &mut oracle, 900, "all released");
+                let mut silence = [[1.0; 2]; 32];
+                enabled.render(&mut silence).unwrap();
+                assert_eq!(silence, [[0.0; 2]; 32]);
+            }
+        });
     }
 
     #[test]
@@ -1755,30 +1997,84 @@ mod tests {
         });
     }
 
+    fn long_sampler_release(f: &mut Fixture) -> hex_project::DeviceId {
+        let instrument = f
+            .editor
+            .project()
+            .track(f.receiver)
+            .unwrap()
+            .instrument()
+            .unwrap();
+        let mut state =
+            hex_devices::sampler::state::SamplerState::from_native(instrument.state()).unwrap();
+        state.envelope.release_seconds = 0.1;
+        let state = state
+            .to_native()
+            .unwrap()
+            .with_asset_references(instrument.state().asset_references().to_vec())
+            .unwrap();
+        let device = instrument.id();
+        f.editor
+            .execute(Command::ReplaceDeviceState { device, state })
+            .unwrap();
+        device
+    }
+
     #[test]
     fn rapid_shared_source_reenable_preserves_the_original_long_release() {
         on_control(|| {
             let mut f = fixture();
-            let instrument = f
-                .editor
-                .project()
-                .track(f.receiver)
-                .unwrap()
-                .instrument()
-                .unwrap();
-            let mut state =
-                hex_devices::sampler::state::SamplerState::from_native(instrument.state()).unwrap();
-            state.envelope.release_seconds = 0.1;
-            let state = state
-                .to_native()
-                .unwrap()
-                .with_asset_references(instrument.state().asset_references().to_vec())
-                .unwrap();
-            let device = instrument.id();
-            f.editor
-                .execute(Command::ReplaceDeviceState { device, state })
-                .unwrap();
+            let device = long_sampler_release(&mut f);
             check_rapid_source_toggles(&mut f, device);
+        });
+    }
+
+    #[test]
+    fn rapid_static_utility_receiver_reenable_preserves_the_original_release() {
+        on_control(|| {
+            use hex_devices::utility::{UTILITY_DEFINITION as utility, parameter as p};
+            use hex_lattice_contract::ParameterValue;
+            for case in 0..3 {
+                let mut f = fixture();
+                let device = long_sampler_release(&mut f);
+                let mut state = utility.default_state().unwrap();
+                if case == 1 {
+                    state = utility
+                        .patch_parameter(&state, p::BALANCE, ParameterValue::Float(0.5))
+                        .unwrap();
+                    state = utility
+                        .patch_parameter(&state, p::WIDTH, ParameterValue::Float(2.0))
+                        .unwrap();
+                } else if case == 2 {
+                    state = utility
+                        .patch_parameter(&state, p::INVERT_LEFT, ParameterValue::Bool(true))
+                        .unwrap();
+                }
+                f.editor
+                    .execute(Command::InsertDevice {
+                        track: f.receiver,
+                        before: None,
+                        state,
+                    })
+                    .unwrap();
+                if case == 2 {
+                    let state = utility
+                        .patch_parameter(
+                            &utility.default_state().unwrap(),
+                            p::WIDTH,
+                            ParameterValue::Float(0.5),
+                        )
+                        .unwrap();
+                    f.editor
+                        .execute(Command::InsertDevice {
+                            track: f.receiver,
+                            before: None,
+                            state,
+                        })
+                        .unwrap();
+                }
+                check_rapid_source_toggles(&mut f, device);
+            }
         });
     }
 
