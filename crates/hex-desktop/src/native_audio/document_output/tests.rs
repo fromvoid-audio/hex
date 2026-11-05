@@ -133,9 +133,7 @@ impl Harness {
                             .project_generation,
                         project_generation
                     );
-                    audio.control.bind_resident_transport(
-                        std::num::NonZeroU64::new(project_generation).unwrap(),
-                    );
+                    audio.control.bind_resident_transport(project_generation);
                     self.rebound = Some((project_generation, output_identity));
                 }
                 _ => {}

@@ -367,9 +367,10 @@ impl EditorView {
         {
             if audio.mode == hex_session::DocumentAudioMode::Resident
                 && audio.control.worker_owns_graph_publication()
-                && let Some(generation) = std::num::NonZeroU64::new(self.project_generation)
             {
-                audio.control.bind_resident_transport(generation);
+                audio
+                    .control
+                    .bind_resident_transport(self.project_generation);
             }
             self.status = "audio ready".into();
             self.reconcile_publication_observation();
