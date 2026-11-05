@@ -168,20 +168,59 @@ impl Configuration {
     }
 }
 
-/// Actual caller-derived per-direction contributions. Absence is represented
-/// by None, never by substituting zero for an unknown device/graph contribution.
+/// Actual caller-derived per-direction contributions. Unknown uses a separate
+/// plan, so its SDK sentinel cannot be mistaken for measured zero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PresentationLatency {
     pub input_frames: u32,
     pub output_frames: u32,
 }
+/// Unknown is a deliberate compatibility mode, distinct from a known zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PresentationPlan {
+    RequireKnown,
+    Known(PresentationLatency),
+    AllowUnknown,
+}
+impl From<Option<PresentationLatency>> for PresentationPlan {
+    fn from(value: Option<PresentationLatency>) -> Self {
+        value.map_or(Self::RequireKnown, Self::Known)
+    }
+}
+impl PresentationPlan {
+    fn flag(self) -> u8 {
+        match self {
+            Self::RequireKnown => 0,
+            Self::Known(_) => 1,
+            Self::AllowUnknown => 2,
+        }
+    }
+    fn known(self) -> Option<PresentationLatency> {
+        match self {
+            Self::Known(value) => Some(value),
+            _ => None,
+        }
+    }
+    pub(super) fn expected(self, available: bool) -> Result<Presentation> {
+        match (self, available) {
+            (_, false) => Ok(Presentation::Absent),
+            (Self::Known(_), true) => Ok(Presentation::Applied),
+            (Self::AllowUnknown, true) => Ok(Presentation::Unknown),
+            (Self::RequireKnown, true) => Err(Error::Protocol(
+                "actual presentation contributions are unavailable",
+            )),
+        }
+    }
+}
 pub fn presentation_request(
     binding: Binding,
-    value: Option<PresentationLatency>,
+    plan: impl Into<PresentationPlan>,
 ) -> Result<Vec<u8>> {
+    let plan = plan.into();
+    let value = plan.known();
     let mut out = control_prefix(*b"HXVIPR01", 35 + usize::from(value.is_some()) * 8)?;
     stamp(&mut out, binding);
-    out.push(u8::from(value.is_some()));
+    out.push(plan.flag());
     if let Some(value) = value {
         out.extend(value.input_frames.to_le_bytes());
         out.extend(value.output_frames.to_le_bytes());
@@ -239,6 +278,7 @@ impl Facts {
 pub enum Presentation {
     Absent,
     Applied,
+    Unknown,
 }
 #[derive(Clone, Debug)]
 pub struct Ready {
@@ -258,8 +298,9 @@ impl Ready {
     pub fn decode(
         body: &[u8],
         config: &Configuration,
-        expected: Option<PresentationLatency>,
+        expected: impl Into<PresentationPlan>,
     ) -> Result<Self> {
+        let expected = expected.into();
         config.validate()?;
         let mut r = Reader::new(body);
         if r.binding()? != config.binding
@@ -276,6 +317,7 @@ impl Ready {
         let presentation = match r.byte()? {
             0 => Presentation::Absent,
             1 => Presentation::Applied,
+            2 => Presentation::Unknown,
             _ => return Err(Error::Protocol("refused presentation cannot be ready")),
         };
         let supplied = match r.byte()? {
@@ -286,7 +328,9 @@ impl Ready {
             }),
             _ => return Err(Error::Protocol("invalid presentation acknowledgement")),
         };
-        if supplied != expected {
+        if supplied != expected.known()
+            || (presentation != Presentation::Absent && presentation != expected.expected(true)?)
+        {
             return Err(Error::Protocol(
                 "presentation acknowledgement differs from the requested contributions",
             ));
@@ -482,13 +526,15 @@ pub fn validate_resume(previous: Binding, next: Binding) -> Result<()> {
 pub fn resume_request(
     config: &Configuration,
     next: Binding,
-    presentation: Option<PresentationLatency>,
+    plan: impl Into<PresentationPlan>,
 ) -> Result<Vec<u8>> {
+    let plan = plan.into();
+    let presentation = plan.known();
     config.validate()?;
     validate_resume(config.binding, next)?;
     let mut header = stop(config.binding, next.graph, next.epoch);
     header[..4].copy_from_slice(b"HXVR");
-    header[10] = u8::from(presentation.is_some());
+    header[10] = plan.flag();
     let mut out = buffer(64 + usize::from(presentation.is_some()) * 8)?;
     out.extend(header);
     if let Some(value) = presentation {
@@ -559,8 +605,9 @@ pub fn resumed(
     config: &Configuration,
     sequence: u64,
     expected: Facts,
-    presentation: Option<PresentationLatency>,
+    presentation: impl Into<PresentationPlan>,
 ) -> Result<Presentation> {
+    let presentation = presentation.into();
     let (facts, mut rest) = epoch_facts(body, config, sequence)?;
     if facts != expected {
         return Err(Error::Protocol(
@@ -570,6 +617,7 @@ pub fn resumed(
     let result = match rest.byte()? {
         0 => Presentation::Absent,
         1 => Presentation::Applied,
+        2 => Presentation::Unknown,
         _ => return Err(Error::Protocol("native presentation resume refused")),
     };
     let supplied = match rest.byte()? {
@@ -585,9 +633,8 @@ pub fn resumed(
         }
     };
     rest.end()?;
-    if supplied != presentation
-        || (result == Presentation::Applied && supplied.is_none())
-        || (result == Presentation::Applied) != facts.presentation_available
+    if supplied != presentation.known()
+        || result != presentation.expected(facts.presentation_available)?
     {
         return Err(Error::Protocol(
             "resumed presentation differs from actual plan",

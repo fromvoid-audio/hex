@@ -3,7 +3,10 @@
 use super::*;
 use crate::prepared::PublicationControl;
 use hex_engine::{AudioCandidateEffects, ProcessorChainOwner};
-use hex_plugin_host::{native, protocol::PresentationLatency};
+use hex_plugin_host::{
+    native,
+    protocol::{PresentationLatency, PresentationPlan},
+};
 use hex_plugin_scan::macos::{build_identity::InstanceBuild, package::InstancePackage};
 use hex_plugin_state::{BinaryIdentity, ClassId};
 use std::{path::Path, time::Duration};
@@ -37,9 +40,8 @@ impl EffectSelection<'_> {
     }
 }
 
-/// Caller-derived graph/device contributions. None remains explicit unknown;
-/// a native interface requiring these facts must refuse it. Backend buffer
-/// duration alone does not establish total device presentation latency.
+/// Caller-derived graph/device contributions. None uses the SDK's explicit
+/// unknown mode. Buffer duration alone does not establish device latency.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EffectPresentation {
     pub input_frames: u32,
@@ -213,9 +215,11 @@ impl Hosting {
         output
             .complete_native_source_preparation(
                 binding,
-                presentation.map(|p| PresentationLatency {
-                    input_frames: p.input_frames,
-                    output_frames: p.output_frames,
+                presentation.map_or(PresentationPlan::AllowUnknown, |p| {
+                    PresentationPlan::Known(PresentationLatency {
+                        input_frames: p.input_frames,
+                        output_frames: p.output_frames,
+                    })
                 }),
             )
             .map_err(str::to_owned)
