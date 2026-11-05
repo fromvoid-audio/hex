@@ -462,6 +462,7 @@ int main(int argc,char** argv) {
                         return true;
                     };
                     wire::Packet packet{};
+                    hex_instance::InputNotes input_notes;
                     std::array<float,wire::max_frames> left{},right{},output_left{},output_right{};
                     float* input_pointers[]={left.data(),right.data()};float* output_pointers[]={output_left.data(),output_right.data()};
                     AudioBusBuffers input{},output{};input.numChannels=config->inputs;output.numChannels=config->outputs;
@@ -654,6 +655,9 @@ int main(int argc,char** argv) {
                             right[n]=wire::sample(packet.bytes.data()+wire::header_size+n*8+4);
                             valid=valid && (config->inputs==2 || right[n]==0) && (config->inputs!=0 || left[n]==0);
                         }
+                        const auto event_channels=instance.event_input_channels();
+                        for (size_t n=0;n<packet.note_count;++n)
+                            valid=valid && packet.notes[n].channel<event_channels;
                         if(!valid) { worker_failure.store(ProtocolFailure);break; }
                         instance.refresh_processing_parameters(processing_parameters);
                         if(!parameter_input.reset(packet.frames,false) || !parameter_output.reset(packet.frames,true)) {
@@ -669,8 +673,12 @@ int main(int argc,char** argv) {
                         if(!parameter_input.begin_sdk() || !parameter_output.begin_sdk()) {
                             error(channel,&*config,Processing);std::_Exit(Processing);
                         }
+                        if (event_channels && !input_notes.begin(packet.notes,packet.note_count)) {
+                            error(channel,&*config,Processing);std::_Exit(Processing);
+                        }
                         data.inputParameterChanges=parameter_input.size()?&parameter_input:nullptr;
                         data.outputParameterChanges=&parameter_output;
+                        data.inputEvents=event_channels?&input_notes:nullptr;
                         data.numSamples=packet.frames;phase.store(2,std::memory_order_release);
                         const bool processed=instance.process(data);
                         // No SDK stop/unload beneath retained or malformed
@@ -678,7 +686,8 @@ int main(int argc,char** argv) {
                         // the isolated instance without claiming rollback.
                         const bool input_returned=parameter_input.end_sdk();
                         const bool output_returned=parameter_output.end_sdk();
-                        if(!input_returned || !output_returned) {
+                        const bool notes_returned=!event_channels || input_notes.end();
+                        if(!input_returned || !output_returned || !notes_returned) {
                             error(channel,&*config,Processing);std::_Exit(Processing);
                         }
                         if(!processed) { worker_failure.store(Processing);break; }
