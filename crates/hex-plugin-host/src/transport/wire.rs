@@ -1,17 +1,18 @@
 //! Worker-only bounded little-endian copied protocol. Never call I/O on callback.
 //! Header: HXVB, version u16, frames u16, event count u16, parameter count
-//! u16 (version2 only), four zero bytes,
+//! u16 (versions 2 and 3), four zero bytes,
 //! root/instance/graph/epoch/sequence/first-frame u64. Then interleaved f32 PCM
 //! and eight-byte MIDI records (offset u16, len u8, three bytes, two zero bytes).
 //! Version2 appends sixteen-byte parameter records: offset u16, two zero bytes,
 //! raw ParamID u32 and normalized f64. Empty parameter payloads retain version1.
+//! Version3 extends each MIDI record with a u32 note ID (zero means absent).
 //! These records carry transport data; they do not promise SDK event admission.
 use super::*;
 use std::io::{self, Read, Write};
 
 pub const HEADER_BYTES: usize = 64;
 pub const MAX_PACKET_BYTES: usize =
-    HEADER_BYTES + MAX_FRAMES * 8 + MAX_EVENTS * 8 + MAX_PARAMETER_POINTS * 16;
+    HEADER_BYTES + MAX_FRAMES * 8 + MAX_EVENTS * 12 + MAX_PARAMETER_POINTS * 16;
 
 fn invalid() -> io::Error {
     io::ErrorKind::InvalidData.into()
@@ -36,7 +37,14 @@ pub fn write(writer: &mut impl Write, block: &Block) -> io::Result<()> {
     }
     let mut packet = [0_u8; MAX_PACKET_BYTES];
     packet[..4].copy_from_slice(b"HXVB");
-    let version = if block.parameters.as_slice().is_empty() {
+    let version = if block
+        .events
+        .as_slice()
+        .iter()
+        .any(|event| event.note_id.is_some())
+    {
+        3_u16
+    } else if block.parameters.as_slice().is_empty() {
         1_u16
     } else {
         2_u16
@@ -70,6 +78,11 @@ pub fn write(writer: &mut impl Write, block: &Block) -> io::Result<()> {
         packet[offset + 2] = event.len;
         packet[offset + 3..offset + 6].copy_from_slice(&event.bytes);
         offset += 8;
+        if version == 3 {
+            let id = event.note_id.map_or(0, std::num::NonZeroU32::get);
+            packet[offset..offset + 4].copy_from_slice(&id.to_le_bytes());
+            offset += 4;
+        }
     }
     for point in block.parameters.as_slice() {
         packet[offset..offset + 2].copy_from_slice(&point.frame.to_le_bytes());
@@ -93,7 +106,7 @@ pub fn read(reader: &mut impl Read) -> io::Result<Option<Block>> {
     reader.read_exact(&mut header[1..])?;
     let version = u16::from_le_bytes([header[4], header[5]]);
     if &header[..4] != b"HXVB"
-        || !matches!(version, 1 | 2)
+        || !matches!(version, 1..=3)
         || header[if version == 1 { 10 } else { 12 }..16]
             .iter()
             .any(|b| *b != 0)
@@ -106,6 +119,7 @@ pub fn read(reader: &mut impl Read) -> io::Result<Option<Block>> {
     if frames == 0
         || usize::from(frames) > MAX_FRAMES
         || count > MAX_EVENTS
+        || (version == 3 && count == 0)
         || parameters > MAX_PARAMETER_POINTS
     {
         return Err(invalid());
@@ -141,12 +155,20 @@ pub fn read(reader: &mut impl Read) -> io::Result<Option<Block>> {
         if bytes[6..].iter().any(|b| *b != 0) {
             return Err(invalid());
         }
+        let note_id = if version == 3 {
+            let mut id = [0_u8; 4];
+            reader.read_exact(&mut id)?;
+            std::num::NonZeroU32::new(u32::from_le_bytes(id))
+        } else {
+            None
+        };
         block
             .events
             .push(MidiEvent {
                 frame: u16::from_le_bytes([bytes[0], bytes[1]]),
                 len: bytes[2],
                 bytes: [bytes[3], bytes[4], bytes[5]],
+                note_id,
             })
             .map_err(|_| invalid())?;
     }
@@ -228,6 +250,55 @@ mod tests {
     }
 
     #[test]
+    fn identified_notes_round_trip_with_byte_only_notes_and_parameters() {
+        let mut block = Block::empty(
+            Binding {
+                root: 1,
+                instance: 2,
+                graph: 3,
+                epoch: 4,
+            },
+            8,
+        );
+        for (frame, note_id) in [(1, std::num::NonZeroU32::new(70_001)), (4, None)] {
+            block
+                .events
+                .push(MidiEvent {
+                    frame,
+                    bytes: [0x90, 60, 100],
+                    len: 3,
+                    note_id,
+                })
+                .unwrap();
+        }
+        block
+            .parameters
+            .push(ParameterPoint {
+                frame: 2,
+                id: 7,
+                normalized: 0.25,
+            })
+            .unwrap();
+        let mut packet = Vec::new();
+        write(&mut packet, &block).unwrap();
+        assert_eq!(&packet[4..6], &3_u16.to_le_bytes());
+        let decoded = read(&mut packet.as_slice()).unwrap().unwrap();
+        assert_eq!(decoded.events.as_slice(), block.events.as_slice());
+        assert_eq!(decoded.parameters, block.parameters);
+
+        let event_start = HEADER_BYTES + 8 * 8;
+        for end in event_start..packet.len() {
+            assert!(read(&mut &packet[..end]).is_err(), "truncation {end}");
+        }
+        let mut malformed = packet.clone();
+        malformed[event_start + 8..event_start + 12]
+            .copy_from_slice(&0x8000_0000_u32.to_le_bytes());
+        assert!(read(&mut malformed.as_slice()).is_err());
+        packet[event_start + 3] = 0xb0;
+        assert!(read(&mut packet.as_slice()).is_err());
+    }
+
+    #[test]
     fn canonical_wire_roundtrip_and_all_truncations_are_bounded() {
         let binding = Binding {
             root: 1,
@@ -245,6 +316,7 @@ mod tests {
                 frame: 3,
                 bytes: [0x90, 64, 100],
                 len: 3,
+                note_id: None,
             })
             .unwrap();
         let mut bytes = Vec::new();

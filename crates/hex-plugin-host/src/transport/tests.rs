@@ -122,6 +122,7 @@ fn sample_timeline_latency_and_midi_survive_physical_callback_partitions() {
                     frame: offset as u16,
                     bytes: [0x90, 60, 100],
                     len: 3,
+                    note_id: None,
                 })
                 .collect();
             let mut output = vec![[99.0; 2]; size];
@@ -213,6 +214,7 @@ fn consumer_rejects_each_identity_field_and_nonfinite_or_invalid_events() {
                     frame: 8,
                     bytes: [0x90, 60, 1],
                     len: 3,
+                    note_id: None,
                 })
                 .unwrap(),
             9 => reply
@@ -221,6 +223,7 @@ fn consumer_rejects_each_identity_field_and_nonfinite_or_invalid_events() {
                     frame: 0,
                     bytes: [0xf0, 0, 0],
                     len: 3,
+                    note_id: None,
                 })
                 .unwrap(),
             _ => unreachable!(),
@@ -309,6 +312,7 @@ fn bounded_input_validation_and_queue_independent_stop() {
                         frame: 0,
                         bytes: [0x90, 200, 0],
                         len: 3,
+                        note_id: None,
                     }],
                     &mut output,
                 )
@@ -445,6 +449,7 @@ fn graph_segments_preserve_physical_pcm_event_timeline_and_one_final_dispatch() 
             frame: (size - 1) as u16,
             bytes: [0x90, 61, 127],
             len: 3,
+            note_id: None,
         };
         let mut expected = vec![[9.0; 2]; size];
         let whole_events = whole.stage(&input, &[event], &mut expected).unwrap();
@@ -538,6 +543,7 @@ fn segmenting_does_not_multiply_the_physical_callback_event_budget() {
         frame: 0,
         bytes: [0x90, 60, 127],
         len: 3,
+        note_id: None,
     };
     callback.begin_physical_callback(8).unwrap();
     callback

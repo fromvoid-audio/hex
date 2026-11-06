@@ -113,6 +113,8 @@ pub struct ForeignNote {
     pub pitch: u8,
     pub velocity: u8,
     pub on: bool,
+    /// Graph-assigned identity shared by this occurrence's on/off pair.
+    pub note_id: Option<std::num::NonZeroU32>,
 }
 
 /// Unique borrowed view of the host's already retained foreign endpoints.

@@ -276,6 +276,17 @@ class NativeInstanceTests(unittest.TestCase):
             self.assertEqual(struct.unpack("<16f", reply[64:]), tuple(x for v in expected for x in (v, v)))
         self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (3, 24))
 
+    def test_out_of_range_note_identity_refuses_before_dsp(self):
+        session = self.session(variant=115, channels=(0, 2))
+        self.assertEqual(session.message()[0], b"HXVIRD04")
+        header = bytearray(session.packet(8))
+        struct.pack_into("<HHH", header, 4, 3, 8, 1)
+        event = struct.pack("<HBBBB2xI", 0, 3, 0x92, 60, 127, 2**31)
+        session.socket.sendall(header + bytes(64) + event)
+        self.error(session, 8)
+        self.terminal(session, 8)
+        self.assertEqual(self.observation()[10], 0)
+
     def test_midi_outside_the_active_instrument_bus_refuses_before_dsp(self):
         for channels, variant, note in [
             ((0, 2), 115, (0, 0x94, 60, 127)),  # the fixture has four MIDI channels

@@ -370,6 +370,7 @@ fn immutable_request_bounds_and_failed_reply_never_fabricate_pcm() {
             frame: 0,
             bytes: [0x90, 60, 100],
             len: 3,
+            note_id: None,
         })
         .unwrap();
     assert!(config.validate_block(&event, 0).is_err());
@@ -388,6 +389,7 @@ fn immutable_request_bounds_and_failed_reply_never_fabricate_pcm() {
             frame: 0,
             bytes: [0xb0, 64, 127],
             len: 3,
+            note_id: None,
         })
         .unwrap();
     assert!(instrument.validate_block(&event, 0).is_err());
