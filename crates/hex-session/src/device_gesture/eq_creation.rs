@@ -198,6 +198,7 @@ impl GestureMachine {
                         secondary_value: None,
                         parameters: None,
                         creation: Some(snapshot),
+                        plugin_value: None,
                     },
                     kind: ActiveKind::Device {
                         class,
@@ -205,6 +206,8 @@ impl GestureMachine {
                     },
                     creation_origin: Some(entry.state().clone()),
                     origin_parameters: None,
+                    state_origin: None,
+                    plugin_initial: None,
                 });
                 self.last_key = Some(key);
             }
@@ -233,6 +236,7 @@ impl GestureMachine {
                 let draft = GestureSnapshot {
                     sequence,
                     creation: Some(snapshot),
+                    plugin_value: None,
                     ..active
                 };
                 let before = session.project().clone();

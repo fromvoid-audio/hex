@@ -1724,6 +1724,30 @@ pub(super) fn request(value: &Request) -> Description {
 
 pub(super) fn gesture(value: &crate::device_gesture::GestureRequest) -> Description {
     match value {
+        crate::device_gesture::GestureRequest::BeginPlugin { key, origin } => {
+            describe!("begin_plugin"; ["key_generation" => key.generation, "key_token" => key.token,
+                "device" => origin.device.value(), "parameter" => origin.parameter,
+                "normalized" => origin.initial.normalized(),
+                "project_generation" => origin.context.project_generation,
+                "editor_revision" => origin.context.editor_revision,
+                "page_first" => origin.page_first, "metadata_revision" => origin.metadata_revision]; omitted="")
+        }
+        crate::device_gesture::GestureRequest::ChangePlugin {
+            key,
+            sequence,
+            value,
+        } => {
+            describe!("change_plugin"; ["key_generation" => key.generation, "key_token" => key.token,
+                "sequence" => sequence, "normalized" => value.normalized()]; omitted="")
+        }
+        crate::device_gesture::GestureRequest::CommitPlugin {
+            key,
+            sequence,
+            value,
+        } => {
+            describe!("commit_plugin"; ["key_generation" => key.generation, "key_token" => key.token,
+                "sequence" => sequence, "normalized" => value.normalized()]; omitted="")
+        }
         crate::device_gesture::GestureRequest::Begin { key, target } => {
             let mut description = describe!("begin"; ["key_generation" => key.generation, "key_token" => key.token]; omitted="");
             description.nested("target", self::gesture_target(target));
@@ -1802,6 +1826,9 @@ pub(super) fn gesture(value: &crate::device_gesture::GestureRequest) -> Descript
 
 pub(super) fn gesture_target(value: &crate::device_gesture::GestureTarget) -> Description {
     match value {
+        crate::device_gesture::GestureTarget::PluginParameter { device, parameter } => {
+            describe!("plugin_parameter"; ["device" => device.value(), "parameter" => parameter]; omitted="")
+        }
         crate::device_gesture::GestureTarget::TrackGain { track } => {
             describe!("track_gain"; ["track" => track.value()]; omitted="")
         }
