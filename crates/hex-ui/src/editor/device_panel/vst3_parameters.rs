@@ -115,30 +115,6 @@ pub(in crate::editor) fn install_result(
     panel.refilter();
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn matches_named_rows_across_the_inventory_without_renumbering_ids() {
-        let rows = ["oscillator", "filter cutoff", "filter resonance", "level"]
-            .into_iter()
-            .enumerate()
-            .map(|(i, name)| PluginParameterRow {
-                id: 100 + 3 * i as u32,
-                name: name.into(),
-                value: "25%".into(),
-            })
-            .collect::<Vec<_>>();
-        let found = matching_rows(&rows, "filter");
-        assert_eq!(
-            found.iter().map(|&i| rows[i].id).collect::<Vec<_>>(),
-            [103, 106]
-        );
-        assert!(matching_rows(&rows, "delay").is_empty());
-    }
-}
-
 pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<EditorView>) -> Div {
     let context = current_context(view);
     let output = view
@@ -155,7 +131,10 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
         .panel
         .as_ref()
         .filter(|panel| panel.query.device == device);
-    let body = crate::device_composition::body().flex_col().min_w_0();
+    let body = crate::device_composition::body()
+        .w(px(crate::device_composition::GENERIC_FRAME_WIDTH))
+        .flex_col()
+        .min_w_0();
     let Some(panel) = panel else {
         return body.child(
             div()
@@ -233,5 +212,29 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
                 .w_full(),
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn matches_named_rows_across_the_inventory_without_renumbering_ids() {
+        let rows = ["oscillator", "filter cutoff", "filter resonance", "level"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| PluginParameterRow {
+                id: 100 + 3 * i as u32,
+                name: name.into(),
+                value: "25%".into(),
+            })
+            .collect::<Vec<_>>();
+        let found = matching_rows(&rows, "filter");
+        assert_eq!(
+            found.iter().map(|&i| rows[i].id).collect::<Vec<_>>(),
+            [103, 106]
+        );
+        assert!(matching_rows(&rows, "delay").is_empty());
     }
 }
