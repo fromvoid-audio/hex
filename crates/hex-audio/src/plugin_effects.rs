@@ -278,6 +278,12 @@ impl NativeEffect {
     pub fn prepared(&self) -> PreparedForeignProcessor {
         self.callback.configuration.prepared
     }
+    pub fn finite_tail_frames(&self) -> Option<u64> {
+        match self.prepared().output_tail() {
+            hex_lattice::OutputTail::Finite { max_tail_frames } => Some(max_tail_frames),
+            hex_lattice::OutputTail::Unbounded => None,
+        }
+    }
     /// Borrow the actual unsplit pair's copied-channel backing. This partial
     /// inventory excludes dry history, state, worker/native owners and all
     /// construction temporaries; it cannot close a Root resource witness.
@@ -357,6 +363,9 @@ impl NativeEffectCallback {
         self.transport.finish(accepted)?;
         self.tail.commit();
         Ok(())
+    }
+    pub(crate) fn end_staging_at_pause(&mut self, frame: usize) {
+        self.transport.end_staging_at_pause(frame);
     }
     /// This original live epoch has accepted enough consecutive zero input to
     /// drain its source-reported tail and fixed processor/bridge latency. New

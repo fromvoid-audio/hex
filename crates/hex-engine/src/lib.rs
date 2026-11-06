@@ -4054,6 +4054,7 @@ pub mod midi_template;
 mod mutable_instrument;
 mod prepared_revision;
 mod prepared_tempo;
+pub use prepared_tempo::CaptureTempo;
 mod session_inventory;
 pub mod session_playback;
 mod shared_analytic;
@@ -4071,6 +4072,7 @@ pub use scalar_streamed::{
     read_scalar_values,
 };
 mod project_output;
+pub use hex_project::{MAX_RETURN_TRACKS, ReturnId};
 pub use midi_preview::{
     MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP, MidiArrangementPreview, MidiClipPreview, MidiPreviewSample,
     midi_clip_preview,

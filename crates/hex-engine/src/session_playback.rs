@@ -436,6 +436,7 @@ enum RenderConstruction {
     Interactive,
     LinearExport,
     FiniteBounce,
+    FiniteForeignBounce,
 }
 /// Finite serial-effect drain admission horizon. Ten minutes admits useful
 /// chains of long-decay rooms without weakening processor-count or byte bounds.
@@ -1374,7 +1375,9 @@ impl SessionPlayback {
             RenderConstruction::Interactive => {
                 preroll::arrangement_runtime_storage_preflight_bytes(revision)
             }
-            RenderConstruction::LinearExport | RenderConstruction::FiniteBounce => {
+            RenderConstruction::LinearExport
+            | RenderConstruction::FiniteBounce
+            | RenderConstruction::FiniteForeignBounce => {
                 preroll::linear_export_runtime_storage_preflight_bytes(revision)
             }
         };
@@ -1485,6 +1488,35 @@ impl SessionPlayback {
         resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
         frames: u64,
     ) -> Result<Self, SessionPlaybackError> {
+        Self::new_finite_bounce(
+            revision,
+            resources,
+            frames,
+            RenderConstruction::FiniteBounce,
+        )
+    }
+
+    /// Finite bounce whose caller supplies independently prepared foreign
+    /// processors for every render, including preroll and latency drain.
+    pub fn new_finite_arrangement_bounce_with_foreign(
+        revision: Arc<PreparedRevision>,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
+        frames: u64,
+    ) -> Result<Self, SessionPlaybackError> {
+        Self::new_finite_bounce(
+            revision,
+            resources,
+            frames,
+            RenderConstruction::FiniteForeignBounce,
+        )
+    }
+
+    fn new_finite_bounce(
+        revision: Arc<PreparedRevision>,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
+        frames: u64,
+        policy: RenderConstruction,
+    ) -> Result<Self, SessionPlaybackError> {
         if frames == 0 || frames > MAX_FINITE_BOUNCE_FRAMES {
             return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
                 "source bounce exceeds its finite frame limit",
@@ -1495,7 +1527,7 @@ impl SessionPlayback {
                 "sampler requires private offline export resources",
             ));
         }
-        Self::new_with_render_policy(revision, RenderConstruction::FiniteBounce, resources, None)
+        Self::new_with_render_policy(revision, policy, resources, None)
     }
 
     fn new_with_policy_scoped_and_loop(
@@ -1524,7 +1556,10 @@ impl SessionPlayback {
     ) -> Result<Self, SessionPlaybackError> {
         let linear_arrangement_export = policy != RenderConstruction::Interactive;
         let foreign_arrangement = foreign_arrangement::ForeignArrangement::prepare(&revision)?;
-        if linear_arrangement_export && !foreign_arrangement.is_empty() {
+        if linear_arrangement_export
+            && policy != RenderConstruction::FiniteForeignBounce
+            && !foreign_arrangement.is_empty()
+        {
             return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
                 "vst3 instruments require interactive arrangement playback",
             ));
@@ -1537,8 +1572,10 @@ impl SessionPlayback {
         // Scoped linear export and every finite bounce reserve before allocation,
         // then check the actual runtime below. Interactive budgets stay unchanged.
         let linear_resource_allowance = if (linear_arrangement_export && resources.is_some())
-            || policy == RenderConstruction::FiniteBounce
-        {
+            || matches!(
+                policy,
+                RenderConstruction::FiniteBounce | RenderConstruction::FiniteForeignBounce
+            ) {
             Some(Self::linear_export_runtime_allowance(&revision)?)
         } else {
             None
@@ -2293,6 +2330,7 @@ impl SessionPlayback {
     /// render at least the full output-path latency and recheck before stopping.
     pub fn arrangement_bounce_is_quiescent(&self) -> bool {
         !self.has_active_arrangement_voices()
+            && !self.foreign_arrangement.has_held_notes()
             && self.releases.is_empty()
             && self
                 .mutable_instruments

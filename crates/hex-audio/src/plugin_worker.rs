@@ -481,12 +481,32 @@ impl NativeWorker {
     }
 
     pub(crate) fn take_failure_diagnostic_on_control(&self) -> Option<String> {
-        self.reaper
+        if let Some(diagnostic) = self
+            .reaper
             .completed
             .failure_diagnostic
             .try_lock()
             .ok()?
             .take()
+        {
+            return Some(diagnostic);
+        }
+        self.reaper.control.take_callback_fault().map(|fault| {
+            let deadline = self.reaper.control.deadline_miss().map_or_else(
+                String::new,
+                |miss| format!(
+                    " reply_sequence={} worker_phase={:?} quantum={}",
+                    miss.reply_sequence, miss.worker_phase, self.quantum
+                ),
+            );
+            format!(
+                "vst3 callback transport failed: binding={:?} completed_blocks={} fault={fault:?} cause={}{}",
+                self.binding,
+                self.reaper.completed_blocks(),
+                fault.message(),
+                deadline,
+            )
+        })
     }
     /// Diagnostic publication progress only; never native/root/graph readiness.
     pub fn published_blocks_on_control(&self) -> u64 {

@@ -247,8 +247,8 @@ fn composition_oracle(
     Ok(sum)
 }
 // Audio sources finish at the handoff while held Operator notes continue.
-// Bypassing the audio filters detaches their live histories; the old graph's
-// separately rendered track composition provides the full post-cut reference.
+// Utility ramps the continuously filtered output to the dry signal on bypass.
+// Isolated tracks provide the uninterrupted wet and instrument references.
 fn mixed_tail(tracks: usize, block: usize, profile: CompanionProfile) -> Result<()> {
     let (base, mut media) = if profile != CompanionProfile::Default {
         fixture_with_companion(tracks, 1, profile)?
@@ -296,7 +296,7 @@ fn mixed_tail(tracks: usize, block: usize, profile: CompanionProfile) -> Result<
     let changed = Project::from_snapshot(snapshot)?;
     let table = Arc::new(SineTable::new());
     let frames = RATE as usize + 32;
-    let expected = composition_oracle(&old, &media, &table, 32, frames)?;
+    let mut expected = composition_oracle(&old, &media, &table, 32, frames)?;
     // Independently demonstrate an audible audio-only residual after source end.
     let mut audio_only = old.snapshot();
     audio_only.tracks.retain(|track| track.instrument.is_none());
@@ -309,6 +309,36 @@ fn mixed_tail(tracks: usize, block: usize, profile: CompanionProfile) -> Result<
         .fold(0.0_f32, |peak, value| peak.max(value.abs()));
     if audio_peak <= 2.0e-5 {
         return Err(format!("mixed-tail audio reference too quiet: {audio_peak:e}").into());
+    }
+    // The dry audio is zero after the clips end at frame 32. Apply the
+    // documented 5 ms Utility wet-to-dry law only to the isolated wet signal.
+    // The instrument path is unchanged and keeps its full level.
+    let ramp_frames = RATE.div_ceil(200) as usize;
+    let mut ramp_peak = 0.0_f32;
+    let mut first_stale_delta = None;
+    for (offset, (mixed, wet)) in expected[32..]
+        .iter_mut()
+        .zip(&audio_reference[32..])
+        .enumerate()
+    {
+        let dry_mix = (offset + 1).min(ramp_frames) as f32 / ramp_frames as f32;
+        for lane in 0..2 {
+            let stale = mixed[lane];
+            mixed[lane] -= wet[lane] * dry_mix;
+            let delta = (stale - mixed[lane]).abs();
+            if first_stale_delta.is_none() && delta > 2.0e-6 {
+                first_stale_delta = Some((offset / block, 32 + offset, lane, delta));
+            }
+            ramp_peak = ramp_peak.max((wet[lane] * (1.0 - dry_mix)).abs());
+        }
+    }
+    if ramp_peak <= 2.0e-5 {
+        return Err(format!("mixed-tail bypass reference too quiet: {ramp_peak:e}").into());
+    }
+    if let Some((block, frame, lane, delta)) = first_stale_delta {
+        println!(
+            "unfaded_reference profile={profile:?} block={block} frame={frame} channel={lane} delta={delta:e}"
+        );
     }
     let mut instrument_only = old.snapshot();
     instrument_only
@@ -344,12 +374,14 @@ fn mixed_tail(tracks: usize, block: usize, profile: CompanionProfile) -> Result<
         if index == 0 {
             first_render_ns = elapsed;
         }
-        for (actual, expected) in output[..count].iter().zip(expected_chunk) {
+        for (offset, (actual, expected)) in output[..count].iter().zip(expected_chunk).enumerate() {
             for channel in 0..2 {
                 let error = (actual[channel] - expected[channel]).abs();
                 if !error.is_finite() || error > 2.0e-6 {
+                    let frame = 32 + index * block + offset;
                     return Err(format!(
-                        "mixed tail composition mismatch block={index} error={error}"
+                        "mixed tail composition mismatch profile={profile:?} block={index} frame={frame} channel={channel} actual={} expected={} error={error}",
+                        actual[channel], expected[channel]
                     )
                     .into());
                 }
@@ -712,9 +744,21 @@ mod tests {
 
     #[test]
     fn mixed_tail_keeps_audio_residual_and_sustained_instrument() -> Result<()> {
-        mixed_tail(2, 128, CompanionProfile::Default)?;
-        mixed_tail(2, 128, CompanionProfile::Uniform)?;
-        mixed_tail(2, 128, CompanionProfile::Asymmetric)?;
+        mixed_tail(2, 128, CompanionProfile::Default)
+    }
+
+    #[test]
+    fn mixed_tail_keeps_audio_residual_and_sustained_instrument_uniform() -> Result<()> {
+        mixed_tail(2, 128, CompanionProfile::Uniform)
+    }
+
+    #[test]
+    fn mixed_tail_keeps_audio_residual_and_sustained_instrument_asymmetric() -> Result<()> {
+        mixed_tail(2, 128, CompanionProfile::Asymmetric)
+    }
+
+    #[test]
+    fn mixed_tail_keeps_audio_residual_and_sustained_instrument_distinct() -> Result<()> {
         mixed_tail(2, 128, CompanionProfile::Distinct)
     }
 

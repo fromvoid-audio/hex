@@ -400,6 +400,8 @@ pub struct Terminal {
     pub frames: u64,
     pub failure: u32,
     pub closed: bool,
+    /// False on clean process-only retirement of a stopped instance with a
+    /// retained host reference. The direct child's successful reap is required.
     pub unloaded: bool,
 }
 impl Terminal {

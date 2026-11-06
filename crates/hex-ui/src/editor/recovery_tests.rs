@@ -100,6 +100,88 @@ fn restart_from_fault(cx: &mut gpui::TestAppContext, stop: bool) {
     output.publication.close();
 }
 #[gpui::test]
+fn stop_restarts_audio_from_zero_when_a_vst3_worker_is_degraded(cx: &mut gpui::TestAppContext) {
+    degraded_worker_recovers(cx, true, None);
+}
+
+#[gpui::test]
+fn play_restarts_audio_if_stop_has_already_degraded_the_worker(cx: &mut gpui::TestAppContext) {
+    degraded_worker_recovers(cx, false, None);
+}
+
+#[gpui::test]
+fn explicit_play_from_recovers_degraded_vst3_at_the_requested_frame(cx: &mut gpui::TestAppContext) {
+    degraded_worker_recovers(cx, false, Some(18_000));
+}
+
+fn degraded_worker_recovers(
+    cx: &mut gpui::TestAppContext,
+    stop_first: bool,
+    explicit_frame: Option<u64>,
+) {
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let playback = Playback::new(hex_engine::Project::new(48_000, Vec::new()).unwrap());
+    output
+        .publication
+        .control()
+        .unwrap()
+        .publish(playback)
+        .unwrap();
+    let mut client = output.take_client().unwrap();
+    client.command(PlaybackCommand::Play).unwrap();
+    backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    assert_eq!(client.status().unwrap().position.load(Acquire), 64);
+    if !stop_first {
+        client.stop();
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    }
+
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, _| {
+        view.audio = Some(EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "degraded vst3 fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![2]);
+        if stop_first {
+            view.stop();
+            assert!(view.deferred_play.is_none());
+        }
+        if let Some(frame) = explicit_frame {
+            view.queue_audio_command(PlaybackCommand::PlayFrom(frame));
+        } else {
+            view.toggle_play();
+        }
+        assert_eq!(
+            view.deferred_play,
+            Some((
+                hex_engine::playback::PlaybackAction::Transport(PlaybackCommand::Play),
+                None,
+                view.project_generation
+            ))
+        );
+        assert!(!view.tick_deferred_play());
+        assert!(view.audio.is_none());
+        assert!(view.pending_restart_request.is_some());
+        assert!(view.stopped_playback_restore.is_none());
+        assert_eq!(view.recovery.position(), Some(explicit_frame.unwrap_or(0)));
+        view.stop();
+        assert!(view.deferred_play.is_none());
+    });
+    drop(backend);
+    output.publication.close();
+}
+
+#[gpui::test]
 fn a_changed_output_route_restarts_audio_once_its_guards_allow(cx: &mut gpui::TestAppContext) {
     let _output_serial = hex_audio::worker_fixture::serial_output();
     let (mut output, backend) =

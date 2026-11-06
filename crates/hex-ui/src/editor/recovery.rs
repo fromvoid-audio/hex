@@ -1,6 +1,6 @@
 //! Output lifecycle admission and graph/cursor restoration, without canonical edits.
 use super::EditorView;
-use hex_engine::playback::PlaybackCommand;
+use hex_engine::playback::{PlaybackAction, PlaybackCommand};
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -8,7 +8,42 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 mod tests;
 
 impl EditorView {
+    pub(super) fn has_degraded_vst3_output(&self) -> bool {
+        self.audio.is_some()
+            && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            && !self.degraded_plugins.is_empty()
+    }
+
+    pub(super) fn defer_play_until_audio_recovers(&mut self) {
+        self.deferred_play = Some((
+            PlaybackAction::Transport(PlaybackCommand::Play),
+            None,
+            self.project_generation,
+        ));
+        self.status = "restarting audio output · playback starts when ready".into();
+    }
+
+    /// Use the requested start as the restored cursor before admitting Play.
+    pub(super) fn recover_degraded_play_at(&mut self, frame: u64) -> bool {
+        if self.recovery.generation().is_some() || !self.has_degraded_vst3_output() {
+            return false;
+        }
+        self.recover_audio_at(frame);
+        if self.recovery.generation().is_some() {
+            self.defer_play_until_audio_recovers();
+        }
+        true
+    }
+
     pub(super) fn recover_audio(&mut self) {
+        let position = self.recovery.position().unwrap_or_else(|| {
+            self.audio_status()
+                .map_or(self.offline_cursor, |status| status.recovery_position())
+        });
+        self.recover_audio_at(position);
+    }
+
+    pub(super) fn recover_audio_at(&mut self, position: u64) {
         if self.close_prompt_open
             || self.opening_project
             || self.save_dialog_open
@@ -27,10 +62,6 @@ impl EditorView {
             return;
         }
         self.invalidate_prepared_seek();
-        let position = self.recovery.position().unwrap_or_else(|| {
-            self.audio_status()
-                .map_or(self.offline_cursor, |status| status.recovery_position())
-        });
         let generation = match self.recovery.begin(position) {
             Ok(generation) => generation,
             Err(message) => {
@@ -234,6 +265,7 @@ impl EditorView {
     fn clear_audio_accounting(&mut self) {
         self.output_meter_frame = None;
         self.stopped_playback_restore = None;
+        self.deferred_play = None;
         self.service.invalidate_arrangement_seek();
         self.prepared_seek = None;
         self.latched_seek_intent = None;

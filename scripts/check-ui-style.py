@@ -39,6 +39,10 @@ widgets = (
     'hex_widgets::action(',
     # The shared splitter handle paints caller-resolved geometry/color only.
     'self.project_spectrum_splitter_input(cx)',
+    # Recorder controls route captions through the shared themed button factory.
+    'self.sample_arm_button(', 'self.sample_recorder_mode_button(',
+    # The take waveform canvas paints geometry only.
+    'wave_canvas(',
     'harmonic_range_control)', 'harmonic_repeat_control)', 'harmonic_tools)',
     'view.device_panel.operator_harmonics[&key].entity.clone())',
     'operator_row(', 'operator_label(', 'page_tab(', 'shell)', 'page_tabs)', 'detail)',

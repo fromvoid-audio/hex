@@ -5,6 +5,7 @@
 #include "macos_editor.hpp"
 #include "macos_instance.hpp"
 #include "macos_instance_wire.hpp"
+#include "pluginterfaces/base/iplugincompatibility.h"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -123,7 +124,7 @@ struct Module {
         if(!url) throw Refusal{};
         bundle=CFBundleCreate(nullptr,url);CFRelease(url);
         if(!bundle || executable(bundle,root)!=request.executable ||
-            digest(member(root,string(request.executable)),16*1024*1024)!=binary ||
+            digest(member(root,string(request.executable)))!=binary ||
             digest(member(root,@"Contents/Info.plist"),65536)!=info)
             throw Refusal{};
         native_attempted=true;
@@ -140,9 +141,12 @@ struct Module {
         for(int32 n=0;n<count;++n) {
             PClassInfo info{};
             if(factory->getClassInfo(n,&info)!=kResultOk || !std::memchr(info.category,0,sizeof info.category)) return false;
-            if(!std::memcmp(info.cid,request.cid.data(),16)) {
-                if(matched || std::strcmp(info.category,kVstAudioEffectClass)) return false;matched=true;
-            }
+            if(std::memcmp(info.cid,request.cid.data(),16)) continue;
+            // A compatibility service can share this CID. Only a single
+            // processor descriptor grants ordinary instance admission.
+            if(!std::strcmp(info.category,kPluginCompatibilityClass)) continue;
+            if(matched || std::strcmp(info.category,kVstAudioEffectClass)) return false;
+            matched=true;
         }
         return matched;
     }
@@ -256,8 +260,10 @@ int main(int argc,char** argv) {
     // No SDK entry or protocol/guardian is used by the actual waitable-child
     // preflight. The caller must observe normal direct reap before loading code.
     if(argc==2 && !std::strcmp(argv[1],"--child-custody-probe")) return 0;
-    const bool supervised=argc==2 && !std::strcmp(argv[1],"--supervised");
+    const bool offline=argc==3 && !std::strcmp(argv[2],"--offline");
+    const bool supervised=(argc==2 || offline) && !std::strcmp(argv[1],"--supervised");
     if(argc!=1 && !supervised) return Configuration;
+    const auto process_mode=offline?kOffline:kRealtime;
     // Static lifetime keeps cancellation live through main-thread TLS/atexit
     // cleanup registered by subsequently loaded SDK modules, not just main.
     static CancellationGuardian guardian;
@@ -265,11 +271,13 @@ int main(int argc,char** argv) {
     const int channel=isolate_channel();if(channel<0) return Configuration;
     const auto* message_diagnostics=std::getenv("HEX_VST3_MESSAGE_DIAGNOSTICS");
     const bool trace_messages=message_diagnostics && !std::strcmp(message_diagnostics,"1");
-    Module module;hex_instance::Instance instance;hex_instance::EditorWindow editor;
+    Module module;hex_instance::Instance instance;
+    hex_instance::EditorWindow editor(supervised?::getppid():0);
     std::optional<wire::Config> config;
     uint32_t failure=Configuration;bool accepted=false,normal_stop=false;
     uint64_t blocks=0,frames=0;
-    bool closed=false,unloaded=false;
+    using CloseResult=hex_instance::Instance::CloseResult;
+    auto closing=CloseResult::Refused;
     // SDK startup and teardown may autorelease objects with methods in the
     // bundle. Drain those objects before module close can unmap their code.
     @autoreleasepool {
@@ -294,6 +302,7 @@ int main(int argc,char** argv) {
             setup.sample_rate=config->rate;setup.maximum_frames=config->maximum;
             setup.input_channels=config->inputs;setup.output_channels=config->outputs;
             setup.input_enabled=config->inputs!=0;
+            setup.process_mode=process_mode;
             const auto configured=instance.configure(setup);
             if(configured!=hex_instance::ConfigurationResult::Prepared) {
                 failure=setup_failure(configured);throw Refusal{};
@@ -452,7 +461,7 @@ int main(int argc,char** argv) {
                             if(!parameter_input.begin_sdk() || !parameter_output.begin_sdk()) {
                                 error(channel,&*config,Processing);std::_Exit(Processing);
                             }
-                            ProcessData flush{};flush.processMode=kRealtime;flush.symbolicSampleSize=kSample32;
+                            ProcessData flush{};flush.processMode=process_mode;flush.symbolicSampleSize=kSample32;
                             flush.inputParameterChanges=&parameter_input;flush.outputParameterChanges=&parameter_output;
                             phase.store(2,std::memory_order_release);
                             const auto result=instance.flush_idle(flush);
@@ -542,7 +551,7 @@ int main(int argc,char** argv) {
                     input.numChannels=instance.configuration()->input_channels;output.numChannels=config->outputs;
                     const auto input_silence=config->inputs?0u:(uint64_t{1}<<input.numChannels)-1;
                     input.channelBuffers32=input_pointers;output.channelBuffers32=output_pointers;
-                    ProcessData data{};data.processMode=kRealtime;data.symbolicSampleSize=kSample32;
+                    ProcessData data{};data.processMode=process_mode;data.symbolicSampleSize=kSample32;
                     uint64_t live_operation=0;
                     auto live_started=std::chrono::steady_clock::now();
                     data.numInputs=input.numChannels?1:0;data.numOutputs=1;data.inputs=data.numInputs?&input:nullptr;data.outputs=&output;
@@ -693,7 +702,7 @@ int main(int argc,char** argv) {
                                     }
                                     if(!valid || !stage_edits()) { worker_failure.store(ProtocolFailure);break; }
                                     if(!parameter_input.begin_sdk() || !parameter_output.begin_sdk()) { error(channel,&*config,Processing);std::_Exit(Processing); }
-                                    ProcessData flush{};flush.processMode=kRealtime;flush.symbolicSampleSize=kSample32;
+                                    ProcessData flush{};flush.processMode=process_mode;flush.symbolicSampleSize=kSample32;
                                     flush.inputParameterChanges=parameter_input.size()?&parameter_input:nullptr;flush.outputParameterChanges=&parameter_output;
                                     phase.store(2,std::memory_order_release);
                                     const auto result=instance.flush_stopped(flush);
@@ -1142,17 +1151,24 @@ int main(int argc,char** argv) {
             }
             error(channel,config?&*config:nullptr,failure);
         }
-        try { closed=editor.close() && instance.close(); } catch(...) {}
+        try { if(editor.close()) closing=instance.close_for_retirement(); } catch(...) {}
     }
     @autoreleasepool {
-        try { if(closed) unloaded=module.close(); } catch(...) {}
-        if(!closed || !unloaded) failure=Teardown;
+        bool unloaded=false;
+        try { if(closing==CloseResult::Closed) unloaded=module.close(); } catch(...) {}
+        // A successful stop can leave a foreign host reference alive. Keep
+        // its host pool and module mapped and let the OS reclaim both on exit.
+        const bool process_only=closing==CloseResult::RetainedHost && normal_stop && !failure;
+        const bool closed=closing==CloseResult::Closed || process_only;
+        if(!closed || (!unloaded && !process_only)) failure=Teardown;
+        bool terminal_sent=false;
         if(config) {
             wire::Bytes terminal;config->stamp(terminal);wire::number(terminal,blocks,8);wire::number(terminal,frames,8);
             wire::number(terminal,failure,4);wire::number(terminal,closed?1:0,1);wire::number(terminal,unloaded?1:0,1);
-            wire::send(channel,"HXVITR01",terminal);
+            terminal_sent=wire::send(channel,"HXVITR01",terminal);
         }
         ::close(channel);
+        if(process_only) std::_Exit(terminal_sent?0:ProtocolFailure);
         return failure==0 && normal_stop && closed && unloaded?0:static_cast<int>(failure?failure:ProtocolFailure);
     }
 }

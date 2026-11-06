@@ -380,14 +380,17 @@ fn decode_packet_for_platform(
     let mut ids = BTreeSet::new();
     for _ in 0..count {
         let cid: [u8; 16] = d.take(16)?.try_into().map_err(|_| "class id width")?;
-        if cid == [0; 16] || !ids.insert(cid) {
-            return Err("invalid or duplicate class identity".into());
-        }
         let cardinality = d.u32()? as i32;
         if cardinality < 0 {
             return Err("invalid cardinality".into());
         }
         let category = d.text(32)?;
+        // The VST3 compatibility service may share the processor's CID. It
+        // supplies migration metadata and is outside Hex's discovery catalog.
+        let compatibility = extended && category == "Plugin Compatibility Class";
+        if cid == [0; 16] || (!compatibility && !ids.insert(cid)) {
+            return Err("invalid or duplicate class identity".into());
+        }
         let name = d.text(64)?;
         let has_extension = if extended {
             match d.take(1)? {
@@ -410,6 +413,9 @@ fn decode_packet_for_platform(
             } else {
                 (None, None, None, None, None)
             };
+        if compatibility {
+            continue;
+        }
         classes.push(Class {
             cid,
             cardinality,

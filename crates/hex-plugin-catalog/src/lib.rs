@@ -67,15 +67,14 @@
 //! Cache data never authorizes future plugin instance admission; the processing host
 //! must verify current source and resources.
 //!
-//! Catalog version 3 is the current format. It adds `failed_bundle`: the bundle
-//! identity (canonical path and Info.plist digest, never executed code) observed
-//! when a scan failed. Folder scans skip a failed bundle while its current identity
-//! still equals that record; an explicit single-bundle scan always runs again.
-//! Version 2 files migrate in memory on load (no failure has a recorded identity, so
-//! each is rescanned once) and are rewritten as version 3 only by the next catalog
-//! update. Version 1 alpha files and newer versions remain intact with a visible
-//! error, without migration. A binary change that keeps Info.plist byte-identical
-//! is not detected by the failure identity; an explicit rescan recovers it.
+//! Catalog version 4 records the verified discovery tools alongside the bundle
+//! identity for a failed scan. A folder scan skips a failure only when both
+//! identities match. A single-bundle scan always retries. Versions 2 and 3
+//! migrate in memory and retain last-good reports and failure diagnostics;
+//! their failures lack tool provenance and are eligible for retry. Only a
+//! catalog update publishes version 4. Version 1 and newer unsupported files
+//! remain intact. A binary change with an unchanged Info.plist still requires
+//! an explicit retry while the discovery tools remain identical.
 //! The native integration tests require an explicit signed original package through
 //! `HEX_VST3_CATALOG_TEST_APP` and original fixture directory through
 //! `HEX_VST3_CATALOG_FIXTURES`; ordinary runs keep these tests ignored. They do not
@@ -90,7 +89,10 @@ pub mod storage;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod worker;
 
-use hex_plugin_scan::{Discovery, PUBLIC_SDK, SDK, macos::report::Report};
+use hex_plugin_scan::{
+    Discovery, PUBLIC_SDK, SDK,
+    macos::{identity::Bundle, report::Report},
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -102,8 +104,9 @@ pub const MAX_MODULES: usize = 512;
 pub const MAX_CLASSES: usize = 2048;
 pub const MAX_CATALOG_BYTES: usize = 4 * 1024 * 1024;
 /// Current saved catalog format; see the crate documentation for migration.
-pub const CATALOG_VERSION: u32 = 3;
+pub const CATALOG_VERSION: u32 = 4;
 const CATALOG_VERSION_2: u32 = 2;
+const CATALOG_VERSION_3: u32 = 3;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -115,7 +118,16 @@ pub struct Entry {
     /// Bundle identity observed by the failed scan, when it was inspected.
     /// Absent in version 2 files; always paired with `failure`.
     #[serde(default)]
-    pub failed_bundle: Option<hex_plugin_scan::macos::identity::Bundle>,
+    pub failed_bundle: Option<Bundle>,
+    /// Absent in older catalogs, so the old failure is eligible for retry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_tools_sha256: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct FailedScan {
+    bundle: Bundle,
+    tools_sha256: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -234,32 +246,27 @@ pub fn validate_report(report: &Report) -> Result<(), String> {
 }
 
 impl Catalog {
-    /// Upgrade a decoded supported older format in memory. Version 2 has no
-    /// `failed_bundle` field, so a decoded value there is malformed, not migrated.
+    /// Upgrade supported older formats in memory, retaining their diagnostics.
     pub(crate) fn migrate(&mut self) -> Result<(), String> {
-        if self.version == CATALOG_VERSION_2 {
-            if self
-                .entries
-                .iter()
-                .any(|entry| entry.failed_bundle.is_some())
-            {
-                return Err("invalid version 2 plugin catalog; existing file preserved".into());
+        if matches!(self.version, CATALOG_VERSION_2 | CATALOG_VERSION_3) {
+            if self.entries.iter().any(|entry| {
+                entry.failed_tools_sha256.is_some()
+                    || (self.version == CATALOG_VERSION_2 && entry.failed_bundle.is_some())
+            }) {
+                return Err("invalid historical plugin catalog; existing file preserved".into());
             }
             self.version = CATALOG_VERSION;
         }
         Ok(())
     }
 
-    /// True when `path` last failed with exactly this bundle identity, so a
-    /// folder scan may skip it. Pure metadata; the caller inspects `current`.
-    pub fn failed_unchanged(
-        &self,
-        path: &Path,
-        current: &hex_plugin_scan::macos::identity::Bundle,
-    ) -> bool {
-        self.entries
-            .iter()
-            .any(|entry| entry.path == path && entry.failed_bundle.as_ref() == Some(current))
+    /// A remembered failure applies only to the same bundle and scan tools.
+    fn failed_unchanged(&self, path: &Path, current: &Bundle, tools_sha256: &str) -> bool {
+        self.entries.iter().any(|entry| {
+            entry.path == path
+                && entry.failed_bundle.as_ref() == Some(current)
+                && entry.failed_tools_sha256.as_deref() == Some(tools_sha256)
+        })
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -273,6 +280,10 @@ impl Catalog {
                 || entry.path.extension().and_then(|s| s.to_str()) != Some("vst3")
                 || !paths.insert(&entry.path)
                 || entry.failure.as_ref().is_some_and(|s| !bounded(s, 512))
+                || entry
+                    .failed_tools_sha256
+                    .as_ref()
+                    .is_some_and(|tools| entry.failed_bundle.is_none() || !digest(tools, 64))
                 || entry.failed_bundle.as_ref().is_some_and(|bundle| {
                     entry.failure.is_none()
                         || bundle.supplied_path != entry.path
@@ -305,7 +316,7 @@ impl Catalog {
     }
 
     /// Record a scan result. A failure recorded here has no bundle identity and
-    /// is rescanned by the next folder scan; see [`Catalog::record_failure`].
+    /// is rescanned by the next folder scan.
     pub fn record(
         &mut self,
         path: PathBuf,
@@ -314,22 +325,21 @@ impl Catalog {
         self.record_outcome(path, result, None)
     }
 
-    /// Record a failed scan with the bundle identity it observed, so folder
-    /// scans skip this bundle until its identity changes.
-    pub fn record_failure(
+    /// Record a failed scan with its observed bundle and discovery tools.
+    fn record_failure(
         &mut self,
         path: PathBuf,
         error: String,
-        bundle: Option<hex_plugin_scan::macos::identity::Bundle>,
+        scan: Option<FailedScan>,
     ) -> Result<(), String> {
-        self.record_outcome(path, Err(error), bundle)
+        self.record_outcome(path, Err(error), scan)
     }
 
     fn record_outcome(
         &mut self,
         path: PathBuf,
         result: Result<(Report, String), String>,
-        failed_bundle: Option<hex_plugin_scan::macos::identity::Bundle>,
+        failed_scan: Option<FailedScan>,
     ) -> Result<(), String> {
         if !path_valid(&path) || path.extension().and_then(|s| s.to_str()) != Some("vst3") {
             return Err("absolute bounded plugin path required".into());
@@ -347,6 +357,7 @@ impl Catalog {
                     source: None,
                     failure: None,
                     failed_bundle: None,
+                    failed_tools_sha256: None,
                 });
                 next.entries.len() - 1
             }
@@ -364,11 +375,16 @@ impl Catalog {
                 entry.source = Some(source);
                 entry.failure = None;
                 entry.failed_bundle = None;
+                entry.failed_tools_sha256 = None;
                 next.source_errors.remove(&path);
             }
             Err(error) => {
                 entry.failure = Some(error.chars().take(128).collect());
-                entry.failed_bundle = failed_bundle;
+                let (bundle, tools) = failed_scan.map_or((None, None), |scan| {
+                    (Some(scan.bundle), Some(scan.tools_sha256))
+                });
+                entry.failed_bundle = bundle;
+                entry.failed_tools_sha256 = tools;
             }
         }
         next.entries.sort_by(|a, b| a.path.cmp(&b.path));
@@ -1314,12 +1330,12 @@ mod tests {
         storage::update(&fixture.catalog(), |_| Ok(())).unwrap();
         let saved: serde_json::Value =
             serde_json::from_slice(&fs::read(fixture.catalog()).unwrap()).unwrap();
-        assert_eq!(saved["version"], 3);
+        assert_eq!(saved["version"], CATALOG_VERSION);
         let reopened = Catalog::load(&fixture.catalog()).unwrap();
         assert_eq!(reopened.entries.len(), 2);
 
         // A version 2 file cannot carry the version 3 field; newer formats are refused.
-        for (version, failed) in [(2, true), (4, false)] {
+        for (version, failed) in [(2, true), (5, false)] {
             let mut entry = serde_json::json!(
                 {"path": bad, "last_good": null, "source": null, "failure": "scan failed"}
             );
@@ -1347,34 +1363,38 @@ mod tests {
         let fixture = Fixture::new();
         let path = fixture.module();
         let identity = failed_identity(&path, 'c');
+        let tools = "a".repeat(64);
         storage::update(&fixture.catalog(), |catalog| {
             catalog.record_failure(
                 path.clone(),
                 "deadline exceeded".into(),
-                Some(identity.clone()),
+                Some(FailedScan {
+                    bundle: identity.clone(),
+                    tools_sha256: tools.clone(),
+                }),
             )
         })
         .unwrap();
         let saved = Catalog::load(&fixture.catalog()).unwrap();
         assert_eq!(saved.entries[0].failed_bundle.as_ref(), Some(&identity));
-        assert!(saved.failed_unchanged(&path, &identity));
+        assert!(saved.failed_unchanged(&path, &identity, &tools));
         assert!(
-            !saved.failed_unchanged(&path, &failed_identity(&path, 'f')),
+            !saved.failed_unchanged(&path, &failed_identity(&path, 'f'), &tools),
             "changed plist"
         );
         let other = fixture.0.join("Other.vst3");
-        assert!(!saved.failed_unchanged(&other, &failed_identity(&other, 'c')));
+        assert!(!saved.failed_unchanged(&other, &failed_identity(&other, 'c'), &tools));
 
         // A failure without identity, or a later success, is not remembered.
         let mut catalog = saved.clone();
         catalog.record(path.clone(), Err("again".into())).unwrap();
-        assert!(!catalog.failed_unchanged(&path, &identity));
+        assert!(!catalog.failed_unchanged(&path, &identity, &tools));
         let mut catalog = saved;
         catalog
             .record(path.clone(), Ok((report(path.clone()), "e".repeat(40))))
             .unwrap();
         assert!(catalog.entries[0].failed_bundle.is_none());
-        assert!(!catalog.failed_unchanged(&path, &identity));
+        assert!(!catalog.failed_unchanged(&path, &identity, &tools));
 
         // The identity must belong to a recorded failure for this exact path.
         let mut invalid = Catalog::default();
@@ -1386,7 +1406,14 @@ mod tests {
         assert!(invalid.validate().is_err(), "identity without failure");
         assert!(
             Catalog::default()
-                .record_failure(path, "x".into(), Some(failed_identity(&other, 'c')))
+                .record_failure(
+                    path,
+                    "x".into(),
+                    Some(FailedScan {
+                        bundle: failed_identity(&other, 'c'),
+                        tools_sha256: tools,
+                    }),
+                )
                 .is_err(),
             "identity for another path"
         );

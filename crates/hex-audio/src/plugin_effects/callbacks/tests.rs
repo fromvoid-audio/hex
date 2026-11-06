@@ -686,6 +686,12 @@ fn one_endpoint_missing_its_reply_degrades_alone_while_the_other_keeps_processin
     );
     // Control sees the degraded entry through its own worker lease only.
     assert_eq!(endpoints[1].worker.receive().err(), Some(Fault::Revoked));
+    assert_eq!(endpoints[0]._control.take_callback_fault(), None);
+    assert_eq!(
+        endpoints[1]._control.take_callback_fault(),
+        Some(Fault::MissingOutput)
+    );
+    assert_eq!(endpoints[1]._control.take_callback_fault(), None);
     assert_eq!(
         endpoints[0].worker.completed_blocks(),
         CALLBACKS as u64,

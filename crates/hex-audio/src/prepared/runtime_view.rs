@@ -63,6 +63,18 @@ impl ActivePublication {
     }
 }
 impl RuntimeRef<'_> {
+    pub(super) fn project_sample_sources_supported(
+        &self,
+        layout: &crate::sample_recording::Layout,
+    ) -> bool {
+        match self {
+            Self::Legacy(p) => p.project_sample_sources_supported(&layout.tracks, &layout.returns),
+            Self::Eligible(p) => {
+                p.project_sample_sources_supported(&layout.tracks, &layout.returns)
+            }
+        }
+    }
+
     pub(super) fn project_output_supported(&self, tracks: &[u64]) -> bool {
         match self {
             Self::Legacy(p) => p.project_output_supported(tracks),
