@@ -3390,31 +3390,30 @@ impl EditorView {
         // Independent edits can advance the canonical revision even when they
         // carry source stamps. Refuse them before taking worker custody.
         // Duplicate repeats submit a new edit after the prior terminal.
-        let independent_edit = clipboard_edit
-            || matches!(
-                &request,
-                Request::Edit(_)
-                    | Request::Import(_)
-                    | Request::ImportAudioBatch { .. }
-                    | Request::ImportToTrack { .. }
-                    | Request::ImportToTrackWithOverwrite { .. }
-                    | Request::ImportToNewTrack { .. }
-                    | Request::ImportToNewTrackWithGain { .. }
-                    | Request::ImportToSession { .. }
-                    | Request::ImportDeviceAsset { .. }
-                    | Request::LoadFirstSampler { .. }
-                    | Request::AssignSampler { .. }
-                    | Request::RelinkMedia(_)
-                    | Request::EditArrangementSection { .. }
-                    | Request::MoveExistingClips { .. }
-                    | Request::DuplicateClips { .. }
-                    | Request::DuplicateAliasClips { .. }
-                    | Request::DuplicateSessionCell { .. }
-                    | Request::GroupClips { .. }
-                    | Request::GroupTimeRange { .. }
-                    | Request::GroupAudioEvents { .. }
-                    | Request::CopyArrangementClipToConsoleTrack { .. }
-            );
+        let independent_edit = matches!(
+            &request,
+            Request::Edit(_)
+                | Request::Import(_)
+                | Request::ImportAudioBatch { .. }
+                | Request::ImportToTrack { .. }
+                | Request::ImportToTrackWithOverwrite { .. }
+                | Request::ImportToNewTrack { .. }
+                | Request::ImportToNewTrackWithGain { .. }
+                | Request::ImportToSession { .. }
+                | Request::ImportDeviceAsset { .. }
+                | Request::LoadFirstSampler { .. }
+                | Request::AssignSampler { .. }
+                | Request::RelinkMedia(_)
+                | Request::EditArrangementSection { .. }
+                | Request::MoveExistingClips { .. }
+                | Request::DuplicateClips { .. }
+                | Request::DuplicateAliasClips { .. }
+                | Request::DuplicateSessionCell { .. }
+                | Request::GroupClips { .. }
+                | Request::GroupTimeRange { .. }
+                | Request::GroupAudioEvents { .. }
+                | Request::CopyArrangementClipToConsoleTrack { .. }
+        ) || clipboard_edit;
         if independent_edit && self.gain_lane.draft.is_some() {
             self.error = Some("finish or cancel the gain point gesture before editing".into());
             return false;
@@ -3611,57 +3610,56 @@ impl EditorView {
         if !request.is_project_open() && !recovery_restore {
             self.pending_open_path = None;
         }
-        if clipboard_edit
-            || matches!(
-                &request,
-                Request::DeviceGesture(_)
-                    | Request::DropNativeDevice { .. }
-                    | Request::DropBrowserDeviceOnArrangement { .. }
-                    | Request::InsertBrowserInstrumentTrack { .. }
-                    | Request::InsertEffectBusDevice { .. }
-                    | Request::InsertPluginEffect(_)
-                    | Request::AddNativeDevice { .. }
-                    | Request::ReplaceNativeDevice { .. }
-                    | Request::CompareDevice { .. }
-                    | Request::LoadDevicePreset { .. }
-                    | Request::SetDeviceParameter { .. }
-                    | Request::Import(_)
-                    | Request::LoadFirstSampler { .. }
-                    | Request::ImportAudioBatch { .. }
-                    | Request::ImportToTrack { .. }
-                    | Request::ImportToTrackWithOverwrite { .. }
-                    | Request::ImportToNewTrack { .. }
-                    | Request::ImportToNewTrackWithGain { .. }
-                    | Request::ImportToSession { .. }
-                    | Request::RecoverTruncatedImport(_)
-                    | Request::RelinkMedia(_)
-                    | Request::Open(_)
-                    | Request::OpenWith { .. }
-                    | Request::NewWithAudioMode { .. }
-                    | Request::OpenWithAudioMode { .. }
-                    | Request::GainLane { .. }
-                    | Request::DeviceAutomation { .. }
-                    | Request::DeviceAutomationControl { .. }
-                    | Request::EditArrangementSection { .. }
-                    | Request::ReorderTracks { .. }
-                    | Request::ReparentTracks { .. }
-                    | Request::MoveExistingClips { .. }
-                    | Request::DuplicateClips { .. }
-                    | Request::DuplicateAliasClips { .. }
-                    | Request::DuplicateSessionCell { .. }
-                    | Request::GroupClips { .. }
-                    | Request::GroupTimeRange { .. }
-                    | Request::GroupAudioEvents { .. }
-                    | Request::Edit(_)
-                    | Request::BounceArrangement { .. }
-                    | Request::ConvertClip { .. }
-                    | Request::Undo
-                    | Request::SamplerEdit(hex_session::service::SamplerEdit::History(_))
-                    | Request::SamplerEdit(hex_session::service::SamplerEdit::Midi(_))
-                    | Request::Redo
-                    | Request::RestorePlayback { .. }
-                    | Request::RestoreStoppedPlayback
-            )
+        if matches!(
+            &request,
+            Request::DeviceGesture(_)
+                | Request::DropNativeDevice { .. }
+                | Request::DropBrowserDeviceOnArrangement { .. }
+                | Request::InsertBrowserInstrumentTrack { .. }
+                | Request::InsertEffectBusDevice { .. }
+                | Request::InsertPluginEffect(_)
+                | Request::AddNativeDevice { .. }
+                | Request::ReplaceNativeDevice { .. }
+                | Request::CompareDevice { .. }
+                | Request::LoadDevicePreset { .. }
+                | Request::SetDeviceParameter { .. }
+                | Request::Import(_)
+                | Request::LoadFirstSampler { .. }
+                | Request::ImportAudioBatch { .. }
+                | Request::ImportToTrack { .. }
+                | Request::ImportToTrackWithOverwrite { .. }
+                | Request::ImportToNewTrack { .. }
+                | Request::ImportToNewTrackWithGain { .. }
+                | Request::ImportToSession { .. }
+                | Request::RecoverTruncatedImport(_)
+                | Request::RelinkMedia(_)
+                | Request::Open(_)
+                | Request::OpenWith { .. }
+                | Request::NewWithAudioMode { .. }
+                | Request::OpenWithAudioMode { .. }
+                | Request::GainLane { .. }
+                | Request::DeviceAutomation { .. }
+                | Request::DeviceAutomationControl { .. }
+                | Request::EditArrangementSection { .. }
+                | Request::ReorderTracks { .. }
+                | Request::ReparentTracks { .. }
+                | Request::MoveExistingClips { .. }
+                | Request::DuplicateClips { .. }
+                | Request::DuplicateAliasClips { .. }
+                | Request::DuplicateSessionCell { .. }
+                | Request::GroupClips { .. }
+                | Request::GroupTimeRange { .. }
+                | Request::GroupAudioEvents { .. }
+                | Request::Edit(_)
+                | Request::BounceArrangement { .. }
+                | Request::ConvertClip { .. }
+                | Request::Undo
+                | Request::SamplerEdit(hex_session::service::SamplerEdit::History(_))
+                | Request::SamplerEdit(hex_session::service::SamplerEdit::Midi(_))
+                | Request::Redo
+                | Request::RestorePlayback { .. }
+                | Request::RestoreStoppedPlayback
+        ) || clipboard_edit
         {
             self.invalidate_prepared_seek();
         }
