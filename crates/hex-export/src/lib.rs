@@ -50,9 +50,9 @@ mod controlled;
 mod dither;
 mod format;
 pub use bounce::{
-    MAX_ARRANGEMENT_BOUNCE_TAIL_SECONDS, render_arrangement_bounce_new,
-    render_arrangement_bounce_with_pages, render_bounce_new,
-    render_bounce_new_with_device_resources,
+    ForeignBounceRenderer, MAX_ARRANGEMENT_BOUNCE_TAIL_SECONDS, render_arrangement_bounce_new,
+    render_arrangement_bounce_with_foreign, render_arrangement_bounce_with_pages,
+    render_bounce_new, render_bounce_new_with_device_resources,
 };
 pub use format::ExportFormat;
 mod pages;
