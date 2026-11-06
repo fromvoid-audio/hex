@@ -5,6 +5,7 @@
 #include "macos_editor.hpp"
 #include "macos_instance.hpp"
 #include "macos_instance_wire.hpp"
+#include "pluginterfaces/base/iplugincompatibility.h"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -140,9 +141,12 @@ struct Module {
         for(int32 n=0;n<count;++n) {
             PClassInfo info{};
             if(factory->getClassInfo(n,&info)!=kResultOk || !std::memchr(info.category,0,sizeof info.category)) return false;
-            if(!std::memcmp(info.cid,request.cid.data(),16)) {
-                if(matched || std::strcmp(info.category,kVstAudioEffectClass)) return false;matched=true;
-            }
+            if(std::memcmp(info.cid,request.cid.data(),16)) continue;
+            // A compatibility service can share this CID. Only a single
+            // processor descriptor grants ordinary instance admission.
+            if(!std::strcmp(info.category,kPluginCompatibilityClass)) continue;
+            if(matched || std::strcmp(info.category,kVstAudioEffectClass)) return false;
+            matched=true;
         }
         return matched;
     }
