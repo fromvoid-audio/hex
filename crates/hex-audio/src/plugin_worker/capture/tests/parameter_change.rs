@@ -435,19 +435,80 @@ fn actual_authored_parameter_input_refuses_competing_host_point_without_replacin
     if fixture_child(91, NAME) {
         return;
     }
-    let (mut owner, mut endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
+    use hex_plugin_host::transport::{
+        AuthoredParameterProgram, AuthoredSegment, SegmentTiming, TimingChanges,
+    };
+    use std::num::NonZeroU64;
+
+    struct FixtureEnvelope;
+    impl AuthoredParameterProgram for FixtureEnvelope {
+        fn quantum_program_key(&self) -> NonZeroU64 {
+            NonZeroU64::MIN
+        }
+        fn render_quantum(
+            &self,
+            _: &[Option<u64>],
+            _: &TimingChanges,
+            output: &mut Parameters,
+        ) -> Result<(), Fault> {
+            output.push(ParameterPoint {
+                frame: 0,
+                id: 7,
+                normalized: 0.5,
+            })
+        }
+    }
+
+    let mut instance = original_instance();
+    let class = instance.configuration().identity.class;
+    let facts = instance
+        .read_authored_parameter_metadata_on_control(class, &[7])
+        .unwrap();
+    instance
+        .arm_authored_parameter_metadata_on_control(facts)
+        .unwrap();
+    let (mut owner, mut endpoint) = NativeWorker::start_on_control(instance).unwrap();
     let request = begin_change(&mut owner, 7, 0.75);
-    callback(
-        &owner,
-        &mut endpoint,
-        0,
-        2.0,
-        &[ParameterPoint {
-            frame: 0,
-            id: 7,
-            normalized: 0.5,
-        }],
-    );
+    let mut output = [[9.0; 2]; 8];
+    let stage = || {
+        endpoint.begin_physical_callback(8).unwrap();
+        endpoint
+            .stage_segment_with_authored_parameters(
+                0,
+                &[[0.5, -0.25]; 8],
+                &[],
+                &mut output,
+                SegmentTiming {
+                    playing: None,
+                    at: |_| None,
+                },
+                AuthoredSegment {
+                    program: &FixtureEnvelope,
+                    origin: &|frame| Some(frame as u64),
+                },
+            )
+            .unwrap();
+        endpoint.finish(true).unwrap();
+    };
+    #[cfg(feature = "allocation-probe")]
+    {
+        let counts = allocation_counter::measure(stage);
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    #[cfg(not(feature = "allocation-probe"))]
+    {
+        let mut stage = stage;
+        stage();
+    }
+    assert_eq!(output, [[0.0; 2]; 8]);
     assert_eq!(
         terminal(&mut owner, &request),
         NativeWorkerParameterProgress::Refused

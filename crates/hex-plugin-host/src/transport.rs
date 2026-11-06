@@ -24,6 +24,9 @@ use std::sync::{
         Ordering::{AcqRel, Acquire, Relaxed, Release},
     },
 };
+mod authored;
+use authored::AuthoredOrigins;
+pub use authored::{AuthoredParameterProgram, AuthoredSegment};
 mod parameters;
 mod storage;
 pub use parameters::{MAX_PARAMETER_POINTS, ParameterPoint, Parameters};
@@ -425,7 +428,15 @@ struct InputRequest {
     // Minimum spare capacity of every physical callback contributing to this
     // quantum. Control-originated input may consume it only after acceptance.
     parameter_capacity: usize,
+    authored: bool,
 }
+
+pub struct WorkerRequest {
+    pub block: Block,
+    pub parameter_capacity: usize,
+    pub authored: bool,
+}
+
 #[derive(Clone, Copy)]
 struct State {
     position: u64,
@@ -467,6 +478,9 @@ pub struct Callback {
     revoked: Arc<Revocation>,
     state: State,
     staged: Option<Stage>,
+    // Only the prefix below the staged position is read. Rejection permanently
+    // revokes the endpoint, so origin scratch does not need a rollback copy.
+    authored_origins: AuthoredOrigins,
 }
 
 /// Serialized worker endpoint; process at most one received block at a time.
@@ -547,6 +561,7 @@ fn channel_with_policy(
                 parameter_capacity: MAX_PARAMETER_POINTS,
             },
             staged: None,
+            authored_origins: AuthoredOrigins::default(),
         },
         Worker {
             binding,
@@ -727,15 +742,69 @@ impl Callback {
         output: &mut [Frame],
         timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
     ) -> Result<SegmentReply, Fault> {
+        self.stage_segment_input(
+            frame_offset,
+            input,
+            events,
+            parameters,
+            output,
+            timing,
+            None,
+        )
+    }
+
+    /// Accumulate compensated origins through graph and physical callback
+    /// partitions. Render the authored points once for the actual complete
+    /// processing quantum. Ordinary parameter input has a separate path.
+    pub fn stage_segment_with_authored_parameters(
+        &mut self,
+        frame_offset: usize,
+        input: &[Frame],
+        events: &[MidiEvent],
+        output: &mut [Frame],
+        timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
+        authored: AuthoredSegment<'_>,
+    ) -> Result<SegmentReply, Fault> {
+        self.stage_segment_input(
+            frame_offset,
+            input,
+            events,
+            &[],
+            output,
+            timing,
+            Some(authored),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // Parallel borrowed PCM, events and origin windows.
+    fn stage_segment_input(
+        &mut self,
+        frame_offset: usize,
+        input: &[Frame],
+        events: &[MidiEvent],
+        parameters: &[ParameterPoint],
+        output: &mut [Frame],
+        timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
+        authored: Option<AuthoredSegment<'_>>,
+    ) -> Result<SegmentReply, Fault> {
         output.fill([0.0; 2]);
-        let result =
-            self.stage_segment_inner(frame_offset, input, events, parameters, output, timing);
+        let result = self.stage_segment_inner(
+            frame_offset,
+            input,
+            events,
+            parameters,
+            output,
+            timing,
+            authored,
+        );
         if let Err(fault) = result {
             output.fill([0.0; 2]);
             return self.fail(fault);
         }
         result
     }
+
+    #[allow(clippy::too_many_arguments)] // Same borrowed windows, with a single staging transaction.
     fn stage_segment_inner(
         &mut self,
         frame_offset: usize,
@@ -744,6 +813,7 @@ impl Callback {
         parameters: &[ParameterPoint],
         output: &mut [Frame],
         mut timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
+        authored: Option<AuthoredSegment<'_>>,
     ) -> Result<SegmentReply, Fault> {
         if self.revoked.is_revoked() {
             return Err(Fault::Revoked);
@@ -786,12 +856,19 @@ impl Callback {
             return Err(Fault::InvalidParameters);
         }
         let q = u64::from(self.quantum);
+        let program = authored
+            .as_ref()
+            .map(|segment| segment.program.quantum_program_key());
+        if stage.state.position % q != 0 && self.authored_origins.program != program {
+            return Err(Fault::InvalidParameters);
+        }
         let mut result = SegmentReply {
             events: Events::default(),
             parameters: Parameters::default(),
         };
         let mut event_index = 0;
         let mut parameter_index = 0;
+        let mut input_parameters = parameters.len();
         for (index, (source, destination)) in input.iter().zip(output).enumerate() {
             let position = stage.state.position;
             let offset = (position % q) as usize;
@@ -801,6 +878,7 @@ impl Callback {
                 stage.state.input.sequence = sequence;
                 stage.state.input.first_frame = position;
                 stage.state.parameter_capacity = MAX_PARAMETER_POINTS;
+                self.authored_origins.program = program;
                 stage.state.input.timing = (timing.at)(index);
                 if stage.state.input.timing.is_some_and(|origin| {
                     !origin.is_valid()
@@ -882,11 +960,31 @@ impl Callback {
                     })?;
                 }
             }
+            if let Some(authored) = &authored {
+                self.authored_origins.frames[offset] = (authored.origin)(index);
+            }
             stage.state.position = position.checked_add(1).ok_or(Fault::Exhausted)?;
             if offset + 1 == usize::from(self.quantum) {
+                if let Some(authored) = &authored {
+                    let points = self.authored_origins.render(
+                        authored,
+                        usize::from(self.quantum),
+                        &stage.state.input.timing_changes,
+                    )?;
+                    input_parameters += points.as_slice().len();
+                    if input_parameters > MAX_PARAMETER_POINTS - stage.input_parameters {
+                        return Err(Fault::InvalidParameters);
+                    }
+                    stage.state.input.parameters = points;
+                }
                 stage.request = Some(InputRequest {
                     block: stage.state.input,
-                    parameter_capacity: stage.state.parameter_capacity,
+                    parameter_capacity: if authored.is_some() {
+                        0
+                    } else {
+                        stage.state.parameter_capacity
+                    },
+                    authored: authored.is_some(),
                 });
             }
         }
@@ -899,7 +997,7 @@ impl Callback {
         stage.input_events = input_event_count;
         stage.legacy_input_events = legacy_input_events;
         stage.output_events += result.events.as_slice().len();
-        stage.input_parameters += parameters.len();
+        stage.input_parameters += input_parameters;
         stage.output_parameters += result.parameters.as_slice().len();
         stage.staged_frames = end;
         Ok(result)
@@ -1007,6 +1105,16 @@ impl Worker {
     /// The quantum's Parameters capacity is an independent bound and must
     /// still be checked before adding input.
     pub fn receive_with_parameter_capacity(&mut self) -> Result<Option<(Block, usize)>, Fault> {
+        match self.receive_request()? {
+            Some(request) if request.authored => self.fail(Fault::InvalidParameters),
+            Some(request) => Ok(Some((request.block, request.parameter_capacity))),
+            None => Ok(None),
+        }
+    }
+
+    /// Take the original accepted request with its input provenance. An
+    /// authored request requires the guarded SDK exchange for this exact source.
+    pub fn receive_request(&mut self) -> Result<Option<WorkerRequest>, Fault> {
         if self.revoked.is_revoked() {
             return Err(Fault::Revoked);
         }
@@ -1027,7 +1135,11 @@ impl Worker {
             .received_prefix
             .store(self.sequence.saturating_add(1), Release);
         self.in_flight = true;
-        Ok(Some((block, request.parameter_capacity)))
+        Ok(Some(WorkerRequest {
+            block,
+            parameter_capacity: request.parameter_capacity,
+            authored: request.authored,
+        }))
     }
     /// Publish exactly one matching reply after the isolated processor finishes.
     /// Revocation discards a late completion; it cannot undo DSP already run.

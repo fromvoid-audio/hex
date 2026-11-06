@@ -195,6 +195,7 @@ pub struct Prepared {
     last_edit_frame: u64,
     parameter_page: Option<parameter_page::PendingPage>,
     parameter_page_sequence: u64,
+    authored_parameter_metadata: Option<AuthoredParameterMetadata>,
 }
 /// Source-bound configured component awaiting actual graph presentation facts.
 /// No processing/state capture or canonical/audio acceptance has occurred. Keep
@@ -593,6 +594,7 @@ impl Pending {
             last_edit_frame: 0,
             parameter_page: None,
             parameter_page_sequence: 0,
+            authored_parameter_metadata: None,
         })
     }
 }
@@ -662,6 +664,33 @@ impl Prepared {
         }
         self.exchange_on_worker_with_metadata(block, Some(metadata))
     }
+    /// Retain the exact capability observation with the lease that will run
+    /// authored requests. Admission and endpoint construction remain with
+    /// the caller. A renewed epoch must install a new observation.
+    pub fn arm_authored_parameter_metadata_on_control(
+        &mut self,
+        metadata: AuthoredParameterMetadata,
+    ) -> Result<()> {
+        self.require_live_epoch()?;
+        if !metadata.matches(self) {
+            return Err(Error::Protocol("authored parameter source differs"));
+        }
+        self.authored_parameter_metadata = Some(metadata);
+        Ok(())
+    }
+
+    pub fn exchange_armed_authored_on_worker(&mut self, block: Block) -> Result<Block> {
+        let metadata = self
+            .authored_parameter_metadata
+            .take()
+            .ok_or(Error::Protocol(
+                "authored parameter capability is not armed",
+            ))?;
+        let result = self.exchange_authored_on_worker(block, &metadata);
+        self.authored_parameter_metadata = Some(metadata);
+        result
+    }
+
     fn exchange_on_worker_with_metadata(
         &mut self,
         block: Block,

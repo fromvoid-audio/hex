@@ -704,3 +704,121 @@ fn authored_pcm_rechecks_processing_capability_after_controller_refresh() {
         );
     }
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn authored_quantum_partition_preserves_signed_pcm_after_pipeline_latency() {
+    use crate::transport::{
+        AuthoredParameterProgram, AuthoredSegment, Fault, ParameterPoint, Parameters,
+        SegmentTiming, TimingChanges, channel,
+    };
+    use std::num::NonZeroU64;
+
+    struct FixtureEnvelope;
+    impl FixtureEnvelope {
+        fn normalized(frame: u64) -> f64 {
+            if frame < 8 {
+                0.25 + frame as f64 / 16.0
+            } else {
+                0.75
+            }
+        }
+    }
+    impl AuthoredParameterProgram for FixtureEnvelope {
+        fn quantum_program_key(&self) -> NonZeroU64 {
+            NonZeroU64::MIN
+        }
+
+        fn render_quantum(
+            &self,
+            origins: &[Option<u64>],
+            _: &TimingChanges,
+            output: &mut Parameters,
+        ) -> std::result::Result<(), Fault> {
+            for (frame, origin) in origins.iter().enumerate() {
+                output.push(ParameterPoint {
+                    frame: frame as u16,
+                    id: 0,
+                    normalized: Self::normalized(origin.ok_or(Fault::InvalidParameters)?),
+                })?;
+            }
+            Ok(())
+        }
+    }
+
+    let build = build();
+    let origins = [0, 1, 2, 3, 4, 5, 6, 7, 20, 21, 22, 23, 0, 1, 2, 3];
+    for partitions in [[8, 8, 8, 8, 0], [3, 6, 8, 7, 8]] {
+        let case = Case::new();
+        let mut instance = Prepared::prepare(
+            &build,
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup(80),
+        )
+        .unwrap();
+        let class = instance.configuration().identity.class;
+        let metadata = instance
+            .read_authored_parameter_metadata_on_control(class, &[0])
+            .unwrap();
+        let (_control, mut callback, mut worker) = channel(metadata.binding(), 8).unwrap();
+        instance
+            .arm_authored_parameter_metadata_on_control(metadata)
+            .unwrap();
+        let mut position = 0;
+        let mut pcm = [[0.0; 2]; 32];
+        for frames in partitions.into_iter().filter(|&frames| frames != 0) {
+            callback.begin_physical_callback(frames).unwrap();
+            let cut = frames / 2;
+            for (offset, len) in [(0, cut), (cut, frames - cut)] {
+                callback
+                    .stage_segment_with_authored_parameters(
+                        offset,
+                        &[[0.25, -0.125]; 8][..len],
+                        &[],
+                        &mut pcm[position + offset..position + offset + len],
+                        SegmentTiming {
+                            playing: None,
+                            at: |_| None,
+                        },
+                        AuthoredSegment {
+                            program: &FixtureEnvelope,
+                            origin: &|index| {
+                                Some(origins[(position + offset + index) % origins.len()])
+                            },
+                        },
+                    )
+                    .unwrap();
+            }
+            assert!(worker.receive_request().unwrap().is_none());
+            callback.finish(true).unwrap();
+            if let Some(request) = worker.receive_request().unwrap() {
+                assert!(request.authored);
+                worker
+                    .complete(
+                        instance
+                            .exchange_armed_authored_on_worker(request.block)
+                            .unwrap(),
+                    )
+                    .unwrap();
+            }
+            position += frames;
+        }
+        assert_eq!(position, pcm.len());
+        assert!(pcm[..16].iter().all(|frame| *frame == [0.0; 2]));
+        for (index, (&origin, actual)) in origins.iter().zip(&pcm[16..]).enumerate() {
+            let gain = (FixtureEnvelope::normalized(origin)
+                * 4.0
+                * (0.5 + (index / 8) as f64 * 0.125)) as f32;
+            assert_eq!(*actual, [0.25 * gain, -0.125 * gain], "frame {index}");
+        }
+        assert!(
+            instance
+                .stop_and_reap_on_control()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+}

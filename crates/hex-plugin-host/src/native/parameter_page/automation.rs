@@ -15,6 +15,12 @@ pub struct AuthoredParameterMetadata {
 }
 
 impl AuthoredParameterMetadata {
+    pub(in crate::native) fn backing_data_bytes(&self) -> Option<usize> {
+        self.parameters
+            .capacity()
+            .checked_mul(std::mem::size_of::<Parameter>())
+    }
+
     pub fn binding(&self) -> Binding {
         self.binding
     }
