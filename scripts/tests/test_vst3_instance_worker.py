@@ -281,6 +281,26 @@ class NativeInstanceTests(unittest.TestCase):
                     self.assertEqual(struct.unpack("<16f", reply[64:]), tuple(x for v in expected for x in (v, v)))
                 self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (3, 24))
 
+    def test_instrument_without_event_input_renders_through_authored_notes(self):
+        fixture = self.fixtures.parent / BOOT.APP / "Contents/Resources/fixtures/instrument.vst3"
+        self.bundle = self.root / "autonomous.vst3"
+        shutil.copytree(fixture, self.bundle)
+        cid = bytes.fromhex("48455833010203040506070809101101")
+        session = self.session(channels=(0, 2), cid=cid, maximum=64)
+        self.assertEqual(session.message()[0], b"HXVIRD05")
+        for notes in ([], [(3, 0x90, 60, 100)], [(4, 0x80, 60, 0)], []):
+            magic, reply = self.instrument_block(session, notes)
+            self.assertEqual(magic, b"HXVB")
+            self.assertEqual(struct.unpack("<16f", reply[64:]), (0.125,) * 16)
+        self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (4, 32))
+
+        # Without an event bus, malformed transport data is still rejected.
+        malformed = self.session(channels=(0, 2), cid=cid, maximum=64)
+        self.assertEqual(malformed.message()[0], b"HXVIRD05")
+        magic, error = self.instrument_block(malformed, [(8, 0x90, 60, 100)])
+        self.assertEqual((magic, struct.unpack_from("<I", error, 35)[0]), (b"HXVIER01", 8))
+        self.assertEqual(self.terminal(malformed, 8)[5:7], (0, 0))
+
     def test_silent_input_instrument_refuses_routed_pcm_and_requires_a_midi_bus(self):
         audio_only = self.session(variant=0, channels=(0, 2))
         self.error(audio_only, 20)
