@@ -290,34 +290,73 @@ fn save_capture_refusal_preserves_existing_file_dirty_state_and_new_destination(
 }
 
 #[test]
-fn rate_history_retains_the_exact_captured_vst3_state_on_both_clocks() {
-    use hex_project::{Editor, SampleRateHistoryAction, SampleRateMode};
+fn rate_history_retains_the_exact_captured_vst3_state_on_both_sides() {
+    use crate::Session;
+    use crate::service::project_rate::history_needs_replacement;
+    use hex_project::{SampleRateHistoryAction, SampleRateMode};
 
     let project = fixture();
     let captured = project_with_captures(project.clone(), captures(&project)).unwrap();
     assert_ne!(captured, project);
-    let mut editor = Editor::new(project.clone(), 8).unwrap();
-    let change = || SampleRateHistoryAction::Apply {
-        rate: 96_000,
-        mode: SampleRateMode::Fixed,
-    };
 
-    let refused = editor.change_sample_rate_prepared(change(), Some(captured.clone()), |_| {
-        Err::<(), _>(hex_project::Invalid("fixture output refused"))
-    });
-    assert!(refused.is_err());
-    assert_eq!(editor.project(), &project);
-    assert!(!editor.can_undo());
+    for rate in [48_000, 96_000] {
+        let mut session = Session::new(48_000, 8, 1_000_000).unwrap();
+        session.editor = Editor::new(project.clone(), 8).unwrap();
+        let change = || SampleRateHistoryAction::Apply {
+            rate,
+            mode: SampleRateMode::FollowInterface,
+        };
+        let prepared = |_: &Project| Ok::<(), hex_project::Invalid>(());
 
-    let applied = editor
-        .change_sample_rate_prepared(change(), Some(captured.clone()), |project| {
-            Ok::<_, hex_project::Invalid>(project.clone())
-        })
-        .unwrap()
-        .unwrap();
-    assert_eq!(applied, captured.at_sample_rate(96_000).unwrap());
-    assert!(editor.undo());
-    assert_eq!(editor.project(), &captured);
-    assert!(editor.redo());
-    assert_eq!(editor.project(), &applied);
+        let refused =
+            session
+                .editor
+                .change_sample_rate_prepared(change(), Some(captured.clone()), |_| {
+                    Err::<(), _>(hex_project::Invalid("fixture output refused"))
+                });
+        assert!(refused.is_err());
+        assert_eq!(session.project(), &project);
+        assert!(!session.editor.can_undo());
+
+        session
+            .editor
+            .change_sample_rate_prepared(change(), Some(captured.clone()), prepared)
+            .unwrap()
+            .unwrap();
+        let expected = captured
+            .at_sample_rate(rate)
+            .unwrap()
+            .with_sample_rate_mode(SampleRateMode::FollowInterface);
+        assert_eq!(session.project(), &expected);
+        assert!(history_needs_replacement(&session, false));
+
+        let captured_at_new_rate = project
+            .at_sample_rate(rate)
+            .unwrap()
+            .with_sample_rate_mode(SampleRateMode::FollowInterface);
+        session
+            .editor
+            .change_sample_rate_prepared(
+                SampleRateHistoryAction::Undo,
+                Some(captured_at_new_rate.clone()),
+                prepared,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project(), &captured);
+        assert!(history_needs_replacement(&session, true));
+
+        session
+            .editor
+            .change_sample_rate_prepared(
+                SampleRateHistoryAction::Redo,
+                Some(project.clone()),
+                prepared,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project(), &captured_at_new_rate);
+        assert!(session.editor.undo());
+        assert_eq!(session.project(), &project);
+    }
 }
