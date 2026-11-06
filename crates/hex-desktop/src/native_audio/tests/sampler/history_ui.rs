@@ -1,5 +1,5 @@
 //! Retained numeric fields and global keyboard history through the real worker.
-use super::envelope::render;
+use super::envelope::{render, visible_control_center};
 use super::*;
 use gpui::{Modifiers, MouseButton, VisualTestContext};
 use hex_engine::SamplerParameter::{self, AttackMs, Gain, Transpose};
@@ -88,7 +88,7 @@ pub(super) fn exercise(
     let mut states = vec![initial.device(device).unwrap().state().clone()];
     for (parameter, value) in [(Gain, 0.5), (Transpose, -12.0), (AttackMs, 0.125)] {
         let old = applied().unwrap();
-        let center = visual.debug_bounds(selector(parameter)).unwrap().center();
+        let center = visible_control_center(visual, selector(parameter));
         visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
         visual.simulate_keystrokes("cmd-a");
@@ -106,7 +106,7 @@ pub(super) fn exercise(
     }
     // First Undo cancels an uncommitted local draft and consumes the shortcut.
     let old = applied().unwrap();
-    let center = visual.debug_bounds(selector(Gain)).unwrap().center();
+    let center = visible_control_center(visual, selector(Gain));
     visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
     visual.simulate_keystrokes("cmd-a");
