@@ -14,6 +14,7 @@ use hex_session::service::{
 };
 mod degraded;
 mod editor;
+mod parameter_gesture;
 mod parameters;
 mod restore;
 use restore::Restore;
@@ -138,6 +139,8 @@ pub(super) struct Plugins {
     pending: Option<Pending>,
     editor: Option<editor::EditorOperation>,
     parameters: Option<parameters::Inventory>,
+    observed_parameters: Option<parameters::ObservedInventory>,
+    parameter_gesture: Option<parameter_gesture::Gesture>,
     editor_checked: Option<AudioSourceContext>,
     restore: Option<Restore>,
     reopen: Option<Reopen>,
@@ -228,6 +231,8 @@ impl Plugins {
             parameters.output_closed();
         }
         self.configured = false;
+        self.observed_parameters = None;
+        self.parameter_gesture = None;
         for source in &mut self.sources {
             source.edit_backlog = false;
         }

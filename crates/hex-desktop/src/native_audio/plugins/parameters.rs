@@ -7,6 +7,12 @@ use hex_audio::plugin_worker::{
 use hex_session::service::{PluginParameterQuery, PluginParameterResult, PluginParameterRow};
 use std::time::{Duration, Instant};
 
+pub(super) struct ObservedInventory {
+    pub(super) query: PluginParameterQuery,
+    pub(super) binding: Binding,
+    pub(super) rows: Vec<PluginParameterRow>,
+}
+
 pub(super) struct Inventory {
     query: PluginParameterQuery,
     binding: Binding,
@@ -29,7 +35,11 @@ impl Plugins {
         &mut self,
         query: PluginParameterQuery,
     ) -> Result<(), String> {
-        if self.parameters.is_some() || self.editor.is_some() || self.restore.is_some() {
+        if self.parameters.is_some()
+            || self.editor.is_some()
+            || self.restore.is_some()
+            || self.parameter_gesture.is_some()
+        {
             return Err("vst3 controller is busy · try again".into());
         }
         let binding = self
@@ -68,9 +78,15 @@ impl Plugins {
             return None;
         }
         let inventory = self.parameters.take()?;
+        let rows = inventory.terminal?.map(|()| inventory.rows);
+        self.observed_parameters = rows.as_ref().ok().map(|rows| ObservedInventory {
+            query: inventory.query,
+            binding: inventory.binding,
+            rows: rows.clone(),
+        });
         Some(PluginParameterResult {
             query: inventory.query,
-            rows: inventory.terminal?.map(|()| inventory.rows),
+            rows,
         })
     }
 
@@ -162,6 +178,12 @@ impl Plugins {
                             id: parameter.id,
                             name,
                             value,
+                            normalized: parameter.normalized,
+                            default_normalized: parameter.default_normalized,
+                            steps: parameter.step_count,
+                            editable: parameter.is_editable(),
+                            page_first: page.first,
+                            metadata_revision: page.revision,
                         }
                     }));
                 if inventory.rows.len() == total {

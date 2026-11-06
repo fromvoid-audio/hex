@@ -47,7 +47,10 @@ pub enum PluginParameterGestureResult {
     Applied,
     /// Actual host capture. The host retains its private matching receipt and
     /// staged compiler permission until finish_plugin_parameter_commit.
-    Captured(NativeDeviceState),
+    Captured {
+        before: NativeDeviceState,
+        after: NativeDeviceState,
+    },
 }
 #[derive(Debug)]
 pub enum PluginParameterGestureError {
@@ -317,6 +320,16 @@ pub trait WorkerAudioSink: Send {
     ) -> Result<PluginParameterGestureResult, PluginParameterGestureError> {
         Err(PluginParameterGestureError::Refused(
             "plugin parameter controls are unavailable for this output".into(),
+        ))
+    }
+    /// Correlate the exact graph's callback terminal before the editor writes history.
+    fn confirm_plugin_parameter_publication(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _acceptance: ResidentPublicationAcceptance,
+    ) -> Result<(), PluginParameterGestureError> {
+        Err(PluginParameterGestureError::Refused(
+            "vst3 publication confirmation is unavailable".into(),
         ))
     }
     /// Called for every Commit attempt, including capture/compilation/publication

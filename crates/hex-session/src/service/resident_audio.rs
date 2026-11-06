@@ -1255,6 +1255,11 @@ pub(super) fn relink_files(
 
 enum Transition {
     Command(Box<Command>),
+    PluginParameter {
+        device: hex_project::DeviceId,
+        before: NativeDeviceState,
+        after: NativeDeviceState,
+    },
     PluginEffect {
         command: Box<Command>,
         control: Arc<PluginEffectControl>,
@@ -2061,6 +2066,35 @@ impl Session {
             "resident command produced no transition",
         ))
     }
+    #[allow(clippy::too_many_arguments)] // Exact native capture plus the existing publication owners.
+    pub(super) fn plugin_parameter_resident_snapshot(
+        &mut self,
+        device: hex_project::DeviceId,
+        before: NativeDeviceState,
+        after: NativeDeviceState,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+    ) -> Result<Snapshot, SessionError> {
+        self.resident_transition(
+            Transition::PluginParameter {
+                device,
+                before,
+                after,
+            },
+            context,
+            sink,
+            admission,
+            current,
+            None,
+        )?
+        .map(|(_, snapshot)| snapshot)
+        .ok_or(SessionError::Invalid(
+            "plugin parameter produced no transition",
+        ))
+    }
+
     pub(super) fn plugin_effect_resident_snapshot(
         &mut self,
         command: Command,
@@ -2258,6 +2292,7 @@ impl Session {
             &transition,
             Transition::SectionCommand { .. } | Transition::SectionHistory { .. }
         );
+        let plugin_parameter = matches!(&transition, Transition::PluginParameter { .. });
         let explicit_tuning = matches!(&transition, Transition::Command(command)
             if matches!(command.as_ref(), Command::SetTuning(..)));
         let prepare = |source: &Project, project: &Project| {
@@ -2321,12 +2356,31 @@ impl Session {
                     region,
                 )?;
             } else {
-                inputs.publish(&mut snapshot, project, sink, context)?;
+                let accepted = inputs.publish(&mut snapshot, project, sink, context)?;
+                if plugin_parameter {
+                    sink.confirm_plugin_parameter_publication(context, accepted)
+                        .map_err(|error| match error {
+                            super::PluginParameterGestureError::Refused(reason) => {
+                                SessionError::NativeAudio(reason)
+                            }
+                            super::PluginParameterGestureError::SourceLost(reason) => {
+                                SessionError::PluginSourceLost(reason)
+                            }
+                        })?;
+                }
             }
             publish_time = publish_started.elapsed();
             Ok(snapshot)
         };
         let result = match transition {
+            Transition::PluginParameter {
+                device,
+                before,
+                after,
+            } => self
+                .editor
+                .replace_captured_device_state(device, before, after, prepare)
+                .map(|snapshot| Some((Created::None, snapshot))),
             Transition::Command(command)
             | Transition::PluginEffect { command, .. }
             | Transition::SectionCommand { command, .. } => self

@@ -171,6 +171,16 @@ impl Editor {
         stopped_bounce: bool,
     ) {
         let previous = std::mem::replace(&mut self.project, candidate);
+        self.push_undo(previous, midi_effect, section_publication, stopped_bounce);
+    }
+
+    fn push_undo(
+        &mut self,
+        previous: Project,
+        midi_effect: Option<crate::MidiHistoryEffect>,
+        section_publication: bool,
+        stopped_bounce: bool,
+    ) {
         if self.undo.len() == self.capacity {
             self.undo.pop_front();
         }
@@ -181,6 +191,46 @@ impl Editor {
             stopped_bounce,
         });
         self.redo.clear();
+    }
+
+    /// Commit one device state with the actual pre-gesture state as its Undo
+    /// preimage. Preparation still compares the canonical source and candidate.
+    pub fn replace_captured_device_state<T, E: From<Invalid>>(
+        &mut self,
+        device: crate::DeviceId,
+        before: hex_lattice_contract::NativeDeviceState,
+        after: hex_lattice_contract::NativeDeviceState,
+        prepare: impl FnOnce(&Project, &Project) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let original = self
+            .project
+            .device(device)
+            .ok_or(Invalid("device no longer exists"))?;
+        if before.type_id() != original.state().type_id() || after.type_id() != before.type_id() {
+            return Err(Invalid("captured device type changed").into());
+        }
+        let previous = self
+            .project
+            .preview_device_edit(&Command::ReplaceDeviceState {
+                device,
+                state: before,
+            })?;
+        let candidate = self
+            .project
+            .preview_device_edit(&Command::ReplaceDeviceState {
+                device,
+                state: after,
+            })?;
+        if previous == candidate {
+            return Err(Invalid("captured device edit has no state change").into());
+        }
+        self.undo
+            .try_reserve(1)
+            .map_err(|_| E::from(Invalid("could not reserve device edit history")))?;
+        let prepared = prepare(&self.project, &candidate)?;
+        self.project = candidate;
+        self.push_undo(previous, None, false, false);
+        Ok(prepared)
     }
 
     pub fn execute(&mut self, command: Command) -> Result<Created, Invalid> {

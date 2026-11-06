@@ -15,6 +15,12 @@ pub struct PluginParameterRow {
     pub id: u32,
     pub name: String,
     pub value: String,
+    pub normalized: f64,
+    pub default_normalized: f64,
+    pub steps: u32,
+    pub editable: bool,
+    pub page_first: u16,
+    pub metadata_revision: u64,
 }
 
 pub struct PluginParameterResult {
