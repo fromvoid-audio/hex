@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from test_ci_target_storage import reuse_scratch_volume_observations
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("identity_ci", ROOT / "scripts/local-ci.py")
@@ -24,6 +25,7 @@ class UiBuildIdentityTests(unittest.TestCase):
     __hex_shard_early__ = True
 
     def test_real_cargo_freshness_source_untracked_changelog_and_raw_fallback(self):
+        reuse_scratch_volume_observations(self, ci, delivery.ci)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             package = root / "crates/ui"
@@ -76,7 +78,9 @@ class UiBuildIdentityTests(unittest.TestCase):
                 count += 1
                 argv = ("cargo", "build", "--offline", "--locked", "--message-format=json")
                 if raw:
-                    argv = (sys.executable, "-c", "import os,subprocess; e=dict(os.environ); e.pop('HEX_GUARDED_BUILD_SOURCE',None); raise SystemExit(subprocess.run(" + repr(argv) + ",env=e).returncode)")
+                    result = subprocess.run(argv, cwd=root, env=env, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    return inspect_artifact(result.stdout)
                 if optimized:
                     runner = delivery.ci.LocalCiRunner(root, run_id=f"optimized-identity-{count}",
                         env={**env, "CARGO_TARGET_DIR": str(root / "release-target")}, min_free_bytes=0)

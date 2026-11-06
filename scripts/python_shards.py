@@ -9,8 +9,8 @@ once and every process reports a unittest result. Tests cannot rely on sharing
 state with other cases in the same process.
 
 Methods marked `__hex_shard_bounded__ = True` use at most two workers. Owner
-selections finish ordinary cases first. Discovery can use spare worker slots
-once every ordinary batch has started.
+selections finish ordinary cases first. Discovery queues the bounded lanes
+after its first wave of ordinary batches and shares the same worker limit.
 """
 from __future__ import annotations
 
@@ -57,21 +57,24 @@ def test_cases(selectors: list[str] | None) -> list[tuple[str, bool]]:
     return sorted(found.items(), key=lambda case: (case[0] not in early, case[0]))
 
 
-def run_cases(cases, workers, run, *, use_idle_slots=False):
-    """Queue ordinary cases first and give marked cases at most two lanes."""
+def run_cases(cases, workers, run, *, overlap_bounded=False):
+    """Give marked cases at most two lanes within the overall worker limit."""
     ordinary = [name for name, marked in cases if not marked]
     bounded = [name for name, marked in cases if marked]
     lanes = min(2, workers, len(bounded))
+    split = workers if overlap_bounded and workers > 1 else len(ordinary)
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        ordinary_results = pool.map(run, ordinary)
-        if not use_idle_slots:
-            yield from ordinary_results
-        # Queue both lanes behind all ordinary batches. Each lane runs one
-        # fixture at a time, even if most ordinary workers have become idle.
+        first = pool.map(run, ordinary[:split])
+        if not overlap_bounded:
+            yield from first
+        # Each lane runs one fixture at a time. In discovery these jobs enter
+        # the same queue between the first wave and the remaining batches.
         bounded_jobs = [pool.submit(lambda names: list(map(run, names)), bounded[index::lanes])
                         for index in range(lanes)]
-        if use_idle_slots:
-            yield from ordinary_results
+        remaining = pool.map(run, ordinary[split:])
+        if overlap_bounded:
+            yield from first
+        yield from remaining
         results = [job.result() for job in bounded_jobs]
         for index in range(len(bounded)):
             yield results[index % lanes][index // lanes]
@@ -113,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
 
     failed = False
     jobs = batches(cases, size=8 if arguments.discover else 1)
-    for test, code, output in run_cases(jobs, arguments.workers, run, use_idle_slots=arguments.discover):
+    for test, code, output in run_cases(jobs, arguments.workers, run, overlap_bounded=arguments.discover):
         # unittest reports on stderr; keep that stream for callers and logs.
         print(f"===== {test} (exit {code}) =====\n{output}", file=sys.stderr, flush=True)
         failed |= code != 0

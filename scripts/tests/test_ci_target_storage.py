@@ -13,6 +13,22 @@ storage = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(storage)
 
 
+def reuse_scratch_volume_observations(test, *runner_modules):
+    """Probe each fixed scratch target once in fixtures that never move it."""
+    for runner in runner_modules:
+        inspect = runner.ci_target_storage.inspect
+        observed = {}
+
+        def inspect_scratch(target, env, *, inspect=inspect, observed=observed):
+            if target not in observed:
+                observed[target] = inspect(target, env)
+            return observed[target]
+
+        patched = patch.object(runner.ci_target_storage, "inspect", inspect_scratch)
+        patched.start()
+        test.addCleanup(patched.stop)
+
+
 class TargetStorageTests(unittest.TestCase):
     def test_macos_identifies_actual_device_for_new_target_without_creating_it(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -123,7 +123,7 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual([item[0] for item in results], ["a", "b"])
         self.assertEqual(maximum, 1)
 
-    def test_discovery_uses_idle_slots_while_ordinary_tail_finishes(self):
+    def test_discovery_queues_bounded_cases_after_the_first_ordinary_wave(self):
         started = threading.Event()
         bounded_started = threading.Event()
 
@@ -134,11 +134,13 @@ class SelectionTests(unittest.TestCase):
             elif name == "bounded":
                 self.assertTrue(started.wait(timeout=2))
                 bounded_started.set()
+            elif name == "later":
+                self.assertTrue(bounded_started.is_set())
             return name
 
-        cases = [("tail", False), ("quick", False), ("bounded", True)]
-        self.assertEqual(list(shards.run_cases(cases, 2, run, use_idle_slots=True)),
-                         ["tail", "quick", "bounded"])
+        cases = [("tail", False), ("quick", False), ("later", False), ("bounded", True)]
+        self.assertEqual(list(shards.run_cases(cases, 2, run, overlap_bounded=True)),
+                         ["tail", "quick", "later", "bounded"])
 
     def test_shard_cli_refuses_empty_or_missing_selection(self):
         output = io.StringIO()

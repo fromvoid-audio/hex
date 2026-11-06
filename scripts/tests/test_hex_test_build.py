@@ -15,6 +15,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from contextlib import contextmanager, redirect_stderr
+from test_ci_target_storage import reuse_scratch_volume_observations
 
 SPEC = importlib.util.spec_from_file_location("hex_test_build", Path(__file__).resolve().parents[1] / "hex-test-build.py")
 delivery = importlib.util.module_from_spec(SPEC)
@@ -1244,6 +1245,7 @@ class ReleaseCargoTests(unittest.TestCase):
     __hex_shard_early__ = True
 
     def test_real_release_a_b_a_api_outputs_dependencies_and_scope_refusal(self):
+        reuse_scratch_volume_observations(self, delivery.ci)
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             root = base / "a"
