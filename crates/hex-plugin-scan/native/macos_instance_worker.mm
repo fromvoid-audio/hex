@@ -393,6 +393,15 @@ int main(int argc,char** argv) {
                         ++edit_query_operation;completed_edit_count=0;return true;
                     };
                     std::array<hex_instance::EditEvent,hex_instance::HOST_EDIT_COUNT> applying_edits{};size_t applying_edit_count=0;
+                    const auto last_editor_edit=[&](ParamID id) {
+                        for(size_t n=applying_edit_count;n>0;--n)
+                            if(applying_edits[n-1].kind==hex_instance::Perform && applying_edits[n-1].id==id) return n-1;
+                        return applying_edit_count;
+                    };
+                    const auto staged_editor_sequence=[&](ParamID id)->uint64 {
+                        const auto index=last_editor_edit(id);
+                        return index<applying_edit_count?applying_edits[index].sequence:0;
+                    };
                     const auto stage_edits=[&](size_t later_points=0) {
                         applying_edit_count=0;hex_instance::EditEvent event{};
                         while(completed_edit_count+applying_edit_count<completed_edits.size() && instance.peek_parameter_edit(event)) {
@@ -434,14 +443,7 @@ int main(int argc,char** argv) {
                                 for(size_t n=0;n<changes->size();++n) {
                                     hex_instance::ParameterPoint point{};
                                     if(!changes->point(n,point) || !processing_parameters.find(point.id)) return false;
-                                    uint64 editor_sequence=0;
-                                    for(size_t edit=applying_edit_count;edit>0;--edit) {
-                                        const auto& applied=applying_edits[edit-1];
-                                        if(applied.kind==hex_instance::Perform && applied.id==point.id) {
-                                            editor_sequence=applied.sequence;break;
-                                        }
-                                    }
-                                    if(!parameter_feedback.put(point.id,point.normalized,editor_sequence)) return false;
+                                    if(!parameter_feedback.put(point.id,point.normalized,staged_editor_sequence(point.id))) return false;
                                 }
                             }
                             instance.publish_parameter_feedback(parameter_feedback);
@@ -757,6 +759,7 @@ int main(int argc,char** argv) {
                         // copied exchange and its reply remain one quantum.
                         packet.reply_parameter_count=0;
                         size_t next_note=0,next_parameter=0;
+                        std::array<bool,hex_instance::HOST_EDIT_COUNT> editor_value_replaced{};
                         for(size_t slice=0;slice<=packet.timing_change_count;++slice) {
                             const size_t first=slice?packet.timing_changes[slice-1].offset:0;
                             const size_t end=slice<packet.timing_change_count?packet.timing_changes[slice].offset:packet.frames;
@@ -811,7 +814,16 @@ int main(int argc,char** argv) {
                                     (outgoing==parameter_output.size() || input_point.offset<=output_point.offset);
                                 const auto point=use_input?input_point:output_point;
                                 if(use_input) ++incoming;else ++outgoing;
-                                if(!processing_parameters.find(point.id) || !parameter_feedback.put(point.id,point.normalized)) valid=false;
+                                const auto edit=last_editor_edit(point.id);
+                                uint64 editor_sequence=0;
+                                if(edit<applying_edit_count) {
+                                    // Editor input is staged at quantum offset zero. A later
+                                    // authored point takes ownership, including across slices.
+                                    if(use_input && (first || point.offset)) editor_value_replaced[edit]=true;
+                                    if(!editor_value_replaced[edit]) editor_sequence=applying_edits[edit].sequence;
+                                }
+                                if(!processing_parameters.find(point.id) ||
+                                    !parameter_feedback.put(point.id,point.normalized,editor_sequence)) valid=false;
                             }
                             if(!valid || !packet.append_parameter_reply(first,parameter_output)) {
                                 worker_failure.store(ProtocolFailure);break;

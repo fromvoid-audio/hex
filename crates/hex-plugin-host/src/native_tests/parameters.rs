@@ -1,6 +1,7 @@
 //! Actual source-bound SDK parameter processing through the production Rust
 //! reader. Direct worker exchanges are not Root/callback delivery acceptance.
 use super::*;
+use crate::protocol::{ParameterPageProgress, ParameterPageQuery};
 use crate::transport::{ParameterPoint, Parameters};
 
 fn change_fixture_latency(instance: &mut Prepared, value: f64) -> Result<Block> {
@@ -839,6 +840,75 @@ fn editor_burst_drains(idle: bool) {
         &3.0_f32.to_le_bytes()
     );
     assert!(paused.retire_on_control().unwrap().status.success());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_sdk_playback_does_not_replay_stale_editor_values() {
+    for authored in [false, true] {
+        let case = Case::new();
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup_restore(135),
+        )
+        .unwrap();
+        fs::write(case.release(), b"finish the editor drag").unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        while instance.poll_parameter_edits_on_worker().unwrap().ready == 0 {
+            assert!(Instant::now() < until, "the drag must reach the worker");
+            thread::yield_now();
+        }
+        let mut input = request(instance.configuration(), 0);
+        if authored {
+            input
+                .parameters
+                .push(ParameterPoint {
+                    frame: 4,
+                    id: 7,
+                    normalized: 0.5,
+                })
+                .unwrap();
+        }
+        let output = instance.exchange_on_worker(input).unwrap();
+        assert_eq!(
+            output.parameters.as_slice(),
+            &[ParameterPoint {
+                frame: input.frames - 1,
+                id: 7,
+                normalized: if authored { 0.5 } else { 0.25 },
+            }]
+        );
+        instance
+            .begin_parameter_page_on_worker(ParameterPageQuery::default())
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        loop {
+            match instance.poll_parameter_page_on_worker().unwrap() {
+                ParameterPageProgress::Page(page) => {
+                    assert_eq!(
+                        page.as_slice()[0].normalized,
+                        if authored { 0.5 } else { 0.875 }
+                    );
+                    break;
+                }
+                ParameterPageProgress::Pending => {
+                    assert!(Instant::now() < until, "controller feedback must settle");
+                    thread::yield_now();
+                }
+                other => panic!("expected a controller page, got {other:?}"),
+            }
+        }
+        assert!(
+            instance
+                .stop_and_reap_on_control()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
 }
 
 #[test]
