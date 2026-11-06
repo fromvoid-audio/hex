@@ -25,7 +25,9 @@
 //! Playback admission is owned by hex-engine and may refuse unsupported hierarchy.
 //!
 //! # Dependencies
-//! Uses hex-tuning and neutral hex-lattice-contract metadata/state; never DSP implementations.
+//! Uses hex-tuning and neutral hex-lattice-contract metadata/state. The pure
+//! hex-plugin-state codec validates class identity for VST3 lanes and state
+//! replacements. This crate never loads a plug-in or depends on DSP implementations.
 //!
 //! # Does not own
 //! Does not render DSP, access audio devices or maintain a parallel UI editing model. Audio

@@ -50,6 +50,7 @@ pub(crate) mod track_groups;
 pub(crate) mod track_name_origin;
 pub(crate) mod track_tags;
 pub(crate) mod tuning;
+pub(crate) mod vst3_automation;
 pub(crate) mod warp_resampler;
 use crate::StorageError;
 use hex_project::{

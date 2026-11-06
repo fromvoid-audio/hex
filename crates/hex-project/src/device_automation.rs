@@ -116,6 +116,18 @@ fn validate_points(points: &[AutomationPoint]) -> Result<(), Invalid> {
     }
     Ok(())
 }
+fn validate_vst3_target(
+    target: DeviceAutomationTarget,
+    state: &hex_lattice_contract::NativeDeviceState,
+) -> Result<(), Invalid> {
+    if let DeviceAutomationTarget::Vst3 { class, .. } = target
+        && !hex_plugin_state::decode(state)
+            .is_ok_and(|plugin| plugin.identity.class.bytes() == class)
+    {
+        return Err(Invalid("vst3 automation target differs from device class"));
+    }
+    Ok(())
+}
 impl Device {
     pub(crate) fn validate_automation_provider(
         &self,
@@ -130,6 +142,9 @@ impl Device {
             return Err(Invalid(
                 "clear automation before replacing a device provider",
             ));
+        }
+        for lane in &self.automation {
+            validate_vst3_target(lane.target, state)?;
         }
         Ok(())
     }
@@ -179,6 +194,7 @@ impl Project {
         for device in self.automation_devices() {
             validate_device_automation(&device.automation)?;
             for lane in &device.automation {
+                validate_vst3_target(lane.target, device.state())?;
                 total = total
                     .checked_add(lane.points.len())
                     .ok_or(Invalid("automation point count overflow"))?;
@@ -287,6 +303,7 @@ impl Project {
             validate_points(&points)?;
         }
         self.edit_device(device, move |device| {
+            validate_vst3_target(target, device.state())?;
             match device
                 .automation
                 .binary_search_by_key(&target, |lane| lane.target)

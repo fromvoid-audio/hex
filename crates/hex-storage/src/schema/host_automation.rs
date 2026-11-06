@@ -68,6 +68,11 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
                 DeviceAutomationTarget::Parameter(_) => continue,
                 DeviceAutomationTarget::HostInputGain => Target::InputGain,
                 DeviceAutomationTarget::HostOutputGain => Target::OutputGain,
+                DeviceAutomationTarget::Vst3 { .. } => {
+                    return Err(StorageError::Invalid(
+                        "older schema cannot save vst3 automation targets",
+                    ));
+                }
             };
             rows.push(Lane {
                 device: device.id().value(),

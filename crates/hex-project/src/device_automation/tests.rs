@@ -815,3 +815,95 @@ fn base_selection_retains_authored_evaluation_and_still_enforces_point_bounds() 
     );
     assert_eq!(e.project(), &before);
 }
+
+#[test]
+fn vst3_automation_uses_raw_ids_and_refuses_replacement_by_a_different_class() {
+    let plugin = |class, state| {
+        hex_plugin_state::encode(hex_plugin_state::State {
+            identity: hex_plugin_state::Identity {
+                class: hex_plugin_state::ClassId::new(class).unwrap(),
+                binary: hex_plugin_state::BinaryIdentity {
+                    executable_sha256: [4; 32],
+                    info_sha256: [5; 32],
+                },
+            },
+            component: Some(state),
+            controller: None,
+        })
+        .unwrap()
+    };
+    let class = [1; 16];
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Device(device) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: plugin(class, &[1]),
+        })
+        .unwrap()
+    else {
+        panic!("expected a vst3 device");
+    };
+    let before = editor.project().clone();
+    let target = |class, parameter| DeviceAutomationTarget::Vst3 { class, parameter };
+    for invalid in [
+        target([0; 16], 0),
+        target([2; 16], 0),
+        target(class, u32::MAX),
+    ] {
+        assert!(
+            editor
+                .execute(Command::ReplaceDeviceAutomationTarget {
+                    device,
+                    target: invalid,
+                    points: points(),
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project(), &before);
+    }
+    let zero = target(class, 0);
+    editor
+        .execute(Command::ReplaceDeviceAutomationTarget {
+            device,
+            target: zero,
+            points: points(),
+        })
+        .unwrap();
+    let authored = editor.project().clone();
+    assert_eq!(
+        authored
+            .device(device)
+            .unwrap()
+            .automation_target(zero)
+            .unwrap()
+            .points,
+        points()
+    );
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &before);
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &authored);
+    assert!(
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device,
+                state: plugin([2; 16], &[2]),
+            })
+            .is_err()
+    );
+    assert_eq!(editor.project(), &authored);
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device,
+            state: plugin(class, &[2]),
+        })
+        .unwrap();
+    assert!(
+        editor
+            .project()
+            .device(device)
+            .unwrap()
+            .automation_target(zero)
+            .is_some()
+    );
+}

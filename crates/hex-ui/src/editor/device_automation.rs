@@ -68,6 +68,7 @@ impl std::fmt::Display for TargetKey {
             DeviceAutomationTarget::Parameter(id) => write!(f, "{}", id.value()),
             DeviceAutomationTarget::HostInputGain => f.write_str("host-input"),
             DeviceAutomationTarget::HostOutputGain => f.write_str("host-output"),
+            DeviceAutomationTarget::Vst3 { parameter, .. } => write!(f, "vst3-{parameter}"),
         }
     }
 }
@@ -305,6 +306,7 @@ impl Entry {
         }
         let metadata = hex_engine::native_device_view_for_class(*class, source.state()).ok()?;
         let (entry_metadata, base, label) = match kind {
+            DeviceAutomationTarget::Vst3 { .. } => return None,
             DeviceAutomationTarget::Parameter(parameter) => {
                 let value = metadata
                     .parameters
@@ -542,6 +544,7 @@ impl EditorView {
             DeviceAutomationTarget::Parameter(parameter) => parameter,
             DeviceAutomationTarget::HostInputGain => hex_engine::DEVICE_INPUT_GAIN.id,
             DeviceAutomationTarget::HostOutputGain => hex_engine::DEVICE_OUTPUT_GAIN.id,
+            DeviceAutomationTarget::Vst3 { .. } => return entry.base,
         };
         let key = super::device_panel::ParameterKey {
             device: entry.target.device,
