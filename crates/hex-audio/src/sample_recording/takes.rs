@@ -2,11 +2,12 @@
 //! successful write advances all files together. A write failure preserves the
 //! last common prefix, which is finalized as a readable interrupted take.
 
-use super::{End, FRAMES, Reader, Source};
+use super::{End, FRAMES, Reader, Source, TimingSpan, timing};
 use std::{
     fs::{File, OpenOptions},
     io::{self, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    sync::Arc,
     thread,
     time::Duration,
 };
@@ -21,6 +22,9 @@ pub struct Take {
     pub path: PathBuf,
     pub frames: u64,
     pub sample_rate: u32,
+    /// Original playing spans in this recorder session. Gaps are unknown, e.g.
+    /// stopped audio or capture beyond the bounded timing index.
+    pub timing: Arc<[TimingSpan]>,
 }
 
 #[derive(Debug)]
@@ -56,10 +60,11 @@ pub fn write_takes(mut reader: Reader, directory: &Path) -> io::Result<Takes> {
     }
     reader.ready();
     let mut written = 0;
+    let mut timing_index = Vec::new();
     let mut write_error = None;
     let mut encoded = [0; FRAMES * FRAME_BYTES as usize];
     let end = loop {
-        let terminal = reader.drain(|frames, _, pcm| {
+        let terminal = reader.drain_with_timing(|frames, _, pcm, clock| {
             if write_error.is_some() {
                 return;
             }
@@ -84,6 +89,17 @@ pub fn write_takes(mut reader: Reader, directory: &Path) -> io::Result<Takes> {
                     return;
                 }
             }
+            for span in clock {
+                timing::append(
+                    &mut timing_index,
+                    TimingSpan {
+                        take_start: written + span.take_start,
+                        take_end: written + span.take_end,
+                        ..*span
+                    },
+                    timing::MAX_SPANS,
+                );
+            }
             written = end;
         });
         if let Some(end) = terminal {
@@ -95,6 +111,7 @@ pub fn write_takes(mut reader: Reader, directory: &Path) -> io::Result<Takes> {
         }
         thread::sleep(Duration::from_millis(1));
     };
+    let timing: Arc<[TimingSpan]> = timing_index.into();
     let mut takes = Vec::with_capacity(files.len());
     for (source, path, mut file) in files {
         file.set_len(HEADER + written * FRAME_BYTES)?;
@@ -107,6 +124,7 @@ pub fn write_takes(mut reader: Reader, directory: &Path) -> io::Result<Takes> {
                 path,
                 frames: written,
                 sample_rate: rate,
+                timing: timing.clone(),
             });
         }
     }

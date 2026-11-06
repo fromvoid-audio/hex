@@ -15,6 +15,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+mod beat_guides;
 mod excerpt;
 mod selection;
 mod waveform;
