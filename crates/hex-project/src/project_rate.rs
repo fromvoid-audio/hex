@@ -8,7 +8,26 @@ use crate::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 
+/// How to resolve the project clock when applying settings. The saved
+/// effective rate stays authoritative when opening or moving a project.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SampleRateMode {
+    #[default]
+    Fixed,
+    FollowInterface,
+}
+
 impl Project {
+    pub fn sample_rate_mode(&self) -> SampleRateMode {
+        self.sample_rate_mode
+    }
+
+    /// Set the mode on a private candidate after resolving its effective rate.
+    pub fn with_sample_rate_mode(mut self, mode: SampleRateMode) -> Self {
+        self.sample_rate_mode = mode;
+        self
+    }
+
     /// Build a separate candidate in the current saved format. Musical positions
     /// retain their beats. Frame positions round to the nearest destination
     /// frame, with ties away from zero. Asset ends use the original source

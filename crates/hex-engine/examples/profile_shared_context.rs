@@ -325,6 +325,7 @@ fn fixture(instrument_type: DeviceTypeId) -> Result<ProfileFixture, Box<dyn Erro
         sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: RATE,
+        sample_rate_mode: Default::default(),
         next_id,
         assets: Vec::new(),
         tracks,

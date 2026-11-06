@@ -123,6 +123,7 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
         sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: RATE,
+        sample_rate_mode: Default::default(),
         next_id: next,
         assets: Vec::new(),
         tracks,

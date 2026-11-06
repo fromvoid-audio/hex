@@ -69,6 +69,7 @@ impl Project {
             sidechains,
             import_provenance,
             sample_rate,
+            sample_rate_mode,
             next_id,
             assets,
             tracks,
@@ -92,6 +93,7 @@ impl Project {
             || sidechains != &target.sidechains
             || import_provenance != &target.import_provenance
             || sample_rate != &target.sample_rate
+            || sample_rate_mode != &target.sample_rate_mode
             || target.next_id > *next_id
             || returns != &target.returns
             || session != &target.session

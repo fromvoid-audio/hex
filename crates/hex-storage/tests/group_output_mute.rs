@@ -186,6 +186,16 @@ fn larger_inactive_vst3_state_selects_schema75_and_preserves_group_mutes() {
     );
     let mut document: Value = serde_json::from_slice(&saved).unwrap();
     assert_eq!(document["version"], 75);
+    let follows = project
+        .clone()
+        .with_sample_rate_mode(hex_project::SampleRateMode::FollowInterface);
+    let encoded = hex_storage::encode(&follows).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&encoded).unwrap()["version"],
+        hex_storage::SAMPLE_RATE_MODE_SCHEMA_VERSION,
+    );
+    assert_eq!(hex_storage::decode(&encoded).unwrap(), follows);
+
     document["version"] = 74.into();
     assert!(hex_storage::decode(&serde_json::to_vec(&document).unwrap()).is_err());
     assert!(hex_storage::encode_schema20(project).is_err());

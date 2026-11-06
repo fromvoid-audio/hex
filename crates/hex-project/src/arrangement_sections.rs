@@ -211,6 +211,7 @@ impl Project {
             sidechains,
             import_provenance,
             sample_rate,
+            sample_rate_mode,
             next_id: _,
             assets,
             offline_assets,
@@ -224,6 +225,7 @@ impl Project {
             meter_map,
         } = self;
         *sample_rate == other.sample_rate
+            && *sample_rate_mode == other.sample_rate_mode
             && master_gain.to_bits() == other.master_gain.to_bits()
             && *loop_region == other.loop_region
             && *tempo_map == other.tempo_map
