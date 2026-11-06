@@ -394,11 +394,9 @@ mod tests {
         let (window, editor) = editor_window(cx, project, Default::default());
         let mut visual = VisualTestContext::from_window(window, cx);
         visual.run_until_parked();
-        for selector in [
-            format!("sample-arm-track-{}", track.value()),
-            "sample-arm-main-0".into(),
-        ] {
-            let point = visual.debug_bounds(&selector).unwrap().center();
+        let track_arm = Box::leak(format!("sample-arm-track-{}", track.value()).into_boxed_str());
+        for selector in [track_arm, "sample-arm-main-0"] {
+            let point = visual.debug_bounds(selector).unwrap().center();
             visual.simulate_click(point, Modifiers::default());
             visual.run_until_parked();
         }
