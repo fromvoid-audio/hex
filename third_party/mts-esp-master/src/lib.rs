@@ -192,9 +192,10 @@ impl Master {
         Self::acquire(false)
     }
 
-    /// Register after the user confirms that no other master is running.
+    /// Register after the user explicitly requests replacing the shared registration.
     /// If the library still reports a master with IPC enabled, reset shared
     /// MTS state, including tuning tables, filters and the client count.
+    /// An external process that is still running can continue writing to the table.
     pub fn recover() -> Result<Self, Error> {
         Self::acquire(true)
     }
