@@ -721,7 +721,7 @@ fn stopped_partial_quantum_dispatches_play_context_before_the_coincident_note() 
 #[test]
 fn dense_identified_notes_cross_callback_and_wire_without_expanding_replies() {
     let (control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
-    let events: [MidiEvent; 128] = std::array::from_fn(|index| MidiEvent {
+    let events: [MidiEvent; 160] = std::array::from_fn(|index| MidiEvent {
         frame: 1,
         bytes: [0x92, 60, 127],
         len: 3,
@@ -729,7 +729,7 @@ fn dense_identified_notes_cross_callback_and_wire_without_expanding_replies() {
     });
     let mut stage = || {
         callback.begin_physical_callback(8).unwrap();
-        for (index, events) in events.chunks_exact(64).enumerate() {
+        for (index, events) in events.chunks_exact(events.len() / 2).enumerate() {
             callback
                 .stage_segment(index * 4, &[[0.0; 2]; 4], events, &mut [[0.0; 2]; 4])
                 .unwrap();
@@ -752,9 +752,9 @@ fn dense_identified_notes_cross_callback_and_wire_without_expanding_replies() {
     #[cfg(not(feature = "allocation-probe"))]
     stage();
     let request = worker.receive().unwrap().unwrap();
-    assert_eq!(request.events.as_slice().len(), 128);
+    assert_eq!(request.events.as_slice().len(), events.len());
     for (index, event) in request.events.as_slice().iter().enumerate() {
-        assert_eq!(event.frame, if index < 64 { 1 } else { 5 });
+        assert_eq!(event.frame, if index < events.len() / 2 { 1 } else { 5 });
         assert_eq!(event.note_id, events[index].note_id);
     }
     let mut packet = Vec::new();

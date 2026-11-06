@@ -14,7 +14,7 @@
 //! Version6 uses the 40-byte context and appends one to seven playing-state
 //! changes. Header byte 12 is their count. Each change carries a u16 sample
 //! offset, six reserved zero bytes, and its own 40-byte context.
-//! Versions 3–6 carry up to 128 input events only when every event has a note
+//! Versions 3–6 carry up to 160 input events only when every event has a note
 //! ID. The generic event and worker reply contracts remain capped at 64.
 //! These records carry transport data; they do not promise SDK event admission.
 use super::*;
