@@ -314,7 +314,7 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
     println!("instrument console rate={rate} peak={console_peak}");
 
     if controlled_fixture {
-        // Hold a gate in the actual retained SDK component, then run the
+        // Hold both sources in the retained SDK component through the
         // desktop's priority Stop and stopped-restore handshake.
         send(
             &mut harness,
@@ -326,11 +326,15 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
         for _ in 0..3 {
             render_completed_block(&harness);
         }
+        let authored_peak = pcm_peak(render_completed_block(&harness));
+        assert!(authored_peak > 0.001);
+        keys.set_key(0, Some((60, 100, 2))).unwrap();
+        let combined_peak = (0..5)
+            .map(|_| pcm_peak(render_completed_block(&harness)))
+            .fold(0.0, f32::max);
         assert!(
-            render_completed_block(&harness)
-                .iter()
-                .flatten()
-                .any(|sample| sample.abs() > 0.001)
+            combined_peak > 1.5 * authored_peak,
+            "expected both held gates"
         );
         let before_stop = harness
             .audio
@@ -368,6 +372,31 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
         let (_, restored) = harness.applied(before_stop);
         assert!(restored.stopped_restore);
         wait(|| harness.plugin_completed.load(Acquire) == 0);
+        for _ in 0..4 {
+            assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
+        }
+        keys.ensure_output_activation_on_control().unwrap();
+        keys.set_key(0, Some((60, 100, 3))).unwrap();
+        let restored_peak = (0..6)
+            .map(|_| pcm_peak(render_completed_block(&harness)))
+            .fold(0.0, f32::max);
+        assert!(restored_peak > 0.001, "expected fresh stopped keyboard pcm");
+        assert!(
+            !harness
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
+        );
+        keys.set_key(0, None).unwrap();
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
+        println!("instrument keyboard after priority stop rate={rate} peak={restored_peak}");
         // The restored Arrangement contains a note at zero. Route to silence
         // before starting the callback to isolate any retained old SDK gate.
         wait(|| {

@@ -678,7 +678,7 @@ public:
         if (fault==28) fault_hang(9);
         if (fault==31) fault_crash(9);
         if (fault==10) return kResultFalse;
-        const float scale=0.5f+static_cast<float>(block)*0.125f;
+        const float scale=fault==127?1.0f:0.5f+static_cast<float>(block)*0.125f;
         int32 next_point=0,left_offset=-1;double left_value=static_cast<double>(gain.load())/4.0;
         double current_gain=gain.load();
         bool silent=true;
