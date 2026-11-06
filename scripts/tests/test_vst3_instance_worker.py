@@ -499,6 +499,16 @@ class NativeInstanceTests(unittest.TestCase):
         self.assertEqual((magic, struct.unpack_from("<I", error, 35)[0]), (b"HXVIER01", 8))
         self.assertEqual(self.terminal(malformed, 8)[5:7], (0, 0))
 
+    def test_instrument_with_single_auxiliary_input_renders_midi_with_silence_on_aux(self):
+        session = self.session(variant=136, channels=(0, 2))
+        self.assertEqual(session.message()[0], b"HXVIRD05")
+        for notes, audible in [([], False), ([(0, 0x92, 60, 100)], True),
+                               ([(0, 0x82, 60, 0)], False)]:
+            magic, reply = self.instrument_block(session, notes)
+            self.assertEqual(magic, b"HXVB")
+            self.assertEqual(any(struct.unpack("<16f", reply[64:])), audible)
+        self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (3, 24))
+
     def test_silent_input_instrument_refuses_routed_pcm_and_requires_a_midi_bus(self):
         audio_only = self.session(variant=0, channels=(0, 2))
         self.error(audio_only, 20)
