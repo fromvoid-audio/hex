@@ -270,15 +270,25 @@ mod tests {
             })
             .unwrap();
         assert_eq!(editor.project().main_devices()[0].id(), vst3);
-        for mode in [SampleRateMode::Fixed, SampleRateMode::FollowInterface] {
+        let directory =
+            std::env::temp_dir().join(format!("hex-vst3-automation-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        for (index, mode) in [SampleRateMode::Fixed, SampleRateMode::FollowInterface]
+            .into_iter()
+            .enumerate()
+        {
             let project = editor.project().clone().with_sample_rate_mode(mode);
             assert_eq!(
                 crate::schema_version_for(&project),
                 VST3_AUTOMATION_SCHEMA_VERSION
             );
-            let bytes = crate::encode(&project).unwrap();
-            assert_eq!(crate::decode(&bytes).unwrap(), project);
+            let path = directory.join(format!("{index}.hex"));
+            crate::save_new(&path, &project).unwrap();
+            let (reopened, token) = crate::load_with_token(&path).unwrap();
+            assert_eq!(reopened, project);
+            assert!(!token.requires_format_upgrade());
         }
+        std::fs::remove_dir_all(directory).unwrap();
         let value = encode(editor.project()).unwrap();
         let decode_mutation = |mutate: fn(&mut Value)| {
             let mut value = value.clone();
