@@ -507,18 +507,22 @@ impl SessionPlayback {
         demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
         force_restart: bool,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        if previous.foreign_arrangement.has_started()
-            || (previous.playing && !self.foreign_arrangement.is_empty())
-        {
-            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
-                "vst3 instrument graph handoff is unavailable",
-            ));
-        }
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
         {
             return Err(SessionPlaybackError::RevisionSampleRateMismatch);
         }
+        let foreign_handoff = self.foreign_arrangement.plan_handoff(
+            &previous.foreign_arrangement,
+            self.revision.arrangement().tracks(),
+            foreign_arrangement::FrameContext {
+                performance: previous.performance_frame,
+                arrangement: previous.arrangement_frame,
+                loop_pass: previous.arrangement_loop_pass,
+                playing: previous.playing,
+                chase: false,
+            },
+        )?;
         if self.analytic_continuations.len() != MAX_TRACKS
             || self.analytic_continuation_scratch.len() != MAX_TRACKS
             || previous.analytic_continuations.len() != MAX_TRACKS
@@ -773,6 +777,14 @@ impl SessionPlayback {
         let relocate = (planned_transfer.is_none() || force_restart)
             && !self.current_sampler_console
             && !self.revision.requires_control_sampler_sources();
+        if foreign_handoff.requires_clock_continuity
+            && (force_restart
+                || relocate
+                || !mapped_main_clock
+                || previous.periodic_tempo() != self.periodic_tempo_at(previous.arrangement_frame))
+        {
+            return Err(foreign_arrangement::INCOMPATIBLE_HANDOFF);
+        }
         // A paused cursor keeps its Arrangement beat across an edited base
         // tempo map, like the running handoff below (Pulse #4118).
         let paused_cursor = if relocate && !previous.playing {
@@ -984,6 +996,11 @@ impl SessionPlayback {
                 self.playing = true;
                 self.route_state_generation = previous.route_state_generation.wrapping_add(1);
             }
+            self.foreign_arrangement.inherit_handoff(
+                &mut previous.foreign_arrangement,
+                foreign_handoff,
+                false,
+            );
             return Ok(SessionHandoffReport {
                 cancelled_pending,
                 cancelled_pending_len,
@@ -4675,6 +4692,11 @@ impl SessionPlayback {
         }
         self.main_chain
             .transfer_history_from(&mut previous.main_chain);
+        self.foreign_arrangement.inherit_handoff(
+            &mut previous.foreign_arrangement,
+            foreign_handoff,
+            true,
+        );
         Ok(report)
     }
 
