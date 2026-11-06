@@ -62,28 +62,48 @@ pub(crate) enum PreparedOutputKind {
     Worker(WorkerOutputProfile),
     WorkerReliable(WorkerOutputProfile),
 }
+/// Device frames configure CoreAudio. Project frames bound each callback and
+/// define the immutable VST3 transport quantum and its 2Q delay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BridgeStreamPlan {
+    device_frames: u16,
+    project_quantum: u16,
+    converting_device_rate: Option<u32>,
+}
+
 impl PreparedOutputKind {
-    /// Whether the backend may convert this output's rate. A plugin bridge
-    /// fixes its physical quantum in device frames, which conversion breaks.
-    fn converts_rate(self) -> bool {
-        BACKEND_CONVERTS_OUTPUT_RATE
-            && !matches!(
-                self,
-                Self::Worker(WorkerOutputProfile::PluginBridge)
-                    | Self::WorkerReliable(WorkerOutputProfile::PluginBridge)
-            )
-    }
-    fn physical_callback_request(
+    fn bridge_stream_plan(
         self,
         supported: cpal::SupportedBufferSize,
-    ) -> Result<Option<u16>, String> {
-        match self {
+        device_rate: u32,
+        project_rate: u32,
+    ) -> Result<Option<BridgeStreamPlan>, String> {
+        if !matches!(
+            self,
             Self::Worker(WorkerOutputProfile::PluginBridge)
-            | Self::WorkerReliable(WorkerOutputProfile::PluginBridge) => {
-                bridge_callback_request(supported).map(Some)
-            }
-            _ => Ok(None),
+                | Self::WorkerReliable(WorkerOutputProfile::PluginBridge)
+        ) {
+            return Ok(None);
         }
+        let quantum = hex_plugin_host::transport::MAX_FRAMES as u16;
+        if device_rate == project_rate {
+            let frames = bridge_callback_request(supported, u32::from(quantum), false)?;
+            return Ok(Some(BridgeStreamPlan {
+                device_frames: frames,
+                project_quantum: frames,
+                converting_device_rate: None,
+            }));
+        }
+        // Choose a hardware buffer whose corresponding client duration fits Q.
+        // AUHAL's initialized maximum is checked separately before startup.
+        let cap = u64::from(quantum) * u64::from(device_rate) / u64::from(project_rate);
+        let cap = cap.min(u64::from(quantum)) as u32;
+        let device_frames = bridge_callback_request(supported, cap, true)?;
+        Ok(Some(BridgeStreamPlan {
+            device_frames,
+            project_quantum: quantum,
+            converting_device_rate: Some(device_rate),
+        }))
     }
 }
 
@@ -194,8 +214,11 @@ pub(crate) fn open_prepared(
     let device_rate = config.sample_rate;
     // A converting backend runs the stream at the project rate; the device's
     // nominal rate is left as the user set it (see `open_outcome`).
-    config.sample_rate =
-        negotiate_stream_rate(expected_sample_rate, device_rate, kind.converts_rate())?;
+    config.sample_rate = negotiate_stream_rate(
+        expected_sample_rate,
+        device_rate,
+        BACKEND_CONVERTS_OUTPUT_RATE,
+    )?;
     if config.channels == 0 {
         return Err("output device has no channels".into());
     }
@@ -210,9 +233,10 @@ pub(crate) fn open_prepared(
     // CPAL's CoreAudio fixed request changes a device-wide property. Make it
     // explicit on the existing lifecycle open lane; ordinary native outputs
     // retain Default, including devices reporting Unknown buffer ranges.
-    let physical_callback_request = kind.physical_callback_request(*supported.buffer_size())?;
-    if let Some(frames) = physical_callback_request {
-        config.buffer_size = cpal::BufferSize::Fixed(u32::from(frames));
+    let bridge =
+        kind.bridge_stream_plan(*supported.buffer_size(), device_rate, config.sample_rate)?;
+    if let Some(plan) = bridge {
+        config.buffer_size = cpal::BufferSize::Fixed(u32::from(plan.device_frames));
     }
 
     let (capture, mut spectrum, spectrum_reaper, spectrum_error) =
@@ -273,8 +297,9 @@ pub(crate) fn open_prepared(
     } else {
         None
     };
-    if let Some(frames) = physical_callback_request
-        && let Err(error) = control.configure_physical_callback_request(&mut callback, frames)
+    if let Some(plan) = bridge
+        && let Err(error) =
+            control.configure_plugin_callback_quantum(&mut callback, plan.project_quantum)
     {
         drop(lifecycle::StreamOwner::failed_preparation_custody(
             lease,
@@ -319,11 +344,11 @@ pub(crate) fn open_prepared(
     }
     stream_owner.expose_backend();
     let stream = if sample_format == cpal::SampleFormat::F32 {
-        build::<f32>(&device, &config, data_guard, error_guard)
+        build::<f32>(&device, &config, bridge, data_guard, error_guard)
     } else if sample_format == cpal::SampleFormat::I16 {
-        build::<i16>(&device, &config, data_guard, error_guard)
+        build::<i16>(&device, &config, bridge, data_guard, error_guard)
     } else {
-        build::<u16>(&device, &config, data_guard, error_guard)
+        build::<u16>(&device, &config, bridge, data_guard, error_guard)
     }
     .map_err(|error| error.to_string())?;
     stream_owner.set_stream(stream);
@@ -356,22 +381,39 @@ pub(crate) fn open_prepared(
 /// Select within the device's reported finite range and the existing bridge
 /// cap. Unknown/invalid ranges refuse rather than infer a bound from scratch
 /// chunks. A backend can still refuse the fixed request during stream creation.
-fn bridge_callback_request(supported: cpal::SupportedBufferSize) -> Result<u16, String> {
+fn bridge_callback_request(
+    supported: cpal::SupportedBufferSize,
+    cap: u32,
+    prefer_power_of_two: bool,
+) -> Result<u16, String> {
     let cpal::SupportedBufferSize::Range { min, max } = supported else {
         return Err(
             "output device does not report a bounded buffer range for plugin processing".into(),
         );
     };
-    let frames = max.min(hex_plugin_host::transport::MAX_FRAMES as u32);
+    let frames = max.min(cap);
     if min == 0 || min > max || min > frames {
-        return Err("output device cannot provide a supported plugin callback size".into());
+        return Err(
+            "output device cannot provide a buffer within the plugin callback limit".into(),
+        );
     }
+    let frames = if prefer_power_of_two {
+        let conventional = 1 << frames.ilog2();
+        if conventional >= min {
+            conventional
+        } else {
+            frames
+        }
+    } else {
+        frames
+    };
     u16::try_from(frames).map_err(|_| "plugin callback size exceeds its supported range".into())
 }
 
 fn build<T: SizedSample + FromSample<f32>>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
+    bridge: Option<BridgeStreamPlan>,
     mut data_guard: crate::native_callback_owner::Guard<
         crate::native_callback_owner::NativeCallbackOwner,
     >,
@@ -384,85 +426,104 @@ where
 {
     let channels = usize::from(config.channels);
     let rate = config.sample_rate;
-    device.build_output_stream(
-        config,
-        move |data: &mut [T], _| {
-            let Some(owner) = data_guard.owner_mut() else {
+    let bounded_bridge =
+        bridge.and_then(|plan| Some((plan.converting_device_rate?, plan.project_quantum)));
+    let data_callback = move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+        let Some(owner) = data_guard.owner_mut() else {
+            data.fill(T::from_sample(0.0));
+            return;
+        };
+        owner.run(|callback, status| {
+            let start = Instant::now();
+            callback.begin_block();
+            if status.device_fault.load(Acquire) {
+                callback.fence_device_fault();
                 data.fill(T::from_sample(0.0));
+                status.peak_left.store(0, Relaxed);
+                status.peak_right.store(0, Relaxed);
                 return;
-            };
-            owner.run(|callback, status| {
-                let start = Instant::now();
-                callback.begin_block();
-                if status.device_fault.load(Acquire) {
-                    callback.fence_device_fault();
-                    data.fill(T::from_sample(0.0));
-                    status.peak_left.store(0, Relaxed);
-                    status.peak_right.store(0, Relaxed);
-                    return;
-                }
-                let mut block: [Frame; 256] = [[0.0; 2]; 256];
-                let mut peaks = [0.0_f32; 2];
-                let complete = data.len() / channels * channels;
-                data[complete..].fill(T::from_sample(0.0));
-                if !valid_transport_buffer(callback, data.len(), channels) {
-                    // Render chunks are not physical callback bounds. Never
-                    // turn a large callback into hidden same-callback 2Q waits.
-                    callback.revoke_output_transport();
-                    data.fill(T::from_sample(0.0));
-                    callback.report_render_fault(
-                        Some(&hex_engine::Invalid(
-                            "plugin physical callback extent exceeds its fixed quantum",
-                        )),
-                        status.position.load(Relaxed),
-                    );
-                    return;
-                }
-                if let Err(error) = callback.begin_native_effect_callback(complete / channels) {
-                    data.fill(T::from_sample(0.0));
-                    callback.report_render_fault(Some(&error), status.position.load(Relaxed));
-                    return;
-                }
-                for chunk in data[..complete].chunks_mut(channels * block.len()) {
-                    let frames = chunk.len() / channels;
-                    let block_start_frame = status.position.load(Relaxed);
-                    let rendered = callback.render(&mut block[..frames]);
-                    finish_host_chunk(
-                        callback,
-                        chunk,
-                        &mut block[..frames],
-                        channels,
-                        &rendered,
-                        block_start_frame,
-                        start,
-                    );
-                    for stereo in &block[..frames] {
-                        for channel in 0..2 {
-                            peaks[channel] = peaks[channel].max(stereo[channel].abs());
-                        }
+            }
+            let mut block: [Frame; 256] = [[0.0; 2]; 256];
+            let mut peaks = [0.0_f32; 2];
+            let complete = data.len() / channels * channels;
+            data[complete..].fill(T::from_sample(0.0));
+            if bounded_bridge.is_some_and(|(_, quantum)| {
+                complete != data.len() || complete / channels > usize::from(quantum)
+            }) || !valid_transport_buffer(callback, data.len(), channels)
+            {
+                // Render chunks are not physical callback bounds. Never
+                // turn a large callback into hidden same-callback 2Q waits.
+                callback.revoke_output_transport();
+                data.fill(T::from_sample(0.0));
+                callback.report_render_fault(
+                    Some(&hex_engine::Invalid(
+                        "plugin physical callback extent exceeds its fixed quantum",
+                    )),
+                    status.position.load(Relaxed),
+                );
+                return;
+            }
+            if let Err(error) = callback.begin_native_effect_callback(complete / channels) {
+                data.fill(T::from_sample(0.0));
+                callback.report_render_fault(Some(&error), status.position.load(Relaxed));
+                return;
+            }
+            for chunk in data[..complete].chunks_mut(channels * block.len()) {
+                let frames = chunk.len() / channels;
+                let block_start_frame = status.position.load(Relaxed);
+                let rendered = callback.render(&mut block[..frames]);
+                finish_host_chunk(
+                    callback,
+                    chunk,
+                    &mut block[..frames],
+                    channels,
+                    &rendered,
+                    block_start_frame,
+                    start,
+                );
+                for stereo in &block[..frames] {
+                    for channel in 0..2 {
+                        peaks[channel] = peaks[channel].max(stereo[channel].abs());
                     }
                 }
-                status.peak_left.store(peaks[0].to_bits(), Relaxed);
-                status.peak_right.store(peaks[1].to_bits(), Relaxed);
-                let elapsed = start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
-                status
-                    .cpu_meter
-                    .record(elapsed, data.len() / channels, rate);
-                status.callback_max_ns.fetch_max(elapsed, Relaxed);
-                let deadline = (data.len() / channels) as u64 * 1_000_000_000 / u64::from(rate);
-                if elapsed > deadline {
-                    status.deadline_misses.fetch_add(1, Relaxed);
-                }
-                callback.trace_callback_timing(elapsed, deadline, data.len() / channels);
-            });
-        },
-        move |_| {
-            if let Some(owner) = error_guard.owner_mut() {
-                owner.report();
             }
-        },
-        None,
-    )
+            status.peak_left.store(peaks[0].to_bits(), Relaxed);
+            status.peak_right.store(peaks[1].to_bits(), Relaxed);
+            let elapsed = start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+            status
+                .cpu_meter
+                .record(elapsed, data.len() / channels, rate);
+            status.callback_max_ns.fetch_max(elapsed, Relaxed);
+            let deadline = (data.len() / channels) as u64 * 1_000_000_000 / u64::from(rate);
+            if elapsed > deadline {
+                status.deadline_misses.fetch_add(1, Relaxed);
+            }
+            callback.trace_callback_timing(elapsed, deadline, data.len() / channels);
+        });
+    };
+    let error_callback = move |_| {
+        if let Some(owner) = error_guard.owner_mut() {
+            owner.report();
+        }
+    };
+    #[cfg(target_os = "macos")]
+    if let Some((device_rate, limit)) = bounded_bridge {
+        match device.as_inner() {
+            cpal::platform::DeviceInner::CoreAudio(device) => {
+                let stream = device.build_bounded_output_stream(
+                    config,
+                    device_rate,
+                    limit,
+                    data_callback,
+                    error_callback,
+                )?;
+                return Ok(cpal::platform::StreamInner::CoreAudio(stream).into());
+            }
+            #[allow(unreachable_patterns)]
+            _ => return Err(cpal::BuildStreamError::StreamConfigNotSupported),
+        }
+    }
+    device.build_output_stream(config, data_callback, error_callback, None)
 }
 
 pub(crate) fn valid_transport_buffer(
@@ -654,7 +715,7 @@ pub(crate) fn headless_worker_output_with_outcomes(
         None
     };
     control
-        .configure_physical_callback_request(
+        .configure_plugin_callback_quantum(
             &mut callback,
             hex_plugin_host::transport::MAX_FRAMES as u16,
         )

@@ -260,10 +260,7 @@ impl Plugins {
         if !self.wants_profile() {
             return Ok(());
         }
-        if control
-            .requested_physical_callback_frames_on_control()
-            .is_none()
-        {
+        if control.plugin_callback_quantum_on_control().is_none() {
             return Err("vst3 output profile is unavailable".into());
         }
         self.sources

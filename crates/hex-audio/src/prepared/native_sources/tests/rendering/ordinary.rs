@@ -39,7 +39,7 @@ fn fixture_at(profile: &str, location: usize) -> OrdinaryFixture {
 fn fixture_with_quantum(profile: &str, location: usize, quantum: u16) -> OrdinaryFixture {
     let (mut control, mut callback) = channel(48_000).unwrap();
     control
-        .configure_physical_callback_request(&mut callback, quantum)
+        .configure_plugin_callback_quantum(&mut callback, quantum)
         .unwrap();
     let (mut data, errors, terminals) =
         crate::native_callback_owner::reserve_native(callback, Arc::clone(&control.status));
