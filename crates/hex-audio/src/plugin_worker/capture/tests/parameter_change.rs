@@ -552,3 +552,189 @@ fn rejected_physical_callback_never_consumes_queued_host_parameter_input() {
     assert!(retired.failure.is_none() && retired.native.status.success());
     assert_eq!(trace()[10], 0);
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn compiled_saved_vst3_lane_reaches_the_signed_worker_without_callback_allocations() {
+    use hex_engine::foreign_automation::{ParameterCapability, Program, QuantumProfile};
+    use hex_plugin_host::transport::{
+        AuthoredParameterProgram, AuthoredSegment, MAX_PARAMETER_POINTS, MAX_TIMING_CHANGES,
+        SegmentTiming, TimingChanges,
+    };
+    use hex_project::{
+        AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, Command, Created,
+        DeviceAutomationTarget, Editor, Project,
+    };
+    use std::num::NonZeroU64;
+
+    const NAME: &str = "plugin_worker::capture::tests::parameter_change::compiled_saved_vst3_lane_reaches_the_signed_worker_without_callback_allocations";
+    if fixture_child(91, NAME) {
+        return;
+    }
+
+    struct Compiled(Program);
+    impl AuthoredParameterProgram for Compiled {
+        fn quantum_program_key(&self) -> NonZeroU64 {
+            NonZeroU64::MIN
+        }
+
+        fn render_quantum(
+            &self,
+            origins: &[Option<u64>],
+            timing: &TimingChanges,
+            output: &mut Parameters,
+        ) -> Result<(), Fault> {
+            let mut cuts = [0; MAX_TIMING_CHANGES];
+            for (cut, change) in cuts.iter_mut().zip(timing.as_slice()) {
+                *cut = change.frame;
+            }
+            let mut points = [ParameterPoint::default(); MAX_PARAMETER_POINTS];
+            let len = self
+                .0
+                .render_quantum(origins, &cuts[..timing.as_slice().len()], &mut points)
+                .map_err(|_| Fault::InvalidParameters)?;
+            for &point in &points[..len] {
+                output.push(point)?;
+            }
+            Ok(())
+        }
+    }
+
+    let mut instance = original_instance();
+    let class = instance.configuration().identity.class;
+    let metadata = instance
+        .read_authored_parameter_metadata_on_control(class, &[7])
+        .unwrap();
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Device(device) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: instance.ready().initial_state.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("expected a vst3 device");
+    };
+    editor
+        .execute(Command::ReplaceDeviceAutomationTarget {
+            device,
+            target: DeviceAutomationTarget::Vst3 { parameter: 7 },
+            points: [
+                (BeatTime::ZERO, 0.25, AutomationInterpolation::Step),
+                (
+                    BeatTime::from_ratio(1, 500).unwrap(),
+                    0.5,
+                    AutomationInterpolation::Linear,
+                ),
+                (
+                    BeatTime::from_ratio(13, 6000).unwrap(),
+                    0.75,
+                    AutomationInterpolation::Step,
+                ),
+            ]
+            .map(|(beat, value, outgoing)| AutomationPoint {
+                beat,
+                value: AutomationValue::new(value).unwrap(),
+                outgoing,
+            })
+            .to_vec(),
+        })
+        .unwrap();
+    let path = trace_path().with_extension("hex");
+    hex_storage::save_new(&path, editor.project()).unwrap();
+    let reopened = hex_storage::load(&path).unwrap();
+    let program = Compiled(
+        Program::prepare(
+            reopened.device(device).unwrap().automation(),
+            class.bytes(),
+            &[ParameterCapability {
+                id: 7,
+                steps: metadata.step_count(7).unwrap(),
+            }],
+            reopened.tempo_map(),
+            QuantumProfile {
+                frames: 8,
+                max_runs: 2,
+            },
+        )
+        .unwrap()
+        .unwrap(),
+    );
+    instance
+        .arm_authored_parameter_metadata_on_control(metadata)
+        .unwrap();
+    let (mut owner, mut endpoint) = NativeWorker::start_on_control(instance).unwrap();
+    let origins = [45, 46, 47, 48, 49, 0, 1, 2];
+    for sequence in 0..4 {
+        let mut pcm = [[9.0; 2]; 8];
+        let render = || {
+            // Split one actual PCM quantum across two physical callbacks.
+            for (start, end) in [(0, 3), (3, 8)] {
+                endpoint.begin_physical_callback(end - start).unwrap();
+                endpoint
+                    .stage_segment_with_authored_parameters(
+                        0,
+                        &[[0.5, -0.25]; 8][start..end],
+                        &[],
+                        &mut pcm[start..end],
+                        SegmentTiming {
+                            playing: None,
+                            at: |_| None,
+                        },
+                        AuthoredSegment {
+                            program: &program,
+                            origin: &|offset| Some(origins[start + offset]),
+                        },
+                    )
+                    .unwrap();
+                endpoint.finish(true).unwrap();
+            }
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let info = allocation_counter::measure(render);
+            assert_eq!(
+                (
+                    info.count_total,
+                    info.bytes_total,
+                    info.count_current,
+                    info.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            let mut render = render;
+            render();
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while owner.published_blocks_on_control() <= sequence {
+            assert!(
+                Instant::now() < deadline,
+                "compiled lane did not reach the worker"
+            );
+            thread::yield_now();
+        }
+        for (index, &actual) in pcm.iter().enumerate() {
+            let gain = match index {
+                3 => 2.0,
+                4 => 2.25,
+                _ => 1.0,
+            };
+            let scale = if sequence < 2 {
+                0.0
+            } else {
+                0.5 + (sequence - 2) as f32 * 0.125
+            };
+            assert_eq!(
+                actual,
+                [0.5 * gain * scale, -0.25 * gain * scale],
+                "frame {index}"
+            );
+        }
+    }
+    owner.revoke_on_control();
+    let retired = owner.retire_on_control().unwrap();
+    assert!(retired.failure.is_none() && retired.native.status.success());
+}

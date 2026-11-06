@@ -35,6 +35,8 @@ pub use hex_lattice::ProcessorAuditionSelection;
 pub use hex_lattice::ProcessorChainOwner;
 pub use hex_lattice_contract::DeviceTypeId;
 pub mod compensation;
+pub mod foreign_automation;
+
 pub mod midi_capture;
 mod source_routing;
 pub use source_routing::PreparedSourceRouting;
