@@ -108,6 +108,19 @@ fn live_capture_poll_binds_current_exchange_and_rejects_partial_or_stale_state()
 }
 
 #[test]
+fn stopped_restore_changes_only_instrument_quiescence_version() {
+    let mut config = config();
+    let ordinary = quiesce(&config, 3).unwrap();
+    assert_eq!(quiesce_for_stopped_restore(&config, 3).unwrap(), ordinary);
+    config.input_channels = 0;
+    assert_eq!(quiesce(&config, 3).unwrap(), ordinary);
+    let mut release = ordinary;
+    release[4..6].copy_from_slice(&2_u16.to_le_bytes());
+    assert_eq!(quiesce_for_stopped_restore(&config, 3).unwrap(), release);
+    assert!(quiesce_for_stopped_restore(&config, u64::MAX).is_err());
+}
+
+#[test]
 fn quiescent_capture_binds_source_pcm_prefix_and_operation_before_copying_state() {
     let config = config();
     let state = hex_plugin_state::encode(State {

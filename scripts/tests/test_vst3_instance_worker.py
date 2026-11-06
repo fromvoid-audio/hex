@@ -335,6 +335,36 @@ class NativeInstanceTests(unittest.TestCase):
                     self.assertEqual(struct.unpack("<16f", reply[64:]), tuple(x for v in expected for x in (v, v)))
                 self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (3, 24))
 
+    def test_instrument_stopped_epoch_releases_original_note_before_resume(self):
+        session = self.session(variant=115, channels=(0, 2))
+        self.assertEqual(session.message()[0], b"HXVIRD05")
+
+        def render(binding, notes):
+            header = bytearray(session.packet(8, binding=binding))
+            if notes:
+                struct.pack_into("<HHH", header, 4, 3, 8, len(notes))
+            events = b"".join(struct.pack("<HBBBB2xI", 0, 3, status, 60, velocity, identity)
+                              for status, velocity, identity in notes)
+            session.socket.sendall(header + bytes(64) + events)
+            magic, reply = session.message()
+            self.assertEqual(magic, b"HXVB")
+            session.sequence += 1
+            session.frames += 8
+            return max(map(abs, struct.unpack("<16f", reply[64:])))
+
+        self.assertGreater(render(BINDING, [(0x92, 100, 41), (0x92, 100, 42), (0x82, 0, 41)]), 0)
+        session.socket.sendall(struct.pack("<4sHHH6x6Q", b"HXVQ", 2, 0, 0,
+                                           *BINDING, session.sequence, session.frames))
+        magic, facts = session.message()
+        self.assertEqual((magic, struct.unpack("<2Q", facts[-16:])), (b"HXVIQF03", (1, 8)))
+        session.socket.sendall(struct.pack("<4sHHHB5x6Q", b"HXVR", 1, 0, 0, 2,
+                                           *BINDING, 3, 5))
+        self.assertEqual(session.message()[0], b"HXVIRR03")
+        resumed = (*BINDING[:3], 5)
+        self.assertEqual(render(resumed, []), 0, "original note leaked into resumed epoch")
+        self.assertGreater(render(resumed, [(0x92, 100, 42)]), 0)
+        self.assertEqual(render(resumed, [(0x82, 0, 42)]), 0)
+
     def test_dense_identified_input_notes_cross_sdk_with_exact_offsets_and_ids(self):
         def send(session, notes, version=3):
             header = bytearray(session.packet(8))

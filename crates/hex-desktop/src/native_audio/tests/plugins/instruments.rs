@@ -220,4 +220,107 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
         );
     }
     println!("instrument console rate={rate} peak={console_peak}");
+
+    if controlled_fixture {
+        // Hold a gate in the actual retained SDK component, then run the
+        // desktop's priority Stop and stopped-restore handshake.
+        send(
+            &mut harness,
+            SessionPlaybackCommand::LaunchClip {
+                clip: console,
+                quantization: Immediate,
+            },
+        );
+        for _ in 0..3 {
+            render_completed_block(&harness);
+        }
+        assert!(
+            render_completed_block(&harness)
+                .iter()
+                .flatten()
+                .any(|sample| sample.abs() > 0.001)
+        );
+        let before_stop = harness
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire);
+        harness.audio.as_ref().unwrap().control.stop();
+        assert_eq!(harness.render_plugin_block(), [[0.0; 2]; 256]);
+        harness
+            .service
+            .submit(Request::RestoreStoppedPlayback)
+            .unwrap();
+        let pending = harness.next();
+        assert!(pending.error.is_none(), "{:?}", pending.error);
+        assert!(!pending.stopped_playback_restore_complete);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            harness.pump();
+            harness.render_plugin_block();
+            if let Ok(event) = harness.service.try_event() {
+                assert!(event.error.is_none(), "{:?}", event.error);
+                if event.stopped_playback_restore_complete {
+                    break;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "stopped restore terminal timed out"
+            );
+            std::thread::yield_now();
+        }
+        let (_, restored) = harness.applied(before_stop);
+        assert!(restored.stopped_restore);
+        wait(|| harness.plugin_completed.load(Acquire) == 0);
+        // The restored Arrangement contains a note at zero. Route to silence
+        // before starting the callback to isolate any retained old SDK gate.
+        wait(|| {
+            harness.pump();
+            harness
+                .audio
+                .as_mut()
+                .unwrap()
+                .control
+                .session_command_with_ticket(SessionPlaybackCommand::StopTrack {
+                    track,
+                    quantization: Immediate,
+                })
+                .is_ok()
+        });
+        send(&mut harness, SessionPlaybackCommand::Play);
+        for _ in 0..4 {
+            assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
+        }
+        send(
+            &mut harness,
+            SessionPlaybackCommand::LaunchClip {
+                clip: console,
+                quantization: Immediate,
+            },
+        );
+        for _ in 0..3 {
+            render_completed_block(&harness);
+        }
+        assert!(
+            render_completed_block(&harness)
+                .iter()
+                .flatten()
+                .any(|sample| sample.abs() > 0.001)
+        );
+        send(
+            &mut harness,
+            SessionPlaybackCommand::StopTrack {
+                track,
+                quantization: Immediate,
+            },
+        );
+        for _ in 0..3 {
+            render_completed_block(&harness);
+        }
+        assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
+    }
 }
