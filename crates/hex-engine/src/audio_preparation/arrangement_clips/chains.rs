@@ -368,11 +368,11 @@ impl ChainCustody {
                     device,
                     identity,
                     effects,
+                    foreign,
                     project.tempo_map(),
                     project.loop_region(),
                 )? {
-                    if !automation.is_empty() || Some(program.borrow().binding) != foreign.binding()
-                    {
+                    if !automation.is_empty() {
                         return Err(AudioStorageError::UnsupportedGraph);
                     }
                     automation = hex_lattice::PreparedParameterAutomation::for_foreign(program);

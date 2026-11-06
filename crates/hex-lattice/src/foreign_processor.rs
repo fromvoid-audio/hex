@@ -194,9 +194,9 @@ impl PreparedForeignAutomation {
 
 impl PartialEq for PreparedForeignAutomation {
     fn eq(&self, other: &Self) -> bool {
-        self.binding == other.binding
-            && self.revision == other.revision
-            && Arc::ptr_eq(&self.program, &other.program)
+        // The compiler keeps one immutable program revision per worker
+        // binding. Independently prepared graphs may own equal programs.
+        self.binding == other.binding && self.revision == other.revision
     }
 }
 

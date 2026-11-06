@@ -79,6 +79,7 @@ pub(crate) fn prepare_device(
     device: &Device,
     identity: ProcessorInstanceIdentity,
     effects: &NativeDeviceRegistry<'_>,
+    processor: hex_lattice::PreparedForeignProcessor,
     tempo: &hex_project::TempoMap,
     region: Option<hex_project::LoopRegion>,
 ) -> Result<Option<hex_lattice::PreparedForeignAutomation>, Error> {
@@ -96,6 +97,12 @@ pub(crate) fn prepare_device(
         .foreign_automation_source(identity, device.state(), &context)
         .map_err(|_| Error::UnsupportedGraph)?
         .ok_or(Error::UnsupportedGraph)?;
+    if source.sample_rate != tempo.sample_rate()
+        || source.quantum_frames != processor.quantum_frames()
+        || Some(source.binding) != processor.binding()
+    {
+        return Err(Error::SourceMismatch);
+    }
     let revision = std::num::NonZeroU64::new(source.binding.epoch).ok_or(Error::SourceMismatch)?;
     let program = Program::prepare(
         device.automation(),
