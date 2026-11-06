@@ -574,8 +574,8 @@ impl Catalog {
         let mut rows = Vec::new();
         for entry in &self.entries {
             if entry.last_good.is_none() {
-                let name = entry.path.file_name().map_or_else(
-                    || "unavailable vst3 module".into(),
+                let name = entry.path.file_stem().map_or_else(
+                    || "unavailable plug-in".into(),
                     |name| name.to_string_lossy().into_owned(),
                 );
                 if query.is_empty() || name.to_lowercase().contains(&query) {
@@ -817,6 +817,43 @@ mod tests {
             catalog
                 .resolve_effect([1; 16], [0xdd; 32], [0xcc; 32])
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn saved_plugin_label_uses_the_exact_class_and_binary_and_failures_use_the_stem() {
+        let fixture = Fixture::new();
+        let path = fixture.module();
+        let mut catalog = Catalog::default();
+        catalog
+            .record(path.clone(), Err("unavailable".into()))
+            .unwrap();
+        assert_eq!(catalog.rows("")[0].name, "Original");
+
+        let report = effect_report(path.clone(), "Fx");
+        catalog
+            .record(path.clone(), Ok((report, "e".repeat(40))))
+            .unwrap();
+        assert_eq!(
+            catalog.saved_class_name([1; 16], [0xdd; 32], [0xcc; 32]),
+            Some("Original Processor"),
+        );
+        assert_eq!(
+            catalog.saved_class_name([2; 16], [0xdd; 32], [0xcc; 32]),
+            None
+        );
+        assert_eq!(
+            catalog.saved_class_name([1; 16], [0xde; 32], [0xcc; 32]),
+            None
+        );
+        assert_eq!(
+            catalog.saved_class_name([1; 16], [0xdd; 32], [0xcd; 32]),
+            None
+        );
+        catalog.record(path, Err("rescan failed".into())).unwrap();
+        assert_eq!(
+            catalog.saved_class_name([1; 16], [0xdd; 32], [0xcc; 32]),
+            Some("Original Processor"),
         );
     }
 
