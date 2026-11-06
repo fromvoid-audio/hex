@@ -725,6 +725,16 @@ struct OffsetClock<'a> {
 }
 
 impl NativeInstrumentClock for OffsetClock<'_> {
+    fn arrangement_meter_at_offset(&self, offset: usize) -> Option<(u8, u8)> {
+        self.clock
+            .arrangement_meter_at_offset(self.offset.checked_add(offset)?)
+    }
+
+    fn arrangement_cycle_at_offset(&self, offset: usize) -> Option<(u64, u64)> {
+        self.clock
+            .arrangement_cycle_at_offset(self.offset.checked_add(offset)?)
+    }
+
     fn tempo_micro_bpm_at_offset(&self, offset: usize) -> Option<u32> {
         self.clock
             .tempo_micro_bpm_at_offset(self.offset.checked_add(offset)?)

@@ -1020,6 +1020,8 @@ fn printed_audio_bypasses_source_chain_and_aligns_before_fader() {
                         loop_pass: 0,
                         performance_beat_raw: 0,
                         arrangement_beat_raw: Some(0),
+                        meter: None,
+                        cycle_beats_raw: None,
                     })
                     .unwrap();
                 let audio = if frame == 0 { [0.25, -0.5] } else { [0.0; 2] };
@@ -1571,6 +1573,8 @@ fn delayed_origin_clock_reports_source_performance_and_transport_without_guesses
         loop_pass: 7,
         performance_beat_raw: 5 << 32,
         arrangement_beat_raw: Some(1 << 32),
+        meter: None,
+        cycle_beats_raw: None,
     };
     let clock = OriginClock(Some(source));
     assert_eq!(clock.tempo_micro_bpm_at_offset(0), Some(123_000_000));

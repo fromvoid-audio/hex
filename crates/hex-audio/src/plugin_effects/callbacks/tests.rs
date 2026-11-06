@@ -251,6 +251,12 @@ fn worker_quanta_use_their_first_aligned_clock_even_across_split_callbacks() {
         fn transport_is_running(&self) -> Option<bool> {
             Some(self.1)
         }
+        fn arrangement_meter_at_offset(&self, offset: usize) -> Option<(u8, u8)> {
+            Some(if offset == 0 { (7, 8) } else { (3, 4) })
+        }
+        fn arrangement_cycle_at_offset(&self, offset: usize) -> Option<(u64, u64)> {
+            (offset == 0).then_some((0, 4 << 32))
+        }
     }
     let (mut callbacks, mut endpoints) = endpoints();
     let endpoint = &mut endpoints[0];
@@ -279,6 +285,8 @@ fn worker_quanta_use_their_first_aligned_clock_even_across_split_callbacks() {
             playing: true,
             arrangement_beat_raw: Some(100 << 32),
             tempo_micro_bpm: std::num::NonZeroU32::new(123_125_000),
+            meter: Some((7, 8)),
+            cycle_beats_raw: Some((0, 4 << 32)),
         })
     );
     endpoint.worker.complete(first).unwrap();
@@ -291,6 +299,8 @@ fn worker_quanta_use_their_first_aligned_clock_even_across_split_callbacks() {
             playing: false,
             arrangement_beat_raw: Some(502 << 32),
             tempo_micro_bpm: std::num::NonZeroU32::new(123_125_000),
+            meter: Some((3, 4)),
+            cycle_beats_raw: None,
         })
     );
 }

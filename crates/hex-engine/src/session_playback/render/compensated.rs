@@ -476,6 +476,8 @@ impl SessionPlayback {
         let beat = timing
             .frame_to_beat(performance_frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)?;
+        let session = self.revision.session();
+        let arrangement_beat = session.timing().frame_to_beat(arrangement_frame).ok();
         Ok(TransportStamp {
             tempo_micro_bpm: timing.micro_bpm_at_frame(performance_frame).ok(),
             performance_frame,
@@ -483,13 +485,11 @@ impl SessionPlayback {
             arrangement_frame,
             loop_pass,
             performance_beat_raw: beat.raw(),
-            arrangement_beat_raw: self
-                .revision
-                .session()
-                .timing()
-                .frame_to_beat(arrangement_frame)
-                .ok()
-                .map(|beat| beat.raw()),
+            arrangement_beat_raw: arrangement_beat.map(hex_project::BeatTime::raw),
+            meter: arrangement_beat.map(|beat| session.meter_map().meter_at(beat)),
+            cycle_beats_raw: self
+                .periodic_tempo_at(arrangement_frame)
+                .map(|cycle| cycle.beat_range_raw()),
         })
     }
 
@@ -1041,6 +1041,90 @@ impl SessionPlayback {
 mod tests {
     use super::*;
     use crate::signal_graph::tests::fixture;
+
+    #[test]
+    fn compensated_clock_keeps_meter_and_cycle_across_the_actual_loop_wrap() {
+        use hex_project::{BeatTime, Command, Meter};
+
+        let start = 23_998;
+        let end = 24_002;
+        let mut f = fixture(&[&[]], 24_010);
+        let limiter = hex_lattice_contract::DeviceTypeId::from_static("hex.limiter");
+        f.editor
+            .execute(Command::InsertDevice {
+                track: f.tracks[0],
+                before: None,
+                state: crate::default_native_device_state(limiter).unwrap(),
+            })
+            .unwrap();
+        let seven_eight = Meter::new(7, 8).unwrap();
+        f.editor
+            .execute(Command::SetMeterPoint {
+                beat: BeatTime::from_ratio(1, 1).unwrap(),
+                meter: seven_eight,
+            })
+            .unwrap();
+        f.editor
+            .execute(Command::SetLoopRegion {
+                start,
+                end,
+                enabled: true,
+            })
+            .unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                f.editor.project(),
+                &f.media,
+                Arc::new(crate::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let timing = revision.session().timing();
+        let cycle = Some((
+            timing.frame_to_beat(start).unwrap().raw(),
+            timing.frame_to_beat(end).unwrap().raw(),
+        ));
+        let export = SessionPlayback::new_linear_arrangement_export(Arc::clone(&revision)).unwrap();
+        let export_stamp = export.compensated_stamp(start, start, 0).unwrap();
+        assert_eq!(
+            (export_stamp.meter, export_stamp.cycle_beats_raw),
+            (Some(Meter::COMMON_TIME), None)
+        );
+        let mut runtime = SessionPlayback::new(revision).unwrap();
+        runtime.apply(SessionPlaybackCommand::Seek(start)).unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut [[0.0; 2]; 5]).unwrap();
+        let history = &runtime.compensation.as_ref().unwrap().delays;
+        let wrapped = history.stamp_at_delay(0).unwrap();
+        assert_eq!((wrapped.arrangement_frame, wrapped.loop_pass), (start, 1));
+        assert_eq!(
+            (wrapped.meter, wrapped.cycle_beats_raw),
+            (Some(Meter::COMMON_TIME), cycle)
+        );
+        let before_wrap = history.stamp_at_delay(2).unwrap();
+        assert_eq!(
+            (before_wrap.arrangement_frame, before_wrap.loop_pass),
+            (24_000, 0)
+        );
+        assert_eq!(
+            (before_wrap.meter, before_wrap.cycle_beats_raw),
+            (Some(seven_eight), cycle)
+        );
+        runtime.apply(SessionPlaybackCommand::Seek(end)).unwrap();
+        runtime.render(&mut [[0.0; 2]; 1]).unwrap();
+        let after_loop = runtime
+            .compensation
+            .as_ref()
+            .unwrap()
+            .delays
+            .stamp_at_delay(0)
+            .unwrap();
+        assert_eq!(
+            (after_loop.arrangement_frame, after_loop.cycle_beats_raw),
+            (end, None)
+        );
+    }
 
     struct RefuseTrack(TrackId);
 

@@ -1914,6 +1914,19 @@ impl SignalRuntime {
 
 pub(crate) struct OriginClock(pub(crate) Option<TransportStamp>);
 impl hex_lattice::NativeInstrumentClock for OriginClock {
+    fn arrangement_meter_at_offset(&self, offset: usize) -> Option<(u8, u8)> {
+        if offset != 0 {
+            return None;
+        }
+        let meter = self.0?.meter?;
+        Some((meter.numerator(), meter.denominator()))
+    }
+    fn arrangement_cycle_at_offset(&self, offset: usize) -> Option<(u64, u64)> {
+        if offset != 0 {
+            return None;
+        }
+        self.0?.cycle_beats_raw
+    }
     fn tempo_micro_bpm_at_offset(&self, offset: usize) -> Option<u32> {
         if offset != 0 {
             return None;

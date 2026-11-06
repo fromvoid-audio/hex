@@ -22,6 +22,7 @@
 namespace hex_instance_wire {
 constexpr size_t config_limit=2*4096+256, max_frames=256, header_size=64;
 constexpr size_t timing_size=24;
+constexpr size_t extended_timing_size=40;
 using Bytes=std::vector<uint8_t>;
 inline uint64_t number(const uint8_t* p,size_t n) {
     uint64_t value=0;for(size_t i=0;i<n;++i) value|=uint64_t(p[i])<<(i*8);return value;
@@ -189,7 +190,7 @@ inline void sample(uint8_t* p,float value) {
     uint32_t bits=0;std::memcpy(&bits,&value,4);for(size_t n=0;n<4;++n) p[n]=static_cast<uint8_t>(bits>>(n*8));
 }
 struct Packet {
-    std::array<uint8_t,header_size+max_frames*8+hex_instance::INPUT_NOTE_COUNT*12+hex_instance::PARAMETER_POINT_COUNT*16+timing_size> bytes{};
+    std::array<uint8_t,header_size+max_frames*8+hex_instance::INPUT_NOTE_COUNT*12+hex_instance::PARAMETER_POINT_COUNT*16+extended_timing_size> bytes{};
     std::array<hex_instance::ParameterPoint,hex_instance::PARAMETER_POINT_COUNT> parameters{};
     std::array<hex_instance::InputNote,hex_instance::INPUT_NOTE_COUNT> notes{};
     size_t note_count=0;
@@ -219,7 +220,8 @@ struct Packet {
         const auto version=number(p+4,2);
         observe_latency=edit_query && (version==2 || version==3);
         flush_idle_edits=edit_query && version==3;
-        const bool timed=pcm && version==4;
+        const bool extended_timing=pcm && version==5;
+        const bool timed=pcm && (version==4 || extended_timing);
         const bool identified_notes=pcm && (version==3 || timed);
         if((!stop && !quiesce && !resume && !capture && !live_start && !live_poll && !pcm && !flush && !edit_query && !page_start && !page_poll && !reactivate) ||
             ((pcm || flush || edit_query)?(version!=1 && version!=2 && !flush_idle_edits && !identified_notes):version!=1)) return -1;
@@ -268,7 +270,8 @@ struct Packet {
         }
         if(!frames || frames>config.maximum || frame>std::numeric_limits<uint64_t>::max()-frames || sequence==std::numeric_limits<uint64_t>::max()) return -1;
         const size_t note_bytes=identified_notes?12:8;
-        if(read_exact(fd,p+header_size,frames*8+note_count*note_bytes+parameter_count*16+(timed?timing_size:0))!=1) return -1;
+        const size_t clock_bytes=extended_timing?extended_timing_size:(timed?timing_size:0);
+        if(read_exact(fd,p+header_size,frames*8+note_count*note_bytes+parameter_count*16+clock_bytes)!=1) return -1;
         for(size_t n=0;n<frames*2u;++n) if(!std::isfinite(sample(p+header_size+n*4))) return -1;
         const auto* payload=p+header_size+frames*8;
         for (size_t n=0;n<note_count;++n) {
@@ -287,14 +290,22 @@ struct Packet {
         const auto* points=payload+note_count*note_bytes;
         if(!parse_parameters(points,frames)) return -1;
         context.reset();
-        return !timed || parse_timing(points+parameter_count*16,config.rate)?1:-1;
+        return !timed || parse_timing(points+parameter_count*16,config.rate,extended_timing)?1:-1;
     }
-    bool parse_timing(const uint8_t* start,double rate) {
+    bool parse_timing(const uint8_t* start,double rate,bool extended) {
         using Steinberg::Vst::ProcessContext;
         const auto frame=number(start,8),beat=number(start+8,8),tempo=number(start+16,4);
         const auto flags=start[20];
+        const auto numerator=start[21],denominator=start[22];
+        const auto cycle_start=extended?number(start+24,8):0;
+        const auto cycle_end=extended?number(start+32,8):0;
         if(frame>static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
-            (flags&~3) || number(start+21,3) || (!(flags&2) && beat)) return false;
+            (flags&~15) || extended!=bool(flags&12) || start[23] || (!(flags&2) && beat) ||
+            (!(flags&4) && (numerator || denominator)) ||
+            ((flags&4) && (!numerator || numerator>99 || !denominator || denominator>64 ||
+                          (denominator&(denominator-1)))) ||
+            (!(flags&8) && (cycle_start || cycle_end)) ||
+            ((flags&8) && cycle_start>=cycle_end)) return false;
         auto& value=context.emplace();
         value.sampleRate=rate;
         value.projectTimeSamples=static_cast<int64_t>(frame);
@@ -306,6 +317,21 @@ struct Packet {
         if(tempo) {
             value.state|=ProcessContext::kTempoValid;
             value.tempo=static_cast<double>(tempo)/1000000.0;
+        }
+        if(flags&4) {
+            value.state|=ProcessContext::kTimeSigValid;
+            value.timeSigNumerator=numerator;
+            value.timeSigDenominator=denominator;
+        }
+        if(flags&8) {
+            const auto start_music=static_cast<double>(cycle_start)/4294967296.0;
+            const auto end_music=static_cast<double>(cycle_end)/4294967296.0;
+            // Very distant raw endpoints can round to one SDK quarter-note value.
+            if(start_music<end_music) {
+                value.state|=ProcessContext::kCycleActive|ProcessContext::kCycleValid;
+                value.cycleStartMusic=start_music;
+                value.cycleEndMusic=end_music;
+            }
         }
         return true;
     }

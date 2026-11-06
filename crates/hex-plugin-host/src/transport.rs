@@ -136,6 +136,18 @@ pub struct ProcessTiming {
     pub playing: bool,
     pub arrangement_beat_raw: Option<u64>,
     pub tempo_micro_bpm: Option<std::num::NonZeroU32>,
+    pub meter: Option<(u8, u8)>,
+    pub cycle_beats_raw: Option<(u64, u64)>,
+}
+
+impl ProcessTiming {
+    fn is_valid(self) -> bool {
+        self.arrangement_frame >= 0
+            && self.meter.is_none_or(|(numerator, denominator)| {
+                (1..=99).contains(&numerator) && denominator.is_power_of_two() && denominator <= 64
+            })
+            && self.cycle_beats_raw.is_none_or(|(start, end)| start < end)
+    }
 }
 
 /// Inline wire payload; dropping it never reclaims a resource.
@@ -184,10 +196,7 @@ impl Block {
         if !self.parameters.valid(usize::from(quantum)) {
             return Err(Fault::InvalidParameters);
         }
-        if self
-            .timing
-            .is_some_and(|timing| timing.arrangement_frame < 0)
-        {
+        if self.timing.is_some_and(|timing| !timing.is_valid()) {
             return Err(Fault::Protocol);
         }
         Ok(())
@@ -531,7 +540,7 @@ impl Callback {
                     .state
                     .input
                     .timing
-                    .is_some_and(|timing| timing.arrangement_frame < 0)
+                    .is_some_and(|timing| !timing.is_valid())
                 {
                     return Err(Fault::Protocol);
                 }

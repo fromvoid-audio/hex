@@ -295,6 +295,10 @@ impl PreparedPeriodicSessionTempo {
         }
     }
 
+    pub(crate) const fn beat_range_raw(self) -> (u64, u64) {
+        (self.start_beat.raw(), self.end_beat.raw())
+    }
+
     #[cfg(test)]
     pub fn start_beat(self) -> BeatTime {
         self.start_beat

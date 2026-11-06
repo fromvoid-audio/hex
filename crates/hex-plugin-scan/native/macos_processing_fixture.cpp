@@ -642,6 +642,20 @@ public:
             } else if(block==2) {
                 if(!context || context->state || context->sampleRate!=sample_rate ||
                     context->projectTimeSamples!=0) return kInvalidArgument;
+            } else if(block==3) {
+                constexpr auto expected=ProcessContext::kPlaying|ProcessContext::kTimeSigValid|
+                    ProcessContext::kCycleActive|ProcessContext::kCycleValid;
+                if(!context || context->state!=expected || context->sampleRate!=sample_rate ||
+                    context->projectTimeSamples!=30000 || context->timeSigNumerator!=7 ||
+                    context->timeSigDenominator!=8 || context->cycleStartMusic!=1.25 ||
+                    context->cycleEndMusic!=5.5) return kInvalidArgument;
+            } else if(block==4) {
+                if(!context || context->state!=ProcessContext::kTimeSigValid ||
+                    context->timeSigNumerator!=3 || context->timeSigDenominator!=4)
+                    return kInvalidArgument;
+            } else if(block==5) {
+                if(!context || context->state || context->cycleStartMusic || context->cycleEndMusic)
+                    return kInvalidArgument;
             } else if(context) return kInvalidArgument;
         }
         // Independent SDK automation oracle. The previous block's final value

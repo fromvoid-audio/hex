@@ -9,14 +9,20 @@
 //! Version4 uses those extended records and appends a 24-byte input clock:
 //! Arrangement frame i64, beat Q32.32 u64, tempo micro-BPM u32 (zero absent),
 //! flags u8 (playing, beat present), then three reserved zero bytes.
+//! Version5 adds meter/cycle presence flags, two meter bytes, one reserved
+//! zero byte, and two u64 Q32.32 cycle endpoints. Absent fields are zero.
 //! These records carry transport data; they do not promise SDK event admission.
 use super::*;
 use std::io::{self, Read, Write};
 
 pub const HEADER_BYTES: usize = 64;
 const TIMING_BYTES: usize = 24;
-pub const MAX_PACKET_BYTES: usize =
-    HEADER_BYTES + MAX_FRAMES * 8 + MAX_EVENTS * 12 + MAX_PARAMETER_POINTS * 16 + TIMING_BYTES;
+const EXTENDED_TIMING_BYTES: usize = 40;
+pub const MAX_PACKET_BYTES: usize = HEADER_BYTES
+    + MAX_FRAMES * 8
+    + MAX_EVENTS * 12
+    + MAX_PARAMETER_POINTS * 16
+    + EXTENDED_TIMING_BYTES;
 
 fn invalid() -> io::Error {
     io::ErrorKind::InvalidData.into()
@@ -41,7 +47,12 @@ pub fn write(writer: &mut impl Write, block: &Block) -> io::Result<()> {
     }
     let mut packet = [0_u8; MAX_PACKET_BYTES];
     packet[..4].copy_from_slice(b"HXVB");
-    let version = if block.timing.is_some() {
+    let version = if block
+        .timing
+        .is_some_and(|timing| timing.meter.is_some() || timing.cycle_beats_raw.is_some())
+    {
+        5_u16
+    } else if block.timing.is_some() {
         4_u16
     } else if block
         .events
@@ -108,7 +119,21 @@ pub fn write(writer: &mut impl Write, block: &Block) -> io::Result<()> {
         );
         packet[offset + 20] =
             u8::from(timing.playing) | (u8::from(timing.arrangement_beat_raw.is_some()) << 1);
-        offset += TIMING_BYTES;
+        if let Some((numerator, denominator)) = timing.meter {
+            packet[offset + 20] |= 4;
+            packet[offset + 21] = numerator;
+            packet[offset + 22] = denominator;
+        }
+        if let Some((start, end)) = timing.cycle_beats_raw {
+            packet[offset + 20] |= 8;
+            packet[offset + 24..offset + 32].copy_from_slice(&start.to_le_bytes());
+            packet[offset + 32..offset + 40].copy_from_slice(&end.to_le_bytes());
+        }
+        offset += if version == 5 {
+            EXTENDED_TIMING_BYTES
+        } else {
+            TIMING_BYTES
+        };
     }
     writer.write_all(&packet[..offset])?;
     writer.flush()
@@ -126,7 +151,7 @@ pub fn read(reader: &mut impl Read) -> io::Result<Option<Block>> {
     reader.read_exact(&mut header[1..])?;
     let version = u16::from_le_bytes([header[4], header[5]]);
     if &header[..4] != b"HXVB"
-        || !matches!(version, 1..=4)
+        || !matches!(version, 1..=5)
         || header[if version == 1 { 10 } else { 12 }..16]
             .iter()
             .any(|b| *b != 0)
@@ -209,14 +234,29 @@ pub fn read(reader: &mut impl Read) -> io::Result<Option<Block>> {
             })
             .map_err(|_| invalid())?;
     }
-    if version == 4 {
-        let mut bytes = [0_u8; TIMING_BYTES];
-        reader.read_exact(&mut bytes)?;
+    if version >= 4 {
+        let extended = version == 5;
+        let mut bytes = [0_u8; EXTENDED_TIMING_BYTES];
+        reader.read_exact(
+            &mut bytes[..if extended {
+                EXTENDED_TIMING_BYTES
+            } else {
+                TIMING_BYTES
+            }],
+        )?;
         let frame = i64::from_le_bytes(bytes[..8].try_into().map_err(|_| invalid())?);
         let beat = u64::from_le_bytes(bytes[8..16].try_into().map_err(|_| invalid())?);
         let tempo = u32::from_le_bytes(bytes[16..20].try_into().map_err(|_| invalid())?);
         let flags = bytes[20];
-        if flags & !3 != 0 || bytes[21..] != [0; 3] || (flags & 2 == 0 && beat != 0) {
+        let start = u64::from_le_bytes(bytes[24..32].try_into().map_err(|_| invalid())?);
+        let end = u64::from_le_bytes(bytes[32..40].try_into().map_err(|_| invalid())?);
+        if flags & !15 != 0
+            || extended != (flags & 12 != 0)
+            || bytes[23] != 0
+            || (flags & 2 == 0 && beat != 0)
+            || (flags & 4 == 0 && bytes[21..23] != [0; 2])
+            || (flags & 8 == 0 && (start != 0 || end != 0))
+        {
             return Err(invalid());
         }
         block.timing = Some(ProcessTiming {
@@ -224,6 +264,8 @@ pub fn read(reader: &mut impl Read) -> io::Result<Option<Block>> {
             playing: flags & 1 != 0,
             arrangement_beat_raw: (flags & 2 != 0).then_some(beat),
             tempo_micro_bpm: std::num::NonZeroU32::new(tempo),
+            meter: (flags & 4 != 0).then_some((bytes[21], bytes[22])),
+            cycle_beats_raw: (flags & 8 != 0).then_some((start, end)),
         });
     }
     block
@@ -251,6 +293,8 @@ mod tests {
             playing: true,
             arrangement_beat_raw: Some(5 << 31),
             tempo_micro_bpm: std::num::NonZeroU32::new(123_125_000),
+            meter: None,
+            cycle_beats_raw: None,
         };
         block.timing = Some(timing);
         let event = MidiEvent {
@@ -273,6 +317,22 @@ mod tests {
         assert_eq!(decoded.timing, Some(timing));
         assert_eq!(decoded.events.as_slice(), &[event]);
         assert_eq!(decoded.parameters.as_slice(), &[point]);
+        let extended = ProcessTiming {
+            meter: Some((7, 8)),
+            cycle_beats_raw: Some((5 << 30, 11 << 31)),
+            ..timing
+        };
+        block.timing = Some(extended);
+        let mut with_meter = Vec::new();
+        write(&mut with_meter, &block).unwrap();
+        assert_eq!(&with_meter[4..6], &[5, 0]);
+        assert_eq!(
+            read(&mut with_meter.as_slice()).unwrap().unwrap().timing,
+            Some(extended)
+        );
+        let meter_offset = with_meter.len() - EXTENDED_TIMING_BYTES + 22;
+        with_meter[meter_offset] = 3;
+        assert!(read(&mut with_meter.as_slice()).is_err());
         let flags = bytes.len() - 4;
         bytes[flags] = 1; // Beat payload without its presence flag.
         assert!(read(&mut bytes.as_slice()).is_err());
