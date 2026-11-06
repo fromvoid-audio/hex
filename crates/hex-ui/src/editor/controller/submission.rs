@@ -205,6 +205,9 @@ impl EditorView {
         refusal: Refusal,
     ) -> bool {
         let mut visible = false;
+        if matches!(request, Request::RestoreStoppedPlayback) {
+            visible |= self.stopped_playback_restore.take().is_some();
+        }
         if kinds.sample_drop {
             visible |= self.pending_sample_drop.take().is_some();
         }

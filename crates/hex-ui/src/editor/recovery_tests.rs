@@ -21,6 +21,79 @@ use std::sync::{
 };
 use std::time::Instant;
 
+#[gpui::test]
+fn stop_renews_current_resident_vst3_playback_before_an_edit(cx: &mut gpui::TestAppContext) {
+    use super::super::audio_admission::StoppedPlaybackRestore;
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let client = output.take_client().unwrap();
+    let mut project =
+        hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Device(device) = project
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: hex_lattice_contract::NativeDeviceState::new(
+                hex_lattice_contract::DeviceTypeId::from_static("hex.vst3"),
+                1,
+                vec![0],
+            )
+            .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("vst3 effect");
+    };
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        project.project().clone(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, _| {
+        let revision = view.state.as_ref().unwrap().revision;
+        let identity = client.output_identity().unwrap();
+        view.audio = Some(EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "stopped vst3 fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        view.applied_project_revision = Some(revision);
+        view.audible_playback = Some(super::super::PlaybackCandidate {
+            worker_requires_preroll: None,
+            observation: None,
+            audio_revision: 0,
+            project_generation: view.project_generation,
+            state: view.state.as_ref().unwrap().clone(),
+            prepared_revision: None,
+            seek_request_id: None,
+            device_preview_identity: None,
+            tuning_preview_identity: None,
+        });
+        view.stop();
+        assert_eq!(
+            view.stopped_playback_restore,
+            Some(StoppedPlaybackRestore::Preparing)
+        );
+        view.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![device.value()]);
+        view.queue_audio_command(PlaybackCommand::PlayFrom(0));
+        assert!(view.deferred_play.is_some());
+        assert_eq!(
+            view.audio.as_ref().unwrap().control.output_identity(),
+            Some(identity)
+        );
+        assert!(view.enqueue(Request::Edit(Command::RemoveDevice(device))));
+        assert!(matches!(
+            view.pending_requests.back(),
+            Some(Request::Edit(Command::RemoveDevice(id))) if *id == device
+        ));
+    });
+    drop(backend);
+    output.publication.close();
+}
+
 // An already-open actual worker endpoint, without a second lifecycle implementation. The native
 // desktop tests own reopen/teardown; this fixture exercises UI recovery through the real Service
 // seek worker, ordinary resource book, callback and protected scalar observation channel.
