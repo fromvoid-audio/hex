@@ -70,6 +70,25 @@ class SelectionTests(unittest.TestCase):
         modules = sorted(impact.REVIEWED_MODULES) + ["test_unknown"]
         self.assertEqual(selection(paths, profile="health", modules=modules)["mode"], "comprehensive")
 
+    def test_discovery_resolves_only_the_default_apple_git_launcher(self):
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "selected-git"
+            executable.touch(mode=0o700)
+            with patch.object(shards.sys, "platform", "darwin"), \
+                    patch.object(shards.shutil, "which", return_value="/usr/bin/git") as which, \
+                    patch.object(shards.subprocess, "check_output", return_value=str(executable) + "\n") as lookup:
+                with shards.discovery_environment() as env:
+                    first, original = env["PATH"].split(os.pathsep, 1)
+                    self.assertEqual(original, os.environ.get("PATH", os.defpath))
+                    self.assertEqual(list(Path(first).iterdir()), [Path(first) / "git"])
+                    self.assertEqual((Path(first) / "git").resolve(), executable.resolve())
+                self.assertFalse(Path(first).exists())
+                lookup.assert_called_once()
+                which.return_value = str(executable)
+                with shards.discovery_environment() as env:
+                    self.assertIsNone(env)
+                lookup.assert_called_once()
+
     def test_shard_discovery_retains_bounded_marker_and_deduplicates(self):
         class Cases(unittest.TestCase):
             def test_plain(self):

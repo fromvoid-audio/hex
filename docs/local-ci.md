@@ -151,8 +151,11 @@ Python tooling follows the same rule. A changed `scripts/NAME.py` (or
 `scripts/tests/test_X.py` runs itself. Both add the shared planner invariants.
 Scripts without their own test module, config files and unknown inputs keep
 comprehensive discovery. Merge checks without explicit native acceptance inputs
-run that inventory through `scripts/python_shards.py --discover` in batches
-of up to eight ordinary cases. Comprehensive full, release and health runs
+run that inventory through `scripts/python_shards.py --discover` with up to
+eight workers and batches of up to eight ordinary cases. When Git on the
+original PATH is Apple's `/usr/bin/git` launcher, discovery resolves the
+selected Git once with `xcrun` and puts only that executable ahead of the
+original PATH for its child processes. Comprehensive full, release and health runs
 remain serial. Owner selections run through `scripts/python_shards.py`:
 one process per test from a shared work queue (up to 12 workers), which brings
 `test_local_ci` + `test_ci_plan` from 124 s serial to about 40 s.
