@@ -275,6 +275,14 @@ fn action_invalidates_processor_audition(action: PlaybackAction) -> bool {
     }
 }
 
+fn is_pause_action(action: PlaybackAction) -> bool {
+    matches!(
+        action,
+        PlaybackAction::Transport(PlaybackCommand::Pause)
+            | PlaybackAction::Session(hex_engine::SessionPlaybackCommand::Pause)
+    )
+}
+
 fn starts_playback(action: PlaybackAction) -> bool {
     matches!(
         action,
@@ -2430,6 +2438,10 @@ impl Callback {
 
     pub(crate) fn revoke_output_transport(&mut self) {
         self.revoke_native_effects();
+        self.revoke_forwarded_output_transport();
+    }
+
+    fn revoke_forwarded_output_transport(&mut self) {
         if let Some(transport) = self.output_transport.as_mut() {
             transport.revoke();
             self.output_transport_cancelled = true;
@@ -4027,7 +4039,7 @@ impl Callback {
                 if fading {
                     // The output transport, epoch and sampler keyboard stay
                     // live until the fade's audible end.
-                    self.begin_transport_fade(queued.ticket, stop, false);
+                    self.begin_transport_fade(queued.ticket, queued.action, false);
                 } else if stop {
                     self.revoke_current_sampler_keyboard();
                 }
@@ -4046,9 +4058,7 @@ impl Callback {
                             crate::gain_recording::AbortReason::TransportChanged,
                         );
                     } else {
-                        self.invalidate_gain_recording(
-                            crate::gain_recording::AbortReason::TransportChanged,
-                        );
+                        self.invalidate_for_transport_change(queued.action);
                     }
                 }
                 if invalidate_audition {
@@ -4172,6 +4182,16 @@ impl Callback {
         let block = self.scheduled_transport();
         let result = self.render_inner(output);
         if self.transport_fade.is_some() && !self.transport_fade_pending() {
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            if result.is_ok()
+                && self.transport_fade_is_pause()
+                && let Some((_, before, true)) = block
+                && let Some((_, after, false)) = self.scheduled_transport()
+                && let Ok(frame) = usize::try_from(after.saturating_sub(before))
+                && frame < output.len()
+            {
+                self.native_sources.end_staging_at_pause(frame);
+            }
             self.settle_transport_fade();
         }
         if let Some((position, performance, true)) = block
@@ -4709,9 +4729,25 @@ impl Callback {
     }
 
     fn invalidate_gain_recording(&mut self, reason: crate::gain_recording::AbortReason) {
+        self.revoke_native_effects();
+        self.invalidate_transport_recording(reason);
+    }
+
+    fn invalidate_for_transport_change(&mut self, action: PlaybackAction) {
+        let reason = crate::gain_recording::AbortReason::TransportChanged;
+        if is_pause_action(action) {
+            // Pause retains the active graph for monitoring, release tails
+            // and resume. The native endpoints belong to that same graph.
+            self.invalidate_transport_recording(reason);
+        } else {
+            self.invalidate_gain_recording(reason);
+        }
+    }
+
+    fn invalidate_transport_recording(&mut self, reason: crate::gain_recording::AbortReason) {
         // Reuse the existing transport-discontinuity owner/epoch; asynchronous
         // output must not expose pre-seek/pause/stop buffers in a new context.
-        self.revoke_output_transport();
+        self.revoke_forwarded_output_transport();
         self.abort_transport_inputs(reason);
         let prior_epoch = self
             .status

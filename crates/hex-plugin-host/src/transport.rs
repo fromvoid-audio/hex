@@ -523,6 +523,19 @@ impl Callback {
             .as_ref()
             .is_some_and(|stage| stage.staged_frames == stage.expected_frames)
     }
+    /// An audible Pause can end inside the physical callback. The caller
+    /// proves the exact end of playback; a contiguous staged prefix ending
+    /// there may omit the unvisited, paused suffix. A fully staged monitoring
+    /// path keeps its original extent. Final host acceptance is still required.
+    pub fn end_staging_at_pause(&mut self, frame: usize) {
+        if let Some(stage) = self.staged.as_mut()
+            && frame != 0
+            && stage.staged_frames == frame
+            && frame < stage.expected_frames
+        {
+            stage.expected_frames = frame;
+        }
+    }
     /// Current epoch revocation, including a worker/control request that the
     /// callback has not yet visited. This read grants no future liveness.
     pub fn is_revoked(&self) -> bool {

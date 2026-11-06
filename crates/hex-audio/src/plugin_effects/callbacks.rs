@@ -87,6 +87,9 @@ impl NativeEffectEntry {
         }
         Ok(())
     }
+    pub(crate) fn end_staging_at_pause(&mut self, frame: usize) {
+        self.callback.end_staging_at_pause(frame);
+    }
     pub(crate) fn reject(&mut self) {
         self.callback.reject_callback();
         self.staged = false;
