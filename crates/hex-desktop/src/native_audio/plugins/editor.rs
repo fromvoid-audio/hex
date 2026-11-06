@@ -153,7 +153,7 @@ impl Plugins {
             let mut present = false;
             let checked = desired
                 .effect_preparation()
-                .visit_plugin_effects(|_, device, _| {
+                .visit_plugin_devices(|_, device, _| {
                     present |= device == source.device;
                     Ok(())
                 });

@@ -30,13 +30,28 @@ pub use flush::{
 
 pub const CONFIG_LIMIT: usize = 8448;
 pub const CONTROL_LIMIT: usize = 8192;
-pub const PACKET_LIMIT: usize = CONFIG_LIMIT + 12;
+pub const PACKET_LIMIT: usize = 12 + hex_plugin_state::MAX_ENVELOPE_BYTES + 166;
+pub(crate) fn control_limit(magic: &[u8]) -> usize {
+    let prefix = match magic {
+        b"HXVICF03" => return CONFIG_LIMIT,
+        b"HXVIST02" => 39,
+        b"HXVIFA04" => 140,
+        b"HXVIQF03" => 156,
+        b"HXVIAR02" => 164,
+        b"HXVIRR03" => 166,
+        b"HXVIRD05" => 86,
+        b"HXVICS02" => 62,
+        b"HXVLCA02" => 63,
+        _ => return CONTROL_LIMIT,
+    };
+    prefix + hex_plugin_state::MAX_ENVELOPE_BYTES
+}
 /// Explicit protocol DATA during preparation/completion and quiescent capture:
 /// at most two outgoing frames, or a presentation frame plus both bounded
-/// Vec/Arc state payloads during capture. Fixed incoming Packet storage belongs
+/// Vec/Arc state payloads during capture. Heap-backed incoming Packet storage belongs
 /// to its enclosing owner. Source/configuration, file/inventory workspaces,
 /// errors and allocator/Arc/OS implementation overhead are separate.
-pub const MAX_WORKING_DATA_BYTES: usize = 2 * PACKET_LIMIT;
+pub const MAX_WORKING_DATA_BYTES: usize = 2 * PACKET_LIMIT + CONFIG_LIMIT;
 
 #[derive(Clone, Debug)]
 pub struct Configuration {
@@ -80,8 +95,8 @@ impl Configuration {
     pub fn startup_request(&self) -> Result<Vec<u8>> {
         self.validate()?;
         let mut out = control_prefix(
-            *b"HXVIST01",
-            37 + self
+            *b"HXVIST02",
+            39 + self
                 .restore
                 .as_ref()
                 .map_or(0, |state| state.payload().len()),
@@ -96,7 +111,7 @@ impl Configuration {
             .as_ref()
             .map_or(&[][..], |state| state.payload());
         out.push(u8::from(self.restore.is_some()));
-        out.extend((payload.len() as u16).to_le_bytes());
+        out.extend((payload.len() as u32).to_le_bytes());
         out.extend(payload);
     }
     fn check_restore_ack(&self, r: &mut Reader<'_>) -> Result<bool> {
@@ -109,7 +124,7 @@ impl Configuration {
                 ));
             }
         };
-        let count = usize::from(u16::from_le_bytes(r.array()?));
+        let count = u32::from_le_bytes(r.array()?) as usize;
         let expected = self
             .restore
             .as_ref()
@@ -355,8 +370,8 @@ impl Ready {
             1 => true,
             _ => return Err(Error::Protocol("invalid ready state presence")),
         };
-        let count = usize::from(u16::from_le_bytes(r.array()?));
-        if count > 4096 {
+        let count = u32::from_le_bytes(r.array()?) as usize;
+        if count > hex_plugin_state::MAX_ENVELOPE_BYTES {
             return Err(Error::Protocol("ready state exceeds envelope bound"));
         }
         let payload = r.take(count)?;
@@ -423,7 +438,7 @@ pub fn control(magic: [u8; 8], body: &[u8]) -> Result<Vec<u8>> {
     finish_control(out)
 }
 
-fn buffer(capacity: usize) -> Result<Vec<u8>> {
+pub(crate) fn buffer(capacity: usize) -> Result<Vec<u8>> {
     if capacity > PACKET_LIMIT {
         return Err(Error::Protocol("protocol allocation exceeds frame bound"));
     }
@@ -437,12 +452,7 @@ fn buffer(capacity: usize) -> Result<Vec<u8>> {
 }
 
 fn control_prefix(magic: [u8; 8], body_len: usize) -> Result<Vec<u8>> {
-    let limit = if &magic == b"HXVICF03" {
-        CONFIG_LIMIT
-    } else {
-        CONTROL_LIMIT
-    };
-    if body_len > limit {
+    if body_len > control_limit(&magic) {
         return Err(Error::Protocol("control frame exceeds bound"));
     }
     let mut out = buffer(12 + body_len)?;
@@ -556,7 +566,7 @@ fn epoch_facts<'a>(
 ) -> Result<(Facts, Reader<'a>)> {
     // Current fixed facts plus the exact optional original startup envelope.
     config.validate()?;
-    let size = 138_usize
+    let size = 140_usize
         .checked_add(
             config
                 .restore

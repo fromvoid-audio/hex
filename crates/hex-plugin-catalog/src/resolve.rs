@@ -11,7 +11,17 @@ impl Catalog {
         cid: [u8; 16],
         executable_sha256: [u8; 32],
         info_sha256: [u8; 32],
-    ) -> Result<EffectSelection, String> {
+    ) -> Result<PluginSelection, String> {
+        self.resolve_plugin(cid, executable_sha256, info_sha256, PluginRole::Effect)
+    }
+
+    pub fn resolve_plugin(
+        &self,
+        cid: [u8; 16],
+        executable_sha256: [u8; 32],
+        info_sha256: [u8; 32],
+        role: PluginRole,
+    ) -> Result<PluginSelection, String> {
         self.validate()?;
         let mut selected = None;
         for entry in &self.entries {
@@ -30,7 +40,7 @@ impl Catalog {
             {
                 continue;
             }
-            let candidate = self.select_effect(&entry.path, cid)?;
+            let candidate = self.select_with_role(&entry.path, cid, Some(role))?;
             if selected.replace(candidate).is_some() {
                 return Err("saved vst3 source is ambiguous · select and rescan one module".into());
             }

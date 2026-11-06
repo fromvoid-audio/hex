@@ -541,7 +541,14 @@ fn meter_sources(
             track
                 .instrument_id
                 .zip(track.instrument_state.as_ref())
-                .map(|(id, state)| (id.value(), state.type_id(), &track.instrument_meter, false))
+                .map(|(id, state)| {
+                    (
+                        id.value(),
+                        state.type_id(),
+                        &track.instrument_meter,
+                        track.foreign_instrument.is_some(),
+                    )
+                })
                 .into_iter()
                 .chain(track.device_chain.iter().map(|device| {
                     (

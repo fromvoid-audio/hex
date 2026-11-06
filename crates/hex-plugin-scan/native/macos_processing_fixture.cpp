@@ -9,6 +9,7 @@
 #include <array>
 #include <stdexcept>
 #include <string>
+#include <vector>
 #include <csignal>
 #include <unistd.h>
 #include <limits>
@@ -86,8 +87,8 @@ static ParamID parameter_id(int variant) { return variant==80 || variant==89 || 
 static int32 parameter_inventory_size() {
     const auto* shape=std::getenv("HEX_ORIGINAL_PARAMETER_INVENTORY");
     if(!shape) return 1;
-    if(!std::strcmp(shape,"519") || !std::strcmp(shape,"duplicate")) return 519;
-    if(!std::strcmp(shape,"577")) return 577;
+    if(!std::strcmp(shape,"2304") || !std::strcmp(shape,"duplicate")) return 2304;
+    if(!std::strcmp(shape,"2305")) return 2305;
     return 1;
 }
 static double parameter_value(int variant,double value) {
@@ -150,7 +151,7 @@ public:
     tresult PLUGIN_API setComponentHandler(IComponentHandler* value) override {
         if (!control() || !context || (value && handler)) return kResultFalse;
         if(value)value->addRef();if(handler)handler->release();handler=value;
-        if(fault==104 || fault==105) latency_handler=handler;
+        if(fault==104 || fault==105 || fault==118 || fault==119) latency_handler=handler;
         if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116)) {
             CFRunLoopTimerContext timer_context{};timer_context.info=this;
             edit_timer=CFRunLoopTimerCreate(nullptr,CFAbsoluteTimeGetCurrent(),0.001,0,0,edit_tick,&timer_context);
@@ -163,6 +164,7 @@ public:
     tresult PLUGIN_API setComponentState(IBStream* stream) override {
         if (!control() || !context || !handler || !stream) return kResultFalse;
         ++restoration.controller_component;trace(17);
+        if(fault==117) { restoration.phase=2;return kNotImplemented; }
         if(fault==42)return kResultFalse;
         if(fault==43)throw std::runtime_error("original controller synchronization exception");
         if(fault==44)fault_crash(17);
@@ -173,6 +175,7 @@ public:
         std::memcpy(&component_gain,data.data()+8,4);
         if(!std::isfinite(component_gain) || component_gain<0 || component_gain>4)return kResultFalse;
         if((fault==110 || fault==111) && handler->restartComponent(kLatencyChanged)!=kResultOk) return kResultFalse;
+        if(fault==123) handler->restartComponent(kParamValuesChanged|kParamIDMappingChanged);
         if(fault==53)stream->write(data.data(),1,nullptr); // ignored illegal write must still invalidate stream
         restoration.controller_gain=bits(component_gain);restoration.phase=2;trace(17);return kResultOk;
     }
@@ -187,13 +190,15 @@ public:
         if(stream->read(data.data(),data.size(),&read)!=kResultOk || read!=8 || std::memcmp(data.data(),"HXCT",4))return kResultFalse;
         std::memcpy(&scroll,data.data()+4,4);
         if(fault==54)stream->write(data.data(),1,nullptr);
+        if(fault==123) handler->restartComponent(kParamValuesChanged|kParamIDMappingChanged);
         restoration.scroll=static_cast<int>(scroll);restoration.phase=3;trace(18);return kResultOk;
     }
     tresult PLUGIN_API getState(IBStream* stream) override {
         if (!control() || !context || !handler || !stream) return kResultFalse;
         ++restoration.controller_get;
+        if(fault==123 && restoration.controller_get==2) handler->restartComponent(kParamIDMappingChanged);
         if(fault==96 && restoration.controller_get==2) {
-            std::array<unsigned char,5000> huge{};return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
+            std::vector<unsigned char> huge(512*1024);return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
         }
         // Original sensitivity fixture: an edit admitted during a live SDK
         // state read must not let that pre-edit component snapshot escape.
@@ -292,7 +297,9 @@ public:
     IPlugView* PLUGIN_API createView(FIDString) override { return nullptr; }
 };
 class ProcessingProcessor final : public Processor,public IAudioPresentationLatency {
-    const int fault=next_fault,mode=fault==115?1:next_mode;
+    const int fault=next_fault;
+    const bool midi_instrument=fault==115 || fault==120;
+    const int mode=midi_instrument?1:next_mode;
     bool initialized=false, arranged=false, setup=false, active=false;
     std::atomic<bool> processing{false};
     bool input=false,output=false,thread_bound=false;
@@ -364,7 +371,7 @@ public:
     }
     tresult PLUGIN_API setAudioPresentationLatencySamples(BusDirection direction,int32 index,uint32 value) override {
         if (!control() || !active || processing || index || (direction!=kInput && direction!=kOutput) ||
-            (direction==kInput && !inputs) || fault==17) return kResultFalse;
+            (direction==kInput && (!inputs || fault==120)) || fault==17) return kResultFalse;
         if(fault==67 && observed.stops) fault_hang(22);
         ++presentation_calls;
         (direction==kInput?input_latency:output_latency)=value;return kResultOk;
@@ -383,9 +390,18 @@ public:
         if(fault==41)fault_hang(16);
         std::array<unsigned char,32> data{};int32 read=0;
         if(stream->read(data.data(),data.size(),&read)!=kResultOk || read!=32 || std::memcmp(data.data(),"HXPS",4))return kResultFalse;
+        if(fault==121) {
+            int64 tail=0;unsigned char marker=0;
+            if(stream->seek(-1,IBStream::kIBSeekEnd,&tail)!=kResultOk || tail!=150544 ||
+               stream->read(&marker,1,&read)!=kResultOk || read!=1 || marker!=0x37) return kResultFalse;
+        }
         float restored_gain=0;std::memcpy(&restored_gain,data.data()+8,4);std::memcpy(&restored_latency,data.data()+4,4);
         if(!std::isfinite(restored_gain) || restored_gain<0 || restored_gain>4 || restored_latency>32 || (fault<37 && restored_latency))return kResultFalse;
         gain.store(restored_gain);
+        if(fault==118 && (!latency_handler ||
+            latency_handler->beginEdit(51)!=kResultOk ||
+            latency_handler->performEdit(51,0.5)!=kResultOk ||
+            latency_handler->endEdit(51)!=kResultOk)) return kResultFalse;
         if(fault==50)stream->write(data.data(),1,nullptr);
         if(fault==51 || fault==52) {stream->addRef();retained_stream=stream;}
         restoration.component_gain=bits(restored_gain);restoration.latency=static_cast<int>(restored_latency);restoration.phase=1;
@@ -394,18 +410,20 @@ public:
     tresult PLUGIN_API getState(IBStream* stream) override {
         if (!control() || !active || !stream) return kResultFalse;
         ++restoration.component_get;
+        if(fault==119 && restoration.component_set &&
+            (!latency_handler || latency_handler->restartComponent(0)!=kResultOk)) return kResultFalse;
         // Original current-state capture fault controls leave startup valid.
         if(restoration.component_get>1) {
             if(fault==95 && restoration.component_get==2) {
-                std::array<unsigned char,5000> huge{};return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
+                std::vector<unsigned char> huge(512*1024);return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
             }
             if(fault==97 && restoration.component_get==2) {
-                std::array<unsigned char,5000> huge{};
+                std::vector<unsigned char> huge(512*1024);
                 stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
                 stream->seek(-1,IBStream::kIBSeekSet,nullptr);return kResultOk;
             }
             if(fault==98 && restoration.component_get==2) {
-                std::array<unsigned char,5000> huge{};
+                std::vector<unsigned char> huge(512*1024);
                 stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
                 return kInternalError;
             }
@@ -416,7 +434,7 @@ public:
         if (fault==35) arm_main_thread_tail();
         if (fault==34) fault_hang(12);
         if (fault==26) { trace(7);throw std::runtime_error("original SDK state exception"); }
-        if (fault==15) { std::array<unsigned char,4001> huge{};return stream->write(huge.data(),4001,nullptr); }
+        if (fault==15) { std::vector<unsigned char> huge(512*1024);return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr); }
         if (fault==23) {
             stream->seek(std::numeric_limits<int64>::min(),IBStream::kIBSeekCur,nullptr);
             stream->seek(std::numeric_limits<int64>::max(),IBStream::kIBSeekSet,nullptr);
@@ -438,6 +456,11 @@ public:
         const bool ok=sized_ok && stream->seek(4,IBStream::kIBSeekSet,nullptr)==kResultOk &&
             stream->write(bytes.data()+4,28,&written)==kResultOk && written==28 &&
             stream->seek(0,IBStream::kIBSeekSet,nullptr)==kResultOk && stream->write(bytes.data(),4,&written)==kResultOk && written==4;
+        if(ok && fault==121) {
+            unsigned char marker=0x37;
+            if(stream->seek(150544,IBStream::kIBSeekSet,nullptr)!=kResultOk ||
+               stream->write(&marker,1,&written)!=kResultOk || written!=1) return kResultFalse;
+        }
         trace(4);return ok?kResultOk:kResultFalse;
     }
     tresult PLUGIN_API initialize(FUnknown* host) override {
@@ -454,11 +477,11 @@ public:
     }
     int32 PLUGIN_API getBusCount(MediaType media,BusDirection direction) override {
         if (!control() || !initialized) return 0;
-        if (media==kEvent) return fault==115 && direction==kInput?1:0;
+        if (media==kEvent) return midi_instrument && direction==kInput?1:0;
         if (media!=kAudio) return 0;
         if (fault==5) return 2;
         if (fault==106 && direction==kInput) return 2;
-        return direction==kInput && mode==1?0:1;
+        return direction==kInput && mode==1 && fault!=120?0:1;
     }
     tresult PLUGIN_API getBusInfo(MediaType media,BusDirection direction,int32 index,BusInfo& info) override {
         const bool auxiliary=fault==106 && media==kAudio && direction==kInput && index==1;
@@ -484,6 +507,7 @@ public:
         return size==kSample32 || (mode==2 && size==kSample64)?kResultOk:kResultFalse;
     }
     tresult PLUGIN_API setBusArrangements(SpeakerArrangement* in,int32 ni,SpeakerArrangement* out,int32 no) override {
+        if(fault==120) return kResultFalse; // this default is already configured
         if (!control() || !initialized || active || processing || ni!=(fault==106?2:(mode==1?0:1)) || no!=1 ||
             !out || (ni && !in)) return kInvalidArgument;
         if (fault==106 && in[1]!=SpeakerArr::kStereo) return kResultFalse;
@@ -498,7 +522,7 @@ public:
         return fault==1?kResultFalse:kResultOk; // real refusal can mutate arrangement
     }
     tresult PLUGIN_API setupProcessing(ProcessSetup& request) override {
-        if (!control() || !arranged || active || processing || request.processMode!=kRealtime ||
+        if (!control() || (!arranged && fault!=120) || active || processing || request.processMode!=kRealtime ||
             (request.symbolicSampleSize!=kSample32 && !(mode==2 && request.symbolicSampleSize==kSample64)) ||
             request.maxSamplesPerBlock<1 || request.maxSamplesPerBlock>256 ||
             (request.sampleRate!=44100 && request.sampleRate!=48000 && request.sampleRate!=96000)) return kResultFalse;
@@ -522,7 +546,7 @@ public:
         if (!enabled && fault==25) trace(7); // sensitivity: teardown after unknown startup
         if (!control() || !setup || processing) return kResultFalse;
         if (enabled && fault==106 && !auxiliary_disabled) return kResultFalse;
-        if (enabled && fault==115 && !event_active) return kResultFalse;
+        if (enabled && midi_instrument && !event_active) return kResultFalse;
         if (enabled && fault==111) {
             if (activated_once) restored_latency=7;
             activated_once=true;
@@ -563,7 +587,7 @@ public:
         processing=enabled;
         if (enabled && fault==33) fault_hang(11);
         if (enabled && fault==25) throw std::runtime_error("original SDK startup exception");
-        return kResultOk;
+        return fault==122?kNotImplemented:kResultOk;
     }
     tresult PLUGIN_API process(ProcessData& data) override {
         if (pthread_main_np() || !same_worker() || !active || !std::isfinite(sample_rate) || data.processMode!=kRealtime ||
@@ -592,12 +616,17 @@ public:
             return kResultOk;
         }
         if (!processing || data.numSamples<1 || data.numSamples>maximum ||
-            (fault==115?(!event_active || !data.inputEvents):data.inputEvents!=nullptr) ||
-            data.numInputs!=(mode==1 || (!input && data.numInputs==0)?0:1) ||
+            (midi_instrument?(!event_active || !data.inputEvents):data.inputEvents!=nullptr) ||
+            data.numInputs!=((mode==1 && fault!=120) || (!input && data.numInputs==0)?0:1) ||
             data.numOutputs!=(!output && data.numOutputs==0?0:1)) return kInvalidArgument;
         if (data.numInputs && (!data.inputs || data.inputs[0].numChannels!=inputs ||
             (precision==kSample32?!data.inputs[0].channelBuffers32:!data.inputs[0].channelBuffers64)))
             return kInvalidArgument;
+        if (fault==120) {
+            if (!input || data.numInputs!=1 || data.inputs[0].silenceFlags!=3) return kInvalidArgument;
+            for(int32 channel=0;channel<inputs;++channel) for(int32 frame=0;frame<data.numSamples;++frame)
+                if(data.inputs[0].channelBuffers32[channel][frame]!=0) return kInvalidArgument;
+        }
         if (data.numOutputs && (!data.outputs || data.outputs[0].numChannels!=outputs ||
             (precision==kSample32?!data.outputs[0].channelBuffers32:!data.outputs[0].channelBuffers64)))
             return kInvalidArgument;
@@ -674,7 +703,7 @@ public:
             if(fault==83 || fault==84) current_gain=2.0;
             // Read all inputs for this sample before writing any aliased output.
             const double note_output=note_signal+named_voices[0].gain+named_voices[1].gain;
-            const double left=mode==1?(fault==115?note_output:0.25):(input?(precision==kSample32?data.inputs[0].channelBuffers32[0][frame]:data.inputs[0].channelBuffers64[0][frame]):0.0);
+            const double left=mode==1?(midi_instrument?note_output:0.25):(input?(precision==kSample32?data.inputs[0].channelBuffers32[0][frame]:data.inputs[0].channelBuffers64[0][frame]):0.0);
             const double right=mode==1?left:(input && inputs==2?(precision==kSample32?data.inputs[0].channelBuffers32[1][frame]:data.inputs[0].channelBuffers64[1][frame]):left);
             if (output) for (int32 channel=0;channel<outputs;++channel) {
                 double value=(channel?right:left)*(fault==82?(current_gain>=2.0?1.0:scale):scale*current_gain);
@@ -701,6 +730,15 @@ public:
 #if HEX_FIXTURE_RESIDUAL_ECHO
             residual_cursor=(residual_cursor+1)%residual.size();
 #endif
+        }
+        if((fault==124 || fault==125) && data.outputParameterChanges) {
+            int32 index=-1;
+            auto* queue=data.outputParameterChanges->addParameterData(parameter_id(fault),index);
+            if(!queue || queue->addPoint(0,-0.444444417953,index)!=kResultFalse ||
+                queue->addPoint(1,0.25,index)!=kResultOk ||
+                queue->addPoint(1,std::numeric_limits<double>::quiet_NaN(),index)!=kResultFalse)
+                return kResultFalse;
+            if(fault==125) queue->addRef();
         }
         if(point_count || fault==83 || fault==84) {
             gain.store(static_cast<float>(current_gain));
@@ -770,7 +808,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>116) return false;next_fault=value;
+        if (value>125) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

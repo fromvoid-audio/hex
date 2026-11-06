@@ -159,8 +159,10 @@ fn prepare_foreign_instrument(
     let prepared = registry
         .prepare_runtime_instance(identity, &migrated, context)
         .map_err(|_| Invalid("vst3 instrument source could not be prepared"))?;
-    let Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) = prepared.processor else {
-        return Err(Invalid("vst3 instrument has no foreign worker"));
+    let facts = match prepared.processor {
+        Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) => facts,
+        None if prepared.matrix.is_identity() => return Ok(None),
+        _ => return Err(Invalid("vst3 instrument has no foreign worker")),
     };
     if !prepared.matrix.is_identity()
         || !facts.is_instrument_profile()
@@ -631,8 +633,8 @@ fn compile_project_inner<'a>(
             .as_ref()
             .filter(|node| !node.bypassed)
             .map(|_| crate::midi_compile::MutableInstrumentLimits {
-                max_events_per_query: 64,
-                max_active_occurrences: 64,
+                max_events_per_query: crate::mutable_instrument::authored_gate::MAX_FOREIGN_NOTES,
+                max_active_occurrences: crate::mutable_instrument::authored_gate::MAX_FOREIGN_NOTES,
                 max_release_tail_frames: 0,
                 supports_clip_volume: false,
                 steals_releasing_voices: true,

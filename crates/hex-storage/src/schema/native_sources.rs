@@ -62,7 +62,7 @@ struct SourceState {
     output_gain_millidb: i32,
 }
 fn payload<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
-    bounded(d, hex_lattice_contract::MAX_NATIVE_DEVICE_STATE_BYTES)
+    bounded(d, hex_lattice_contract::MAX_VST3_DEVICE_STATE_BYTES)
 }
 impl From<super::DeviceDtoV14> for SourceState {
     fn from(d: super::DeviceDtoV14) -> Self {

@@ -48,6 +48,13 @@ pub struct EffectPresentation {
     pub output_frames: u32,
 }
 
+/// Fixed audio-bus shape for the selected project device slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PluginProfile {
+    Effect,
+    Instrument,
+}
+
 /// Checked helper artifact held by the canonical worker. Actual native source,
 /// worker, endpoint, cancellation and retirement owners remain in its output Root.
 pub struct Hosting {
@@ -55,6 +62,8 @@ pub struct Hosting {
     limits: native::Limits,
 }
 impl Hosting {
+    /// Maximum payload for the single pending native capture response.
+    pub const CAPTURE_RESPONSE_DATA_BYTES: usize = hex_plugin_state::MAX_ENVELOPE_BYTES;
     /// Inspect the saved envelope's copied class/binary identity. This resolves
     /// no file, grants no native source and never replaces opaque state.
     pub fn saved_identity_on_control(
@@ -73,7 +82,7 @@ impl Hosting {
             .retained_storage()?
             .data_bytes
             .checked_add(std::mem::size_of::<Self>())?
-            .checked_add(hex_lattice_contract::MAX_NATIVE_DEVICE_STATE_BYTES)
+            .checked_add(Self::CAPTURE_RESPONSE_DATA_BYTES)
     }
     /// Initial finite source profile. Listed control/transport DATA is capped
     /// at4MiB per source; opaque plugin/OS memory is not an RSS claim. Reserve
@@ -167,6 +176,7 @@ impl Hosting {
         device_id: u64,
         graph: u64,
         sample_rate: u32,
+        profile: PluginProfile,
         restore: Option<NativeDeviceState>,
     ) -> Result<Binding, String> {
         let quantum = output
@@ -194,7 +204,10 @@ impl Hosting {
                     },
                     sample_rate: f64::from(sample_rate),
                     quantum,
-                    input_channels: 2,
+                    input_channels: match profile {
+                        PluginProfile::Effect => 2,
+                        PluginProfile::Instrument => 0,
+                    },
                     output_channels: 2,
                     limits: self.limits,
                 },

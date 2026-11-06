@@ -1,3 +1,4 @@
+use hex_lattice_contract::{NativeDeviceState, VST3_DEVICE_TYPE_ID};
 use hex_project::{
     Command, Created, Editor, GroupOutputMuteRange, Project, TrackId, TrackSelectionIds, TrackTag,
     TrimEdge,
@@ -130,4 +131,63 @@ fn group_output_mute_codec_rejects_bad_inventory_and_version() {
         .unwrap()
         .remove("group_output_mutes");
     assert!(hex_storage::decode(&serde_json::to_vec(&document).unwrap()).is_err());
+}
+
+#[test]
+fn larger_inactive_vst3_state_selects_schema75_and_preserves_group_mutes() {
+    let (mut project, group, _) = fixture();
+    project
+        .add_group_output_mute(group, GroupOutputMuteRange::new(12_000, 24_000).unwrap())
+        .unwrap();
+    let schema74 = hex_storage::encode(&project).unwrap();
+    assert_eq!(hex_storage::decode(&schema74).unwrap(), project);
+    let mut older: Value = serde_json::from_slice(&schema74).unwrap();
+    assert_eq!(older["version"], 74);
+    older["version"] = 75.into();
+    assert!(hex_storage::decode(&serde_json::to_vec(&older).unwrap()).is_err());
+
+    let directory = std::env::temp_dir().join(format!("hex-large-vst3-{}", std::process::id()));
+    std::fs::create_dir(&directory).unwrap();
+    let previous_path = directory.join("schema74.hex");
+    hex_storage::save_new(&previous_path, &project).unwrap();
+    let (_, token) = hex_storage::load_with_token(&previous_path).unwrap();
+    let small = NativeDeviceState::new(VST3_DEVICE_TYPE_ID, 1, vec![3; 4096]).unwrap();
+    let large = NativeDeviceState::new(VST3_DEVICE_TYPE_ID, 1, vec![255; 150_545]).unwrap();
+    let mut editor = Editor::new(project, 8).unwrap();
+    let Created::Device(device) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: small.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("main effect");
+    };
+    editor
+        .execute(Command::ReplaceDeviceComparison {
+            device,
+            state: small,
+            comparison: Some(hex_project::DeviceComparison::new(
+                hex_project::DeviceVariant::A,
+                large,
+            )),
+        })
+        .unwrap();
+    let project = editor.project();
+    assert_eq!(hex_storage::schema_version_for(project), 75);
+    assert!(token.requires_save_confirmation(project).unwrap());
+    let current_path = directory.join("schema75.hex");
+    hex_storage::save_new(&current_path, project).unwrap();
+    let saved = std::fs::read(current_path).unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+    assert_eq!(
+        hex_storage::decode(&saved).unwrap().snapshot(),
+        project.snapshot()
+    );
+    let mut document: Value = serde_json::from_slice(&saved).unwrap();
+    assert_eq!(document["version"], 75);
+    document["version"] = 74.into();
+    assert!(hex_storage::decode(&serde_json::to_vec(&document).unwrap()).is_err());
+    assert!(hex_storage::encode_schema20(project).is_err());
+    assert!(hex_storage::encode_schema22(project).is_err());
 }
