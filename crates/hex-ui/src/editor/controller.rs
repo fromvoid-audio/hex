@@ -3356,7 +3356,8 @@ impl EditorView {
             );
             return false;
         }
-        if self.gain_recorder.blocks_edits() && !self.pending_gain_take_matches(&request) {
+        let own_gain_take = self.pending_gain_take_matches(&request);
+        if self.gain_recorder.blocks_edits() && !own_gain_take {
             self.error = Some(if self.gain_recorder.has_retained_take() {
                 "retry or explicitly discard the retained gain take before another project action"
                     .into()
@@ -3381,6 +3382,28 @@ impl EditorView {
         {
             self.error = Some("finish or cancel the numeric draft before editing".into());
             return false;
+        }
+        // The exact sealed recording already owns its terminal. It shares
+        // GainLane's request type but must finish through its existing receipt.
+        if !own_gain_take
+            && matches!(
+                &request,
+                Request::GainLane { .. }
+                    | Request::DeviceAutomation { .. }
+                    | Request::DeviceAutomationControl { .. }
+                    | Request::SamplerEdit(_)
+            )
+        {
+            let gain_conflict = (self.gain_lane.draft.is_some()
+                || self.gain_lane.numeric_draft_active())
+                && !self.pending_gain_matches(&request);
+            let automation_conflict = self.automation_view.devices.point_draft_active()
+                && !self.pending_device_automation_matches(&request);
+            let sampler_conflict = self.sampler_parameter.numeric_draft_active();
+            if gain_conflict || automation_conflict || sampler_conflict {
+                self.error = Some("finish or cancel the local draft before editing".into());
+                return false;
+            }
         }
         #[cfg(test)]
         match &request {

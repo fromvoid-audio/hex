@@ -84,6 +84,14 @@ fn unrelated_edit_preserves_sampler_numeric_text_and_valid_commit(cx: &mut TestA
         assert!(control.edit_state.is_editing());
         assert_eq!(control.entity.read(cx).display_text(), "invalid");
         assert!(!view.enqueue(Request::Edit(Command::Mute { track, muted: true })));
+        let generation = view.project_generation;
+        let revision = view.state.as_ref().unwrap().revision;
+        assert!(!view.enqueue(Request::GainLane {
+            project_generation: generation,
+            revision,
+            track,
+            edit: hex_session::service::GainLaneEdit::Clear,
+        }));
         let control = view
             .sampler_parameter
             .controls
