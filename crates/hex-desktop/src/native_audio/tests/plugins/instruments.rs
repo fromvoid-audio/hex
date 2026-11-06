@@ -190,6 +190,31 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
         );
     }
     println!("instrument keyboard rate={rate} peak={keyboard_peak}");
+    // Reach an exact copied-quantum boundary, then advance only 64 stopped
+    // frames. Play must carry its new context inside that same worker block.
+    let wait_for_short_callback = |harness: &ResidentHarness| {
+        harness.render();
+        wait(|| {
+            harness
+                .callback
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .native_workers_idle_on_control()
+                == Some(true)
+        });
+    };
+    let before_partial = harness.plugin_completed.load(Acquire);
+    for _ in 0..4 {
+        wait_for_short_callback(&harness);
+        if harness.plugin_completed.load(Acquire) > before_partial {
+            break;
+        }
+    }
+    assert_eq!(harness.plugin_completed.load(Acquire), before_partial + 1);
+    wait_for_short_callback(&harness);
+    assert_eq!(harness.plugin_completed.load(Acquire), before_partial + 1);
     harness
         .audio
         .as_mut()
