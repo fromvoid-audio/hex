@@ -238,7 +238,7 @@ fn confirmed_timing_splits_at_tempo_changes_loop_wraps_and_stops() {
     for _ in 0..3 {
         assert!(deliver(&mut callback, 2));
     }
-    control.command(PlaybackCommand::Pause).unwrap();
+    control.command(PlaybackCommand::Stop).unwrap();
     assert!(deliver(&mut callback, 2));
     let mut cursor = 0;
     let mut timing = Vec::new();

@@ -4436,7 +4436,8 @@ impl Callback {
             {
                 project.observe(signal, offset, frames);
             }
-            if let Ok(mut recording) = recording.try_borrow_mut()
+            if recording_observed
+                && let Ok(mut recording) = recording.try_borrow_mut()
                 && let Some((layout, stage)) = recording.as_mut()
             {
                 stage.observe(layout, signal, capture_offset + offset, frames);
