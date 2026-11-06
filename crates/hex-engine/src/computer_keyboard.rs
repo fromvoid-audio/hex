@@ -332,7 +332,7 @@ mod current_sampler;
 
 /// Native CURRENT has no UI input owner. Its copied desired words arrive only
 /// through the already-rooted output mailbox; ordinary playback keeps its lease.
-enum NoteSnapshot {
+pub(crate) enum NoteSnapshot {
     Active(u64, [u64; COMPUTER_KEY_COUNT]),
     Inactive,
     Deferred(u64),

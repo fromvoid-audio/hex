@@ -267,6 +267,82 @@ impl NoteEndpoint {
 }
 
 #[test]
+fn computer_keyboard_uses_the_same_worker_while_stopped_playing_and_rearmed_after_stop() {
+    use crate::{
+        computer_keyboard::{ComputerKeyboardInput, KeyboardActivationClock},
+        playback::{Playback, PlaybackCommand},
+    };
+    let (editor, identity) = fixture();
+    let project = editor.project();
+    let track = project.tracks()[0].id();
+    let revision = prepare(&editor, identity, true).unwrap();
+    let clock = Arc::new(KeyboardActivationClock::default());
+    let keys = Arc::new(ComputerKeyboardInput::with_output_activation(Arc::clone(&clock)).unwrap());
+    let mut playback = Playback::from_prepared(Arc::clone(&revision));
+    playback
+        .prepare_computer_keyboard(project, track, Arc::clone(&keys))
+        .unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    let mut render = |playback: &mut Playback, count: usize| {
+        endpoint.next_offset = 0;
+        endpoint.notes.clear();
+        playback
+            .render_with_foreign_processors(
+                &mut [[0.; 2]; 8][..count],
+                None,
+                None,
+                None,
+                &mut endpoint,
+            )
+            .unwrap();
+        endpoint.notes.clone()
+    };
+
+    keys.set_key(0, Some((67, 100, 1))).unwrap();
+    let [(0, first)] = render(&mut playback, 2)[..] else {
+        panic!("stopped note-on")
+    };
+    assert!(first.on && first.pitch == 67 && first.channel == 0);
+    playback.apply(PlaybackCommand::Play);
+    let [(0, authored)] = render(&mut playback, 6)[..] else {
+        panic!("authored note-on")
+    };
+    assert!(authored.on && authored.pitch == 60 && authored.note_id != first.note_id);
+
+    let mut next = Playback::from_prepared(revision);
+    next.prepare_computer_keyboard_for_controller_activation(project, track, Arc::clone(&keys))
+        .unwrap();
+    next.try_inherit_runtime_in_control_context(&mut playback, Some(1), Some(1))
+        .unwrap();
+    assert!(render(&mut next, 8).is_empty());
+    keys.set_key(0, None).unwrap();
+    let [(0, release)] = render(&mut next, 8)[..] else {
+        panic!("key release")
+    };
+    assert!(!release.on && release.note_id == first.note_id);
+
+    keys.set_key(0, Some((68, 100, 2))).unwrap();
+    let [(0, held)] = render(&mut next, 8)[..] else {
+        panic!("held key")
+    };
+    clock.revoke_reserved_prefix();
+    keys.ensure_output_activation_on_control().unwrap();
+    keys.set_key(1, Some((69, 100, 3))).unwrap();
+    next.apply_priority_stop(&clock);
+    let [(0, authored_off), (0, held_off), (0, fresh)] = render(&mut next, 8)[..] else {
+        panic!("stop and fresh epoch")
+    };
+    assert!(!authored_off.on && authored_off.note_id == authored.note_id);
+    assert!(!held_off.on && held_off.note_id == held.note_id);
+    assert!(fresh.on && fresh.pitch == 69 && fresh.note_id != held.note_id);
+    keys.cancel();
+    let [(0, release)] = render(&mut next, 8)[..] else {
+        panic!("cancel release")
+    };
+    assert!(!release.on && release.note_id == fresh.note_id);
+}
+
+#[test]
 fn console_clip_replaces_arrangement_gates_and_stop_releases_its_note() {
     use crate::LaunchQuantization::Immediate;
     let (mut editor, identity) = fixture();
