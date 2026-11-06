@@ -86,6 +86,7 @@ const TUID restore_controller_id={0x48,0x45,0x58,0x43,1,2,3,4,5,6,7,8,9,10,11,12
 // Distinct variants exercise actual metadata and processing, not host guesses.
 static ParamID parameter_id(int variant) { return variant==80 || variant==89 || variant==92?0u:7u; }
 constexpr ParamID drag_axis_id=11;
+static bool saturated_editor_drag(int variant) { return variant==87 || variant==131; }
 static int32 parameter_inventory_size() {
     const auto* shape=std::getenv("HEX_ORIGINAL_PARAMETER_INVENTORY");
     if(!shape) return 1;
@@ -104,7 +105,7 @@ IComponentHandler* latency_handler=nullptr;
 class RestoreController final : public IEditController {
     std::atomic<uint32> refs{1};
     const int fault=next_fault;
-    const int32 inventory_size=fault==87?2:parameter_inventory_size();
+    const int32 inventory_size=saturated_editor_drag(fault)?2:parameter_inventory_size();
     FUnknown* context=nullptr;
     IComponentHandler* handler=nullptr;
     float component_gain=0;uint32 scroll=7;
@@ -121,18 +122,23 @@ class RestoreController final : public IEditController {
         }
         const auto id=parameter_id(self->fault);
         if(self->fault==86) self->handler->performEdit(id,0.75);
-        else if(self->fault==87) {
-            // One synchronous mouse-tracking burst before main can dispatch.
-            self->handler->beginEdit(id);self->handler->beginEdit(drag_axis_id);
-            for(int n=0;n<96;++n) {
-                self->handler->performEdit(id,n==95?0.875:0.25);
-                self->handler->performEdit(drag_axis_id,n==95?0.625:0.125);
+        else if(saturated_editor_drag(self->fault)) {
+            // Emit the next gesture before main can dispatch the previous one.
+            const int gestures=self->fault==131?5:1;
+            for(int drag=0;drag<gestures;++drag) {
+                const double gain=0.875-(gestures-1-drag)*0.09375;
+                const double axis=0.625-(gestures-1-drag)*0.0625;
+                self->handler->beginEdit(id);self->handler->beginEdit(drag_axis_id);
+                for(int n=0;n<96;++n) {
+                    self->handler->performEdit(id,n==95?gain:0.25);
+                    self->handler->performEdit(drag_axis_id,n==95?axis:0.125);
+                }
+                self->handler->endEdit(id);self->handler->endEdit(drag_axis_id);
             }
             // The editor has already painted the final position. Treat any
             // setter replay during the drain as a regression.
             self->component_gain=3.5;
             self->drag_axis=0.625;
-            self->handler->endEdit(id);self->handler->endEdit(drag_axis_id);
         }
         else {
             self->handler->beginEdit(id);self->component_gain=3.0;
@@ -168,7 +174,7 @@ public:
         if (!control() || !context || (value && handler)) return kResultFalse;
         if(value)value->addRef();if(handler)handler->release();handler=value;
         if(fault==104 || fault==105 || fault==118 || fault==119) latency_handler=handler;
-        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116)) {
+        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || fault==131)) {
             CFRunLoopTimerContext timer_context{};timer_context.info=this;
             edit_timer=CFRunLoopTimerCreate(nullptr,CFAbsoluteTimeGetCurrent(),0.001,0,0,edit_tick,&timer_context);
             if(!edit_timer) return kResultFalse;
@@ -235,7 +241,7 @@ public:
         // Keep the low gain ID last to exercise SDK page order separately
         // from the host's sorted processing lookup.
         if(inventory_size>1 && index<inventory_size-1) {
-            if(fault==87) {info.id=drag_axis_id;return kResultOk;}
+            if(saturated_editor_drag(fault)) {info.id=drag_axis_id;return kResultOk;}
             const auto* shape=std::getenv("HEX_ORIGINAL_PARAMETER_INVENTORY");
             if(index!=inventory_size-2 || !shape || std::strcmp(shape,"duplicate"))
                 info.id=static_cast<ParamID>(1001+index);
@@ -253,7 +259,7 @@ public:
         const char16_t name[]=u"gain";std::memcpy(info.title,name,sizeof(name));std::memcpy(info.shortTitle,name,sizeof(name));return kResultOk;
     }
     ParamValue PLUGIN_API getParamNormalized(ParamID id) override {
-        if(control() && context && fault==87 && id==drag_axis_id) return drag_axis;
+        if(control() && context && saturated_editor_drag(fault) && id==drag_axis_id) return drag_axis;
         if(control() && context && id>1000 && id<static_cast<ParamID>(1000+inventory_size)) return 0.25;
         if (!control() || !context || id!=parameter_id(fault)) {++observed.violations;return 0;}
         ++restoration.value_reads;trace(19);
@@ -304,8 +310,8 @@ public:
     tresult PLUGIN_API setParamNormalized(ParamID id,ParamValue value) override {
         if(!control() || !context || !handler || !std::isfinite(value) || value<0 || value>1)
             return kInvalidArgument;
-        if(fault==87 && edits_sent) return kResultFalse;
-        if(fault==87 && id==drag_axis_id) {drag_axis=value;return kResultOk;}
+        if(saturated_editor_drag(fault) && edits_sent) return kResultFalse;
+        if(saturated_editor_drag(fault) && id==drag_axis_id) {drag_axis=value;return kResultOk;}
         if(id!=parameter_id(fault)) return kInvalidArgument;
         if(fault==76 && observed.flushes.load()) return kResultFalse;
         component_gain=static_cast<float>(parameter_value(fault,value)*4.0);
@@ -633,7 +639,7 @@ public:
         if (pthread_main_np() || !same_worker() || !active || !std::isfinite(sample_rate) || data.processMode!=kRealtime ||
             data.symbolicSampleSize!=precision) { ++observed.violations;return kResultFalse; }
         if (!data.numSamples && !data.numInputs && !data.numOutputs && !data.inputs && !data.outputs) {
-            if(fault==87 && data.inputParameterChanges) {
+            if(saturated_editor_drag(fault) && data.inputParameterChanges) {
                 const auto count=data.inputParameterChanges->getParameterCount();
                 if(count<1 || count>2) return kInvalidArgument;
                 for(int32 n=0;n<count;++n) {
@@ -898,7 +904,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>130) return false;next_fault=value;
+        if (value>131) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

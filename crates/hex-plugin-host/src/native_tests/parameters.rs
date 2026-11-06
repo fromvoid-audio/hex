@@ -838,6 +838,16 @@ fn editor_burst_drains(idle: bool) {
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_sdk_saturated_drag_keeps_final_values_and_gesture_boundaries() {
+    assert_saturated_editor_drags(87, 1);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_sdk_admits_five_drags_before_the_previous_gestures_drain() {
+    assert_saturated_editor_drags(131, 5);
+}
+
+fn assert_saturated_editor_drags(variant: u32, drags: usize) {
     use crate::protocol::ParameterEditKind::{Begin, End, Perform};
 
     let case = Case::new();
@@ -846,14 +856,14 @@ fn actual_sdk_saturated_drag_keeps_final_values_and_gesture_boundaries() {
         source(),
         options(),
         PreparationCancellation::new_on_control().unwrap(),
-        case.setup_restore(87),
+        case.setup_restore(variant),
     )
     .unwrap();
     let child = instance.child_id_on_control();
     std::fs::write(case.release(), b"emit a two-axis drag").unwrap();
     let until = Instant::now() + Duration::from_secs(2);
     let mut edits: Vec<protocol::ParameterEdit> = Vec::new();
-    while edits.iter().filter(|edit| edit.kind == End).count() < 2 {
+    while edits.iter().filter(|edit| edit.kind == End).count() < 2 * drags {
         let batch = instance.service_idle_editor_edits_on_worker().unwrap();
         edits.extend_from_slice(batch.edits.as_slice());
         assert!(Instant::now() < until, "the entire drag must drain");
@@ -867,16 +877,27 @@ fn actual_sdk_saturated_drag_keeps_final_values_and_gesture_boundaries() {
             .all(|pair| pair[0].sequence < pair[1].sequence)
     );
     assert!(edits.iter().all(|edit| edit.first_frame == 0));
-    for (id, final_value) in [(7, 0.875), (11, 0.625)] {
-        let mut gesture = edits.iter().filter(|edit| edit.id == id);
-        let begin = gesture.next().unwrap();
-        let end = gesture.next_back().unwrap();
-        assert_eq!((begin.kind, end.kind), (Begin, End));
-        assert_eq!(begin.sequence, end.gesture);
-        let last = gesture.next_back().unwrap();
-        assert_eq!((last.kind, last.normalized), (Perform, final_value));
-        assert_eq!(last.gesture, begin.sequence);
-        assert!(gesture.all(|edit| edit.kind == Perform && edit.gesture == begin.sequence));
+    for (id, final_value, step) in [(7, 0.875, 0.09375), (11, 0.625, 0.0625)] {
+        let mut axis = edits.iter().filter(|edit| edit.id == id);
+        for drag in 0..drags {
+            let begin = axis.next().unwrap();
+            assert_eq!(begin.kind, Begin);
+            let mut final_perform = None;
+            loop {
+                let edit = axis.next().unwrap();
+                assert_eq!(edit.gesture, begin.sequence);
+                if edit.kind == End {
+                    break;
+                }
+                assert_eq!(edit.kind, Perform);
+                final_perform = Some(edit.normalized);
+            }
+            assert_eq!(
+                final_perform,
+                Some(final_value - (drags - 1 - drag) as f64 * step)
+            );
+        }
+        assert!(axis.next().is_none());
     }
     assert_eq!(instance.completed_blocks_on_control(), 0);
     assert_eq!(instance.child_id_on_control(), child);

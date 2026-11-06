@@ -231,6 +231,11 @@ public:
     tresult PLUGIN_API performEdit(ParamID id,ParamValue value) override { return admit_edit(id,Perform,value); }
     tresult PLUGIN_API endEdit(ParamID id) override { return admit_edit(id,End,0); }
 private:
+    void erase_request(size_t index) {
+        for(size_t next=index+1;next<count;++next)
+            requests[(first+next-1)%requests.size()]=requests[(first+next)%requests.size()];
+        --count;
+    }
     bool replace_queued_perform(const EditEvent& next) {
         // Main owns this FIFO even while the worker drains its separate
         // handoff. Append at the tail to retain increasing receipt sequences.
@@ -238,12 +243,32 @@ private:
             const auto& previous=requests[(first+n-1)%requests.size()];
             if(previous.kind==Restart) break;
             if(previous.kind!=Perform || previous.gesture!=next.gesture) continue;
-            for(size_t index=n;index<count;++index)
-                requests[(first+index-1)%requests.size()]=requests[(first+index)%requests.size()];
-            requests[(first+count-1)%requests.size()]=next;
+            erase_request(n-1);
+            requests[(first+count++)%requests.size()]=next;
             return true;
         }
         return false;
+    }
+    bool make_edit_room(size_t needed) {
+        // An older value can be dropped only if its replacement is still in
+        // this main-owned FIFO and precedes any intervening restart.
+        for(size_t n=0;count+active_count+needed>requests.size();) {
+            if(n>=count) return false;
+            const auto current=requests[(first+n)%requests.size()];
+            bool superseded=false;
+            if(current.kind==Perform) for(size_t later=n+1;later<count;++later) {
+                const auto& next=requests[(first+later)%requests.size()];
+                if(next.kind==Restart) break;
+                if(next.kind==Perform && next.gesture==current.gesture) {
+                    superseded=true;break;
+                }
+            }
+            if(superseded) {
+                erase_request(n);
+                pending_edits.fetch_sub(1,std::memory_order_acq_rel);
+            } else ++n;
+        }
+        return true;
     }
     tresult admit_edit(ParamID id,uint32 kind,ParamValue value) {
         if(![NSThread isMainThread]) {refuse(WrongThread);return kResultFalse;}
@@ -272,12 +297,14 @@ private:
         // Reserve one slot for each admitted gesture's End. A new Begin
         // consumes a record and adds a reservation. End spends its own.
         const auto available=requests.size()-count-active_count;
-        if(kind==Begin && (available<2 || vacant==active_tokens.size())) return kResultFalse;
+        if(kind==Begin && (vacant==active_tokens.size() || !make_edit_room(2))) return kResultFalse;
         if(kind==Perform && !available) {
-            if(!replace_queued_perform(event)) return kResultFalse;
-            info->editor_sequence=next;
-            sequence=next;
-            return kResultOk;
+            if(replace_queued_perform(event)) {
+                info->editor_sequence=next;
+                sequence=next;
+                return kResultOk;
+            }
+            if(!make_edit_room(1)) return kResultFalse;
         }
         requests[(first+count)%requests.size()]=event;
         ++count;sequence=next;pending_edits.fetch_add(1,std::memory_order_release);
