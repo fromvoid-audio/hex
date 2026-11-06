@@ -862,6 +862,7 @@ fn sampler_with_native_effect_on_control() {
                 .unwrap(),
             &cancel,
             &effects,
+            None,
         )
         .unwrap(),
     );

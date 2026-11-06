@@ -1454,6 +1454,13 @@ pub(super) fn request(value: &Request) -> Description {
         } => {
             describe!("commit_midi_take"; ["request_id" => request_id, "project_generation" => project_generation, "revision" => revision, "notes_count" => notes.len(), "stop_frame" => stop_frame]; omitted="binding")
         }
+        Request::ArmNativeParameterRecording {
+            project_generation,
+            revision,
+            target,
+        } => {
+            describe!("arm_native_parameter_recording"; ["project_generation" => project_generation, "revision" => revision, "armed" => target.is_some()]; omitted="")
+        }
         Request::ArmGainRecording {
             project_generation,
             revision,
