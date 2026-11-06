@@ -64,6 +64,13 @@ class Instance final {
         if (b) b->release();
         return first && second;
     }
+    bool sync_controller_component_state(StateStream* stream) {
+        if (!stream->rewind_read_only_on_control()) return false;
+        const auto result=host->apply_saved_state([&] { return controller->setComponentState(stream); });
+        // A controller can decline this synchronization method while the
+        // processor and controller still own their separate state chunks.
+        return (result==kResultOk || result==kNotImplemented) && stream->valid() && stream->exclusive();
+    }
     bool refuse_cleanup() { quarantined.store(true); return false; }
 public:
     Instance() = default;
@@ -145,17 +152,15 @@ public:
         restoration_started=true;
         restore_component_stream=new(std::nothrow) StateStream(state.bytes.data(),state.component_bytes);
         if (!restore_component_stream || !restore_component_stream->valid() ||
-            component->setState(restore_component_stream)!=kResultOk ||
+            host->apply_saved_state([&] { return component->setState(restore_component_stream); })!=kResultOk ||
             !restore_component_stream->valid() || !restore_component_stream->exclusive()) return false;
         if (controller) {
-            if (!restore_component_stream->rewind_read_only_on_control() ||
-                controller->setComponentState(restore_component_stream)!=kResultOk ||
-                !restore_component_stream->valid() || !restore_component_stream->exclusive()) return false;
+            if (!sync_controller_component_state(restore_component_stream)) return false;
             if (state.controller) {
                 restore_controller_stream=new(std::nothrow) StateStream(
                     state.bytes.data()+state.component_bytes,state.controller_bytes);
                 if (!restore_controller_stream || !restore_controller_stream->valid() ||
-                    controller->setState(restore_controller_stream)!=kResultOk ||
+                    host->apply_saved_state([&] { return controller->setState(restore_controller_stream); })!=kResultOk ||
                     !restore_controller_stream->valid() || !restore_controller_stream->exclusive()) return false;
             }
             if (host->refresh_on_control(controller).disposition!=HostDisposition::Refreshed ||
@@ -286,9 +291,7 @@ private:
         } else if (first!=kNotImplemented && first!=kResultFalse) return CaptureResult::Refused;
         if (controller) {
             if (initial && !restored && captured.component) {
-                if (!component_stream->rewind_read_only_on_control() ||
-                    controller->setComponentState(component_stream)!=kResultOk ||
-                    !component_stream->valid() || !component_stream->exclusive()) return CaptureResult::Refused;
+                if (!sync_controller_component_state(component_stream)) return CaptureResult::Refused;
                 if (host->refresh_on_control(controller).disposition!=HostDisposition::Refreshed ||
                     host->refusal_flags()) return CaptureResult::Refused;
             }
