@@ -2,6 +2,40 @@
 use super::*;
 
 impl SessionPlayback {
+    pub(crate) fn prepare_foreign_keyboard(
+        &mut self,
+        track: hex_project::TrackId,
+        input: Arc<crate::computer_keyboard::ComputerKeyboardInput>,
+    ) -> Result<(), crate::Invalid> {
+        if self.computer_keyboard.is_some() {
+            return Err(crate::Invalid("a computer keyboard is already prepared"));
+        }
+        self.foreign_arrangement.attach_keyboard(track, input)?;
+        if self.validate_candidate_runtime_storage(0).is_err() {
+            self.foreign_arrangement.remove_keyboard_on_control();
+            return Err(crate::Invalid(
+                "computer keyboard exceeds graph storage budget",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn shares_foreign_keyboard(&self, previous: &Self) -> bool {
+        self.foreign_arrangement
+            .shares_keyboard(&previous.foreign_arrangement)
+    }
+
+    pub(crate) fn detach_foreign_keyboard(&mut self) {
+        self.foreign_arrangement.detach_keyboard();
+    }
+
+    pub(crate) fn cancel_foreign_keyboard(
+        &self,
+        priority_stop: Option<&crate::computer_keyboard::KeyboardActivationClock>,
+    ) {
+        self.foreign_arrangement.cancel_keyboard(priority_stop);
+    }
+
     pub(super) fn render_stopped_main_tails(
         &mut self,
         output: &mut [Frame],

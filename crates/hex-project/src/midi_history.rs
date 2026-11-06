@@ -1057,6 +1057,7 @@ fn same_shell(
         sidechains,
         import_provenance,
         sample_rate,
+        sample_rate_mode,
         next_id: _,
         assets,
         tracks,
@@ -1120,6 +1121,7 @@ fn same_shell(
         || sidechains != &b.sidechains
         || import_provenance != &b.import_provenance
         || sample_rate != &b.sample_rate
+        || sample_rate_mode != &b.sample_rate_mode
         || assets != &b.assets
         || returns != &b.returns
         || loop_region != &b.loop_region

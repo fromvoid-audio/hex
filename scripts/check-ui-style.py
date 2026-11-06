@@ -39,6 +39,10 @@ widgets = (
     'hex_widgets::action(',
     # The shared splitter handle paints caller-resolved geometry/color only.
     'self.project_spectrum_splitter_input(cx)',
+    # Recorder controls route captions through the shared themed button factory.
+    'self.sample_arm_button(', 'self.sample_recorder_mode_button(',
+    # The take waveform canvas paints geometry only.
+    'wave_canvas(',
     'harmonic_range_control)', 'harmonic_repeat_control)', 'harmonic_tools)',
     'view.device_panel.operator_harmonics[&key].entity.clone())',
     'operator_row(', 'operator_label(', 'page_tab(', 'shell)', 'page_tabs)', 'detail)',
@@ -113,6 +117,8 @@ widgets = (
     # Device preset header actions reuse themed compact action buttons.
     'super::device_preset::actions(', 'super::device_panel::action_button(', 'super::device_panel::segment_button(',
     'super::super::device_preset::actions(',
+    # The VST3 editor toggle uses the same themed device action.
+    'vst3_editor_button(',
     # Shared A/B actions compose themed compact buttons, never raw text.
     'super::device_comparison::actions(', 'super::super::device_comparison::actions(',
     'device_drag_title(', 'render_return_drop_target(', 'uniform_list(',
@@ -261,13 +267,22 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             )
             and suffix.startswith('insertion_gap(')
         )
+        # The rotated title paints the already themed label in the inherited font.
+        device_insertion_component = device_insertion_component or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel.rs'
+            and suffix.startswith('hex_widgets::vertical_device_name(title)')
+        )
         # The log viewer displays source bytes and native filenames verbatim;
         # query/list are typed GPUI components; log_scrollbar is text-free.
         log_viewer_source = (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/log_viewer.rs'
             and suffix.startswith(('display)', 'session)', 'detail)', 'status)', 'self.query.clone())', 'list)', 'self.log_scrollbar('))
         )
-        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not browser_scrollbar_component and not transport_vector_component and not limiter_component and not device_insertion_component and not log_viewer_source:
+        plugin_parameter_search = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/vst3_parameters.rs'
+            and suffix.startswith('panel.search.clone())')
+        )
+        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not browser_scrollbar_component and not transport_vector_component and not limiter_component and not device_insertion_component and not log_viewer_source and not plugin_parameter_search:
             line = source.count('\n', 0, match.start()) + 1
             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):

@@ -22,7 +22,7 @@ pub(crate) fn fixture_view(
                 operation: view
                     .pending_plugin_effect
                     .as_ref()
-                    .map(|pending| Arc::downgrade(&pending.0)),
+                    .map(|pending| Arc::downgrade(&pending.control)),
                 error: view.error.as_ref().map(ToString::to_string),
                 selected_owner: view
                     .state
@@ -48,34 +48,44 @@ pub(crate) fn fixture_view(
         .map_err(|error| error.to_string())
 }
 
-pub(super) struct PendingPluginEffect(Arc<PluginEffectControl>);
+pub(super) struct PendingPluginEffect {
+    pub(super) status: String,
+    control: Arc<PluginEffectControl>,
+    trace: Option<crate::diagnostics::PluginLoad>,
+}
 impl Drop for PendingPluginEffect {
     fn drop(&mut self) {
-        self.0.cancel();
+        self.control.cancel();
     }
 }
 
 impl EditorView {
     pub(super) fn cancel_plugin_effect(&self) {
         if let Some(pending) = &self.pending_plugin_effect {
-            pending.0.cancel();
+            pending.control.cancel();
         }
     }
 
     pub(super) fn plugin_effect_complete(&mut self, event: &hex_session::service::Event) {
-        if self.pending_plugin_effect.as_ref().is_some_and(|pending| {
+        let Some(terminal) = self.pending_plugin_effect.as_ref().and_then(|pending| {
             event
                 .plugin_effect_complete
                 .iter()
-                .any(|terminal| Arc::ptr_eq(&pending.0, &terminal.control))
-        }) {
-            self.pending_plugin_effect.take();
+                .find(|terminal| Arc::ptr_eq(&pending.control, &terminal.control))
+        }) else {
+            return;
+        };
+        if let Some(pending) = self.pending_plugin_effect.take()
+            && let Some(trace) = &pending.trace
+        {
+            trace.complete(terminal.accepted);
         }
     }
 
     pub(super) fn insert_browser_plugin_effect(
         &mut self,
-        selection: hex_plugin_catalog::EffectSelection,
+        selection: hex_plugin_catalog::PluginSelection,
+        cx: &App,
     ) {
         let Some(state) = self.state.as_ref() else {
             return;
@@ -90,17 +100,28 @@ impl EditorView {
                 return;
             }
         };
-        self.insert_plugin_effect(&selection, destination, None);
+        self.insert_plugin_effect(&selection, destination, None, cx);
     }
 
     pub(super) fn insert_plugin_effect(
         &mut self,
-        selection: &hex_plugin_catalog::EffectSelection,
+        selection: &hex_plugin_catalog::PluginSelection,
         destination: PluginEffectDestination,
         before: Option<hex_project::DeviceId>,
+        cx: &App,
     ) {
+        let (destination, before) = match (selection.role, destination) {
+            (hex_plugin_catalog::PluginRole::Instrument, PluginEffectDestination::Track(track)) => {
+                (PluginEffectDestination::Instrument(track), None)
+            }
+            (hex_plugin_catalog::PluginRole::Instrument, _) => {
+                self.error = Some("select a track for the vst3 instrument".into());
+                return;
+            }
+            _ => (destination, before),
+        };
         if self.pending_plugin_effect.is_some() {
-            self.error = Some("wait for the pending vst3 effect insertion".into());
+            self.error = Some("wait for the pending vst3 insertion".into());
             return;
         }
         let Some(state) = self.state.as_ref() else {
@@ -123,9 +144,24 @@ impl EditorView {
             before,
             control: Arc::clone(&control),
         };
+        let trace = crate::diagnostics::PluginLoad::new(
+            cx,
+            &selection.class_name,
+            request.context,
+            destination,
+            state.project.sample_rate(),
+        );
         if self.enqueue(Request::InsertPluginEffect(request)) {
-            self.pending_plugin_effect = Some(PendingPluginEffect(control));
-            self.status = "loading vst3 effect".into();
+            if let Some(trace) = &trace {
+                trace.submitted();
+            }
+            let status = format!("loading vst3 · {}", selection.class_name);
+            self.status.clone_from(&status);
+            self.pending_plugin_effect = Some(PendingPluginEffect {
+                control,
+                trace,
+                status,
+            });
             self.error = None;
         }
     }

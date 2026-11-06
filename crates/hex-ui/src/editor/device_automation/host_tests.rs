@@ -972,13 +972,22 @@ fn unrelated_edit_refuses_during_automation_gesture_but_release_commits(cx: &mut
         assert!(view.automation_view.devices.draft.is_some());
         assert!(!view.enqueue(Request::Edit(Command::Mute { track, muted: true })));
         assert!(view.automation_view.devices.draft.is_some());
-        assert_eq!(view.worker_requests_pending, 0);
         assert!(
             view.error
                 .as_deref()
                 .unwrap()
                 .contains("automation point gesture")
         );
+        let generation = view.project_generation;
+        let revision = view.state.as_ref().unwrap().revision;
+        assert!(!view.enqueue(Request::GainLane {
+            project_generation: generation,
+            revision,
+            track,
+            edit: hex_session::service::GainLaneEdit::Clear,
+        }));
+        assert_eq!(view.worker_requests_pending, 0);
+        assert!(view.error.as_deref().unwrap().contains("local draft"));
     });
     visual.simulate_mouse_up(at, MouseButton::Left, CMD);
     visual.run_until_parked();

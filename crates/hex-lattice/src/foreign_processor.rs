@@ -19,6 +19,7 @@ pub struct PreparedForeignProcessor {
     total_latency: u32,
     binding: Option<ForeignProcessorBinding>,
     output_tail: crate::OutputTail,
+    instrument_profile: bool,
 }
 impl PreparedForeignProcessor {
     pub fn new(
@@ -39,6 +40,7 @@ impl PreparedForeignProcessor {
             total_latency,
             binding: None,
             output_tail: crate::OutputTail::Unbounded,
+            instrument_profile: false,
         })
     }
     /// Retain the exact existing source/endpoint binding in immutable graph
@@ -63,6 +65,15 @@ impl PreparedForeignProcessor {
     }
     pub fn output_tail(self) -> crate::OutputTail {
         self.output_tail
+    }
+    /// Declare the zero-audio-input configuration used for instrument
+    /// workers. The host still owns the actual source binding.
+    pub fn with_instrument_profile(mut self) -> Self {
+        self.instrument_profile = true;
+        self
+    }
+    pub fn is_instrument_profile(self) -> bool {
+        self.instrument_profile
     }
     pub fn binding(self) -> Option<ForeignProcessorBinding> {
         self.binding
@@ -101,6 +112,20 @@ pub struct ForeignProcessorNode<'a> {
     /// Host output trim for endpoints that explicitly return post-trim PCM.
     /// Legacy borrowed endpoints continue to return pre-trim PCM.
     pub output_gain: f32,
+}
+
+/// One MIDI 1.0 note event at an offset within the supplied render segment.
+/// The caller owns note scheduling and sends release events through the same
+/// endpoint as the matching note-on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ForeignNote {
+    pub frame: u16,
+    pub channel: u8,
+    pub pitch: u8,
+    pub velocity: u8,
+    pub on: bool,
+    /// Graph-assigned identity shared by this occurrence's on/off pair.
+    pub note_id: Option<std::num::NonZeroU32>,
 }
 
 /// Unique borrowed view of the host's already retained foreign endpoints.
@@ -144,6 +169,25 @@ pub trait ForeignProcessors {
     ) -> Result<(), DeviceContractError> {
         if parameters.is_empty() {
             self.process_segment(node, frame_offset, frames, clock)
+        } else {
+            self.reject_callback();
+            frames.fill([0.0; 2]);
+            Err(DeviceContractError::ForeignProcessingUnavailable)
+        }
+    }
+    /// Stage ordered note events along with the segment. Like PCM, staged
+    /// events become visible to the worker only after host acceptance.
+    fn process_segment_with_notes(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        frame_offset: usize,
+        frames: &mut [StereoFrame],
+        parameters: &[ForeignParameterPoint],
+        notes: &[ForeignNote],
+        clock: Option<&dyn NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        if notes.is_empty() {
+            self.process_segment_with_parameters(node, frame_offset, frames, parameters, clock)
         } else {
             self.reject_callback();
             frames.fill([0.0; 2]);

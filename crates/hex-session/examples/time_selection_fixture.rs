@@ -117,6 +117,7 @@ fn project(count: usize, wav: &Path, audio_only: bool) -> Result<Project, Box<dy
         main_devices: Vec::new(),
         tuning: Default::default(),
         sample_rate: 48_000,
+        sample_rate_mode: Default::default(),
         next_id,
         assets: vec![AssetSnapshot {
             original_source: None,

@@ -1,7 +1,7 @@
 //! Schema74 adds exact Arrangement output mute ranges keyed by group identity.
 //! It extends the complete track-tag and event layout used by schemas72/73.
-//! Older layouts contain no such range. Projects without one keep their
-//! existing writer and no project is changed during open.
+//! Schema75 uses the same layout with a larger VST3 state bound. It can
+//! carry an empty mute inventory. No project is changed during open.
 use crate::{GROUP_OUTPUT_MUTE_SCHEMA_VERSION, Project, StorageError};
 use hex_project::{GroupOutputMuteRange, MAX_GROUP_OUTPUT_MUTE_RANGES, MAX_TRACKS};
 use serde::{Deserialize, Serialize};
@@ -55,8 +55,11 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
     Ok(value)
 }
 
-pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    let mut value = super::audio_events::parse_unique(bytes)?;
+pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError> {
+    decode_value(super::audio_events::parse_unique(bytes)?, version)
+}
+
+pub(crate) fn decode_value(mut value: Value, version: u32) -> Result<Project, StorageError> {
     let rows = value
         .as_object_mut()
         .and_then(|map| map.remove("group_output_mutes"))
@@ -64,7 +67,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "group output mute inventory is missing",
         ))?;
     if rows.as_array().is_none_or(|rows| {
-        rows.is_empty()
+        (rows.is_empty() && version == GROUP_OUTPUT_MUTE_SCHEMA_VERSION)
             || rows.len() > MAX_TRACKS
             || rows.iter().any(|row| {
                 row.get("ranges")
@@ -87,7 +90,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             return Err(StorageError::Invalid("duplicate group output mute owner"));
         }
     }
-    let project = super::track_tags::decode_value(value, GROUP_OUTPUT_MUTE_SCHEMA_VERSION)?;
+    let project = super::track_tags::decode_value(value, version)?;
     let mut snapshot = project.snapshot();
     for track in &mut snapshot.tracks {
         if let Some(ranges) = by_group.remove(&track.id) {

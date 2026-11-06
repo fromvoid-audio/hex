@@ -16,6 +16,7 @@ use std::{
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
+const MAIN_SATURATOR_LATENCY: usize = 11;
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> Self {
@@ -136,19 +137,14 @@ fn prepared(f: &Fixture) -> Arc<PreparedRevision> {
     )
 }
 /// Independent Main oracle. The raw pre-Main sum is rendered with the Main
-/// Saturator bypassed (a bypassed device declares no latency), then fed once
+/// Saturator removed, then fed once
 /// through the same oversampled Saturator state on a lone track, before the
 /// same master gain. Running Main per source instead (2 x sat(0.6)) differs.
 fn main_oracle(compensated: bool, frames: usize) -> Vec<[f32; 2]> {
     let mut raw = fixture(compensated);
     let main = raw.editor.project().main_devices()[0].id();
     let state = raw.editor.project().main_devices()[0].state().clone();
-    raw.editor
-        .execute(Command::SetDeviceBypass {
-            device: main,
-            bypassed: true,
-        })
-        .unwrap();
+    raw.editor.execute(Command::RemoveDevice(main)).unwrap();
     let mut session = SessionPlayback::new(prepared(&raw)).unwrap();
     session.apply(SessionPlaybackCommand::Play).unwrap();
     let mut sum = vec![[0.0; 2]; 320];
@@ -304,8 +300,8 @@ fn actual_linear_prepared_wav_and_stems_preserve_main_boundary() {
         // declared 11-frame latency is rendered and dropped, so the file's
         // first frame is the oracle's frame 11 and its tail includes the
         // band-limited release after the clip ends.
-        const MAIN_LATENCY: usize = 11;
-        let expected = main_oracle(compensated, 320 + MAIN_LATENCY).split_off(MAIN_LATENCY);
+        let expected = main_oracle(compensated, 320 + MAIN_SATURATOR_LATENCY)
+            .split_off(MAIN_SATURATOR_LATENCY);
         assert_pcm(&linear, &expected);
         assert_pcm(&shared, &expected);
         assert_eq!(fs::read(&linear).unwrap(), fs::read(&shared).unwrap());
@@ -343,21 +339,29 @@ fn main_bypass_and_remove_restore_raw_sum_with_exact_undo_redo() {
     let mut f = fixture(false);
     let main = f.editor.project().main_devices()[0].id();
     let original = f.editor.project().snapshot();
-    for command in [
-        Command::SetDeviceBypass {
-            device: main,
-            bypassed: true,
-        },
-        Command::RemoveDevice(main),
+    for (command, latency) in [
+        (
+            Command::SetDeviceBypass {
+                device: main,
+                bypassed: true,
+            },
+            MAIN_SATURATOR_LATENCY,
+        ),
+        (Command::RemoveDevice(main), 0),
     ] {
         f.editor.execute(command).unwrap();
         let changed = f.editor.project().snapshot();
         let revision = prepared(&f);
+        assert_eq!(
+            usize::try_from(revision.arrangement().main_latency_frames()).unwrap(),
+            latency
+        );
         let mut session = SessionPlayback::new(revision).unwrap();
         session.apply(SessionPlaybackCommand::Play).unwrap();
         let mut frames = [[0.0; 2]; 64];
         session.render(&mut frames).unwrap();
-        assert_eq!(frames, [[0.6, -0.6]; 64]);
+        assert!(frames[..latency].iter().all(|frame| *frame == [0.0; 2]));
+        assert!(frames[latency..].iter().all(|frame| *frame == [0.6, -0.6]));
         assert!(f.editor.try_undo().unwrap());
         assert_eq!(f.editor.project().snapshot(), original);
         assert!(f.editor.try_redo().unwrap());

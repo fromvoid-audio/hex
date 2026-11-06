@@ -12,6 +12,12 @@ pub(super) struct Reopen {
     cleanup: bool,
 }
 
+impl Source {
+    fn is_reopening_for(&self, generation: u64) -> bool {
+        self.project_generation == generation && self.operation.is_reopen()
+    }
+}
+
 impl Plugins {
     pub(in crate::native_audio) fn request_reopen(
         &mut self,
@@ -25,7 +31,7 @@ impl Plugins {
             observed.restore_refused = false;
         }
         let mut has_effects = false;
-        let visited = input.visit_plugin_effects(|_, _, _| {
+        let visited = input.visit_plugin_devices(|_, _, _| {
             has_effects = true;
             Ok(())
         });
@@ -84,9 +90,7 @@ impl Plugins {
             restore.ready = false;
             restore.cleanup = true;
             for source in &mut self.sources {
-                if source.project_generation == context.project_generation
-                    && source.operation.is_reopen()
-                {
+                if source.is_reopening_for(context.project_generation) {
                     source.retiring = true;
                 }
             }
@@ -101,12 +105,11 @@ impl Plugins {
         let Some(mut restore) = self.reopen.take() else {
             return;
         };
+        let generation = restore.context.project_generation;
         let Some(snapshot) = snapshot.filter(|snapshot| snapshot.context() == restore.context)
         else {
             for source in &mut self.sources {
-                if source.project_generation == restore.context.project_generation
-                    && source.operation.is_reopen()
-                {
+                if source.is_reopening_for(generation) {
                     source.retiring = true;
                 }
             }
@@ -130,14 +133,14 @@ impl Plugins {
         restore.output = Some(identity);
         if restore.cleanup {
             for source in &mut self.sources {
-                if source.operation.is_reopen() {
+                if source.is_reopening_for(generation) {
                     source.retiring = true;
                 }
             }
             if self
                 .sources
                 .iter()
-                .any(|source| source.operation.is_reopen())
+                .any(|source| source.is_reopening_for(generation))
             {
                 self.reopen = Some(restore);
             }
@@ -146,7 +149,7 @@ impl Plugins {
         let input = snapshot.effect_preparation();
         let mut next = None;
         let mut index = 0;
-        let visited = input.visit_plugin_effects(|owner, device, state| {
+        let visited = input.visit_plugin_devices(|owner, device, state| {
             if index == restore.next {
                 next = Some((owner, device, state));
             }
@@ -158,21 +161,24 @@ impl Plugins {
             self.reopen = Some(restore);
             return;
         }
-        let Some((owner, device, state)) = next else {
+        let Some((destination, device, state)) = next else {
             // Refused sources must reach their actual return before the
             // admitted unavailable graph can be installed instead.
-            if self.sources.iter().any(|source| source.retiring) {
-                self.reopen = Some(restore);
-            } else if self
+            if self
                 .sources
                 .iter()
-                .any(|source| source.accepted && source.operation.is_reopen())
+                .any(|source| source.retiring && source.is_reopening_for(generation))
             {
+                self.reopen = Some(restore);
+            } else {
+                // A restart has no previous output to replay. Recompile from
+                // canonical state even when every plug-in is unavailable.
                 restore.ready = true;
                 self.reopen = Some(restore);
             }
             return;
         };
+        let owner = destination.owner();
         if let Some(binding) = restore.current {
             let Some(source) = self
                 .sources
@@ -232,10 +238,15 @@ impl Plugins {
             let catalog = hex_plugin_catalog::Catalog::load(
                 self.catalog.as_deref().ok_or("vst3 catalog unavailable")?,
             )?;
-            catalog.resolve_effect(
+            catalog.resolve_plugin(
                 identity.class.bytes(),
                 identity.binary.executable_sha256,
                 identity.binary.info_sha256,
+                if destination.is_instrument() {
+                    hex_plugin_catalog::PluginRole::Instrument
+                } else {
+                    hex_plugin_catalog::PluginRole::Effect
+                },
             )
         })();
         let binding = selected.and_then(|selected| {
@@ -255,6 +266,7 @@ impl Plugins {
                     device,
                     restore.context.editor_revision.max(1),
                     output.sample_rate,
+                    hosting_profile(destination),
                     Some(state.clone()),
                 )
         });
@@ -270,6 +282,8 @@ impl Plugins {
                     retiring: false,
                     queued: false,
                     observes_latency: false,
+                    editor_open: false,
+                    edit_backlog: false,
                     #[cfg(all(test, feature = "allocation-probe"))]
                     observed_latency_receipt: false,
                     #[cfg(all(test, feature = "allocation-probe"))]

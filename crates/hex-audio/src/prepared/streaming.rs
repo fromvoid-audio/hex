@@ -321,7 +321,7 @@ impl Callback {
                 }
             };
             if fading {
-                self.begin_transport_fade(ticket, stop, true);
+                self.begin_transport_fade(ticket, action, true);
             }
             outcome
         } else if !matches!(
@@ -548,9 +548,7 @@ impl Callback {
                             crate::gain_recording::AbortReason::TransportChanged,
                         );
                     } else {
-                        self.invalidate_gain_recording(
-                            crate::gain_recording::AbortReason::TransportChanged,
-                        );
+                        self.invalidate_for_transport_change(queued.action);
                     }
                 }
                 PlaybackAction::Session(SessionPlaybackCommand::CancelPending { track }) => {

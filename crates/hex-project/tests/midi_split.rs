@@ -226,6 +226,7 @@ fn split_refuses_project_clip_limit_and_note_duplication_limit() {
         sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
+        sample_rate_mode: Default::default(),
         next_id: 2 + MAX_CLIPS as u64,
         assets: Vec::new(),
         tracks: vec![TrackSnapshot {

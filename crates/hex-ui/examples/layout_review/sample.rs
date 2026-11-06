@@ -678,14 +678,14 @@ impl Sample {
                 "device rail" => device_rail(s).child(self.controls()),
                 "device display" => device_display(s).child(self.controls()),
                 "device frame" => device_frame(
-                    theme::text("fixture frame"),
+                    vertical_device_name(theme::text("fixture frame")),
                     s,
                     self.toggle.clone(),
                     self.header_action(cx),
                     device_body(s).child(self.controls()),
                 ),
                 _ => device_header(
-                    theme::text("fixture header"),
+                    vertical_device_name(theme::text("fixture header")),
                     s,
                     self.toggle.clone(),
                     self.header_action(cx),

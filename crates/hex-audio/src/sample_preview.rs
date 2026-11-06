@@ -1,4 +1,4 @@
-//! Independent one-shot browser PCM on the existing output stream.
+//! Independent browser and take audition PCM on the existing output stream.
 //! One incoming owner, two retirement slots and one latest control-side pending
 //! owner bound memory and callback work. Only control reclaims PCM.
 //! A latest-value atomic controls preview gain independently of PCM custody.
@@ -17,6 +17,7 @@ struct Preview {
     generation: u64,
     audio: Audio,
     position: usize,
+    repeat: bool,
 }
 
 /// Submission is preparing until the callback actually consumes PCM. Completion
@@ -245,6 +246,21 @@ impl Control {
         audio: Audio,
         frame: usize,
     ) -> Result<(), PublishRefusal> {
+        self.publish_mode(generation, audio, frame, false)
+    }
+
+    /// Repeat exactly the submitted excerpt until another preview or Stop.
+    pub fn publish_loop(&mut self, generation: u64, audio: Audio) -> Result<(), PublishRefusal> {
+        self.publish_mode(generation, audio, 0, true)
+    }
+
+    fn publish_mode(
+        &mut self,
+        generation: u64,
+        audio: Audio,
+        frame: usize,
+        repeat: bool,
+    ) -> Result<(), PublishRefusal> {
         if !self.permitted() {
             return Err(PublishRefusal {
                 reason: Invalid("sample preview output is unavailable"),
@@ -266,7 +282,7 @@ impl Control {
                 audio,
             });
         }
-        if frame > audio.frames().len() {
+        if frame > audio.frames().len() || (repeat && audio.frames().is_empty()) {
             return Err(PublishRefusal {
                 reason: Invalid("sample preview offset exceeds source"),
                 audio,
@@ -278,6 +294,7 @@ impl Control {
             generation,
             audio,
             position: frame,
+            repeat,
         });
         self.reclaim();
         Ok(())
@@ -386,32 +403,47 @@ impl Callback {
             return;
         }
         let frames = preview.audio.frames();
-        let count = output.len().min(frames.len() - preview.position);
+        let mut remaining = output;
+        let mut played = false;
         let target_gain = f32::from_bits(self.target_gain.load(Acquire));
-        let samples = output.iter_mut().zip(&frames[preview.position..][..count]);
-        if self.gain == 1.0 && target_gain == 1.0 {
-            for (target, source) in samples {
-                target[0] += source[0];
-                target[1] += source[1];
+        while !remaining.is_empty() {
+            let count = remaining.len().min(frames.len() - preview.position);
+            let (chunk, rest) = remaining.split_at_mut(count);
+            let samples = chunk.iter_mut().zip(&frames[preview.position..][..count]);
+            if self.gain == 1.0 && target_gain == 1.0 {
+                for (target, source) in samples {
+                    target[0] += source[0];
+                    target[1] += source[1];
+                }
+            } else {
+                for (target, source) in samples {
+                    let delta = target_gain - self.gain;
+                    self.gain = if delta.abs() <= self.gain_step {
+                        target_gain
+                    } else {
+                        self.gain + self.gain_step.copysign(delta)
+                    };
+                    target[0] += source[0] * self.gain;
+                    target[1] += source[1] * self.gain;
+                }
             }
-        } else {
-            for (target, source) in samples {
-                let delta = target_gain - self.gain;
-                self.gain = if delta.abs() <= self.gain_step {
-                    target_gain
+            preview.position += count;
+            played |= count > 0;
+            if preview.position == frames.len() {
+                if preview.repeat {
+                    preview.position = 0;
                 } else {
-                    self.gain + self.gain_step.copysign(delta)
-                };
-                target[0] += source[0] * self.gain;
-                target[1] += source[1] * self.gain;
+                    break;
+                }
             }
+            remaining = rest;
         }
-        preview.position += count;
         self.position.store(preview.position as u64, Release);
-        if count > 0 {
+        if played {
             self.started.store(preview.generation, Release);
         }
-        if preview.position == frames.len() {
+        // A request at EOF also completes on a zero-frame callback.
+        if !preview.repeat && preview.position == frames.len() {
             self.finished.store(preview.generation, Release);
         }
     }
@@ -432,6 +464,50 @@ mod tests {
 
     fn pcm(value: f32, frames: usize) -> Audio {
         Audio::new(48_000, vec![[value, -value]; frames]).unwrap()
+    }
+
+    #[test]
+    fn loop_audition_wraps_at_the_selected_pcm_boundary_without_allocating() {
+        let (mut control, mut callback) = channel(48_000);
+        let generation = control.request().unwrap();
+        let a = [0.125, -0.25];
+        let b = [0.25, 0.375];
+        let c = [-0.5, 0.625];
+        control
+            .publish_loop(generation, Audio::new(48_000, vec![a, b, c]).unwrap())
+            .unwrap();
+        let mut first = [[0.0; 2]; 2];
+        let mut second = [[0.0; 2]; 7];
+        let mut render = || {
+            callback.begin_block(false);
+            callback.mix(&mut first);
+            callback.begin_block(false);
+            callback.mix(&mut second);
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let measured = allocation_counter::measure(&mut render);
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        render();
+        assert_eq!(first, [a, b]);
+        assert_eq!(second, [c, a, b, c, a, b, c]);
+        assert_eq!(control.snapshot().phase, Phase::Playing);
+        assert_eq!(control.snapshot().frame, 0);
+        control.cancel();
+        callback.begin_block(false);
+        let mut silent = [[0.0; 2]; 2];
+        callback.mix(&mut silent);
+        assert_eq!(silent, [[0.0; 2]; 2]);
     }
 
     #[test]
@@ -699,6 +775,7 @@ mod tests {
                     generation: 0,
                     audio: pcm(value, 2),
                     position: 0,
+                    repeat: false,
                 })
                 .ok()
                 .unwrap();
@@ -716,6 +793,7 @@ mod tests {
                     generation: 0,
                     audio: pcm(value, 2),
                     position: 0,
+                    repeat: false,
                 })
                 .ok()
                 .unwrap();

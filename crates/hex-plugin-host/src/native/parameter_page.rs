@@ -1,12 +1,12 @@
 //! One nonwaiting controller query through the original serialized reader.
 //! SDK getters run on the helper main lane while ordinary processing continues.
 use super::*;
-use protocol::{ParameterPageProgress, ParameterPageQuery};
+use protocol::{ControllerRequest, ParameterPageProgress, ParameterPageQuery};
 
 #[derive(Clone, Copy)]
 pub(super) struct PendingPage {
     operation: u64,
-    query: ParameterPageQuery,
+    query: ControllerRequest,
     until: Instant,
 }
 impl Prepared {
@@ -14,6 +14,10 @@ impl Prepared {
     /// pending without waiting for a controller getter. A second begin refuses
     /// without disturbing the first query; rows never identify edit targets.
     pub fn begin_parameter_page_on_worker(&mut self, query: ParameterPageQuery) -> Result<()> {
+        self.begin_controller_request_on_worker(query.into())
+    }
+    /// Includes the editor toggle on the same one-request lane and source.
+    pub fn begin_controller_request_on_worker(&mut self, query: ControllerRequest) -> Result<()> {
         query.validate()?;
         self.require_live_epoch()?;
         if self.parameter_page.is_some() {

@@ -1,16 +1,29 @@
 //! A delivered Resident output can hold one stopped document transition.
 //! Session has already accepted the saved document and retained its graph.
-//! The callback fence drains the outgoing command prefix. Rebound is emitted
-//! only for the applied successor, then the editor binds its existing Client.
+//! The callback fence drains the outgoing command prefix. The exact applied
+//! successor permits retirement of outgoing VST3 sources and client rebind.
 use super::super::*;
-use hex_audio::prepared::{StoppedEditFence, StoppedEditFenceState};
+use hex_audio::prepared::{PublicationControl, StoppedEditFence, StoppedEditFenceState};
 use std::time::Instant;
 
 pub(in crate::native_audio) struct Rebind {
     pub(in crate::native_audio) context: AudioSourceContext,
     pub(in crate::native_audio) fence: StoppedEditFence,
+    pub(in crate::native_audio) restores_plugins: bool,
+    outgoing_generation: u64,
     output_identity: u64,
     deadline: Instant,
+}
+
+impl Rebind {
+    pub(in crate::native_audio) fn ready(&self, control: &PublicationControl) -> bool {
+        control.stopped_edit_fence_state(self.fence) == StoppedEditFenceState::Ready
+            && !self.interrupted(control)
+    }
+
+    fn interrupted(&self, control: &PublicationControl) -> bool {
+        self.restores_plugins && control.stopped_arrangement_edit_interrupted(self.fence)
+    }
 }
 
 impl NativeAudioSink {
@@ -25,12 +38,11 @@ impl NativeAudioSink {
             return false;
         };
         let context = incoming.context();
+        let outgoing_generation = previous.context().project_generation;
         if previous.audio_mode() != DocumentAudioMode::Resident
             || incoming.audio_mode() != DocumentAudioMode::Resident
             || previous.sample_rate() != incoming.sample_rate()
-            || incoming.effect_preparation().requires_plugin_profile()
-            || !self.plugins.can_retain_output_for_native_document()
-            || self.output_generation != Some(previous.context().project_generation)
+            || self.output_generation != Some(outgoing_generation)
             || self.document_rebind.is_some()
             || self.open_pending
             || self.opening.is_some()
@@ -60,6 +72,13 @@ impl NativeAudioSink {
         else {
             return false;
         };
+        if !self.plugins.can_retain_output_for_document(
+            control,
+            outgoing_generation,
+            incoming.effect_preparation(),
+        ) {
+            return false;
+        }
         let Some(active) = control.status.recording_source() else {
             return false;
         };
@@ -82,6 +101,8 @@ impl NativeAudioSink {
         self.document_rebind = Some(Rebind {
             context,
             output_identity,
+            outgoing_generation,
+            restores_plugins: incoming.effect_preparation().requires_plugin_profile(),
             fence,
             deadline: Instant::now() + STARTUP_OPEN_DEADLINE,
         });
@@ -97,12 +118,17 @@ impl NativeAudioSink {
         let Some(rebind) = self.document_rebind.as_ref() else {
             return true;
         };
+        if self
+            .resident
+            .current_submission
+            .is_some_and(|submission| submission.source_context == Some(rebind.context))
+        {
+            return false;
+        }
         self.output
             .as_mut()
             .and_then(|output| output.publication.control())
-            .is_some_and(|control| {
-                control.stopped_edit_fence_state(rebind.fence) == StoppedEditFenceState::Ready
-            })
+            .is_some_and(|control| rebind.ready(control))
     }
 
     pub(in crate::native_audio) fn poll_document_rebind(&mut self) {
@@ -117,6 +143,10 @@ impl NativeAudioSink {
             self.fallback_document_rebind();
             return;
         };
+        if rebind.interrupted(control) {
+            self.fallback_document_rebind();
+            return;
+        }
         let submitted = self.resident.current_submission.filter(|submission| {
             submission.source_context == Some(rebind.context)
                 && submission.output_identity == rebind.output_identity
@@ -130,6 +160,10 @@ impl NativeAudioSink {
         {
             let generation = rebind.context.project_generation;
             let output_identity = rebind.output_identity;
+            self.plugins
+                .retire_document_sources(rebind.outgoing_generation);
+            self.resident
+                .discard_obsolete_pending_after_restore(rebind.context);
             control.release_stopped_edit_fence(rebind.fence);
             self.document_rebind = None;
             self.output_generation = Some(generation);
@@ -155,16 +189,17 @@ impl NativeAudioSink {
             return;
         };
         let generation = rebind.context.project_generation;
-        let rate = self
+        let source = self
             .desired
             .as_ref()
             .filter(|source| source.context().project_generation == generation)
-            .map(|source| source.sample_rate());
+            .cloned();
         self.release_output_for_document(generation);
-        if let Some(rate) = rate
+        if let Some(source) = source
             && self.resident.has_pending_document(rebind.context)
         {
-            self.request_open(Some(rate), None);
+            self.request_open(Some(source.sample_rate()), None);
+            self.plugins.request_reopen(&source);
         } else {
             // An already submitted graph belongs to the retiring Root. The
             // accepted project stays open and Restart Audio can prepare it.

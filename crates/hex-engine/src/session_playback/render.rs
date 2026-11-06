@@ -37,6 +37,8 @@ impl SessionPlayback {
             && self.computer_keyboard.is_none()
             && self.current_sampler_keyboards.is_empty()
             && !self.stopped_edit_tails()
+            && !self.foreign_arrangement.has_started()
+            && !self.foreign_arrangement.has_keyboard()
     }
 
     /// Render a complete block transactionally. A refusal after any chunk
@@ -117,12 +119,14 @@ impl SessionPlayback {
         output: &mut [Frame],
         pages: Option<&mut P>,
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
-        project: Option<&mut ProjectOutputTap<'_, '_>>,
+        mut project: Option<&mut ProjectOutputTap<'_, '_>>,
         sources: &crate::native_device_resources::current_sampler::CurrentSamplerSources,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         self.candidate_admission_open = false;
-        let capture = project.map(|p| p as &mut dyn CaptureSink);
+        let capture = project
+            .as_mut()
+            .map(|tap| &mut **tap as &mut dyn CaptureSink);
         self.render_internal_with_foreign(
             output,
             pages,
@@ -132,7 +136,11 @@ impl SessionPlayback {
                 sources,
             )),
             foreign,
-        )
+        )?;
+        if let Some(project) = project {
+            project.main(output);
+        }
+        Ok(())
     }
 
     /// Render transactionally while optionally observing stable device IDs at
@@ -471,6 +479,8 @@ impl SessionPlayback {
         if output.is_empty()
             || self.renders_no_device_chains()
             || (!self.playing
+                && !self.foreign_arrangement.has_started()
+                && !self.foreign_arrangement.has_keyboard()
                 && self.computer_keyboard.is_none()
                 && self.current_sampler_keyboards.is_empty()
                 && !self
@@ -567,7 +577,10 @@ impl SessionPlayback {
         for keyboard in &mut self.current_sampler_keyboards {
             keyboard.begin_block();
         }
+        self.foreign_arrangement.begin();
         let main_tails_only = !self.playing
+            && !self.foreign_arrangement.has_started()
+            && !self.foreign_arrangement.has_keyboard()
             && stopped_edit_tails
             && !self.monitor_source_releases
             && self.computer_keyboard.is_none()
@@ -641,6 +654,7 @@ impl SessionPlayback {
                 output.fill([0.0; 2]);
                 return Err(SessionPlaybackError::DeviceRuntime);
             }
+            self.foreign_arrangement.commit();
             self.track_faders[..track_count]
                 .copy_from_slice(&self.track_fader_scratch[..track_count]);
             self.live_gain = self.live_gain_scratch;
@@ -763,6 +777,10 @@ impl SessionPlayback {
         let mut arrangement_frame = self.arrangement_frame;
         let mut arrangement_loop_pass = self.arrangement_loop_pass;
         let mut output_offset = 0;
+        let mut timing_run = capture
+            .as_ref()
+            .filter(|sink| sink.observes_timing())
+            .map(|_| (0, arrangement_frame));
         let mut route_changed = false;
         let region = self.active_loop_region();
         // Pending route frames only change when apply_due_routes consumes them.
@@ -781,6 +799,21 @@ impl SessionPlayback {
             if let Some(region) = region {
                 (arrangement_frame, arrangement_loop_pass) =
                     normalize_loop_cursor(arrangement_frame, region, arrangement_loop_pass)?;
+            }
+            if let Some((offset, start)) = timing_run
+                && start.checked_add((output_offset - offset) as u64) != Some(arrangement_frame)
+            {
+                if output_offset > offset
+                    && let Some(sink) = capture.as_mut()
+                {
+                    sink.timing(
+                        offset,
+                        start,
+                        output_offset - offset,
+                        self.revision.session().timing(),
+                    );
+                }
+                timing_run = Some((output_offset, arrangement_frame));
             }
             let (captured_release, applied_route) = if self.current_sampler_console
                 || next_route.is_some_and(|next| next <= performance_frame)
@@ -1111,6 +1144,16 @@ impl SessionPlayback {
             output_offset = chunk_end;
         }
 
+        if let Some((offset, start)) = timing_run
+            && let Some(sink) = capture.as_mut()
+        {
+            sink.timing(
+                offset,
+                start,
+                output_offset - offset,
+                self.revision.session().timing(),
+            );
+        }
         self.main_chain.commit_block();
         self.revision.arrangement().master_mix().apply(output);
         for chain in &mut self.device_chains {
@@ -2499,6 +2542,56 @@ struct MutableInstrumentChunkContext<'a, T: ?Sized> {
     timing: &'a T,
 }
 
+/// Gather canonical Console note onsets for an already selected MIDI route.
+/// Both native and foreign generators consume the same admitted clip template.
+pub(super) fn collect_console_midi_onsets<T: MidiTiming + ?Sized>(
+    midi: &crate::session_inventory::EffectiveSessionMidi<'_>,
+    route: TrackRoute,
+    timing: &T,
+    start: u64,
+    end: u64,
+    spans: &mut MidiSpanBuffer,
+    onsets: &mut MutableOnsetBuffer,
+) -> Result<(), SessionPlaybackError> {
+    let RouteOwner::Session { clip, origin } = route.owner else {
+        return Err(SessionPlaybackError::InvalidCommand);
+    };
+    let prepared = midi
+        .midi_clip_for_track(clip, route.id)
+        .ok_or(SessionPlaybackError::UnknownClip)?;
+    if prepared.track != route.id {
+        return Err(SessionPlaybackError::ClipTrackMismatch);
+    }
+    if !prepared.instrument_enabled() {
+        return Ok(());
+    }
+    prepared
+        .instrument_template()
+        .query_with_origin(origin, timing, start, end, spans)
+        .map_err(SessionPlaybackError::Midi)?;
+    for span in spans.spans() {
+        onsets
+            .push(crate::mutable_instrument::MutableNoteOnset {
+                key: crate::mutable_instrument::MutableOccurrenceKey::new(
+                    prepared.track,
+                    span.clip,
+                    span.note,
+                    span.iteration,
+                    route.current_incarnation,
+                ),
+                onset_beat: span.onset_beat,
+                gate_end_beat: span.gate_end_beat,
+                source_start: span.start_frame,
+                source_gate_end: span.gate_end_frame,
+                pitch: span.pitch,
+                channel: span.channel,
+                velocity: span.velocity,
+            })
+            .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
+    }
+    Ok(())
+}
+
 fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?Sized>(
     context: MutableInstrumentChunkContext<'_, T>,
     index: usize,
@@ -2606,39 +2699,16 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
                 return Err(SessionPlaybackError::MutableInstrumentEvents);
             }
         }
-        RouteOwner::Session { clip, origin } => {
-            let prepared = midi
-                .midi_clip_for_track(clip, track_id)
-                .ok_or(SessionPlaybackError::UnknownClip)?;
-            if prepared.track != routes[index].id {
-                return Err(SessionPlaybackError::ClipTrackMismatch);
-            }
-            if prepared.instrument_enabled() {
-                prepared
-                    .instrument_template()
-                    .query_with_origin(origin, timing, performance_frame, source_end, spans)
-                    .map_err(SessionPlaybackError::Midi)?;
-                for span in spans.spans() {
-                    onsets
-                        .push(crate::mutable_instrument::MutableNoteOnset {
-                            key: crate::mutable_instrument::MutableOccurrenceKey::new(
-                                prepared.track,
-                                span.clip,
-                                span.note,
-                                span.iteration,
-                                routes[index].current_incarnation,
-                            ),
-                            onset_beat: span.onset_beat,
-                            gate_end_beat: span.gate_end_beat,
-                            source_start: span.start_frame,
-                            source_gate_end: span.gate_end_frame,
-                            pitch: span.pitch,
-                            channel: span.channel,
-                            velocity: span.velocity,
-                        })
-                        .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
-                }
-            }
+        RouteOwner::Session { .. } => {
+            collect_console_midi_onsets(
+                &midi,
+                midi_route,
+                timing,
+                performance_frame,
+                source_end,
+                spans,
+                onsets,
+            )?;
         }
         RouteOwner::SessionAudio { .. } | RouteOwner::Silence => {}
     }

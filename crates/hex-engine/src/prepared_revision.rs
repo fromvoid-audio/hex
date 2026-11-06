@@ -1202,6 +1202,18 @@ impl PreparedRevision {
             })
     }
 
+    /// A private finite renderer must replay the note history of foreign
+    /// instruments before a nonzero bounce start.
+    pub fn arrangement_bounce_requires_preroll(&self) -> bool {
+        self.arrangement_seek_requires_preroll()
+            || self.arrangement.tracks().iter().any(|track| {
+                track
+                    .foreign_instrument
+                    .as_ref()
+                    .is_some_and(|node| !node.bypassed)
+            })
+    }
+
     /// Source identity/configuration is independent of receiver position and
     /// every contributor's local effects. Reuse existing exact canonical device
     /// descriptors; this query creates no competing source/resource owner.

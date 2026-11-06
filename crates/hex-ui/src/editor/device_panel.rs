@@ -58,6 +58,7 @@ mod numeric_display;
 pub(super) use navigation::{bottom_bar, capture_pointer_down as capture_navigation_pointer_down};
 mod operator_panel;
 mod parameter_rows;
+pub(super) mod vst3_parameters;
 pub(super) use operator_panel::bind_keys as bind_operator_keys;
 mod return_drag;
 mod sampler_overview;
@@ -117,6 +118,7 @@ pub(super) struct DevicePanelState {
     pub(super) main_selected: Option<u64>,
     chain_window: chain_window::ChainWindow,
     parameter_rows: HashMap<DeviceId, parameter_rows::RowWindow>,
+    vst3_parameters: vst3_parameters::State,
     pub(super) navigation: navigation::Navigation,
     generation: u64,
     pub(super) selected_device: Option<DeviceId>,
@@ -1355,7 +1357,7 @@ fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::De
         (NativeDeviceClass::Effect, Some("hex.overdrive")) => overdrive_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     };
-    frame_width + device_meter::WIDTH
+    frame_width + hex_widgets::DEVICE_FRAME_HEADER_WIDTH + device_meter::WIDTH
 }
 
 fn pointer_within_visible_device_drop_bounds(
@@ -1694,6 +1696,7 @@ fn device_drag_title(
         return_destination: std::rc::Rc::new(std::cell::Cell::new(None)),
     };
     let entity = cx.entity();
+    let help = theme::text(format!("{title} · drag to reorder device"));
     div()
         .id(("device-drag-title", id.value()))
         .debug_selector(move || format!("device-drag-title-{}", id.value()))
@@ -1701,16 +1704,17 @@ fn device_drag_title(
         .h_full()
         .flex()
         .items_center()
-        .overflow_hidden()
+        .truncate()
         .cursor(gpui::CursorStyle::OpenHand)
-        .tooltip(|_, cx| {
+        .tooltip(move |_, cx| {
+            let help = help.clone();
             cx.new(|_| super::transport::MiniTooltip {
                 kind: crate::tooltips::Kind::Help,
-                description: "drag to reorder device".into(),
+                description: help,
             })
             .into()
         })
-        .child(theme::text(title))
+        .child(hex_widgets::vertical_device_name(title))
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |view, _, window, cx| {
@@ -1835,7 +1839,11 @@ fn device_selection_listener(
     })
 }
 
-fn vst3_status_body(view: &EditorView, device: &hex_project::Device) -> Stateful<Div> {
+fn vst3_status_body(
+    view: &mut EditorView,
+    device: &hex_project::Device,
+    cx: &mut Context<EditorView>,
+) -> Stateful<Div> {
     let device_id = device.id();
     if view.degraded_plugins.contains(device_id.value()) {
         return vst3_degraded_body(device_id);
@@ -1856,10 +1864,16 @@ fn vst3_status_body(view: &EditorView, device: &hex_project::Device) -> Stateful
             observation.foreign_processor(device_id.value(), device.state().type_id())
         });
     let (message, status) = match foreign {
-        Some(true) => (
-            theme::text("vst3 effect · parameter controls unavailable"),
-            "active",
-        ),
+        Some(true) => {
+            let body = vst3_parameters::body(view, device_id, cx);
+            let body = div()
+                .debug_selector(move || format!("device-vst3-active-{}", device_id.value()))
+                .child(body);
+            return div()
+                .id(("device-body", device_id.value()))
+                .debug_selector(move || format!("device-body-{}", device_id.value()))
+                .child(body);
+        }
         Some(false) => (
             theme::text("vst3 unavailable · saved state preserved"),
             "unavailable",
@@ -1930,7 +1944,7 @@ fn render_effect(
     let header_actions = device_actions(view, device, selected, device_view.is_ok(), cx);
     let rendered = match &device_view {
         _ if device.state().type_id().as_str() == Ok("hex.vst3") => {
-            let body = vst3_status_body(view, device);
+            let body = vst3_status_body(view, device, cx);
             device_frame(
                 device_drag_title(
                     view,
@@ -2043,7 +2057,9 @@ fn render_effect(
             )
         }
     };
-    let rendered = rendered.debug_selector(move || format!("device-shell-{}", device_id.value()));
+    let rendered = rendered
+        .h_full()
+        .debug_selector(move || format!("device-shell-{}", device_id.value()));
     view.device_panel.views.insert(
         device_id,
         (
@@ -2053,24 +2069,15 @@ fn render_effect(
         ),
     );
     let selector = format!("effect-device-{}", device_id.value());
-    let frame_width = match device.state().type_id().as_str() {
-        Ok("hex.utility") => UTILITY_FRAME_WIDTH,
-        Ok("hex.eq8" | "hex.eq") => eq8_panel::FRAME_WIDTH,
-        Ok("hex.saturator") => saturator_panel::FRAME_WIDTH,
-        Ok("hex.limiter") => limiter_panel::FRAME_WIDTH,
-        Ok("hex.compressor") => compressor_panel::FRAME_WIDTH,
-        Ok("hex.gate") => gate_panel::FRAME_WIDTH,
-        Ok("hex.reverb") => reverb_panel::FRAME_WIDTH,
-        Ok("hex.delay") => delay_panel::FRAME_WIDTH,
-        Ok("hex.auto-pan") => auto_pan_panel::FRAME_WIDTH,
-        Ok("hex.overdrive") => overdrive_panel::FRAME_WIDTH,
-        _ => DEVICE_FRAME_WIDTH,
-    };
-    let rendered = div().w(px(frame_width)).flex_shrink_0().child(rendered);
+    let card_width = device_card_width(NativeDeviceClass::Effect, device.state().type_id());
+    let rendered = div()
+        .w(px(card_width - device_meter::WIDTH))
+        .flex_shrink_0()
+        .child(rendered);
     div()
         .id(ElementId::Name(selector.clone().into()))
         .debug_selector(move || selector.clone())
-        .w(px(frame_width + device_meter::WIDTH))
+        .w(px(card_width))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex()
         .flex_shrink_0()
@@ -2223,7 +2230,7 @@ impl EditorView {
                     }
                 };
                 self.clear_native_device_drag(drag);
-                self.insert_plugin_effect(selection, destination, before);
+                self.insert_plugin_effect(selection, destination, before, cx);
                 cx.notify();
                 return;
             }
@@ -2456,6 +2463,7 @@ impl EditorView {
                     selection,
                     hex_session::service::PluginEffectDestination::Track(drop_target.track),
                     before,
+                    cx,
                 );
                 cx.notify();
                 return;
@@ -2560,7 +2568,21 @@ fn render_instrument(
     let is_sampler = device.state().type_id().as_str() == Ok("hex.instrument.sampler");
     let leading = bypass_action(view, device, NativeDeviceClass::Instrument, cx);
     let header_actions = instrument_actions(view, track, device, selected, device_view.is_ok(), cx);
-    let rendered = if hex_engine::is_empty_sampler_state_on_control(device.state()) {
+    let rendered = if device.state().type_id().as_str() == Ok("hex.vst3") {
+        device_frame(
+            device_drag_title(
+                view,
+                cx,
+                device,
+                NativeDeviceClass::Instrument,
+                theme::text("vst3"),
+            ),
+            theme::device_frame_style(selected),
+            leading,
+            header_actions,
+            vst3_status_body(view, device, cx),
+        )
+    } else if hex_engine::is_empty_sampler_state_on_control(device.state()) {
         device_frame(
             device_drag_title(
                 view,
@@ -2765,7 +2787,9 @@ fn render_instrument(
             }
         }
     };
-    let rendered = rendered.debug_selector(move || format!("device-shell-{}", device_id.value()));
+    let rendered = rendered
+        .h_full()
+        .debug_selector(move || format!("device-shell-{}", device_id.value()));
     view.device_panel.views.insert(
         device_id,
         (
@@ -2775,18 +2799,15 @@ fn render_instrument(
         ),
     );
     let selector = format!("instrument-device-{}", device_id.value());
-    let frame_width = if is_operator {
-        operator_panel::OPERATOR_FRAME_WIDTH
-    } else if is_sampler {
-        crate::device_composition::SAMPLER_FRAME_WIDTH
-    } else {
-        DEVICE_FRAME_WIDTH
-    };
-    let rendered = div().w(px(frame_width)).flex_shrink_0().child(rendered);
+    let card_width = device_card_width(NativeDeviceClass::Instrument, device.state().type_id());
+    let rendered = div()
+        .w(px(card_width - device_meter::WIDTH))
+        .flex_shrink_0()
+        .child(rendered);
     div()
         .id(ElementId::Name(selector.clone().into()))
         .debug_selector(move || selector.clone())
-        .w(px(frame_width + device_meter::WIDTH))
+        .w(px(card_width))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex()
         .flex_shrink_0()
@@ -2809,7 +2830,14 @@ fn instrument_actions(
     cx: &mut Context<EditorView>,
 ) -> Div {
     let id = device.id();
-    let actions = div().flex().items_center().gap(px(2.0));
+    let actions = div().flex().flex_col().items_center().gap(px(2.0));
+    let actions = if device.state().type_id().as_str() == Ok("hex.vst3")
+        && !view.degraded_plugins.contains(id.value())
+    {
+        actions.child(vst3_editor_button(id, selected, cx))
+    } else {
+        actions
+    };
     let actions = actions.child(
         action_button(
             format!("instrument-replace-{}", id.value()),
@@ -3001,7 +3029,12 @@ fn device_actions(
     cx: &mut Context<EditorView>,
 ) -> Div {
     let id = device.id();
-    let mut actions = div().flex().items_center().gap(px(2.0));
+    let mut actions = div().flex().flex_col().items_center().gap(px(2.0));
+    if device.state().type_id().as_str() == Ok("hex.vst3")
+        && !view.degraded_plugins.contains(id.value())
+    {
+        actions = actions.child(vst3_editor_button(id, selected, cx));
+    }
     if presets_available {
         actions = actions
             .child(super::device_preset::actions(
@@ -3035,6 +3068,23 @@ fn device_actions(
             cx.notify();
         })),
     )
+}
+
+fn vst3_editor_button(id: DeviceId, selected: bool, cx: &mut Context<EditorView>) -> Stateful<Div> {
+    action_button(
+        format!("device-vst3-editor-{}", id.value()),
+        "↗",
+        "show or hide plugin editor",
+        theme::DeviceActionRole::Normal,
+        selected,
+    )
+    .on_click(cx.listener(move |view, _, _, cx| {
+        view.enqueue(Request::TogglePluginEditor {
+            project_generation: view.project_generation,
+            device: id,
+        });
+        cx.notify();
+    }))
 }
 
 pub(super) fn action_button(

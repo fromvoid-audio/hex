@@ -613,6 +613,14 @@ impl Playback {
         let runtime = self.session_runtime.as_mut().ok_or(Invalid(
             "computer keyboard requires prepared session playback",
         ))?;
+        if compiled.foreign_instrument.is_some() {
+            if hint.is_some() {
+                return Err(Invalid(
+                    "vst3 computer keyboard tuning hints are unsupported",
+                ));
+            }
+            return runtime.prepare_foreign_keyboard(track, input);
+        }
         let family = self
             .prepared_revision
             .as_ref()
@@ -735,6 +743,7 @@ impl Playback {
     pub fn cancel_computer_keyboard(&mut self) {
         if let Some(runtime) = self.session_runtime.as_mut() {
             runtime.cancel_current_sampler_keyboard();
+            runtime.cancel_foreign_keyboard(None);
         }
 
         if let Some(keyboard) = self
@@ -1119,7 +1128,14 @@ impl Playback {
         self.project
             .tracks
             .iter()
-            .flat_map(|track| track.device_chain.iter())
+            .flat_map(|track| {
+                track.device_chain.iter().chain(
+                    track
+                        .foreign_instrument
+                        .iter()
+                        .filter(|node| !node.bypassed),
+                )
+            })
             .chain(
                 self.project
                     .return_buses
@@ -1698,6 +1714,7 @@ impl Playback {
             if let Some(clock) = priority_stop {
                 if let Some(runtime) = self.session_runtime.as_mut() {
                     runtime.cancel_current_sampler_keyboard();
+                    runtime.cancel_foreign_keyboard(Some(clock));
                     if let Some(keyboard) = runtime.computer_keyboard.as_mut() {
                         keyboard.priority_stop(clock);
                     }
@@ -2121,6 +2138,14 @@ impl Playback {
     }
 
     fn can_rebind_keyboard_input(&self, previous: &Self) -> bool {
+        if self
+            .session_runtime
+            .as_ref()
+            .zip(previous.session_runtime.as_ref())
+            .is_some_and(|(next, old)| next.shares_foreign_keyboard(old))
+        {
+            return true;
+        }
         self.session_runtime
             .as_ref()
             .and_then(|runtime| runtime.computer_keyboard.as_ref())
@@ -2133,12 +2158,11 @@ impl Playback {
             .is_some_and(|(next, old)| next.can_rebind_input_from(old))
     }
     fn detach_rebound_keyboard_input(&mut self) {
-        if let Some(keyboard) = self
-            .session_runtime
-            .as_mut()
-            .and_then(|runtime| runtime.computer_keyboard.as_mut())
-        {
-            keyboard.detach_rebound_input();
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            runtime.detach_foreign_keyboard();
+            if let Some(keyboard) = runtime.computer_keyboard.as_mut() {
+                keyboard.detach_rebound_input();
+            }
         }
     }
 
@@ -2532,6 +2556,19 @@ impl Playback {
         self.session_runtime.is_some() && self.project.project_track_ids.contains(tracks, || {})
     }
 
+    /// Check selected sources against the current canonical render graph.
+    pub fn project_sample_sources_supported(
+        &self,
+        tracks: &[u64],
+        returns: &[crate::ReturnId],
+    ) -> bool {
+        self.project_output_supported(tracks)
+            && returns.len() <= crate::MAX_RETURN_TRACKS
+            && returns
+                .iter()
+                .all(|id| self.project.return_buses().iter().any(|bus| bus.id == *id))
+    }
+
     fn render_pages_fallback<P: MediaPages + ?Sized>(
         &mut self,
         output: &mut [Frame],
@@ -2774,11 +2811,23 @@ impl hex_lattice::ForeignProcessors for ShiftedForeign<'_> {
         parameters: &[hex_lattice_contract::ForeignParameterPoint],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), hex_lattice_contract::DeviceContractError> {
-        self.inner.process_segment_with_parameters(
+        self.process_segment_with_notes(node, frame_offset, frames, parameters, &[], clock)
+    }
+    fn process_segment_with_notes(
+        &mut self,
+        node: hex_lattice::ForeignProcessorNode<'_>,
+        frame_offset: usize,
+        frames: &mut [Frame],
+        parameters: &[hex_lattice_contract::ForeignParameterPoint],
+        notes: &[hex_lattice::ForeignNote],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), hex_lattice_contract::DeviceContractError> {
+        self.inner.process_segment_with_notes(
             node,
             self.offset.saturating_add(frame_offset),
             frames,
             parameters,
+            notes,
             clock,
         )
     }

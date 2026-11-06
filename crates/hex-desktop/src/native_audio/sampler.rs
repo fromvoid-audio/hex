@@ -137,11 +137,12 @@ impl NativeAudioSink {
                             policy.resident_native.storage,
                         )
                         .map_err(str::to_owned)?;
-                    let domains = if self.plugins.wants_profile() && !self.open_without_bridge {
-                        policy.plugins.domains(policy.ordinary_domains)?
-                    } else {
-                        policy.ordinary_domains
-                    };
+                    let domains =
+                        if self.plugins.wants_profile() && self.bridge_rate_mismatch.is_none() {
+                            policy.plugins.domains(policy.ordinary_domains)?
+                        } else {
+                            policy.ordinary_domains
+                        };
                     control
                         .configure_ordinary_streaming_on_control(
                             domains,
@@ -149,7 +150,7 @@ impl NativeAudioSink {
                             policy.ordinary_stream_metadata_bytes,
                         )
                         .map_err(str::to_owned)?;
-                    if !self.open_without_bridge
+                    if self.bridge_rate_mismatch.is_none()
                         && let Err(error) = self.plugins.configure(control, policy.plugins)
                     {
                         self.plugins.refuse_profile(error);

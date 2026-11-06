@@ -71,6 +71,7 @@ impl SessionPlayback {
                     // cut below and rendered while paused. Only sampler-only
                     // offline export lacks one, and it refuses Pause.
                     self.pause_analytic_sources()?;
+                    self.foreign_arrangement.cut();
                     // A removed receiver may already own a detached release.
                     // Only explicit discontinuities reset admitted monitoring.
                     self.monitor_source_releases |=
@@ -151,6 +152,7 @@ impl SessionPlayback {
     }
 
     fn stop_transport(&mut self) -> bool {
+        self.foreign_arrangement.cut();
         let mut changed = self.performance_frame != 0;
         self.playing = false;
         self.monitor_source_releases = false;
@@ -333,6 +335,7 @@ impl SessionPlayback {
     /// compensation epoch and mutable voices start empty. Allocation-free:
     /// existing owners are cleared or reset in place.
     pub(super) fn restart_audio_history(&mut self) {
+        self.foreign_arrangement.cut();
         for route in &mut self.routes {
             route.audio_release = None;
         }
@@ -781,6 +784,14 @@ impl SessionPlayback {
             (owner, None) => owner,
             _ => return Err(SessionPlaybackError::InvalidCommand),
         };
+        let has_clip_volume = match next_owner {
+            RouteOwner::Session { clip, .. } => self
+                .revision
+                .session()
+                .midi_clip(clip)
+                .is_some_and(|clip| clip.volume_program().is_some()),
+            _ => false,
+        };
         if next_owner != owner || matches!(target, RouteTarget::Session(_)) {
             self.check_shared_transition_capacity(index, next_owner, moment.target_frame, false)?;
         }
@@ -808,12 +819,19 @@ impl SessionPlayback {
             None
         };
         for destination in 0..self.route_scratch.len() {
-            if self.revision.arrangement().tracks()[destination]
-                .midi_source_index
-                .unwrap_or(destination)
-                != index
-            {
+            let track = &self.revision.arrangement().tracks()[destination];
+            if track.midi_source_index.unwrap_or(destination) != index {
                 continue;
+            }
+            if has_clip_volume
+                && track
+                    .foreign_instrument
+                    .as_ref()
+                    .is_some_and(|node| !node.bypassed)
+            {
+                return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                    "console clip volume is unavailable for vst3 instruments",
+                ));
             }
             if !proven_current
                 && self.shared_source_runtime_index(destination).is_none()

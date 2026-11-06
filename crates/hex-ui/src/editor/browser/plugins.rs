@@ -12,7 +12,7 @@
 //! Native interaction acceptance remains separate.
 use super::*;
 use gpui::AnimationExt;
-use hex_plugin_catalog::{Catalog, Row};
+use hex_plugin_catalog::{Catalog, PluginRole, Row};
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 enum PluginScan {
@@ -26,7 +26,7 @@ enum PluginScan {
 #[derive(Default)]
 pub(super) struct Plugins {
     catalog: Catalog,
-    projection: RefCell<Option<(String, Arc<Vec<Row>>)>>,
+    projection: RefCell<Option<PluginProjection>>,
     pub(super) status: String,
     pub(super) loading: bool,
     pub(super) busy: bool,
@@ -37,6 +37,8 @@ pub(super) struct Plugins {
     app: Option<PathBuf>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     cancellation: Option<hex_plugin_catalog::worker::Cancellation>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    scan_progress: Option<gpui::Task<()>>,
     #[cfg(all(
         test,
         feature = "ui-test-support",
@@ -44,6 +46,97 @@ pub(super) struct Plugins {
         target_arch = "aarch64"
     ))]
     test_roots: Option<Vec<PathBuf>>,
+}
+
+struct PluginProjection {
+    query: String,
+    grouped: bool,
+    rows: Arc<Vec<Row>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum PluginGroup {
+    Instruments,
+    Effects,
+    Other,
+}
+
+impl PluginGroup {
+    const ALL: [Self; 3] = [Self::Instruments, Self::Effects, Self::Other];
+
+    fn of(row: &Row) -> Self {
+        match row.selection.as_ref().map(|selection| selection.role) {
+            Some(PluginRole::Instrument) => Self::Instruments,
+            Some(PluginRole::Effect) => Self::Effects,
+            None => Self::Other,
+        }
+    }
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Instruments => "instruments",
+            Self::Effects => "effects",
+            Self::Other => "other vst3",
+        }
+    }
+}
+
+pub(super) enum PluginLine {
+    Heading(PluginGroup, usize),
+    Plugin(usize),
+}
+
+/// Headers occupy physical list rows but never enter the keyboard selection
+/// or browser history's logical item order.
+pub(super) struct PluginGroups([usize; 3]);
+
+impl PluginGroups {
+    pub(super) fn new(rows: &[Row]) -> Self {
+        let instruments =
+            rows.partition_point(|row| matches!(PluginGroup::of(row), PluginGroup::Instruments));
+        let effects_end =
+            rows.partition_point(|row| !matches!(PluginGroup::of(row), PluginGroup::Other));
+        Self([
+            instruments,
+            effects_end - instruments,
+            rows.len() - effects_end,
+        ])
+    }
+
+    pub(super) fn heading_count(&self) -> usize {
+        self.0.iter().filter(|&&count| count != 0).count()
+    }
+
+    pub(super) fn line(&self, index: usize) -> Option<PluginLine> {
+        let (mut visual, mut logical) = (0, 0);
+        for (group, count) in PluginGroup::ALL.into_iter().zip(self.0) {
+            if count == 0 {
+                continue;
+            }
+            if index == visual {
+                return Some(PluginLine::Heading(group, logical));
+            }
+            if index <= visual + count {
+                return Some(PluginLine::Plugin(logical + index - visual - 1));
+            }
+            visual += count + 1;
+            logical += count;
+        }
+        None
+    }
+
+    pub(super) fn visual_index(&self, index: usize) -> usize {
+        let (mut start, mut headings) = (0, 0);
+        for count in self.0.into_iter().filter(|&count| count != 0) {
+            if index < start + count {
+                // Put a group's heading in view when selecting its first row.
+                return index + headings + usize::from(index != start);
+            }
+            start += count;
+            headings += 1;
+        }
+        index
+    }
 }
 impl Plugins {
     #[cfg(all(
@@ -59,31 +152,58 @@ impl Plugins {
         self.catalog = catalog;
         self.projection.borrow_mut().take();
     }
-    fn rows(&self, query: &str) -> Arc<Vec<Row>> {
+    fn rows(&self, query: &str, grouped: bool) -> Arc<Vec<Row>> {
         let mut cached = self.projection.borrow_mut();
         if cached
             .as_ref()
-            .is_none_or(|(previous, _)| previous != query)
+            .is_none_or(|previous| previous.query != query || previous.grouped != grouped)
         {
-            *cached = Some((query.into(), Arc::new(self.catalog.rows(query))));
+            let mut rows = self.catalog.rows(query);
+            if grouped {
+                rows.sort_by_key(PluginGroup::of);
+            }
+            *cached = Some(PluginProjection {
+                query: query.into(),
+                grouped,
+                rows: Arc::new(rows),
+            });
         }
-        cached
-            .as_ref()
-            .map_or_else(|| Arc::new(Vec::new()), |(_, rows)| Arc::clone(rows))
+        cached.as_ref().map_or_else(
+            || Arc::new(Vec::new()),
+            |projection| Arc::clone(&projection.rows),
+        )
     }
 }
 
 impl EditorView {
+    pub(in crate::editor) fn plugin_scan_status(&self) -> Option<String> {
+        let state = &self.browser.plugins;
+        if !state.busy {
+            return None;
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if let Some(path) = state
+            .cancellation
+            .as_ref()
+            .and_then(|scan| scan.current_module())
+            && let Some(name) = path.file_stem()
+        {
+            return Some(format!("scanning vst3 · {}", name.to_string_lossy()));
+        }
+        Some("scanning vst3…".into())
+    }
+
     pub(super) fn activate_browser_plugin(
         &mut self,
         module: &std::path::Path,
         cid: Option<[u8; 16]>,
+        cx: &App,
     ) {
         let selected = cid
-            .ok_or_else(|| "select an available vst3 effect class".to_string())
-            .and_then(|cid| self.browser.plugins.catalog.select_effect(module, cid));
+            .ok_or_else(|| "select an available vst3 class".to_string())
+            .and_then(|cid| self.browser.plugins.catalog.select_plugin(module, cid));
         match selected {
-            Ok(selection) => self.insert_browser_plugin_effect(selection),
+            Ok(selection) => self.insert_browser_plugin_effect(selection, cx),
             Err(error) => self.error = Some(error.into()),
         }
     }
@@ -188,9 +308,33 @@ impl EditorView {
         ) {
             return Arc::new(Vec::new());
         }
-        self.browser
-            .plugins
-            .rows(self.browser.search.read(cx).text())
+        self.browser.plugins.rows(
+            self.browser.search.read(cx).text(),
+            self.browser.section == BrowserSection::Plugins,
+        )
+    }
+
+    pub(super) fn browser_scroll_row(&self, index: usize, cx: &App) -> usize {
+        if self.browser.section == BrowserSection::Plugins {
+            PluginGroups::new(&self.browser_visible_plugins(cx)).visual_index(index)
+        } else {
+            index
+        }
+    }
+
+    pub(super) fn browser_plugin_heading(group: PluginGroup) -> gpui::Stateful<Div> {
+        let label = group.label();
+        div()
+            .id(("browser-vst3-group", group as usize))
+            .debug_selector(move || format!("browser-vst3-group-{label}"))
+            .h(px(ROW_HEIGHT))
+            .w_full()
+            .px_1()
+            .flex()
+            .items_center()
+            .text_xs()
+            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+            .child(theme::text(label))
     }
     pub(super) fn plugin_controls(&self, cx: &mut Context<Self>) -> Div {
         let state = &self.browser.plugins;
@@ -292,6 +436,10 @@ impl EditorView {
         let mut panel = div()
             .flex()
             .flex_col()
+            .flex_shrink_0()
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap()
             .gap_1()
             .px_1()
             .text_xs()
@@ -427,7 +575,7 @@ impl EditorView {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn start_plugin_scan(&mut self, request: PluginScan, cx: &mut Context<Self>) {
         {
-            use hex_plugin_catalog::worker::{self, Cancellation};
+            use hex_plugin_catalog::worker::{self, Cancellation, ScanDeadline};
             if self.browser.plugins.busy
                 || self.browser.plugins.loading
                 || !self.browser.plugins.writable
@@ -441,6 +589,30 @@ impl EditorView {
             let cancellation = Cancellation::default();
             let token = cancellation.token();
             self.browser.plugins.cancellation = Some(cancellation);
+            self.browser.plugins.scan_progress = Some(cx.spawn(async move |this, cx| {
+                let mut previous = None;
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(150))
+                        .await;
+                    if !this
+                        .update(cx, |view, cx| {
+                            let Some(scan) = &view.browser.plugins.cancellation else {
+                                return false;
+                            };
+                            let current = scan.current_module();
+                            if current != previous {
+                                previous = current;
+                                cx.notify();
+                            }
+                            true
+                        })
+                        .unwrap_or(false)
+                    {
+                        break;
+                    }
+                }
+            }));
             self.browser.plugins.busy = true;
             self.browser.plugins.diagnostics = None;
             self.browser.plugins.status = "scanning vst3…".into();
@@ -452,7 +624,13 @@ impl EditorView {
                     .spawn(async move {
                         let mut update = match request {
                             #[cfg(all(test, feature = "ui-test-support"))]
-                            PluginScan::Selected(path) => worker::scan(&catalog, &app, path, token),
+                            PluginScan::Selected(path) => worker::scan_with_deadline(
+                                &catalog,
+                                &app,
+                                path,
+                                token,
+                                ScanDeadline::interactive(),
+                            ),
                             PluginScan::Configured(scan) => {
                                 let folder = scan.custom_folder.filter(|_| scan.custom_enabled);
                                 match hex_plugin_catalog::roots::macos_scan_paths(
@@ -460,9 +638,13 @@ impl EditorView {
                                     scan.user,
                                     folder,
                                 ) {
-                                    Ok(roots) => {
-                                        worker::scan_folders(&catalog, &app, &roots, token)
-                                    }
+                                    Ok(roots) => worker::scan_folders_with_deadline(
+                                        &catalog,
+                                        &app,
+                                        &roots,
+                                        token,
+                                        ScanDeadline::interactive(),
+                                    ),
                                     Err(status) => worker::Update {
                                         catalog: None,
                                         diagnostics: None,
@@ -471,9 +653,13 @@ impl EditorView {
                                 }
                             }
                             #[cfg(all(test, feature = "ui-test-support"))]
-                            PluginScan::TestFolders(roots) => {
-                                worker::scan_folders(&catalog, &app, &roots, token)
-                            }
+                            PluginScan::TestFolders(roots) => worker::scan_folders_with_deadline(
+                                &catalog,
+                                &app,
+                                &roots,
+                                token,
+                                ScanDeadline::interactive(),
+                            ),
                         };
                         if let Some(catalog) = &mut update.catalog
                             && let Err(error) = catalog.refresh_sources()
@@ -486,6 +672,7 @@ impl EditorView {
                     .await;
                 let _ = this.update(cx, |view, cx| {
                     view.browser.plugins.busy = false;
+                    view.browser.plugins.scan_progress = None;
                     view.browser.plugins.cancellation = None;
                     view.browser.plugins.diagnostics = result.diagnostics;
                     if let Some(catalog) = result.catalog {
@@ -509,7 +696,7 @@ impl EditorView {
         let payload = self
             .state
             .as_ref()
-            .zip(row.effect)
+            .zip(row.selection)
             .map(|(state, selection)| drag::NativeDeviceDrag {
                 project_generation: self.project_generation,
                 revision: state.revision,

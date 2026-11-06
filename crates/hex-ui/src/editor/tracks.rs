@@ -1131,10 +1131,10 @@ impl EditorView {
             .and_then(|drag| drag.preview.get())
             .filter(|preview| preview.target_track == track_id);
         let browser_preview = self
-            .active_browser_audio_drag
+            .pending_sample_drop
             .as_ref()
-            .filter(|drag| self.browser_audio_drag_is_current(drag))
-            .and_then(|drag| drag.preview.get())
+            .and_then(|drop| drop.preview)
+            .or_else(|| self.displayed_browser_audio_drag()?.preview.get())
             .filter(|preview| preview.target_track == track_id);
         if let Some(preview) = clip_preview.or(browser_preview) {
             let visible_start = preview.start_frame.max(viewport.start);
@@ -1216,16 +1216,18 @@ impl EditorView {
                             drop_preview = drop_preview.child(content);
                         }
                     }
-                } else if let Some(drag) = self
-                    .active_browser_audio_drag
+                } else if let Some(waveform) = self
+                    .pending_sample_drop
                     .as_ref()
-                    .filter(|drag| self.browser_audio_drag_is_current(drag))
-                    && let Some(waveform) = drag
-                        .metadata
-                        .borrow()
-                        .as_ref()
-                        .filter(|metadata| metadata.sample_rate == state.project.sample_rate())
-                        .map(|metadata| std::sync::Arc::clone(&metadata.waveform))
+                    .and_then(|drop| drop.metadata.clone())
+                    .or_else(|| {
+                        self.displayed_browser_audio_drag()?
+                            .metadata
+                            .borrow()
+                            .clone()
+                    })
+                    .filter(|metadata| metadata.sample_rate == state.project.sample_rate())
+                    .map(|metadata| std::sync::Arc::clone(&metadata.waveform))
                 {
                     drop_preview = drop_preview.children([waveform_source_segment_view(
                         waveform,
@@ -1289,18 +1291,12 @@ impl EditorView {
                 }
             }
         } else if let Some((pending_track, start)) = self
-            .active_browser_audio_drag
-            .as_ref()
-            .filter(|drag| drag.lane_hovered.get())
-            .and_then(|drag| match drag.destination.get() {
-                Some(drag::BrowserDropDestination::ExistingTrack { track, start }) => {
+            .sample_drop_target()
+            .and_then(|destination| match destination {
+                drag::BrowserDropDestination::ExistingTrack { track, start } => {
                     Some((track, start))
                 }
-                Some(
-                    drag::BrowserDropDestination::NewTrack { .. }
-                    | drag::BrowserDropDestination::Console(_),
-                )
-                | None => None,
+                _ => None,
             })
             .filter(|(pending_track, _)| *pending_track == track_id)
         {
@@ -1572,6 +1568,8 @@ impl EditorView {
             .bg(rgb(name_fill))
             .text_color(rgb(name_text))
             .child(track_name_view);
+        let sample_source =
+            super::sample_recorder::Arm::Output(hex_engine::OutputCaptureId::Track(track_id));
         let resident_layout = self.document_audio_mode == hex_session::DocumentAudioMode::Resident;
         // Empty header gutters bubble to the shared selection/focus owner.
         // Only actual control hit regions stop clicks; row-wide stops make the
@@ -1582,7 +1580,10 @@ impl EditorView {
             div()
                 .id(("compact-track-title", track_id.value()))
                 .w_full()
-                .children([name_area.w_full()])
+                .flex()
+                .items_center()
+                .children([name_area.flex_1().min_w_0()])
+                .child(self.sample_arm_button(sample_source, cx))
         } else if resident_layout {
             let (active_background, active_text) =
                 super::track_gain::activator_colors(!track.muted());
@@ -1715,6 +1716,7 @@ impl EditorView {
                                 .flex()
                                 .gap(px(2.0))
                                 .child(activator)
+                                .child(self.sample_arm_button(sample_source, cx))
                                 .child(solo)
                                 .child(arm),
                         )
@@ -1828,7 +1830,8 @@ impl EditorView {
                         view.send_menu_track = next;
                         cx.notify();
                     })),
-                );
+                )
+                .child(self.sample_arm_button(sample_source, cx));
             div()
                 .id(("streaming-track-controls", track_id.value()))
                 .w_full()

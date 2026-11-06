@@ -47,6 +47,7 @@ mod live_notes;
 mod live_runtime;
 pub(crate) mod ordered_keys;
 mod source_input;
+pub(crate) use live_notes::LiveNoteBatch;
 pub use live_notes::{LiveNoteActivation, LiveNoteEvent, LiveNoteInput, LiveNotePublishError};
 pub use ordered_keys::MidiKeyActivation;
 /// Full exact-velocity hardware banks are prepared only for opted-in roots.
@@ -332,7 +333,7 @@ mod current_sampler;
 
 /// Native CURRENT has no UI input owner. Its copied desired words arrive only
 /// through the already-rooted output mailbox; ordinary playback keeps its lease.
-enum NoteSnapshot {
+pub(crate) enum NoteSnapshot {
     Active(u64, [u64; COMPUTER_KEY_COUNT]),
     Inactive,
     Deferred(u64),

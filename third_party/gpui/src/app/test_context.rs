@@ -800,6 +800,24 @@ impl VisualTestContext {
         })
     }
 
+    /// Bounds of bottom-to-top monochrome sprites in a rendered element.
+    pub fn rendered_vertical_glyph_bounds(
+        &mut self,
+        selector: &'static str,
+    ) -> Vec<Bounds<crate::ScaledPixels>> {
+        self.update(|window, _| {
+            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
+                return Vec::new();
+            };
+            let bounds = bounds.scale(window.scale_factor());
+            window.rendered_frame.scene.monochrome_sprites.iter()
+                .filter(|sprite| sprite.transformation.rotation_scale == [[0.0, 1.0], [-1.0, 0.0]])
+                .map(|sprite| sprite.painted_bounds())
+                .filter(|glyph| glyph.intersects(&bounds))
+                .collect()
+        })
+    }
+
     /// Filled quad fragments inside a debug element in the completed scene,
     /// clipped to its bounds and each replay/content mask. Canvas primitives do
     /// not have individual element selectors. This is scene geometry, not native

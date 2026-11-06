@@ -1191,3 +1191,124 @@ fn actual_tail_drain_waits_for_final_acceptance_and_preserves_last_bridge_sample
         assert!(stopped.retire_on_control().unwrap().status.success());
     }
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+#[cfg(feature = "allocation-probe")]
+fn actual_arrangement_instrument_renders_authored_notes_at_compensated_offsets() {
+    const NAME: &str = "plugin_effects::tests::actual_arrangement_instrument_renders_authored_notes_at_compensated_offsets";
+    const CHILD: &str = "HEX_ARRANGEMENT_INSTRUMENT_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        for variant in ["115", "120"] {
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--ignored"])
+                .env(CHILD, "1")
+                .env("HEX_ORIGINAL_INSTANCE_VARIANT", variant)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success()
+                    && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+                "variant {variant}\n{}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr),
+            );
+        }
+        return;
+    }
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "synth".into(),
+        })
+        .unwrap()
+    else {
+        panic!("midi track");
+    };
+    let identity = ProcessorInstanceIdentity::new(
+        ProcessorChainOwner::Track(track.value()),
+        editor.project().next_identity(),
+    )
+    .unwrap();
+    let source = crate::plugin_worker::native_tests::original_instance_with_inputs(
+        Binding {
+            root: 1,
+            instance: identity.device_id(),
+            graph: 3,
+            epoch: 4,
+        },
+        0,
+    );
+    let effect = NativeEffect::prepare_on_control(identity, source).unwrap();
+    editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: effect.configuration().clone(),
+        })
+        .unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: hex_project::BeatTime::ZERO,
+            length: hex_project::BeatTime::from_ratio(1, 1).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("midi clip");
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: hex_project::BeatTime::from_ratio(1, 24_000).unwrap(),
+            duration: hex_project::BeatTime::from_ratio(1, 12_000).unwrap(),
+            pitch: 60,
+            channel: 2,
+            velocity: 127,
+        })
+        .unwrap();
+    let revision = {
+        let definition = NativeEffectDefinition::new(std::slice::from_ref(&effect)).unwrap();
+        let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        hex_engine::PreparedRevision::prepare_with_effect_registry(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+            &registry,
+        )
+        .unwrap()
+    };
+    let latency = revision.arrangement().main_latency_frames() as usize;
+    assert_eq!(latency, effect.prepared().total_latency_frames() as usize);
+    let mut runtime = hex_engine::SessionPlayback::new(Arc::new(revision)).unwrap();
+    let (mut workers, mut endpoints) =
+        NativeEffectCallbacks::from_effects_on_control(vec![effect]).unwrap();
+    runtime
+        .apply(hex_engine::SessionPlaybackCommand::Play)
+        .unwrap();
+    let mut output = [[0.0; 2]; 32];
+    for (index, block) in output.chunks_exact_mut(8).enumerate() {
+        let measured = allocation_counter::measure(|| {
+            endpoints.begin_host_callback(block.len()).unwrap();
+            runtime
+                .render_with_foreign_processors(block, None, None, None, &mut endpoints)
+                .unwrap();
+            endpoints.finish_host_callback(true).unwrap();
+        });
+        assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+        assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while workers[0].published_blocks_on_control() <= index as u64 {
+            assert!(Instant::now() < deadline, "native pcm completion");
+            std::thread::yield_now();
+        }
+    }
+    let mut expected = [[0.0; 2]; 32];
+    expected[latency + 1..latency + 3].fill([0.5; 2]);
+    assert_eq!(output, expected);
+    let retired = workers[0].retire_on_control().unwrap();
+    assert!(retired.failure.is_none() && retired.native.status.success());
+    assert_eq!(retired.native.terminal.unwrap().blocks, 4);
+}

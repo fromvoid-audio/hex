@@ -9,6 +9,114 @@ use std::collections::BTreeMap;
 mod latency_fixture;
 
 #[test]
+fn foreign_bounce_requires_completed_provider_before_wav_publication() {
+    struct Provider {
+        frames: usize,
+        fail_finish: bool,
+    }
+    impl ForeignBounceRenderer for Provider {
+        fn max_block_frames(&self) -> usize {
+            8
+        }
+        fn render_block(
+            &mut self,
+            _: &mut SessionPlayback,
+            output: &mut [hex_engine::Frame],
+            _: Option<&mut dyn hex_engine::MediaPages>,
+            _: &ExportControl,
+        ) -> Result<(), ExportError> {
+            assert!(output.len() <= 8);
+            for frame in output {
+                self.frames += 1;
+                *frame = [self.frames as f32 / 32.0, 0.0];
+            }
+            Ok(())
+        }
+        fn finish(&mut self, _: &ExportControl) -> Result<(), ExportError> {
+            assert_eq!(self.frames, 5 + 7 + 19);
+            if self.fail_finish {
+                Err(ExportError::Invalid("foreign provider failed"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+    let Created::Imported { track, asset, .. } = editor
+        .execute(Command::ImportPreparedAudioTrack {
+            name: "source".into(),
+            path: "memory.wav".into(),
+            source_sample_rate: 48_000,
+            source_frames: 64,
+            playback_frames: 64,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        })
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: latency_fixture::Definition.default_state().unwrap(),
+        })
+        .unwrap();
+    let definitions: [&dyn NativeDeviceDefinition; 1] = [&latency_fixture::Definition];
+    let effects = NativeDeviceRegistry::new(&definitions).unwrap();
+    let instruments = NativeInstrumentRegistry::new(&[]).unwrap();
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_test_registries(
+            editor.project(),
+            &BTreeMap::from([(asset, Audio::new(48_000, vec![[0.0; 2]; 64]).unwrap())]),
+            Arc::new(SineTable::new()),
+            None,
+            &effects,
+            &instruments,
+        )
+        .unwrap(),
+    );
+    let directory = std::env::temp_dir().join(format!("hex-foreign-bounce-{}", std::process::id()));
+    std::fs::create_dir(&directory).unwrap();
+    let path = directory.join("bounce.wav");
+    for fail_finish in [true, false] {
+        let report = render_arrangement_bounce_with_foreign(
+            &path,
+            Arc::clone(&revision),
+            None,
+            5,
+            19,
+            false,
+            &ExportControl::default(),
+            None,
+            &mut Provider {
+                frames: 0,
+                fail_finish,
+            },
+        );
+        if fail_finish {
+            assert!(matches!(
+                report,
+                Err(ExportError::Invalid("foreign provider failed"))
+            ));
+            assert!(!path.exists());
+        } else {
+            assert_eq!(report.unwrap().frames, 19);
+            let wav = std::fs::read(&path).unwrap();
+            let samples: Vec<_> = wav[crate::FLOAT32_WAV_HEADER_BYTES as usize..]
+                .chunks_exact(8)
+                .map(|frame| f32::from_le_bytes(frame[..4].try_into().unwrap()))
+                .collect();
+            assert_eq!(
+                samples,
+                (13..=31).map(|n| n as f32 / 32.0).collect::<Vec<_>>()
+            );
+        }
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn latent_bounce_matches_reference_across_render_partitions() {
     let directory =
         std::env::temp_dir().join(format!("hex-bounce-partitions-{}", std::process::id()));
@@ -86,7 +194,10 @@ fn latent_bounce_matches_reference_across_render_partitions() {
                     frames,
                     tails,
                     &ExportControl::default(),
-                    None,
+                    RenderInputs {
+                        pages: None,
+                        foreign: None,
+                    },
                     block,
                 )
                 .unwrap();

@@ -65,6 +65,9 @@ pub(crate) fn prepare_source_instruments(
         let Some(device) = track.instrument() else {
             continue;
         };
+        if is_vst3_instrument(device) {
+            continue;
+        }
         if instruments.contains_key(&device.id()) {
             continue;
         }
@@ -127,6 +130,62 @@ pub(crate) fn prepare_source_instruments(
         );
     }
     Ok(instruments)
+}
+
+pub(crate) fn is_vst3_instrument(device: &hex_project::Device) -> bool {
+    device.state().type_id() == hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
+}
+
+fn prepare_foreign_instrument(
+    track: &hex_project::Track,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    context: &hex_lattice::DevicePreparationContext<'_>,
+) -> Result<Option<hex_lattice::PreparedRuntimeInstance>, Invalid> {
+    let Some(device) = track
+        .instrument()
+        .filter(|device| is_vst3_instrument(device))
+    else {
+        return Ok(None);
+    };
+    if !track.receives_source_audio() {
+        return Ok(None);
+    }
+    let owner = hex_lattice::ProcessorChainOwner::Track(track.id().value());
+    let identity = hex_lattice::ProcessorInstanceIdentity::new(owner, device.id().value())
+        .map_err(|_| Invalid("invalid vst3 instrument identity"))?;
+    let migrated = registry
+        .migrate_state(device.state())
+        .map_err(|_| Invalid("vst3 instrument state is unsupported or malformed"))?;
+    let prepared = registry
+        .prepare_runtime_instance(identity, &migrated, context)
+        .map_err(|_| Invalid("vst3 instrument source could not be prepared"))?;
+    let facts = match prepared.processor {
+        Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) => facts,
+        None if prepared.matrix.is_identity() => return Ok(None),
+        _ => return Err(Invalid("vst3 instrument has no foreign worker")),
+    };
+    if !prepared.matrix.is_identity()
+        || !facts.is_instrument_profile()
+        || facts
+            .binding()
+            .is_none_or(|binding| binding.instance != device.id().value())
+    {
+        return Err(Invalid(
+            "vst3 instrument worker binding or processing role differs",
+        ));
+    }
+    Ok(Some(hex_lattice::PreparedRuntimeInstance {
+        automation: Default::default(),
+        meter: Default::default(),
+        owner,
+        device_id: device.id().value(),
+        device_type: migrated.type_id(),
+        matrix: prepared.matrix,
+        bypassed: device.bypassed(),
+        sample_rate: context.sample_rate,
+        configuration: Some(Arc::new(migrated)),
+        definition: Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)),
+    }))
 }
 
 /// Refuse the same selected MIDI root entering one source twice. Its independent
@@ -554,17 +613,27 @@ fn compile_project_inner<'a>(
         let instrument_config = source_config
             .filter(|_| has_receiver)
             .map(|prepared| &prepared.config);
-        let instrument_latency = if track.receives_source_audio() {
+        let foreign_instrument = prepare_foreign_instrument(track, registry, &device_context)?;
+        let instrument_latency = if let Some(node) = &foreign_instrument {
+            node.algorithmic_latency_frames()
+        } else if track.receives_source_audio() {
             source_config.map_or(Some(0), |prepared| prepared.latency)
         } else {
             Some(0)
         };
-        let instrument_runtime_latency = if track.receives_source_audio() {
+        let instrument_runtime_latency = if foreign_instrument.is_some() {
+            instrument_latency
+        } else if track.receives_source_audio() {
             source_config.map_or(Some(0), |prepared| prepared.runtime_latency)
         } else {
             Some(0)
         };
-        let mutable_limits = source_config.and_then(|prepared| prepared.mutable_limits);
+        let built_in_limits = source_config.and_then(|prepared| prepared.mutable_limits);
+        let foreign_limits = foreign_instrument
+            .as_ref()
+            .filter(|node| !node.bypassed)
+            .map(|_| crate::mutable_instrument::authored_gate::FOREIGN_GATE_LIMITS);
+        let mutable_limits = built_in_limits.or(foreign_limits);
         if mutable_limits.is_some()
             && let Some(instrument) = instrument_config.map(Arc::as_ref)
         {
@@ -591,7 +660,7 @@ fn compile_project_inner<'a>(
         } else {
             false
         };
-        let mutable_instrument = mutable_limits.is_some();
+        let mutable_instrument = built_in_limits.is_some();
         let clips = track
             .clips()
             .iter()
@@ -810,6 +879,7 @@ fn compile_project_inner<'a>(
                 mutable_instrument && track.receives_source_audio(),
                 mutable_looping_source,
             )
+            .with_foreign_instrument(foreign_instrument)
             .with_sends(sends)
             .with_gain_envelope(
                 track.gain_lane(),

@@ -42,6 +42,8 @@ pub use arrangement_sections::{
 mod audio_event_fade;
 mod audio_events;
 pub use audio_event_fade::AudioEventFade;
+mod project_rate;
+pub use project_rate::SampleRateMode;
 mod project_tempo;
 mod track_gain_group;
 pub use track_gain_group::RelativeTrackGains;
@@ -691,6 +693,7 @@ pub struct Project {
     pub(crate) sidechains: Vec<SidechainRoute>,
     pub(crate) import_provenance: Option<ImportProvenance>,
     pub(crate) sample_rate: u32,
+    pub(crate) sample_rate_mode: SampleRateMode,
     pub(crate) next_id: u64,
     pub(crate) assets: BTreeMap<AssetId, Asset>,
     pub(crate) tracks: Vec<Track>,
@@ -722,6 +725,7 @@ impl Project {
             midi_routes: Vec::new(),
             sidechains: Vec::new(),
             sample_rate,
+            sample_rate_mode: SampleRateMode::Fixed,
             next_id: 1,
             import_provenance: None,
             assets: BTreeMap::new(),
@@ -755,6 +759,7 @@ impl Project {
             sidechains,
             import_provenance,
             sample_rate,
+            sample_rate_mode,
             next_id,
             assets,
             tracks,
@@ -776,6 +781,7 @@ impl Project {
             && sidechains == &other.sidechains
             && import_provenance == &other.import_provenance
             && sample_rate == &other.sample_rate
+            && sample_rate_mode == &other.sample_rate_mode
             && next_id == &other.next_id
             && assets == &other.assets
             && tracks == &other.tracks

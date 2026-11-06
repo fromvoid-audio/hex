@@ -1389,6 +1389,7 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         sampler_load_complete: None,
         sampler_edit_complete: None,
         plugin_effect_complete: Vec::new(),
+        plugin_parameters: None,
         computer_keyboard_complete: None,
         midi_take_complete: None,
         tuning_audition_complete: None,

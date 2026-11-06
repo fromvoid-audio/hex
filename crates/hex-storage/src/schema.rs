@@ -42,6 +42,7 @@ pub(crate) mod provenance;
 pub(crate) mod retained_receiver;
 pub(crate) mod return_feeds;
 pub(crate) mod routing;
+pub(crate) mod sample_rate_mode;
 pub(crate) mod sampler_crossfade;
 pub(crate) mod session_audio_loops;
 pub(crate) mod sidechain;
@@ -1306,6 +1307,7 @@ impl DocumentV8 {
                     sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: document.next_id,
                     assets: document
                         .assets
@@ -1350,6 +1352,7 @@ impl DocumentV8 {
                     sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: document.next_id,
                     assets: document
                         .assets
@@ -1394,6 +1397,7 @@ impl DocumentV8 {
                     sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: document.next_id,
                     assets: document
                         .assets
@@ -1445,6 +1449,7 @@ impl DocumentV8 {
                     sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: document.next_id,
                     assets: document
                         .assets
@@ -1496,6 +1501,7 @@ impl DocumentV8 {
                     sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: document.next_id,
                     assets: document
                         .assets
@@ -1547,6 +1553,7 @@ impl DocumentV8 {
                     sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: document.next_id,
                     assets: document
                         .assets
@@ -1598,6 +1605,7 @@ impl DocumentV8 {
                     sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: document.next_id,
                     assets: document
                         .assets
@@ -1667,6 +1675,7 @@ impl DocumentV8 {
                     sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: document.next_id,
                     assets: document
                         .assets
@@ -2119,6 +2128,7 @@ impl DocumentV13 {
             sidechains: Vec::new(),
             import_provenance: None,
             sample_rate: doc.sample_rate,
+            sample_rate_mode: Default::default(),
             next_id: doc.next_id,
             assets: doc
                 .assets
@@ -2488,6 +2498,7 @@ impl DocumentV10 {
                     sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: doc.sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: doc.next_id,
                     assets: doc
                         .assets
@@ -2643,6 +2654,7 @@ impl DocumentV9 {
             sidechains: Vec::new(),
             import_provenance: None,
             sample_rate: doc.sample_rate,
+            sample_rate_mode: Default::default(),
             next_id: doc.next_id,
             assets: doc
                 .assets

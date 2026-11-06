@@ -27,7 +27,7 @@ impl Gallery {
             }
         }));
         hex_widgets::device_frame(
-            theme::text(format!("{} · fixture", self.entry.label())),
+            hex_widgets::vertical_device_name(theme::text(self.entry.label())),
             theme::device_frame_style(self.selected),
             actions,
             div(),
@@ -38,7 +38,9 @@ impl Gallery {
         ))
         .debug_selector(|| "catalog-card".into())
         .track_focus(&self.header_focus)
-        .w(px(self.entry.width()))
+        .w(px(
+            self.entry.width() + hex_widgets::DEVICE_FRAME_HEADER_WIDTH
+        ))
         .h(px(device_composition::BODY_HEIGHT
             + hex_widgets::DEVICE_FRAME_HEADER_HEIGHT
             + 2.0))

@@ -30,6 +30,7 @@ pub struct Snapshot {
     pub sidechains: Vec<crate::SidechainRouteSnapshot>,
     pub import_provenance: Option<crate::ImportProvenance>,
     pub sample_rate: u32,
+    pub sample_rate_mode: crate::SampleRateMode,
     pub next_id: u64,
     pub assets: Vec<AssetSnapshot>,
     pub tracks: Vec<TrackSnapshot>,
@@ -316,6 +317,7 @@ impl Project {
                 .collect(),
             import_provenance: self.import_provenance.clone(),
             sample_rate: self.sample_rate,
+            sample_rate_mode: self.sample_rate_mode,
             next_id: self.next_id,
             assets: self
                 .assets
@@ -741,6 +743,7 @@ impl Project {
         }
         let mut automatic_track_names: BTreeSet<u64> = automatic_track_names.into_iter().collect();
         let mut project = Project::new(snapshot.sample_rate)?;
+        project.sample_rate_mode = snapshot.sample_rate_mode;
         project.tuning = snapshot.tuning;
         project.import_provenance = snapshot.import_provenance;
         project.tempo_map = crate::TempoMap::new(snapshot.sample_rate, snapshot.tempo_points)?;

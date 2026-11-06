@@ -22,6 +22,9 @@ pub struct ResidentEffectPreparation<'a> {
     pub(in crate::service) preparing_edit: bool,
 }
 impl<'a> ResidentEffectPreparation<'a> {
+    pub fn sample_rate(&self) -> u32 {
+        self.project.sample_rate()
+    }
     pub fn context(&self) -> hex_engine::AudioSourceContext {
         self.context
     }
@@ -39,37 +42,73 @@ impl<'a> ResidentEffectPreparation<'a> {
     pub fn requires_plugin_profile(&self) -> bool {
         requires_plugin_profile(self.project)
     }
-    pub fn visit_plugin_effects(
+    pub fn visit_plugin_devices(
         &self,
-        mut visit: impl FnMut(
-            hex_engine::ProcessorChainOwner,
-            u64,
-            &'a NativeDeviceState,
-        ) -> Result<(), String>,
+        mut visit: impl FnMut(PluginEffectDestination, u64, &'a NativeDeviceState) -> Result<(), String>,
     ) -> Result<(), String> {
-        let mut chain = |owner, devices: &'a [hex_project::Device]| {
-            for device in devices.iter().filter(|d| is_plugin_effect(d)) {
-                visit(owner, device.id().value(), device.state())?;
-            }
-            Ok(())
-        };
         for track in self.project.tracks() {
-            chain(
-                hex_engine::ProcessorChainOwner::Track(track.id().value()),
-                track.devices(),
-            )?;
+            if let Some(device) = track
+                .instrument()
+                .filter(|device| track.receives_source_audio() && is_plugin_effect(device))
+            {
+                visit(
+                    PluginEffectDestination::Instrument(track.id()),
+                    device.id().value(),
+                    device.state(),
+                )?;
+            }
+            for device in track
+                .devices()
+                .iter()
+                .filter(|device| is_plugin_effect(device))
+            {
+                visit(
+                    PluginEffectDestination::Track(track.id()),
+                    device.id().value(),
+                    device.state(),
+                )?;
+            }
         }
         for bus in self.project.return_tracks() {
-            chain(
-                hex_engine::ProcessorChainOwner::Return(bus.id().value()),
-                bus.devices(),
+            for device in bus
+                .devices()
+                .iter()
+                .filter(|device| is_plugin_effect(device))
+            {
+                visit(
+                    PluginEffectDestination::Return(bus.id()),
+                    device.id().value(),
+                    device.state(),
+                )?;
+            }
+        }
+        for device in self
+            .project
+            .main_devices()
+            .iter()
+            .filter(|device| is_plugin_effect(device))
+        {
+            visit(
+                PluginEffectDestination::Main,
+                device.id().value(),
+                device.state(),
             )?;
         }
-        chain(
-            hex_engine::ProcessorChainOwner::Main,
-            self.project.main_devices(),
-        )
+        Ok(())
     }
+}
+
+/// One private native bounce owner. It supplies exact compile facts before
+/// rendering and is dropped before Session adopts any of the output media.
+pub trait OfflineBounceSource: hex_export::ForeignBounceRenderer {
+    fn retained_data_bytes(&self) -> usize;
+    fn prepare(
+        &self,
+        compile: &mut dyn FnMut(
+            &hex_engine::AudioCandidateEffects<'_, '_>,
+        )
+            -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<hex_engine::PreparedRevision, String>;
 }
 
 fn is_plugin_effect(device: &hex_project::Device) -> bool {
@@ -80,7 +119,12 @@ pub(super) fn requires_plugin_profile(project: &Project) -> bool {
     project
         .tracks()
         .iter()
-        .flat_map(|track| track.devices())
+        .flat_map(|track| {
+            track
+                .devices()
+                .iter()
+                .chain(track.instrument().filter(|_| track.receives_source_audio()))
+        })
         .chain(project.return_tracks().iter().flat_map(|bus| bus.devices()))
         .chain(project.main_devices())
         .any(is_plugin_effect)
@@ -254,6 +298,12 @@ pub trait WorkerAudioSink: Send {
     ) {
     }
 
+    /// The fresh output's plug-in restoration owns publication for this
+    /// context. Restart must wait for its ready receipt before compiling.
+    fn plugin_state_restore_pending(&self, _context: hex_engine::AudioSourceContext) -> bool {
+        false
+    }
+
     /// A fresh-output owner has restored the unchanged canonical plugin state
     /// through its actual native/endpoint ACKs. The worker may now recompile
     /// that exact context; this scalar transfers no source or graph custody.
@@ -296,6 +346,25 @@ pub trait WorkerAudioSink: Send {
     fn plugin_effect_ready(&self) -> bool {
         false
     }
+    /// Send a window action to the existing hosted instance, without a project edit.
+    fn toggle_plugin_editor(&mut self, _generation: u64, _device: u64) -> Result<(), String> {
+        Err("vst3 editor unavailable for this output".into())
+    }
+    fn plugin_editor_ready(&self) -> bool {
+        false
+    }
+    fn take_plugin_editor_result(&mut self, _generation: u64) -> Option<Result<bool, String>> {
+        None
+    }
+    fn query_plugin_parameters(&mut self, _query: PluginParameterQuery) -> Result<(), String> {
+        Err("vst3 parameters unavailable for this output".into())
+    }
+    fn plugin_parameters_ready(&self) -> bool {
+        false
+    }
+    fn take_plugin_parameters(&mut self) -> Option<PluginParameterResult> {
+        None
+    }
     /// Match the exact request control; never cancel an unrelated later source.
     /// Exact canonical terminal. Rejected requests retire only their matching native preparation;
     /// acceptance transfers display/request custody, never the native source's lifetime.
@@ -315,6 +384,22 @@ pub trait WorkerAudioSink: Send {
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<Option<hex_engine::PreparedRevision>, String> {
         Ok(None)
+    }
+    /// A host with no private offline capability must refuse foreign bounce
+    /// instead of using its live source or publishing unprocessed audio.
+    fn prepare_offline_bounce(
+        &mut self,
+        input: ResidentEffectPreparation<'_>,
+    ) -> Result<Option<Box<dyn OfflineBounceSource>>, String> {
+        if input.requires_plugin_profile() {
+            return Err("offline vst3 bounce unavailable for this host".into());
+        }
+        Ok(None)
+    }
+    /// Rate of the current default interface for an un-authored document.
+    /// An unavailable observation leaves selection to the existing fallback.
+    fn default_project_sample_rate(&self) -> Option<u32> {
+        None
     }
     /// Ordinary source-planning defaults, independent of the document mode.
     /// A host opts in only with bounded file preparation/publication consumers.
@@ -688,6 +773,13 @@ impl WorkerEvents {
             );
         }
     }
+    pub(super) fn default_project_sample_rate(&self) -> Option<u32> {
+        self.audio
+            .as_ref()
+            .and_then(|audio| audio.default_project_sample_rate())
+            .filter(|rate| (8_000..=192_000).contains(rate))
+    }
+
     pub(super) fn ordinary_source_reservation(&self) -> Option<crate::SourcePlanReservation> {
         self.audio
             .as_ref()
@@ -1104,6 +1196,26 @@ impl WorkerEvents {
             {
                 return Some(QueuedRequest::continuation(
                     Request::ContinuePluginStateRestore,
+                    document_intent,
+                ));
+            }
+            if self
+                .audio
+                .as_ref()
+                .is_some_and(|audio| audio.plugin_editor_ready())
+            {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinuePluginEditor,
+                    document_intent,
+                ));
+            }
+            if self
+                .audio
+                .as_ref()
+                .is_some_and(|audio| audio.plugin_parameters_ready())
+            {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinuePluginParameters,
                     document_intent,
                 ));
             }

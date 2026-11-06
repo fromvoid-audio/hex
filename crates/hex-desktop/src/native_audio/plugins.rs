@@ -4,17 +4,21 @@ use super::*;
 use hex_audio::plugin_effects::EffectBinding as Binding;
 use hex_audio::{
     NativeSourcePreparationProgress as Progress,
-    plugin_effects::{EffectSelection, Hosting},
+    plugin_effects::{EffectSelection, Hosting, PluginProfile},
 };
 use hex_engine::{PreparedRevision, ProcessorChainOwner};
 use hex_session::service::{NativeDeviceState, ResidentEffectPreparation};
 use hex_session::service::{
-    PluginEffectControl, PluginEffectPreparation, PluginEffectPreparationState,
+    PluginEffectControl, PluginEffectDestination, PluginEffectPreparation,
+    PluginEffectPreparationState,
 };
 mod degraded;
+mod editor;
+mod parameters;
 mod restore;
 use restore::Restore;
 mod edits;
+mod offline_bounce;
 mod reopen;
 mod save;
 use reopen::Reopen;
@@ -45,6 +49,8 @@ struct Source {
     retiring: bool,
     queued: bool,
     observes_latency: bool,
+    editor_open: bool,
+    edit_backlog: bool,
     #[cfg(all(test, feature = "allocation-probe"))]
     observed_latency_receipt: bool,
     #[cfg(all(test, feature = "allocation-probe"))]
@@ -130,12 +136,16 @@ pub(super) struct Plugins {
     pub(super) pool_held: bool,
     sources: Vec<Source>,
     pending: Option<Pending>,
+    editor: Option<editor::EditorOperation>,
+    parameters: Option<parameters::Inventory>,
+    editor_checked: Option<AudioSourceContext>,
     restore: Option<Restore>,
     reopen: Option<Reopen>,
     edit: Option<AudioSourceContext>,
     pub(super) catalog: Option<std::path::PathBuf>,
     degraded: degraded::DegradedReport<Binding>,
-    degraded_changed: Option<(u64, Vec<u64>)>,
+    degraded_changed: Option<(u64, u64, Vec<u64>)>,
+    diagnostics: Option<hex_diagnostics::DiagnosticsHandle>,
     latency_poll: usize,
     latency_poll_at: Option<std::time::Instant>,
     latency_notice: Option<(hex_audio::prepared::AppliedAudioSource, std::time::Instant)>,
@@ -153,6 +163,10 @@ pub(super) struct Plugins {
     pub(super) progress: Option<Arc<std::sync::Mutex<PreparationObservation>>>,
 }
 impl Plugins {
+    pub fn set_diagnostics(&mut self, log: Option<hex_diagnostics::DiagnosticsHandle>) {
+        self.diagnostics = log;
+    }
+
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(super) fn with_fixture(
         host: Hosting,
@@ -205,12 +219,32 @@ impl Plugins {
         self.sources.clear();
         self.pool_held = false;
     }
-    /// The newest changed degraded vst3 device set and its output, once.
-    pub fn take_degraded_change(&mut self) -> Option<(u64, Vec<u64>)> {
+    /// The newest changed degraded vst3 device set, project generation and output, once.
+    pub fn take_degraded_change(&mut self) -> Option<(u64, u64, Vec<u64>)> {
         self.degraded_changed.take()
     }
     pub fn output_closed(&mut self) {
+        if let Some(parameters) = &mut self.parameters {
+            parameters.output_closed();
+        }
         self.configured = false;
+        for source in &mut self.sources {
+            source.edit_backlog = false;
+        }
+        self.editor_checked = None;
+        if let Some(editor::EditorOperation::Pending {
+            generation,
+            report: true,
+            ..
+        }) = &self.editor
+        {
+            self.editor = Some(editor::EditorOperation::Complete {
+                generation: *generation,
+                result: Err("vst3 editor closed · output changed".into()),
+            });
+        } else if matches!(self.editor, Some(editor::EditorOperation::Pending { .. })) {
+            self.editor = None;
+        }
         if let Some(restore) = self.restore.as_mut() {
             restore.output_closed();
         }
@@ -226,10 +260,7 @@ impl Plugins {
         if !self.wants_profile() {
             return Ok(());
         }
-        if control
-            .requested_physical_callback_frames_on_control()
-            .is_none()
-        {
+        if control.plugin_callback_quantum_on_control().is_none() {
             return Err("vst3 output profile is unavailable".into());
         }
         self.sources
@@ -267,21 +298,64 @@ impl Plugins {
         Ok(())
     }
     /// No insertion, restore, reopen, edit, queued source or retirement is
-    /// waiting for a worker poll (#4574). Accepted sources stay warm; their
-    /// degraded-endpoint observation tolerates the idle poll interval.
+    /// waiting for a worker poll (#4574). Accepted sources stay warm, but
+    /// queued editor receipts need the busy cadence even with transport stopped.
     pub fn idle(&self) -> bool {
         self.pending.is_none()
+            && self.editor.is_none()
+            && self.parameters.is_none()
             && self.restore.is_none()
             && self.reopen.is_none()
             && self.edit.is_none()
             && self.degraded_changed.is_none()
-            && !self
+            && !self.sources.iter().any(|source| {
+                source.retiring || source.edit_backlog || (source.queued && !source.accepted)
+            })
+    }
+    pub(super) fn can_retain_output_for_document(
+        &self,
+        control: &hex_audio::prepared::PublicationControl,
+        outgoing: u64,
+        incoming: ResidentEffectPreparation<'_>,
+    ) -> bool {
+        if !self.idle()
+            || !self
                 .sources
                 .iter()
-                .any(|source| source.retiring || (source.queued && !source.accepted))
+                .all(|source| source.accepted && source.project_generation == outgoing)
+        {
+            return false;
+        }
+        if !incoming.requires_plugin_profile() {
+            return true;
+        }
+        if !self.configured || self.host.is_none() || self.catalog.is_none() {
+            return false;
+        }
+        let capacity = self.sources.capacity() - self.sources.len();
+        let mut needed = 0;
+        incoming
+            .visit_plugin_devices(|_, _, _| {
+                if needed == capacity {
+                    return Err("retained vst3 source capacity exceeded".into());
+                }
+                needed += 1;
+                Ok(())
+            })
+            .is_ok()
+            && control.has_vacant_native_source_slots_on_control(needed)
     }
-    pub(super) fn can_retain_output_for_native_document(&self) -> bool {
-        self.sources.is_empty() && self.idle()
+    /// The exact successor has applied. Keep the old bindings until Root
+    /// returns their graph, tail and endpoint obligations on control.
+    pub(super) fn retire_document_sources(&mut self, generation: u64) {
+        for source in self
+            .sources
+            .iter_mut()
+            .filter(|source| source.project_generation == generation)
+        {
+            source.accepted = false;
+            source.retiring = true;
+        }
     }
     pub fn ready(&self) -> bool {
         // Session queries this only for its held insertion. No Root binding yet
@@ -344,6 +418,7 @@ impl Plugins {
                 input.device_id,
                 graph,
                 output.sample_rate,
+                hosting_profile(input.insertion.destination),
                 None,
             ) {
                 Ok(binding) => binding,
@@ -370,6 +445,8 @@ impl Plugins {
                 retiring: false,
                 queued: false,
                 observes_latency: false,
+                editor_open: false,
+                edit_backlog: false,
                 #[cfg(all(test, feature = "allocation-probe"))]
                 observed_latency_receipt: false,
                 #[cfg(all(test, feature = "allocation-probe"))]
@@ -434,13 +511,14 @@ impl Plugins {
             return None;
         }
         let control = output.publication.control()?;
-        if control.status.applied_audio_source().is_some() {
+        let active = control.status.native_effect_source();
+        if active.is_none() || control.status.applied_audio_source().is_some() {
+            for source in &mut self.sources {
+                source.edit_backlog = false;
+            }
             return None;
         }
-        let active = control
-            .status
-            .native_effect_source()
-            .filter(|source| source.context == context)?;
+        let active = active.filter(|source| source.context == context)?;
         self.latency_poll_at = now.checked_add(std::time::Duration::from_millis(10));
         let len = self.sources.len();
         for _ in 0..len {
@@ -457,6 +535,32 @@ impl Plugins {
             let batch = control
                 .poll_native_source_recovery_edits_on_control(source.binding)
                 .ok()?;
+            if let Some(batch) = batch {
+                source.edit_backlog = batch.edits.pending != 0;
+            }
+            if let Some(log) = &self.diagnostics
+                && let Some(batch) = batch
+                && let [first, ..] = batch.edits.as_slice()
+                && let Some(last) = batch.edits.as_slice().last()
+            {
+                let _ = log.record_typed(
+                    hex_diagnostics::Level::Debug,
+                    hex_diagnostics::Category::Audio,
+                    &format!(
+                        "vst3_editor v=1 stage=drain device={} binding={:?} transport_playing={} first_sequence={} last_sequence={} first_frame={} last_frame={} receipts={} pending={} ready={}",
+                        source.device,
+                        source.binding,
+                        control.status.playing.load(Acquire),
+                        first.sequence,
+                        last.sequence,
+                        first.first_frame,
+                        last.first_frame,
+                        batch.edits.as_slice().len(),
+                        batch.edits.pending,
+                        batch.edits.ready,
+                    ),
+                );
+            }
             #[cfg(all(test, feature = "allocation-probe"))]
             {
                 source.observed_latency_receipt |= batch.is_some();
@@ -482,17 +586,40 @@ impl Plugins {
             self.output_closed();
             return;
         };
+        self.poll_editor(control, context);
+        self.poll_parameters(control, context);
         self.poll_restore(control, context);
-        if let Some(output) = control.output_identity() {
-            let endpoints = self.sources.iter().map(|source| {
-                (
-                    source.binding,
-                    source.device,
-                    control.native_source_endpoint_status(source.binding),
-                )
-            });
+        if let Some(output) = control.output_identity()
+            && let Some(context) = context
+        {
+            let generation = context.project_generation;
+            let endpoints = self
+                .sources
+                .iter_mut()
+                .filter(|source| source.project_generation == generation)
+                .map(|source| {
+                    let status = control.native_source_endpoint_status(source.binding);
+                    if status == Some((true, false)) {
+                        source.edit_backlog = false;
+                    }
+                    if status == Some((true, false))
+                        && let Some(log) = &self.diagnostics
+                        && let Some(diagnostic) =
+                            control.take_native_source_failure_diagnostic(source.binding)
+                    {
+                        let _ = log.record_typed(
+                            hex_diagnostics::Level::Warn,
+                            hex_diagnostics::Category::Audio,
+                            &format!(
+                                "vst3_editor v=1 stage=worker_failure generation={generation} output={output} device={} {diagnostic}",
+                                source.device
+                            ),
+                        );
+                    }
+                    (source.binding, source.device, status)
+                });
             if let Some(devices) = self.degraded.observe(output, endpoints) {
-                self.degraded_changed = Some((output, devices));
+                self.degraded_changed = Some((generation, output, devices));
             }
         }
         #[cfg(all(test, feature = "allocation-probe"))]
@@ -639,11 +766,11 @@ impl Plugins {
         }
         let mut output = output;
         if input.preparing_edit() {
-            input.visit_plugin_effects(|owner, device, state| {
+            input.visit_plugin_devices(|destination, device, state| {
                 self.prepare_edit_source(
                     output.as_deref_mut().ok_or("native output closed")?,
                     &input,
-                    owner,
+                    destination,
                     device,
                     state,
                     desired,
@@ -658,7 +785,8 @@ impl Plugins {
             .map_err(|_| "vst3 compiler selection unavailable")?;
         let context = input.context();
         let mut unavailable = Vec::new();
-        input.visit_plugin_effects(|owner, device, state| {
+        input.visit_plugin_devices(|destination, device, state| {
+            let owner = destination.owner();
             let source = match output
                 .as_deref_mut()
                 .and_then(|output| output.publication.control())
@@ -688,9 +816,9 @@ impl Plugins {
             if let Some(source) = desired
                 .filter(|source| source.context().project_generation == context.project_generation)
             {
-                source.effect_preparation().visit_plugin_effects(
-                    |old_owner, old_device, old_state| {
-                        preserved |= old_owner == owner
+                source.effect_preparation().visit_plugin_devices(
+                    |old_destination, old_device, old_state| {
+                        preserved |= old_destination == destination
                             && old_device == device
                             && old_state.processing_eq(state);
                         preserved |= input.preparing_edit() && old_state.processing_eq(state);
@@ -737,6 +865,14 @@ impl Plugins {
                 result => return result.map(Some),
             }
         }
+    }
+}
+
+fn hosting_profile(destination: PluginEffectDestination) -> PluginProfile {
+    if destination.is_instrument() {
+        PluginProfile::Instrument
+    } else {
+        PluginProfile::Effect
     }
 }
 
@@ -803,4 +939,44 @@ fn advance_source(
         Some(Progress::Preparing) | None => {}
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod idle_tests {
+    use super::*;
+
+    #[test]
+    fn stopped_editor_backlog_keeps_polling_busy_until_drained_or_output_closes() {
+        let mut plugins = Plugins::default();
+        plugins.sources.push(Source {
+            binding: Binding {
+                root: 1,
+                instance: 2,
+                graph: 3,
+                epoch: 4,
+            },
+            owner: ProcessorChainOwner::Main,
+            device: 2,
+            project_generation: 1,
+            operation: SourceOperation::Reopen,
+            accepted: true,
+            retiring: false,
+            queued: true,
+            observes_latency: true,
+            editor_open: true,
+            edit_backlog: false,
+            #[cfg(feature = "allocation-probe")]
+            observed_latency_receipt: false,
+            #[cfg(feature = "allocation-probe")]
+            attempts: 0,
+        });
+        assert!(plugins.idle());
+        plugins.sources[0].edit_backlog = true;
+        assert!(!plugins.idle());
+        plugins.sources[0].edit_backlog = false;
+        assert!(plugins.idle());
+        plugins.sources[0].edit_backlog = true;
+        plugins.output_closed();
+        assert!(plugins.idle());
+    }
 }

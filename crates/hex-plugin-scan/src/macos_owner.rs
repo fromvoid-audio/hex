@@ -171,13 +171,13 @@ fn may_publish(cleanup: &Cleanup) -> bool {
 }
 
 fn interruption(
-    started: Instant,
+    deadline_started: Option<Instant>,
     deadline: Duration,
     cancelled: &mut impl FnMut() -> Result<bool, String>,
 ) -> Result<Option<&'static str>, String> {
     if cancelled()? {
         Ok(Some("cancelled"))
-    } else if started.elapsed() >= deadline {
+    } else if deadline_started.is_some_and(|started| started.elapsed() >= deadline) {
         Ok(Some("deadline exceeded"))
     } else {
         Ok(None)
@@ -258,7 +258,7 @@ fn drain(reader: &mut UnixStream, output: &mut Vec<u8>, limit: usize) -> Result<
     Ok(false)
 }
 
-pub fn stdin_cancelled() -> Result<bool, String> {
+pub fn stdin_cancelled(cancel_on_disconnect: bool) -> Result<bool, String> {
     let mut input = std::io::stdin();
     let mut descriptors = [rustix::event::PollFd::new(
         &input,
@@ -270,11 +270,9 @@ pub fn stdin_cancelled() -> Result<bool, String> {
     };
     rustix::event::poll(&mut descriptors, Some(&zero))
         .map_err(|e| format!("cancel poll failed: {e}"))?;
-    if !descriptors[0]
-        .revents()
-        .contains(rustix::event::PollFlags::IN)
-    {
-        return Ok(false);
+    let ready = descriptors[0].revents();
+    if !ready.contains(rustix::event::PollFlags::IN) {
+        return Ok(cancel_on_disconnect && ready.contains(rustix::event::PollFlags::HUP));
     }
     let mut bytes = [0_u8; 64];
     let count = input
@@ -282,7 +280,7 @@ pub fn stdin_cancelled() -> Result<bool, String> {
         .map_err(|e| format!("cancel read failed: {e}"))?;
     // Any stdin byte cancels. A split word cannot lose cancellation, and no
     // line-buffered read or competing stdin reader is introduced.
-    Ok(count != 0)
+    Ok(count != 0 || cancel_on_disconnect)
 }
 
 pub fn run(
@@ -290,12 +288,13 @@ pub fn run(
     bundle: Bundle,
     attempt: Attempt,
     deadline: Duration,
+    wait_for_plugin: bool,
     mut cancelled: impl FnMut() -> Result<bool, String>,
 ) -> Result<(Report, Option<Pending>), String> {
     if deadline.is_zero() || deadline > Duration::from_secs(30) {
         return Err("scan deadline must be1..30000 milliseconds".into());
     }
-    let started = Instant::now();
+    let mut deadline_started = Some(Instant::now());
     let mut outgoing = protocol::request(&bundle, attempt)?;
     build.unchanged()?;
     bundle.unchanged()?;
@@ -346,7 +345,7 @@ pub fn run(
 
     let work = (|| -> Result<(), String> {
         loop {
-            if let Some(reason) = interruption(started, deadline, &mut cancelled)? {
+            if let Some(reason) = interruption(deadline_started, deadline, &mut cancelled)? {
                 stopped = Some(reason);
                 return Err(format!("scan {reason}"));
             }
@@ -364,6 +363,11 @@ pub fn run(
                 }
                 if terminal_phase && sent == outgoing.len() && !admission_notified {
                     admission_notified = true;
+                    // An interactive scan can wait inside the native plug-in
+                    // for a modal response. Cancellation still owns the child.
+                    if wait_for_plugin {
+                        deadline_started = None;
+                    }
                     let _ = writeln!(std::io::stderr(), "mac scan: admission sent");
                 }
             }
@@ -382,12 +386,14 @@ pub fn run(
                         return Err("preflight before complete request".into());
                     }
                     let preflight = protocol::preflight(&incoming, attempt, &bundle)?;
-                    if let Some(reason) = interruption(started, deadline, &mut cancelled)? {
+                    if let Some(reason) = interruption(deadline_started, deadline, &mut cancelled)?
+                    {
                         stopped = Some(reason);
                         return Err(format!("scan {reason} before admission"));
                     }
                     let admitted = bundle.admit(&preflight.executable)?;
-                    if let Some(reason) = interruption(started, deadline, &mut cancelled)? {
+                    if let Some(reason) = interruption(deadline_started, deadline, &mut cancelled)?
+                    {
                         stopped = Some(reason);
                         return Err(format!("scan {reason} during admission"));
                     }
@@ -399,6 +405,9 @@ pub fn run(
                     terminal_phase = true;
                 } else if incoming.len() == length {
                     staged = Some(protocol::terminal(&incoming, attempt)?);
+                    if wait_for_plugin {
+                        deadline_started = Some(Instant::now());
+                    }
                     incoming.clear();
                     let _ = writeln!(std::io::stderr(), "mac scan: terminal result received");
                 }
@@ -485,7 +494,7 @@ pub fn run(
         }
     }
     let discovery = publish_candidate(staged, &owner.cleanup, &mut cause, &mut stopped, || {
-        interruption(started, deadline, &mut cancelled)
+        interruption(deadline_started, deadline, &mut cancelled)
     });
     if discovery.is_none() && cause.is_none() {
         cause = Some("terminal scan result missing".into());
