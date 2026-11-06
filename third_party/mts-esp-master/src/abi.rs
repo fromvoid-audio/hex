@@ -130,8 +130,8 @@ impl Api {
         unsafe { (self.has_master)() }
     }
 
-    /// Return the appropriate refusal, or clear a suspected stale IPC master
-    /// only when the caller has explicitly requested recovery.
+    /// Return the appropriate refusal, or clear the shared IPC registration
+    /// when the caller has explicitly requested a reset.
     pub(crate) fn check_registration(&self, recover: bool) -> Result<(), Error> {
         if !self.has_master() {
             return Ok(());
@@ -146,8 +146,8 @@ impl Api {
         if !recover {
             return Err(Error::ExistingMasterWithIpc);
         }
-        // SAFETY: the upstream contract permits reinitialization with IPC
-        // enabled after explicit consent to clear a suspected stale master.
+        // SAFETY: the validated function has no arguments. IPC is enabled and
+        // the user explicitly requested the shared-state reset.
         unsafe { reinitialize() };
         if self.has_master() {
             return Err(Error::ExistingMasterWithIpc);
