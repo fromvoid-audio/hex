@@ -16,18 +16,22 @@
 //! offset, six reserved zero bytes, and its own 40-byte context.
 //! Versions 3–6 carry up to 160 input events only when every event has a note
 //! ID. The generic event and worker reply contracts remain capped at 64.
+//! The request-only high bit of the version marks authored PCM. Each parameter
+//! record then appends its prepared SDK step count as a u32. Replies and
+//! stopped flushes keep the original records.
 //! These records carry transport data; they do not promise SDK event admission.
 use super::*;
 use std::io::{self, Read, Write};
 
 pub const HEADER_BYTES: usize = 64;
+const AUTHORED_PARAMETER_VERSION_BIT: u16 = 0x8000;
 const TIMING_BYTES: usize = 24;
 const EXTENDED_TIMING_BYTES: usize = 40;
 const TIMING_CHANGE_BYTES: usize = 8 + EXTENDED_TIMING_BYTES;
 pub const MAX_PACKET_BYTES: usize = HEADER_BYTES
     + MAX_FRAMES * 8
     + MAX_IDENTIFIED_INPUT_NOTES * 12
-    + MAX_PARAMETER_POINTS * 16
+    + MAX_PARAMETER_POINTS * 20
     + EXTENDED_TIMING_BYTES
     + MAX_TIMING_CHANGES * TIMING_CHANGE_BYTES;
 
@@ -36,6 +40,23 @@ fn invalid() -> io::Error {
 }
 
 pub fn write(writer: &mut impl Write, block: &Block) -> io::Result<()> {
+    write_with_parameters(writer, block, None)
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) fn write_authored(
+    writer: &mut impl Write,
+    block: &Block,
+    step_count: &dyn Fn(u32) -> Option<u32>,
+) -> io::Result<()> {
+    write_with_parameters(writer, block, Some(step_count))
+}
+
+fn write_with_parameters(
+    writer: &mut impl Write,
+    block: &Block,
+    step_count: Option<&dyn Fn(u32) -> Option<u32>>,
+) -> io::Result<()> {
     if block.frames == 0 || usize::from(block.frames) > MAX_FRAMES {
         return Err(invalid());
     }
@@ -76,7 +97,14 @@ pub fn write(writer: &mut impl Write, block: &Block) -> io::Result<()> {
     } else {
         2_u16
     };
-    packet[4..6].copy_from_slice(&version.to_le_bytes());
+    let authored = step_count.is_some() && !block.parameters.as_slice().is_empty();
+    let wire_version = version
+        | if authored {
+            AUTHORED_PARAMETER_VERSION_BIT
+        } else {
+            0
+        };
+    packet[4..6].copy_from_slice(&wire_version.to_le_bytes());
     packet[6..8].copy_from_slice(&block.frames.to_le_bytes());
     packet[8..10].copy_from_slice(&(block.events.len as u16).to_le_bytes());
     packet[10..12].copy_from_slice(&(block.parameters.as_slice().len() as u16).to_le_bytes());
@@ -117,6 +145,13 @@ pub fn write(writer: &mut impl Write, block: &Block) -> io::Result<()> {
         packet[offset + 4..offset + 8].copy_from_slice(&point.id.to_le_bytes());
         packet[offset + 8..offset + 16].copy_from_slice(&point.normalized.to_le_bytes());
         offset += 16;
+        if let Some(step_count) = step_count {
+            let steps = step_count(point.id)
+                .filter(|&steps| steps <= i32::MAX as u32)
+                .ok_or_else(invalid)?;
+            packet[offset..offset + 4].copy_from_slice(&steps.to_le_bytes());
+            offset += 4;
+        }
     }
     if let Some(timing) = block.timing {
         let width = timing_width(version);

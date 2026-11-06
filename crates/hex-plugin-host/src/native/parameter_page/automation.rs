@@ -2,12 +2,13 @@
 use super::*;
 use protocol::{MAX_CONTROLLER_PARAMETERS, ParameterPage};
 
-/// Exact source and controller revision observed during one enumeration. The
-/// metadata is valid for this binding and revision only. It conveys neither
-/// endpoint custody nor permission to keep playing after a metadata change.
-#[derive(Debug, PartialEq, Eq)]
+/// Capability observed during one coherent enumeration of the exact source.
+/// The processing worker rechecks the selected capability; the page revision
+/// may advance independently as normalized values change.
+#[derive(Debug)]
 pub struct AuthoredParameterMetadata {
     binding: Binding,
+    source: std::sync::Weak<AtomicBool>,
     class: ClassId,
     revision: u64,
     parameters: Vec<Parameter>,
@@ -20,6 +21,12 @@ impl AuthoredParameterMetadata {
 
     pub fn class(&self) -> ClassId {
         self.class
+    }
+
+    pub(in crate::native) fn matches(&self, instance: &Prepared) -> bool {
+        self.binding == instance.config.binding
+            && self.class == instance.config.identity.class
+            && self.source.as_ptr() == Arc::as_ptr(&instance.lease.cancellation.cancelled)
     }
 
     pub fn revision(&self) -> u64 {
@@ -71,7 +78,7 @@ impl Prepared {
                 }
             };
             let Some(next) = selection.accept(&page)? else {
-                return selection.finish(self.config.binding, class, page.revision);
+                return selection.finish(self, page.revision);
             };
             query = next;
         }
@@ -137,18 +144,14 @@ impl Selection {
         }))
     }
 
-    fn finish(
-        self,
-        binding: Binding,
-        class: ClassId,
-        revision: u64,
-    ) -> Result<AuthoredParameterMetadata> {
+    fn finish(self, instance: &Prepared, revision: u64) -> Result<AuthoredParameterMetadata> {
         if self.parameters.iter().any(|p| p.steps.is_none()) {
             return Err(Error::Protocol("authored parameter is missing"));
         }
         Ok(AuthoredParameterMetadata {
-            binding,
-            class,
+            binding: instance.config.binding,
+            source: Arc::downgrade(&instance.lease.cancellation.cancelled),
+            class: instance.config.identity.class,
             revision,
             parameters: self.parameters,
         })

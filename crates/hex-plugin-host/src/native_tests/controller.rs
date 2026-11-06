@@ -597,3 +597,110 @@ fn authored_parameter_metadata_uses_loaded_class_and_sdk_flags() {
         );
     }
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn authored_pcm_rechecks_processing_capability_after_controller_refresh() {
+    use crate::transport::{ParameterPoint, ProcessTiming};
+
+    let build = build();
+    for variant in [141, 142] {
+        let case = Case::new();
+        let prepare = |case: &Case| {
+            Prepared::prepare(
+                &build,
+                source(),
+                options(),
+                PreparationCancellation::new_on_control().unwrap(),
+                case.setup(variant),
+            )
+            .unwrap()
+        };
+        let mut instance = prepare(&case);
+        let class = instance.configuration().identity.class;
+        let metadata = instance
+            .read_authored_parameter_metadata_on_control(class, &[7])
+            .unwrap();
+        assert_eq!(metadata.step_count(7), Some(0));
+        let input = |instance: &Prepared, sequence| {
+            let mut block = request(instance.configuration(), sequence);
+            block.timing = Some(ProcessTiming {
+                playing: true,
+                arrangement_frame: block.first_frame as i64,
+                arrangement_beat_raw: None,
+                tempo_micro_bpm: None,
+                meter: Some((4, 4)),
+                cycle_beats_raw: None,
+            });
+            for (frame, normalized) in [(0, 0.25), (7, 0.75)] {
+                block
+                    .parameters
+                    .push(ParameterPoint {
+                        frame,
+                        id: 7,
+                        normalized,
+                    })
+                    .unwrap();
+            }
+            block
+        };
+
+        let other_case = Case::new();
+        let mut other = prepare(&other_case);
+        assert_eq!(
+            other.configuration().binding,
+            instance.configuration().binding
+        );
+        assert!(matches!(
+            other.exchange_authored_on_worker(input(&other, 0), &metadata),
+            Err(Error::Protocol("authored parameter source differs"))
+        ));
+        assert_eq!(other.completed_blocks_on_control(), 0);
+        assert!(other.stop_and_reap_on_control().unwrap().status.success());
+
+        for sequence in 0..2 {
+            let block = input(&instance, sequence);
+            let reply = instance
+                .exchange_authored_on_worker(block, &metadata)
+                .unwrap();
+            for (frame, (input, output)) in block.pcm[..8].iter().zip(&reply.pcm[..8]).enumerate() {
+                let normalized = 0.25 + 0.5 * frame as f64 / 7.0;
+                let gain = (normalized * 4.0 * (0.5 + sequence as f64 * 0.125)) as f32;
+                for channel in 0..2 {
+                    assert!((output[channel] - input[channel] * gain).abs() < 1e-6);
+                }
+            }
+            let current = page(&mut instance, ParameterPageQuery::default());
+            assert!(current.revision > metadata.revision());
+        }
+
+        fs::write(case.release(), b"change authored parameter capability").unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        loop {
+            let current = page(&mut instance, ParameterPageQuery::default());
+            let gain = &current.as_slice()[0];
+            if gain.step_count != 0 || !gain.supports_authored_automation() {
+                break;
+            }
+            assert!(Instant::now() < until, "SDK metadata did not refresh");
+            thread::yield_now();
+        }
+        assert!(matches!(
+            instance.exchange_authored_on_worker(input(&instance, 2), &metadata),
+            Err(Error::Worker(8))
+        ));
+        assert_eq!(instance.completed_blocks_on_control(), 2);
+        assert!(
+            !instance
+                .cancel_and_reap_on_control()
+                .unwrap()
+                .status
+                .success()
+        );
+        assert_eq!(
+            case.observation().unwrap()[10],
+            2,
+            "stale input entered SDK DSP"
+        );
+    }
+}
