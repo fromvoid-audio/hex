@@ -494,6 +494,7 @@ int main(int argc,char** argv) {
                     };
                     wire::Packet packet{};
                     hex_instance::InputNotes input_notes;
+                    hex_instance::HeldInputNotes held_notes;
                     std::array<float,wire::max_frames> left{},right{},output_left{},output_right{};
                     float* input_pointers[]={left.data(),right.data()};float* output_pointers[]={output_left.data(),output_right.data()};
                     AudioBusBuffers input{},output{};
@@ -504,6 +505,29 @@ int main(int argc,char** argv) {
                     uint64_t live_operation=0;
                     auto live_started=std::chrono::steady_clock::now();
                     data.numInputs=input.numChannels?1:0;data.numOutputs=1;data.inputs=data.numInputs?&input:nullptr;data.outputs=&output;
+                    const auto release_held_notes=[&] {
+                        const auto count=held_notes.release_into(packet.notes);
+                        if(!count) return true;
+                        instance.refresh_processing_parameters(processing_parameters);
+                        if(!parameter_output.reset(1,true) || !parameter_output.begin_sdk() ||
+                            !input_notes.begin(packet.notes,count)) return false;
+                        left[0]=0;right[0]=0;output_left[0]=0;output_right[0]=0;
+                        input.silenceFlags=input_silence;output.silenceFlags=0;
+                        ProcessContext stopped{};stopped.sampleRate=config->rate;
+                        auto release=data;
+                        release.numSamples=1;release.processContext=&stopped;
+                        release.inputEvents=&input_notes;
+                        release.inputParameterChanges=nullptr;release.outputParameterChanges=&parameter_output;
+                        const bool processed=instance.process(release);
+                        const bool parameters_returned=parameter_output.end_sdk(), notes_returned=input_notes.end();
+                        if(!processed || !parameters_returned || !notes_returned) return false;
+                        for(size_t index=0;index<parameter_output.size();++index) {
+                            hex_instance::ParameterPoint point{};
+                            if(!parameter_output.point(index,point) || !processing_parameters.find(point.id) ||
+                                !parameter_feedback.put(point.id,point.normalized)) return false;
+                        }
+                        return true;
+                    };
                     // A live SDK failure waits only for the next serialized
                     // request to report its error, without another DSP call.
                     // This keeps the failure reply paired with that exchange
@@ -571,6 +595,13 @@ int main(int argc,char** argv) {
                         if(received==2) { normal_stop=true;break; }
                         if(received==0) std::_Exit(Cancelled); // EOF never claims cooperative close
                         if(received==3) {
+                            if(packet.release_gates) {
+                                // Priority Stop already dropped the old callback's output.
+                                // Deliver the accepted gates' releases on this lane, with no
+                                // returned audio or change to the copied PCM prefix.
+                                phase.store(2,std::memory_order_release);
+                                if(!release_held_notes()) { error(channel,&*config,Processing);std::_Exit(Processing); }
+                            }
                             // Main's epoch handshake drains the last worker-owned
                             // observations before state capture or resume.
                             phase.store(3,std::memory_order_release);
@@ -708,6 +739,9 @@ int main(int argc,char** argv) {
                                 !parameter_input.input(point.id,point.offset,point.normalized)) valid=false;
                         }
                         if(!valid || !stage_edits()) { worker_failure.store(ProtocolFailure);break; }
+                        if(event_channels && !held_notes.stage(packet.notes,packet.note_count)) {
+                            worker_failure.store(ProtocolFailure);break;
+                        }
                         if(!parameter_input.begin_sdk() || !parameter_output.begin_sdk()) {
                             error(channel,&*config,Processing);std::_Exit(Processing);
                         }

@@ -196,7 +196,7 @@ struct Packet {
     size_t note_count=0;
     size_t parameter_count=0;
     std::optional<Steinberg::Vst::ProcessContext> context;
-    uint16_t frames=0;bool stop=false,observe_latency=false,flush_idle_edits=false;
+    uint16_t frames=0;bool stop=false,observe_latency=false,flush_idle_edits=false,release_gates=false;
     uint64_t next_graph=0,next_epoch=0;
     uint64_t capture_operation=0;
     hex_instance::ControllerQuery parameter_query{};
@@ -218,13 +218,15 @@ struct Packet {
         const bool live_start=!std::memcmp(p,"HXVL",4),live_poll=!std::memcmp(p,"HXVP",4);
         const bool pcm=!std::memcmp(p,"HXVB",4),flush=!std::memcmp(p,"HXVF",4);
         const auto version=number(p+4,2);
+        release_gates=quiesce && version==2 && !config.inputs;
         observe_latency=edit_query && (version==2 || version==3);
         flush_idle_edits=edit_query && version==3;
         const bool extended_timing=pcm && version==5;
         const bool timed=pcm && (version==4 || extended_timing);
         const bool identified_notes=pcm && (version==3 || timed);
         if((!stop && !quiesce && !resume && !capture && !live_start && !live_poll && !pcm && !flush && !edit_query && !page_start && !page_poll && !reactivate) ||
-            ((pcm || flush || edit_query)?(version!=1 && version!=2 && !flush_idle_edits && !identified_notes):version!=1)) return -1;
+            ((pcm || flush || edit_query)?(version!=1 && version!=2 && !flush_idle_edits && !identified_notes):
+                (version!=1 && !release_gates))) return -1;
         note_count=static_cast<size_t>(number(p+8,2));
         const bool dense_notes=note_count>hex_instance::LEGACY_INPUT_NOTE_COUNT;
         if (note_count>notes.size() || (dense_notes && !identified_notes) ||

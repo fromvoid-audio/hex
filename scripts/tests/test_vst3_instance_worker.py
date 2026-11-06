@@ -352,10 +352,11 @@ class NativeInstanceTests(unittest.TestCase):
             session.frames += 8
             return max(map(abs, struct.unpack("<16f", reply[64:])))
 
-        self.assertGreater(render(BINDING, [(0x92, 100, 42)]), 0)
-        session.socket.sendall(struct.pack("<4sHHH6x6Q", b"HXVQ", 1, 0, 0,
+        self.assertGreater(render(BINDING, [(0x92, 100, 41), (0x92, 100, 42), (0x82, 0, 41)]), 0)
+        session.socket.sendall(struct.pack("<4sHHH6x6Q", b"HXVQ", 2, 0, 0,
                                            *BINDING, session.sequence, session.frames))
-        self.assertEqual(session.message()[0], b"HXVIQF03")
+        magic, facts = session.message()
+        self.assertEqual((magic, struct.unpack("<2Q", facts[-16:])), (b"HXVIQF03", (1, 8)))
         session.socket.sendall(struct.pack("<4sHHHB5x6Q", b"HXVR", 1, 0, 0, 2,
                                            *BINDING, 3, 5))
         self.assertEqual(session.message()[0], b"HXVIRR03")
