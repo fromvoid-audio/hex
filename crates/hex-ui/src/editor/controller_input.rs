@@ -848,18 +848,19 @@ impl EditorView {
         let connection = if self.controller_input.connected {
             "connected"
         } else if self.controller_input.selected_port.is_some()
-            && self
-                .controller_input
-                .input
-                .as_ref()
-                .is_some_and(|input| !input.is_cancelled())
+            && self.controller_input.target.is_some()
         {
             "pending"
         } else {
             "off"
         };
+        let monitoring = if self.controller_target_uses_vst3_notes() {
+            "hardware notes play the selected vst3 instrument"
+        } else {
+            "hardware notes, pressure, pitch bend and mod wheel for the selected instrument"
+        };
         let description = theme::text(format!(
-            "controller input {connection} · pressure, pitch bend and mod wheel for the selected instrument · click to choose port and channel · ordered hardware notes play the selected instrument and support piano-roll step entry · sustain, recording and mpe are not included"
+            "controller input {connection} · {monitoring} · click to choose port and channel · hardware notes support piano-roll step entry"
         ));
         div().w(px(46.0)).flex_shrink_0().children([div()
             .id("controller-input-menu")
