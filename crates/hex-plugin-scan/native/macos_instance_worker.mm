@@ -12,11 +12,30 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <optional>
+#include <os/log.h>
 #include <thread>
 
 namespace wire=hex_instance_wire;
 using namespace Steinberg;using namespace Steinberg::Vst;
 namespace {
+void report_message_activity(const wire::Config& config,bool editor_open,
+    const hex_instance::HostMessageDiagnostics& trace,uint64_t pcm_blocks,uint64_t nonzero_input_blocks) {
+    static const auto log=os_log_create("org.portalsurfer.hex.vst3","messages");
+    const auto count=[](const std::atomic<uint64_t>& value) {
+        return static_cast<unsigned long long>(value.load(std::memory_order_relaxed));
+    };
+    const auto* bundle=config.root.c_str()+config.root.find_last_of('/')+1;
+    os_log(log,"vst3 message diagnostic bundle=%{public}s editor=%{public}s "
+        "pcm_blocks=%llu nonzero_input_blocks=%llu messages=%llu binary_attempts=%llu "
+        "max_binary_bytes=%u binary_limit=%u binary_writes=%llu binary_oversize=%llu "
+        "binary_reads=%llu binary_misses=%llu wrong_thread_reads=%llu",
+        bundle,editor_open?"open":"closed",
+        static_cast<unsigned long long>(pcm_blocks),static_cast<unsigned long long>(nonzero_input_blocks),
+        count(trace.messages),count(trace.binary_attempts),trace.max_binary_bytes.load(std::memory_order_relaxed),
+        static_cast<unsigned>(hex_instance::HOST_BINARY_BYTES),count(trace.binary_writes),count(trace.binary_oversize),
+        count(trace.binary_reads),count(trace.binary_misses),count(trace.wrong_thread_reads));
+}
+
 enum Failure : uint32_t { Configuration=1,Admission=2,ClassFailure=3,Setup=4,Presentation=5,Capture=6,
     Processing=7,ProtocolFailure=8,Cancelled=9,Teardown=10,HostControl=11,Unexpected=12,InstanceOpen=13,Restore=14,
     Quiescence=15,Resume=16,SetupState=17,SetupConfiguration=18,SetupPrecision=19,
@@ -244,6 +263,8 @@ int main(int argc,char** argv) {
     static CancellationGuardian guardian;
     if(supervised && !guardian.start()) return Configuration;
     const int channel=isolate_channel();if(channel<0) return Configuration;
+    const auto* message_diagnostics=std::getenv("HEX_VST3_MESSAGE_DIAGNOSTICS");
+    const bool trace_messages=message_diagnostics && !std::strcmp(message_diagnostics,"1");
     Module module;hex_instance::Instance instance;hex_instance::EditorWindow editor;
     std::optional<wire::Config> config;
     uint32_t failure=Configuration;bool accepted=false,normal_stop=false;
@@ -259,7 +280,7 @@ int main(int argc,char** argv) {
             failure=ClassFailure;if(!module.has_class(*config)) throw Refusal{};
             TUID cid{};std::memcpy(cid,config->cid.data(),16);
             failure=InstanceOpen;
-            if(!instance.open(module.factory,cid)) throw Refusal{};
+            if(!instance.open(module.factory,cid,trace_messages)) throw Refusal{};
             // State synchronization can issue kLatencyChanged even before
             // processing. Fold it into the facts we already validate here.
             instance.observe_latency_restarts();
@@ -317,6 +338,7 @@ int main(int argc,char** argv) {
             auto processing_parameters=instance.processing_parameters_on_control();
             hex_instance::ParameterChanges parameter_input,parameter_output;
             hex_instance::ParameterFeedback parameter_feedback;
+            std::atomic<uint64_t> diagnostic_pcm_blocks{0},diagnostic_nonzero_input_blocks{0};
             std::atomic<bool> done{false};std::atomic<uint32_t> worker_failure{0},startup{0},phase{0};
             std::mutex startup_mutex;std::condition_variable startup_changed;bool go=false;
             const auto control_failure=[&](uint32_t code) {
@@ -734,10 +756,12 @@ int main(int argc,char** argv) {
                         }
                         if(received!=1) { worker_failure.store(ProtocolFailure);break; }
                         bool valid=true;output_right.fill(0);input.silenceFlags=input_silence;output.silenceFlags=0;
+                        bool nonzero_input=false;
                         for(size_t n=0;n<packet.frames;++n) {
                             left[n]=wire::sample(packet.bytes.data()+wire::header_size+n*8);
                             right[n]=wire::sample(packet.bytes.data()+wire::header_size+n*8+4);
                             valid=valid && (config->inputs==2 || right[n]==0) && (config->inputs!=0 || left[n]==0);
+                            if(trace_messages) nonzero_input|=left[n]!=0 || right[n]!=0;
                         }
                         const auto event_channels=instance.event_input_channels();
                         // The wire has already validated the notes. A generator
@@ -838,6 +862,10 @@ int main(int argc,char** argv) {
                         instance.publish_parameter_feedback(parameter_feedback);
                         if(!packet.write(channel)) { worker_failure.store(Cancelled);break; }
                         ++blocks;frames+=packet.frames;
+                        if(trace_messages) {
+                            diagnostic_pcm_blocks.store(blocks,std::memory_order_relaxed);
+                            if(nonzero_input) diagnostic_nonzero_input_blocks.fetch_add(1,std::memory_order_relaxed);
+                        }
                     }
                     if(worker_failure.load()) error(channel,&*config,worker_failure.load());
                     // Never stop/deactivate/unload beneath a main-lane capture,
@@ -868,8 +896,19 @@ int main(int argc,char** argv) {
             // restart/control requests cannot be silently acknowledged as applied.
             // Foreign timers and controller calls can also autorelease work
             // on turns that do not visit the editor's AppKit event pump.
+            auto next_message_report=std::chrono::steady_clock::time_point::min();
             while(!done.load(std::memory_order_acquire)) @autoreleasepool {
                 try {
+                    if(trace_messages) {
+                        const auto now=std::chrono::steady_clock::now();
+                        if(now>=next_message_report) {
+                            if(const auto* trace=instance.message_diagnostics_on_control())
+                                report_message_activity(*config,editor.is_open(),*trace,
+                                    diagnostic_pcm_blocks.load(std::memory_order_relaxed),
+                                    diagnostic_nonzero_input_blocks.load(std::memory_order_relaxed));
+                            next_message_report=now+std::chrono::seconds(2);
+                        }
+                    }
                     if(worker_failure.load()) {
                         // The joining worker/guardian owns terminal progress.
                         // Do not dispatch more foreign callbacks after failure.

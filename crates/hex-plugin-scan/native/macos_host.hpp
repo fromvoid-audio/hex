@@ -91,6 +91,7 @@ enum HostRefusal : uint32 { WrongThread=1, UnknownRestart=2, GraphControlRequire
 // edit. Explicit gesture boundaries and restart records are never replaced.
 class Host final : public IHostApplication, public IComponentHandler {
     std::atomic<uint32> references{1}, refusals{0};
+    HostMessageDiagnostics message_trace{};
     std::array<HostMessage,HOST_MESSAGE_COUNT> messages{};
     std::array<EditEvent,HOST_REQUEST_COUNT> requests{};
     std::array<EditEvent,HOST_EDIT_COUNT> edits{};
@@ -156,9 +157,11 @@ class Host final : public IHostApplication, public IComponentHandler {
     }
 public:
     static constexpr int32 supported_restarts=kParamValuesChanged|kParamTitlesChanged;
-    Host() {
-        for (auto& message:messages) message.bind(static_cast<IHostApplication*>(this));
+    explicit Host(bool trace_messages=false) {
+        for (auto& message:messages)
+            message.bind(static_cast<IHostApplication*>(this),trace_messages?&message_trace:nullptr);
     }
+    const HostMessageDiagnostics& message_diagnostics() const { return message_trace; }
     uint32 reference_count() const { return references.load(); }
     uint32 refusal_flags() const { return refusals.load(); }
     void bind_processing_thread() { processing_thread.store(pthread_self(),std::memory_order_release); }
