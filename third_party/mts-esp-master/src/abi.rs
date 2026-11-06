@@ -10,6 +10,8 @@ use std::{
 type RegisterMaster = unsafe extern "C" fn(*mut c_void);
 type DeregisterMaster = unsafe extern "C" fn();
 type HasMaster = unsafe extern "C" fn() -> bool;
+type HasIpc = unsafe extern "C" fn() -> bool;
+type Reinitialize = unsafe extern "C" fn();
 type GetVersionNumber = unsafe extern "C" fn() -> c_int;
 type GetNumClients = unsafe extern "C" fn() -> c_int;
 type SetNoteTunings = unsafe extern "C" fn(*const f64);
@@ -22,6 +24,7 @@ pub(crate) struct Api {
     register_master: RegisterMaster,
     deregister_master: DeregisterMaster,
     has_master: HasMaster,
+    recovery: Option<(HasIpc, Reinitialize)>,
     get_num_clients: GetNumClients,
     set_note_tunings: SetNoteTunings,
     set_scale_name: SetScaleName,
@@ -53,6 +56,15 @@ impl Api {
         // SAFETY: see the pinned function signature above.
         let has_master =
             unsafe { required::<HasMaster>(&library, b"MTS_HasMaster\0", "MTS_HasMaster")? };
+        // SAFETY: the pinned wrapper declares these optional recovery symbols
+        // with the signatures above. The library outlives both pointers.
+        let recovery = unsafe {
+            library
+                .get::<HasIpc>(b"MTS_HasIPC\0")
+                .ok()
+                .zip(library.get::<Reinitialize>(b"MTS_Reinitialize\0").ok())
+                .map(|(has_ipc, reinitialize)| (*has_ipc, *reinitialize))
+        };
         // SAFETY: see the pinned function signature above.
         let get_version_number = unsafe {
             required::<GetVersionNumber>(
@@ -102,6 +114,7 @@ impl Api {
             register_master,
             deregister_master,
             has_master,
+            recovery,
             get_num_clients,
             set_note_tunings,
             set_scale_name,
@@ -115,6 +128,31 @@ impl Api {
     pub(crate) fn has_master(&self) -> bool {
         // SAFETY: validated no-argument status function; library is held alive.
         unsafe { (self.has_master)() }
+    }
+
+    /// Return the appropriate refusal, or clear a suspected stale IPC master
+    /// only when the caller has explicitly requested recovery.
+    pub(crate) fn check_registration(&self, recover: bool) -> Result<(), Error> {
+        if !self.has_master() {
+            return Ok(());
+        }
+        let Some((has_ipc, reinitialize)) = self.recovery else {
+            return Err(Error::ExistingMaster);
+        };
+        // SAFETY: validated no-argument query with the library held alive.
+        if !unsafe { has_ipc() } {
+            return Err(Error::ExistingMaster);
+        }
+        if !recover {
+            return Err(Error::ExistingMasterWithIpc);
+        }
+        // SAFETY: the upstream contract permits reinitialization with IPC
+        // enabled after explicit consent to clear a suspected stale master.
+        unsafe { reinitialize() };
+        if self.has_master() {
+            return Err(Error::ExistingMasterWithIpc);
+        }
+        Ok(())
     }
 
     pub(crate) fn register(&self) {
