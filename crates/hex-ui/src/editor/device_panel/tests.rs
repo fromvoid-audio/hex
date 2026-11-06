@@ -5912,6 +5912,12 @@ fn clipped_device_card_bounds_cannot_claim_offscreen_pointer() {
 
 #[gpui::test]
 fn sine_and_effect_place_their_shared_header_to_the_left_of_the_body(cx: &mut TestAppContext) {
+    #[cfg(target_os = "macos")]
+    {
+        cx.use_native_text_system()
+            .expect("native bundled-font shaping");
+        cx.update(|cx| theme::load_fonts(cx).expect("bundled fonts"));
+    }
     let (service, state, track, effect, _, _) = actor_utility_fixture();
     let instrument = state
         .project
@@ -5926,22 +5932,32 @@ fn sine_and_effect_place_their_shared_header_to_the_left_of_the_body(cx: &mut Te
         visual.simulate_resize(size(px(width), px(540.0)));
         visual.run_until_parked();
         for device in [instrument, effect] {
-            let title = visual
-                .debug_bounds(Box::leak(
-                    format!("device-drag-title-{}", device.value()).into_boxed_str(),
-                ))
-                .expect("title");
+            let selector =
+                Box::leak(format!("device-drag-title-{}", device.value()).into_boxed_str());
+            let title = visual.debug_bounds(selector).expect("title");
             let body = visual
                 .debug_bounds(Box::leak(
                     format!("device-body-{}", device.value()).into_boxed_str(),
                 ))
                 .expect("body");
-            assert_eq!(
-                title.size.height,
-                px(hex_widgets::DEVICE_FRAME_HEADER_HEIGHT)
-            );
+            assert!(title.size.width < px(hex_widgets::DEVICE_FRAME_HEADER_WIDTH));
+            assert!(title.size.height > title.size.width);
+            #[cfg(target_os = "macos")]
+            {
+                let glyphs = visual.rendered_vertical_glyph_bounds(selector);
+                assert!(glyphs.len() >= 2, "device title must paint rotated glyphs");
+                assert!(
+                    glyphs[0].origin.y > glyphs[1].origin.y,
+                    "title reads bottom to top"
+                );
+            }
             assert!(title.right() < body.origin.x);
-            assert!(body.origin.y <= title.origin.y && title.bottom() <= body.bottom());
+            let shell = visual
+                .debug_bounds(Box::leak(
+                    format!("device-shell-{}", device.value()).into_boxed_str(),
+                ))
+                .expect("device frame");
+            assert!(shell.origin.y <= title.origin.y && title.bottom() <= shell.bottom());
             assert_eq!(body.size.height, px(DEVICE_FRAME_BODY_HEIGHT));
         }
     }
