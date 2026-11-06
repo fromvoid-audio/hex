@@ -281,7 +281,14 @@ fn second_vst3_instrument_sounds_during_the_same_playback() {
         );
         instruments.push((
             track,
-            accepted.state.project.track(track).unwrap().instrument().unwrap().id(),
+            accepted
+                .state
+                .project
+                .track(track)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .id(),
         ));
         let (next, metadata) = harness.applied(applied);
         assert_eq!(metadata.context.editor_revision, accepted.state.revision);
@@ -334,19 +341,41 @@ fn second_vst3_instrument_sounds_during_the_same_playback() {
     let [(first_track, first), (second_track, second)] = instruments.as_slice() else {
         panic!("two installed instruments");
     };
-    let replacement = hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sine");
+    let added = harness.run(Request::AddNativeDevice {
+        track: *first_track,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.rattle")),
+        before: None,
+    });
+    assert!(added.error.is_none(), "{:?}", added.error);
+    let (effect_applied, metadata) = harness.applied(renewed);
+    assert_eq!(metadata.context.editor_revision, added.state.revision);
+
+    let replacement = hex_engine::DeviceTypeId::from_static("hex.instrument.sine");
     let edited = harness.run(Request::ReplaceNativeDevice {
         device: *first,
         class: hex_engine::NativeDeviceClass::Instrument,
         type_id: Box::new(replacement),
     });
     assert!(edited.error.is_none(), "{:?}", edited.error);
-    let first = edited.state.project.track(*first_track).unwrap().instrument().unwrap();
+    let first = edited
+        .state
+        .project
+        .track(*first_track)
+        .unwrap()
+        .instrument()
+        .unwrap();
     assert_eq!(first.state().type_id(), replacement);
-    let retained = edited.state.project.track(*second_track).unwrap().instrument().unwrap();
+    let retained = edited
+        .state
+        .project
+        .track(*second_track)
+        .unwrap()
+        .instrument()
+        .unwrap();
     assert_eq!(retained.id(), *second);
     assert_eq!(retained.state().type_id().as_str(), Ok("hex.vst3"));
-    let (_, metadata) = harness.applied(renewed);
+    let (_, metadata) = harness.applied(effect_applied);
     assert_eq!(metadata.context.editor_revision, edited.state.revision);
     let audio = harness.audio.as_ref().unwrap();
     assert_eq!(audio.control.output_identity(), expected_output);

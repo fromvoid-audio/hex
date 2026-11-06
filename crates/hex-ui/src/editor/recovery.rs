@@ -8,9 +8,24 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 mod tests;
 
 impl EditorView {
+    pub(super) fn has_resident_vst3(&self) -> bool {
+        self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            && self.state.as_ref().is_some_and(|state| {
+                state
+                    .project
+                    .automation_devices()
+                    .any(|device| device.state().type_id().as_str() == Ok("hex.vst3"))
+            })
+    }
+
+    pub(super) fn holds_stopped_vst3_requests(&self) -> bool {
+        self.stopped_playback_restore.is_some() && self.has_resident_vst3()
+    }
+
     pub(super) fn has_degraded_vst3_output(&self) -> bool {
         self.audio.is_some()
             && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            && self.stopped_playback_restore.is_none()
             && !self.degraded_plugins.is_empty()
     }
 
