@@ -30,13 +30,14 @@ pub(super) enum Transition {
     History { redo: bool },
 }
 
-/// Rate changes rebuild their derivatives. A later history step can also
+/// Rate and mode edges restore their captured plug-in state. A later history step can also
 /// restore an asset that was absent when the new derivative bank was built.
 pub(super) fn history_needs_replacement(session: &Session, redo: bool) -> bool {
     session
         .editor
         .inspect_history(redo, |source, target| {
             source.sample_rate() != target.sample_rate()
+                || source.sample_rate_mode() != target.sample_rate_mode()
                 || target.assets().any(|asset| {
                     let id = asset.id();
                     !target.asset_offline(id)
