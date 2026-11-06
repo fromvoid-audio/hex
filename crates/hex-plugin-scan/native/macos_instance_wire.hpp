@@ -192,8 +192,10 @@ inline void sample(uint8_t* p,float value) {
 struct Packet {
     static constexpr size_t timing_change_limit=7, timing_change_bytes=8+extended_timing_size;
     struct TimingChange { uint16_t offset=0; Steinberg::Vst::ProcessContext context{}; };
-    std::array<uint8_t,header_size+max_frames*8+hex_instance::INPUT_NOTE_COUNT*12+hex_instance::PARAMETER_POINT_COUNT*16+extended_timing_size+timing_change_limit*timing_change_bytes> bytes{};
+    std::array<uint8_t,header_size+max_frames*8+hex_instance::INPUT_NOTE_COUNT*12+hex_instance::PARAMETER_POINT_COUNT*20+extended_timing_size+timing_change_limit*timing_change_bytes> bytes{};
     std::array<hex_instance::ParameterPoint,hex_instance::PARAMETER_POINT_COUNT> parameters{};
+    std::array<uint32_t,hex_instance::PARAMETER_POINT_COUNT> authored_steps{};
+    bool authored_parameters=false;
     std::array<hex_instance::InputNote,hex_instance::INPUT_NOTE_COUNT> notes{};
     size_t note_count=0;
     size_t parameter_count=0;
@@ -221,15 +223,19 @@ struct Packet {
         const bool page_start=!std::memcmp(p,"HXVM",4),page_poll=!std::memcmp(p,"HXVN",4);
         const bool live_start=!std::memcmp(p,"HXVL",4),live_poll=!std::memcmp(p,"HXVP",4);
         const bool pcm=!std::memcmp(p,"HXVB",4),flush=!std::memcmp(p,"HXVF",4);
-        const auto version=number(p+4,2);
+        const auto wire_version=number(p+4,2);
+        constexpr uint64_t authored_bit=0x8000;
+        authored_parameters=pcm && (wire_version&authored_bit);
+        const auto version=authored_parameters?(wire_version&~authored_bit):wire_version;
         release_gates=quiesce && version==2 && !config.inputs;
         observe_latency=edit_query && (version==2 || version==3);
         flush_idle_edits=edit_query && version==3;
-        // Version 6 adds one to seven changes after the initial extended
-        // context. Byte 12 is their count. Each record carries a u16 sample
-        // offset, six reserved zero bytes and the 40-byte context. Offsets
-        // strictly increase and each record changes the playing flag.
+        // Version 6 carries one to seven context changes (count in byte 12).
+        // Byte 13 is one when compensation has no initial context. Each
+        // record carries a strictly increasing u16 sample offset, six reserved
+        // zero bytes and the 40-byte context.
         const bool sliced_timing=pcm && version==6;
+        const bool no_initial_context=sliced_timing && p[13]==1;
         const bool extended_timing=pcm && (version==5 || sliced_timing);
         const bool timed=pcm && (version==4 || extended_timing);
         const bool identified_notes=pcm && (version==3 || timed);
@@ -242,10 +248,10 @@ struct Packet {
             (note_count && (!pcm || config.inputs)) || (version==3 && pcm && !note_count)) return -1;
         const bool has_parameter_field=((pcm || flush) && version==2) || identified_notes;
         parameter_count=has_parameter_field?static_cast<size_t>(number(p+10,2)):0;
-        if(parameter_count>parameters.size()) return -1;
+        if(parameter_count>parameters.size() || (authored_parameters && !parameter_count)) return -1;
         timing_change_count=sliced_timing?p[12]:0;
-        if(sliced_timing && (!timing_change_count || timing_change_count>timing_changes.size())) return -1;
-        for(size_t n=sliced_timing?13:(resume?11:(has_parameter_field?12:10));n<16;++n) if(p[n]) return -1;
+        if(sliced_timing && (!timing_change_count || timing_change_count>timing_changes.size() || p[13]>1)) return -1;
+        for(size_t n=sliced_timing?14:(resume?11:(has_parameter_field?12:10));n<16;++n) if(p[n]) return -1;
         for(size_t n=0;n<4;++n) if(number(p+16+n*8,8)!=config.binding[n]) return -1;
         frames=static_cast<uint16_t>(number(p+6,2));
         if(resume) {
@@ -285,8 +291,9 @@ struct Packet {
         }
         if(!frames || frames>config.maximum || frame>std::numeric_limits<uint64_t>::max()-frames || sequence==std::numeric_limits<uint64_t>::max()) return -1;
         const size_t note_bytes=identified_notes?12:8;
-        const size_t clock_bytes=extended_timing?extended_timing_size:(timed?timing_size:0);
-        if(read_exact(fd,p+header_size,frames*8+note_count*note_bytes+parameter_count*16+clock_bytes+
+        const size_t point_bytes=authored_parameters?20:16;
+        const size_t clock_bytes=no_initial_context?0:(extended_timing?extended_timing_size:(timed?timing_size:0));
+        if(read_exact(fd,p+header_size,frames*8+note_count*note_bytes+parameter_count*point_bytes+clock_bytes+
             timing_change_count*timing_change_bytes)!=1) return -1;
         for(size_t n=0;n<frames*2u;++n) if(!std::isfinite(sample(p+header_size+n*4))) return -1;
         const auto* payload=p+header_size+frames*8;
@@ -308,12 +315,11 @@ struct Packet {
         if(!parse_parameters(points,frames)) return -1;
         context.reset();
         if(!timed) return 1;
-        const auto* clock=points+parameter_count*16;
-        if(!parse_timing(clock,config.rate,extended_timing,version==5,context.emplace())) return -1;
-        const auto playing=[](const Steinberg::Vst::ProcessContext& timing) {
-            return (timing.state&Steinberg::Vst::ProcessContext::kPlaying)!=0;
-        };
-        bool prior_playing=playing(*context);
+        const auto* clock=points+parameter_count*point_bytes;
+        if(!no_initial_context &&
+            !parse_timing(clock,config.rate,extended_timing,version==5,context.emplace())) return -1;
+        constexpr auto playing=Steinberg::Vst::ProcessContext::kPlaying;
+        bool prior_playing=context && (context->state&playing);
         for(size_t index=0;index<timing_change_count;++index) {
             const auto* record=clock+clock_bytes+index*timing_change_bytes;
             const auto offset=number(record,2);
@@ -321,9 +327,9 @@ struct Packet {
             if(!offset || offset>=frames || number(record+2,6) ||
                 (index && offset<=timing_changes[index-1].offset) ||
                 !parse_timing(record+8,config.rate,true,false,change.context) ||
-                playing(change.context)==prior_playing) return -1;
+                (!prior_playing && !(change.context.state&playing))) return -1;
             change.offset=static_cast<uint16_t>(offset);
-            prior_playing=playing(change.context);
+            prior_playing=(change.context.state&playing)!=0;
         }
         return 1;
     }
@@ -374,13 +380,17 @@ struct Packet {
     }
     bool parse_parameters(const uint8_t* start,int32_t limit) {
         for(size_t n=0;n<parameter_count;++n) {
-            const auto* point=start+n*16;
+            const auto* point=start+n*(authored_parameters?20:16);
             auto& value=parameters[n];value.offset=static_cast<int32_t>(number(point,2));
             value.id=static_cast<uint32_t>(number(point+4,4));
             const auto bits=number(point+8,8);std::memcpy(&value.normalized,&bits,8);
             if(number(point+2,2) || value.offset>=limit || value.id>0x7FFFFFFFu ||
                 !std::isfinite(value.normalized) || value.normalized<0 || value.normalized>1 ||
                 (n && parameters[n-1].offset>value.offset)) return false;
+            if(authored_parameters) {
+                authored_steps[n]=static_cast<uint32_t>(number(point+16,4));
+                if(authored_steps[n]>static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) return false;
+            }
         }
         return true;
     }
@@ -401,7 +411,8 @@ struct Packet {
     bool write(int fd) {
         bytes[4]=reply_parameter_count?2:1;bytes[5]=0;
         bytes[8]=bytes[9]=0; // Input notes are never echoed as processor output.
-        bytes[10]=static_cast<uint8_t>(reply_parameter_count);bytes[11]=bytes[12]=0;
+        bytes[10]=static_cast<uint8_t>(reply_parameter_count);
+        std::fill(bytes.begin()+11,bytes.begin()+16,0); // Request timing is never echoed.
         return write_exact(fd,bytes.data(),header_size+frames*8+reply_parameter_count*16);
     }
 };

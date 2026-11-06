@@ -2,7 +2,7 @@
 //! Programs own only bounded flat metadata/point vectors. Providers never retain
 //! these borrows; the existing prepared/runtime owner inventories their backing.
 //! Missing content-origin clocks use base values (None), never performance beats.
-use crate::NativeInstrumentClock;
+use crate::{NativeInstrumentClock, PreparedForeignAutomation};
 use hex_lattice_contract::{
     DeviceAutomationTarget, DeviceContractError as Error, HostGain, ParameterAccess,
     ParameterAutomation, ParameterDescriptor, ParameterId, ParameterKind, ParameterSemantics,
@@ -309,9 +309,23 @@ pub struct PreparedParameterAutomation {
     host_input: Option<usize>,
     host_output: Option<usize>,
     input_target: Option<DeviceAutomationTarget>,
+    foreign: Option<PreparedForeignAutomation>,
     touch: Vec<ParameterAutomationTouchSpan>,
 }
 impl PreparedParameterAutomation {
+    /// A foreign processor consumes the SDK queue rather than the native
+    /// canonical parameter or host trim queries.
+    pub fn for_foreign(program: PreparedForeignAutomation) -> Self {
+        Self {
+            foreign: Some(program),
+            ..Self::default()
+        }
+    }
+
+    pub fn foreign(&self) -> Option<&PreparedForeignAutomation> {
+        self.foreign.as_ref()
+    }
+
     pub fn new(
         lanes: Vec<ParameterAutomationLane>,
         points: Vec<ParameterAutomationPoint>,
@@ -426,6 +440,7 @@ impl PreparedParameterAutomation {
             host_input,
             host_output,
             input_target: None,
+            foreign: None,
             touch,
         };
         result.compile_touch(&points, end)?;
@@ -541,6 +556,9 @@ impl PreparedParameterAutomation {
         descriptor: ParameterDescriptor,
         semantics: ParameterSemantics,
     ) -> Result<(), Error> {
+        if self.foreign.is_some() {
+            return Err(Error::UnsupportedProcessingClass);
+        }
         semantics.validate(descriptor)?;
         if semantics.access != ParameterAccess::ReadWrite
             || semantics.automation != ParameterAutomation::DeviceArrangementEnvelope
@@ -636,7 +654,7 @@ impl PreparedParameterAutomation {
         Ok(())
     }
     fn validate_input_target(&self, target: DeviceAutomationTarget) -> Result<(), Error> {
-        if self.input_target.is_some_and(|current| current != target) {
+        if self.foreign.is_some() || self.input_target.is_some_and(|current| current != target) {
             return Err(Error::InvalidDescriptor);
         }
         Ok(())
@@ -653,13 +671,14 @@ impl PreparedParameterAutomation {
         Ok(())
     }
     pub fn is_empty(&self) -> bool {
-        self.lanes.is_empty() && self.input_target.is_none()
+        self.lanes.is_empty() && self.input_target.is_none() && self.foreign.is_none()
     }
     /// The tail split can stage output-gain control while input gain stays
     /// static. Provider controls, authored curves and input-gain windows need
     /// their own verified combined-signal contracts.
     pub(crate) fn supports_tail_split_controls(&self) -> bool {
-        self.points.is_empty()
+        self.foreign.is_none()
+            && self.points.is_empty()
             && self.ids.is_empty()
             && self.host_input.is_none()
             && self.input_target != Some(DeviceAutomationTarget::HostInputGain)
@@ -709,6 +728,10 @@ impl PreparedParameterAutomation {
                 self.points
                     .capacity()
                     .checked_mul(std::mem::size_of::<PreparedParameterAutomationPoint>())?,
+            )?
+            .checked_add(
+                self.foreign()
+                    .map_or(0, PreparedForeignAutomation::storage_bytes),
             )?
             .checked_add(Self::quoted_touch_storage_bytes(self.touch.capacity())?)
     }

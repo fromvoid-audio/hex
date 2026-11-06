@@ -94,6 +94,33 @@ impl<'a> NativeEffectDefinition<'a> {
             )
         }))
     }
+    fn exact_configuration(
+        &self,
+        identity: ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        rate: u32,
+    ) -> Result<Option<&Configuration>, DeviceContractError> {
+        if let Some(effect) = self
+            .effects
+            .iter()
+            .copied()
+            .find(|effect| effect.identity == identity)
+        {
+            if effect.sample_rate != rate || !state.processing_eq(&effect.state) {
+                return Err(DeviceContractError::ForeignProcessingUnavailable);
+            }
+            return Ok(Some(effect));
+        }
+        if self
+            .unavailable
+            .iter()
+            .any(|(missing, preserved)| *missing == identity && state.processing_eq(preserved))
+        {
+            return Ok(None);
+        }
+        Err(DeviceContractError::ForeignProcessingUnavailable)
+    }
+
     pub(super) fn from_selected(
         effects: impl IntoIterator<Item = (&'a Configuration, bool)>,
     ) -> Result<Self, DeviceContractError> {
@@ -204,24 +231,25 @@ impl NativeDeviceDefinition for NativeEffectDefinition<'_> {
         state: &NativeDeviceState,
         context: &DevicePreparationContext<'_>,
     ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
-        let effect = self
-            .effects
-            .iter()
-            .find(|effect| effect.identity == identity);
-        let Some(effect) = effect else {
-            if self
-                .unavailable
-                .iter()
-                .any(|(missing, preserved)| *missing == identity && state.processing_eq(preserved))
-            {
-                return Ok(None);
-            }
-            return Err(DeviceContractError::ForeignProcessingUnavailable);
-        };
-        if effect.sample_rate != context.sample_rate || !state.processing_eq(&effect.state) {
-            return Err(DeviceContractError::ForeignProcessingUnavailable);
-        }
-        Ok(Some(PreparedProcessorFactory::Foreign(effect.prepared)))
+        Ok(self
+            .exact_configuration(identity, state, context.sample_rate)?
+            .map(|effect| PreparedProcessorFactory::Foreign(effect.prepared)))
+    }
+    fn foreign_automation_source(
+        &self,
+        identity: ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &DevicePreparationContext<'_>,
+    ) -> Result<Option<hex_lattice::ForeignAutomationSource<'_>>, DeviceContractError> {
+        Ok(self
+            .exact_configuration(identity, state, context.sample_rate)?
+            .and_then(|effect| {
+                effect.authored.view(
+                    effect.binding,
+                    effect.sample_rate,
+                    effect.prepared.quantum_frames(),
+                )
+            }))
     }
 }
 

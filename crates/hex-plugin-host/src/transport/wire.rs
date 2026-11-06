@@ -11,23 +11,28 @@
 //! flags u8 (playing, beat present), then three reserved zero bytes.
 //! Version5 adds meter/cycle presence flags, two meter bytes, one reserved
 //! zero byte, and two u64 Q32.32 cycle endpoints. Absent fields are zero.
-//! Version6 uses the 40-byte context and appends one to seven playing-state
-//! changes. Header byte 12 is their count. Each change carries a u16 sample
+//! Version6 uses the 40-byte context and appends one to seven context
+//! changes. Header byte 12 is their count. Byte 13 is one when the initial
+//! context is absent. Each change carries a u16 sample
 //! offset, six reserved zero bytes, and its own 40-byte context.
 //! Versions 3–6 carry up to 160 input events only when every event has a note
 //! ID. The generic event and worker reply contracts remain capped at 64.
+//! The request-only high bit of the version marks authored PCM. Each parameter
+//! record then appends its prepared SDK step count as a u32. Replies and
+//! stopped flushes keep the original records.
 //! These records carry transport data; they do not promise SDK event admission.
 use super::*;
 use std::io::{self, Read, Write};
 
 pub const HEADER_BYTES: usize = 64;
+const AUTHORED_PARAMETER_VERSION_BIT: u16 = 0x8000;
 const TIMING_BYTES: usize = 24;
 const EXTENDED_TIMING_BYTES: usize = 40;
 const TIMING_CHANGE_BYTES: usize = 8 + EXTENDED_TIMING_BYTES;
 pub const MAX_PACKET_BYTES: usize = HEADER_BYTES
     + MAX_FRAMES * 8
     + MAX_IDENTIFIED_INPUT_NOTES * 12
-    + MAX_PARAMETER_POINTS * 16
+    + MAX_PARAMETER_POINTS * 20
     + EXTENDED_TIMING_BYTES
     + MAX_TIMING_CHANGES * TIMING_CHANGE_BYTES;
 
@@ -36,6 +41,23 @@ fn invalid() -> io::Error {
 }
 
 pub fn write(writer: &mut impl Write, block: &Block) -> io::Result<()> {
+    write_with_parameters(writer, block, None)
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) fn write_authored(
+    writer: &mut impl Write,
+    block: &Block,
+    step_count: &dyn Fn(u32) -> Option<u32>,
+) -> io::Result<()> {
+    write_with_parameters(writer, block, Some(step_count))
+}
+
+fn write_with_parameters(
+    writer: &mut impl Write,
+    block: &Block,
+    step_count: Option<&dyn Fn(u32) -> Option<u32>>,
+) -> io::Result<()> {
     if block.frames == 0 || usize::from(block.frames) > MAX_FRAMES {
         return Err(invalid());
     }
@@ -76,11 +98,21 @@ pub fn write(writer: &mut impl Write, block: &Block) -> io::Result<()> {
     } else {
         2_u16
     };
-    packet[4..6].copy_from_slice(&version.to_le_bytes());
+    let authored = step_count.is_some() && !block.parameters.as_slice().is_empty();
+    let wire_version = version
+        | if authored {
+            AUTHORED_PARAMETER_VERSION_BIT
+        } else {
+            0
+        };
+    packet[4..6].copy_from_slice(&wire_version.to_le_bytes());
     packet[6..8].copy_from_slice(&block.frames.to_le_bytes());
     packet[8..10].copy_from_slice(&(block.events.len as u16).to_le_bytes());
     packet[10..12].copy_from_slice(&(block.parameters.as_slice().len() as u16).to_le_bytes());
     packet[12] = changes.len() as u8;
+    if version == 6 {
+        packet[13] = u8::from(block.timing.is_none());
+    }
     for (index, value) in [
         block.binding.root,
         block.binding.instance,
@@ -117,6 +149,13 @@ pub fn write(writer: &mut impl Write, block: &Block) -> io::Result<()> {
         packet[offset + 4..offset + 8].copy_from_slice(&point.id.to_le_bytes());
         packet[offset + 8..offset + 16].copy_from_slice(&point.normalized.to_le_bytes());
         offset += 16;
+        if let Some(step_count) = step_count {
+            let steps = step_count(point.id)
+                .filter(|&steps| steps <= i32::MAX as u32)
+                .ok_or_else(invalid)?;
+            packet[offset..offset + 4].copy_from_slice(&steps.to_le_bytes());
+            offset += 4;
+        }
     }
     if let Some(timing) = block.timing {
         let width = timing_width(version);
@@ -212,12 +251,12 @@ pub fn read(reader: &mut impl Read) -> io::Result<Option<Block>> {
     };
     let reserved = match version {
         1 => 10,
-        6 => 13,
+        6 => 14,
         _ => 12,
     };
     if &header[..4] != b"HXVB"
         || !matches!(version, 1..=6)
-        || (version == 6 && !(1..=MAX_TIMING_CHANGES).contains(&change_count))
+        || (version == 6 && (!(1..=MAX_TIMING_CHANGES).contains(&change_count) || header[13] > 1))
         || header[reserved..16].iter().any(|b| *b != 0)
     {
         return Err(invalid());
@@ -303,7 +342,7 @@ pub fn read(reader: &mut impl Read) -> io::Result<Option<Block>> {
             })
             .map_err(|_| invalid())?;
     }
-    if version >= 4 {
+    if version >= 4 && header[13] == 0 {
         block.timing = Some(read_timing(reader, version)?);
     }
     for _ in 0..change_count {

@@ -2079,6 +2079,10 @@ impl hex_lattice::NativeInstrumentClock for OriginClock {
         }
         self.0.map(|stamp| stamp.arrangement_frame)
     }
+    fn authored_arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+        self.performance_frame_at_offset(offset)?;
+        self.arrangement_frame_at_offset(offset)
+    }
     fn loop_pass_at_offset(&self, offset: usize) -> Option<u64> {
         if offset != 0 {
             return None;

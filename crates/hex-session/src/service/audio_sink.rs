@@ -79,6 +79,54 @@ impl<'a> ResidentEffectPreparation<'a> {
     pub fn requires_plugin_profile(&self) -> bool {
         requires_plugin_profile(self.project)
     }
+    /// Borrow the active authored raw targets of one canonical device. The
+    /// native source owner still validates the class and exact SDK capabilities.
+    pub fn authored_plugin_targets(
+        &self,
+        device: u64,
+    ) -> impl Iterator<Item = (u32, Option<[u8; 16]>)> + '_ {
+        self.project
+            .automation_devices()
+            .find(|candidate| candidate.id().value() == device && is_plugin_effect(candidate))
+            .into_iter()
+            .flat_map(hex_project::Device::reading_automation)
+            .filter_map(|lane| match lane.target {
+                hex_lattice_contract::DeviceAutomationTarget::Vst3 { parameter } => {
+                    Some((parameter, lane.vst3_class))
+                }
+                _ => None,
+            })
+    }
+
+    /// An authored program is immutable for one native worker epoch. A loop
+    /// edit also changes the transport proof used by that epoch.
+    pub fn same_authored_plugin_program(&self, previous: &Self, device: u64) -> bool {
+        fn lanes(
+            project: &Project,
+            device: u64,
+        ) -> impl Iterator<Item = &hex_project::DeviceAutomation> {
+            project
+                .automation_devices()
+                .find(|candidate| candidate.id().value() == device && is_plugin_effect(candidate))
+                .into_iter()
+                .flat_map(hex_project::Device::reading_automation)
+                .filter(|lane| {
+                    matches!(
+                        lane.target,
+                        hex_lattice_contract::DeviceAutomationTarget::Vst3 { .. }
+                    )
+                })
+        }
+        let mut current = lanes(self.project, device).peekable();
+        let mut old = lanes(previous.project, device).peekable();
+        if current.peek().is_none() && old.peek().is_none() {
+            return true;
+        }
+        self.project.tempo_map() == previous.project.tempo_map()
+            && self.project.loop_region() == previous.project.loop_region()
+            && current.eq(old)
+    }
+
     pub fn visit_plugin_devices(
         &self,
         mut visit: impl FnMut(PluginEffectDestination, u64, &'a NativeDeviceState) -> Result<(), String>,
@@ -545,6 +593,14 @@ pub trait WorkerAudioSink: Send {
         &mut self,
         _context: hex_engine::AudioSourceContext,
     ) -> Result<Option<ResidentRuntimeLoop>, String> {
+        Ok(None)
+    }
+    /// Exact current armed and playing ordinary output. A copied observation
+    /// cannot reserve an audio input or substitute for a delivery receipt.
+    fn native_automation_source(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+    ) -> Result<Option<super::NativeAutomationSource>, String> {
         Ok(None)
     }
     /// Synchronously borrow actual active/retiring/unpublished owners for every precommit check.

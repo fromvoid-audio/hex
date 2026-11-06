@@ -108,6 +108,7 @@ static int32 parameter_inventory_size() {
     if(!shape) return 1;
     if(!std::strcmp(shape,"2593") || !std::strcmp(shape,"duplicate")) return 2593;
     if(!std::strcmp(shape,"2625")) return 2625;
+    if(!std::strcmp(shape,"9")) return 9;
     return 1;
 }
 static double parameter_value(int variant,double value) {
@@ -139,6 +140,10 @@ class RestoreController final : public IEditController {
         }
         if(self->fault==105) {
             self->handler->restartComponent(kLatencyChanged);
+            return;
+        }
+        if(self->fault==141 || self->fault==142) {
+            self->handler->restartComponent(kParamTitlesChanged);
             return;
         }
         const auto id=parameter_id(self->fault);
@@ -217,7 +222,7 @@ public:
         if (!control() || !context || (value && handler)) return kResultFalse;
         if(value)value->addRef();if(handler)handler->release();handler=value;
         if(fault==104 || fault==105 || fault==118 || fault==119) latency_handler=handler;
-        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || (fault>=131 && fault<=135))) {
+        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || (fault>=131 && fault<=135) || fault==141 || fault==142)) {
             CFRunLoopTimerContext timer_context{};timer_context.info=this;
             edit_timer=CFRunLoopTimerCreate(nullptr,CFAbsoluteTimeGetCurrent(),0.001,0,0,edit_tick,&timer_context);
             if(!edit_timer) return kResultFalse;
@@ -296,6 +301,8 @@ public:
         if(fault==80 || fault==81 || fault==82 || fault==91 || fault==92) info.flags=ParameterInfo::kCanAutomate;
         if(fault==91 || fault==92) {const char16_t unit[]=u"ratio";std::memcpy(info.units,unit,sizeof(unit));}
         if(fault==81) info.stepCount=3;
+        if(fault==141 || (fault==142 && !edits_sent)) info.flags=ParameterInfo::kCanAutomate;
+        if(fault==141 && edits_sent) info.stepCount=3;
         if(fault==82) {info.stepCount=1;info.flags|=ParameterInfo::kIsBypass;}
         if(fault==83 || fault==84 || fault==88) info.flags=ParameterInfo::kIsReadOnly;
         if(fault==84) info.flags|=ParameterInfo::kIsHidden;
@@ -968,7 +975,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>140) return false;next_fault=value;
+        if (value>142) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

@@ -4,7 +4,7 @@ use super::*;
 use hex_audio::plugin_effects::EffectBinding as Binding;
 use hex_audio::{
     NativeSourcePreparationProgress as Progress,
-    plugin_effects::{EffectSelection, Hosting, PluginProfile},
+    plugin_effects::{AuthoredSelection, EffectSelection, Hosting, PluginProfile},
 };
 use hex_engine::{PreparedRevision, ProcessorChainOwner};
 use hex_session::service::{NativeDeviceState, ResidentEffectPreparation};
@@ -46,6 +46,7 @@ struct Source {
     device: u64,
     project_generation: u64,
     operation: SourceOperation,
+    authored: Option<AuthoredSelection>,
     accepted: bool,
     retiring: bool,
     queued: bool,
@@ -446,6 +447,7 @@ impl Plugins {
                 device: input.device_id,
                 project_generation: input.insertion.context.project_generation,
                 operation: SourceOperation::Insertion(Arc::clone(&input.insertion.control)),
+                authored: None,
                 accepted: false,
                 retiring: false,
                 queued: false,
@@ -909,7 +911,9 @@ fn advance_source(
                 Err(reason) => return Err(reason),
             }
         }
-        Some(Progress::Prepared { .. }) => match control.start_native_effect(source.binding) {
+        Some(Progress::Prepared { .. }) => match control
+            .start_native_effect_with_authored_selection(source.binding, source.authored.as_ref())
+        {
             Ok(()) => {}
             Err("native preparation is busy") => return Ok(None),
             Err(reason) => return Err(reason.to_owned()),
@@ -964,6 +968,7 @@ mod idle_tests {
             device: 2,
             project_generation: 1,
             operation: SourceOperation::Reopen,
+            authored: None,
             accepted: true,
             retiring: false,
             queued: true,

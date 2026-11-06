@@ -165,22 +165,30 @@ impl State {
         }
         Ok(())
     }
-    fn process(&mut self, block: Block) -> Result<Block, Fault> {
+    fn process(&mut self, block: Block, authored: bool) -> Result<Block, Fault> {
         match self.processor.as_mut() {
-            Some(Processor::Function(process)) => process(block),
+            Some(Processor::Function(process)) if !authored => process(block),
+            Some(Processor::Function(_)) => Err(Fault::InvalidParameters),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            Some(Processor::Native(instance)) => match instance.exchange_on_worker(block) {
-                Ok(reply) => Ok(reply),
-                Err(error) => {
-                    let fault = if matches!(error, hex_plugin_host::Error::Cancelled) {
-                        Fault::Revoked
-                    } else {
-                        Fault::Protocol
-                    };
-                    self.native_error = Some(error);
-                    Err(fault)
+            Some(Processor::Native(instance)) => {
+                let result = if authored {
+                    instance.exchange_armed_authored_on_worker(block)
+                } else {
+                    instance.exchange_on_worker(block)
+                };
+                match result {
+                    Ok(reply) => Ok(reply),
+                    Err(error) => {
+                        let fault = if matches!(error, hex_plugin_host::Error::Cancelled) {
+                            Fault::Revoked
+                        } else {
+                            Fault::Protocol
+                        };
+                        self.native_error = Some(error);
+                        Err(fault)
+                    }
                 }
-            },
+            }
             None => Err(Fault::Protocol),
         }
     }
@@ -362,8 +370,12 @@ fn transport_runner_with_setup(
                 fault = Some(Fault::Protocol);
                 break;
             };
-            match state.worker.receive_with_parameter_capacity() {
-                Ok(Some((block, parameter_capacity))) => {
+            match state.worker.receive_request() {
+                Ok(Some(hex_plugin_host::transport::WorkerRequest {
+                    block,
+                    parameter_capacity,
+                    authored,
+                })) => {
                     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
                     let _ = parameter_capacity;
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -376,7 +388,7 @@ fn transport_runner_with_setup(
                         fault = Some(error);
                         break;
                     }
-                    let result = state.process(block).and_then(|reply| {
+                    let result = state.process(block, authored).and_then(|reply| {
                         // Native exchange already validated the complete SDK
                         // reply. Retain its private input receipt even if Stop
                         // revokes the transport before callback publication.

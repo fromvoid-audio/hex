@@ -435,19 +435,80 @@ fn actual_authored_parameter_input_refuses_competing_host_point_without_replacin
     if fixture_child(91, NAME) {
         return;
     }
-    let (mut owner, mut endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
+    use hex_plugin_host::transport::{
+        AuthoredParameterProgram, AuthoredSegment, SegmentTiming, TimingChanges,
+    };
+    use std::num::NonZeroU64;
+
+    struct FixtureEnvelope;
+    impl AuthoredParameterProgram for FixtureEnvelope {
+        fn quantum_program_key(&self) -> NonZeroU64 {
+            NonZeroU64::MIN
+        }
+        fn render_quantum(
+            &self,
+            _: &[Option<u64>],
+            _: &TimingChanges,
+            output: &mut Parameters,
+        ) -> Result<(), Fault> {
+            output.push(ParameterPoint {
+                frame: 0,
+                id: 7,
+                normalized: 0.5,
+            })
+        }
+    }
+
+    let mut instance = original_instance();
+    let class = instance.configuration().identity.class;
+    let facts = instance
+        .read_authored_parameter_metadata_on_control(class, &[7])
+        .unwrap();
+    instance
+        .arm_authored_parameter_metadata_on_control(facts)
+        .unwrap();
+    let (mut owner, mut endpoint) = NativeWorker::start_on_control(instance).unwrap();
     let request = begin_change(&mut owner, 7, 0.75);
-    callback(
-        &owner,
-        &mut endpoint,
-        0,
-        2.0,
-        &[ParameterPoint {
-            frame: 0,
-            id: 7,
-            normalized: 0.5,
-        }],
-    );
+    let mut output = [[9.0; 2]; 8];
+    let stage = || {
+        endpoint.begin_physical_callback(8).unwrap();
+        endpoint
+            .stage_segment_with_authored_parameters(
+                0,
+                &[[0.5, -0.25]; 8],
+                &[],
+                &mut output,
+                SegmentTiming {
+                    playing: None,
+                    at: |_| None,
+                },
+                AuthoredSegment {
+                    program: &FixtureEnvelope,
+                    origin: &|frame| Some(frame as u64),
+                },
+            )
+            .unwrap();
+        endpoint.finish(true).unwrap();
+    };
+    #[cfg(feature = "allocation-probe")]
+    {
+        let counts = allocation_counter::measure(stage);
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    #[cfg(not(feature = "allocation-probe"))]
+    {
+        let mut stage = stage;
+        stage();
+    }
+    assert_eq!(output, [[0.0; 2]; 8]);
     assert_eq!(
         terminal(&mut owner, &request),
         NativeWorkerParameterProgress::Refused
@@ -490,4 +551,273 @@ fn rejected_physical_callback_never_consumes_queued_host_parameter_input() {
     let retired = owner.retire_on_control().unwrap();
     assert!(retired.failure.is_none() && retired.native.status.success());
     assert_eq!(trace()[10], 0);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn compiled_saved_vst3_lane_reaches_the_signed_worker_without_callback_allocations() {
+    use crate::plugin_effects::{NativeEffect, NativeEffectCallbacks, NativeEffectDefinition};
+    use hex_engine::foreign_automation::BoundProgram;
+    use hex_lattice::{
+        DevicePreparationContext, ForeignProcessorNode, ForeignProcessors, NativeDeviceDefinition,
+        NativeInstrumentClock, ProcessorChainOwner, ProcessorInstanceIdentity,
+    };
+    use hex_project::{
+        AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, Command, Created,
+        DeviceAutomationTarget, Editor, Project,
+    };
+    use std::num::NonZeroU64;
+
+    const NAME: &str = "plugin_worker::capture::tests::parameter_change::compiled_saved_vst3_lane_reaches_the_signed_worker_without_callback_allocations";
+    if fixture_child(91, NAME) {
+        return;
+    }
+
+    struct Clock<'a>(&'a [u64]);
+    impl NativeInstrumentClock for Clock<'_> {
+        fn beat_at_offset(&self, _: usize) -> Option<u64> {
+            None
+        }
+        fn arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+            self.0.get(offset).copied()
+        }
+        fn authored_arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+            self.arrangement_frame_at_offset(offset)
+        }
+        fn transport_is_running(&self) -> Option<bool> {
+            Some(true)
+        }
+    }
+
+    let instance = original_instance();
+    let class = instance.configuration().identity.class;
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Device(device) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: instance.ready().initial_state.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("expected a vst3 device");
+    };
+    editor
+        .execute(Command::ReplaceDeviceAutomationTarget {
+            device,
+            target: DeviceAutomationTarget::Vst3 { parameter: 7 },
+            points: [
+                (BeatTime::ZERO, 0.25, AutomationInterpolation::Step),
+                (
+                    BeatTime::from_ratio(1, 500).unwrap(),
+                    0.5,
+                    AutomationInterpolation::Linear,
+                ),
+                (
+                    BeatTime::from_ratio(13, 6000).unwrap(),
+                    0.75,
+                    AutomationInterpolation::Step,
+                ),
+            ]
+            .map(|(beat, value, outgoing)| AutomationPoint {
+                beat,
+                value: AutomationValue::new(value).unwrap(),
+                outgoing,
+            })
+            .to_vec(),
+        })
+        .unwrap();
+    let path = trace_path().with_extension("hex");
+    hex_storage::save_new(&path, editor.project()).unwrap();
+    let reopened = hex_storage::load(&path).unwrap();
+    let binding = instance.configuration().binding;
+    let identity =
+        ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, binding.instance).unwrap();
+    let effect = NativeEffect::prepare_retained_with_authored_selection_on_control(
+        identity,
+        instance,
+        usize::MAX,
+        Some((class, &[7])),
+    )
+    .unwrap();
+    let state = effect.configuration().clone();
+    let definition = NativeEffectDefinition::new(std::slice::from_ref(&effect)).unwrap();
+    let mut context = DevicePreparationContext {
+        sample_rate: 48_000,
+        tuning: &hex_lattice::TuningTable::default(),
+        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    };
+    let source = definition
+        .foreign_automation_source(identity, &state, &context)
+        .unwrap()
+        .unwrap();
+    assert_eq!(source.binding, binding);
+    assert_eq!(
+        source.parameters,
+        [hex_lattice::ForeignParameterCapability { id: 7, steps: 0 }]
+    );
+    assert!(
+        definition
+            .foreign_automation_source(
+                ProcessorInstanceIdentity::new(ProcessorChainOwner::Track(9), binding.instance)
+                    .unwrap(),
+                &state,
+                &context,
+            )
+            .is_err()
+    );
+    context.sample_rate = 44_100;
+    assert!(
+        definition
+            .foreign_automation_source(identity, &state, &context)
+            .is_err()
+    );
+    let program = BoundProgram::prepare(
+        reopened.device(device).unwrap().automation(),
+        source,
+        reopened.tempo_map(),
+        2,
+        NonZeroU64::MIN,
+    )
+    .unwrap()
+    .unwrap();
+    let node = ForeignProcessorNode {
+        owner: identity.owner(),
+        device_id: identity.device_id(),
+        device_type: state.type_id(),
+        sample_rate: 48_000,
+        configuration: &state,
+        prepared: effect.prepared(),
+        automation: Some(program.borrow()),
+        bypassed: false,
+        input_gain: 1.0,
+        output_gain: 1.0,
+    };
+    let (mut workers, mut endpoint) =
+        NativeEffectCallbacks::from_effects_on_control(vec![effect]).unwrap();
+    let owner = &mut workers[0];
+    let origins = [45, 46, 47, 48, 49, 0, 1, 2];
+    for sequence in 0..4 {
+        let mut pcm = [[0.5, -0.25]; 8];
+        let render = || {
+            // Split one actual PCM quantum across two physical callbacks.
+            for (start, end) in [(0, 3), (3, 8)] {
+                endpoint.begin_host_callback(end - start).unwrap();
+                endpoint
+                    .process_segment(
+                        node,
+                        0,
+                        &mut pcm[start..end],
+                        Some(&Clock(&origins[start..end])),
+                    )
+                    .unwrap();
+                endpoint.finish_host_callback(true).unwrap();
+            }
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let info = allocation_counter::measure(render);
+            assert_eq!(
+                (
+                    info.count_total,
+                    info.bytes_total,
+                    info.count_current,
+                    info.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            let mut render = render;
+            render();
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while owner.published_blocks_on_control() <= sequence {
+            assert!(
+                Instant::now() < deadline,
+                "compiled lane did not reach the worker"
+            );
+            thread::yield_now();
+        }
+        for (index, &actual) in pcm.iter().enumerate() {
+            let gain = match index {
+                3 => 2.0,
+                4 => 2.25,
+                _ => 1.0,
+            };
+            let scale = if sequence < 2 {
+                0.0
+            } else {
+                0.5 + (sequence - 2) as f32 * 0.125
+            };
+            assert_eq!(
+                actual,
+                [0.5 * gain * scale, -0.25 * gain * scale],
+                "frame {index}"
+            );
+        }
+    }
+    // Even the correct state and processor facts cannot lend this program
+    // to a different source binding.
+    let mut wrong = node.automation.unwrap();
+    wrong.binding.epoch += 1;
+    let mut refused = [[0.5, -0.25]; 8];
+    endpoint.begin_host_callback(refused.len()).unwrap();
+    assert_eq!(
+        endpoint.process_segment(
+            ForeignProcessorNode {
+                automation: Some(wrong),
+                ..node
+            },
+            0,
+            &mut refused,
+            Some(&Clock(&origins)),
+        ),
+        Err(hex_lattice_contract::DeviceContractError::ForeignProcessingUnavailable)
+    );
+    assert_eq!(refused, [[0.0; 2]; 8]);
+    let retired = owner.retire_on_control().unwrap();
+    assert!(retired.failure.is_none() && retired.native.status.success());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn unavailable_authored_parameter_refuses_worker_and_retains_original_disposal() {
+    const NAME: &str = "plugin_worker::capture::tests::parameter_change::unavailable_authored_parameter_refuses_worker_and_retains_original_disposal";
+    if fixture_child(91, NAME) {
+        return;
+    }
+
+    use crate::plugin_effects::NativeEffect;
+    use hex_lattice::{ProcessorChainOwner, ProcessorInstanceIdentity};
+    use hex_plugin_host::native::PreparationDisposal;
+
+    let instance = original_instance();
+    let binding = instance.configuration().binding;
+    let class = instance.configuration().identity.class;
+    let identity =
+        ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, binding.instance).unwrap();
+    let mut failure = NativeEffect::prepare_retained_with_authored_selection_on_control(
+        identity,
+        instance,
+        usize::MAX,
+        Some((class, &[7, 99])),
+    )
+    .err()
+    .expect("missing parameter must refuse the entire selection");
+    assert_eq!(failure.binding(), binding);
+    assert!(
+        failure
+            .to_string()
+            .contains("authored parameter is missing")
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if let Some(disposal) = failure.poll_disposal_on_control().unwrap() {
+            assert!(matches!(disposal, PreparationDisposal::Reaped(_)));
+            break;
+        }
+        assert!(Instant::now() < deadline, "original source disposal");
+        thread::yield_now();
+    }
 }
