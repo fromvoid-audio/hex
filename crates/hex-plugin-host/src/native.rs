@@ -372,6 +372,7 @@ impl Pending {
             receiver: child_cancel,
         } = cancellation;
         let channel = Channel::new(data).map_err(PreparationFailure::before_native)?;
+        let mut packet = Packet::new().map_err(PreparationFailure::before_native)?;
         let mut command = Command::new(build.helper());
         command
             .arg("--supervised")
@@ -395,7 +396,6 @@ impl Pending {
             #[cfg(test)]
             reap_probe: None,
         };
-        let mut packet = Packet::new();
         let token = pending.cancellation.clone();
         let prepared = (|| {
             let until = end_after(options.limits.startup)?;
@@ -414,7 +414,7 @@ impl Pending {
                     config.binding,
                 )?));
             }
-            if packet.magic() != b"HXVIFA03" {
+            if packet.magic() != b"HXVIFA04" {
                 return Err(Error::Protocol("worker did not report preparation facts"));
             }
             let facts = Facts::decode(packet.body()?, &config)?;
@@ -514,7 +514,7 @@ impl Pending {
                     self.config.binding,
                 )?));
             }
-            if self.packet.magic() != b"HXVIRD04" {
+            if self.packet.magic() != b"HXVIRD05" {
                 return Err(Error::Protocol(
                     "missing final prepared instance acknowledgement",
                 ));

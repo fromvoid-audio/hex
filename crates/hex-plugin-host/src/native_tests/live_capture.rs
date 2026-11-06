@@ -344,7 +344,7 @@ fn overflow_capture_recovers(variant: u32) {
             Err(crate::Error::CaptureRefused(
                 crate::protocol::StateCaptureRefusal::ExceedsLimit { observed_bytes },
             )) => {
-                assert_eq!(observed_bytes, if variant == 95 { 5000 } else { 5032 });
+                assert_eq!(observed_bytes, if variant == 95 { 524288 } else { 524320 });
                 break;
             }
             Ok(None) => {

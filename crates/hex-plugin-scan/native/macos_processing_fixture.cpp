@@ -9,6 +9,7 @@
 #include <array>
 #include <stdexcept>
 #include <string>
+#include <vector>
 #include <csignal>
 #include <unistd.h>
 #include <limits>
@@ -194,7 +195,7 @@ public:
         if (!control() || !context || !handler || !stream) return kResultFalse;
         ++restoration.controller_get;
         if(fault==96 && restoration.controller_get==2) {
-            std::array<unsigned char,5000> huge{};return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
+            std::vector<unsigned char> huge(512*1024);return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
         }
         // Original sensitivity fixture: an edit admitted during a live SDK
         // state read must not let that pre-edit component snapshot escape.
@@ -386,6 +387,11 @@ public:
         if(fault==41)fault_hang(16);
         std::array<unsigned char,32> data{};int32 read=0;
         if(stream->read(data.data(),data.size(),&read)!=kResultOk || read!=32 || std::memcmp(data.data(),"HXPS",4))return kResultFalse;
+        if(fault==121) {
+            int64 tail=0;unsigned char marker=0;
+            if(stream->seek(-1,IBStream::kIBSeekEnd,&tail)!=kResultOk || tail!=150544 ||
+               stream->read(&marker,1,&read)!=kResultOk || read!=1 || marker!=0x37) return kResultFalse;
+        }
         float restored_gain=0;std::memcpy(&restored_gain,data.data()+8,4);std::memcpy(&restored_latency,data.data()+4,4);
         if(!std::isfinite(restored_gain) || restored_gain<0 || restored_gain>4 || restored_latency>32 || (fault<37 && restored_latency))return kResultFalse;
         gain.store(restored_gain);
@@ -406,15 +412,15 @@ public:
         // Original current-state capture fault controls leave startup valid.
         if(restoration.component_get>1) {
             if(fault==95 && restoration.component_get==2) {
-                std::array<unsigned char,5000> huge{};return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
+                std::vector<unsigned char> huge(512*1024);return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
             }
             if(fault==97 && restoration.component_get==2) {
-                std::array<unsigned char,5000> huge{};
+                std::vector<unsigned char> huge(512*1024);
                 stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
                 stream->seek(-1,IBStream::kIBSeekSet,nullptr);return kResultOk;
             }
             if(fault==98 && restoration.component_get==2) {
-                std::array<unsigned char,5000> huge{};
+                std::vector<unsigned char> huge(512*1024);
                 stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
                 return kInternalError;
             }
@@ -425,7 +431,7 @@ public:
         if (fault==35) arm_main_thread_tail();
         if (fault==34) fault_hang(12);
         if (fault==26) { trace(7);throw std::runtime_error("original SDK state exception"); }
-        if (fault==15) { std::array<unsigned char,4001> huge{};return stream->write(huge.data(),4001,nullptr); }
+        if (fault==15) { std::vector<unsigned char> huge(512*1024);return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr); }
         if (fault==23) {
             stream->seek(std::numeric_limits<int64>::min(),IBStream::kIBSeekCur,nullptr);
             stream->seek(std::numeric_limits<int64>::max(),IBStream::kIBSeekSet,nullptr);
@@ -447,6 +453,11 @@ public:
         const bool ok=sized_ok && stream->seek(4,IBStream::kIBSeekSet,nullptr)==kResultOk &&
             stream->write(bytes.data()+4,28,&written)==kResultOk && written==28 &&
             stream->seek(0,IBStream::kIBSeekSet,nullptr)==kResultOk && stream->write(bytes.data(),4,&written)==kResultOk && written==4;
+        if(ok && fault==121) {
+            unsigned char marker=0x37;
+            if(stream->seek(150544,IBStream::kIBSeekSet,nullptr)!=kResultOk ||
+               stream->write(&marker,1,&written)!=kResultOk || written!=1) return kResultFalse;
+        }
         trace(4);return ok?kResultOk:kResultFalse;
     }
     tresult PLUGIN_API initialize(FUnknown* host) override {
@@ -573,7 +584,7 @@ public:
         processing=enabled;
         if (enabled && fault==33) fault_hang(11);
         if (enabled && fault==25) throw std::runtime_error("original SDK startup exception");
-        return kResultOk;
+        return fault==122?kNotImplemented:kResultOk;
     }
     tresult PLUGIN_API process(ProcessData& data) override {
         if (pthread_main_np() || !same_worker() || !active || !std::isfinite(sample_rate) || data.processMode!=kRealtime ||
@@ -785,7 +796,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>120) return false;next_fault=value;
+        if (value>122) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

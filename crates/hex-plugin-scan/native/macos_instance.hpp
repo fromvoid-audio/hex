@@ -149,7 +149,8 @@ public:
             quarantined.load() || restoration_started || !state.component ||
             state.component_bytes>StateStream::capacity ||
             state.controller_bytes>StateStream::capacity-state.component_bytes ||
-            (!state.controller && state.controller_bytes) || (state.controller && !controller)) return false;
+            (!state.controller && state.controller_bytes) || (state.controller && !controller) ||
+            state.bytes.size()!=state.component_bytes+state.controller_bytes) return false;
         restoration_started=true;
         restore_component_stream=new(std::nothrow) StateStream(state.bytes.data(),state.component_bytes);
         if (!restore_component_stream || !restore_component_stream->valid() ||
@@ -159,7 +160,7 @@ public:
             if (!sync_controller_component_state(restore_component_stream)) return false;
             if (state.controller) {
                 restore_controller_stream=new(std::nothrow) StateStream(
-                    state.bytes.data()+state.component_bytes,state.controller_bytes);
+                    state.controller_bytes ? state.bytes.data()+state.component_bytes : nullptr,state.controller_bytes);
                 if (!restore_controller_stream || !restore_controller_stream->valid() ||
                     host->apply_saved_state([&] { return controller->setState(restore_controller_stream); })!=kResultOk ||
                     !restore_controller_stream->valid() || !restore_controller_stream->exclusive()) return false;
@@ -311,7 +312,6 @@ private:
         }
         if (first==kResultOk) {
             captured.component=true;captured.component_bytes=static_cast<uint32>(component_stream->size());
-            std::copy_n(component_stream->bytes.begin(),captured.component_bytes,captured.bytes.begin());
         } else if (first!=kNotImplemented && first!=kResultFalse) return CaptureResult::Refused;
         if (controller) {
             if (initial && !restored && captured.component) {
@@ -330,10 +330,14 @@ private:
             }
             if (second==kResultOk) {
                 captured.controller=true;captured.controller_bytes=static_cast<uint32>(controller_stream->size());
-                std::copy_n(controller_stream->bytes.begin(),captured.controller_bytes,captured.bytes.begin()+captured.component_bytes);
             } else if (second!=kNotImplemented && second!=kResultFalse) return CaptureResult::Refused;
         }
-        result=captured;return CaptureResult::Captured;
+        captured.bytes.resize(captured.component_bytes+captured.controller_bytes);
+        if(captured.component_bytes)
+            std::copy_n(component_stream->bytes.begin(),captured.component_bytes,captured.bytes.begin());
+        if(captured.controller_bytes)
+            std::copy_n(controller_stream->bytes.begin(),captured.controller_bytes,captured.bytes.begin()+captured.component_bytes);
+        result=std::move(captured);return CaptureResult::Captured;
     }
 public:
 
@@ -394,7 +398,9 @@ public:
         if (processing_thread != std::thread::id{} && processing_thread != std::this_thread::get_id()) return false;
         processing_thread = std::this_thread::get_id();
         host->bind_processing_thread();
-        if (processor->setProcessing(true) != kResultOk) { processing_fault.store(true); return false; }
+        // Steinberg's base AudioEffect leaves this notification unimplemented.
+        const auto result=processor->setProcessing(true);
+        if (result!=kResultOk && result!=kNotImplemented) { processing_fault.store(true); return false; }
         processing.store(true);
         return true;
     }
@@ -442,7 +448,8 @@ public:
     bool stop_processing() {
         if (!processing.load() || processing_thread != std::this_thread::get_id() || quarantined.load())
             return false;
-        if (processor->setProcessing(false) != kResultOk) return refuse_cleanup();
+        const auto result=processor->setProcessing(false);
+        if (result!=kResultOk && result!=kNotImplemented) return refuse_cleanup();
         processing.store(false);
         return true;
     }

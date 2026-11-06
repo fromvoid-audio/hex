@@ -29,7 +29,12 @@ pub(super) struct PluginPolicy {
     pub retained: usize,
     pub peak: usize,
 }
-pub(super) const PLUGIN_CONTROL_DATA_BYTES: usize = 128 * 1024;
+const PLUGIN_CONTROL_METADATA_BYTES: usize = 128 * 1024;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(super) const PLUGIN_CONTROL_DATA_BYTES: usize =
+    PLUGIN_CONTROL_METADATA_BYTES + hex_audio::plugin_effects::Hosting::CAPTURE_RESPONSE_DATA_BYTES;
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+pub(super) const PLUGIN_CONTROL_DATA_BYTES: usize = PLUGIN_CONTROL_METADATA_BYTES;
 impl PluginPolicy {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn new() -> Result<Self, String> {
