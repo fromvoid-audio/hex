@@ -42,6 +42,10 @@ pub enum ProjectSignal {
 pub type ProjectSignalObserver<'observer> =
     dyn for<'frames> FnMut(ProjectSignal, usize, &'frames [Frame]) + 'observer;
 
+/// Speculative contiguous Arrangement clock span, in output-frame coordinates.
+pub type ProjectTimingObserver<'observer> =
+    dyn FnMut(usize, u64, usize, &crate::PreparedTempoMap) + 'observer;
+
 /// Borrowed, bounded live selection. Unlike the offline capture plan, this does
 /// not change scheduling or restrict loops/Session launches. Each owner list
 /// must be sorted by ascending ID with no duplicates. Callers validate owners
@@ -51,6 +55,7 @@ pub struct ProjectOutputTap<'a, 'observer> {
     tracks: &'a [u64],
     returns: &'a [ReturnId],
     observer: &'a mut ProjectSignalObserver<'observer>,
+    timing: Option<&'a mut ProjectTimingObserver<'observer>>,
     // Callback-relative start of the current render part. `Playback` splits a
     // callback only at a transport declick boundary and restores zero after.
     part_offset: usize,
@@ -88,8 +93,14 @@ impl<'a, 'observer> ProjectOutputTap<'a, 'observer> {
             tracks,
             returns,
             observer,
+            timing: None,
             part_offset: 0,
         })
+    }
+    /// Observe the playing transport alongside PCM. Stopped output has no clock.
+    pub fn with_timing(mut self, timing: &'a mut ProjectTimingObserver<'observer>) -> Self {
+        self.timing = Some(timing);
+        self
     }
     pub(crate) fn set_part_offset(&mut self, offset: usize) {
         self.part_offset = offset;
@@ -121,10 +132,29 @@ pub(super) trait CaptureSink {
     ) -> Result<(), SessionPlaybackError> {
         self.add(id, offset, &[frame])
     }
+    fn observes_timing(&self) -> bool {
+        false
+    }
+    fn timing(
+        &mut self,
+        _offset: usize,
+        _start: u64,
+        _frames: usize,
+        _map: &crate::PreparedTempoMap,
+    ) {
+    }
     fn commit(&mut self, _frames: usize) {}
     fn invalidate(&mut self) {}
 }
 impl CaptureSink for ProjectOutputTap<'_, '_> {
+    fn observes_timing(&self) -> bool {
+        self.timing.is_some()
+    }
+    fn timing(&mut self, offset: usize, start: u64, frames: usize, map: &crate::PreparedTempoMap) {
+        if let Some(observer) = self.timing.as_mut() {
+            observer(self.part_offset.saturating_add(offset), start, frames, map);
+        }
+    }
     fn selects(&self, id: OutputCaptureId) -> bool {
         match id {
             OutputCaptureId::Track(id) => self.tracks.binary_search(&id.value()).is_ok(),

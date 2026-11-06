@@ -19,7 +19,9 @@ pub use hex_engine::OutputCaptureId;
 use hex_engine::OutputCaptureId::{Return, Track};
 
 mod takes;
+mod timing;
 pub use takes::{Take, Takes, write_takes};
+pub use timing::TimingSpan;
 
 pub(crate) const FRAMES: usize = 256;
 const PACKETS: usize = 32;
@@ -75,6 +77,7 @@ impl Layout {
 struct Packet {
     frames: usize,
     pcm: Box<[Frame]>,
+    timing: Vec<TimingSpan>,
 }
 
 pub struct Control {
@@ -191,10 +194,15 @@ impl Control {
             pcm.try_reserve_exact(layout.layers() * FRAMES)
                 .map_err(|_| Invalid("could not reserve sample recording storage"))?;
             pcm.resize(layout.layers() * FRAMES, [0.0; 2]);
+            let mut timing = Vec::new();
+            timing
+                .try_reserve_exact(FRAMES)
+                .map_err(|_| Invalid("could not reserve sample timing storage"))?;
             recycle
                 .push(Packet {
                     frames: 0,
                     pcm: pcm.into_boxed_slice(),
+                    timing,
                 })
                 .map_err(|_| Invalid("sample recording reserve is full"))?;
         }
@@ -274,12 +282,19 @@ impl Reader {
     /// The consumer receives every channel of every source in each block.
     /// A terminal is returned only after all earlier packets are drained.
     pub fn drain(&mut self, mut block: impl FnMut(usize, &[Source], &[Frame])) -> Option<End> {
+        self.drain_with_timing(|frames, sources, pcm, _| block(frames, sources, pcm))
+    }
+
+    fn drain_with_timing(
+        &mut self,
+        mut block: impl FnMut(usize, &[Source], &[Frame], &[TimingSpan]),
+    ) -> Option<End> {
         // Read the terminal before observing the queue. A terminal release
         // publishes the tail of the producer's confirmed prefix.
         let state = self.state.load(Acquire);
         for _ in 0..PACKETS {
             let Ok(packet) = self.full.pop() else { break };
-            block(packet.frames, &self.sources, &packet.pcm);
+            block(packet.frames, &self.sources, &packet.pcm, &packet.timing);
             let _ = self.recycle.push(packet);
         }
         let disconnected = self.full.is_abandoned() && self.full.is_empty();
@@ -347,6 +362,7 @@ impl Callback {
                 return;
             };
             packet.frames = frames;
+            packet.timing.clear();
             for layer in packet.pcm.chunks_exact_mut(FRAMES) {
                 layer[..frames].fill([0.0; 2]);
             }
@@ -421,6 +437,53 @@ impl Callback {
 }
 
 impl Stage {
+    pub(crate) fn observe_timing(
+        &mut self,
+        offset: usize,
+        start: u64,
+        frames: usize,
+        map: &hex_engine::PreparedTempoMap,
+    ) {
+        let Some(packet) = &mut self.packet else {
+            return;
+        };
+        let Some(end) = offset
+            .checked_add(frames)
+            .filter(|end| *end <= packet.frames)
+        else {
+            return;
+        };
+        let mut offset = offset;
+        let mut start = start;
+        while offset < end && packet.timing.len() < FRAMES {
+            let Some((tempo, next)) = map.capture_tempo(start) else {
+                break;
+            };
+            let count = next.map_or(end - offset, |next| {
+                (end - offset)
+                    .min(usize::try_from(next.saturating_sub(start)).unwrap_or(usize::MAX))
+            });
+            if count == 0 {
+                break;
+            }
+            timing::append(
+                &mut packet.timing,
+                TimingSpan {
+                    take_start: offset as u64,
+                    take_end: (offset + count) as u64,
+                    timeline_start: start,
+                    tempo,
+                },
+                FRAMES,
+            );
+            offset += count;
+            let Some(next_start) = start.checked_add(count as u64) else {
+                break;
+            };
+            start = next_start;
+        }
+    }
+
     pub(crate) fn observe(
         &mut self,
         layout: &Layout,

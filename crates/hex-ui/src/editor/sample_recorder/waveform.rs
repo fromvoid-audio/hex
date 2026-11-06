@@ -307,6 +307,13 @@ impl EditorView {
             (original.start, gesture.snap_step)
         };
         let snap = |frame: u64| {
+            if !modifiers.alt
+                && !modifiers.shift
+                && wave.snap
+                && let Some(recorded) = super::beat_guides::snap(&wave.take.timing, frame)
+            {
+                return recorded;
+            }
             let Some(step) = step else { return frame };
             let offset = (frame as f64 - root as f64) / step;
             let candidate = root as f64 + offset.round() * step;
@@ -404,7 +411,11 @@ impl EditorView {
             .child(
                 button(
                     if wave.snap { "snap on" } else { "snap off" },
-                    "toggle selection snap · shift adjusts freely",
+                    if wave.take.timing.is_empty() {
+                        "snap uses project tempo · shift adjusts freely"
+                    } else {
+                        "snap uses recorded beats where available · shift adjusts freely"
+                    },
                     ("take-snap", 0),
                 )
                 .on_click(cx.listener(|view, _, _, cx| {
@@ -429,6 +440,7 @@ impl EditorView {
                 }))
             }));
         let controls = controls.children(self.take_excerpt_grip(cx));
+        let guides = super::beat_guides::visible(&wave.take.timing, view, wave.take.sample_rate);
         let body = div()
             .id("take-waveform")
             .debug_selector(|| "take-waveform".into())
@@ -485,7 +497,7 @@ impl EditorView {
                 view,
                 range,
                 playhead,
-                true,
+                Some(guides),
             ));
         let overview = div()
             .id("take-navigator")
@@ -512,7 +524,7 @@ impl EditorView {
                 full,
                 view,
                 None,
-                false,
+                None,
             ));
         Some(
             div()
@@ -555,7 +567,7 @@ fn wave_canvas(
     view: Range,
     highlight: Range,
     playhead: Option<u64>,
-    draw_slide: bool,
+    guides: Option<Vec<u64>>,
 ) -> impl IntoElement {
     canvas(
         move |bounds, _, _| slot.set(Some(bounds)),
@@ -594,7 +606,18 @@ fn wave_canvas(
                     ));
                 }
             }
-            if draw_slide && right - left >= px(12.0) {
+            if let Some(guides) = &guides {
+                let color =
+                    gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Text))).opacity(0.28);
+                for &frame in guides {
+                    let x = x_at(view, bounds, frame);
+                    window.paint_quad(fill(
+                        Bounds::new(point(x, bounds.top()), size(px(1.0), bounds.size.height)),
+                        color,
+                    ));
+                }
+            }
+            if guides.is_some() && right - left >= px(12.0) {
                 let middle = left + (right - left) * 0.5;
                 let handle = Bounds::new(
                     point(middle - px(5.0), bounds.bottom() - px(4.0)),
@@ -642,6 +665,7 @@ mod tests {
                     path: "unused.wav".into(),
                     frames: 1024,
                     sample_rate: 48_000,
+                    timing: Default::default(),
                 },
                 name: "take".into(),
                 peaks: Some(vec![0.5; 8].into()),
