@@ -660,7 +660,13 @@ impl EditorView {
                                     .children(self.track_latency_indicator(
                                         super::track_latency::Owner::Track(track_id),
                                     ))
-                                    .children(self.track_tags_header(track, cx)),
+                                    .children(self.track_tags_header(track, cx))
+                                    .child(self.sample_arm_button(
+                                        super::sample_recorder::Arm::Output(
+                                            hex_engine::OutputCaptureId::Track(track_id),
+                                        ),
+                                        cx,
+                                    )),
                             )
                             .children(self.route_marker_for_track(
                                 track.id().value(),

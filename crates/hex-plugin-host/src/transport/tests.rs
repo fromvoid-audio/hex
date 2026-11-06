@@ -190,8 +190,92 @@ fn missed_deadline_silences_and_revokes_without_replaying_last_output() {
     assert!(callback.replies.is_empty());
     callback.reject(Fault::Protocol);
     assert_eq!(control.take_callback_fault(), Some(Fault::MissingOutput));
+    assert_eq!(
+        control.deadline_miss(),
+        Some(DeadlineMiss {
+            reply_sequence: 0,
+            worker_phase: DeadlineWorkerPhase::Processing,
+        })
+    );
     assert_eq!(control.take_callback_fault(), None);
     assert_eq!(callback.fault(), Some(Fault::MissingOutput));
+}
+
+#[test]
+fn deadline_observation_distinguishes_a_worker_that_has_not_picked_up_the_request() {
+    let (control, mut callback, _worker) = channel_from_completed_prefix(BINDING, 8, 37).unwrap();
+    let mut output = [[0.0; 2]; 8];
+    for _ in 0..2 {
+        callback.stage(&[[1.0; 2]; 8], &[], &mut output).unwrap();
+        callback.finish(true).unwrap();
+    }
+    assert_eq!(
+        callback.stage(&[[1.0; 2]; 8], &[], &mut output).err(),
+        Some(Fault::MissingOutput)
+    );
+    assert_eq!(
+        control.deadline_miss(),
+        Some(DeadlineMiss {
+            reply_sequence: 37,
+            worker_phase: DeadlineWorkerPhase::AwaitingPickup,
+        })
+    );
+}
+
+#[test]
+fn native_instrument_keeps_ordered_input_and_recovers_from_one_late_reply() {
+    let (control, mut callback, mut worker) =
+        instrument_channel_from_completed_prefix(BINDING, 8, 37).unwrap();
+    let mut output = [[0.0; 2]; 8];
+    let counts = allocation_counter::measure(|| {
+        for value in [1.0, 2.0, 3.0] {
+            callback.stage(&[[value; 2]; 8], &[], &mut output).unwrap();
+            callback.finish(true).unwrap();
+            assert_eq!(output, [[0.0; 2]; 8]);
+        }
+        assert!(!control.is_revoked());
+        for (sequence, value) in [(37, 1.0), (38, 2.0), (39, 3.0)] {
+            let reply = worker.receive().unwrap().unwrap();
+            assert_eq!(reply.sequence, sequence);
+            assert_eq!(reply.pcm[0], [value; 2]);
+            worker.complete(reply).unwrap();
+        }
+        for value in [2.0, 3.0] {
+            callback.stage(&[[0.0; 2]; 8], &[], &mut output).unwrap();
+            callback.finish(true).unwrap();
+            assert_eq!(output, [[value; 2]; 8]);
+        }
+        assert!(!control.is_revoked());
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+}
+
+#[test]
+fn native_instrument_revokes_after_two_consecutive_missed_replies() {
+    let (control, mut callback, mut worker) =
+        instrument_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+    let mut output = [[0.0; 2]; 8];
+    for _ in 0..3 {
+        callback.stage(&[[0.0; 2]; 8], &[], &mut output).unwrap();
+        callback.finish(true).unwrap();
+    }
+    // The stale reply does not turn a second missed deadline into a success.
+    let late = worker.receive().unwrap().unwrap();
+    worker.complete(late).unwrap();
+    assert_eq!(
+        callback.stage(&[[0.0; 2]; 8], &[], &mut output).err(),
+        Some(Fault::MissingOutput)
+    );
+    assert!(control.is_revoked());
+    assert_eq!(control.deadline_miss().unwrap().reply_sequence, 1);
 }
 
 #[test]

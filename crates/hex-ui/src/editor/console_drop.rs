@@ -19,14 +19,13 @@ impl EditorView {
         target: ConsoleDestination,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let active = self.active_browser_audio_drag.as_ref().is_some_and(|drag| {
-            self.browser_audio_drag_is_current(drag)
-                && drag.destination.get() == Some(BrowserDropDestination::Console(target))
-        });
+        let active = self.sample_drop_target() == Some(BrowserDropDestination::Console(target));
         let entity = cx.entity();
         surface
             .when(active, |surface| {
-                surface.bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                surface
+                    .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                    .debug_selector(|| "console-sample-drop-preview".to_owned())
             })
             .on_drag_move::<BrowserAudioDrag>(move |event, _, cx| {
                 if !event.bounds.contains(&event.event.position) {
@@ -85,15 +84,16 @@ impl EditorView {
             && !self.changelog.is_open()
             && !self.device_panel.has_pending_draft(cx)
             && self.tuning.client.snapshot().is_none();
-        // Always retire this exact UI payload before admission. The worker's
-        // AudioBatchControl, not a retained ghost, owns cancellation afterwards.
-        self.clear_browser_audio_drag(drag);
+        // The worker control owns cancellation after admission. The paint is
+        // copied before retiring the pointer payload.
         if !current {
+            self.clear_browser_audio_drag(drag);
             self.error = Some("sample drop canceled · console target or project changed".into());
             cx.notify();
             return;
         }
         let Some(state) = self.state.as_ref() else {
+            self.clear_browser_audio_drag(drag);
             cx.notify();
             return;
         };
@@ -109,18 +109,20 @@ impl EditorView {
         ) {
             Ok(request) => request,
             Err(reason) => {
+                self.clear_browser_audio_drag(drag);
                 self.error = Some(reason.into());
                 cx.notify();
                 return;
             }
         };
-        if self.enqueue(request) {
+        if self.enqueue_sample_drop(request, drag, BrowserDropDestination::Console(target)) {
             self.stop_browser_preview_for_drop();
             self.audio_batch = Some(control);
             self.audio_batch_progress = None;
             self.error = None;
             self.poll_audio_batch();
         }
+        self.clear_browser_audio_drag(drag);
         cx.notify();
     }
 

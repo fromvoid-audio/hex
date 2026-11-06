@@ -170,11 +170,9 @@ impl Plugins {
                 .any(|source| source.retiring && source.is_reopening_for(generation))
             {
                 self.reopen = Some(restore);
-            } else if self
-                .sources
-                .iter()
-                .any(|source| source.accepted && source.is_reopening_for(generation))
-            {
+            } else {
+                // A restart has no previous output to replay. Recompile from
+                // canonical state even when every plug-in is unavailable.
                 restore.ready = true;
                 self.reopen = Some(restore);
             }

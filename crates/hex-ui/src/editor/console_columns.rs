@@ -103,6 +103,9 @@ impl EditorView {
         let clip_owner = cx.entity();
         let device_owner = cx.entity();
         surface
+            .when(!header && self.sample_drop_target() == Some(super::drag::BrowserDropDestination::Console(target)), |surface| {
+                surface.bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+            })
             .drag_over::<BrowserAudioDrag>(move |style, drag, window, cx| {
                 let view = browser_owner.read(cx);
                 if !header && frame.current(view, window) && view.browser_audio_drag_is_current(drag) && view.console_target_exists(target) {

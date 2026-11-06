@@ -156,6 +156,38 @@ fn receipts(control: &mut prepared::Control) -> Vec<Receipt> {
     std::iter::from_fn(|| control.midi_recording.try_receipt()).collect()
 }
 #[test]
+fn sample_recording_captures_the_live_instrument_during_midi_recording() {
+    use crate::sample_recording::{End, OutputCaptureId, Reader};
+    let (mut control, mut callback, input, target) = fixture(48_000);
+    let mut take = control
+        .sample_recording
+        .start(
+            target.project_generation,
+            &[OutputCaptureId::Track(target.capture.track)],
+            false,
+        )
+        .unwrap();
+    assert!(take.ready());
+    control.midi_recording.begin(target).unwrap();
+    input.set_key(0, Some((60, 100, 1))).unwrap();
+    let mut actual = [[0.0; 2]; 64];
+    assert!(deliver(&mut callback, &mut actual, 2));
+    assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+    control.sample_recording.stop();
+    assert!(deliver(&mut callback, &mut [[0.0; 2]; 64], 2));
+    let mut delivered = false;
+    assert_eq!(
+        take.drain(|frames, _, packet| {
+            assert!(!delivered);
+            assert_eq!(Reader::source_frames(packet, frames, 0), Some(&actual[..]));
+            delivered = true;
+        }),
+        Some(End::Stopped)
+    );
+    assert!(delivered);
+}
+
+#[test]
 fn midi_recording_confirms_short_notes_only_after_real_direct_conversion_and_stop_uses_delivered_clock()
  {
     let (mut control, mut callback, input, target) = fixture(48_000);

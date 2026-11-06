@@ -492,11 +492,19 @@ impl NativeWorker {
             return Some(diagnostic);
         }
         self.reaper.control.take_callback_fault().map(|fault| {
+            let deadline = self.reaper.control.deadline_miss().map_or_else(
+                String::new,
+                |miss| format!(
+                    " reply_sequence={} worker_phase={:?} quantum={}",
+                    miss.reply_sequence, miss.worker_phase, self.quantum
+                ),
+            );
             format!(
-                "vst3 callback transport failed: binding={:?} completed_blocks={} fault={fault:?} cause={}",
+                "vst3 callback transport failed: binding={:?} completed_blocks={} fault={fault:?} cause={}{}",
                 self.binding,
                 self.reaper.completed_blocks(),
                 fault.message(),
+                deadline,
             )
         })
     }

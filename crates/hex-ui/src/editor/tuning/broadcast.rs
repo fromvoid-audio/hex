@@ -1,5 +1,6 @@
 //! Explicit project ownership; focus and opening the tuning window never acquire it.
 use super::*;
+use gpui::{PromptButton, PromptLevel};
 use hex_mts::{ClientId, Handle, Owner, Publication, Revision, Snapshot, State};
 
 #[derive(Default)]
@@ -123,10 +124,8 @@ impl Broadcast {
         }
     }
     fn retry(&mut self) {
-        if let (Some(handle), Some(owner)) = (&self.handle, self.owner)
-            && let Err(error) = handle.retry(owner)
-        {
-            self.error = Some(error.to_string());
+        if let (Some(handle), Some(owner)) = (&self.handle, self.owner) {
+            self.error = handle.retry(owner).err().map(|error| error.to_string());
         }
     }
     fn status(&self) -> String {
@@ -143,7 +142,12 @@ impl Broadcast {
             State::Disabled => "mts off".into(),
             State::Disabling => "mts stopping".into(),
             State::Stopped => "mts publisher stopped".into(),
-            State::Blocked => "mts blocked · another master is active · retry explicitly".into(),
+            State::Blocked {
+                recovery_available: true,
+            } => "mts blocked · active or stale master registration".into(),
+            State::Blocked {
+                recovery_available: false,
+            } => "mts blocked · a master is already registered".into(),
             State::Unavailable(error) => format!("mts unavailable · {error}").to_lowercase(),
             State::Pending | State::Active => format!(
                 "mts {} · desired {} · published {} · clients {}",
@@ -166,11 +170,46 @@ impl Drop for Broadcast {
 }
 
 impl EditorView {
-    pub(super) fn tuning_mts_controls(&self, cx: &mut Context<Self>) -> Div {
-        let retry = self.tuning.broadcast.owner.is_some()
-            && self.tuning.broadcast.snapshot.is_some_and(|snapshot| {
-                matches!(snapshot.state, State::Blocked | State::Unavailable(_))
+    fn confirm_mts_recovery(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let broadcast = &self.tuning.broadcast;
+        let (Some(handle), Some(owner)) = (&broadcast.handle, broadcast.owner) else {
+            return;
+        };
+        let handle = handle.clone();
+        let serial = broadcast.serial;
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &theme::text("reset shared mts state?"),
+            Some(&theme::text(
+                "continue only if no other mts master is running. this clears the shared tuning, filters and client count before hex starts broadcasting.",
+            )),
+            &[
+                PromptButton::cancel(theme::text("cancel")),
+                PromptButton::new(theme::text("reset and broadcast")),
+            ],
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            if answer.await.ok() != Some(1) {
+                return;
+            }
+            let _ = this.update(cx, |view, cx| {
+                let broadcast = &mut view.tuning.broadcast;
+                if broadcast.owner == Some(owner) && broadcast.serial == serial {
+                    broadcast.error = handle.recover(owner).err().map(|error| error.to_string());
+                    cx.notify();
+                }
             });
+        })
+        .detach();
+    }
+
+    pub(super) fn tuning_mts_controls(&self, cx: &mut Context<Self>) -> Div {
+        let broadcast = &self.tuning.broadcast;
+        let state = broadcast.snapshot.and_then(|snapshot| {
+            (snapshot.owner.is_some() && snapshot.owner == broadcast.owner)
+                .then_some(snapshot.state)
+        });
         let mut controls = div()
             .flex()
             .flex_col()
@@ -190,7 +229,7 @@ impl EditorView {
                     })),
             )
             .child(theme::text(self.tuning.broadcast.status()));
-        if retry {
+        if matches!(state, Some(State::Blocked { .. } | State::Unavailable(_))) {
             controls = controls.child(button("retry mts", false).on_click(cx.listener(
                 |view, _, _, cx| {
                     view.tuning.broadcast.retry();
@@ -198,8 +237,68 @@ impl EditorView {
                 },
             )));
         }
+        if matches!(
+            state,
+            Some(State::Blocked {
+                recovery_available: true
+            })
+        ) {
+            controls = controls.child(
+                button("recover mts", false)
+                    .debug_selector(|| "tuning-mts-recover".into())
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        view.confirm_mts_recovery(window, cx);
+                    })),
+            );
+        }
         controls
     }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[gpui::test]
+fn cancelling_mts_recovery_does_not_submit_a_reset(cx: &mut gpui::TestAppContext) {
+    use gpui::{Modifiers, VisualTestContext};
+
+    let worker = hex_mts::Worker::start().unwrap();
+    let publisher = worker.handle();
+    let owner = Owner {
+        client: publisher.new_client().unwrap(),
+        generation: 0,
+    };
+    let (window, editor) = crate::editor::clip_drag_ui_test::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Default::default(),
+    );
+    editor.update(cx, |view, cx| {
+        view.tuning.open = true;
+        let broadcast = &mut view.tuning.broadcast;
+        broadcast.handle = Some(publisher.clone());
+        broadcast.owner = Some(owner);
+        // Inject the blocked receipt without touching the installed MTS library.
+        broadcast.snapshot = Some(Snapshot {
+            owner: Some(owner),
+            state: State::Blocked {
+                recovery_available: true,
+            },
+            ..Snapshot::default()
+        });
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(window, cx);
+    visual.run_until_parked();
+    let button = visual.debug_bounds("tuning-mts-recover").unwrap().center();
+    visual.simulate_mouse_down(button, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(button, MouseButton::Left, Modifiers::default());
+    assert!(visual.has_pending_prompt());
+    visual.simulate_prompt_answer("cancel");
+    visual.run_until_parked();
+    assert!(!visual.has_pending_prompt());
+    assert_eq!(publisher.snapshot().unwrap(), Snapshot::default());
+    editor.read_with(&visual, |view, _| {
+        assert!(view.tuning.broadcast.error.is_none());
+    });
 }
 
 // A Linux UI fixture exercises the real unavailable backend without acquiring

@@ -72,6 +72,7 @@ mod group_selection;
 mod midi_pending_drag;
 mod pending_clip_move;
 mod pending_edit;
+mod pending_sample_drop;
 #[cfg(test)]
 mod test_environment;
 
@@ -189,6 +190,7 @@ mod refresh;
 mod render;
 mod return_tracks;
 mod routing_controls;
+mod sample_recorder;
 mod sampler_load;
 mod sampler_parameter;
 mod save;
@@ -877,6 +879,7 @@ pub(super) struct EditorView {
     effect_bus_barrier: device_gesture::EffectBusBarrierState,
     device_panel: device_panel::DevicePanelState,
     project_spectrum: project_spectrum::ProjectSpectrumState,
+    sample_recorder: sample_recorder::Recorder,
     worker_requests_pending: usize,
     sampler_load: sampler_load::State,
     sampler_parameter: sampler_parameter::State,
@@ -999,6 +1002,7 @@ pub(super) struct EditorView {
     midi_tile_images: Rc<std::cell::RefCell<midi_loop_notes::TileImages>>,
     active_clip_drag: Option<drag::ClipDrag>,
     active_browser_audio_drag: Option<drag::BrowserAudioDrag>,
+    pending_sample_drop: Option<pending_sample_drop::PendingSampleDrop>,
     arrangement_device_preview: Option<arrangement_device_drop::ArrangementDevicePreview>,
     active_native_device_drag: Option<drag::NativeDeviceDrag>,
     active_trim_drag: Option<trim::TrimDrag>,
@@ -1645,6 +1649,7 @@ impl EditorView {
             effect_bus_barrier: Default::default(),
             device_panel: device_panel::DevicePanelState::default(),
             project_spectrum: Default::default(),
+            sample_recorder: Default::default(),
             worker_requests_pending: 0,
             sampler_load: Default::default(),
             sampler_parameter: Default::default(),
@@ -1766,6 +1771,7 @@ impl EditorView {
             midi_tile_images: Default::default(),
             active_clip_drag: None,
             active_browser_audio_drag: None,
+            pending_sample_drop: None,
             active_native_device_drag: None,
             arrangement_device_preview: None,
             active_trim_drag: None,
@@ -1911,12 +1917,12 @@ impl EditorView {
             self.error = Some("applying edit · wait for audio".into());
             return;
         }
-        if self.recovery.generation().is_some() {
-            self.error = Some("audio recovery pending · playback is not ready".into());
-            return;
-        }
         if self.opening_project || self.close_prompt_open {
             self.error = Some("project change pending · playback is paused".into());
+            return;
+        }
+        if self.recovery.generation().is_some() {
+            self.defer_play_until_audio_recovers();
             return;
         }
         let device_playing = self.audio.as_ref().is_some_and(|audio| {
@@ -1926,6 +1932,13 @@ impl EditorView {
                 .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire))
         });
         let start_frame = self.playback_start_frame();
+        if !self.desired_playing(device_playing) && self.has_degraded_vst3_output() {
+            self.recover_audio_at(start_frame);
+            if self.recovery.generation().is_some() {
+                self.defer_play_until_audio_recovers();
+            }
+            return;
+        }
         let command = match self.play_toggle_action(device_playing, start_frame) {
             arrangement_seek::ToggleAction::Pause => PlaybackCommand::Pause,
             arrangement_seek::ToggleAction::PlayFrom(frame) => PlaybackCommand::PlayFrom(frame),

@@ -98,6 +98,9 @@ impl DegradedDevices {
         devices.dedup();
         Self(devices)
     }
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
     pub(crate) fn contains(&self, device: u64) -> bool {
         self.0.binary_search(&device).is_ok()
     }
