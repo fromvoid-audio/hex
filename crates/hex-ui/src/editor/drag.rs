@@ -80,7 +80,7 @@ impl ClipDrag {
 pub(super) struct BrowserAudioDrag {
     pub(super) project_generation: u64,
     pub(super) revision: u64,
-    pub(super) browser_generation: u64,
+    pub(super) browser_generation: Option<u64>,
     pub(super) sample_rate: u32,
     pub(super) path: std::path::PathBuf,
     pub(super) label: String,
@@ -1016,6 +1016,7 @@ impl super::EditorView {
         &self,
         path: std::path::PathBuf,
         label: String,
+        browser_generation: Option<u64>,
         metadata: Rc<RefCell<Option<Rc<AudioPreview>>>>,
         metadata_error: Rc<RefCell<Option<String>>>,
     ) -> Option<BrowserAudioDrag> {
@@ -1024,7 +1025,7 @@ impl super::EditorView {
         Some(BrowserAudioDrag {
             project_generation: self.project_generation,
             revision: state.revision,
-            browser_generation: self.browser.scan_generation(),
+            browser_generation,
             sample_rate: state.project.sample_rate(),
             path,
             label,
@@ -1153,7 +1154,9 @@ impl super::EditorView {
             || self.close_prompt_open
             || self.worker_requests_pending != 0
             || !self.pending_requests.is_empty()
-            || self.browser.scan_generation() != drag.browser_generation
+            || drag
+                .browser_generation
+                .is_some_and(|generation| self.browser.scan_generation() != generation)
         {
             return false;
         }

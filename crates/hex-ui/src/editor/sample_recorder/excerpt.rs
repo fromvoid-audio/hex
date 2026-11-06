@@ -155,6 +155,7 @@ impl EditorView {
             let payload = self.audio_file_drag_payload(
                 ready.excerpt.path.clone(),
                 wave.name.clone(),
+                None,
                 Rc::new(RefCell::new(Some(Rc::new(ready.excerpt.preview.clone())))),
                 Default::default(),
             )?;
