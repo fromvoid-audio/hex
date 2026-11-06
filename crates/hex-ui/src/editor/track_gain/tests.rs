@@ -1179,9 +1179,18 @@ fn unused_lower_header_space_selects_tracks_with_modifiers_in_both_audio_modes(
         });
         if mode == hex_session::DocumentAudioMode::Resident {
             let mute = bounds(&mut visual, "track-mute", first);
-            let solo = bounds(&mut visual, "track-solo", first);
-            assert!(mute.right() < solo.left());
-            let gap = point((mute.right() + solo.left()) / 2.0, mute.center().y);
+            let sample_arm = bounds(&mut visual, "sample-arm-track", first);
+            visual.simulate_click(sample_arm.center(), Modifiers::default());
+            visual.run_until_parked();
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(
+                    view.selected_track_ids(),
+                    [second],
+                    "sample arm owns its click"
+                );
+            });
+            assert!(mute.right() < sample_arm.left());
+            let gap = point((mute.right() + sample_arm.left()) / 2.0, mute.center().y);
             visual.simulate_click(gap, Modifiers::default());
             visual.run_until_parked();
             editor.read_with(&visual, |view, _| {
