@@ -123,7 +123,7 @@ struct Module {
         if(!url) throw Refusal{};
         bundle=CFBundleCreate(nullptr,url);CFRelease(url);
         if(!bundle || executable(bundle,root)!=request.executable ||
-            digest(member(root,string(request.executable)),16*1024*1024)!=binary ||
+            digest(member(root,string(request.executable)))!=binary ||
             digest(member(root,@"Contents/Info.plist"),65536)!=info)
             throw Refusal{};
         native_attempted=true;
