@@ -880,6 +880,7 @@ impl EditorView {
                     )
                     .child(div().flex_1())
                     .children(self.track_latency_indicator(super::track_latency::Owner::Main))
+                    .child(self.sample_arm_button(super::sample_recorder::Arm::Main, cx))
                     .children(
                         (self.main_track_height() > super::track_layout::HEADER_ONLY_HEIGHT)
                             .then(|| self.main_track_controls(cx)),
