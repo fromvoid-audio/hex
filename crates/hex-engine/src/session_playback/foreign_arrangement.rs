@@ -1,17 +1,18 @@
 //! Arrangement gate ownership for prepared VST3 generators. The engine owns
 //! the bounded note ledger. The audio host owns the worker and accepts or
 //! revokes staged events with the complete physical callback.
-use super::{PreparedRevision, SessionPlaybackError};
+use super::{MAX_TRACKS, PreparedRevision, SessionPlaybackError};
 use crate::mutable_instrument::{
     MutableInstrumentRuntimeError, MutableNoteOnset, MutableOccurrence, MutableOccurrenceKey,
-    MutableOnsetBuffer,
+    MutableOccurrenceSignature, MutableOnsetBuffer,
     authored_gate::{AuthoredGate, AuthoredGateContext, MAX_FOREIGN_NOTES, stage_authored_gates},
 };
 use crate::{Frame, Track};
 use hex_lattice::{
     ForeignNote, ForeignProcessorNode, ForeignProcessors, NativeInstrumentClock,
-    PreparedProcessorFactory,
+    PreparedForeignProcessor, PreparedProcessorFactory,
 };
+use hex_project::TrackId;
 use std::mem::size_of;
 
 #[derive(Default)]
@@ -22,13 +23,21 @@ struct Ledger {
     cut: bool,
 }
 
+impl Ledger {
+    fn has_held_notes(&self) -> bool {
+        self.notes.iter().any(|note| !note.note_off_sent)
+    }
+}
+
 struct Generator {
+    track: TrackId,
+    processor: PreparedForeignProcessor,
     committed: Ledger,
     scratch: Ledger,
 }
 
 impl Generator {
-    fn prepare() -> Result<Self, SessionPlaybackError> {
+    fn prepare(track: &Track) -> Result<Self, SessionPlaybackError> {
         fn ledger() -> Result<Ledger, SessionPlaybackError> {
             let mut ledger = Ledger::default();
             ledger
@@ -37,12 +46,38 @@ impl Generator {
                 .map_err(|_| SessionPlaybackError::Allocation)?;
             Ok(ledger)
         }
+        let track_id = track
+            .canonical_track_id()
+            .ok_or(SessionPlaybackError::RevisionTrackMismatch)?;
+        let Some(PreparedProcessorFactory::Foreign(processor)) = track
+            .foreign_instrument
+            .as_ref()
+            .and_then(|node| node.definition.as_ref())
+        else {
+            return Err(SessionPlaybackError::DeviceRuntime);
+        };
+        if processor.binding().is_none() {
+            return Err(SessionPlaybackError::DeviceRuntime);
+        }
         Ok(Self {
+            track: track_id,
+            processor: *processor,
             committed: ledger()?,
             scratch: ledger()?,
         })
     }
 }
+
+/// Index mapping only. No borrowed or owned endpoint crosses this boundary.
+pub(super) struct Handoff {
+    old_indices: [Option<usize>; MAX_TRACKS],
+    pub(super) requires_clock_continuity: bool,
+}
+
+pub(super) const INCOMPATIBLE_HANDOFF: SessionPlaybackError =
+    SessionPlaybackError::MutableInstrumentDiagnostic(
+        "vst3 instrument graph change requires stopped playback and released notes",
+    );
 
 #[derive(Default)]
 pub(super) struct ForeignArrangement {
@@ -78,7 +113,7 @@ impl ForeignArrangement {
                             "routed vst3 instrument sources are unavailable",
                         ));
                     }
-                    generators.push(Some(Generator::prepare()?));
+                    generators.push(Some(Generator::prepare(track)?));
                 } else {
                     generators.push(None);
                 }
@@ -136,9 +171,83 @@ impl ForeignArrangement {
             .any(|generator| generator.committed.loop_pass.is_some())
     }
 
+    pub(super) fn plan_handoff(
+        &self,
+        old: &Self,
+        tracks: &[Track],
+        cut: FrameContext,
+    ) -> Result<Handoff, SessionPlaybackError> {
+        let mut plan = Handoff {
+            old_indices: [None; MAX_TRACKS],
+            requires_clock_continuity: false,
+        };
+        let mut retained = [false; MAX_TRACKS];
+        for (index, candidate) in self.generators.iter().enumerate() {
+            let Some(candidate) = candidate else { continue };
+            let matched = old.generators.iter().enumerate().find_map(|(index, old)| {
+                let old = old.as_ref()?;
+                (old.track == candidate.track && old.processor == candidate.processor)
+                    .then_some((index, &old.committed))
+            });
+            let Some((old_index, ledger)) = matched else {
+                if cut.playing {
+                    return Err(INCOMPATIBLE_HANDOFF);
+                }
+                continue;
+            };
+            *plan
+                .old_indices
+                .get_mut(index)
+                .ok_or(SessionPlaybackError::RevisionTrackMismatch)? = Some(old_index);
+            *retained
+                .get_mut(old_index)
+                .ok_or(SessionPlaybackError::RevisionTrackMismatch)? = true;
+            plan.requires_clock_continuity |=
+                ledger.loop_pass.is_some() && (cut.playing || ledger.has_held_notes());
+            if !ledger.cut && ledger.loop_pass == Some(cut.loop_pass) {
+                let track = tracks
+                    .get(index)
+                    .ok_or(SessionPlaybackError::RevisionTrackMismatch)?;
+                validate_held_gates(track, candidate.track, ledger, &cut)?;
+            }
+        }
+        for (index, generator) in old.generators.iter().enumerate() {
+            if let Some(generator) = generator
+                && !retained.get(index).copied().unwrap_or(false)
+                && generator.committed.loop_pass.is_some()
+                && (cut.playing || generator.committed.has_held_notes())
+            {
+                return Err(INCOMPATIBLE_HANDOFF);
+            }
+        }
+        Ok(plan)
+    }
+
+    /// Commit only after the graph preflight. Both graphs keep their reserved
+    /// buffers, and the host retains the exact worker on its existing binding.
+    pub(super) fn inherit_handoff(&mut self, old: &mut Self, plan: Handoff, keep_clock: bool) {
+        for (candidate, old_index) in self.generators.iter_mut().zip(plan.old_indices) {
+            if let Some((candidate, donor)) = candidate.as_mut().zip(
+                old_index
+                    .and_then(|index| old.generators.get_mut(index))
+                    .and_then(Option::as_mut),
+            ) {
+                if keep_clock {
+                    std::mem::swap(&mut candidate.committed, &mut donor.committed);
+                } else {
+                    // A stopped reset has no held gates, but the retained
+                    // worker still needs monotonically increasing note IDs.
+                    candidate.committed.next_id = donor.committed.next_id;
+                }
+            }
+        }
+    }
+
     pub(super) fn begin(&mut self) {
         for generator in self.generators.iter_mut().flatten() {
-            let Generator { committed, scratch } = generator;
+            let Generator {
+                committed, scratch, ..
+            } = generator;
             scratch.notes.clear();
             scratch.notes.extend_from_slice(&committed.notes);
             scratch.next_id = committed.next_id;
@@ -285,6 +394,56 @@ impl ForeignArrangement {
             .process_segment_with_notes(node, offset, output, &[], events, Some(clock))
             .map_err(|_| SessionPlaybackError::DeviceRuntime)
     }
+}
+
+fn validate_held_gates(
+    track: &Track,
+    track_id: TrackId,
+    ledger: &Ledger,
+    cut: &FrameContext,
+) -> Result<(), SessionPlaybackError> {
+    let mut unmatched = [false; MAX_FOREIGN_NOTES];
+    for (flag, note) in unmatched.iter_mut().zip(&ledger.notes) {
+        *flag = !note.note_off_sent && note.gate_end_frame > cut.performance;
+    }
+    if !unmatched.contains(&true) {
+        return Ok(());
+    }
+    let end = cut
+        .arrangement
+        .checked_add(1)
+        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+    track
+        .for_each_mutable_midi_span(cut.arrangement, end, |span| {
+            let signature = MutableOccurrenceSignature::from_parts(
+                MutableOccurrenceKey::new(
+                    track_id,
+                    span.clip,
+                    span.note,
+                    span.iteration,
+                    cut.loop_pass,
+                ),
+                span.onset_beat,
+                span.gate_end_beat,
+                span.pitch,
+                span.channel,
+                span.velocity,
+            );
+            let deadline = span
+                .gate_end
+                .checked_sub(cut.arrangement)
+                .and_then(|remaining| cut.performance.checked_add(remaining));
+            for (flag, note) in unmatched.iter_mut().zip(&ledger.notes) {
+                if *flag && note.signature == signature && Some(note.gate_end_frame) == deadline {
+                    *flag = false;
+                }
+            }
+        })
+        .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
+    if unmatched.contains(&true) {
+        return Err(INCOMPATIBLE_HANDOFF);
+    }
+    Ok(())
 }
 
 pub(super) struct FrameContext {

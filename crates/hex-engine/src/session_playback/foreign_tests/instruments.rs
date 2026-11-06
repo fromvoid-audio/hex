@@ -8,6 +8,7 @@ const VST3: DeviceTypeId = DeviceTypeId::from_static("hex.vst3");
 struct InstrumentDefinition {
     identity: ProcessorInstanceIdentity,
     instrument_profile: bool,
+    epoch: u64,
 }
 
 impl NativeDeviceMetadata for InstrumentDefinition {
@@ -79,7 +80,7 @@ impl NativeDeviceDefinition for InstrumentDefinition {
                 root: 1,
                 instance: identity.device_id(),
                 graph: 1,
-                epoch: 1,
+                epoch: self.epoch,
             },
         )?;
         let facts = if self.instrument_profile {
@@ -92,6 +93,10 @@ impl NativeDeviceDefinition for InstrumentDefinition {
 }
 
 fn fixture() -> (Editor, ProcessorInstanceIdentity) {
+    fixture_with_duration(BeatTime::from_ratio(1, 1).unwrap())
+}
+
+fn fixture_with_duration(duration: BeatTime) -> (Editor, ProcessorInstanceIdentity) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
         .execute(Command::AddMidiTrack {
@@ -125,7 +130,7 @@ fn fixture() -> (Editor, ProcessorInstanceIdentity) {
         .execute(Command::AddMidiNote {
             clip,
             start: BeatTime::ZERO,
-            duration: beat,
+            duration,
             pitch: 60,
             channel: 2,
             velocity: 101,
@@ -139,9 +144,19 @@ fn prepare(
     identity: ProcessorInstanceIdentity,
     instrument_profile: bool,
 ) -> Result<Arc<PreparedRevision>, Invalid> {
+    prepare_epoch(editor, identity, instrument_profile, 1)
+}
+
+fn prepare_epoch(
+    editor: &Editor,
+    identity: ProcessorInstanceIdentity,
+    instrument_profile: bool,
+    epoch: u64,
+) -> Result<Arc<PreparedRevision>, Invalid> {
     let definition = InstrumentDefinition {
         identity,
         instrument_profile,
+        epoch,
     };
     let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
     let registry = NativeDeviceRegistry::new(&definitions).unwrap();
@@ -298,6 +313,91 @@ fn seek_and_stop_release_original_notes_and_a_late_fault_refuses_the_block() {
     assert!(endpoint.rejected);
     assert_eq!(output, [[0.0; 2]; 2]);
     assert_eq!(playback.performance_frame(), 0);
+}
+
+#[test]
+fn compatible_gain_edit_keeps_the_accepted_instrument_note_until_release() {
+    let (mut editor, identity) = fixture_with_duration(BeatTime::from_ratio(1, 128).unwrap());
+    let original = prepare(&editor, identity, true).unwrap();
+    let prepared_track = &original.arrangement().tracks()[0];
+    let track = prepared_track.canonical_track_id().unwrap();
+    let mut deadline = None;
+    prepared_track
+        .for_each_mutable_midi_span(0, 1, |span| deadline = Some(span.gate_end))
+        .unwrap();
+    let mut playing = SessionPlayback::new(original).unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    playing.apply(SessionPlaybackCommand::Play).unwrap();
+    endpoint.render(&mut playing, &mut [[0.0; 2]; 2]).unwrap();
+    let [(0, onset)] = endpoint.notes.as_slice() else {
+        panic!("one onset");
+    };
+    let onset = *onset;
+
+    editor.execute(Command::Gain { track, gain: 0.5 }).unwrap();
+    let mut edited = SessionPlayback::new(prepare(&editor, identity, true).unwrap()).unwrap();
+    edited.inherit_state(&mut playing).unwrap();
+    assert_eq!(edited.performance_frame(), 2);
+    endpoint.render(&mut edited, &mut [[0.0; 2]; 2]).unwrap();
+    assert!(endpoint.notes.is_empty());
+
+    let frames_until_release = usize::try_from(deadline.unwrap() - 4).unwrap();
+    endpoint
+        .render(&mut edited, &mut vec![[0.0; 2]; frames_until_release + 1])
+        .unwrap();
+    assert_eq!(
+        endpoint.notes,
+        [(
+            frames_until_release,
+            hex_lattice::ForeignNote {
+                on: false,
+                velocity: 0,
+                ..onset
+            }
+        )]
+    );
+}
+
+#[test]
+fn incompatible_edits_wait_for_the_original_note_off() {
+    let (mut editor, identity) = fixture();
+    let original = prepare(&editor, identity, true).unwrap();
+    let prepared_track = &original.arrangement().tracks()[0];
+    let track = prepared_track.canonical_track_id().unwrap();
+    let mut note = None;
+    prepared_track
+        .for_each_mutable_midi_span(0, 1, |span| note = Some(span.note))
+        .unwrap();
+    let mut replacement =
+        SessionPlayback::new(prepare_epoch(&editor, identity, true, 2).unwrap()).unwrap();
+    let mut playing = SessionPlayback::new(original).unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    playing.apply(SessionPlaybackCommand::Play).unwrap();
+    endpoint.render(&mut playing, &mut [[0.0; 2]; 2]).unwrap();
+    let onset = endpoint.notes[0].1;
+    assert!(matches!(
+        replacement.inherit_state(&mut playing),
+        Err(super::super::foreign_arrangement::INCOMPATIBLE_HANDOFF)
+    ));
+
+    editor
+        .execute(Command::RemoveMidiNote(note.unwrap()))
+        .unwrap();
+    let mut removed_note = SessionPlayback::new(prepare(&editor, identity, true).unwrap()).unwrap();
+    assert!(removed_note.inherit_state(&mut playing).is_err());
+    assert!(editor.undo());
+
+    editor.execute(Command::RemoveInstrument { track }).unwrap();
+    let mut removed = SessionPlayback::new(prepare(&editor, identity, true).unwrap()).unwrap();
+    assert!(removed.inherit_state(&mut playing).is_err());
+    assert_eq!(playing.performance_frame(), 2);
+    playing.apply(SessionPlaybackCommand::Stop).unwrap();
+    assert!(removed.inherit_state(&mut playing).is_err());
+    endpoint.render(&mut playing, &mut [[0.0; 2]; 2]).unwrap();
+    assert_eq!(endpoint.notes.len(), 1);
+    assert!(!endpoint.notes[0].1.on);
+    assert_eq!(endpoint.notes[0].1.note_id, onset.note_id);
+    removed.inherit_state(&mut playing).unwrap();
 }
 
 #[test]
