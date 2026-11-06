@@ -89,7 +89,13 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
 }
 
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    let mut value = super::audio_events::parse_unique(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?, true)
+}
+
+pub(super) fn decode_value(
+    mut value: Value,
+    require_vst3_lanes: bool,
+) -> Result<Project, StorageError> {
     let root = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid vst3 automation document"))?;
@@ -105,7 +111,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     let Lanes(rows) = serde_json::from_value(root.remove("vst3_automation").ok_or(
         StorageError::Invalid("vst3 automation inventory is missing"),
     )?)?;
-    if rows.is_empty() {
+    if require_vst3_lanes && rows.is_empty() {
         return Err(StorageError::Invalid("vst3 automation inventory is empty"));
     }
     root.insert("version".into(), VST3_STATE_SIZE_SCHEMA_VERSION.into());
@@ -151,6 +157,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             .entry(row.device)
             .or_default()
             .push(DeviceAutomation {
+                touch: Vec::new(),
                 read_selection: row.read_selection.into(),
                 target: DeviceAutomationTarget::Vst3 {
                     parameter: row.parameter,

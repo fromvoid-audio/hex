@@ -15,6 +15,7 @@ pub(crate) mod conversion_v2;
 pub(crate) mod crossfades;
 pub(crate) mod device_assets;
 pub(crate) mod device_automation;
+pub(crate) mod device_automation_touch;
 pub(crate) mod event_activation;
 pub(crate) mod event_fades;
 pub(crate) mod event_gain;
