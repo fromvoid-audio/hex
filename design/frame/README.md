@@ -3,13 +3,14 @@
 ## Continue editing in Frame
 
 [hex-orbital.frame.json](hex-orbital.frame.json) is the current editable prototype,
-saved at r139. It includes the structured design, prototype actions, and orbital
+saved at r141. It includes the structured design, prototype actions, and orbital
 styleguide in one portable project.
 
 In Frame, choose **Designs → Import design**, select the file, and open the
 imported copy. If Frame already has a project with the same ID, use the separate
 copy proposed by the import preview. Turn on **Interact** to use the top-right
 Arrangement/Console switch and bottom-right Clip/Device switch.
+With **Interact** on, use the six-dot button at the foot of a device header to preview its modulator tray.
 Choose `group-track-selected` in the State picker to see the selected group track.
 
 To save a later design revision back to Hex, use **Designs → Download design** in
