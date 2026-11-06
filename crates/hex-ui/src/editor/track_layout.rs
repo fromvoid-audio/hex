@@ -1076,5 +1076,22 @@ mod tests {
         visual.run_until_parked();
         pump(&mut visual, &editor);
         assert_eq!(lane_points(&visual, &editor, device, target).len(), 1);
+
+        // The reverse order must also preserve the first draft. A press over
+        // the sampler while automation owns the pointer cannot start text.
+        let next = lane_point(&mut visual, device, target, [0.3, 0.4]);
+        let sampler_at = visual.debug_bounds(selector).unwrap().center();
+        visual.simulate_mouse_down(next, MouseButton::Left, CMD);
+        editor.read_with(&visual, |view, _| {
+            assert!(view.automation_view.devices.point_draft_active());
+        });
+        visual.simulate_mouse_down(sampler_at, MouseButton::Left, Modifiers::default());
+        editor.read_with(&visual, |view, _| {
+            assert!(view.automation_view.devices.point_draft_active());
+            assert!(!view.sampler_parameter.numeric_draft_active());
+        });
+        visual.simulate_mouse_up(next, MouseButton::Left, CMD);
+        pump(&mut visual, &editor);
+        assert_eq!(lane_points(&visual, &editor, device, target).len(), 2);
     }
 }
