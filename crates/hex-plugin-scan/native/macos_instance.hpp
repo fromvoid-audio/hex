@@ -398,7 +398,9 @@ public:
         if (processing_thread != std::thread::id{} && processing_thread != std::this_thread::get_id()) return false;
         processing_thread = std::this_thread::get_id();
         host->bind_processing_thread();
-        if (processor->setProcessing(true) != kResultOk) { processing_fault.store(true); return false; }
+        // Steinberg's base AudioEffect leaves this notification unimplemented.
+        const auto result=processor->setProcessing(true);
+        if (result!=kResultOk && result!=kNotImplemented) { processing_fault.store(true); return false; }
         processing.store(true);
         return true;
     }
@@ -446,7 +448,8 @@ public:
     bool stop_processing() {
         if (!processing.load() || processing_thread != std::this_thread::get_id() || quarantined.load())
             return false;
-        if (processor->setProcessing(false) != kResultOk) return refuse_cleanup();
+        const auto result=processor->setProcessing(false);
+        if (result!=kResultOk && result!=kNotImplemented) return refuse_cleanup();
         processing.store(false);
         return true;
     }
