@@ -299,7 +299,7 @@ public:
 };
 class ProcessingProcessor final : public Processor,public IAudioPresentationLatency {
     const int fault=next_fault;
-    const bool midi_instrument=fault==115 || fault==120;
+    const bool midi_instrument=fault==115 || fault==120 || fault==127;
     const int mode=midi_instrument?1:next_mode;
     bool initialized=false, arranged=false, setup=false, active=false;
     std::atomic<bool> processing{false};
@@ -691,7 +691,7 @@ public:
                 if (event.busIndex!=0) return kResultFalse;
                 const bool on=event.type==Event::kNoteOnEvent;
                 if ((!on && event.type!=Event::kNoteOffEvent) ||
-                    (on?event.noteOn.channel:event.noteOff.channel)!=2 ||
+                    (on?event.noteOn.channel:event.noteOff.channel)!=(fault==127?0:2) ||
                     (on?event.noteOn.pitch:event.noteOff.pitch)!=60) return kResultFalse;
                 const auto id=on?event.noteOn.noteId:event.noteOff.noteId;
                 if(id==-1) note_signal=on?event.noteOn.velocity:0;
@@ -836,7 +836,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>126) return false;next_fault=value;
+        if (value>127) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

@@ -134,7 +134,7 @@ impl ComputerKeyboardInput {
         }
         Ok(())
     }
-    pub(super) fn note_snapshot(&self) -> NoteSnapshot {
+    pub(crate) fn note_snapshot(&self) -> NoteSnapshot {
         for _ in 0..2 {
             let before = self.sequence.load(SeqCst);
             if before & 1 != 0 || self.is_cancelled() {

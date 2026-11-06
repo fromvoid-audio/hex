@@ -38,6 +38,7 @@ impl SessionPlayback {
             && self.current_sampler_keyboards.is_empty()
             && !self.stopped_edit_tails()
             && !self.foreign_arrangement.has_started()
+            && !self.foreign_arrangement.has_keyboard()
     }
 
     /// Render a complete block transactionally. A refusal after any chunk
@@ -473,6 +474,7 @@ impl SessionPlayback {
             || self.renders_no_device_chains()
             || (!self.playing
                 && !self.foreign_arrangement.has_started()
+                && !self.foreign_arrangement.has_keyboard()
                 && self.computer_keyboard.is_none()
                 && self.current_sampler_keyboards.is_empty()
                 && !self
@@ -572,6 +574,7 @@ impl SessionPlayback {
         self.foreign_arrangement.begin();
         let main_tails_only = !self.playing
             && !self.foreign_arrangement.has_started()
+            && !self.foreign_arrangement.has_keyboard()
             && stopped_edit_tails
             && !self.monitor_source_releases
             && self.computer_keyboard.is_none()

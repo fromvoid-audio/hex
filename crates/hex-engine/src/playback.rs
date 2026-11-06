@@ -613,6 +613,14 @@ impl Playback {
         let runtime = self.session_runtime.as_mut().ok_or(Invalid(
             "computer keyboard requires prepared session playback",
         ))?;
+        if compiled.foreign_instrument.is_some() {
+            if hint.is_some() {
+                return Err(Invalid(
+                    "vst3 computer keyboard tuning hints are unsupported",
+                ));
+            }
+            return runtime.prepare_foreign_keyboard(track, input);
+        }
         let family = self
             .prepared_revision
             .as_ref()
@@ -735,6 +743,7 @@ impl Playback {
     pub fn cancel_computer_keyboard(&mut self) {
         if let Some(runtime) = self.session_runtime.as_mut() {
             runtime.cancel_current_sampler_keyboard();
+            runtime.cancel_foreign_keyboard(None);
         }
 
         if let Some(keyboard) = self
@@ -1705,6 +1714,7 @@ impl Playback {
             if let Some(clock) = priority_stop {
                 if let Some(runtime) = self.session_runtime.as_mut() {
                     runtime.cancel_current_sampler_keyboard();
+                    runtime.cancel_foreign_keyboard(Some(clock));
                     if let Some(keyboard) = runtime.computer_keyboard.as_mut() {
                         keyboard.priority_stop(clock);
                     }
@@ -2128,6 +2138,14 @@ impl Playback {
     }
 
     fn can_rebind_keyboard_input(&self, previous: &Self) -> bool {
+        if self
+            .session_runtime
+            .as_ref()
+            .zip(previous.session_runtime.as_ref())
+            .is_some_and(|(next, old)| next.shares_foreign_keyboard(old))
+        {
+            return true;
+        }
         self.session_runtime
             .as_ref()
             .and_then(|runtime| runtime.computer_keyboard.as_ref())
@@ -2140,12 +2158,11 @@ impl Playback {
             .is_some_and(|(next, old)| next.can_rebind_input_from(old))
     }
     fn detach_rebound_keyboard_input(&mut self) {
-        if let Some(keyboard) = self
-            .session_runtime
-            .as_mut()
-            .and_then(|runtime| runtime.computer_keyboard.as_mut())
-        {
-            keyboard.detach_rebound_input();
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            runtime.detach_foreign_keyboard();
+            if let Some(keyboard) = runtime.computer_keyboard.as_mut() {
+                keyboard.detach_rebound_input();
+            }
         }
     }
 

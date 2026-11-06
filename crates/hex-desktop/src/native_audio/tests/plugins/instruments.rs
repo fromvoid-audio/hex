@@ -33,7 +33,7 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
             .args(["--exact", NAME, "--ignored", "--nocapture"])
             .env(CHILD, "1");
         if installed.is_none() {
-            child.env("HEX_ORIGINAL_INSTANCE_VARIANT", "115");
+            child.env("HEX_ORIGINAL_INSTANCE_VARIANT", "127");
         }
         let result = child.output().unwrap();
         let output = String::from_utf8_lossy(&result.stdout);
@@ -79,7 +79,7 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
         start: BeatTime::ZERO,
         duration: BeatTime::from_ratio(1, 2).unwrap(),
         pitch: 60,
-        channel: if installed.is_some() { 0 } else { 2 },
+        channel: 0,
         velocity: 112,
     }));
     (applied, _) = harness.applied(applied);
@@ -105,7 +105,7 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
         start: BeatTime::ZERO,
         duration: BeatTime::from_quarters(1).unwrap(),
         pitch: if controlled_fixture { 60 } else { 64 },
-        channel: if controlled_fixture { 2 } else { 0 },
+        channel: 0,
         velocity: 88,
     }));
     (applied, _) = harness.applied(applied);
@@ -129,6 +129,67 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
     assert!(project_track.instrument().is_some());
     assert_eq!(accepted.state.project.sample_rate(), rate);
     (applied, _) = harness.applied(applied);
+    // Exercise the resident keyboard request on a newly inserted worker
+    // before the authored transport has ever started.
+    let keys = Arc::new(
+        harness
+            .audio
+            .as_ref()
+            .unwrap()
+            .control
+            .new_computer_keyboard_input_on_control()
+            .unwrap(),
+    );
+    let context = harness.submitted.unwrap().1.context;
+    harness.run(Request::PrepareComputerKeyboard {
+        project_generation: context.project_generation,
+        revision: context.editor_revision,
+        request_id: 1,
+        track,
+        input: Arc::clone(&keys),
+    });
+    let (keyboard_revision, keyboard) = harness.applied(applied);
+    applied = keyboard_revision;
+    assert_eq!(keyboard.computer_keyboard_request, Some(1));
+    let pcm_peak = |frames: [hex_engine::Frame; 256]| {
+        frames
+            .into_iter()
+            .flatten()
+            .map(f32::abs)
+            .fold(0.0, f32::max)
+    };
+    keys.set_key(0, Some((60, 100, 1))).unwrap();
+    let keyboard_peak = (0..6)
+        .map(|_| pcm_peak(render_completed_block(&harness)))
+        .fold(0.0, f32::max);
+    assert!(keyboard_peak > 0.001, "expected stopped keyboard pcm");
+    assert!(
+        !harness
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(Acquire)
+    );
+    keys.set_key(0, None).unwrap();
+    for _ in 0..4 {
+        render_completed_block(&harness);
+    }
+    if controlled_fixture {
+        assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
+    } else {
+        let mut release_peak = f32::INFINITY;
+        assert!(
+            (0..1000).any(|_| {
+                release_peak = pcm_peak(render_completed_block(&harness));
+                release_peak < 0.001
+            }),
+            "keyboard release must settle, held peak={keyboard_peak}, release peak={release_peak}"
+        );
+    }
+    println!("instrument keyboard rate={rate} peak={keyboard_peak}");
     harness
         .audio
         .as_mut()
@@ -141,7 +202,7 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
     for block in 0..20 {
         let frames = render_completed_block(&harness);
         if block < 2 {
-            assert!(frames.iter().all(|frame| *frame == [0.0; 2]));
+            assert!(pcm_peak(frames) < 0.001);
         }
         for sample in frames.iter().flatten() {
             peak = peak.max(sample.abs());
