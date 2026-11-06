@@ -203,7 +203,9 @@ fn live_vst3_drag_changes_original_pcm_once_and_survives_undo_save_reopen() {
         return;
     }
     let _native = native_fixture();
-    let mut fixture = nondefault_fixture();
+    // Keep producing accepted PCM while the control worker captures before
+    // and after the drag. The short save-only fixture can end mid-gesture.
+    let mut fixture = nondefault_fixture_with_frames(8192);
     let mut h = open_saved(&fixture);
     let (before_revision, metadata) = h.submitted.unwrap();
     let device = fixture.project.main_devices()[0].id();
