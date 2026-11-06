@@ -186,6 +186,12 @@ impl NativeEffectReference<'_> {
             Self::Loaned(control) => control.transport_is_live_on_control(),
         }
     }
+    pub(crate) fn take_failure_diagnostic_on_control(&self) -> Option<String> {
+        match self {
+            Self::Unsplit(effect) => effect.worker.take_failure_diagnostic_on_control(),
+            Self::Loaned(control) => control.worker.take_failure_diagnostic_on_control(),
+        }
+    }
     pub(crate) fn matches_prepared(&self, node: &hex_lattice::PreparedRuntimeInstance) -> bool {
         let config = self.configuration();
         node.owner == config.identity.owner()

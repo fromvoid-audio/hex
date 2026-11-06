@@ -114,10 +114,11 @@ fn main() -> ExitCode {
                 hex_ui::open(cx, hex_audio::AudioOutput::open())
                     .map_err(StartupFailure::at(Stage::Editor))
             } else {
-                native_audio::backend(audio_diagnostics).and_then(|backend| {
-                    hex_ui::open_editor_backend(cx, backend)
-                        .map_err(StartupFailure::at(Stage::Editor))
-                })
+                native_audio::backend(audio_diagnostics, log_handle.as_ref().ok().cloned())
+                    .and_then(|backend| {
+                        hex_ui::open_editor_backend(cx, backend)
+                            .map_err(StartupFailure::at(Stage::Editor))
+                    })
             }
             .map_err(StartupFailure::into_report)
         });

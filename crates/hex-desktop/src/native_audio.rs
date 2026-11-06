@@ -1672,6 +1672,7 @@ impl WorkerAudioSink for NativeAudioSink {
 /// Builds the editor backend, tagging each fallible step with its startup stage.
 pub(super) fn backend(
     flags: hex_audio::audio_diagnostics::AudioDiagnosticsFlags,
+    log: Option<hex_diagnostics::DiagnosticsHandle>,
 ) -> Result<EditorBackend, StartupFailure> {
     let source_reservation = AudioPolicy::source_reservation();
     let resident_native = AudioPolicy::new()
@@ -1684,6 +1685,7 @@ pub(super) fn backend(
         .map_err(StartupFailure::at(Stage::RecoveryLocation))?;
     let mut sink = NativeAudioSink::new(events);
     sink.audio_diagnostics = flags;
+    sink.plugins.set_diagnostics(log);
     let service = Service::with_audio_sink_and_claimed_recovery(
         32,
         MAX_RESIDENT_FRAMES,

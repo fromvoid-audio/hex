@@ -19,6 +19,7 @@ pub(super) struct Plugins {
     pub(super) pool_held: bool,
 }
 impl Plugins {
+    pub fn set_diagnostics(&mut self, _: Option<hex_diagnostics::DiagnosticsHandle>) {}
     pub fn initialize(&mut self) {}
     pub fn wants_profile(&self) -> bool {
         false

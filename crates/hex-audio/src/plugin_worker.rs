@@ -42,6 +42,8 @@ struct Signal {
     edits_requested: std::sync::atomic::AtomicBool,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     controller_requested: std::sync::atomic::AtomicBool,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    failure_diagnostic: std::sync::Mutex<Option<String>>,
 }
 impl Signal {
     fn new() -> Self {
@@ -55,6 +57,8 @@ impl Signal {
             edits_requested: std::sync::atomic::AtomicBool::new(false),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             controller_requested: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            failure_diagnostic: std::sync::Mutex::new(None),
         }
     }
 }
@@ -89,7 +93,12 @@ struct State {
 }
 impl State {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    fn report_native_failure(&self, exchange: &str, error: &hex_plugin_host::Error) {
+    fn report_native_failure(
+        &self,
+        signal: &Signal,
+        exchange: &str,
+        error: &hex_plugin_host::Error,
+    ) {
         use std::io::Write as _;
 
         let Some(Processor::Native(instance)) = self.processor.as_ref() else {
@@ -99,13 +108,16 @@ impl State {
         let bundle = std::path::Path::new(&configuration.bundle)
             .file_name()
             .unwrap_or_default();
-        let _ = writeln!(
-            std::io::stderr().lock(),
+        let message = format!(
             "vst3 worker failed: exchange={exchange} bundle={bundle:?} binding={:?} child={:?} completed_blocks={} cause={error}",
             configuration.binding,
             instance.child_id_on_control(),
             instance.completed_blocks_on_control(),
         );
+        if let Ok(mut diagnostic) = signal.failure_diagnostic.lock() {
+            *diagnostic = Some(message.clone());
+        }
+        let _ = writeln!(std::io::stderr().lock(), "{message}");
     }
 
     fn prepare_transport(&mut self) -> Result<(), Fault> {
@@ -351,7 +363,7 @@ fn transport_runner_with_setup(
                         if error != Fault::Revoked {
                             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                             if let Some(error) = &state.native_error {
-                                state.report_native_failure("pcm", error);
+                                state.report_native_failure(&published, "pcm", error);
                             }
                             fault = Some(error);
                         }
@@ -379,7 +391,7 @@ fn transport_runner_with_setup(
                 let refused = matches!(error, hex_plugin_host::Error::Cancelled);
                 state.worker.revoke();
                 if !refused {
-                    state.report_native_failure("control", &error);
+                    state.report_native_failure(&published, "control", &error);
                     fault = Some(Fault::Protocol);
                 }
                 state.native_error = Some(error);
@@ -466,6 +478,15 @@ impl NativeWorker {
     /// custody or native ACK; graph admission also validates the retained pair.
     pub(crate) fn transport_is_live_on_control(&self) -> bool {
         !self.retirement_requested && !self.reaper.control.is_revoked()
+    }
+
+    pub(crate) fn take_failure_diagnostic_on_control(&self) -> Option<String> {
+        self.reaper
+            .completed
+            .failure_diagnostic
+            .try_lock()
+            .ok()?
+            .take()
     }
     /// Diagnostic publication progress only; never native/root/graph readiness.
     pub fn published_blocks_on_control(&self) -> u64 {

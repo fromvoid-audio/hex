@@ -141,6 +141,7 @@ pub(super) struct Plugins {
     pub(super) catalog: Option<std::path::PathBuf>,
     degraded: degraded::DegradedReport<Binding>,
     degraded_changed: Option<(u64, u64, Vec<u64>)>,
+    diagnostics: Option<hex_diagnostics::DiagnosticsHandle>,
     latency_poll: usize,
     latency_poll_at: Option<std::time::Instant>,
     latency_notice: Option<(hex_audio::prepared::AppliedAudioSource, std::time::Instant)>,
@@ -158,6 +159,10 @@ pub(super) struct Plugins {
     pub(super) progress: Option<Arc<std::sync::Mutex<PreparationObservation>>>,
 }
 impl Plugins {
+    pub fn set_diagnostics(&mut self, log: Option<hex_diagnostics::DiagnosticsHandle>) {
+        self.diagnostics = log;
+    }
+
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(super) fn with_fixture(
         host: Hosting,
@@ -521,6 +526,29 @@ impl Plugins {
             let batch = control
                 .poll_native_source_recovery_edits_on_control(source.binding)
                 .ok()?;
+            if let Some(log) = &self.diagnostics
+                && let Some(batch) = batch
+                && let [first, ..] = batch.edits.as_slice()
+                && let Some(last) = batch.edits.as_slice().last()
+            {
+                let _ = log.record_typed(
+                    hex_diagnostics::Level::Debug,
+                    hex_diagnostics::Category::Audio,
+                    &format!(
+                        "vst3_editor v=1 stage=drain device={} binding={:?} transport_playing={} first_sequence={} last_sequence={} first_frame={} last_frame={} receipts={} pending={} ready={}",
+                        source.device,
+                        source.binding,
+                        control.status.playing.load(Acquire),
+                        first.sequence,
+                        last.sequence,
+                        first.first_frame,
+                        last.first_frame,
+                        batch.edits.as_slice().len(),
+                        batch.edits.pending,
+                        batch.edits.ready,
+                    ),
+                );
+            }
             #[cfg(all(test, feature = "allocation-probe"))]
             {
                 source.observed_latency_receipt |= batch.is_some();
@@ -557,11 +585,22 @@ impl Plugins {
                 .iter()
                 .filter(|source| source.project_generation == generation)
                 .map(|source| {
-                    (
-                        source.binding,
-                        source.device,
-                        control.native_source_endpoint_status(source.binding),
-                    )
+                    let status = control.native_source_endpoint_status(source.binding);
+                    if status == Some((true, false))
+                        && let Some(log) = &self.diagnostics
+                        && let Some(diagnostic) =
+                            control.take_native_source_failure_diagnostic(source.binding)
+                    {
+                        let _ = log.record_typed(
+                            hex_diagnostics::Level::Warn,
+                            hex_diagnostics::Category::Audio,
+                            &format!(
+                                "vst3_editor v=1 stage=worker_failure generation={generation} output={output} device={} {diagnostic}",
+                                source.device
+                            ),
+                        );
+                    }
+                    (source.binding, source.device, status)
                 });
             if let Some(devices) = self.degraded.observe(output, endpoints) {
                 self.degraded_changed = Some((generation, output, devices));
