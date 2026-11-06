@@ -354,6 +354,15 @@ fn offline_media_relinks_in_place_from_the_indicator_and_undoes(cx: &mut TestApp
         let media = panel.rows[0].media.clone();
         let fit = missing_media::check_candidate(&media, &moved);
         apply_locate(&mut panel.rows, 0, moved.clone(), fit, Vec::new());
+        view.close_prompt_open = true;
+        view.missing_media_relink(cx);
+        assert_eq!(view.worker_requests_pending, 0);
+        assert!(
+            view.missing_media
+                .as_ref()
+                .is_some_and(|panel| panel.resolved().values().eq([&moved]))
+        );
+        view.close_prompt_open = false;
         view.missing_media_relink(cx);
         assert!(view.missing_media.is_none());
     });
