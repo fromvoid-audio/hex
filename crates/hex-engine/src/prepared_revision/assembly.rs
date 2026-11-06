@@ -48,6 +48,8 @@ pub(crate) struct RevisionAssembly {
     session_value: Option<PreparedSessionInventory>,
     preview_value: Option<MidiArrangementPreview>,
     mutable_descriptors: Vec<PreparedMutableTrackRevision>,
+    pending_foreign_automation: Vec<crate::foreign_automation::BoundProgram>,
+    foreign_automation_bytes: usize,
     handles: [u64; 4],
     reserved_bytes: usize,
     reserved: bool,
@@ -129,9 +131,10 @@ impl RevisionAssembly {
         &mut self,
         project: &hex_project::Project,
         scope: Option<u64>,
-        effects: bool,
+        effect_registry: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
         native_input: Option<crate::device_automation::NativeParameterInputTarget>,
     ) -> Result<(), Error> {
+        let effects = effect_registry.is_some();
         if self.reserved
             || self.owner.is_some()
             || self.revision_value.is_some()
@@ -199,6 +202,13 @@ impl RevisionAssembly {
             .reserved_bytes
             .checked_add(crate::PreparedSourceRouting::construction_bytes(project))
             .ok_or(Error::Overflow)?;
+        (self.foreign_automation_bytes, _) = crate::foreign_automation::candidate::quote(project)?;
+        self.reserved_bytes = self
+            .reserved_bytes
+            .checked_add(self.foreign_automation_bytes)
+            .ok_or(Error::Overflow)?;
+        self.pending_foreign_automation =
+            crate::foreign_automation::candidate::prepare(project, effect_registry)?;
         self.reserved = true;
         for index in 0..4 {
             self.handles[index] = crate::audio_only_inputs::handle()?;
@@ -412,6 +422,14 @@ impl RevisionAssembly {
                 return Err(Error::SourceMismatch);
             }
         }
+        if let Some(revision) = self.revision_value.as_mut() {
+            revision
+                .install_foreign_automation_on_control(
+                    std::mem::take(&mut self.pending_foreign_automation),
+                    self.foreign_automation_bytes,
+                )
+                .map_err(|_| Error::SourceMismatch)?;
+        }
         #[cfg(test)]
         self.fault(10)?;
         if let Some(value) = self.revision_value.take() {
@@ -552,6 +570,8 @@ impl RevisionAssembly {
             session_value: _,
             preview_value: _,
             mutable_descriptors,
+            pending_foreign_automation,
+            foreign_automation_bytes: _,
             handles,
             reserved_bytes: _,
             reserved: _,
@@ -565,6 +585,7 @@ impl RevisionAssembly {
                 panic_after: _,
         } = self;
         l.vec(mutable_descriptors)?;
+        crate::foreign_automation::Programs::visit_program_storage(pending_foreign_automation, l)?;
         if let Some(owner) = owner {
             l.shared(
                 owner.arc(),

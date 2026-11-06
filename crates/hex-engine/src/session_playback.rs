@@ -1554,6 +1554,11 @@ impl SessionPlayback {
         resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
         transient_loop: Option<hex_project::LoopRegion>,
     ) -> Result<Self, SessionPlaybackError> {
+        if transient_loop.is_some() && !revision.foreign_automation.admits_loop(transient_loop) {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "audition loop exceeds the prepared vst3 automation capacity",
+            ));
+        }
         let linear_arrangement_export = policy != RenderConstruction::Interactive;
         let foreign_arrangement = foreign_arrangement::ForeignArrangement::prepare(&revision)?;
         if linear_arrangement_export

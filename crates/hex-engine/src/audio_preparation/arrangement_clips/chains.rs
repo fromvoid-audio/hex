@@ -276,7 +276,9 @@ impl ChainCustody {
         }
         let mut admission = StereoMatrix::identity();
         for device in devices {
-            let automation = if native_input.is_some() {
+            let automation = if let Some(effects) = effects {
+                crate::device_automation::prepare_closed_effect(device, effects, native_input)
+            } else if native_input.is_some() {
                 let automation_registry = hex_devices::native_registry()
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
                 crate::device_automation::prepare_with_registry_and_input(

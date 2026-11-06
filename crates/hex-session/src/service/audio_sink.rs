@@ -98,6 +98,35 @@ impl<'a> ResidentEffectPreparation<'a> {
             })
     }
 
+    /// An authored program is immutable for one native worker epoch. A loop
+    /// edit also changes the transport proof used by that epoch.
+    pub fn same_authored_plugin_program(&self, previous: &Self, device: u64) -> bool {
+        fn lanes(
+            project: &Project,
+            device: u64,
+        ) -> impl Iterator<Item = &hex_project::DeviceAutomation> {
+            project
+                .automation_devices()
+                .find(|candidate| candidate.id().value() == device && is_plugin_effect(candidate))
+                .into_iter()
+                .flat_map(hex_project::Device::reading_automation)
+                .filter(|lane| {
+                    matches!(
+                        lane.target,
+                        hex_lattice_contract::DeviceAutomationTarget::Vst3 { .. }
+                    )
+                })
+        }
+        let mut current = lanes(self.project, device).peekable();
+        let mut old = lanes(previous.project, device).peekable();
+        if current.peek().is_none() && old.peek().is_none() {
+            return true;
+        }
+        self.project.tempo_map() == previous.project.tempo_map()
+            && self.project.loop_region() == previous.project.loop_region()
+            && current.eq(old)
+    }
+
     pub fn visit_plugin_devices(
         &self,
         mut visit: impl FnMut(PluginEffectDestination, u64, &'a NativeDeviceState) -> Result<(), String>,

@@ -1332,30 +1332,33 @@ fn actual_arrangement_instrument_renders_authored_notes_at_compensated_offsets()
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 #[cfg(feature = "allocation-probe")]
 fn actual_arrangement_renderer_clock_drives_the_signed_authored_effect() {
-    use hex_engine::foreign_automation::BoundProgram;
-    use hex_lattice::{DevicePreparationContext, ForeignAutomationSource};
+    use hex_engine::{PlaybackAction, PlaybackCommand};
     use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime};
 
     const NAME: &str = "plugin_effects::tests::actual_arrangement_renderer_clock_drives_the_signed_authored_effect";
     const CHILD: &str = "HEX_ARRANGEMENT_AUTHORED_EFFECT_TEST_CHILD";
-    if std::env::var_os(CHILD).is_none() {
-        let result = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", NAME, "--ignored", "--nocapture"])
-            .env(CHILD, "1")
-            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "91")
-            .output()
-            .unwrap();
-        assert!(
-            result.status.success() && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
-            "{}\n{}",
-            String::from_utf8_lossy(&result.stdout),
-            String::from_utf8_lossy(&result.stderr)
-        );
+    let Some(scenario) = std::env::var_os(CHILD) else {
+        for scenario in ["pause", "loop-seek", "loop-live"] {
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--ignored", "--nocapture"])
+                .env(CHILD, scenario)
+                .env("HEX_ORIGINAL_INSTANCE_VARIANT", "91")
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success()
+                    && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+                "{scenario}: {}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
         return;
-    }
+    };
+    let loop_live = scenario == "loop-live";
+    let loop_seek = scenario == "loop-seek" || loop_live;
 
     let mut fixture = fixture_with_authored_parameter(2, false, Some(7));
-    let mut revision = Arc::try_unwrap(prepare(&fixture)).unwrap();
     fixture
         .editor
         .execute(Command::ReplaceDeviceAutomationTarget {
@@ -1373,67 +1376,141 @@ fn actual_arrangement_renderer_clock_drives_the_signed_authored_effect() {
             .to_vec(),
         })
         .unwrap();
-    let definition = NativeEffectDefinition::new(std::slice::from_ref(&fixture.effect)).unwrap();
-    let source = definition
-        .foreign_automation_source(
-            fixture.effect.identity(),
-            fixture.effect.configuration(),
-            &DevicePreparationContext {
-                sample_rate: 48_000,
-                tuning: &hex_lattice::TuningTable::default(),
-                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
-            },
+    if loop_seek {
+        fixture
+            .editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end: 512,
+                enabled: true,
+            })
+            .unwrap();
+    }
+    let prepare_candidate = |project: &Project, effect: &NativeEffect, generation: u64| {
+        let definition = NativeEffectDefinition::new(std::slice::from_ref(effect)).unwrap();
+        let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let effects = hex_engine::AudioCandidateEffects::new(&registry);
+        let (&asset, media) = fixture.media.first_key_value().unwrap();
+        let quote = effects.quote(project, 1).unwrap();
+        let limits = quote
+            .storage_reservation(std::mem::size_of_val(media.frames()))
+            .unwrap();
+        let bank = hex_engine::OwnedAudioInputs::try_new(
+            vec![(
+                asset,
+                hex_engine::OwnedAudioSource::try_resident(48_000, media.frames().to_vec())
+                    .ok()
+                    .unwrap(),
+            )],
+            limits,
         )
-        .unwrap()
+        .ok()
         .unwrap();
-    let project = fixture.editor.project();
-    let lanes = project.device(fixture.device).unwrap().automation();
-    let prepare_program = |source| {
-        BoundProgram::prepare(
-            lanes,
-            source,
-            project.tempo_map(),
-            1,
-            std::num::NonZeroU64::MIN,
-        )
-        .unwrap()
-        .unwrap()
+        let mut custody = hex_engine::AudioPreparationCustody::try_new_on_control().unwrap();
+        let token = custody
+            .begin_input_on_control(
+                hex_engine::AudioArrangementInput::new(project, generation, bank)
+                    .with_audio_prepared_revision()
+                    .with_effect_registry(&registry),
+            )
+            .ok()
+            .unwrap();
+        let mut owner = hex_engine::AudioCandidateOwner::try_new_on_control(custody, token)
+            .ok()
+            .unwrap();
+        owner
+            .seal_constructor_on_control(hex_engine::AudioStorageLedgerReservation {
+                data_rows: quote.data_rows,
+                handle_rows: quote.handle_rows,
+                root_rows: 1,
+                max_retained_bytes: limits.max_prepared_data_bytes,
+                max_construction_peak_bytes: limits.max_construction_data_bytes,
+            })
+            .unwrap();
+        owner.split_constructor_on_control().ok().unwrap()
     };
-    let mut stale = ForeignAutomationSource { ..source };
-    stale.binding.epoch += 1;
-    assert_eq!(
-        revision.install_foreign_automation_on_control(vec![prepare_program(stale)], 4096),
-        Err(hex_engine::Invalid(
-            "foreign automation source differs from the prepared graph"
-        ))
-    );
-    assert_eq!(
-        revision.install_foreign_automation_on_control(vec![prepare_program(source)], 0),
-        Err(hex_engine::Invalid(
-            "foreign automation storage exceeds reservation"
-        ))
-    );
-    assert_eq!(
-        revision.install_foreign_automation_on_control(
-            vec![prepare_program(source), prepare_program(source)],
-            4096,
-        ),
-        Err(hex_engine::Invalid(
-            "duplicate foreign automation source binding"
-        ))
-    );
-    revision
-        .install_foreign_automation_on_control(vec![prepare_program(source)], 4096)
-        .unwrap();
-    let mut runtime = hex_engine::SessionPlayback::new(Arc::new(revision)).unwrap();
+    let mut previous =
+        loop_live.then(|| prepare_candidate(fixture.editor.project(), &fixture.effect, 10));
+    if loop_seek {
+        fixture
+            .editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end: 320,
+                enabled: true,
+            })
+            .unwrap();
+    }
+    let mut effects = vec![fixture.effect];
+    if loop_live {
+        let original = &effects[0];
+        let mut binding = original.binding();
+        binding.epoch += 1;
+        let instance = original_instance_for_binding(binding);
+        let class = instance.configuration().identity.class;
+        effects.push(
+            NativeEffect::prepare_retained_with_authored_selection_on_control(
+                original.identity(),
+                instance,
+                usize::MAX,
+                Some((class, &[7])),
+            )
+            .unwrap(),
+        );
+    }
+    let (mut runtime, anchor) =
+        prepare_candidate(fixture.editor.project(), effects.last().unwrap(), 11);
     let (mut workers, mut endpoints) =
-        NativeEffectCallbacks::from_effects_on_control(vec![fixture.effect]).unwrap();
-    runtime
-        .apply(hex_engine::SessionPlaybackCommand::Play)
-        .unwrap();
+        NativeEffectCallbacks::from_effects_on_control(effects).unwrap();
+    if loop_seek && !loop_live {
+        runtime
+            .apply_action(PlaybackAction::Transport(PlaybackCommand::Seek(304)))
+            .unwrap();
+    }
+    if !loop_live {
+        runtime
+            .apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+            .unwrap();
+    }
+    let mut retired_graph = None;
+    let mut retired_anchor = None;
+    if let Some((mut old, old_anchor)) = previous.take() {
+        old.apply_action(PlaybackAction::Transport(PlaybackCommand::Seek(304)))
+            .unwrap();
+        old.apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+            .unwrap();
+        let mut before_edit = [[0.0; 2]; 5];
+        endpoints.begin_host_callback(before_edit.len()).unwrap();
+        old.render_with_foreign_processors(&mut before_edit, None, None, None, &mut endpoints)
+            .unwrap();
+        endpoints.finish_host_callback(true).unwrap();
+        assert_eq!(before_edit, [[0.0; 2]; 5]);
+        let mut transfer = None;
+        runtime
+            .try_inherit_and_retire_in_place(&mut Some(old), &mut retired_graph, &mut transfer)
+            .unwrap();
+        assert!(transfer.is_some());
+        retired_anchor = Some(old_anchor);
+    }
     let mut output = [[0.0; 2]; 64];
     let mut rendered = 0;
     for frames in output.chunks_mut(5) {
+        if !loop_seek && rendered == 5 {
+            runtime
+                .apply_action(PlaybackAction::Transport(PlaybackCommand::Pause))
+                .unwrap();
+            let mut paused = [[9.0; 2]; 3];
+            endpoints.begin_host_callback(paused.len()).unwrap();
+            runtime
+                .render_with_foreign_processors(&mut paused, None, None, None, &mut endpoints)
+                .unwrap();
+            endpoints.finish_host_callback(true).unwrap();
+            assert_eq!(paused, [[0.0; 2]; 3]);
+            runtime
+                .apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+                .unwrap();
+        }
         let measured = allocation_counter::measure(|| {
             endpoints.begin_host_callback(frames.len()).unwrap();
             runtime
@@ -1452,16 +1529,44 @@ fn actual_arrangement_renderer_clock_drives_the_signed_authored_effect() {
         );
         rendered += frames.len();
         let deadline = Instant::now() + Duration::from_secs(2);
-        while workers[0].published_blocks_on_control() < rendered as u64 / 8 {
+        while workers.last().unwrap().published_blocks_on_control() < rendered as u64 / 8 {
             assert!(Instant::now() < deadline, "signed authored PCM completion");
             std::thread::yield_now();
         }
     }
     let mut expected = [[0.0; 2]; 64];
-    expected[16] = fixture.samples[0].map(|sample| sample * 0.5);
-    expected[47] = fixture.samples[31].map(|sample| sample * (3.0 * 0.875));
+    if loop_live {
+        expected[27] = fixture.samples[0].map(|sample| sample * 0.625);
+        expected[58] = fixture.samples[31].map(|sample| sample * (3.0 * 1.125));
+    } else if loop_seek {
+        expected[32] = fixture.samples[0].map(|sample| sample * 0.75);
+        expected[63] = fixture.samples[31].map(|sample| sample * (3.0 * 1.125));
+    } else {
+        expected[16] = fixture.samples[0].map(|sample| sample * 0.5);
+        expected[47] = fixture.samples[31].map(|sample| sample * (3.0 * 0.875));
+    }
     assert_eq!(output, expected);
-    let retired = workers[0].quiesce_on_control().unwrap();
-    assert_eq!(retired.completed_blocks(), 8);
-    assert!(retired.retire_on_control().unwrap().status.success());
+    let proof = runtime.dispose_on_control().unwrap();
+    let mut anchors = [Some(anchor), retired_anchor];
+    proof.record_anchor_cells_on_control(&mut anchors).unwrap();
+    if let Some(mut old) = retired_graph {
+        old.dispose_on_control()
+            .unwrap()
+            .record_anchor_cells_on_control(&mut anchors)
+            .unwrap();
+    }
+    for anchor in anchors.iter_mut().flatten() {
+        anchor.finish_disposal_on_control().unwrap();
+    }
+    let current = workers.last_mut().unwrap().quiesce_on_control().unwrap();
+    assert_eq!(current.completed_blocks(), 8);
+    assert!(current.retire_on_control().unwrap().status.success());
+    if loop_live {
+        assert!(
+            workers[0].transport_is_live_on_control(),
+            "outgoing worker faulted after the edit"
+        );
+        let old = workers[0].quiesce_on_control().unwrap();
+        assert!(old.retire_on_control().unwrap().status.success());
+    }
 }

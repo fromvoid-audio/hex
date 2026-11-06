@@ -72,13 +72,13 @@ impl Plugins {
                 source.context().project_generation == input.context().project_generation
             })
         {
-            desired
-                .effect_preparation()
-                .visit_plugin_devices(|old_owner, old_device, old| {
-                    changed_state |= old_device == device
-                        && (old_owner.owner() != owner || !old.processing_eq(state));
-                    Ok(())
-                })?;
+            let previous = desired.effect_preparation();
+            changed_state = !input.same_authored_plugin_program(&previous, device);
+            previous.visit_plugin_devices(|old_owner, old_device, old| {
+                changed_state |= old_device == device
+                    && (old_owner.owner() != owner || !old.processing_eq(state));
+                Ok(())
+            })?;
         }
         // The latest accepted preparation for an equal state is the current
         // device's source; older matching instances can still own old tails.

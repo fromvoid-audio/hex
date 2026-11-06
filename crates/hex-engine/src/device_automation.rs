@@ -429,10 +429,28 @@ pub(crate) fn prepare_with_registry_inputs_and_external(
     input: Option<NativeParameterInputTarget>,
     external: &[NativeParameterInputTarget],
 ) -> Result<hex_lattice::PreparedParameterAutomation, Invalid> {
+    prepare_with_reading_routes(device, registry, input, external, false)
+}
+
+pub(crate) fn prepare_closed_effect(
+    device: &hex_project::Device,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    input: Option<NativeParameterInputTarget>,
+) -> Result<hex_lattice::PreparedParameterAutomation, Invalid> {
+    prepare_with_reading_routes(device, registry, input, &[], true)
+}
+
+fn prepare_with_reading_routes(
+    device: &hex_project::Device,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    input: Option<NativeParameterInputTarget>,
+    external: &[NativeParameterInputTarget],
+    foreign_preflighted: bool,
+) -> Result<hex_lattice::PreparedParameterAutomation, Invalid> {
     if external.len() > MAX_EXTERNAL_PARAMETER_TARGETS {
         return Err(Invalid("recorded parameter target limit exceeded"));
     }
-    let mut program = prepare_envelopes_with_registry(device, registry)?;
+    let mut program = prepare_envelopes_with_registry(device, registry, foreign_preflighted)?;
     if let Some(input) = input.filter(|input| input.device == device.id()) {
         if input.device_type != device.state().type_id()
             || !target_supported(registry, device.state(), input.target)
@@ -518,8 +536,12 @@ fn provider_description(
 fn prepare_envelopes_with_registry(
     device: &hex_project::Device,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    foreign_preflighted: bool,
 ) -> Result<hex_lattice::PreparedParameterAutomation, Invalid> {
-    if device.automation().is_empty() {
+    let local = |lane: &&hex_project::DeviceAutomation| {
+        !foreign_preflighted || !matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
+    };
+    if !device.automation().iter().any(|lane| local(&lane)) {
         return Ok(Default::default());
     }
     let definition = registry
@@ -527,6 +549,7 @@ fn prepare_envelopes_with_registry(
         .ok_or(Invalid(DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED))?;
     let count = device
         .reading_automation()
+        .filter(local)
         .try_fold(0usize, |sum, lane| sum.checked_add(lane.points.len()))
         .ok_or(Invalid("device automation point count overflow"))?;
     let mut lanes = Vec::new();
@@ -534,6 +557,7 @@ fn prepare_envelopes_with_registry(
         .try_reserve_exact(
             device
                 .reading_automation()
+                .filter(local)
                 .filter(|lane| !lane.target.is_host())
                 .count(),
         )
@@ -542,6 +566,7 @@ fn prepare_envelopes_with_registry(
     host.try_reserve_exact(
         device
             .reading_automation()
+            .filter(local)
             .filter(|lane| lane.target.is_host())
             .count(),
     )
@@ -550,7 +575,7 @@ fn prepare_envelopes_with_registry(
     points
         .try_reserve_exact(count)
         .map_err(|_| Invalid("could not reserve device automation points"))?;
-    for lane in device.automation() {
+    for lane in device.automation().iter().filter(local) {
         if !target_supported(registry, device.state(), lane.target) {
             return Err(Invalid(DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED));
         }

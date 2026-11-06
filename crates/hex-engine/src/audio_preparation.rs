@@ -780,6 +780,16 @@ impl AudioPreparationCustody {
         } = stages;
         let mut slots = Vec::new();
         let mut capacity = AudioArrangementCapacity::default();
+        let foreign_bytes = match crate::foreign_automation::candidate::quote(project) {
+            Ok((bytes, _)) => bytes,
+            Err(reason) => return Err(Box::new(AudioArrangementStartRefusal { reason, capacity })),
+        };
+        if foreign_bytes != 0 && (!assemble_revision || effects.is_none()) {
+            return Err(Box::new(AudioArrangementStartRefusal {
+                reason: AudioStorageError::UnsupportedGraph,
+                capacity,
+            }));
+        }
         let result = self.preflight(
             project,
             generation,
@@ -874,14 +884,14 @@ impl AudioPreparationCustody {
                         self.revision.reserve_with_sampler_and_effects(
                             project,
                             Some(metadata.id),
-                            effects.is_some(),
+                            effects,
                             native_input,
                         )?;
                     } else {
                         self.revision.reserve_with_sampler_and_effects(
                             project,
                             None,
-                            effects.is_some(),
+                            effects,
                             native_input,
                         )?;
                     }

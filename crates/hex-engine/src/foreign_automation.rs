@@ -7,6 +7,8 @@ use hex_lattice_contract::{DeviceAutomationTarget, ForeignParameterPoint};
 use hex_lattice_contract::{DeviceContractError, ForeignProcessorBinding};
 use hex_project::{AutomationInterpolation, AutomationPoint, DeviceAutomation, TempoMap};
 
+pub(crate) mod candidate;
+
 const MAX_QUANTUM_FRAMES: u16 = 256;
 const MAX_POINTS: usize = 64;
 
@@ -18,6 +20,23 @@ pub use hex_lattice::ForeignParameterCapability as ParameterCapability;
 pub struct QuantumProfile {
     pub frames: u16,
     pub max_runs: u16,
+}
+
+impl QuantumProfile {
+    /// Start with one run, allow the seven SDK timing cuts, and bound loop
+    /// wraps by their minimum spacing. Seek or loop replacement uses a new
+    /// source epoch before the renderer starts accepting the new origins.
+    pub(crate) fn arrangement(frames: u16, region: Option<hex_project::LoopRegion>) -> Self {
+        let wraps = region
+            .filter(|region| region.enabled())
+            .map_or(0, |region| {
+                u64::from(frames.saturating_sub(1)).div_ceil(region.end() - region.start())
+            });
+        Self {
+            frames,
+            max_runs: (8 + wraps).min(u64::from(frames)) as u16,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -164,14 +183,28 @@ impl Programs {
         self.0.is_empty()
     }
 
+    pub(crate) fn admits_loop(&self, region: Option<hex_project::LoopRegion>) -> bool {
+        self.0.iter().all(|bound| {
+            let profile = bound.program.profile;
+            QuantumProfile::arrangement(profile.frames, region).max_runs <= profile.max_runs
+        })
+    }
+
     pub(crate) fn visit_storage<'a>(
         &'a self,
         ledger: &mut crate::AudioRootStorageLedger<'a>,
     ) -> Result<(), crate::AudioStorageError> {
-        if self.0.capacity() != 0 {
-            ledger.vec(&self.0)?;
+        Self::visit_program_storage(&self.0, ledger)
+    }
+
+    pub(crate) fn visit_program_storage<'a>(
+        programs: &'a Vec<BoundProgram>,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        if programs.capacity() != 0 {
+            ledger.vec(programs)?;
         }
-        for bound in &self.0 {
+        for bound in programs {
             ledger.vec(&bound.program.lanes)?;
             for lane in &bound.program.lanes {
                 ledger.vec(&lane.knots)?;
@@ -446,12 +479,32 @@ fn continuous(previous: Option<u64>, next: Option<u64>) -> bool {
         .is_some_and(|frame| Some(frame) == next)
 }
 
+fn knot_reservation(points: &[AutomationPoint], tempo: &TempoMap) -> Option<usize> {
+    points.windows(2).try_fold(points.len(), |count, pair| {
+        if pair[0].outgoing != AutomationInterpolation::Linear {
+            return Some(count);
+        }
+        let markers = tempo.points();
+        let start = markers.partition_point(|marker| marker.beat() <= pair[0].beat);
+        let end = markers.partition_point(|marker| marker.beat() < pair[1].beat);
+        count.checked_add(end.checked_sub(start)?)
+    })
+}
+
 fn prepare_knots(
     points: &[AutomationPoint],
     steps: u32,
     tempo: &TempoMap,
 ) -> Result<Vec<Knot>, Invalid> {
     let mut knots = Vec::<Knot>::new();
+    let capacity = if steps == 0 {
+        knot_reservation(points, tempo).ok_or(Invalid("foreign automation knot count overflow"))?
+    } else {
+        points.len()
+    };
+    knots
+        .try_reserve_exact(capacity)
+        .map_err(|_| Invalid("could not reserve foreign automation knots"))?;
     let mut push = |beat, value, linear| -> Result<(), Invalid> {
         let frame = tempo
             .beat_to_frame(beat)
@@ -464,9 +517,6 @@ fn prepare_knots(
         if let Some(last) = knots.last_mut().filter(|last| last.frame == frame) {
             *last = knot;
         } else {
-            knots
-                .try_reserve(1)
-                .map_err(|_| Invalid("could not reserve foreign automation knots"))?;
             knots.push(knot);
         }
         Ok(())
