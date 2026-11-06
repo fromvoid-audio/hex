@@ -4760,6 +4760,7 @@ impl EditorView {
         {
             self.stopped_playback_restore =
                 Some(super::audio_admission::StoppedPlaybackRestore::Preparing);
+            super::device_panel::vst3_parameters::refresh(self);
             self.status = "stopped · restoring current sound".into();
             self.error = None;
         }

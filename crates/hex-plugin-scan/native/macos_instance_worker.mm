@@ -366,7 +366,7 @@ int main(int argc,char** argv) {
             uint64_t next_graph=0,next_epoch=0;
             uint64_t capture_operation=0,flush_operation=0,reactivate_operation=0;
             hex_instance::ParameterFeedback flushed_values;
-            bool flush_applied=false;
+            bool flush_applied=false,flush_while_idle=false;
             wire::PresentationPlan next_presentation;
             // Single live capture slot. Main exclusively writes its result
             // after Requested/acquire, then Complete/release transfers it back
@@ -482,6 +482,48 @@ int main(int argc,char** argv) {
                         for(size_t n=0;n<applying_edit_count;++n) complete_edit(applying_edits[n]);
                         return true;
                     };
+                    // Explicit host input uses the same parameter-only SDK
+                    // exchange in both epochs. Only the non-PCM request waits
+                    // for the main lane to mirror values before acknowledging.
+                    const auto flush_parameters=[&](const wire::Packet& packet,bool idle)->uint32_t {
+                        instance.refresh_processing_parameters(processing_parameters);
+                        if(!parameter_input.reset(0,false) || !parameter_output.reset(0,true)) { error(channel,&*config,Processing);std::_Exit(Processing); }
+                        bool valid=true;
+                        for(size_t n=0;n<packet.parameter_count;++n) {
+                            const auto& point=packet.parameters[n];const auto* info=processing_parameters.find(point.id);
+                            if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden)) ||
+                                !parameter_input.input(point.id,0,point.normalized)) valid=false;
+                        }
+                        if(!valid || !stage_edits()) return ProtocolFailure;
+                        if(!parameter_input.begin_sdk() || !parameter_output.begin_sdk()) { error(channel,&*config,Processing);std::_Exit(Processing); }
+                        ProcessData flush{};flush.processMode=process_mode;flush.symbolicSampleSize=kSample32;
+                        flush.inputParameterChanges=parameter_input.size()?&parameter_input:nullptr;flush.outputParameterChanges=&parameter_output;
+                        phase.store(2,std::memory_order_release);
+                        const auto result=idle?instance.flush_idle(flush):instance.flush_stopped(flush);
+                        const bool input_returned=parameter_input.end_sdk(),output_returned=parameter_output.end_sdk();
+                        if(!input_returned || !output_returned) { error(channel,&*config,Processing);std::_Exit(Processing); }
+                        if(result!=hex_instance::FlushResult::Applied && result!=hex_instance::FlushResult::Empty) return Processing;
+                        flushed_values={};
+                        for(size_t n=0;n<parameter_input.size();++n) {
+                            hex_instance::ParameterPoint point{};
+                            valid=parameter_input.point(n,point) && flushed_values.put(point.id,point.normalized,staged_editor_sequence(point.id)) && valid;
+                        }
+                        for(size_t n=0;n<parameter_output.size();++n) {
+                            hex_instance::ParameterPoint point{};
+                            if(!parameter_output.point(n,point) || !processing_parameters.find(point.id) || !flushed_values.put(point.id,point.normalized,staged_editor_sequence(point.id))) valid=false;
+                        }
+                        if(!valid) return ProtocolFailure;
+                        for(size_t n=0;n<applying_edit_count;++n) complete_edit(applying_edits[n]);
+                        {
+                            std::unique_lock<std::mutex> lock(startup_mutex);
+                            flush_operation=packet.capture_operation;flush_applied=result==hex_instance::FlushResult::Applied;
+                            flush_while_idle=idle;epoch_stage=FlushRequested;
+                            startup_changed.notify_all();startup_changed.wait(lock,[&]{return epoch_stage==FlushSent || worker_failure.load();});
+                            if(idle) epoch_stage=Idle;
+                        }
+                        return worker_failure.load();
+                    };
+                    uint64_t idle_flushes=0;
                     uint64_t page_operation=0;
                     const auto page_reply=[&](const wire::Packet& request,bool poll) {
                         auto state=page_stage.load(std::memory_order_acquire);
@@ -599,6 +641,13 @@ int main(int argc,char** argv) {
                             if(!page_reply(packet,received==11)) {if(!worker_failure.load())worker_failure.store(ProtocolFailure);break;}
                             continue;
                         }
+                        if(received==8) {
+                            if(idle_flushes==std::numeric_limits<uint64_t>::max() || packet.capture_operation!=idle_flushes+1) {
+                                worker_failure.store(ProtocolFailure);break;
+                            }
+                            if(const auto failure=flush_parameters(packet,true)) {worker_failure.store(failure);break;}
+                            ++idle_flushes;continue;
+                        }
                         if(received==9) {
                             if(packet.flush_idle_edits && !flush_idle_editor()) {worker_failure.store(Processing);break;}
                             if(!read_edit_receipts(packet)) {worker_failure.store(ProtocolFailure);break;}
@@ -692,40 +741,7 @@ int main(int argc,char** argv) {
                                 }
                                 if(resumed==8) {
                                     if(flushes==std::numeric_limits<uint64_t>::max() || packet.capture_operation!=flushes+1) { worker_failure.store(ProtocolFailure);break; }
-                                    instance.refresh_processing_parameters(processing_parameters);
-                                    if(!parameter_input.reset(0,false) || !parameter_output.reset(0,true)) { error(channel,&*config,Processing);std::_Exit(Processing); }
-                                    bool valid=true;
-                                    for(size_t n=0;n<packet.parameter_count;++n) {
-                                        const auto& point=packet.parameters[n];const auto* info=processing_parameters.find(point.id);
-                                        if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden)) ||
-                                            !parameter_input.input(point.id,0,point.normalized)) valid=false;
-                                    }
-                                    if(!valid || !stage_edits()) { worker_failure.store(ProtocolFailure);break; }
-                                    if(!parameter_input.begin_sdk() || !parameter_output.begin_sdk()) { error(channel,&*config,Processing);std::_Exit(Processing); }
-                                    ProcessData flush{};flush.processMode=process_mode;flush.symbolicSampleSize=kSample32;
-                                    flush.inputParameterChanges=parameter_input.size()?&parameter_input:nullptr;flush.outputParameterChanges=&parameter_output;
-                                    phase.store(2,std::memory_order_release);
-                                    const auto result=instance.flush_stopped(flush);
-                                    const bool input_returned=parameter_input.end_sdk(),output_returned=parameter_output.end_sdk();
-                                    if(!input_returned || !output_returned) { error(channel,&*config,Processing);std::_Exit(Processing); }
-                                    if(result!=hex_instance::FlushResult::Applied && result!=hex_instance::FlushResult::Empty) { worker_failure.store(Processing);break; }
-                                    flushed_values={};
-                                    for(size_t n=0;n<parameter_input.size();++n) {
-                                        hex_instance::ParameterPoint point{};
-                                        valid=parameter_input.point(n,point) && flushed_values.put(point.id,point.normalized) && valid;
-                                    }
-                                    for(size_t n=0;n<parameter_output.size();++n) {
-                                        hex_instance::ParameterPoint point{};
-                                        if(!parameter_output.point(n,point) || !processing_parameters.find(point.id) || !flushed_values.put(point.id,point.normalized)) valid=false;
-                                    }
-                                    if(!valid) { worker_failure.store(ProtocolFailure);break; }
-                                    for(size_t n=0;n<applying_edit_count;++n) complete_edit(applying_edits[n]);
-                                    {
-                                        std::unique_lock<std::mutex> lock(startup_mutex);
-                                        flush_operation=packet.capture_operation;flush_applied=result==hex_instance::FlushResult::Applied;epoch_stage=FlushRequested;
-                                        startup_changed.notify_all();startup_changed.wait(lock,[&]{return epoch_stage==FlushSent || worker_failure.load();});
-                                    }
-                                    if(worker_failure.load()) break;
+                                    if(const auto failure=flush_parameters(packet,false)) {worker_failure.store(failure);break;}
                                     ++flushes;phase.store(1,std::memory_order_release);resumed=packet.read(channel,*config,blocks,frames);continue;
                                 }
                                 if(captures==std::numeric_limits<uint64_t>::max() || packet.capture_operation!=captures+1) {
@@ -1037,17 +1053,19 @@ int main(int argc,char** argv) {
                         std::lock_guard<std::mutex> lock(startup_mutex);
                         epoch_stage=ReactivateSent;startup_changed.notify_all();
                     } else if(stage==FlushRequested) {
-                        // The original worker is stopped and waiting at this
-                        // barrier. Synchronize controller values before ACK;
+                        // The original worker is waiting at this barrier. Synchronize controller values before ACK;
                         // neither flush nor mirror advances the PCM prefix.
                         auto pending=flushed_values;
                         if(!instance.publish_parameter_feedback(pending) || !instance.synchronize_parameter_feedback_on_control()) {
                             error(channel,&*config,HostControl);std::_Exit(HostControl);
                         }
                         instance.dispatch_host_callbacks();
-                        const auto current_latency=instance.reported_latency_on_control(),current_tail=instance.reported_tail_on_control();
-                        if(instance.host_refusals() || !current_latency || !current_tail || *current_latency!=*latency || *current_tail!=*tail) {
-                            error(channel,&*config,HostControl);std::_Exit(HostControl);
+                        if(instance.host_refusals()) { error(channel,&*config,HostControl);std::_Exit(HostControl); }
+                        if(!flush_while_idle) {
+                            const auto current_latency=instance.reported_latency_on_control(),current_tail=instance.reported_tail_on_control();
+                            if(!current_latency || !current_tail || *current_latency!=*latency || *current_tail!=*tail) {
+                                error(channel,&*config,HostControl);std::_Exit(HostControl);
+                            }
                         }
                         const auto* snapshot=instance.parameter_snapshot();
                         wire::Bytes body;config->stamp(body);wire::number(body,blocks,8);wire::number(body,frames,8);

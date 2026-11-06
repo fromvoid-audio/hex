@@ -15,9 +15,9 @@ pub(super) enum NativeEpochRuntimeTarget {
 
 impl PublicationControl {
     /// Queue one validated raw SDK parameter input on the original live source.
-    /// Only an actual accepted PCM quantum can consume it; no process/flush or
-    /// graph replacement is invented. Validate current metadata/writability at
-    /// the caller; the SDK path still enforces its actual parameter contract.
+    /// While playing, an actual PCM quantum consumes it. While idle, the same
+    /// worker flushes the point and acknowledges controller readback without
+    /// advancing PCM. Validate current metadata/writability at the caller.
     /// Processing progress below grants no canonical/state installation.
     pub fn begin_native_source_parameter_change_on_control(
         &mut self,
@@ -28,9 +28,12 @@ impl PublicationControl {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native parameter output is closing");
         }
-        let result = self
-            .candidate_root
-            .begin_native_parameter_change(binding, id, normalized)?;
+        let result = self.candidate_root.begin_native_parameter_change(
+            binding,
+            id,
+            normalized,
+            !self.status.playing.load(Acquire),
+        )?;
         if self.status.closing.load(Acquire) {
             return Err("native parameter output is closing");
         }

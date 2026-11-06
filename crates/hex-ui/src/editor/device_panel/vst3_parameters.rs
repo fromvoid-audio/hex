@@ -57,6 +57,9 @@ fn current_context(view: &EditorView) -> Option<AudioSourceContext> {
 }
 
 fn open(view: &mut EditorView, device: DeviceId, cx: &mut Context<EditorView>) {
+    if view.stopped_playback_restore.is_some() {
+        return;
+    }
     let Some(context) = current_context(view) else {
         return;
     };
@@ -178,6 +181,9 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
         .w(px(crate::device_composition::GENERIC_FRAME_WIDTH))
         .flex_col()
         .min_w_0();
+    if view.stopped_playback_restore.is_some() {
+        return body.child(theme::text("restoring vst3…"));
+    }
     let Some(panel) = panel else {
         return body.child(
             div()

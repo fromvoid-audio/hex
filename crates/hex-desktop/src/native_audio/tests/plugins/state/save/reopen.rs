@@ -179,6 +179,16 @@ fn native_effect_save_reopens_component_and_controller_into_independent_instance
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
 fn live_vst3_drag_changes_original_pcm_once_and_survives_undo_save_reopen() {
+    vst3_drag_roundtrip(true);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper/source receipts required"]
+fn idle_vst3_drag_survives_undo_save_reopen() {
+    vst3_drag_roundtrip(false);
+}
+
+fn vst3_drag_roundtrip(playing: bool) {
     use hex_session::device_gesture::{
         GestureClient, GestureRequest, PluginParameterOrigin, PluginParameterValue,
     };
@@ -220,14 +230,20 @@ fn live_vst3_drag_changes_original_pcm_once_and_survives_undo_save_reopen() {
     let gain = &result[0];
     assert!(gain.editable);
     assert_eq!(gain.normalized, 0.75 / 4.0);
-    h.audio
-        .as_mut()
-        .unwrap()
-        .control
-        .command(PlaybackCommand::Play)
-        .unwrap();
+    if playing {
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+    }
     let mut blocks = h.plugin_completed.load(Acquire);
     let mut render = |h: &ResidentHarness| {
+        if !playing {
+            h.render_worker_step();
+            return [[0.0; 2]; 256];
+        }
         let samples = h.render_plugin_block();
         blocks += 1;
         wait(|| h.plugin_completed.load(Acquire) >= blocks);
@@ -288,8 +304,21 @@ fn live_vst3_drag_changes_original_pcm_once_and_survives_undo_save_reopen() {
     assert!(client.acknowledge(ack));
     assert_eq!(preview.state.project.as_ref(), &fixture.project);
     // Render the original pipeline's accepted point through to its PCM.
-    let pcm = (0..3).map(|_| render(&h)).last().unwrap();
-    assert!(pcm.iter().any(|frame| frame[0] > 0.25), "live preview PCM");
+    if playing {
+        let pcm = (0..3).map(|_| render(&h)).last().unwrap();
+        assert!(pcm.iter().any(|frame| frame[0] > 0.25), "live preview PCM");
+    } else {
+        assert_eq!(h.plugin_completed.load(Acquire), 0);
+        assert!(
+            !h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
+        );
+    }
     client
         .finish_plugin(PluginParameterValue::new(0.5).unwrap())
         .unwrap();

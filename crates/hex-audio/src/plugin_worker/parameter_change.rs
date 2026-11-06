@@ -15,6 +15,7 @@ enum Phase {
 #[derive(Clone, Copy, Debug)]
 enum Terminal {
     Processed(ProcessedParameterChange),
+    Flushed,
     Refused,
     Withdrawn,
 }
@@ -23,6 +24,7 @@ pub(super) struct Slot {
     ordinal: u64,
     phase: Phase,
     point: ParameterPoint,
+    idle: bool,
     result: Option<Terminal>,
 }
 #[derive(Default)]
@@ -55,6 +57,8 @@ pub struct ProcessedParameterChange {
 pub enum NativeWorkerParameterProgress {
     Pending,
     Processed(ProcessedParameterChange),
+    /// A zero-frame exchange acknowledged by the original processor and controller.
+    Flushed,
     /// The accepted input already contains this ID, or its quantum/physical
     /// callback budget has no remaining slot.
     /// Its authored points and PCM are preserved; no host point was injected.
@@ -141,6 +145,7 @@ impl NativeWorker {
             .store(false, Release);
         Ok(match terminal {
             Some(Terminal::Processed(value)) => NativeWorkerParameterProgress::Processed(value),
+            Some(Terminal::Flushed) => NativeWorkerParameterProgress::Flushed,
             Some(Terminal::Refused) => NativeWorkerParameterProgress::Refused,
             Some(Terminal::Withdrawn) => NativeWorkerParameterProgress::Withdrawn,
             None => NativeWorkerParameterProgress::Failed,
@@ -165,6 +170,15 @@ impl NativeWorker {
         &mut self,
         id: u32,
         normalized: f64,
+    ) -> Result<NativeWorkerParameterChange, &'static str> {
+        self.begin_parameter_change(id, normalized, false)
+    }
+
+    pub(crate) fn begin_parameter_change(
+        &mut self,
+        id: u32,
+        normalized: f64,
+        idle: bool,
     ) -> Result<NativeWorkerParameterChange, &'static str> {
         let point = ParameterPoint {
             frame: 0,
@@ -193,6 +207,7 @@ impl NativeWorker {
             .ok_or("native parameter input ordinal exhausted")?;
         slot.ordinal = ordinal;
         slot.point = point;
+        slot.idle = idle;
         slot.phase = Phase::Queued;
         slot.result = None;
         self.reaper
@@ -267,6 +282,7 @@ impl NativeWorker {
         slot.result = None;
         Ok(match result {
             Terminal::Processed(value) => NativeWorkerParameterProgress::Processed(value),
+            Terminal::Flushed => NativeWorkerParameterProgress::Flushed,
             Terminal::Refused => NativeWorkerParameterProgress::Refused,
             Terminal::Withdrawn => NativeWorkerParameterProgress::Withdrawn,
         })
@@ -310,6 +326,46 @@ fn merge_parameter_input(
     Ok(Some(merged))
 }
 impl State {
+    /// Serialized with PCM on the native worker. Idle points never enter a
+    /// PCM block and use the same exact mailbox/token as live input.
+    pub(super) fn advance_idle_parameter_change(
+        &mut self,
+        signal: &Signal,
+    ) -> Result<(), hex_plugin_host::Error> {
+        use hex_plugin_host::Error;
+        if self.parameter_change.ordinal.is_some()
+            || !signal.parameter_change_requested.load(Acquire)
+        {
+            return Ok(());
+        }
+        let (ordinal, point) = {
+            let mut mailbox = match signal.capture.try_lock() {
+                Ok(slot) => slot,
+                Err(TryLockError::WouldBlock) => return Ok(()),
+                Err(TryLockError::Poisoned(_)) => {
+                    return Err(Error::Protocol("native parameter mailbox failed"));
+                }
+            };
+            let slot = &mut mailbox.parameter_change;
+            if slot.phase != Phase::Queued || !slot.idle {
+                return Ok(());
+            }
+            slot.phase = Phase::InFlight;
+            signal.parameter_change_requested.store(false, Release);
+            (slot.ordinal, slot.point)
+        };
+        let Some(Processor::Native(instance)) = self.processor.as_mut() else {
+            return Err(Error::Protocol("native parameter source missing"));
+        };
+        let mut points = Parameters::default();
+        points
+            .push(point)
+            .map_err(|_| Error::Protocol("invalid native parameter input"))?;
+        instance.flush_idle_parameters_on_worker(&points)?;
+        self.parameter_change.ordinal = Some(ordinal);
+        self.parameter_change.result = Some(Terminal::Flushed);
+        Ok(())
+    }
     pub(super) fn stage_parameter_change(
         &mut self,
         signal: &Signal,
@@ -329,7 +385,7 @@ impl State {
         let slot = &mut mailbox.parameter_change;
         // Withdrawal may win after the worker's atomic observation and before
         // this lock. It must not become a source fault or a late mutation.
-        if slot.phase != Phase::Queued {
+        if slot.phase != Phase::Queued || slot.idle {
             return Ok(());
         }
         self.parameter_change.ordinal = Some(slot.ordinal);

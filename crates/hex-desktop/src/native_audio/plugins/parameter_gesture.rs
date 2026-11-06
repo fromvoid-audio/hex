@@ -65,9 +65,6 @@ impl Plugins {
         input: PluginParameterGestureInput<'_>,
     ) -> Result<Prepared, Error> {
         if let PluginGesturePreparation::Begin { origin, snapshot } = input.operation() {
-            if !control.status.playing.load(Acquire) {
-                return Err(refused("start playback to adjust vst3 parameters"));
-            }
             if self.parameter_gesture.is_some()
                 || self.parameters.is_some()
                 || self.restore.is_some()
@@ -260,7 +257,10 @@ impl Gesture {
                     .drain_stopped_native_source_parameter_change_on_control(self.binding, token);
             }
             match result {
-                Ok(NativeWorkerParameterProgress::Processed(_)) => {
+                Ok(
+                    NativeWorkerParameterProgress::Processed(_)
+                    | NativeWorkerParameterProgress::Flushed,
+                ) => {
                     self.last = *value;
                     self.sequence = *sequence;
                     self.pending = None;
@@ -292,7 +292,7 @@ impl Gesture {
                 {
                     continue;
                 }
-                return Err(refused("vst3 is waiting for a playback block"));
+                return Err(refused("vst3 parameter input is still pending"));
             }
             edits::poll_control(control);
         }

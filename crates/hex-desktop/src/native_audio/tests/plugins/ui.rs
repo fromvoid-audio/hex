@@ -1380,4 +1380,35 @@ fn live_vst3_pointer_drag_reaches_native_device_during_playback(cx: &mut gpui::T
                     != initial.device(device).unwrap().state()
         })
     });
+
+    let before_stop = view(cx).applied.unwrap().audio_revision;
+    let before_edit = view(cx).state.unwrap().project.clone();
+    click(&mut visual, "stop · escape");
+    until("stopped restore refreshes the open controller list", || {
+        assert!(render().iter().all(|sample| *sample == [0.0; 2]));
+        repaint(cx, &mut visual);
+        let view = view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        view.applied
+            .is_some_and(|source| source.audio_revision > before_stop)
+            && visual.debug_bounds(knob).is_some()
+    });
+    let start = visual.debug_bounds(knob).unwrap().center();
+    let end = gpui::point(start.x, start.y + gpui::px(20.0));
+    visual.simulate_mouse_down(start, gpui::MouseButton::Left, mods);
+    repaint(cx, &mut visual);
+    visual.simulate_mouse_move(end, gpui::MouseButton::Left, mods);
+    repaint(cx, &mut visual);
+    visual.simulate_mouse_up(end, gpui::MouseButton::Left, mods);
+    until("stopped pointer release commits a second VST3 edit", || {
+        assert!(render().iter().all(|sample| *sample == [0.0; 2]));
+        repaint(cx, &mut visual);
+        let view = view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        view.state.is_some_and(|state| {
+            state.revision == revision + 2
+                && state.project.device(device).unwrap().state()
+                    != before_edit.device(device).unwrap().state()
+        })
+    });
 }

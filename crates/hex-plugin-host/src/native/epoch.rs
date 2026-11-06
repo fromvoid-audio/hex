@@ -32,6 +32,76 @@ impl Prepared {
         }
         Ok(())
     }
+    /// Apply host input on the original enabled SDK processor while the
+    /// transport is idle. Controller readback is acknowledged at the same
+    /// completed PCM prefix. Only the serialized instance worker calls this.
+    pub fn flush_idle_parameters_on_worker(
+        &mut self,
+        parameters: &crate::transport::Parameters,
+    ) -> Result<protocol::FlushedParameters> {
+        let result = (|| {
+            let operation = self
+                .idle_flush_sequence
+                .checked_add(1)
+                .ok_or(Error::Protocol("idle flush operation exhausted"))?;
+            let values =
+                self.exchange_parameter_flush(operation, parameters, self.limits.exchange, || {
+                    false
+                })?;
+            self.idle_flush_sequence = operation;
+            Ok(values)
+        })();
+        if result.is_err() {
+            self.faulted = true;
+            self.lease.cancel_native();
+        }
+        result
+    }
+
+    fn exchange_parameter_flush(
+        &mut self,
+        operation: u64,
+        parameters: &crate::transport::Parameters,
+        timeout: std::time::Duration,
+        mut is_cancelled: impl FnMut() -> bool,
+    ) -> Result<protocol::FlushedParameters> {
+        self.require_live_epoch()?;
+        let request = protocol::flush_request(&self.config, self.sequence, operation, parameters)?;
+        let until = end_after(timeout)?;
+        let token = self.lease.cancellation.clone();
+        let mut check = || {
+            token.check()?;
+            if is_cancelled() {
+                Err(Error::Cancelled)
+            } else {
+                Ok(())
+            }
+        };
+        self.lease.channel.send(&request, until, &mut check)?;
+        self.lease
+            .channel
+            .read(&mut self.packet, until, &mut check)?;
+        if self.packet.magic() == b"HXVIER01" {
+            return Err(Error::Worker(protocol::error(
+                self.packet.body()?,
+                self.config.binding,
+            )?));
+        }
+        if self.packet.magic() != b"HXVIFL01" {
+            return Err(Error::Protocol("missing parameter flush acknowledgement"));
+        }
+        let values = protocol::flushed_parameters(
+            self.packet.body()?,
+            &self.config,
+            self.sequence,
+            operation,
+            parameters,
+        )?;
+        self.require_live_epoch()?;
+        check()?;
+        Ok(values)
+    }
+
     fn refuse_epoch_retained(self, cause: Error) -> PreparationFailure {
         PreparationFailure::native(cause, self.lease, self.limits.retirement)
     }
@@ -301,58 +371,19 @@ impl Quiescent {
     pub fn flush_parameters_retained_while_on_control(
         mut self,
         parameters: &crate::transport::Parameters,
-        mut is_cancelled: impl FnMut() -> bool,
+        is_cancelled: impl FnMut() -> bool,
     ) -> std::result::Result<(Self, protocol::FlushedParameters), PreparationFailure> {
         let result = (|| {
-            self.instance.require_live_epoch()?;
             let operation = self
                 .flush_sequence
                 .checked_add(1)
                 .ok_or(Error::Protocol("flush operation exhausted"))?;
-            let request = protocol::flush_request(
-                &self.instance.config,
-                self.instance.sequence,
+            let values = self.instance.exchange_parameter_flush(
                 operation,
                 parameters,
+                self.instance.limits.startup,
+                is_cancelled,
             )?;
-            let until = end_after(self.instance.limits.startup)?;
-            let token = self.instance.lease.cancellation.clone();
-            let mut check = || {
-                token.check()?;
-                if is_cancelled() {
-                    Err(Error::Cancelled)
-                } else {
-                    Ok(())
-                }
-            };
-            self.instance
-                .lease
-                .channel
-                .send(&request, until, &mut check)?;
-            self.instance
-                .lease
-                .channel
-                .read(&mut self.instance.packet, until, &mut check)?;
-            if self.instance.packet.magic() == b"HXVIER01" {
-                return Err(Error::Worker(protocol::error(
-                    self.instance.packet.body()?,
-                    self.instance.config.binding,
-                )?));
-            }
-            if self.instance.packet.magic() != b"HXVIFL01" {
-                return Err(Error::Protocol(
-                    "missing stopped parameter flush acknowledgement",
-                ));
-            }
-            let values = protocol::flushed_parameters(
-                self.instance.packet.body()?,
-                &self.instance.config,
-                self.instance.sequence,
-                operation,
-                parameters,
-            )?;
-            self.instance.require_live_epoch()?;
-            check()?;
             self.flush_sequence = operation;
             Ok(values)
         })();
