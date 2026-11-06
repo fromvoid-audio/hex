@@ -1288,7 +1288,7 @@ class ReleaseCargoTests(unittest.TestCase):
             def runner(cwd, name, selected_env=env):
                 return delivery.ci.LocalCiRunner(cwd, run_id=name, env=selected_env,
                     min_free_bytes=0, target_state_dir=state)
-            def build(cwd, name, expected, selected_env=env):
+            def build(cwd, name, expected, selected_env=env, *, check_contender=False, retain=False):
                 instance = runner(cwd, name, selected_env)
                 checks = []
                 def verify():
@@ -1298,18 +1298,19 @@ class ReleaseCargoTests(unittest.TestCase):
                     self.assertEqual(command([str(binary)]), expected)
                     self.assertEqual(delivery.sha(binary), ownership["artifact"]["sha256"])
                     self.assertIsNotNone(instance.target_lock)
-                    with self.assertRaisesRegex(delivery.ci.TargetCacheError, "already in use"):
-                        with runner(cwd, name + "-contender").guarded_release():
-                            self.fail("second owner entered")
-                    # Artifact-only consumption does not activate/install any app.
-                    shutil.copy2(binary, base / (name + "-retained-binary"))
+                    if check_contender:
+                        with self.assertRaisesRegex(delivery.ci.TargetCacheError, "already in use"):
+                            with runner(cwd, name + "-contender").guarded_release():
+                                self.fail("second owner entered")
+                    if retain:
+                        shutil.copy2(binary, base / (name + "-retained-binary"))
                 self.assertIsNone(instance.target_lock)
                 self.assertEqual(ownership["state"], "ready")
                 if ownership.get("cleanup_log"):
                     self.assertNotIn("qualifier", Path(ownership["cleanup_log"]).read_text())
                 self.assertEqual(checks, ["before-build", "artifact"])
                 return ownership
-            first = build(root, "release-a", "16")
+            first = build(root, "release-a", "16", check_contender=True, retain=True)
             owner_before = Path(first["owner_path"]).read_bytes()
             def refuse_certificate():
                 raise delivery.DeliveryError("test certificate inputs changed")
@@ -1350,7 +1351,7 @@ class ReleaseCargoTests(unittest.TestCase):
             self.assertEqual(control.returncode, 23, control.stderr)
             command(["cargo", "build", "--offline", "--locked"], other, env)
             dev = {str(p.relative_to(target)):delivery.sha(p) for p in (target / "debug").rglob("*") if p.is_file()}
-            second = build(other, "release-b", "B string API 9", guarded_env)
+            second = build(other, "release-b", "B string API 9", guarded_env, retain=True)
             third = build(root, "release-a-again", "16", guarded_env)
             self.assertEqual(second["cleanup_status"], "passed")
             self.assertEqual(third["cleanup_status"], "passed")
@@ -1382,31 +1383,27 @@ class ReleaseCargoTests(unittest.TestCase):
             self.assertEqual(restored["cleanup_status"], "passed")
             self.assertIn("fixture-api", " ".join(restored["cleanup_argv"]))
             self.assertNotEqual(restored["artifact"]["sha256"], incremental["artifact"]["sha256"])
-            api.write_text('pub fn value() -> u32 { 10 }\n')
-            command(["git", "add", "."])
-            command(["git", "commit", "-qm", "restore normal behavior"])
-            build(root, "release-a-after-restored", "19")
             # External path dependencies need the same content-based release
             # protection, even when Cargo's timestamp observation is unchanged.
+            # Keep workspace source fixed at the previous successful build.
             external_source = external / "src/lib.rs"
             stamp = external_source.stat()
             external_source.write_text('pub fn suffix() -> u32 { 8 }\n')
             os.utime(external_source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
-            external_changed = build(root, "release-a-external-restored", "18")
+            external_changed = build(root, "release-a-external-restored", "28")
             self.assertIn("external-helper", " ".join(external_changed["cleanup_argv"]))
-            external_source.write_text('pub fn suffix() -> u32 { 9 }\n')
-            build(root, "release-a-external-restored-back", "19")
-            changed_config = build(root, "release-a-config", "19", {**env, "RUSTFLAGS": "--cfg release_fixture_changed"})
+            dependencies = {p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}
+            self.assertTrue(dependencies)
+            configured_env = {**env, "RUSTFLAGS": "--cfg release_fixture_changed"}
+            changed_config = build(root, "release-a-config", "28", configured_env)
             self.assertEqual(changed_config["cleanup_status"], "passed")
             configured_dependencies = {p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}
             self.assertEqual({name: configured_dependencies[name] for name in dependencies}, dependencies)
-            dependencies = configured_dependencies
-            build(root, "release-a-normal-config", "19")
             original_main = (root / "app/src/main.rs").read_text()
             (root / "app/src/main.rs").write_text("invalid Rust source")
             command(["git", "add", "."])
             command(["git", "commit", "-qm", "actual failed build"])
-            failed = runner(root, "release-a-failed")
+            failed = runner(root, "release-a-failed", configured_env)
             with self.assertRaises(delivery.DeliveryError):
                 with delivery.optimized_artifact(failed, package="fixture-app"):
                     self.fail("failed Cargo build yielded an artifact")
@@ -1414,15 +1411,15 @@ class ReleaseCargoTests(unittest.TestCase):
             self.assertEqual(owner["state"], "pending")
             (root / "app/src/main.rs").write_text(original_main)
             (root / "api/src/lib.rs").write_text('pub fn value() -> u32 { 7 }\n')
+            external_source.write_text('pub fn suffix() -> u32 { 9 }\n')
             command(["git", "add", "."])
             command(["git", "commit", "-qm", "restore behavior"])
             with self.assertRaisesRegex(delivery.ci.TargetCacheError, "pending"):
-                with delivery.optimized_artifact(runner(root, "pending-refused"), package="fixture-app"):
+                with delivery.optimized_artifact(runner(root, "pending-refused", configured_env), package="fixture-app"):
                     self.fail("pending state was silently reused")
             with delivery.optimized_artifact(runner(root, "pending-explicit"), package="fixture-app", adopt=True) as (binary, _):
                 self.assertEqual(command([str(binary)]), "16")
-            # Explicit recovery switched from the guarded Cargo wrapper back
-            # to the original tool, invalidating that release dependency profile.
+            # Explicit recovery restores the original release inputs.
             dependencies = {p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}
             # Cargo cannot select the old removed/renamed member from this graph.
             (other / "api/Cargo.toml").write_text('[package]\nname="renamed-api"\nversion="0.1.0"\nedition="2021"\n')

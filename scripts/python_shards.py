@@ -8,9 +8,9 @@ sets of ordinary cases to keep process startup from dominating. Every case runs
 once and every process reports a unittest result. Tests cannot rely on sharing
 state with other cases in the same process.
 
-Methods marked `__hex_shard_bounded__ = True` run after ordinary tests with at
-most two workers. This keeps subprocess-heavy isolated fixtures from competing
-with the ordinary queue; it does not skip cases or alter their reported times.
+Methods marked `__hex_shard_bounded__ = True` use at most two workers. Owner
+selections finish ordinary cases first. Discovery can use spare worker slots
+once every ordinary batch has started.
 """
 from __future__ import annotations
 
@@ -52,14 +52,24 @@ def test_cases(selectors: list[str] | None) -> list[tuple[str, bool]]:
     return sorted(found.items())
 
 
-def run_cases(cases, workers, run):
-    """Run ordinary cases first, then bound marked fixture concurrency to two."""
-    for bounded in (False, True):
-        selected = [name for name, marked in cases if marked == bounded]
-        if not selected:
-            continue
-        with ThreadPoolExecutor(max_workers=min(workers, 2) if bounded else workers) as pool:
-            yield from pool.map(run, selected)
+def run_cases(cases, workers, run, *, use_idle_slots=False):
+    """Queue ordinary cases first and give marked cases at most two lanes."""
+    ordinary = [name for name, marked in cases if not marked]
+    bounded = [name for name, marked in cases if marked]
+    lanes = min(2, workers, len(bounded))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        ordinary_results = pool.map(run, ordinary)
+        if not use_idle_slots:
+            yield from ordinary_results
+        # Queue both lanes behind all ordinary batches. Each lane runs one
+        # fixture at a time, even if most ordinary workers have become idle.
+        bounded_jobs = [pool.submit(lambda names: list(map(run, names)), bounded[index::lanes])
+                        for index in range(lanes)]
+        if use_idle_slots:
+            yield from ordinary_results
+        results = [job.result() for job in bounded_jobs]
+        for index in range(len(bounded)):
+            yield results[index % lanes][index // lanes]
 
 
 def batches(cases: list[tuple[str, bool]], size: int) -> list[tuple[tuple[str, ...], bool]]:
@@ -98,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
 
     failed = False
     jobs = batches(cases, size=8 if arguments.discover else 1)
-    for test, code, output in run_cases(jobs, arguments.workers, run):
+    for test, code, output in run_cases(jobs, arguments.workers, run, use_idle_slots=arguments.discover):
         # unittest reports on stderr; keep that stream for callers and logs.
         print(f"===== {test} (exit {code}) =====\n{output}", file=sys.stderr, flush=True)
         failed |= code != 0
