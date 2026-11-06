@@ -35,6 +35,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
         sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: RATE,
+        sample_rate_mode: Default::default(),
         next_id: 10,
         assets: vec![
             AssetSnapshot {

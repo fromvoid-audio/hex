@@ -992,6 +992,7 @@ fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
         sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
+        sample_rate_mode: Default::default(),
         next_id: 7,
         assets: vec![
             AssetSnapshot {
@@ -1243,6 +1244,7 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
         sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
+        sample_rate_mode: Default::default(),
         next_id: 8,
         assets: Vec::new(),
         tracks: vec![TrackSnapshot {

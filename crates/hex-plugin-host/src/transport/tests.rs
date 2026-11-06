@@ -25,9 +25,10 @@ fn constructor_storage_requires_the_original_pair_and_survives_exchange_and_reti
     // Both queue allocations retain all slots, even when no blocks are queued.
     assert_eq!(
         storage.data_bytes,
-        2 * (QUEUE_CAPACITY * std::mem::size_of::<Block>()
-            + std::mem::size_of::<RingBuffer<Block>>())
-            + std::mem::size_of::<AtomicBool>()
+        QUEUE_CAPACITY * (std::mem::size_of::<InputRequest>() + std::mem::size_of::<Block>())
+            + std::mem::size_of::<RingBuffer<InputRequest>>()
+            + std::mem::size_of::<RingBuffer<Block>>()
+            + std::mem::size_of::<Revocation>()
     );
     assert_eq!((storage.shared_groups, storage.shared_handle_bound), (3, 7));
     for _ in 0..4 {
@@ -51,6 +52,7 @@ fn constructor_storage_requires_the_original_pair_and_survives_exchange_and_reti
         callback.fault().is_none(),
         "revocation is separate from a visited fault"
     );
+    assert_eq!(control.take_callback_fault(), None);
     drop(worker);
     assert_eq!(
         callback.constructor_storage_on_control(&control),
@@ -187,6 +189,94 @@ fn missed_deadline_silences_and_revokes_without_replaying_last_output() {
     assert!(control.is_revoked());
     assert_eq!(worker.complete(late), Err(Fault::Revoked));
     assert!(callback.replies.is_empty());
+    callback.reject(Fault::Protocol);
+    assert_eq!(control.take_callback_fault(), Some(Fault::MissingOutput));
+    assert_eq!(
+        control.deadline_miss(),
+        Some(DeadlineMiss {
+            reply_sequence: 0,
+            worker_phase: DeadlineWorkerPhase::Processing,
+        })
+    );
+    assert_eq!(control.take_callback_fault(), None);
+    assert_eq!(callback.fault(), Some(Fault::MissingOutput));
+}
+
+#[test]
+fn deadline_observation_distinguishes_a_worker_that_has_not_picked_up_the_request() {
+    let (control, mut callback, _worker) = channel_from_completed_prefix(BINDING, 8, 37).unwrap();
+    let mut output = [[0.0; 2]; 8];
+    for _ in 0..2 {
+        callback.stage(&[[1.0; 2]; 8], &[], &mut output).unwrap();
+        callback.finish(true).unwrap();
+    }
+    assert_eq!(
+        callback.stage(&[[1.0; 2]; 8], &[], &mut output).err(),
+        Some(Fault::MissingOutput)
+    );
+    assert_eq!(
+        control.deadline_miss(),
+        Some(DeadlineMiss {
+            reply_sequence: 37,
+            worker_phase: DeadlineWorkerPhase::AwaitingPickup,
+        })
+    );
+}
+
+#[test]
+fn native_instrument_keeps_ordered_input_and_recovers_from_one_late_reply() {
+    let (control, mut callback, mut worker) =
+        instrument_channel_from_completed_prefix(BINDING, 8, 37).unwrap();
+    let mut output = [[0.0; 2]; 8];
+    let counts = allocation_counter::measure(|| {
+        for value in [1.0, 2.0, 3.0] {
+            callback.stage(&[[value; 2]; 8], &[], &mut output).unwrap();
+            callback.finish(true).unwrap();
+            assert_eq!(output, [[0.0; 2]; 8]);
+        }
+        assert!(!control.is_revoked());
+        for (sequence, value) in [(37, 1.0), (38, 2.0), (39, 3.0)] {
+            let reply = worker.receive().unwrap().unwrap();
+            assert_eq!(reply.sequence, sequence);
+            assert_eq!(reply.pcm[0], [value; 2]);
+            worker.complete(reply).unwrap();
+        }
+        for value in [2.0, 3.0] {
+            callback.stage(&[[0.0; 2]; 8], &[], &mut output).unwrap();
+            callback.finish(true).unwrap();
+            assert_eq!(output, [[value; 2]; 8]);
+        }
+        assert!(!control.is_revoked());
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+}
+
+#[test]
+fn native_instrument_revokes_after_two_consecutive_missed_replies() {
+    let (control, mut callback, mut worker) =
+        instrument_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+    let mut output = [[0.0; 2]; 8];
+    for _ in 0..3 {
+        callback.stage(&[[0.0; 2]; 8], &[], &mut output).unwrap();
+        callback.finish(true).unwrap();
+    }
+    // The stale reply does not turn a second missed deadline into a success.
+    let late = worker.receive().unwrap().unwrap();
+    worker.complete(late).unwrap();
+    assert_eq!(
+        callback.stage(&[[0.0; 2]; 8], &[], &mut output).err(),
+        Some(Fault::MissingOutput)
+    );
+    assert!(control.is_revoked());
+    assert_eq!(control.deadline_miss().unwrap().reply_sequence, 1);
 }
 
 #[test]
@@ -319,14 +409,26 @@ fn bounded_input_validation_and_queue_independent_stop() {
                 .err(),
             3 => {
                 for _ in 0..QUEUE_CAPACITY {
-                    callback.requests.push(Block::empty(BINDING, 8)).unwrap();
+                    callback
+                        .requests
+                        .push(InputRequest {
+                            block: Block::empty(BINDING, 8),
+                            parameter_capacity: MAX_PARAMETER_POINTS,
+                        })
+                        .unwrap();
                 }
                 callback.stage(&[[1.0; 2]; 8], &[], &mut output).unwrap();
                 callback.finish(true).err()
             }
             4 => {
                 for _ in 0..QUEUE_CAPACITY {
-                    callback.requests.push(Block::empty(BINDING, 8)).unwrap();
+                    callback
+                        .requests
+                        .push(InputRequest {
+                            block: Block::empty(BINDING, 8),
+                            parameter_capacity: MAX_PARAMETER_POINTS,
+                        })
+                        .unwrap();
                 }
                 control.revoke();
                 assert!(matches!(worker.receive(), Err(Fault::Revoked)));
@@ -348,6 +450,10 @@ fn bounded_input_validation_and_queue_independent_stop() {
         );
         assert!(control.is_revoked());
         assert_eq!(output, [[0.0; 2]; 8]);
+        assert_eq!(
+            control.take_callback_fault(),
+            fault.filter(|&reason| reason != Fault::Revoked)
+        );
     }
     for q in [0, 257, u16::MAX] {
         assert!(matches!(channel(BINDING, q), Err(Fault::Configuration)));
@@ -534,6 +640,32 @@ fn incomplete_overlapping_gapped_or_refused_graph_callbacks_never_dispatch() {
     ));
     assert_eq!(output, [[0.0; 2]; 5]);
     assert!(worker.requests.is_empty());
+}
+
+#[test]
+fn pause_accepts_only_the_exact_staged_prefix_and_keeps_partial_input() {
+    for pause_cut in [3, 4] {
+        let (control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
+        callback.begin_physical_callback(8).unwrap();
+        callback
+            .stage_segment(0, &[[0.25; 2]; 4], &[], &mut [[0.0; 2]; 4])
+            .unwrap();
+        callback.end_staging_at_pause(pause_cut);
+        if pause_cut != 4 {
+            assert_eq!(callback.finish(true), Err(Fault::Protocol));
+            assert!(control.is_revoked());
+            continue;
+        }
+        callback.finish(true).unwrap();
+        assert!(worker.receive().unwrap().is_none());
+        callback
+            .stage(&[[0.5; 2]; 4], &[], &mut [[0.0; 2]; 4])
+            .unwrap();
+        callback.finish(true).unwrap();
+        let input = worker.receive().unwrap().unwrap();
+        assert_eq!(input.pcm[..4], [[0.25; 2]; 4]);
+        assert_eq!(input.pcm[4..8], [[0.5; 2]; 4]);
+    }
 }
 
 #[test]

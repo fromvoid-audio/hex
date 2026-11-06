@@ -159,6 +159,7 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
         sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
+        sample_rate_mode: Default::default(),
         next_id: 3 + MAX_CLIPS as u64,
         assets: vec![AssetSnapshot {
             original_source: None,
@@ -267,6 +268,7 @@ fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
         sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
+        sample_rate_mode: Default::default(),
         next_id: u64::MAX,
         assets: vec![AssetSnapshot {
             original_source: None,

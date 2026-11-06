@@ -36,6 +36,12 @@ bool host_testing=false, process_callback=false;
 int metadata_fault=0, received_messages=0, processing_callback_result=kNotImplemented, processing_message_result=kNotImplemented;
 ParamValue metadata_value=0.25;
 IMessage* retained_message=nullptr;
+constexpr uint32 analysis_message_bytes=25853, binary_limit=32768;
+const auto analysis_payload=[] {
+    std::array<unsigned char,binary_limit+1> bytes{};
+    for(size_t n=0;n<bytes.size();++n) bytes[n]=static_cast<unsigned char>(n*73);
+    return bytes;
+}();
 class Node final : public Processor, public IEditController, public IConnectionPoint {
     std::atomic<uint32> references{1};
     bool controller_only, initialized=false, arranged=false, setup=false;
@@ -167,12 +173,12 @@ public:
         auto* attributes=message->getAttributes();
         int64 integer=0; double floating=0; String128 text{}; const void* binary=nullptr; uint32 bytes=0;
         const char16_t expected[]=u"Mixed-Case";
-        const unsigned char expected_binary[]={0,1,255};
         const bool valid=message->getMessageID() && std::strcmp(message->getMessageID(),"OriginalCase")==0 && attributes &&
             attributes->getInt("integer",integer)==kResultOk && integer==7 &&
             attributes->getFloat("floating",floating)==kResultOk && floating==0.25 &&
             attributes->getString("text",text,sizeof(text))==kResultOk && std::memcmp(text,expected,sizeof(expected))==0 &&
-            attributes->getBinary("binary",binary,bytes)==kResultOk && bytes==3 && binary && std::memcmp(binary,expected_binary,3)==0;
+            attributes->getBinary("binary",binary,bytes)==kResultOk && bytes==analysis_message_bytes && binary &&
+            std::memcmp(binary,analysis_payload.data(),bytes)==0;
         if (!valid) return kResultFalse;
         ++received_messages; return kResultOk;
     }
@@ -328,9 +334,11 @@ extern "C" __attribute__((visibility("default"))) int HexHostMessages(int retain
     if (ok && retain) { retained_message=message; host->release(); return kResultOk; }
     if (ok) {
         message->setMessageID("OriginalCase"); auto* attributes=message->getAttributes();
-        const char16_t text[]=u"Mixed-Case"; const unsigned char data[]={0,1,255};
+        const char16_t text[]=u"Mixed-Case";
         ok=attributes && attributes->setInt("integer",7)==kResultOk && attributes->setFloat("floating",0.25)==kResultOk &&
-            attributes->setString("text",text)==kResultOk && attributes->setBinary("binary",data,3)==kResultOk;
+            attributes->setString("text",text)==kResultOk &&
+            attributes->setBinary("binary",analysis_payload.data(),analysis_message_bytes)==kResultOk &&
+            attributes->setBinary("second",analysis_payload.data(),8192)==kOutOfMemory;
         double before=0; int64 unchanged=99; String128 small{}; small[0]=u'!';
         std::array<TChar,258> oversized{}; oversized.fill(u'x'); oversized.back()=0;
         ok=ok && attributes->setFloat("floating",std::numeric_limits<double>::infinity())!=kResultOk &&
@@ -338,15 +346,18 @@ extern "C" __attribute__((visibility("default"))) int HexHostMessages(int retain
             attributes->getInt("floating",unchanged)!=kResultOk && unchanged==99 &&
             attributes->getString("text",small,2)!=kResultOk && small[0]==u'!' &&
             attributes->setString("text",oversized.data())!=kResultOk &&
-            attributes->setBinary("binary",data,1025)!=kResultOk;
+            attributes->setBinary("binary",analysis_payload.data(),binary_limit+1)!=kResultOk;
         const void* borrowed=nullptr; uint32 borrowed_size=0;
         ok=ok && attributes->getBinary("missing",borrowed,borrowed_size)==kResultFalse;
-        ok=attributes->getBinary("binary",borrowed,borrowed_size)==kResultOk && borrowed_size==3 && ok;
+        ok=attributes->getBinary("binary",borrowed,borrowed_size)==kResultOk && borrowed_size==analysis_message_bytes && ok;
         ok=attributes->setBinary("binary",borrowed,borrowed_size)==kResultOk && ok;
         message->setMessageID(message->getMessageID());
         for (int n=0;n<12 && ok;++n) { char key[8]{}; std::snprintf(key,sizeof(key),"key%d",n); ok=attributes->setInt(key,n)==kResultOk; }
         ok=ok && attributes->setInt("overflow",1)!=kResultOk && active_controller->connected_peer() &&
             active_controller->connected_peer()->notify(message)==kResultOk;
+        ok=ok && attributes->setBinary("binary",analysis_payload.data(),binary_limit)==kResultOk &&
+            attributes->getBinary("binary",borrowed,borrowed_size)==kResultOk && borrowed_size==binary_limit &&
+            std::memcmp(borrowed,analysis_payload.data(),binary_limit)==0;
         bool wrong_thread_refused=false;
         std::thread wrong_thread([&] {
             const void* value=nullptr; uint32 size=0;

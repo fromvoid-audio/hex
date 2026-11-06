@@ -4,6 +4,49 @@
 
 using namespace hex_instance;
 
+// Observe the actual panel policy without ordering a window into the user's
+// desktop or activating the test process.
+@interface HexFixturePanel : NSPanel {
+@public
+    BOOL test_visible;
+    int hides,shows;
+}
+@end
+@implementation HexFixturePanel
+- (BOOL)isVisible { return test_visible; }
+- (void)orderOut:(id)sender { (void)sender;test_visible=NO;++hides; }
+- (void)orderFrontRegardless { test_visible=YES;++shows; }
+@end
+
+static void check_floating_panel() {
+    auto* panel=[[HexFixturePanel alloc] initWithContentRect:NSMakeRect(0,0,320,240)
+        styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    assert(panel);
+    EditorPanelVisibility::configure(panel);
+    assert([panel isFloatingPanel] && [panel level]==NSFloatingWindowLevel && ![panel hidesOnDeactivate]);
+
+    const auto editor=::getpid(),owner=::getppid();
+    assert(is_editor_foreground_group(editor,editor,owner,nil));
+    assert(is_editor_foreground_group(owner,editor,owner,nil));
+    assert(!is_editor_foreground_group(0,editor,owner,nil));
+    assert(!is_editor_foreground_group(-1,editor,owner,nil));
+
+    EditorPanelVisibility visibility;
+    panel->test_visible=YES;
+    visibility.sync(panel,true);
+    assert(panel->test_visible && panel->hides==0 && panel->shows==0);
+    visibility.sync(panel,false);
+    visibility.sync(panel,false);
+    assert(!panel->test_visible && visibility.is_open(panel) && panel->hides==1);
+    visibility.sync(panel,true);
+    visibility.sync(panel,true);
+    assert(panel->test_visible && panel->shows==1);
+    panel->test_visible=NO; // Native close while visible.
+    visibility.sync(panel,true);
+    assert(!visibility.is_open(panel) && panel->shows==1);
+    [panel release];
+}
+
 class ResizeView final : public IPlugView {
     NSWindow* window;
 public:
@@ -45,6 +88,7 @@ public:
 int main() {
     @autoreleasepool {
         [NSApplication sharedApplication];
+        check_floating_panel();
         ResizeView fixed(nullptr);
         assert(!(EditorFrame::window_style(fixed)&NSWindowStyleMaskResizable));
         fixed.resizable=true;

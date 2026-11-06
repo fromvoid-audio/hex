@@ -2163,7 +2163,7 @@ fn browser_audio_drag_rejects_changed_snap_or_viewport(cx: &mut TestAppContext) 
         let payload = BrowserAudioDrag {
             project_generation: view.project_generation,
             revision: state.revision,
-            browser_generation: view.browser.scan_generation(),
+            browser_generation: Some(view.browser.scan_generation()),
             sample_rate: state.project.sample_rate(),
             path,
             label: "loop.wav".into(),
@@ -2247,7 +2247,7 @@ fn clip_and_sample_drags_clear_unavailable_targets_and_recover_from_invalid_poin
         let browser_drag = BrowserAudioDrag {
             project_generation: view.project_generation,
             revision: current.revision.saturating_add(1),
-            browser_generation: view.browser.scan_generation(),
+            browser_generation: Some(view.browser.scan_generation()),
             sample_rate: current.project.sample_rate(),
             path,
             label: "loop.wav".into(),

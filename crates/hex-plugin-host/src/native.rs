@@ -266,6 +266,27 @@ impl Pending {
             |_| {},
         )
     }
+    /// Configure a new source in the SDK's offline mode from confirmed state.
+    /// The caller owns it independently of any live processor or output.
+    pub fn prepare_offline_restored_on_control(
+        build: &InstanceBuild,
+        source: Source,
+        preparation: Preparation,
+        state: NativeDeviceState,
+        cancellation: PreparationCancellation,
+        _trust: TrustUserCode,
+    ) -> Result<Self> {
+        Self::prepare_with_restore(
+            build,
+            source,
+            preparation,
+            Some(state),
+            cancellation,
+            |command| {
+                command.arg("--offline");
+            },
+        )
+    }
     fn prepare(
         build: &InstanceBuild,
         source: Source,
@@ -484,6 +505,12 @@ impl Pending {
         self,
         presentation: Option<PresentationLatency>,
     ) -> Result<Prepared> {
+        self.complete_with_plan_on_control(presentation.into())
+    }
+    pub fn complete_with_plan_on_control(
+        self,
+        presentation: protocol::PresentationPlan,
+    ) -> Result<Prepared> {
         self.complete_retained_on_control(presentation)
             .map_err(PreparationFailure::finish_on_control)
     }
@@ -698,9 +725,10 @@ impl Prepared {
             self.retired = Some(retired);
             token.check()?;
             self.lease.channel.reject_queued_after_reap()?;
+            // A clean process-only stop can leave the module mapped until
+            // the OS reclaims it. Require the same terminal and reaped status.
             if terminal.failure != 0
                 || !terminal.closed
-                || !terminal.unloaded
                 || terminal.blocks != self.sequence
                 || terminal.frames != frames
                 || !status.success()

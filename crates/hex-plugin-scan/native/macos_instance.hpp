@@ -1,5 +1,5 @@
 // Native-helper-only component/controller ownership. Original Hex implementation.
-// The admitted module outlives this owner and may unload only after close() succeeds.
+// The admitted module outlives this owner and may unload only after full closure.
 // UI methods require the helper's main thread. Processing methods require one
 // serialized worker; its joining control owner must join before close(). No ABI
 // pointer crosses into Rust. This is not installed-module or audio-bridge admission.
@@ -189,21 +189,24 @@ public:
             return ConfigurationResult::UnsupportedPrecision;
         const auto input_count=component->getBusCount(kAudio,kInput);
         const auto output_count=component->getBusCount(kAudio,kOutput);
-        // A MIDI generator may advertise one main audio input. The helper
-        // preserves its native layout and supplies silence; Hex routes no
-        // audio to it. The wire and graph still see a zero-input instrument.
+        // An instrument may advertise one main or auxiliary audio input. Keep
+        // its native layout and provide silence in that SDK slot; the wire and
+        // graph still see a zero-input instrument.
         auto sdk=request;
         const bool silent_input=!request.input_channels && input_count==1;
+        BusType first_input_type=kMain;
         if (silent_input) {
             BusInfo info{};
-            if (!audio_bus_info(component,kInput,0,kMain,info) || info.channelCount>2)
+            if (!audio_bus_info(component,kInput,0,info) || info.channelCount>2 ||
+                (info.busType!=kMain && info.busType!=kAux))
                 return ConfigurationResult::UnsupportedTopology;
+            first_input_type=info.busType;
             sdk.input_channels=info.channelCount;
             sdk.input_enabled=true;
         }
         const bool multiple_outputs=!request.input_channels && output_count>1;
         BusInfo first_output{};
-        if (!audio_buses(component,kInput,input_count,sdk.input_channels,false) ||
+        if (!audio_buses(component,kInput,input_count,sdk.input_channels,false,first_input_type) ||
             (multiple_outputs
                 ? output_count>max_instrument_outputs || !request.output_enabled ||
                     !audio_bus_info(component,kOutput,0,kMain,first_output)
@@ -253,7 +256,7 @@ public:
             return ConfigurationResult::ArrangementRefused;
         if (component->getBusCount(kAudio,kInput)!=input_count ||
             component->getBusCount(kAudio,kOutput)!=output_count ||
-            !audio_buses(component,kInput,input_count,sdk.input_channels,true) ||
+            !audio_buses(component,kInput,input_count,sdk.input_channels,true,first_input_type) ||
             !audio_bus_info(component,kOutput,0,kMain,first_output) ||
             first_output.channelCount!=request.output_channels ||
             processor->getBusArrangement(kOutput,0,observed)!=kResultOk || observed!=main_output ||
@@ -264,7 +267,7 @@ public:
             if (!additional_output_matches(i,observed) || observed!=outputs[i])
                 return ConfigurationResult::ArrangementMismatch;
         ProcessSetup setup{};
-        setup.processMode = kRealtime; setup.symbolicSampleSize = kSample32;
+        setup.processMode = request.process_mode; setup.symbolicSampleSize = kSample32;
         setup.maxSamplesPerBlock = request.maximum_frames; setup.sampleRate = request.sample_rate;
         if (processor->setupProcessing(setup) != kResultOk) return ConfigurationResult::SetupRefused;
         // An inactive trailing bus needs no PCM buffer, even if default active.
@@ -463,7 +466,7 @@ private:
             processing_fault.load() || quarantined.load() ||
             (processing_thread!=std::thread::id{} && processing_thread!=std::this_thread::get_id()))
             return FlushResult::InvalidState;
-        if (data.processMode!=kRealtime || data.symbolicSampleSize!=kSample32 || data.numSamples!=0 ||
+        if (data.processMode!=configuration_.process_mode || data.symbolicSampleSize!=kSample32 || data.numSamples!=0 ||
             data.numInputs!=0 || data.numOutputs!=0 || data.inputs || data.outputs || data.inputEvents || data.outputEvents)
             return FlushResult::InvalidData;
         if (!data.inputParameterChanges) return FlushResult::Empty;
@@ -531,7 +534,28 @@ public:
     uint64 latency_restart() const { return host?host->latency_restart():0; }
     void cover_latency_restart(uint64 covered) { if(host) host->cover_latency_restart(covered); }
 
+    enum class CloseResult { Closed, RetainedHost, Refused };
+
     bool close() {
+        const auto result=close_for_retirement();
+        if (result==CloseResult::RetainedHost) return refuse_cleanup();
+        return result==CloseResult::Closed;
+    }
+
+    // RetainedHost means all component/controller teardown and stream disposal
+    // succeeded. The isolated worker may then retire by process exit while
+    // keeping the stopped Host and module alive.
+    CloseResult close_for_retirement() {
+        if (!close_objects()) return CloseResult::Refused;
+        if (host) {
+            if (host->reference_count()!=1) return CloseResult::RetainedHost;
+            host->release(); host=nullptr;
+        }
+        return CloseResult::Closed;
+    }
+
+private:
+    bool close_objects() {
         if (![NSThread isMainThread] || processing.load() || quarantined.load()) return false;
         if (host) host->stop_accepting();
         // Stop/join is the caller's prerequisite. Never release/unload past a
@@ -597,12 +621,6 @@ public:
             restore_controller_stream=nullptr;
         }
         if (factory) { factory->release(); factory = nullptr; }
-        if (host) {
-            // Keep the control lease when a message/context is still retained.
-            // Its last release on another thread cannot finally free this pool.
-            if (host->reference_count()!=1) return refuse_cleanup();
-            host->release(); host=nullptr;
-        }
         return true;
     }
 };

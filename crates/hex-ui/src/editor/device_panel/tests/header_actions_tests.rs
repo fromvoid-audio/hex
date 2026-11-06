@@ -202,38 +202,29 @@ fn assert_order(visual: &mut VisualTestContext, device: DeviceId, remove_prefix:
     );
     let inset =
         px(hex_widgets::DEVICE_FRAME_HEADER_PADDING + hex_widgets::DEVICE_FRAME_BORDER_WIDTH);
-    assert_eq!(
-        bypass.left() - frame.left(),
-        inset,
-        "toggle is the far-left control"
-    );
-    assert_eq!(
-        frame.right() - px(device_meter::WIDTH) - remove.right(),
-        inset,
-        "X occupies the right inset"
-    );
     assert!(
-        load.right() <= save.left(),
+        load.bottom() <= save.top(),
         "load precedes save without overlap"
     );
 
     assert!(
-        bypass.right() <= title.left(),
+        bypass.bottom() <= title.top(),
         "bypass must precede the name"
     );
     assert!(
-        title.size.width >= px(24.0),
+        title.size.height >= px(24.0),
         "compact name retains useful space"
     );
-    assert!(title.right() <= save.left().min(load.left()));
+    assert!(remove.bottom() <= title.top());
     assert!(
-        save.right() <= remove.left() && load.right() <= remove.left(),
+        save.bottom() <= remove.top() && load.bottom() <= remove.top(),
         "X is last"
     );
     for action in [bypass, save, load, remove] {
         assert!(action.size.width >= px(12.0));
         assert_eq!(action.size.height, px(12.0));
-        assert!(action.top() >= title.top() && action.bottom() <= title.bottom());
+        assert!(action.left() >= frame.left() + inset);
+        assert!(action.right() <= frame.left() + px(hex_widgets::DEVICE_FRAME_HEADER_WIDTH));
     }
     for prefix in [
         "device-up",

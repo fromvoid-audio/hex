@@ -389,6 +389,64 @@ fn native_effect_saved_state_restores_fresh_instance_and_nondefault_pcm() {
             "restored source sample {index}"
         );
     }
+    // Restart audio inside the same document, as the editor does after a
+    // degraded worker. The replacement must run the saved sound again.
+    let old = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let restarted = h.run(Request::RestartAudio {
+        project_generation: metadata.context.project_generation,
+        request_id: 1,
+    });
+    assert!(restarted.error.is_none(), "{:?}", restarted.error);
+    assert_eq!(restarted.state.revision, restored.state.revision);
+    assert_eq!(restarted.state.project, restored.state.project);
+    h.release_relinquished_output();
+    h.wait_fresh_output(old);
+    let requested = h.run(Request::RestorePlayback { generation: 1 });
+    assert_eq!(requested.restore_complete, Some(1));
+    let (recovered_revision, recovered) = h.applied(0);
+    assert_eq!(recovered.context, metadata.context);
+    assert_eq!(
+        h.submitted_observation()
+            .unwrap()
+            .foreign_processor(device_id.value(), expected.type_id()),
+        Some(true)
+    );
+    // A loop selection is a canonical edit after recovery, including for the
+    // newly restored native source. Compare the same PCM before the first wrap.
+    let loop_region = hex_project::LoopRegion::new(0, 2048, true).unwrap();
+    h.service
+        .submit(Request::Edit(Command::SetLoopRegion {
+            start: loop_region.start(),
+            end: loop_region.end(),
+            enabled: true,
+        }))
+        .unwrap();
+    let loop_edit = edits::ordinary_terminal(&mut h);
+    assert!(loop_edit.error.is_none(), "{:?}", loop_edit.error);
+    assert_eq!(loop_edit.state.revision, restored.state.revision + 1);
+    assert_eq!(loop_edit.state.project.loop_region(), Some(loop_region));
+    assert_eq!(loop_edit.state.project.main_devices()[0].state(), &expected);
+    h.applied(recovered_revision);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let mut restarted_pcm = Vec::new();
+    for block in 0..6 {
+        restarted_pcm.extend(h.render_plugin_block());
+        wait(|| h.plugin_completed.load(Acquire) > block);
+    }
+    assert_eq!(restarted_pcm, pcm);
+    for _ in 0..4 {
+        let before = h.plugin_completed.load(Acquire);
+        h.render_plugin_block();
+        wait(|| h.plugin_completed.load(Acquire) > before);
+    }
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(status.playing.load(Acquire));
+    assert_eq!(status.position.load(Acquire), 512);
     assert_eq!(fs::read(path).unwrap(), original_saved);
     assert_eq!(
         fs::read(files.0.join("mixed-rate.wav")).unwrap(),

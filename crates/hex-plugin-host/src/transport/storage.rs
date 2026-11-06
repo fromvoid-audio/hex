@@ -17,13 +17,16 @@ pub struct ConstructorStorage {
 /// are excluded, as in the actual paired-channel inventory. This quote grants
 /// no source, worker or publication authority.
 pub fn channel_storage_bound() -> Option<ConstructorStorage> {
-    let ring = QUEUE_CAPACITY
+    let reply_ring = QUEUE_CAPACITY
         .checked_mul(std::mem::size_of::<Block>())?
         .checked_add(std::mem::size_of::<RingBuffer<Block>>())?;
+    let request_ring = QUEUE_CAPACITY
+        .checked_mul(std::mem::size_of::<InputRequest>())?
+        .checked_add(std::mem::size_of::<RingBuffer<InputRequest>>())?;
     Some(ConstructorStorage {
-        data_bytes: ring
-            .checked_mul(2)?
-            .checked_add(std::mem::size_of::<AtomicBool>())?,
+        data_bytes: request_ring
+            .checked_add(reply_ring)?
+            .checked_add(std::mem::size_of::<Revocation>())?,
         shared_groups: 3,
         shared_handle_bound: 7,
     })
@@ -39,11 +42,11 @@ impl Callback {
         if !self.matches_control(control) {
             return None;
         }
-        let ring_bytes = |ring: &RingBuffer<Block>| {
+        fn ring_bytes<T>(ring: &RingBuffer<T>) -> Option<usize> {
             ring.capacity()
-                .checked_mul(std::mem::size_of::<Block>())?
+                .checked_mul(std::mem::size_of::<T>())?
                 .checked_add(std::mem::size_of_val(ring))
-        };
+        }
         Some(ConstructorStorage {
             data_bytes: ring_bytes(self.requests.buffer())?
                 .checked_add(ring_bytes(self.replies.buffer())?)?

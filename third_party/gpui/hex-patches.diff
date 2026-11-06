@@ -318,7 +318,10 @@ diff --git a/src/app.rs b/src/app.rs
 diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 --- a/src/app/test_context.rs
 +++ b/src/app/test_context.rs
-@@ -122,0 +123,18 @@ impl TestAppContext {
+@@ -120,6 +120,24 @@ impl AppContext for TestAppContext {
+ }
+
+ impl TestAppContext {
 +    /// Verify private draw-order queries against an independent linear scan.
 +    /// Test support only; no native graphics or public scene API.
 +    pub fn verify_draw_order_queries(&self) -> std::result::Result<(), String> {
@@ -337,7 +340,13 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 +        self.test_platform.cursor_style()
 +    }
 +
-@@ -144,0 +163,18 @@ impl TestAppContext {
+     /// Creates a new `TestAppContext`. Usually you can rely on `#[gpui::test]` to do this for you.
+     pub fn build(dispatcher: TestDispatcher, fn_name: Option<&'static str>) -> Self {
+         let arc_dispatcher = Arc::new(dispatcher.clone());
+@@ -142,6 +160,24 @@ impl TestAppContext {
+         }
+     }
+
 +    /// Opt into real macOS font registration and shaping for a disposable test.
 +    /// Call before opening any window. This retains the deterministic test
 +    /// platform and never creates an OS window or changes system font settings.
@@ -356,7 +365,13 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 +        Ok(())
 +    }
 +
-@@ -307,0 +344,50 @@ impl TestAppContext {
+     /// Create a single TestAppContext, for non-multi-client tests
+     pub fn single() -> Self {
+         let dispatcher = TestDispatcher::new(StdRng::seed_from_u64(0));
+@@ -305,6 +341,56 @@ impl TestAppContext {
+         self.test_platform.simulate_new_path_selection(select_path);
+     }
+
 +    /// Whether the test platform has an outstanding Open picker request.
 +    pub fn did_prompt_for_paths(&self) -> bool {
 +        self.test_platform.did_prompt_for_paths()
@@ -407,7 +422,13 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 +        crate::MacPlatform::picker_directory_url_for_test(directory)
 +    }
 +
-@@ -677,0 +764,127 @@ impl VisualTestContext {
+     /// Simulates clicking a button in an platform-level alert dialog.
+     #[track_caller]
+     pub fn simulate_prompt_answer(&self, button: &str) {
+@@ -675,6 +761,151 @@ pub struct VisualTestContext {
+ }
+
+ impl VisualTestContext {
 +    /// Returns the cursor request selected by the current rendered hitbox.
 +    /// This checks GPUI hover routing; it does not claim native OS cursor delivery.
 +    pub fn rendered_cursor_style(&mut self) -> Option<crate::CursorStyle> {
@@ -443,6 +464,24 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 +            window.rendered_frame.scene.monochrome_sprites.iter()
 +                .filter(|sprite| sprite.bounds.intersects(&scaled))
 +                .map(|sprite| sprite.color)
++                .collect()
++        })
++    }
++
++    /// Bounds of bottom-to-top monochrome sprites in a rendered element.
++    pub fn rendered_vertical_glyph_bounds(
++        &mut self,
++        selector: &'static str,
++    ) -> Vec<Bounds<crate::ScaledPixels>> {
++        self.update(|window, _| {
++            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
++                return Vec::new();
++            };
++            let bounds = bounds.scale(window.scale_factor());
++            window.rendered_frame.scene.monochrome_sprites.iter()
++                .filter(|sprite| sprite.transformation.rotation_scale == [[0.0, 1.0], [-1.0, 0.0]])
++                .map(|sprite| sprite.painted_bounds())
++                .filter(|glyph| glyph.intersects(&bounds))
 +                .collect()
 +        })
 +    }
@@ -535,6 +574,9 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 +        })
 +    }
 +
+     /// Provides a `Window` and `App` for the duration of the closure.
+     pub fn update<R>(&mut self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
+         self.cx
 diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 --- a/src/bounds_tree.rs
 +++ b/src/bounds_tree.rs
@@ -3722,7 +3764,7 @@ diff --git a/src/platform/windows/util.rs b/src/platform/windows/util.rs
 diff --git a/src/scene.rs b/src/scene.rs
 --- a/src/scene.rs
 +++ b/src/scene.rs
-@@ -11,8 +11,9 @@
+@@ -11,8 +11,9 @@ use crate::{
  use std::{
      fmt::Debug,
      iter::Peekable,
@@ -3733,16 +3775,19 @@ diff --git a/src/scene.rs b/src/scene.rs
  };
 
  #[allow(non_camel_case_types, unused)]
-@@ -65,7 +66,7 @@
+@@ -65,9 +66,9 @@ impl Scene {
      }
 
      pub fn insert_primitive(&mut self, primitive: impl Into<Primitive>) {
 -        let mut primitive = primitive.into();
 +        let primitive = primitive.into();
          let clipped_bounds = primitive
-             .bounds()
+-            .bounds()
++            .painted_bounds()
              .intersect(&primitive.content_mask().bounds);
-@@ -79,6 +80,10 @@
+
+         if clipped_bounds.is_empty() {
+@@ -79,6 +80,10 @@ impl Scene {
              .last()
              .copied()
              .unwrap_or_else(|| self.primitive_bounds.insert(clipped_bounds));
@@ -3753,7 +3798,7 @@ diff --git a/src/scene.rs b/src/scene.rs
          match &mut primitive {
              Primitive::Shadow(shadow) => {
                  shadow.order = order;
-@@ -115,6 +120,127 @@
+@@ -115,6 +120,129 @@ impl Scene {
      }
 
      pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
@@ -3807,9 +3852,11 @@ diff --git a/src/scene.rs b/src/scene.rs
 +                    {
 +                        return false;
 +                    }
-+                    let clipped = primitive
-+                        .bounds()
-+                        .intersect(&primitive.content_mask().bounds);
++                    let painted = primitive.painted_bounds();
++                    if !finite_replay_bounds(&painted) {
++                        return false;
++                    }
++                    let clipped = painted.intersect(&primitive.content_mask().bounds);
 +                    if clipped.is_empty() {
 +                        continue;
 +                    }
@@ -3881,7 +3928,7 @@ diff --git a/src/scene.rs b/src/scene.rs
          for operation in &prev_scene.paint_operations[range] {
              match operation {
                  PaintOperation::Primitive(primitive) => self.insert_primitive(primitive.clone()),
-@@ -170,6 +296,20 @@
+@@ -170,6 +298,20 @@ impl Scene {
      }
  }
 
@@ -3902,7 +3949,7 @@ diff --git a/src/scene.rs b/src/scene.rs
  #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Default)]
  #[cfg_attr(
      all(
-@@ -207,6 +347,17 @@
+@@ -207,6 +349,17 @@ pub(crate) enum Primitive {
  }
 
  impl Primitive {
@@ -3920,7 +3967,56 @@ diff --git a/src/scene.rs b/src/scene.rs
      pub fn bounds(&self) -> &Bounds<ScaledPixels> {
          match self {
              Primitive::Shadow(shadow) => &shadow.bounds,
-@@ -671,6 +822,36 @@
+@@ -219,6 +372,13 @@ impl Primitive {
+         }
+     }
+
++    fn painted_bounds(&self) -> Bounds<ScaledPixels> {
++        if let Self::MonochromeSprite(sprite) = self {
++            return sprite.painted_bounds();
++        }
++        *self.bounds()
++    }
++
+     pub fn content_mask(&self) -> &ContentMask<ScaledPixels> {
+         match self {
+             Primitive::Shadow(shadow) => &shadow.content_mask,
+@@ -628,6 +788,34 @@ pub(crate) struct MonochromeSprite {
+     pub transformation: TransformationMatrix,
+ }
+
++impl MonochromeSprite {
++    pub(crate) fn painted_bounds(&self) -> Bounds<ScaledPixels> {
++        if self.transformation == TransformationMatrix::unit() {
++            return self.bounds;
++        }
++        let transform = |point: Point<ScaledPixels>| {
++            self.transformation
++                .apply(point.map(|p| Pixels(p.0)))
++                .map(|p| ScaledPixels(p.0))
++        };
++        let first = transform(self.bounds.origin);
++        let mut min = first;
++        let mut max = first;
++        for corner in [
++            self.bounds.top_right(),
++            self.bounds.bottom_left(),
++            self.bounds.bottom_right(),
++        ] {
++            let p = transform(corner);
++            min.x = min.x.min(p.x);
++            min.y = min.y.min(p.y);
++            max.x = max.x.max(p.x);
++            max.y = max.y.max(p.y);
++        }
++        Bounds::from_corners(min, max)
++    }
++}
++
+ impl From<MonochromeSprite> for Primitive {
+     fn from(sprite: MonochromeSprite) -> Self {
+         Primitive::MonochromeSprite(sprite)
+@@ -671,6 +859,36 @@ impl From<PaintSurface> for Primitive {
  #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
  pub(crate) struct PathId(pub(crate) usize);
 
@@ -3957,7 +4053,7 @@ diff --git a/src/scene.rs b/src/scene.rs
  /// A line made up of a series of vertices and control points.
  #[derive(Clone, Debug)]
  pub struct Path<P: Clone + Debug + Default + PartialEq> {
-@@ -678,7 +859,8 @@
+@@ -678,7 +896,8 @@ pub struct Path<P: Clone + Debug + Default + PartialEq> {
      pub(crate) order: DrawOrder,
      pub(crate) bounds: Bounds<P>,
      pub(crate) content_mask: ContentMask<P>,
@@ -3967,7 +4063,7 @@ diff --git a/src/scene.rs b/src/scene.rs
      pub(crate) color: Background,
      start: Point<P>,
      current: Point<P>,
-@@ -691,7 +873,7 @@
+@@ -691,7 +910,7 @@ impl Path<Pixels> {
          Self {
              id: PathId(0),
              order: DrawOrder::default(),
@@ -3976,7 +4072,7 @@ diff --git a/src/scene.rs b/src/scene.rs
              start,
              current: start,
              bounds: Bounds {
-@@ -711,11 +893,8 @@
+@@ -711,11 +930,8 @@ impl Path<Pixels> {
              order: self.order,
              bounds: self.bounds.scale(factor),
              content_mask: self.content_mask.scale(factor),
@@ -3990,7 +4086,7 @@ diff --git a/src/scene.rs b/src/scene.rs
              start: self.start.map(|start| start.scale(factor)),
              current: self.current.scale(factor),
              contour_count: self.contour_count,
-@@ -780,17 +959,18 @@
+@@ -780,17 +996,18 @@ impl Path<Pixels> {
                  size: Default::default(),
              });
 
@@ -4012,7 +4108,7 @@ diff --git a/src/scene.rs b/src/scene.rs
              xy_position: xy.2,
              st_position: st.2,
              content_mask: Default::default(),
-@@ -831,3 +1011,650 @@
+@@ -831,3 +1048,650 @@ impl PathVertex<Pixels> {
          }
      }
  }
@@ -4702,7 +4798,7 @@ diff --git a/src/view.rs b/src/view.rs
 diff --git a/src/window.rs b/src/window.rs
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -53,6 +53,9 @@
+@@ -53,6 +53,9 @@ use util::post_inc;
  use util::{ResultExt, measure};
  use uuid::Uuid;
  
@@ -4712,7 +4808,7 @@ diff --git a/src/window.rs b/src/window.rs
  mod prompts;
  
  use crate::util::atomic_incr_if_not_zero;
-@@ -462,6 +465,28 @@
+@@ -462,6 +465,28 @@ type FrameCallback = Box<dyn FnOnce(&mut Window, &mut App)>;
  pub(crate) type AnyMouseListener =
      Box<dyn FnMut(&dyn Any, DispatchPhase, &mut Window, &mut App) + 'static>;
  
@@ -4741,7 +4837,7 @@ diff --git a/src/window.rs b/src/window.rs
  #[derive(Clone)]
  pub(crate) struct CursorStyleRequest {
      pub(crate) hitbox_id: Option<HitboxId>,
-@@ -656,7 +681,7 @@
+@@ -656,7 +681,7 @@ pub(crate) struct DeferredDraw {
      current_view: EntityId,
      priority: usize,
      parent_node: DispatchNodeId,
@@ -4750,7 +4846,7 @@ diff --git a/src/window.rs b/src/window.rs
      text_style_stack: Vec<TextStyleRefinement>,
      element: Option<AnyElement>,
      absolute_offset: Point<Pixels>,
-@@ -665,6 +690,7 @@
+@@ -665,6 +690,7 @@ pub(crate) struct DeferredDraw {
  }
  
  pub(crate) struct Frame {
@@ -4758,7 +4854,7 @@ diff --git a/src/window.rs b/src/window.rs
      pub(crate) focus: Option<FocusId>,
      pub(crate) window_active: bool,
      pub(crate) element_states: FxHashMap<(GlobalElementId, TypeId), ElementStateBox>,
-@@ -678,8 +704,10 @@
+@@ -678,8 +704,10 @@ pub(crate) struct Frame {
      pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
      pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
      pub(crate) cursor_styles: Vec<CursorStyleRequest>,
@@ -4770,7 +4866,7 @@ diff --git a/src/window.rs b/src/window.rs
      #[cfg(any(feature = "inspector", debug_assertions))]
      pub(crate) next_inspector_instance_ids: FxHashMap<Rc<crate::InspectorElementPath>, usize>,
      #[cfg(any(feature = "inspector", debug_assertions))]
-@@ -687,8 +715,42 @@
+@@ -687,8 +715,42 @@ pub(crate) struct Frame {
      pub(crate) tab_stops: TabStopMap,
  }
  
@@ -4813,7 +4909,7 @@ diff --git a/src/window.rs b/src/window.rs
      hitboxes_index: usize,
      tooltips_index: usize,
      deferred_draws_index: usize,
-@@ -703,14 +765,19 @@
+@@ -703,14 +765,19 @@ pub(crate) struct PaintIndex {
      mouse_listeners_index: usize,
      input_handlers_index: usize,
      cursor_styles_index: usize,
@@ -4833,7 +4929,7 @@ diff --git a/src/window.rs b/src/window.rs
              focus: None,
              window_active: false,
              element_states: FxHashMap::default(),
-@@ -724,9 +791,11 @@
+@@ -724,9 +791,11 @@ impl Frame {
              input_handlers: Vec::new(),
              tooltip_requests: Vec::new(),
              cursor_styles: Vec::new(),
@@ -4846,7 +4942,7 @@ diff --git a/src/window.rs b/src/window.rs
  
              #[cfg(any(feature = "inspector", debug_assertions))]
              next_inspector_instance_ids: FxHashMap::default(),
-@@ -738,6 +807,7 @@
+@@ -738,6 +807,7 @@ impl Frame {
      }
  
      pub(crate) fn clear(&mut self) {
@@ -4854,7 +4950,7 @@ diff --git a/src/window.rs b/src/window.rs
          self.element_states.clear();
          self.accessed_element_states.clear();
          self.mouse_listeners.clear();
-@@ -746,12 +816,17 @@
+@@ -746,12 +816,17 @@ impl Frame {
          self.input_handlers.clear();
          self.tooltip_requests.clear();
          self.cursor_styles.clear();
@@ -4872,7 +4968,7 @@ diff --git a/src/window.rs b/src/window.rs
          #[cfg(any(feature = "inspector", debug_assertions))]
          {
              self.next_inspector_instance_ids.clear();
-@@ -760,6 +835,9 @@
+@@ -760,6 +835,9 @@ impl Frame {
      }
  
      pub(crate) fn cursor_style(&self, window: &Window) -> Option<CursorStyle> {
@@ -4882,7 +4978,7 @@ diff --git a/src/window.rs b/src/window.rs
          self.cursor_styles
              .iter()
              .rev()
-@@ -815,11 +893,21 @@
+@@ -815,11 +893,21 @@ impl Frame {
      }
  }
  
@@ -4904,7 +5000,7 @@ diff --git a/src/window.rs b/src/window.rs
      pub(crate) platform_window: Box<dyn PlatformWindow>,
      display_id: Option<DisplayId>,
      sprite_atlas: Arc<dyn PlatformAtlas>,
-@@ -833,7 +921,7 @@
+@@ -833,7 +921,7 @@ pub struct Window {
      pub(crate) viewport_size: Size<Pixels>,
      layout_engine: Option<TaffyLayoutEngine>,
      pub(crate) root: Option<AnyView>,
@@ -4913,7 +5009,7 @@ diff --git a/src/window.rs b/src/window.rs
      pub(crate) text_style_stack: Vec<TextStyleRefinement>,
      pub(crate) rendered_entity_stack: Vec<EntityId>,
      pub(crate) element_offset_stack: Vec<Point<Pixels>>,
-@@ -853,6 +941,10 @@
+@@ -853,6 +941,10 @@ pub struct Window {
      default_prevented: bool,
      mouse_position: Point<Pixels>,
      mouse_hit_test: HitTest,
@@ -4924,7 +5020,7 @@ diff --git a/src/window.rs b/src/window.rs
      modifiers: Modifiers,
      capslock: Capslock,
      scale_factor: f32,
-@@ -1095,6 +1187,12 @@
+@@ -1095,6 +1187,12 @@ impl Window {
                  handle
                      .update(&mut cx, |_, window, cx| {
                          window.active.set(active);
@@ -4937,7 +5033,7 @@ diff --git a/src/window.rs b/src/window.rs
                          window.modifiers = window.platform_window.modifiers();
                          window.capslock = window.platform_window.capslock();
                          window
-@@ -1121,6 +1219,16 @@
+@@ -1121,6 +1219,16 @@ impl Window {
                      .log_err();
              }
          }));
@@ -4954,7 +5050,7 @@ diff --git a/src/window.rs b/src/window.rs
          platform_window.on_input({
              let mut cx = cx.to_async();
              Box::new(move |event| {
-@@ -1208,6 +1316,7 @@
+@@ -1208,6 +1316,7 @@ impl Window {
              handle,
              invalidator,
              removed: false,
@@ -4962,7 +5058,7 @@ diff --git a/src/window.rs b/src/window.rs
              platform_window,
              display_id,
              sprite_atlas,
-@@ -1236,6 +1345,10 @@
+@@ -1236,6 +1345,10 @@ impl Window {
              default_prevented: true,
              mouse_position,
              mouse_hit_test: HitTest::default(),
@@ -4973,7 +5069,7 @@ diff --git a/src/window.rs b/src/window.rs
              modifiers,
              capslock,
              scale_factor,
-@@ -1371,8 +1484,17 @@
+@@ -1371,8 +1484,17 @@ impl Window {
          }
      }
  
@@ -4991,7 +5087,7 @@ diff --git a/src/window.rs b/src/window.rs
          self.removed = true;
      }
  
-@@ -1908,6 +2030,61 @@
+@@ -1908,6 +2030,61 @@ impl Window {
          self.platform_window.completed_frame();
      }
  
@@ -5053,7 +5149,7 @@ diff --git a/src/window.rs b/src/window.rs
      /// Produces a new frame and assigns it to `rendered_frame`. To actually show
      /// the contents of the new [`Scene`], use [`Self::present`].
      #[profiling::function]
-@@ -1941,6 +2118,10 @@
+@@ -1941,6 +2118,10 @@ impl Window {
          let previous_window_active = self.rendered_frame.window_active;
          mem::swap(&mut self.rendered_frame, &mut self.next_frame);
          self.next_frame.clear();
@@ -5064,7 +5160,7 @@ diff --git a/src/window.rs b/src/window.rs
          let current_focus_path = self.rendered_frame.focus_path();
          let current_window_active = self.rendered_frame.window_active;
  
-@@ -1975,6 +2156,17 @@
+@@ -1975,6 +2156,17 @@ impl Window {
          self.reset_cursor_style(cx);
          self.refreshing = false;
          self.invalidator.set_phase(DrawPhase::None);
@@ -5082,7 +5178,7 @@ diff --git a/src/window.rs b/src/window.rs
          self.needs_present.set(true);
  
          ArenaClearNeeded
-@@ -2086,6 +2278,11 @@
+@@ -2086,6 +2278,11 @@ impl Window {
      }
  
      fn prepaint_tooltip(&mut self, cx: &mut App) -> Option<AnyElement> {
@@ -5094,7 +5190,7 @@ diff --git a/src/window.rs b/src/window.rs
          // Use indexing instead of iteration to avoid borrowing self for the duration of the loop.
          for tooltip_request_index in (0..self.next_frame.tooltip_requests.len()).rev() {
              let Some(Some(tooltip_request)) = self
-@@ -2220,6 +2417,7 @@
+@@ -2220,6 +2417,7 @@ impl Window {
  
      pub(crate) fn prepaint_index(&self) -> PrepaintStateIndex {
          PrepaintStateIndex {
@@ -5102,7 +5198,7 @@ diff --git a/src/window.rs b/src/window.rs
              hitboxes_index: self.next_frame.hitboxes.len(),
              tooltips_index: self.next_frame.tooltip_requests.len(),
              deferred_draws_index: self.next_frame.deferred_draws.len(),
-@@ -2230,6 +2428,14 @@
+@@ -2230,6 +2428,14 @@ impl Window {
      }
  
      pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
@@ -5117,7 +5213,7 @@ diff --git a/src/window.rs b/src/window.rs
          self.next_frame.hitboxes.extend(
              self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
                  .iter()
-@@ -2284,13 +2490,38 @@
+@@ -2284,13 +2490,38 @@ impl Window {
              mouse_listeners_index: self.next_frame.mouse_listeners.len(),
              input_handlers_index: self.next_frame.input_handlers.len(),
              cursor_styles_index: self.next_frame.cursor_styles.len(),
@@ -5156,7 +5252,64 @@ diff --git a/src/window.rs b/src/window.rs
          self.next_frame.cursor_styles.extend(
              self.rendered_frame.cursor_styles
                  [range.start.cursor_styles_index..range.end.cursor_styles_index]
-@@ -3524,14 +3755,28 @@
+@@ -2952,6 +3183,31 @@ impl Window {
+         glyph_id: GlyphId,
+         font_size: Pixels,
+         color: Hsla,
++    ) -> Result<()> {
++        self.paint_oriented_glyph(origin, font_id, glyph_id, font_size, color, false)
++    }
++
++    /// Paint a shaped monochrome glyph with its advance running bottom to top.
++    /// The origin is the rotated glyph's baseline anchor in window coordinates.
++    pub fn paint_vertical_glyph(
++        &mut self,
++        origin: Point<Pixels>,
++        font_id: FontId,
++        glyph_id: GlyphId,
++        font_size: Pixels,
++        color: Hsla,
++    ) -> Result<()> {
++        self.paint_oriented_glyph(origin, font_id, glyph_id, font_size, color, true)
++    }
++
++    fn paint_oriented_glyph(
++        &mut self,
++        origin: Point<Pixels>,
++        font_id: FontId,
++        glyph_id: GlyphId,
++        font_size: Pixels,
++        color: Hsla,
++        vertical: bool,
+     ) -> Result<()> {
+         self.invalidator.debug_assert_paint();
+
+@@ -2986,6 +3242,15 @@ impl Window {
+                 size: tile.bounds.size.map(Into::into),
+             };
+             let content_mask = self.content_mask().scale(scale_factor);
++            let transformation = if vertical {
++                let Point { x, y } = glyph_origin;
++                TransformationMatrix {
++                    rotation_scale: [[0.0, 1.0], [-1.0, 0.0]],
++                    translation: [x.0 - y.0, y.0 + x.0],
++                }
++            } else {
++                TransformationMatrix::unit()
++            };
+             self.next_frame.scene.insert_primitive(MonochromeSprite {
+                 order: 0,
+                 pad: 0,
+@@ -2993,7 +3258,7 @@ impl Window {
+                 content_mask,
+                 color: color.opacity(element_opacity),
+                 tile,
+-                transformation: TransformationMatrix::unit(),
++                transformation,
+             });
+         }
+         Ok(())
+@@ -3524,14 +3789,28 @@ impl Window {
          subscription
      }
  
@@ -5192,7 +5345,7 @@ diff --git a/src/window.rs b/src/window.rs
          }
      }
  
-@@ -3576,6 +3821,188 @@
+@@ -3576,6 +3855,188 @@ impl Window {
              .unwrap_or_else(|| action.name().to_string())
      }
  
@@ -5381,7 +5534,7 @@ diff --git a/src/window.rs b/src/window.rs
      /// Dispatch a mouse or keyboard event on the window.
      #[profiling::function]
      pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
-@@ -3585,6 +4012,63 @@
+@@ -3585,6 +4046,63 @@ impl Window {
          // Handlers may set this to true by calling `prevent_default`.
          self.default_prevented = false;
  
@@ -5445,7 +5598,7 @@ diff --git a/src/window.rs b/src/window.rs
          let event = match event {
              // Track the mouse position with our own state, since accessing the platform
              // API for the mouse position can only occur on the main thread.
-@@ -3662,10 +4146,60 @@
+@@ -3662,25 +4180,87 @@ impl Window {
              PlatformInput::KeyDown(_) | PlatformInput::KeyUp(_) => event,
          };
  
@@ -5466,8 +5619,8 @@ diff --git a/src/window.rs b/src/window.rs
 +            );
          } else if let Some(any_key_event) = event.keyboard_event() {
              self.dispatch_key_event(any_key_event, cx);
-+        }
-+
+         }
+
 +        if keyboard_hover_transition {
 +            self.dispatch_pointer_hover(cx);
 +            self.invalidate_pointer_hover();
@@ -5504,10 +5657,11 @@ diff --git a/src/window.rs b/src/window.rs
 +        }
 +        if isolated_mouse_event != self.pointer_capture.is_some() {
 +            self.reset_cursor_style(cx);
-         }
- 
++        }
++
          DispatchEventResult {
-@@ -3674,17 +4208,50 @@
+             propagate: cx.propagate_event,
+             default_prevented: self.default_prevented,
          }
      }
  
@@ -5534,10 +5688,10 @@ diff --git a/src/window.rs b/src/window.rs
          #[cfg(any(feature = "inspector", debug_assertions))]
          if self.is_inspector_picking(cx) {
              self.handle_inspector_mouse_event(event, cx);
-             // When inspector is picking, all other mouse handling is skipped.
-+            return;
-+        }
-+
+@@ -3688,6 +4268,27 @@ impl Window {
+             return;
+         }
+
 +        if event.is::<MouseMoveEvent>() {
 +            self.dispatch_pointer_hover(cx);
 +        }
@@ -5556,9 +5710,12 @@ diff --git a/src/window.rs b/src/window.rs
 +            // No underlying action, wheel, raw listener or trailing click can
 +            // receive this input, even if the owner ignored this event type.
 +            cx.stop_propagation();
-             return;
-         }
++            return;
++        }
++
+         let mut mouse_listeners = mem::take(&mut self.rendered_frame.mouse_listeners);
  
+         // Capture phase, events bubble from back to front. Handlers for this phase are used for
 diff --git a/src/element.rs b/src/element.rs
 --- a/src/element.rs
 +++ b/src/element.rs

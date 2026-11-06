@@ -119,7 +119,7 @@ impl EditorView {
         let count = self.browser_visible_entries(cx).len()
             + self.browser_visible_devices(cx).len()
             + self.browser_visible_plugins(cx).len();
-        let top = self.browser_history_top_index(count);
+        let top = self.browser_history_top_index(count, cx);
         Entry {
             location: Location {
                 section: self.browser.section.clone(),
@@ -133,7 +133,7 @@ impl EditorView {
         }
     }
 
-    fn browser_history_top_index(&self, count: usize) -> usize {
+    fn browser_history_top_index(&self, count: usize, cx: &App) -> usize {
         let scroll = self.browser.scroll.0.borrow();
         // Both browser UniformLists have zero vertical padding and fixed
         // ROW_HEIGHT rows. Generic ScrollHandle child indexes do not describe
@@ -149,7 +149,17 @@ impl EditorView {
             },
             |pending| pending.item_index,
         );
-        index.min(count.saturating_sub(1))
+        if self.browser.section == BrowserSection::Plugins {
+            match super::plugins::PluginGroups::new(&self.browser_visible_plugins(cx)).line(index) {
+                Some(
+                    super::plugins::PluginLine::Heading(_, logical)
+                    | super::plugins::PluginLine::Plugin(logical),
+                ) => logical,
+                None => count.saturating_sub(1),
+            }
+        } else {
+            index.min(count.saturating_sub(1))
+        }
     }
 
     // Synchronize before navigation as well as from the observer: a queued observer
@@ -384,7 +394,7 @@ impl EditorView {
             .unwrap_or(0);
         self.browser
             .scroll
-            .scroll_to_item_strict(top, gpui::ScrollStrategy::Top);
+            .scroll_to_item_strict(self.browser_scroll_row(top, cx), gpui::ScrollStrategy::Top);
     }
 }
 

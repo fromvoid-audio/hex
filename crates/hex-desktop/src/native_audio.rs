@@ -1065,6 +1065,9 @@ impl WorkerAudioSink for NativeAudioSink {
     fn finish_resident_effect_edit(&mut self, context: AudioSourceContext, accepted: bool) {
         self.plugins.finish_edit(context, accepted);
     }
+    fn plugin_state_restore_pending(&self, context: AudioSourceContext) -> bool {
+        self.plugins.hold_reopen(context)
+    }
     fn plugin_state_restore_ready(&self) -> Option<AudioSourceContext> {
         self.plugins.reopen_ready()
     }
@@ -1132,6 +1135,22 @@ impl WorkerAudioSink for NativeAudioSink {
     fn take_plugin_editor_result(&mut self, generation: u64) -> Option<Result<bool, String>> {
         self.plugins.take_editor_result(generation)
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn query_plugin_parameters(
+        &mut self,
+        query: hex_session::service::PluginParameterQuery,
+    ) -> Result<(), String> {
+        self.output.as_ref().ok_or("native output unavailable")?;
+        self.plugins.query_parameters(query)
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn plugin_parameters_ready(&self) -> bool {
+        self.plugins.parameters_ready()
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn take_plugin_parameters(&mut self) -> Option<hex_session::service::PluginParameterResult> {
+        self.plugins.take_parameters()
+    }
     fn finish_plugin_effect(
         &mut self,
         control: &Arc<hex_session::service::PluginEffectControl>,
@@ -1154,6 +1173,13 @@ impl WorkerAudioSink for NativeAudioSink {
             self.request_cancellation.as_ref(),
             prepare,
         )
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn prepare_offline_bounce(
+        &mut self,
+        input: hex_session::service::ResidentEffectPreparation<'_>,
+    ) -> Result<Option<Box<dyn hex_session::service::OfflineBounceSource>>, String> {
+        self.plugins.prepare_offline_bounce(input)
     }
     fn ordinary_source_reservation(&self) -> Option<hex_session::SourcePlanReservation> {
         if !self.worker_owned_resident_graphs {

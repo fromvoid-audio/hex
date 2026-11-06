@@ -62,6 +62,48 @@ pub struct Hosting {
     limits: native::Limits,
 }
 impl Hosting {
+    /// Prepare a private offline source. Its reserved root is never admitted
+    /// by the live output. The owner must join the instance before publishing.
+    pub fn prepare_offline_instrument_on_control(
+        &self,
+        selection: EffectSelection<'_>,
+        owner: ProcessorChainOwner,
+        device_id: u64,
+        sample_rate: u32,
+        state: &NativeDeviceState,
+    ) -> Result<NativeEffect, String> {
+        let identity =
+            ProcessorInstanceIdentity::new(owner, device_id).map_err(|e| e.to_string())?;
+        let pending = native::Pending::prepare_offline_restored_on_control(
+            &self.build,
+            selection.inspect_on_control()?,
+            native::Preparation {
+                binding: Binding {
+                    root: u64::MAX,
+                    instance: device_id,
+                    graph: 1,
+                    epoch: 1,
+                },
+                sample_rate: f64::from(sample_rate),
+                quantum: MAX_FRAMES as u16,
+                input_channels: 0,
+                output_channels: 2,
+                limits: self.limits,
+            },
+            state.clone(),
+            native::PreparationCancellation::new_on_control().map_err(|e| e.to_string())?,
+            native::TrustUserCode::Acknowledged,
+        )
+        .map_err(|e| e.to_string())?;
+        // A private bounce has no device presentation and this source is
+        // configured before the isolated downstream graph has been compiled.
+        let instance = pending
+            .complete_with_plan_on_control(PresentationPlan::AllowUnknown)
+            .map_err(|e| e.to_string())?;
+        let data_limit = Self::source_data_reservation()?.max_retained_data_bytes;
+        NativeEffect::prepare_retained_with_data_limit_on_control(identity, instance, data_limit)
+            .map_err(|e| e.finish_on_control().to_string())
+    }
     /// Maximum payload for the single pending native capture response.
     pub const CAPTURE_RESPONSE_DATA_BYTES: usize = hex_plugin_state::MAX_ENVELOPE_BYTES;
     /// Inspect the saved envelope's copied class/binary identity. This resolves
@@ -180,7 +222,7 @@ impl Hosting {
         restore: Option<NativeDeviceState>,
     ) -> Result<Binding, String> {
         let quantum = output
-            .requested_physical_callback_frames_on_control()
+            .plugin_callback_quantum_on_control()
             .ok_or("vst3 hosting requires the plugin output profile")?;
         let root = output
             .output_identity()

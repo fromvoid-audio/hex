@@ -212,6 +212,13 @@ impl ForeignArrangement {
             .any(|generator| generator.committed.loop_pass.is_some())
     }
 
+    pub(super) fn has_held_notes(&self) -> bool {
+        self.generators
+            .iter()
+            .flatten()
+            .any(|generator| generator.committed.has_any_held_notes())
+    }
+
     pub(super) fn has_keyboard(&self) -> bool {
         self.keyboard
             .as_ref()
@@ -281,6 +288,7 @@ impl ForeignArrangement {
         old: &Self,
         tracks: &[Track],
         cut: FrameContext,
+        fresh: Option<TrackId>,
     ) -> Result<Handoff, SessionPlaybackError> {
         let mut plan = Handoff {
             old_indices: [None; MAX_TRACKS],
@@ -295,7 +303,7 @@ impl ForeignArrangement {
                     .then_some((index, &old.committed))
             });
             let Some((old_index, ledger)) = matched else {
-                if cut.playing {
+                if cut.playing && fresh != Some(candidate.track) {
                     return Err(INCOMPATIBLE_HANDOFF);
                 }
                 continue;
@@ -452,6 +460,9 @@ impl ForeignArrangement {
             Ok(())
         };
         let route_changed = ledger.route.is_some_and(|old| old != session.route.owner);
+        // A fresh generator can first appear at a running Arrangement cursor.
+        // Chase its current span without changing any retained generator's gate.
+        let first_route = ledger.route.is_none();
         let wrapped = session.route.owner == RouteOwner::Arrangement
             && !route_changed
             && !ledger.cut
@@ -482,7 +493,9 @@ impl ForeignArrangement {
                     let mut overflow = false;
                     track
                         .for_each_mutable_midi_span(context.arrangement, end, |span| {
-                            if span.start < context.arrangement && !(context.chase || wrapped) {
+                            if span.start < context.arrangement
+                                && !(context.chase || wrapped || first_route)
+                            {
                                 return;
                             }
                             overflow |= onsets

@@ -3,6 +3,166 @@ use super::*;
 use hex_engine::{LaunchQuantization::Immediate, SessionPlaybackCommand};
 use hex_project::BeatTime;
 
+#[test]
+#[ignore = "requires explicit source-bound SDK receipts and optional installed catalog"]
+fn native_vst3_instrument_bounces_to_new_track() {
+    const CHILD: &str = "HEX_DESKTOP_TEST_INSTRUMENT_BOUNCE_CHILD";
+    let installed = std::env::var("HEX_TEST_VST3_INSTRUMENT_BUNDLE").ok();
+    if std::env::var_os(CHILD).is_none() {
+        let test = std::thread::current().name().unwrap().to_owned();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .args(["--exact", &test, "--ignored", "--nocapture"])
+            .env(CHILD, "1");
+        if installed.is_none() {
+            child.env("HEX_ORIGINAL_INSTANCE_VARIANT", "127");
+        }
+        let result = child.output().unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let _native = native_fixture();
+    let files = Files::new();
+    let (catalog, selected) = if let Some(bundle) = installed.as_ref() {
+        let catalog = PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap());
+        let selected =
+            installed_selection(&catalog, bundle, hex_plugin_catalog::PluginRole::Instrument);
+        (catalog, selected)
+    } else {
+        let mut selected = selection();
+        let module = files.0.canonicalize().unwrap().join("original.vst3");
+        super::ui::copy_original_module(&selected.module, &module);
+        selected.module = module;
+        hex_ui::write_plugin_effect_test_catalog(&files.0, &selected, "Instrument|Synth", 0)
+            .unwrap();
+        (
+            files.0.canonicalize().unwrap().join("plugin-catalog.json"),
+            selected,
+        )
+    };
+    let rate = if installed.is_some() { 44_100 } else { 48_000 };
+    let mut harness = ResidentHarness::with_plugins_at_rate_and_catalog(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        rate,
+        catalog,
+        2_000_000,
+    );
+    assert!(harness.next().error.is_none());
+    let (applied, _) = harness.applied(0);
+    let added = harness.run(Request::Edit(Command::AddMidiTrack {
+        name: "synth".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("midi track")
+    };
+    let (applied, _) = harness.applied(applied);
+    let clip = harness.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::from_quarters(1).unwrap(),
+    }));
+    let Some(Created::Clip(clip)) = clip.created else {
+        panic!("midi clip")
+    };
+    let (applied, _) = harness.applied(applied);
+    let note = harness.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_ratio(1, 2).unwrap(),
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    }));
+    let (applied, _) = harness.applied(applied);
+    let mut insertion = request(&note.state, PluginEffectDestination::Instrument(track));
+    insertion.selection = selected;
+    harness
+        .service
+        .submit(Request::InsertPluginEffect(insertion))
+        .unwrap();
+    let accepted = terminal(&mut harness);
+    assert!(accepted.error.is_none(), "{:?}", accepted.error);
+    let (applied, _) = harness.applied(applied);
+    let binding = harness.plugin_progress.lock().unwrap().binding.unwrap();
+    let state = accepted
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .state()
+        .clone();
+    let control = hex_export::ExportControl::default();
+    harness
+        .service
+        .submit(Request::BounceArrangement {
+            project_generation: 0,
+            revision: accepted.state.revision,
+            target: hex_project::BounceTarget::Clips(vec![clip]),
+            in_place: false,
+            adoption: hex_project::BounceAdoption::NewTracks,
+            control: control.clone(),
+        })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(14);
+    let bounced = loop {
+        harness.pump();
+        harness.render();
+        if let Ok(event) = harness.service.try_event() {
+            break event;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "bounce timed out at {:?}",
+            control.progress()
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert!(bounced.error.is_none(), "{:?}", bounced.error);
+    let project = &bounced.state.project;
+    assert_eq!(
+        project.track(track).unwrap().instrument().unwrap().state(),
+        &state
+    );
+    let audio_track = project
+        .tracks()
+        .iter()
+        .find(|candidate| candidate.id() != track)
+        .unwrap();
+    let asset = project.asset(audio_track.clips()[0].asset()).unwrap();
+    let wav = std::fs::read(asset.path()).unwrap();
+    let audible = wav[hex_export::FLOAT32_WAV_HEADER_BYTES as usize..]
+        .chunks_exact(4)
+        .any(|sample| f32::from_le_bytes(sample.try_into().unwrap()).abs() > 0.001);
+    assert!(
+        audible,
+        "offline instrument bounce must contain audible PCM"
+    );
+    if installed.is_none() {
+        let first = hex_export::FLOAT32_WAV_HEADER_BYTES as usize;
+        let sample = f32::from_le_bytes(wav[first..first + 4].try_into().unwrap());
+        assert!(
+            sample > 0.001,
+            "offline bridge latency must be trimmed: {sample}"
+        );
+    }
+    harness.applied(applied);
+    assert_eq!(
+        harness.plugin_progress.lock().unwrap().binding,
+        Some(binding)
+    );
+}
+
 fn render_completed_block(harness: &ResidentHarness) -> [hex_engine::Frame; 256] {
     let previous = harness.plugin_completed.load(Acquire);
     let frames = harness.render_plugin_block();
@@ -19,6 +179,207 @@ fn render_completed_block(harness: &ResidentHarness) -> [hex_engine::Frame; 256]
         std::thread::yield_now();
     }
     frames
+}
+
+#[test]
+#[ignore = "requires explicit source-bound SDK receipts and optional installed catalog"]
+fn second_vst3_instrument_sounds_during_the_same_playback() {
+    const CHILD: &str = "HEX_DESKTOP_TEST_SECOND_LIVE_INSTRUMENT";
+    let installed = std::env::var("HEX_TEST_VST3_INSTRUMENT_BUNDLE").ok();
+    if std::env::var_os(CHILD).is_none() {
+        let test = std::thread::current().name().unwrap().to_owned();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .args(["--exact", &test, "--ignored", "--nocapture"])
+            .env(CHILD, "1");
+        if installed.is_none() {
+            child.env("HEX_ORIGINAL_INSTANCE_VARIANT", "127");
+        }
+        let result = child.output().unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let _native = native_fixture();
+    let rate = if installed.is_some() { 44_100 } else { 48_000 };
+    let mut harness = ResidentHarness::with_plugins_at_rate(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        rate,
+    );
+    assert!(harness.next().error.is_none());
+    let (mut applied, _) = harness.applied(0);
+    let mut expected_output = None;
+    let mut instruments = Vec::new();
+    harness.run(Request::Edit(Command::SetLoopRegion {
+        start: 0,
+        end: u64::from(rate) * 4,
+        enabled: true,
+    }));
+    (applied, _) = harness.applied(applied);
+    for (name, balance) in [("left", -1.0), ("right", 1.0)] {
+        let added = harness.run(Request::Edit(Command::AddMidiTrack { name: name.into() }));
+        let Some(Created::Track(track)) = added.created else {
+            panic!("midi track")
+        };
+        (applied, _) = harness.applied(applied);
+        harness.run(Request::Edit(Command::Balance { track, balance }));
+        (applied, _) = harness.applied(applied);
+        let length = BeatTime::from_quarters(8).unwrap();
+        let placed = harness.run(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length,
+        }));
+        let Some(Created::Clip(clip)) = placed.created else {
+            panic!("midi clip")
+        };
+        (applied, _) = harness.applied(applied);
+        let note = harness.run(Request::Edit(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: length,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        }));
+        (applied, _) = harness.applied(applied);
+        let mut insertion = request(&note.state, PluginEffectDestination::Instrument(track));
+        if let Some(bundle) = installed.as_ref() {
+            let catalog =
+                PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap());
+            insertion.selection =
+                installed_selection(&catalog, bundle, hex_plugin_catalog::PluginRole::Instrument);
+        }
+        harness
+            .service
+            .submit(Request::InsertPluginEffect(insertion))
+            .unwrap();
+        let end = Instant::now() + Duration::from_secs(5);
+        let accepted = loop {
+            harness.pump();
+            harness.render_worker_step();
+            if let Ok(event) = harness.service.try_event()
+                && !event.plugin_effect_complete.is_empty()
+            {
+                break event;
+            }
+            assert!(Instant::now() < end, "matching live insertion terminal");
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert!(
+            accepted.error.is_none() && accepted.plugin_effect_complete[0].accepted,
+            "{:?}",
+            accepted.error
+        );
+        instruments.push((
+            track,
+            accepted
+                .state
+                .project
+                .track(track)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .id(),
+        ));
+        let (next, metadata) = harness.applied(applied);
+        assert_eq!(metadata.context.editor_revision, accepted.state.revision);
+        applied = next;
+        let audio = harness.audio.as_mut().unwrap();
+        let output = audio.control.output_identity().unwrap();
+        if let Some(original) = expected_output {
+            assert_eq!(output, original);
+            assert!(audio.status().unwrap().playing.load(Acquire));
+        } else {
+            expected_output = Some(output);
+            audio.control.command(PlaybackCommand::Play).unwrap();
+        }
+        let mut peak = [0.0_f32; 2];
+        for _ in 0..12 {
+            for frame in render_completed_block(&harness) {
+                for channel in 0..2 {
+                    peak[channel] = peak[channel].max(frame[channel].abs());
+                }
+            }
+        }
+        assert!(
+            peak[0] > 0.001,
+            "original instrument must keep sounding: {peak:?}"
+        );
+        if name == "left" {
+            assert!(
+                peak[1] < 0.001,
+                "first instrument is isolated left: {peak:?}"
+            );
+        } else {
+            assert!(
+                peak[1] > 0.001,
+                "second instrument must sound on the same playback: {peak:?}"
+            );
+        }
+    }
+
+    // Follow the editor's Stop protocol even though the running revision was
+    // already current. The next edit needs fresh endpoints for the other track.
+    harness.audio.as_ref().unwrap().control.stop();
+    assert_eq!(harness.render_plugin_block(), [[0.0; 2]; 256]);
+    let mut restored = harness.run(Request::RestoreStoppedPlayback);
+    if !restored.stopped_playback_restore_complete {
+        restored = restored_terminal(&mut harness);
+    }
+    assert!(restored.error.is_none(), "{:?}", restored.error);
+    let (renewed, metadata) = harness.applied(applied);
+    assert!(metadata.stopped_restore);
+    let [(first_track, first), (second_track, second)] = instruments.as_slice() else {
+        panic!("two installed instruments");
+    };
+    let added = harness.run(Request::AddNativeDevice {
+        track: *first_track,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.rattle")),
+        before: None,
+    });
+    assert!(added.error.is_none(), "{:?}", added.error);
+    let (effect_applied, metadata) = harness.applied(renewed);
+    assert_eq!(metadata.context.editor_revision, added.state.revision);
+
+    let replacement = hex_engine::DeviceTypeId::from_static("hex.instrument.sine");
+    let edited = harness.run(Request::ReplaceNativeDevice {
+        device: *first,
+        class: hex_engine::NativeDeviceClass::Instrument,
+        type_id: Box::new(replacement),
+    });
+    assert!(edited.error.is_none(), "{:?}", edited.error);
+    let first = edited
+        .state
+        .project
+        .track(*first_track)
+        .unwrap()
+        .instrument()
+        .unwrap();
+    assert_eq!(first.state().type_id(), replacement);
+    let retained = edited
+        .state
+        .project
+        .track(*second_track)
+        .unwrap()
+        .instrument()
+        .unwrap();
+    assert_eq!(retained.id(), *second);
+    assert_eq!(retained.state().type_id().as_str(), Ok("hex.vst3"));
+    let (_, metadata) = harness.applied(effect_applied);
+    assert_eq!(metadata.context.editor_revision, edited.state.revision);
+    let audio = harness.audio.as_ref().unwrap();
+    assert_eq!(audio.control.output_identity(), expected_output);
+    assert!(!audio.status().unwrap().playing.load(Acquire));
 }
 
 #[test]

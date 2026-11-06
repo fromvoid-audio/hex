@@ -23,9 +23,9 @@
 //! are unchanged. The conversion latency belongs to CoreAudio and is not
 //! declared to hex, like the rest of the physical output latency.
 //!
-//! A plugin-bridge output keeps its refusal: it fixes the device buffer in
-//! device frames, and converted callbacks could exceed that fixed quantum.
-//! Other backends also keep the typed refusal.
+//! The macOS plugin bridge selects a separate hardware buffer and verifies the
+//! initialized CoreAudio client slice against its transport quantum before
+//! opening. Other backends keep the typed mismatch refusal.
 
 use std::fmt;
 

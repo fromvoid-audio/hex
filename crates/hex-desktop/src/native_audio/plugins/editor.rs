@@ -27,6 +27,7 @@ impl Plugins {
         device: u64,
     ) -> Result<(), String> {
         if self.editor.is_some()
+            || self.parameters.is_some()
             || self.restore.is_some()
             || self.reopen.is_some()
             || self.edit.is_some()

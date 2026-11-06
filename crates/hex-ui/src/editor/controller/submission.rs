@@ -41,6 +41,8 @@ pub(super) struct PendingKinds {
     gain_take: bool,
     device_automation: bool,
     time_copy: bool,
+    sample_drop: bool,
+    project_rate: bool,
 }
 
 /// One request's classification, captured before submission moves it.
@@ -95,6 +97,8 @@ impl EditorView {
                 gain_take: self.pending_gain_take_matches(request),
                 device_automation: self.pending_device_automation_matches(request),
                 time_copy: self.pending_time_copy_matches(request),
+                sample_drop: self.pending_sample_drop_matches(request),
+                project_rate: self.project_rate_settings.matches(request),
             },
             import_intent: ImportIntent::capture(request),
         }
@@ -124,6 +128,13 @@ impl EditorView {
             import_intent,
         } = submission;
         self.worker_submitted();
+        if kinds.project_rate {
+            self.project_rate_settings
+                .submitted(self.worker_requests_pending);
+        }
+        if kinds.sample_drop {
+            self.sample_drop_submitted();
+        }
         self.truncated_import_submitted(import_intent);
         if kinds.time_copy {
             self.time_copy_submitted();
@@ -200,6 +211,12 @@ impl EditorView {
         refusal: Refusal,
     ) -> bool {
         let mut visible = false;
+        if matches!(request, Request::RestoreStoppedPlayback) {
+            visible |= self.stopped_playback_restore.take().is_some();
+        }
+        if kinds.sample_drop {
+            visible |= self.pending_sample_drop.take().is_some();
+        }
         self.midi_take_not_submitted(request);
         self.gain_take_not_submitted(request);
         if refusal == Refusal::Closed {
@@ -284,6 +301,10 @@ impl EditorView {
             Refusal::Closed => "project worker stopped",
             Refusal::QueueFull => "request queue full · edit was not applied",
         };
+        if kinds.project_rate {
+            self.project_rate_settings.refused(message.into());
+            visible = true;
+        }
         visible |= replace_error(&mut self.error, message);
         visible
     }

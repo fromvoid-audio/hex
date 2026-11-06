@@ -3,10 +3,13 @@
 #import <AppKit/AppKit.h>
 #include "pluginterfaces/gui/iplugview.h"
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <optional>
 #include <new>
+#include <libproc.h>
+#include <unistd.h>
 
 namespace hex_instance {
 using namespace Steinberg;
@@ -124,20 +127,62 @@ private:
 @end
 
 namespace hex_instance {
+// AppKit's default deactivate rule follows only the helper. Treat Hex and
+// its editor helpers as one foreground group without transferring the view.
+class EditorPanelVisibility {
+    bool hidden_for_application=false;
+public:
+    static void configure(NSPanel* panel) {
+        [panel setFloatingPanel:YES];
+        [panel setLevel:NSFloatingWindowLevel];
+        [panel setHidesOnDeactivate:NO];
+    }
+    bool is_open(NSPanel* panel) const {
+        return panel && (hidden_for_application || [panel isVisible]);
+    }
+    void sync(NSPanel* panel,bool hex_is_foreground) {
+        if(!is_open(panel)) return; // A user close stays closed.
+        if(hex_is_foreground && hidden_for_application) {
+            hidden_for_application=false;
+            [panel orderFrontRegardless]; // Keep focus in the Hex window.
+        } else if(!hex_is_foreground && !hidden_for_application) {
+            hidden_for_application=true;
+            [panel orderOut:nil];
+        }
+    }
+    void reset() { hidden_for_application=false; }
+};
+
+inline bool is_editor_foreground_group(pid_t foreground,pid_t editor,pid_t owner,NSString* bundle_identifier) {
+    if(foreground<=0) return false;
+    if(foreground==editor || foreground==owner) return true;
+    // Each plug-in has its own helper. Keep sibling panels visible while
+    // moving between them, scoped to the same directly supervising Hex PID.
+    if(owner<=0 || ![bundle_identifier length] ||
+        ![bundle_identifier isEqualToString:[[NSRunningApplication currentApplication] bundleIdentifier]]) return false;
+    proc_bsdinfo info{};
+    return proc_pidinfo(foreground,PROC_PIDTBSDINFO,0,&info,sizeof(info))==static_cast<int>(sizeof(info)) &&
+        info.pbi_ppid==static_cast<uint32_t>(owner);
+}
+
 // Owns the window and one SDK reference. Explicit teardown precedes controller
 // release. On a refused detach the isolated process retains foreign resources.
 class EditorWindow {
-    NSWindow* window=nil;
+    NSPanel* window=nil;
     IPlugView* view=nullptr;
     EditorFrame* frame=nullptr;
     HexVSTEditorResizeDelegate* resize_delegate=nil;
+    EditorPanelVisibility visibility;
+    const pid_t owner;
+    std::chrono::steady_clock::time_point next_application_check{};
     bool attached=false,frame_set=false,quarantined=false,app_initialized=false;
 public:
+    explicit EditorWindow(pid_t owner):owner(owner) {}
     void quarantine() { quarantined=true; }
     bool close() {
         if(quarantined) return false;
         if(!view) return true;
-        const bool was_visible=is_open();
+        const bool was_visible=window && [window isVisible];
         if(resize_delegate) {
             [window setDelegate:nil];
             [resize_delegate release];resize_delegate=nil;
@@ -154,9 +199,10 @@ public:
             if(was_visible) [window close];
             [window release];window=nil;
         }
+        visibility.reset();
         return true;
     }
-    bool is_open() const { return window && [window isVisible]; }
+    bool is_open() const { return visibility.is_open(window); }
     std::optional<EditorState> open(IPlugView* editor) {
         view=editor;
         if(!view) return EditorState::Unavailable;
@@ -173,10 +219,11 @@ public:
             app_initialized=true;
         }
         const auto style=EditorFrame::window_style(*view);
-        window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,size.width,size.height)
+        window=[[NSPanel alloc] initWithContentRect:NSMakeRect(0,0,size.width,size.height)
             styleMask:style
             backing:NSBackingStoreBuffered defer:NO];
         if(!window) return unavailable();
+        EditorPanelVisibility::configure(window);
         [window setReleasedWhenClosed:NO];
         [window setTitle:@"vst3 editor"];
         [window center];
@@ -194,6 +241,7 @@ public:
         }
         [window makeKeyAndOrderFront:nil];
         [NSApp activateIgnoringOtherApps:YES];
+        next_application_check=std::chrono::steady_clock::now()+std::chrono::milliseconds(100);
         return is_open()?std::optional<EditorState>(EditorState::Open):unavailable();
     }
     bool pump() {
@@ -205,6 +253,16 @@ public:
                     inMode:NSDefaultRunLoopMode dequeue:YES];
                 if(!event) break;
                 [NSApp sendEvent:event];
+            }
+            if(is_open() && owner>0) {
+                const auto now=std::chrono::steady_clock::now();
+                if(now>=next_application_check) {
+                    next_application_check=now+std::chrono::milliseconds(100);
+                    auto* active=[[NSWorkspace sharedWorkspace] frontmostApplication];
+                    if(active && [active processIdentifier]>0)
+                        visibility.sync(window,is_editor_foreground_group(
+                            [active processIdentifier],::getpid(),owner,[active bundleIdentifier]));
+                }
             }
         }
         return is_open() || close();

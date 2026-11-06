@@ -49,13 +49,21 @@ fn catalog_fixture_track_return_labels_reuse_production_geometry_in_bounded_view
             let card = visual.debug_bounds("catalog-card").unwrap();
             let header = visual.debug_bounds("device-frame-header").unwrap();
             let body = visual.debug_bounds("fixture-body").unwrap();
-            assert_eq!(card.size, size(px(entry.width()), px(184.0)), "{entry:?}");
             assert_eq!(
-                header.size.height,
-                px(hex_widgets::DEVICE_FRAME_HEADER_HEIGHT)
+                card.size,
+                size(
+                    px(entry.width() + hex_widgets::DEVICE_FRAME_HEADER_WIDTH),
+                    px(184.0)
+                ),
+                "{entry:?}"
+            );
+            assert_eq!(
+                header.size.width,
+                px(hex_widgets::DEVICE_FRAME_HEADER_WIDTH)
             );
             assert_eq!(body.size.height, px(device_composition::BODY_HEIGHT));
-            assert_eq!(body.origin.y, header.bottom_left().y);
+            assert_eq!(body.origin.x, header.right());
+            assert_eq!(body.origin.y, header.origin.y);
             assert_eq!(
                 visual.rendered_background("device-frame-header"),
                 Some(gpui::Background::from(rgb(theme::device_style(

@@ -119,12 +119,14 @@ impl SessionPlayback {
         output: &mut [Frame],
         pages: Option<&mut P>,
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
-        project: Option<&mut ProjectOutputTap<'_, '_>>,
+        mut project: Option<&mut ProjectOutputTap<'_, '_>>,
         sources: &crate::native_device_resources::current_sampler::CurrentSamplerSources,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         self.candidate_admission_open = false;
-        let capture = project.map(|p| p as &mut dyn CaptureSink);
+        let capture = project
+            .as_mut()
+            .map(|tap| &mut **tap as &mut dyn CaptureSink);
         self.render_internal_with_foreign(
             output,
             pages,
@@ -134,7 +136,11 @@ impl SessionPlayback {
                 sources,
             )),
             foreign,
-        )
+        )?;
+        if let Some(project) = project {
+            project.main(output);
+        }
+        Ok(())
     }
 
     /// Render transactionally while optionally observing stable device IDs at
@@ -771,6 +777,10 @@ impl SessionPlayback {
         let mut arrangement_frame = self.arrangement_frame;
         let mut arrangement_loop_pass = self.arrangement_loop_pass;
         let mut output_offset = 0;
+        let mut timing_run = capture
+            .as_ref()
+            .filter(|sink| sink.observes_timing())
+            .map(|_| (0, arrangement_frame));
         let mut route_changed = false;
         let region = self.active_loop_region();
         // Pending route frames only change when apply_due_routes consumes them.
@@ -789,6 +799,21 @@ impl SessionPlayback {
             if let Some(region) = region {
                 (arrangement_frame, arrangement_loop_pass) =
                     normalize_loop_cursor(arrangement_frame, region, arrangement_loop_pass)?;
+            }
+            if let Some((offset, start)) = timing_run
+                && start.checked_add((output_offset - offset) as u64) != Some(arrangement_frame)
+            {
+                if output_offset > offset
+                    && let Some(sink) = capture.as_mut()
+                {
+                    sink.timing(
+                        offset,
+                        start,
+                        output_offset - offset,
+                        self.revision.session().timing(),
+                    );
+                }
+                timing_run = Some((output_offset, arrangement_frame));
             }
             let (captured_release, applied_route) = if self.current_sampler_console
                 || next_route.is_some_and(|next| next <= performance_frame)
@@ -1119,6 +1144,16 @@ impl SessionPlayback {
             output_offset = chunk_end;
         }
 
+        if let Some((offset, start)) = timing_run
+            && let Some(sink) = capture.as_mut()
+        {
+            sink.timing(
+                offset,
+                start,
+                output_offset - offset,
+                self.revision.session().timing(),
+            );
+        }
         self.main_chain.commit_block();
         self.revision.arrangement().master_mix().apply(output);
         for chain in &mut self.device_chains {

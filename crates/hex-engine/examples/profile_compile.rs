@@ -101,6 +101,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
         sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: RATE,
+        sample_rate_mode: Default::default(),
         next_id: 102 + clips_total,
         assets: vec![AssetSnapshot {
             original_source: None,

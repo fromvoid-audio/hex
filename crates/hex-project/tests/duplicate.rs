@@ -188,6 +188,7 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
         sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
+        sample_rate_mode: Default::default(),
         next_id: 3 + MAX_CLIPS as u64,
         assets: vec![hex_project::AssetSnapshot {
             original_source: None,

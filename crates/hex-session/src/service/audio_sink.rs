@@ -22,6 +22,9 @@ pub struct ResidentEffectPreparation<'a> {
     pub(in crate::service) preparing_edit: bool,
 }
 impl<'a> ResidentEffectPreparation<'a> {
+    pub fn sample_rate(&self) -> u32 {
+        self.project.sample_rate()
+    }
     pub fn context(&self) -> hex_engine::AudioSourceContext {
         self.context
     }
@@ -93,6 +96,19 @@ impl<'a> ResidentEffectPreparation<'a> {
         }
         Ok(())
     }
+}
+
+/// One private native bounce owner. It supplies exact compile facts before
+/// rendering and is dropped before Session adopts any of the output media.
+pub trait OfflineBounceSource: hex_export::ForeignBounceRenderer {
+    fn retained_data_bytes(&self) -> usize;
+    fn prepare(
+        &self,
+        compile: &mut dyn FnMut(
+            &hex_engine::AudioCandidateEffects<'_, '_>,
+        )
+            -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<hex_engine::PreparedRevision, String>;
 }
 
 fn is_plugin_effect(device: &hex_project::Device) -> bool {
@@ -282,6 +298,12 @@ pub trait WorkerAudioSink: Send {
     ) {
     }
 
+    /// The fresh output's plug-in restoration owns publication for this
+    /// context. Restart must wait for its ready receipt before compiling.
+    fn plugin_state_restore_pending(&self, _context: hex_engine::AudioSourceContext) -> bool {
+        false
+    }
+
     /// A fresh-output owner has restored the unchanged canonical plugin state
     /// through its actual native/endpoint ACKs. The worker may now recompile
     /// that exact context; this scalar transfers no source or graph custody.
@@ -334,6 +356,15 @@ pub trait WorkerAudioSink: Send {
     fn take_plugin_editor_result(&mut self, _generation: u64) -> Option<Result<bool, String>> {
         None
     }
+    fn query_plugin_parameters(&mut self, _query: PluginParameterQuery) -> Result<(), String> {
+        Err("vst3 parameters unavailable for this output".into())
+    }
+    fn plugin_parameters_ready(&self) -> bool {
+        false
+    }
+    fn take_plugin_parameters(&mut self) -> Option<PluginParameterResult> {
+        None
+    }
     /// Match the exact request control; never cancel an unrelated later source.
     /// Exact canonical terminal. Rejected requests retire only their matching native preparation;
     /// acceptance transfers display/request custody, never the native source's lifetime.
@@ -352,6 +383,17 @@ pub trait WorkerAudioSink: Send {
         )
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<Option<hex_engine::PreparedRevision>, String> {
+        Ok(None)
+    }
+    /// A host with no private offline capability must refuse foreign bounce
+    /// instead of using its live source or publishing unprocessed audio.
+    fn prepare_offline_bounce(
+        &mut self,
+        input: ResidentEffectPreparation<'_>,
+    ) -> Result<Option<Box<dyn OfflineBounceSource>>, String> {
+        if input.requires_plugin_profile() {
+            return Err("offline vst3 bounce unavailable for this host".into());
+        }
         Ok(None)
     }
     /// Rate of the current default interface for an un-authored document.
@@ -1164,6 +1206,16 @@ impl WorkerEvents {
             {
                 return Some(QueuedRequest::continuation(
                     Request::ContinuePluginEditor,
+                    document_intent,
+                ));
+            }
+            if self
+                .audio
+                .as_ref()
+                .is_some_and(|audio| audio.plugin_parameters_ready())
+            {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinuePluginParameters,
                     document_intent,
                 ));
             }

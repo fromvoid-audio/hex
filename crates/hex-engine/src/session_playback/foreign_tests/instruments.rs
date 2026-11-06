@@ -7,6 +7,7 @@ const VST3: DeviceTypeId = DeviceTypeId::from_static("hex.vst3");
 
 struct InstrumentDefinition {
     identity: ProcessorInstanceIdentity,
+    second: Option<ProcessorInstanceIdentity>,
     instrument_profile: bool,
     epoch: u64,
 }
@@ -72,7 +73,9 @@ impl NativeDeviceDefinition for InstrumentDefinition {
         context: &DevicePreparationContext<'_>,
     ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
         self.migrate_state(state)?;
-        if identity != self.identity || context.sample_rate != 48_000 {
+        if (identity != self.identity && Some(identity) != self.second)
+            || context.sample_rate != 48_000
+        {
             return Err(DeviceContractError::InvalidId);
         }
         let facts = PreparedForeignProcessor::new(8, 3, 16)?.with_binding(
@@ -153,8 +156,19 @@ fn prepare_epoch(
     instrument_profile: bool,
     epoch: u64,
 ) -> Result<Arc<PreparedRevision>, Invalid> {
+    prepare_instruments(editor, identity, None, instrument_profile, epoch)
+}
+
+fn prepare_instruments(
+    editor: &Editor,
+    identity: ProcessorInstanceIdentity,
+    second: Option<ProcessorInstanceIdentity>,
+    instrument_profile: bool,
+    epoch: u64,
+) -> Result<Arc<PreparedRevision>, Invalid> {
     let definition = InstrumentDefinition {
         identity,
+        second,
         instrument_profile,
         epoch,
     };
@@ -168,6 +182,147 @@ fn prepare_epoch(
         &registry,
     )
     .map(Arc::new)
+}
+
+#[test]
+fn live_new_track_and_second_instrument_keep_the_first_gate_and_clock() {
+    let (mut editor, first) = fixture();
+    let mut playing = SessionPlayback::new(prepare(&editor, first, true).unwrap()).unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    playing.apply(SessionPlaybackCommand::Play).unwrap();
+    endpoint.render(&mut playing, &mut [[0.0; 2]; 32]).unwrap();
+    let first_note = endpoint.notes[0].1;
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "second".into(),
+        })
+        .unwrap()
+    else {
+        panic!("second track")
+    };
+    let mut empty = SessionPlayback::new(prepare(&editor, first, true).unwrap()).unwrap();
+    empty
+        .inherit_state(&mut playing)
+        .expect("append independent empty track during play");
+    assert_eq!(empty.performance_frame(), 32);
+    endpoint.render(&mut empty, &mut [[0.0; 2]; 32]).unwrap();
+    assert!(endpoint.notes.is_empty());
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(1).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_ratio(1, 128).unwrap(),
+            pitch: 67,
+            channel: 2,
+            velocity: 100,
+        })
+        .unwrap();
+    editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: NativeDeviceState::new(VST3, 1, vec![19]).unwrap(),
+        })
+        .unwrap();
+    let device = editor.project().track(track).unwrap().instrument().unwrap();
+    let second = ProcessorInstanceIdentity::new(
+        ProcessorChainOwner::Track(track.value()),
+        device.id().value(),
+    )
+    .unwrap();
+    let mut candidate =
+        SessionPlayback::new(prepare_instruments(&editor, first, Some(second), true, 1).unwrap())
+            .unwrap();
+    {
+        let target = candidate.compensation.as_ref().unwrap();
+        let donor = empty.compensation.as_mut().unwrap();
+        let crate::signal_graph::TrackOutput::Main { edge } = donor.graph.tracks[1].output else {
+            panic!("direct main route");
+        };
+        assert!(target.can_copy_from(donor, Some(track)));
+        donor.delays.begin_transaction().unwrap();
+        donor.edge(edge, [1.0, 0.0]).unwrap();
+        donor.delays.commit_transaction().unwrap();
+        assert!(!target.can_copy_from(donor, Some(track)));
+        donor.delays.begin_transaction().unwrap();
+        let mut pending = [[0.0; 2]; 19];
+        donor.edge_block(edge, &mut pending).unwrap();
+        donor.delays.commit_transaction().unwrap();
+        assert!(
+            pending.contains(&[1.0, 0.0]),
+            "refusal must preserve delayed PCM"
+        );
+    }
+    candidate
+        .inherit_state(&mut empty)
+        .expect("install fresh second generator during play");
+    assert_eq!(candidate.performance_frame(), 64);
+
+    #[derive(Default)]
+    struct Sources(Vec<(u64, hex_lattice::ForeignNote)>);
+    impl ForeignProcessors for Sources {
+        fn process_segment(
+            &mut self,
+            _: ForeignProcessorNode<'_>,
+            _: usize,
+            _: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            Err(DeviceContractError::ForeignProcessingFailed)
+        }
+        fn process_segment_with_notes(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            _: usize,
+            _: &mut [Frame],
+            _: &[hex_lattice_contract::ForeignParameterPoint],
+            notes: &[hex_lattice::ForeignNote],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            self.0
+                .extend(notes.iter().map(|note| (node.device_id, *note)));
+            Ok(())
+        }
+        fn reject_callback(&mut self) {}
+    }
+    let mut sources = Sources::default();
+    candidate
+        .render_with_foreign_processors(&mut [[0.0; 2]; 256], None, None, None, &mut sources)
+        .unwrap();
+    assert_eq!(candidate.performance_frame(), 320);
+    assert_eq!(sources.0.len(), 2);
+    assert!(
+        sources
+            .0
+            .iter()
+            .all(|(device, note)| *device == second.device_id() && note.pitch == 67)
+    );
+    assert!(sources.0[0].1.on && !sources.0[1].1.on);
+    let mut rest = vec![[0.0; 2]; 24_001 - 320];
+    sources.0.clear();
+    candidate
+        .render_with_foreign_processors(&mut rest, None, None, None, &mut sources)
+        .unwrap();
+    assert_eq!(
+        sources.0,
+        [(
+            first.device_id(),
+            hex_lattice::ForeignNote {
+                on: false,
+                velocity: 0,
+                ..first_note
+            }
+        )]
+    );
 }
 
 #[test]
@@ -264,6 +419,25 @@ impl NoteEndpoint {
         self.notes.clear();
         playback.render_with_foreign_processors(frames, None, None, None, self)
     }
+}
+
+#[test]
+fn finite_bounce_requires_an_explicit_foreign_instrument_renderer() {
+    let (editor, identity) = fixture();
+    let revision = prepare(&editor, identity, true).unwrap();
+    assert!(
+        SessionPlayback::new_finite_arrangement_bounce(Arc::clone(&revision), None, 8).is_err()
+    );
+    assert!(revision.arrangement_bounce_requires_preroll());
+    let mut playback =
+        SessionPlayback::new_finite_arrangement_bounce_with_foreign(revision, None, 8).unwrap();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    endpoint.render(&mut playback, &mut [[0.0; 2]; 8]).unwrap();
+    let [(offset, note)] = endpoint.notes.as_slice() else {
+        panic!("expected one authored MIDI note");
+    };
+    assert_eq!((*offset, note.frame, note.pitch, note.on), (0, 0, 60, true));
 }
 
 #[test]

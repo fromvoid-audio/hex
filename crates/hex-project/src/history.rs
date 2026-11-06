@@ -14,6 +14,16 @@ struct HistoryEntry {
     stopped_bounce: bool,
 }
 
+/// A rate-changing edge uses the exact same bounded history stacks as edits.
+pub enum SampleRateHistoryAction {
+    Apply {
+        rate: u32,
+        mode: crate::SampleRateMode,
+    },
+    Undo,
+    Redo,
+}
+
 pub struct Editor {
     project: Project,
     undo: VecDeque<HistoryEntry>,
@@ -96,6 +106,81 @@ impl Editor {
             self.undo.back()
         }
         .is_some_and(|entry| entry.section_publication)
+    }
+
+    /// Prepare a rate edge with the optional live-state projection validated
+    /// by the Session owner. The projection describes the outgoing project
+    /// with its freshly captured device state. Failure and no-op restore the
+    /// exact original model and leave both history stacks unchanged.
+    pub fn change_sample_rate_prepared<T, E: From<Invalid>>(
+        &mut self,
+        action: SampleRateHistoryAction,
+        outgoing: Option<Project>,
+        prepare: impl FnOnce(&Project) -> Result<T, E>,
+    ) -> Result<Option<T>, E> {
+        if outgoing.as_ref().is_some_and(|project| {
+            project.sample_rate() != self.project.sample_rate()
+                || project.sample_rate_mode() != self.project.sample_rate_mode()
+        }) {
+            return Err(E::from(Invalid(
+                "captured project clock differs from the current rate",
+            )));
+        }
+        let original = outgoing.map(|project| std::mem::replace(&mut self.project, project));
+        let result = match action {
+            SampleRateHistoryAction::Apply { rate, mode } => {
+                self.apply_sample_rate(rate, mode, prepare)
+            }
+            SampleRateHistoryAction::Undo => self.undo_prepared(prepare),
+            SampleRateHistoryAction::Redo => self.redo_prepared(prepare),
+        };
+        if !matches!(result, Ok(Some(_)))
+            && let Some(original) = original
+        {
+            self.project = original;
+        }
+        result
+    }
+
+    fn apply_sample_rate<T, E: From<Invalid>>(
+        &mut self,
+        rate: u32,
+        mode: crate::SampleRateMode,
+        prepare: impl FnOnce(&Project) -> Result<T, E>,
+    ) -> Result<Option<T>, E> {
+        let candidate = self
+            .project
+            .at_sample_rate(rate)?
+            .with_sample_rate_mode(mode);
+        if candidate == self.project {
+            return Ok(None);
+        }
+        self.undo
+            .try_reserve(1)
+            .map_err(|_| E::from(Invalid("could not reserve sample rate history")))?;
+        let prepared = prepare(&candidate)?;
+        self.commit_candidate(candidate, None, false, false);
+        Ok(Some(prepared))
+    }
+
+    fn commit_candidate(
+        &mut self,
+        candidate: Project,
+        midi_effect: Option<crate::MidiHistoryEffect>,
+        section_publication: bool,
+        stopped_bounce: bool,
+    ) {
+        let previous = std::mem::replace(&mut self.project, candidate);
+        if self.undo.len() == self.capacity {
+            self.undo.pop_front();
+        }
+        self.undo.push_back(HistoryEntry {
+            project: previous,
+            midi_effect,
+            section_publication,
+            stopped_bounce,
+        });
+        self.redo.clear();
     }
 
     pub fn execute(&mut self, command: Command) -> Result<Created, Invalid> {
@@ -195,17 +280,7 @@ impl Editor {
         if candidate == self.project {
             return Ok((result, prepared));
         }
-        let previous = std::mem::replace(&mut self.project, candidate);
-        if self.undo.len() == self.capacity {
-            self.undo.pop_front();
-        }
-        self.undo.push_back(HistoryEntry {
-            project: previous,
-            midi_effect: effect,
-            section_publication,
-            stopped_bounce,
-        });
-        self.redo.clear();
+        self.commit_candidate(candidate, effect, section_publication, stopped_bounce);
         Ok((result, prepared))
     }
     /// Apply at most MAX_CLIPS ordered commands to one private candidate and

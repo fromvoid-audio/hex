@@ -7,6 +7,8 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <memory>
+#include <new>
 #include <pthread.h>
 
 namespace hex_instance {
@@ -16,7 +18,10 @@ inline constexpr size_t HOST_MESSAGE_COUNT=16;
 inline constexpr size_t HOST_ATTRIBUTE_COUNT=16;
 inline constexpr size_t HOST_IDENTIFIER_BYTES=64;
 inline constexpr size_t HOST_TEXT_UNITS=256;
-inline constexpr size_t HOST_BINARY_BYTES=1024;
+inline constexpr size_t HOST_INLINE_BINARY_BYTES=1024;
+// Shared by the large attributes of one live message. Installed Pro-Q 3
+// exchanges attributes up to 25,853 bytes during audible playback.
+inline constexpr size_t HOST_BINARY_BYTES=32*1024;
 inline bool same(const TUID a,const TUID b) { return a && b && std::memcmp(a,b,sizeof(TUID))==0; }
 
 template<typename Char> bool text_length(const Char* value,size_t maximum,size_t& length) {
@@ -52,10 +57,13 @@ class HostMessage final : public IMessage, public IAttributeList {
         int64 integer=0;
         double floating=0;
         TChar text[HOST_TEXT_UNITS+1]{};
-        std::array<unsigned char,HOST_BINARY_BYTES> binary{};
+        std::array<unsigned char,HOST_INLINE_BINARY_BYTES> binary{};
+        std::unique_ptr<unsigned char[]> large_binary;
+        uint32 large_capacity=0;
         uint32 length=0;
     };
     std::array<Attribute,HOST_ATTRIBUTE_COUNT> values{};
+    size_t large_binary_bytes=0;
     std::atomic<uint32> references{0};
     FUnknown* owner=nullptr;
     HostMessageDiagnostics* diagnostics=nullptr;
@@ -63,6 +71,11 @@ class HostMessage final : public IMessage, public IAttributeList {
     bool attributes_only=false, named=false;
     char message_id[HOST_IDENTIFIER_BYTES+1]{};
     bool on_payload_thread() const { return pthread_equal(payload_thread,pthread_self()); }
+    void clear_large_binary(Attribute& value) {
+        large_binary_bytes-=value.large_capacity;
+        value.large_capacity=0;
+        value.large_binary.reset();
+    }
     bool can_read_payload() const {
         if(on_payload_thread()) return true;
         if(diagnostics) diagnostics->wrong_thread_reads.fetch_add(1,std::memory_order_relaxed);
@@ -86,7 +99,10 @@ public:
         if (!owner || !references.compare_exchange_strong(available,1,std::memory_order_acq_rel)) return false;
         owner->addRef();
         payload_thread=pthread_self();
-        for (auto& value:values) value.kind=Kind::Empty;
+        for (auto& value:values) {
+            clear_large_binary(value);
+            value.kind=Kind::Empty;
+        }
         attributes_only=attributes; named=false; message_id[0]=0;
         if(diagnostics && !attributes) diagnostics->messages.fetch_add(1,std::memory_order_relaxed);
         return true;
@@ -123,6 +139,7 @@ public:
     }
     tresult PLUGIN_API setInt(AttrID id,int64 number) override {
         auto* value=find(id,true); if (!value) return kResultFalse;
+        clear_large_binary(*value);
         value->integer=number; value->kind=Kind::Integer; return kResultOk;
     }
     tresult PLUGIN_API getInt(AttrID id,int64& number) override {
@@ -132,6 +149,7 @@ public:
     tresult PLUGIN_API setFloat(AttrID id,double number) override {
         if (!std::isfinite(number)) return kInvalidArgument;
         auto* value=find(id,true); if (!value) return kResultFalse;
+        clear_large_binary(*value);
         value->floating=number; value->kind=Kind::Floating; return kResultOk;
     }
     tresult PLUGIN_API getFloat(AttrID id,double& number) override {
@@ -142,6 +160,7 @@ public:
         size_t length=0; if (!text_length(text,HOST_TEXT_UNITS,length)) return kInvalidArgument;
         auto* value=find(id,true); if (!value) return kResultFalse;
         std::memmove(value->text,text,(length+1)*sizeof(TChar));
+        clear_large_binary(*value);
         value->length=static_cast<uint32>(length); value->kind=Kind::Text; return kResultOk;
     }
     tresult PLUGIN_API getString(AttrID id,TChar* text,uint32 bytes) override {
@@ -156,7 +175,24 @@ public:
         }
         if ((!bytes && size) || size>HOST_BINARY_BYTES) return kInvalidArgument;
         auto* value=find(id,true); if (!value) return kResultFalse;
-        if (size) std::memmove(value->binary.data(),bytes,size);
+        if(size<=value->binary.size()) {
+            if(size) std::memmove(value->binary.data(),bytes,size);
+            clear_large_binary(*value);
+        } else if(size<=value->large_capacity) {
+            std::memmove(value->large_binary.get(),bytes,size);
+        } else {
+            // Only the creating thread can mutate a message, and Host
+            // refuses creation on the SDK PCM lane. Keep the old allocation
+            // valid until after copying, since the caller can pass a borrow.
+            const auto retained=large_binary_bytes-value->large_capacity;
+            if(size>HOST_BINARY_BYTES-retained) return kOutOfMemory;
+            std::unique_ptr<unsigned char[]> replacement(new(std::nothrow) unsigned char[size]);
+            if(!replacement) return kOutOfMemory;
+            std::memcpy(replacement.get(),bytes,size);
+            value->large_binary=std::move(replacement);
+            value->large_capacity=size;
+            large_binary_bytes=retained+size;
+        }
         value->length=size; value->kind=Kind::Binary;
         if(diagnostics) diagnostics->binary_writes.fetch_add(1,std::memory_order_relaxed);
         return kResultOk;
@@ -168,7 +204,7 @@ public:
             if(diagnostics) diagnostics->binary_misses.fetch_add(1,std::memory_order_relaxed);
             return kResultFalse;
         }
-        bytes=value->binary.data(); size=value->length;
+        bytes=value->large_binary?value->large_binary.get():value->binary.data(); size=value->length;
         if(diagnostics) diagnostics->binary_reads.fetch_add(1,std::memory_order_relaxed);
         return kResultOk;
     }

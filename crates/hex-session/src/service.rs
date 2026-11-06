@@ -24,6 +24,7 @@ pub use hex_storage::text;
 use hex_tuning::ProjectTuning;
 mod arrangement_sections;
 mod browser_preview;
+pub mod take_audio;
 pub use browser_preview::{AudioPreview, PreviewFailure, PreviewSources};
 #[cfg(test)]
 mod audio_batch_tests;
@@ -58,11 +59,11 @@ mod sampler_parameter;
 use audio_sink::WorkerEvents;
 pub use audio_sink::{
     ArrangementEditPosition, NativeSamplerInput, NativeSamplerReservationHold,
-    NativeSamplerRetryFacts, ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata,
-    ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
-    ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationMetadata,
-    ResidentPublicationPolicy, ResidentPublicationReadiness, ResidentPublicationRefusal,
-    ResidentRuntimeLoop, WorkerAudioSink,
+    NativeSamplerRetryFacts, OfflineBounceSource, ResidentEffectPreparation, ResidentFileInput,
+    ResidentFileMetadata, ResidentFilePublication, ResidentFileSeekPreparer,
+    ResidentFileSeekRequest, ResidentFileSet, ResidentFreshRuntimeFence,
+    ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
+    ResidentPublicationReadiness, ResidentPublicationRefusal, ResidentRuntimeLoop, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -72,7 +73,9 @@ pub use device_automation_control::DeviceAutomationControlEdit;
 mod device_comparison;
 mod effect_bus;
 mod plugin_effect;
+mod plugin_parameters;
 mod plugin_state_save;
+pub use plugin_parameters::{PluginParameterQuery, PluginParameterResult, PluginParameterRow};
 pub use plugin_state_save::{PluginStateCapture, PluginStateSaveInput};
 pub mod diagnostics;
 mod request_cancellation;
@@ -101,7 +104,9 @@ mod limiter_tests;
 mod long_source_tests;
 pub mod missing_media;
 pub mod preset;
+mod project_rate;
 mod recovery;
+pub use project_rate::ProjectSampleRate;
 #[cfg(test)]
 mod verified_source_tests;
 pub use canonical_audio_source::CanonicalAudioSourceSnapshot;
@@ -267,6 +272,7 @@ pub struct Event {
     pub sampler_edit_complete: Option<u64>,
     /// At most two exact terminals: a refused new request and an invalidated pending one.
     pub plugin_effect_complete: Vec<PluginEffectCompletion>,
+    pub plugin_parameters: Option<PluginParameterResult>,
     pub computer_keyboard_complete: Option<u64>,
     /// Exact terminal for a retained MIDI take commit, including refusal.
     pub midi_take_complete: Option<MidiTakeCompletion>,
@@ -588,6 +594,8 @@ pub enum Request {
         device: hex_project::DeviceId,
     },
     ContinuePluginEditor,
+    QueryPluginParameters(PluginParameterQuery),
+    ContinuePluginParameters,
     /// Internal fresh-output state restoration; no authored edit or revision.
     ContinuePluginStateRestore,
     /// Catalog effect insertion; defaults and target admission belong to the worker.
@@ -761,6 +769,12 @@ pub enum Request {
         track: hex_project::TrackId,
         scene: hex_project::SceneId,
     },
+    /// Change the current project clock through a prepared history edge.
+    ChangeProjectSampleRate {
+        project_generation: u64,
+        revision: u64,
+        choice: ProjectSampleRate,
+    },
     /// Select a fresh document mode before any media preparation.
     NewWithAudioMode {
         mode: DocumentAudioMode,
@@ -922,6 +936,7 @@ impl Request {
         matches!(
             self,
             Request::CommitMidiTake { .. }
+                | Request::ChangeProjectSampleRate { .. }
                 | Request::Undo
                 | Request::ReorderTracks { .. }
                 | Request::ReparentTracks { .. }
@@ -1462,6 +1477,17 @@ impl Service {
                                 }
                             },
                             None => session,
+                        };
+                        let session = match project_rate::new_following_interface(
+                            session,
+                            history_capacity,
+                        ) {
+                            Ok(session) => session,
+                            Err(error) => {
+                                let _ = worker_startup_failure
+                                    .set(format!("project session could not start: {error}"));
+                                return;
+                            }
                         };
                         session.with_shutdown(worker_shutdown)
                     }
@@ -2296,6 +2322,7 @@ fn run_worker(
                 sampler_load_complete: None,
                 sampler_edit_complete: None,
                 plugin_effect_complete: Vec::new(),
+                plugin_parameters: None,
                 computer_keyboard_complete: None,
                 midi_take_complete: None,
                 tuning_audition_complete: None,
@@ -2336,6 +2363,7 @@ fn run_worker(
             sampler_load_complete: None,
             sampler_edit_complete: None,
             plugin_effect_complete: Vec::new(),
+            plugin_parameters: None,
             computer_keyboard_complete: None,
             midi_take_complete: None,
             tuning_audition_complete: None,
@@ -2550,8 +2578,9 @@ fn run_worker(
                 }
                 Request::Undo | Request::Redo => {
                     let redo = matches!(&queued.request, Request::Redo);
-                    session.editor.next_history_requires_stopped_bounce(redo)
-                        || session.section_history_requires_publication(redo)
+                    !project_rate::history_needs_replacement(&session, redo)
+                        && (session.editor.next_history_requires_stopped_bounce(redo)
+                            || session.section_history_requires_publication(redo))
                 }
                 _ => false,
             };
@@ -2589,10 +2618,12 @@ fn run_worker(
             Request::ContinueSamplerEdit
                 | Request::ContinuePluginEffect
                 | Request::ContinuePluginEditor
+                | Request::ContinuePluginParameters
                 | Request::ContinuePluginStateRestore
                 | Request::ContinueStoppedPlaybackRestore
         );
         let mut plugin_effect_complete = Vec::new();
+        let mut plugin_parameters = None;
         let mut sampler_edit_complete = None;
         if matches!(
             &request,
@@ -2626,6 +2657,17 @@ fn run_worker(
         };
         let mut audio_batch_complete = None;
         let mut audio_batch_failure = None;
+        let rate_transition = match &request {
+            Request::ChangeProjectSampleRate { choice, .. } => {
+                Some(project_rate::Transition::Apply(*choice))
+            }
+            Request::Undo | Request::Redo => {
+                let redo = matches!(&request, Request::Redo);
+                project_rate::history_needs_replacement(&session, redo)
+                    .then_some(project_rate::Transition::History { redo })
+            }
+            _ => None,
+        };
         let mut open_complete = false;
         let mut save_complete = false;
         let mut save_confirmation_required = false;
@@ -3463,6 +3505,8 @@ fn run_worker(
                     | Request::ContinuePluginEffect
                     | Request::TogglePluginEditor { .. }
                     | Request::ContinuePluginEditor
+                    | Request::QueryPluginParameters(_)
+                    | Request::ContinuePluginParameters
                     | Request::ContinuePluginStateRestore
                     | Request::PrepareComputerKeyboard { .. }
                     | Request::AssignSampler { .. }
@@ -3568,6 +3612,67 @@ fn run_worker(
             error = Some(reason);
         } else {
             match request {
+                Request::ChangeProjectSampleRate {
+                    project_generation: captured,
+                    revision: captured_revision,
+                    ..
+                } if captured != project_generation || captured_revision != revision => {
+                    error = Some("project changed · sample rate request cancelled".into());
+                }
+                Request::ChangeProjectSampleRate { .. } | Request::Undo | Request::Redo
+                    if rate_transition.is_some() =>
+                {
+                    let admission = export_lane.admission_with_resident_owners(
+                        compiled.as_ref().map(|(_, p)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(p.as_ref()),
+                            }
+                        }),
+                        resident_seek.as_ref(),
+                        resident_preview.as_ref(),
+                    );
+                    if let Some(transition) = rate_transition {
+                        let cancellation = RequestCancellation::new(
+                            Arc::clone(&session.shutdown),
+                            Arc::clone(&document_intent),
+                            document_intent.load(Ordering::Acquire),
+                        );
+                        match project_rate::replace(
+                            &mut session,
+                            transition,
+                            history_capacity,
+                            media_base.as_deref(),
+                            hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision,
+                            },
+                            &cancellation,
+                            &mut events,
+                            resident_snapshot.as_ref(),
+                            admission,
+                        ) {
+                            Ok(Some(prepared)) => {
+                                resident_audio::adopt_document_snapshot(
+                                    &mut resident_snapshot,
+                                    prepared.resident,
+                                );
+                                unsaved = true;
+                                project_replaced = true;
+                                replacement_revision = Some(prepared.prepared);
+                                replacement_sources = Some(prepared.sources);
+                                status = Some("project sample rate updated".into());
+                            }
+                            Ok(None) => {
+                                status = Some("project sample rate already selected".into())
+                            }
+                            Err(reason) => error = Some(reason),
+                        }
+                    }
+                }
+                Request::ChangeProjectSampleRate { .. } => {
+                    error = Some("project sample rate choice could not be resolved".into());
+                }
                 // `truncated_import::admit` unwraps every recovery at receipt.
                 Request::RecoverTruncatedImport(_) => {
                     error = Some("truncated import recovery was not admitted".into());
@@ -3612,18 +3717,20 @@ fn run_worker(
                         match events.restart_audio(project_generation, request_id) {
                             Ok(()) => {
                                 status = Some("restarting audio".into());
+                                let context = hex_engine::AudioSourceContext {
+                                    project_generation,
+                                    editor_revision: revision,
+                                };
                                 if session.audio_mode() == DocumentAudioMode::Resident
                                     && let Some(sink) = events.resident_audio()
+                                    && !sink.plugin_state_restore_pending(context)
                                 {
                                     let admission = export_lane.admission_with_resident_owners(
                                         compiled.as_ref().map(|(_, prepared)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(prepared) }),
                                         resident_seek.as_ref(), None,
                                     );
                                     let metadata = ResidentPublicationMetadata {
-                                        context: hex_engine::AudioSourceContext {
-                                            project_generation,
-                                            editor_revision: revision,
-                                        },
+                                        context,
                                         device_preview: None,
                                         tuning_preview: None,
                                         seek_request: None,
@@ -3954,6 +4061,34 @@ fn run_worker(
                         Some(Err(reason)) => error = Some(reason),
                         None => {}
                     }
+                }
+                Request::QueryPluginParameters(query) => {
+                    let result = if query.context.project_generation != project_generation
+                        || query.context.editor_revision != revision
+                        || !session
+                            .project()
+                            .device(query.device)
+                            .is_some_and(|device| {
+                                device.state().type_id().as_str() == Ok("hex.vst3")
+                            }) {
+                        Err("vst3 parameter target changed".into())
+                    } else {
+                        events
+                            .sampler_edit_audio()
+                            .ok_or_else(|| "vst3 parameters unavailable for this output".to_owned())
+                            .and_then(|audio| audio.query_plugin_parameters(query))
+                    };
+                    if let Err(reason) = result {
+                        plugin_parameters = Some(PluginParameterResult {
+                            query,
+                            rows: Err(reason),
+                        });
+                    }
+                }
+                Request::ContinuePluginParameters => {
+                    plugin_parameters = events
+                        .sampler_edit_audio()
+                        .and_then(|audio| audio.take_plugin_parameters());
                 }
                 request @ (Request::InsertPluginEffect(_) | Request::ContinuePluginEffect) => {
                     if let Request::InsertPluginEffect(insertion) = request {
@@ -5086,6 +5221,9 @@ fn run_worker(
                     .and_then(|candidate| match session.native_reservation {
                         Some(limits) => candidate.with_native_reservation(limits),
                         None => Ok(candidate),
+                    })
+                    .and_then(|candidate| {
+                        project_rate::new_following_interface(candidate, history_capacity)
                     })
                     .map(|candidate| candidate.with_shutdown(Arc::clone(&session.shutdown)))
                     .map_err(|reason| reason.to_string());
@@ -7206,7 +7344,19 @@ fn run_worker(
                         restore_complete = Some(*generation);
                     }
                     let republish = matches!(&request, Request::RepublishPausedPlayback);
-                    if events.resident_publication_enabled()
+                    let context = hex_engine::AudioSourceContext {
+                        project_generation,
+                        editor_revision: revision,
+                    };
+                    if !republish
+                        && events
+                            .resident_audio()
+                            .is_some_and(|sink| sink.plugin_state_restore_pending(context))
+                    {
+                        // The exact fresh graph ACK gates the editor's cursor
+                        // restore and any held Play. Keep the existing owner.
+                        status = Some("restoring vst3 playback".into());
+                    } else if events.resident_publication_enabled()
                         && session.audio_mode() == DocumentAudioMode::Resident
                     {
                         let result = (|| {
@@ -7215,10 +7365,7 @@ fn run_worker(
                             )?;
                             let selected = snapshot.inputs.clone();
                             let metadata = ResidentPublicationMetadata {
-                                context: hex_engine::AudioSourceContext {
-                                    project_generation,
-                                    editor_revision: revision,
-                                },
+                                context,
                                 device_preview: None,
                                 tuning_preview: None,
                                 seek_request: None,
@@ -7780,6 +7927,7 @@ fn run_worker(
                 sampler_load_complete,
                 sampler_edit_complete,
                 plugin_effect_complete,
+                plugin_parameters,
                 computer_keyboard_complete,
                 midi_take_complete,
                 tuning_audition_complete,

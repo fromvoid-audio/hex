@@ -13,7 +13,10 @@ use gpui::{App, Context};
 use hex_audio::prepared::PublicationPolicy;
 use hex_engine::playback::{PlaybackAction, PlaybackCommand};
 use hex_session::device_gesture::GestureKey;
-use hex_session::service::{DevicePreviewIdentity, Event, Request, SubmitError, ViewState};
+use hex_session::service::{
+    DeviceClipboardAction, DevicePreviewIdentity, Event, Request, SubmitError,
+    TrackClipboardAction, ViewState,
+};
 use std::{
     collections::VecDeque,
     sync::Arc,
@@ -1304,7 +1307,11 @@ impl EditorView {
         visible_change |= self.poll_export(cx);
         visible_change |= self.pump_tuning_gesture();
         if !self.tuning.client.has_pending_requests() && !self.tuning.client.is_recovery_pending() {
-            while let Some(request) = self.pending_requests.pop_front() {
+            while self.pending_requests.front().is_some_and(|request| {
+                !self.holds_stopped_vst3_requests()
+                    || matches!(request, Request::RestoreStoppedPlayback)
+            }) && let Some(request) = self.pending_requests.pop_front()
+            {
                 let Err(refused) = self.submit_to_service(request) else {
                     continue;
                 };
@@ -1348,6 +1355,7 @@ impl EditorView {
         visible_change |= self.tick_edit_cursor(now);
         let project_edit_pending = self.edit_pending();
         visible_change |= self.tick_project_spectrum();
+        visible_change |= self.tick_sample_recorder();
         visible_change |= self.retire_stale_spectrum_target();
         visible_change |= self.retire_stale_processor_audition_target();
         if let Some(audio) = self.audio.as_mut() {
@@ -2311,6 +2319,13 @@ impl EditorView {
         self.recovery_failure = event.recovery_failure.clone();
         let sampler_edit_complete = event.sampler_edit_complete;
         self.plugin_effect_complete(&event);
+        if let Some(result) = event.plugin_parameters.take() {
+            super::device_panel::vst3_parameters::install_result(
+                self,
+                result,
+                event.state.revision,
+            );
+        }
         let sampler_load_complete = event.sampler_load_complete;
         let sampler_load_succeeded = event.error.is_none();
         if self
@@ -2326,7 +2341,10 @@ impl EditorView {
         self.truncated_import
             .observe(self.project_generation, &event);
         self.section_request_complete(&event);
+        self.project_rate_settings
+            .observe(self.project_generation, &event);
         self.track_reorder_complete(&event);
+        self.sample_drop_complete(&event);
         self.midi_drag_request_complete(&event);
         self.advance_midi_origin_view(&event);
         self.fade_request_complete(&event);
@@ -3350,7 +3368,8 @@ impl EditorView {
             );
             return false;
         }
-        if self.gain_recorder.blocks_edits() && !self.pending_gain_take_matches(&request) {
+        let own_gain_take = self.pending_gain_take_matches(&request);
+        if self.gain_recorder.blocks_edits() && !own_gain_take {
             self.error = Some(if self.gain_recorder.has_retained_take() {
                 "retry or explicitly discard the retained gain take before another project action"
                     .into()
@@ -3359,22 +3378,89 @@ impl EditorView {
             });
             return false;
         }
-        if self.gain_lane.draft.is_some() && matches!(&request, Request::Edit(_)) {
+        // Copy only reads the project. Cut, paste, insert and duplicate can
+        // change it and invalidate both local drafts and prepared seeks.
+        let clipboard_edit = matches!(
+            &request,
+            Request::DeviceClipboard {
+                action: DeviceClipboardAction::Cut { .. }
+                    | DeviceClipboardAction::Paste { .. }
+                    | DeviceClipboardAction::Duplicate { .. },
+                ..
+            } | Request::TrackClipboard {
+                action: TrackClipboardAction::Cut(_)
+                    | TrackClipboardAction::Duplicate { .. }
+                    | TrackClipboardAction::Paste { .. },
+                ..
+            } | Request::CutTimeRange(_)
+                | Request::PasteTimeRange { .. }
+                | Request::InsertTimeRange { .. }
+        );
+        // Independent edits can advance the canonical revision even when they
+        // carry source stamps. Refuse them before taking worker custody.
+        // Duplicate repeats submit a new edit after the prior terminal.
+        let independent_edit = matches!(
+            &request,
+            Request::Edit(_)
+                | Request::ChangeProjectSampleRate { .. }
+                | Request::Import(_)
+                | Request::ImportAudioBatch { .. }
+                | Request::ImportToTrack { .. }
+                | Request::ImportToTrackWithOverwrite { .. }
+                | Request::ImportToNewTrack { .. }
+                | Request::ImportToNewTrackWithGain { .. }
+                | Request::ImportToSession { .. }
+                | Request::ImportDeviceAsset { .. }
+                | Request::LoadFirstSampler { .. }
+                | Request::AssignSampler { .. }
+                | Request::RelinkMedia(_)
+                | Request::EditArrangementSection { .. }
+                | Request::MoveExistingClips { .. }
+                | Request::DuplicateClips { .. }
+                | Request::DuplicateAliasClips { .. }
+                | Request::DuplicateSessionCell { .. }
+                | Request::GroupClips { .. }
+                | Request::GroupTimeRange { .. }
+                | Request::GroupAudioEvents { .. }
+                | Request::CopyArrangementClipToConsoleTrack { .. }
+        ) || clipboard_edit;
+        if independent_edit && self.gain_lane.draft.is_some() {
             self.error = Some("finish or cancel the gain point gesture before editing".into());
             return false;
         }
-        if self.automation_view.devices.point_draft_active() && matches!(&request, Request::Edit(_))
-        {
+        if independent_edit && self.automation_view.devices.point_draft_active() {
             self.error =
                 Some("finish or cancel the automation point gesture before editing".into());
             return false;
         }
-        if matches!(&request, Request::Edit(_))
+        if independent_edit
             && (self.gain_lane.numeric_draft_active()
                 || self.sampler_parameter.numeric_draft_active())
         {
             self.error = Some("finish or cancel the numeric draft before editing".into());
             return false;
+        }
+        // The exact sealed recording already owns its terminal. It shares
+        // GainLane's request type but must finish through its existing receipt.
+        if !own_gain_take
+            && matches!(
+                &request,
+                Request::GainLane { .. }
+                    | Request::DeviceAutomation { .. }
+                    | Request::DeviceAutomationControl { .. }
+                    | Request::SamplerEdit(_)
+            )
+        {
+            let gain_conflict = (self.gain_lane.draft.is_some()
+                || self.gain_lane.numeric_draft_active())
+                && !self.pending_gain_matches(&request);
+            let automation_conflict = self.automation_view.devices.point_draft_active()
+                && !self.pending_device_automation_matches(&request);
+            let sampler_conflict = self.sampler_parameter.numeric_draft_active();
+            if gain_conflict || automation_conflict || sampler_conflict {
+                self.error = Some("finish or cancel the local draft before editing".into());
+                return false;
+            }
         }
         #[cfg(test)]
         match &request {
@@ -3565,18 +3651,6 @@ impl EditorView {
                 | Request::DeviceAutomation { .. }
                 | Request::DeviceAutomationControl { .. }
                 | Request::EditArrangementSection { .. }
-                | Request::DeviceClipboard {
-                    action: hex_session::service::DeviceClipboardAction::Cut { .. }
-                        | hex_session::service::DeviceClipboardAction::Paste { .. }
-                        | hex_session::service::DeviceClipboardAction::Duplicate { .. },
-                    ..
-                }
-                | Request::TrackClipboard {
-                    action: hex_session::service::TrackClipboardAction::Cut(_)
-                        | hex_session::service::TrackClipboardAction::Duplicate { .. }
-                        | hex_session::service::TrackClipboardAction::Paste { .. },
-                    ..
-                }
                 | Request::ReorderTracks { .. }
                 | Request::ReparentTracks { .. }
                 | Request::MoveExistingClips { .. }
@@ -3587,18 +3661,17 @@ impl EditorView {
                 | Request::GroupTimeRange { .. }
                 | Request::GroupAudioEvents { .. }
                 | Request::Edit(_)
+                | Request::ChangeProjectSampleRate { .. }
                 | Request::BounceArrangement { .. }
                 | Request::ConvertClip { .. }
-                | Request::CutTimeRange(_)
-                | Request::PasteTimeRange { .. }
-                | Request::InsertTimeRange { .. }
                 | Request::Undo
                 | Request::SamplerEdit(hex_session::service::SamplerEdit::History(_))
                 | Request::SamplerEdit(hex_session::service::SamplerEdit::Midi(_))
                 | Request::Redo
                 | Request::RestorePlayback { .. }
                 | Request::RestoreStoppedPlayback
-        ) {
+        ) || clipboard_edit
+        {
             self.invalidate_prepared_seek();
         }
         if request.finalizes_parameter_gesture() && self.device_gesture.snapshot().is_some() {
@@ -3633,7 +3706,7 @@ impl EditorView {
             self.pending_requests.push_back(request);
             return true;
         }
-        if !self.pending_requests.is_empty() {
+        if self.holds_stopped_vst3_requests() || !self.pending_requests.is_empty() {
             if self.pending_requests.len() + self.device_gesture_barriers.len()
                 < UI_REQUEST_CAPACITY
             {
@@ -4035,6 +4108,11 @@ impl EditorView {
             );
             return;
         }
+        if let PlaybackAction::Transport(PlaybackCommand::PlayFrom(frame)) = action
+            && self.recover_degraded_play_at(frame)
+        {
+            return;
+        }
         if !matches!(action, PlaybackAction::SetMetronome(_)) {
             self.invalidate_prepared_seek();
         }
@@ -4217,10 +4295,10 @@ impl EditorView {
         true
     }
 
-    /// Start a Play held behind the stopped restore once that restore
-    /// settles, whether it succeeded or failed; a replaced project drops it.
+    /// Start an explicit Play once the stopped restore or audio recovery
+    /// settles. A failed fresh recovery or replaced project drops the intent.
     pub(super) fn tick_deferred_play(&mut self) -> bool {
-        if self.stopped_playback_restore.is_some() {
+        if self.stopped_playback_restore.is_some() || self.recovery.generation().is_some() {
             return false;
         }
         let Some((action, revision, generation)) = self.deferred_play.take() else {
@@ -4588,15 +4666,21 @@ impl EditorView {
         // Stop explicitly discards voice histories. A previously refused edit
         // or restoration can now install the canonical sound without inheriting
         // an incompatible preview's history. Keep construction on the worker.
-        let restore = stop_output
+        let can_restore = stop_output
             && self.stopped_playback_restore.is_none()
             && !self.edit_pending()
             && self.device_gesture.snapshot().is_none()
             && self.tuning.client.snapshot().is_none()
-            && self.recovery.generation().is_none()
+            && self.recovery.generation().is_none();
+        let restart_degraded = can_restore && self.has_degraded_vst3_output();
+        let restore = can_restore
+            && !restart_degraded
             && self.audio.as_ref().is_some_and(|audio| {
                 self.state.as_ref().is_some_and(|state| {
                     native_restore
+                        // Priority Stop ends the transport epochs even when
+                        // the same project revision is already audible.
+                        || self.has_resident_vst3()
                         || self.applied_project_revision != Some(state.revision)
                         || self.audible_playback.as_ref().is_none_or(|audible| {
                             audible.audio_revision
@@ -4628,8 +4712,16 @@ impl EditorView {
         self.pending_seek_ticket = None;
         self.pending_session_ticket = None;
         self.play_intent.priority_stop();
+        self.deferred_play = None;
         self.status = "stopped · returned to start".into();
-        if restore && !self.update_preparing() && self.enqueue(Request::RestoreStoppedPlayback) {
+        if restart_degraded && !self.update_preparing() {
+            // A revoked worker cannot be renewed on the applied graph. Start a
+            // new output from the current project, at the explicit Stop cursor.
+            self.recover_audio_at(0);
+        } else if restore
+            && !self.update_preparing()
+            && self.enqueue(Request::RestoreStoppedPlayback)
+        {
             self.stopped_playback_restore =
                 Some(super::audio_admission::StoppedPlaybackRestore::Preparing);
             self.status = "stopped · restoring current sound".into();

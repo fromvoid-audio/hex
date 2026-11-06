@@ -182,6 +182,8 @@ impl Plugins {
                                 }
                                 Err(
                                     "native preparation is busy"
+                                    | "native parameter mailbox is busy"
+                                    | "native epoch requires parameter input terminal"
                                     | "native epoch requires original graph and endpoint return",
                                 ) => return Ok(false),
                                 Err(reason) => return Err(reason.into()),

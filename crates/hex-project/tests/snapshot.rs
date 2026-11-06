@@ -19,6 +19,7 @@ fn valid_snapshot() -> Snapshot {
         sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
+        sample_rate_mode: Default::default(),
         next_id: 100,
         assets: vec![AssetSnapshot {
             original_source: None,

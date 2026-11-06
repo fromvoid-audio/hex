@@ -383,7 +383,7 @@ impl BrowserState {
     }
 }
 
-struct BrowserAudioDragGhost;
+pub(super) struct BrowserAudioDragGhost;
 
 impl gpui::Render for BrowserAudioDragGhost {
     fn render(&mut self, _: &mut Window, _: &mut Context<'_, Self>) -> impl gpui::IntoElement {
@@ -1588,9 +1588,10 @@ impl EditorView {
                 .map(|entry| entry.path);
             self.browser_selection_audition(path, cx);
         }
-        self.browser
-            .scroll
-            .scroll_to_item(self.browser.selected_index, gpui::ScrollStrategy::Top);
+        self.browser.scroll.scroll_to_item(
+            self.browser_scroll_row(self.browser.selected_index, cx),
+            gpui::ScrollStrategy::Top,
+        );
         cx.notify();
     }
 
@@ -1748,9 +1749,10 @@ impl EditorView {
         if let Some(index) = index {
             self.browser.selected_index = index;
             self.browser.results_focused = true;
-            self.browser
-                .scroll
-                .scroll_to_item(index, gpui::ScrollStrategy::Top);
+            self.browser.scroll.scroll_to_item(
+                self.browser_scroll_row(index, cx),
+                gpui::ScrollStrategy::Top,
+            );
         } else {
             self.reset_browser_results();
         }
@@ -1950,7 +1952,14 @@ impl EditorView {
         let file_count = entries.len();
         let device_count = devices.len();
         let plugins = self.browser_visible_plugins(cx);
-        let row_count = file_count + device_count + plugins.len();
+        let plugin_groups =
+            (section == BrowserSection::Plugins).then(|| plugins::PluginGroups::new(&plugins));
+        let row_count = file_count
+            + device_count
+            + plugins.len()
+            + plugin_groups
+                .as_ref()
+                .map_or(0, plugins::PluginGroups::heading_count);
         let positions = BrowserRows::new(
             file_count,
             device_count,
@@ -1963,7 +1972,17 @@ impl EditorView {
             cx.processor(move |view, range: std::ops::Range<usize>, _window, cx| {
                 range
                     .filter_map(|index| {
-                        if positions.files.contains(&index) {
+                        if let Some(groups) = &plugin_groups {
+                            match groups.line(index)? {
+                                plugins::PluginLine::Heading(group, _) => {
+                                    Some(Self::browser_plugin_heading(group))
+                                }
+                                plugins::PluginLine::Plugin(logical) => plugins
+                                    .get(logical)
+                                    .cloned()
+                                    .map(|row| view.browser_plugin_row(logical, row, cx)),
+                            }
+                        } else if positions.files.contains(&index) {
                             entries
                                 .get(index - positions.files.start)
                                 .cloned()
@@ -2384,61 +2403,26 @@ impl EditorView {
         };
         let path = entry.path.clone();
         let name = entry.name.clone();
-        let drag_context = self.state.as_ref().map(|state| {
-            (
-                state.project.sample_rate(),
-                state.revision,
-                state.timeline_frames,
-                self.project_generation,
-                self.browser.scans.generation,
-                self.snap_grid,
-            )
-        });
         let drag_payload = if entry.kind == EntryKind::WaveAudio {
-            drag_context.map(
-                |(
-                    sample_rate,
-                    revision,
-                    timeline_frames,
-                    project_generation,
-                    browser_generation,
-                    snap_grid,
-                )| {
-                    // Rendering a row must not fill/evict the metadata cache.
-                    // Hover/drag admission owns preparation, not composition.
-                    let slot = self
-                        .browser
-                        .preview_cache
-                        .get(&PreviewKey {
-                            path: path.clone(),
-                            sample_rate,
-                        })
-                        .cloned()
-                        .unwrap_or_default();
-                    let viewport = self.visible_viewport(timeline_frames);
-                    drag::BrowserAudioDrag {
-                        project_generation,
-                        revision,
-                        browser_generation,
-                        sample_rate,
+            self.state.as_ref().and_then(|state| {
+                // Rendering a row reads only the existing metadata cache.
+                let slot = self
+                    .browser
+                    .preview_cache
+                    .get(&PreviewKey {
                         path: path.clone(),
-                        label: name.clone(),
-                        viewport_start: viewport.start,
-                        viewport_length: viewport.length,
-                        scroll: Default::default(),
-                        snap_grid,
-                        snap_modifier: Rc::new(Cell::new(false)),
-                        copy_modifier: Rc::new(Cell::new(false)),
-                        metadata: slot.metadata,
-                        metadata_error: slot.error,
-                        preview: Rc::new(Cell::new(None)),
-                        destination: Rc::new(Cell::new(None)),
-                        insertion_line_y: Rc::new(Cell::new(None)),
-                        lane_hovered: Rc::new(Cell::new(false)),
-                        last_pointer: Rc::new(Cell::new(None)),
-                    }
-                },
-            )
+                        sample_rate: state.project.sample_rate(),
+                    })
+                    .cloned()
+                    .unwrap_or_default();
+                self.audio_file_drag_payload(
+                    path.clone(),
+                    name.clone(),
+                    Some(self.browser.scan_generation()),
+                    slot.metadata,
+                    slot.error,
+                )
+            })
         } else {
             None
         };

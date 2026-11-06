@@ -37,6 +37,7 @@ impl RenderOnce for Housing {
         let style = self.style.controls;
         let mut controls = div()
             .flex()
+            .flex_col()
             .items_center()
             .gap(px(crate::DEVICE_FRAME_HEADER_GAP))
             .child(self.leading);
@@ -119,8 +120,8 @@ impl RenderOnce for Housing {
         let body = panel_body(self.body, style, visible);
         div()
             .flex()
-            .flex_col()
             .flex_1()
+            .min_w_0()
             .min_h_0()
             .child(crate::device_header(
                 self.title,
@@ -137,6 +138,7 @@ fn panel_body(body: AnyElement, style: ControlStyle, visible: [bool; 2]) -> AnyE
         .flex()
         .flex_col()
         .flex_1()
+        .min_w_0()
         .min_h_0()
         .overflow_y_scroll();
     for (index, (id, title, detail)) in [
