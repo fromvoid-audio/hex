@@ -6,7 +6,12 @@ use crate::{
 use std::sync::Arc;
 
 mod candidate_storage;
+#[cfg(test)]
+mod idle_transition_tests;
 mod metronome;
+pub(crate) mod transport_fade;
+pub use transport_fade::TransportFadeCompletion;
+pub(crate) use transport_fade::fade_frames;
 mod tuning_audition;
 use metronome::Metronome;
 
@@ -109,6 +114,7 @@ pub enum PlaybackActionRejection {
     StreamSourceChanged = 15,
     OutputFailed = 16,
     NoActivePlayback = 17,
+    ProjectChanged = 18,
 }
 
 impl PlaybackActionRejection {
@@ -131,6 +137,7 @@ impl PlaybackActionRejection {
             15 => Some(Self::StreamSourceChanged),
             16 => Some(Self::OutputFailed),
             17 => Some(Self::NoActivePlayback),
+            18 => Some(Self::ProjectChanged),
             _ => None,
         }
     }
@@ -138,6 +145,7 @@ impl PlaybackActionRejection {
     pub const fn message(self) -> &'static str {
         match self {
             Self::NoActivePlayback => "no active playback graph",
+            Self::ProjectChanged => "project changed · playback action cancelled",
             Self::MetronomeUnavailable => {
                 "metronome requires prepared musical timing and sample storage"
             }
@@ -238,7 +246,8 @@ impl PlaybackHandoffRejection {
                 Self::LatencyLayoutChanged
             }
             PlaybackHandoffError::Session(
-                crate::SessionPlaybackError::SourceHistoryUnavailable,
+                crate::SessionPlaybackError::SourceHistoryUnavailable
+                | crate::SessionPlaybackError::DetachedReceiverHistoryUnavailable,
             ) => Self::SourceHistoryUnavailable,
             PlaybackHandoffError::Session(crate::SessionPlaybackError::CandidateAlreadyUsed) => {
                 Self::SessionRuntime
@@ -318,6 +327,7 @@ impl PlaybackHandoffError {
             Self::Session(
                 crate::SessionPlaybackError::ReleaseBankFull
                     | crate::SessionPlaybackError::GroupTailRoutingBusy
+                    | crate::SessionPlaybackError::DeviceTransitionBusy
             )
         )
     }
@@ -345,6 +355,8 @@ pub struct Playback {
     position: u64,
     performance_frame: u64,
     performance_clock_exhausted: bool,
+    // Boxed so publication results carrying a `Playback` stay small.
+    transport_fade: Box<transport_fade::TransportFade>,
     playing: bool,
 }
 impl Playback {
@@ -563,11 +575,18 @@ impl Playback {
         input: Arc<crate::computer_keyboard::ComputerKeyboardInput>,
         hint: Option<&crate::computer_keyboard::ComputerKeyboardTuningHint>,
     ) -> Result<(), Invalid> {
-        let canonical = project
+        let owner = project
             .tracks()
             .iter()
             .find(|candidate| candidate.id() == track)
-            .and_then(hex_project::Track::instrument)
+            .ok_or(Invalid("computer keyboard track is unavailable"))?;
+        if owner.retained_source_path() {
+            return Err(Invalid(
+                "computer keyboard cannot target a retained source path",
+            ));
+        }
+        let canonical = owner
+            .instrument()
             .ok_or(Invalid("computer keyboard track is unavailable"))?;
         let contributor = self
             .project
@@ -594,6 +613,14 @@ impl Playback {
         let runtime = self.session_runtime.as_mut().ok_or(Invalid(
             "computer keyboard requires prepared session playback",
         ))?;
+        if compiled.foreign_instrument.is_some() {
+            if hint.is_some() {
+                return Err(Invalid(
+                    "vst3 computer keyboard tuning hints are unsupported",
+                ));
+            }
+            return runtime.prepare_foreign_keyboard(track, input);
+        }
         let family = self
             .prepared_revision
             .as_ref()
@@ -716,6 +743,7 @@ impl Playback {
     pub fn cancel_computer_keyboard(&mut self) {
         if let Some(runtime) = self.session_runtime.as_mut() {
             runtime.cancel_current_sampler_keyboard();
+            runtime.cancel_foreign_keyboard(None);
         }
 
         if let Some(keyboard) = self
@@ -787,16 +815,14 @@ impl Playback {
         project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
         sources: &crate::native_device_resources::current_sampler::CurrentSamplerSources,
     ) -> Result<(), Invalid> {
-        let start = self.position();
-        let playing = self.playing();
-        self.session_runtime
-            .as_mut()
-            .ok_or(Invalid("current sampler runtime missing"))?
-            .render_current_sampler(output, pages, observer, project, sources)
-            .map_err(|e| Invalid(e.diagnostic_message()))?;
-        self.mix_metronome(start, playing, output);
-        self.mix_tuning_audition(output);
-        Ok(())
+        self.render_current_sampler_with_foreign(
+            output,
+            pages,
+            observer,
+            project,
+            sources,
+            &mut hex_lattice::RefuseForeign,
+        )
     }
     pub(crate) fn render_current_sampler_with_foreign<P: MediaPages + ?Sized>(
         &mut self,
@@ -807,16 +833,33 @@ impl Playback {
         sources: &crate::native_device_resources::current_sampler::CurrentSamplerSources,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), Invalid> {
-        let start = self.position();
-        let playing = self.playing();
-        self.session_runtime
-            .as_mut()
-            .ok_or(Invalid("current sampler runtime missing"))?
-            .render_current_sampler_with_foreign(output, pages, observer, project, sources, foreign)
-            .map_err(|e| Invalid(e.diagnostic_message()))?;
-        self.mix_metronome(start, playing, output);
-        self.mix_tuning_audition(output);
-        Ok(())
+        let mut pages = pages;
+        let mut observer = observer;
+        let mut project = project;
+        self.render_declicked(output, |playback, output, offset| {
+            let runtime = playback
+                .session_runtime
+                .as_mut()
+                .ok_or(Invalid("current sampler runtime missing"))?;
+            let mut foreign = ShiftedForeign {
+                inner: &mut *foreign,
+                offset,
+            };
+            with_part_offset(project.as_deref_mut(), offset, |project| {
+                with_shifted_observer(observer.as_deref_mut(), offset, |observer| {
+                    runtime
+                        .render_current_sampler_with_foreign(
+                            output,
+                            pages.as_deref_mut(),
+                            observer,
+                            project,
+                            sources,
+                            &mut foreign,
+                        )
+                        .map_err(|e| Invalid(e.diagnostic_message()))
+                })
+            })
+        })
     }
     pub(crate) fn validate_candidate_runtime_storage(
         &self,
@@ -867,6 +910,7 @@ impl Playback {
             position: _,
             performance_frame: _,
             performance_clock_exhausted: _,
+            transport_fade: _,
             playing: _,
         } = self;
         if tuning_audition.is_some() || resident_pcm_publication.is_some() {
@@ -903,6 +947,7 @@ impl Playback {
             position: 0,
             performance_frame: 0,
             performance_clock_exhausted: false,
+            transport_fade: Box::default(),
             playing: false,
         }
     }
@@ -1020,6 +1065,7 @@ impl Playback {
             position,
             performance_frame,
             performance_clock_exhausted: false,
+            transport_fade: Box::default(),
             playing,
         }
     }
@@ -1064,6 +1110,7 @@ impl Playback {
             position: 0,
             performance_frame: 0,
             performance_clock_exhausted: false,
+            transport_fade: Box::default(),
             playing: false,
         }
     }
@@ -1081,7 +1128,14 @@ impl Playback {
         self.project
             .tracks
             .iter()
-            .flat_map(|track| track.device_chain.iter())
+            .flat_map(|track| {
+                track.device_chain.iter().chain(
+                    track
+                        .foreign_instrument
+                        .iter()
+                        .filter(|node| !node.bypassed),
+                )
+            })
             .chain(
                 self.project
                     .return_buses
@@ -1129,6 +1183,11 @@ impl Playback {
             runtime.invalidate_native_parameter_input();
         }
     }
+    pub fn finish_native_parameter_input(&mut self) {
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            runtime.finish_native_parameter_input();
+        }
+    }
     pub fn take_native_parameter_application(
         &mut self,
     ) -> Option<crate::NativeParameterApplication> {
@@ -1153,6 +1212,11 @@ impl Playback {
     pub fn clear_gain_recording_override(&mut self) {
         if let Some(runtime) = self.session_runtime.as_mut() {
             runtime.clear_gain_recording_override();
+        }
+    }
+    pub fn release_gain_recording_override(&mut self) {
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            runtime.release_gain_recording_override();
         }
     }
     /// Arrangement content frame, known Main delivery delay and actual content loop pass.
@@ -1375,6 +1439,12 @@ impl Playback {
             .map_or(self.position, |runtime| runtime.arrangement_frame())
     }
 
+    /// Frames by which Main output trails the scheduled content frame: the
+    /// graph's pre-Main compensation plus declared Main processor latency.
+    pub fn main_output_latency_frames(&self) -> u32 {
+        self.project.main_latency_frames()
+    }
+
     /// Monotonic render clock, independent of Arrangement loop wrapping.
     pub fn performance_frame(&self) -> u64 {
         self.session_runtime
@@ -1467,7 +1537,126 @@ impl Playback {
         let _ = self.try_apply_action(PlaybackAction::Transport(command));
     }
 
+    /// Apply immediately. A pending declicked Pause/Stop completes first.
     pub fn try_apply_action(&mut self, action: PlaybackAction) -> Result<(), PlaybackActionError> {
+        self.complete_transport_fade();
+        self.apply_now(action)
+    }
+
+    /// Apply with the transport declick described in `transport_fade`: a
+    /// Pause/Stop or transport Seek while playing is admitted now and applied
+    /// after its fade, a Seek then ramping in at its target; Play from a
+    /// paused, nonzero position ramps in. Static refusals are
+    /// reported here. A deferred action that fails at its fade end falls back
+    /// to Stop and is reported once by `take_transport_fade_failure`.
+    pub fn try_apply_declicked_action(
+        &mut self,
+        action: PlaybackAction,
+    ) -> Result<(), PlaybackActionError> {
+        self.complete_transport_fade();
+        if (transport_fade::fades_out(action) || transport_fade::seeks(action)) && self.playing() {
+            self.admit_declicked_stop(action)?;
+            self.transport_fade.begin_out(action);
+            return Ok(());
+        }
+        let stopped = !self.playing();
+        let resume = transport_fade::resumes(action) && stopped && self.position() != 0;
+        self.apply_now(action)?;
+        if stopped && self.playing() {
+            // Play from frame zero keeps its first transient.
+            let frames = if resume {
+                transport_fade::fade_frames(self.sample_rate())
+            } else {
+                0
+            };
+            self.transport_fade.begin_in(frames);
+        }
+        Ok(())
+    }
+
+    /// Apply a pending declicked Pause/Stop now, at the current frame, so
+    /// a host can settle its own transport effects before a later action.
+    pub fn finish_transport_fade(&mut self) {
+        self.complete_transport_fade();
+    }
+
+    /// The Pause/Stop whose fade is in progress, if any.
+    pub fn pending_transport_fade(&self) -> Option<PlaybackAction> {
+        self.transport_fade.pending()
+    }
+
+    /// One deferred Pause/Stop refusal recorded at its fade end.
+    pub fn take_transport_fade_failure(&mut self) -> Option<PlaybackActionRejection> {
+        self.transport_fade.take_failure()
+    }
+
+    /// The latest deferred Pause/Stop completion and its audible end frame,
+    /// reported once. Stop resets the transport position to zero, so this is
+    /// the only place its audible end is observable.
+    pub fn take_transport_fade_completion(&mut self) -> Option<TransportFadeCompletion> {
+        self.transport_fade.take_completion()
+    }
+
+    fn admit_declicked_stop(&self, action: PlaybackAction) -> Result<(), PlaybackActionError> {
+        let command = match action {
+            PlaybackAction::Transport(PlaybackCommand::Pause) => {
+                crate::SessionPlaybackCommand::Pause
+            }
+            PlaybackAction::Transport(PlaybackCommand::Stop) => crate::SessionPlaybackCommand::Stop,
+            PlaybackAction::Transport(PlaybackCommand::Seek(frame)) => {
+                crate::SessionPlaybackCommand::Seek(frame)
+            }
+            PlaybackAction::Session(command) => command,
+            _ => {
+                return Err(PlaybackActionError::Session(
+                    crate::SessionPlaybackError::InvalidCommand,
+                ));
+            }
+        };
+        match self.session_runtime.as_deref() {
+            Some(runtime) => runtime
+                .admits_transport(&command)
+                .map_err(PlaybackActionError::Session),
+            None if matches!(action, PlaybackAction::Session(_)) => {
+                Err(match self.session_unavailable {
+                    Some(error) => PlaybackActionError::SessionUnavailable(error),
+                    None => PlaybackActionError::SessionNotPrepared,
+                })
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// Apply a pending declicked Pause/Stop now, at the current frame.
+    fn complete_transport_fade(&mut self) {
+        let Some(action) = self.transport_fade.take_pending() else {
+            return;
+        };
+        let audible_end_frame = self.position();
+        let result = self.apply_now(action);
+        self.transport_fade
+            .record_completion(TransportFadeCompletion {
+                action,
+                audible_end_frame,
+                applied: result.is_ok(),
+            });
+        match result {
+            // Paused tails and monitoring, and the seek target, return
+            // without a step.
+            Ok(()) if transport_fade::pauses(action) || transport_fade::seeks(action) => self
+                .transport_fade
+                .begin_in(transport_fade::fade_frames(self.sample_rate())),
+            Ok(()) => {}
+            Err(error) => {
+                self.transport_fade
+                    .record_failure(error.telemetry_rejection());
+                // The output is already silent; never leave it playing unheard.
+                let _ = self.apply_now(PlaybackAction::Transport(PlaybackCommand::Stop));
+            }
+        }
+    }
+
+    fn apply_now(&mut self, action: PlaybackAction) -> Result<(), PlaybackActionError> {
         let result = self.apply_action_inner(action, None);
         if result.is_ok()
             && matches!(
@@ -1497,6 +1686,7 @@ impl Playback {
         &mut self,
         clock: &crate::computer_keyboard::KeyboardActivationClock,
     ) {
+        self.transport_fade.clear();
         if self
             .apply_action_inner(
                 PlaybackAction::Transport(PlaybackCommand::Stop),
@@ -1524,6 +1714,7 @@ impl Playback {
             if let Some(clock) = priority_stop {
                 if let Some(runtime) = self.session_runtime.as_mut() {
                     runtime.cancel_current_sampler_keyboard();
+                    runtime.cancel_foreign_keyboard(Some(clock));
                     if let Some(keyboard) = runtime.computer_keyboard.as_mut() {
                         keyboard.priority_stop(clock);
                     }
@@ -1702,7 +1893,7 @@ impl Playback {
         &mut self,
         previous: &mut Self,
     ) -> Result<(), PlaybackHandoffError> {
-        self.try_inherit_runtime_impl(previous, false)
+        self.try_inherit_runtime_impl(previous, false, false)
     }
 
     /// Ordinary publication may rebind a fresh monitor to the same physical input client in
@@ -1718,13 +1909,34 @@ impl Playback {
         self.try_inherit_runtime_impl(
             previous,
             generation.is_some() && generation == previous_generation,
+            false,
         )
+    }
+
+    /// Reset an explicitly prepared bounce successor at a verified live
+    /// Arrangement fence. The publication owner must validate the fence and
+    /// unchanged source context in the callback before invoking this method.
+    pub fn try_restart_runtime_under_arrangement_fence(
+        &mut self,
+        previous: &mut Self,
+        generation: Option<u64>,
+        previous_generation: Option<u64>,
+    ) -> Result<(), PlaybackHandoffError> {
+        if generation.is_none()
+            || generation != previous_generation
+            || !self.live_restart_requested()
+            || previous.session_runtime.is_none()
+        {
+            return Err(PlaybackHandoffError::RuntimeFenceChanged);
+        }
+        self.try_inherit_runtime_impl(previous, true, true)
     }
 
     fn try_inherit_runtime_impl(
         &mut self,
         previous: &mut Self,
         same_control_context: bool,
+        fenced_restart: bool,
     ) -> Result<(), PlaybackHandoffError> {
         if previous
             .session_runtime
@@ -1801,10 +2013,13 @@ impl Playback {
             _ => false,
         };
         match (&mut self.session_runtime, &mut previous.session_runtime) {
-            (Some(next), Some(old)) => next
-                .try_inherit_state_live_from(old)
-                .map(|_| ())
-                .map_err(PlaybackHandoffError::Session)?,
+            (Some(next), Some(old)) => (if fenced_restart {
+                next.try_inherit_state_fenced_restart_from(old)
+            } else {
+                next.try_inherit_state_live_from(old)
+            })
+            .map(|_| ())
+            .map_err(PlaybackHandoffError::Session)?,
             (Some(next), None) => {
                 if previous.performance_clock_exhausted {
                     return Err(PlaybackHandoffError::PerformanceClockExhausted);
@@ -1841,6 +2056,30 @@ impl Playback {
                 self.playing = old.playing();
             }
             (None, None) => {
+                if let (Some(candidate), Some(old)) = (
+                    self.linear_runtime.as_ref(),
+                    previous.linear_runtime.as_mut(),
+                ) && candidate.transition_busy_from(&self.project, old, &previous.project)
+                {
+                    // Pulse #4558: a paused linear graph renders nothing, so
+                    // settle its inaudible transitions instead of deferring
+                    // forever; resume ramps in from silence.
+                    if !previous.playing {
+                        old.settle_idle_transitions_for(
+                            &previous.project,
+                            candidate,
+                            &self.project,
+                        );
+                    }
+                    if previous.playing
+                        || candidate.transition_busy_from(&self.project, old, &previous.project)
+                    {
+                        // Pulse #4178: defer; never refuse into a fresh history.
+                        return Err(PlaybackHandoffError::Session(
+                            crate::SessionPlaybackError::DeviceTransitionBusy,
+                        ));
+                    }
+                }
                 if let (Some(candidate), Some(old)) = (
                     self.linear_runtime.as_ref(),
                     previous.linear_runtime.as_ref(),
@@ -1893,10 +2132,20 @@ impl Playback {
             }
             previous.cancel_computer_keyboard();
         }
+        // A fade in progress continues on the inheriting graph's transport.
+        *self.transport_fade = std::mem::take(&mut *previous.transport_fade);
         Ok(())
     }
 
     fn can_rebind_keyboard_input(&self, previous: &Self) -> bool {
+        if self
+            .session_runtime
+            .as_ref()
+            .zip(previous.session_runtime.as_ref())
+            .is_some_and(|(next, old)| next.shares_foreign_keyboard(old))
+        {
+            return true;
+        }
         self.session_runtime
             .as_ref()
             .and_then(|runtime| runtime.computer_keyboard.as_ref())
@@ -1909,12 +2158,11 @@ impl Playback {
             .is_some_and(|(next, old)| next.can_rebind_input_from(old))
     }
     fn detach_rebound_keyboard_input(&mut self) {
-        if let Some(keyboard) = self
-            .session_runtime
-            .as_mut()
-            .and_then(|runtime| runtime.computer_keyboard.as_mut())
-        {
-            keyboard.detach_rebound_input();
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            runtime.detach_foreign_keyboard();
+            if let Some(keyboard) = runtime.computer_keyboard.as_mut() {
+                keyboard.detach_rebound_input();
+            }
         }
     }
 
@@ -1940,7 +2188,10 @@ impl Playback {
         }
     }
 
-    /// Render either the selected mixed source or the legacy finite Arrangement.
+    /// Enable live scalar observations on an already prepared runtime. The
+    /// audio publication owner enables this after preparation. Preroll/seek
+    /// preparation must leave it disabled: endpoints may also be retained by
+    /// applied playback. Enablement grants no publication or delivery authority.
     pub fn set_device_metering(&mut self, enabled: bool) {
         if let Some(runtime) = self.session_runtime.as_mut() {
             runtime.set_device_metering(enabled);
@@ -2011,27 +2262,43 @@ impl Playback {
         project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), Invalid> {
-        let start = self.position();
-        let playing = self.playing();
-        let result = self
-            .session_runtime
-            .as_mut()
-            .ok_or(Invalid(
-                "foreign effects require a prepared session runtime",
-            ))
-            .and_then(|runtime| {
-                runtime
-                    .render_with_foreign_processors(output, pages, observer, project, foreign)
-                    .map_err(|error| Invalid(error.diagnostic_message()))
-            });
-        if let Err(error) = result {
-            foreign.reject_callback();
-            output.fill([0.0; 2]);
-            return Err(error);
-        }
-        self.mix_metronome(start, playing, output);
-        self.mix_tuning_audition(output);
-        Ok(())
+        let mut pages = pages;
+        let mut observer = observer;
+        let mut project = project;
+        self.render_declicked(output, |playback, output, offset| {
+            let mut shifted = ShiftedForeign {
+                inner: &mut *foreign,
+                offset,
+            };
+            let result = playback
+                .session_runtime
+                .as_mut()
+                .ok_or(Invalid(
+                    "foreign effects require a prepared session runtime",
+                ))
+                .and_then(|runtime| {
+                    with_part_offset(project.as_deref_mut(), offset, |project| {
+                        with_shifted_observer(observer.as_deref_mut(), offset, |observer| {
+                            runtime
+                                .render_with_foreign_processors(
+                                    output,
+                                    pages
+                                        .as_mut()
+                                        .map(|pages| &mut **pages as &mut dyn MediaPages),
+                                    observer,
+                                    project,
+                                    &mut shifted,
+                                )
+                                .map_err(|error| Invalid(error.diagnostic_message()))
+                        })
+                    })
+                });
+            if result.is_err() {
+                foreign.reject_callback();
+                output.fill([0.0; 2]);
+            }
+            result
+        })
     }
 
     /// Render while exposing bounded borrowed output from each processed
@@ -2074,17 +2341,35 @@ impl Playback {
         &mut self,
         output: &mut [Frame],
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+    ) -> Result<(), Invalid> {
+        let mut observer = observer;
+        let mut project = project;
+        self.render_declicked(output, |playback, output, offset| {
+            playback.render_signal_part(
+                output,
+                offset,
+                observer.as_deref_mut(),
+                project.as_deref_mut(),
+            )
+        })
+    }
+
+    fn render_signal_part(
+        &mut self,
+        output: &mut [Frame],
+        offset: usize,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
         mut project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
     ) -> Result<(), Invalid> {
-        let start = self.position();
-        let playing = self.playing();
         if let Some(runtime) = self.session_runtime.as_mut() {
-            runtime
-                .render_with_signal_observers(output, observer, project)
-                .map_err(|error| Invalid(error.diagnostic_message()))?;
-            self.mix_metronome(start, playing, output);
-            self.mix_tuning_audition(output);
-            return Ok(());
+            return with_part_offset(project, offset, |project| {
+                with_shifted_observer(observer, offset, |observer| {
+                    runtime
+                        .render_with_signal_observers(output, observer, project)
+                        .map_err(|error| Invalid(error.diagnostic_message()))
+                })
+            });
         }
         if let Some(project) = project.as_mut() {
             project.unavailable();
@@ -2119,8 +2404,6 @@ impl Playback {
         self.render_finite_arrangement_with_pages::<dyn MediaPages>(output, None)?;
         self.performance_frame = next_performance;
         self.performance_clock_exhausted = clock_exhausted;
-        self.mix_metronome(start, playing, output);
-        self.mix_tuning_audition(output);
         Ok(())
     }
 
@@ -2186,17 +2469,14 @@ impl Playback {
         output: &mut [Frame],
         pages: &mut P,
     ) -> Result<(), Invalid> {
-        let start = self.position();
-        let playing = self.playing();
-        if let Some(runtime) = self.session_runtime.as_mut() {
-            runtime
-                .render_with_pages(output, pages)
-                .map_err(|error| Invalid(error.diagnostic_message()))?;
-            self.mix_metronome(start, playing, output);
-            self.mix_tuning_audition(output);
-            return Ok(());
-        }
-        self.render_pages_fallback(output, pages)
+        self.render_declicked(output, |playback, output, _| {
+            if let Some(runtime) = playback.session_runtime.as_mut() {
+                return runtime
+                    .render_with_pages(output, pages)
+                    .map_err(|error| Invalid(error.diagnostic_message()));
+            }
+            playback.render_pages_fallback(output, pages)
+        })
     }
 
     /// Borrow pages and optional post-node observation for one block. Neither
@@ -2244,27 +2524,30 @@ impl Playback {
         output: &mut [Frame],
         pages: &mut P,
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
-        mut project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
     ) -> Result<(), Invalid> {
-        let start = self.position();
-        let playing = self.playing();
-        if let Some(runtime) = self.session_runtime.as_mut() {
-            runtime
-                .render_with_pages_and_signal_observers(output, pages, observer, project)
-                .map_err(|error| Invalid(error.diagnostic_message()))?;
-            self.mix_metronome(start, playing, output);
-            self.mix_tuning_audition(output);
-            return Ok(());
-        }
-        if let Some(project) = project.as_mut() {
-            project.unavailable();
-        }
-        if observer.is_some() {
-            return Err(Invalid(
-                "post-node observation requires a prepared session runtime",
-            ));
-        }
-        self.render_pages_fallback(output, pages)
+        let mut observer = observer;
+        let mut project = project;
+        self.render_declicked(output, |playback, output, offset| {
+            let Some(runtime) = playback.session_runtime.as_mut() else {
+                if let Some(project) = project.as_deref_mut() {
+                    project.unavailable();
+                }
+                if observer.is_some() {
+                    return Err(Invalid(
+                        "post-node observation requires a prepared session runtime",
+                    ));
+                }
+                return playback.render_pages_fallback(output, pages);
+            };
+            with_part_offset(project.as_deref_mut(), offset, |project| {
+                with_shifted_observer(observer.as_deref_mut(), offset, |observer| {
+                    runtime
+                        .render_with_pages_and_signal_observers(output, pages, observer, project)
+                        .map_err(|error| Invalid(error.diagnostic_message()))
+                })
+            })
+        })
     }
 
     /// Bounded current canonical identity check, intended once per selection or
@@ -2273,13 +2556,24 @@ impl Playback {
         self.session_runtime.is_some() && self.project.project_track_ids.contains(tracks, || {})
     }
 
+    /// Check selected sources against the current canonical render graph.
+    pub fn project_sample_sources_supported(
+        &self,
+        tracks: &[u64],
+        returns: &[crate::ReturnId],
+    ) -> bool {
+        self.project_output_supported(tracks)
+            && returns.len() <= crate::MAX_RETURN_TRACKS
+            && returns
+                .iter()
+                .all(|id| self.project.return_buses().iter().any(|bus| bus.id == *id))
+    }
+
     fn render_pages_fallback<P: MediaPages + ?Sized>(
         &mut self,
         output: &mut [Frame],
         pages: &mut P,
     ) -> Result<(), Invalid> {
-        let start = self.position();
-        let playing = self.playing();
         if self.session_unavailable.is_some()
             && (self
                 .prepared_revision
@@ -2307,9 +2601,45 @@ impl Playback {
         self.render_finite_arrangement_with_pages(output, Some(pages))?;
         self.performance_frame = next_performance;
         self.performance_clock_exhausted = clock_exhausted;
-        self.mix_metronome(start, playing, output);
-        self.mix_tuning_audition(output);
         Ok(())
+    }
+
+    /// Render one callback as parts split only at a pending fade end. Each
+    /// part is followed by its declick gain and then monitor-only metronome
+    /// and tuning audio. A refused first part keeps the renderer's own atomic
+    /// refusal (the output is left as the renderer left it). A part refused
+    /// after an earlier part rendered silences the whole callback; rendered
+    /// parts keep their committed clock, as consecutive callbacks would.
+    /// Without a pending fade this is exactly one part.
+    fn render_declicked(
+        &mut self,
+        output: &mut [Frame],
+        mut part: impl FnMut(&mut Self, &mut [Frame], usize) -> Result<(), Invalid>,
+    ) -> Result<(), Invalid> {
+        let frames = transport_fade::fade_frames(self.sample_rate());
+        let mut offset = 0;
+        loop {
+            let end = offset + self.transport_fade.part_len(output.len() - offset, frames);
+            let start = self.position();
+            let playing = self.playing();
+            let chunk = &mut output[offset..end];
+            if let Err(error) = part(self, chunk, offset) {
+                if offset > 0 {
+                    output.fill([0.0; 2]);
+                }
+                return Err(error);
+            }
+            let completed = self.transport_fade.apply(chunk, frames);
+            self.mix_metronome(start, playing, chunk);
+            self.mix_tuning_audition(chunk);
+            if completed {
+                self.complete_transport_fade();
+            }
+            offset = end;
+            if offset >= output.len() {
+                return Ok(());
+            }
+        }
     }
 
     fn render_finite_arrangement_with_pages<P: MediaPages + ?Sized>(
@@ -2338,35 +2668,35 @@ impl Playback {
                 self.position = start;
             }
             let remaining = output.len() - output_offset;
-            if self.position == start {
-                if let Ok(period_length) = usize::try_from(length) {
-                    let stateful = self
-                        .linear_runtime
-                        .as_ref()
-                        .is_some_and(|runtime| runtime.has_stateful_processors());
-                    if period_length > 0 && period_length <= remaining && !stateful {
-                        let period_end = output_offset + period_length;
-                        self.render_linear_with_pages(
-                            &mut output[output_offset..period_end],
-                            pages.as_deref_mut(),
-                        )?;
-                        self.position = start;
+            if self.position == start
+                && let Ok(period_length) = usize::try_from(length)
+            {
+                let stateful = self
+                    .linear_runtime
+                    .as_ref()
+                    .is_some_and(|runtime| runtime.has_stateful_processors());
+                if period_length > 0 && period_length <= remaining && !stateful {
+                    let period_end = output_offset + period_length;
+                    self.render_linear_with_pages(
+                        &mut output[output_offset..period_end],
+                        pages.as_deref_mut(),
+                    )?;
+                    self.position = start;
 
-                        let mut filled = period_length;
-                        while filled < remaining {
-                            let copy_length = filled.min(remaining - filled);
-                            let source_start = output_offset;
-                            let source_end = source_start + copy_length;
-                            let destination = output_offset + filled;
-                            output.copy_within(source_start..source_end, destination);
-                            filled += copy_length;
-                        }
-                        let offset = u64::try_from(remaining % period_length)
-                            .map_err(|_| Invalid("loop offset overflow"))?;
-                        self.position = start + offset;
-                        output_offset = output.len();
-                        continue;
+                    let mut filled = period_length;
+                    while filled < remaining {
+                        let copy_length = filled.min(remaining - filled);
+                        let source_start = output_offset;
+                        let source_end = source_start + copy_length;
+                        let destination = output_offset + filled;
+                        output.copy_within(source_start..source_end, destination);
+                        filled += copy_length;
                     }
+                    let offset = u64::try_from(remaining % period_length)
+                        .map_err(|_| Invalid("loop offset overflow"))?;
+                    self.position = start + offset;
+                    output_offset = output.len();
+                    continue;
                 }
             }
             let span_length = if self.position < start {
@@ -2411,6 +2741,101 @@ impl Playback {
         } else {
             runtime.render_without_pages(&self.project, &mut self.position, self.playing, output)
         }
+    }
+}
+
+/// Report a render part's node signals at their callback-relative offset.
+fn with_shifted_observer<R>(
+    observer: Option<&mut crate::NodeSignalObserver<'_>>,
+    offset: usize,
+    render: impl FnOnce(Option<&mut crate::NodeSignalObserver<'_>>) -> R,
+) -> R {
+    match observer {
+        Some(inner) if offset != 0 => {
+            let mut shifted = |identity: crate::PostNodeIdentity,
+                               phase: crate::NodeSignalPhase,
+                               at: usize,
+                               frames: &[Frame]| {
+                inner(identity, phase, offset.saturating_add(at), frames);
+            };
+            render(Some(&mut shifted))
+        }
+        other => render(other),
+    }
+}
+
+/// Report a render part's project signals at their callback-relative offset.
+fn with_part_offset<'a, 'observer, R>(
+    project: Option<&mut crate::ProjectOutputTap<'a, 'observer>>,
+    offset: usize,
+    render: impl FnOnce(Option<&mut crate::ProjectOutputTap<'a, 'observer>>) -> R,
+) -> R {
+    match project {
+        Some(tap) => {
+            tap.set_part_offset(offset);
+            let result = render(Some(&mut *tap));
+            tap.set_part_offset(0);
+            result
+        }
+        None => render(None),
+    }
+}
+
+/// Foreign endpoints stage one physical callback; a declicked render part
+/// reports its segments at their callback-relative offset.
+struct ShiftedForeign<'a> {
+    inner: &'a mut dyn hex_lattice::ForeignProcessors,
+    offset: usize,
+}
+
+impl hex_lattice::ForeignProcessors for ShiftedForeign<'_> {
+    fn process_segment(
+        &mut self,
+        node: hex_lattice::ForeignProcessorNode<'_>,
+        frame_offset: usize,
+        frames: &mut [Frame],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), hex_lattice_contract::DeviceContractError> {
+        self.inner.process_segment(
+            node,
+            self.offset.saturating_add(frame_offset),
+            frames,
+            clock,
+        )
+    }
+    fn process_segment_with_parameters(
+        &mut self,
+        node: hex_lattice::ForeignProcessorNode<'_>,
+        frame_offset: usize,
+        frames: &mut [Frame],
+        parameters: &[hex_lattice_contract::ForeignParameterPoint],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), hex_lattice_contract::DeviceContractError> {
+        self.process_segment_with_notes(node, frame_offset, frames, parameters, &[], clock)
+    }
+    fn process_segment_with_notes(
+        &mut self,
+        node: hex_lattice::ForeignProcessorNode<'_>,
+        frame_offset: usize,
+        frames: &mut [Frame],
+        parameters: &[hex_lattice_contract::ForeignParameterPoint],
+        notes: &[hex_lattice::ForeignNote],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), hex_lattice_contract::DeviceContractError> {
+        self.inner.process_segment_with_notes(
+            node,
+            self.offset.saturating_add(frame_offset),
+            frames,
+            parameters,
+            notes,
+            clock,
+        )
+    }
+    fn committed_tail_is_drained(&self, node: hex_lattice::ForeignProcessorNode<'_>) -> bool {
+        self.inner.committed_tail_is_drained(node)
+    }
+    fn reject_callback(&mut self) {
+        self.inner.reject_callback();
     }
 }
 

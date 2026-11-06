@@ -21,7 +21,7 @@ fn event(service: &Service) -> Event {
     }
 }
 #[derive(Clone, Copy)]
-enum Slot {
+pub(in crate::editor) enum Slot {
     Track,
     Main,
     Return,
@@ -37,17 +37,88 @@ fn window(
     TrackId,
     DeviceId,
 ) {
+    window_with_gain(cx, type_id, slot, false, None)
+}
+
+pub(in crate::editor) fn window_with_gain(
+    cx: &mut TestAppContext,
+    type_id: &str,
+    slot: Slot,
+    with_gain: bool,
+    sampler_path: Option<&std::path::Path>,
+) -> (
+    VisualTestContext,
+    Entity<EditorView>,
+    Owner,
+    TrackId,
+    DeviceId,
+) {
     cx.update(super::super::bind_editor_keys);
-    let service = Service::new(48000, 32, 8_000_000).unwrap();
+    let service = if sampler_path.is_some() {
+        Service::with_native_reservation(
+            48_000,
+            32,
+            8_000_000,
+            hex_session::ResidentNativeReservation {
+                storage: hex_engine::AudioStorageLedgerReservation {
+                    data_rows: 512,
+                    handle_rows: 64,
+                    root_rows: 64,
+                    max_retained_bytes: 20_000_000,
+                    max_construction_peak_bytes: 30_000_000,
+                },
+                max_scan_frames: 1024,
+            },
+        )
+        .unwrap()
+    } else {
+        Service::new(48000, 32, 8_000_000).unwrap()
+    };
     event(&service);
-    service
-        .submit(Request::Edit(Command::AddTrack {
+    let track_command = if sampler_path.is_some() {
+        Command::AddMidiTrack {
             name: "host automation".into(),
-        }))
-        .unwrap();
-    let Created::Track(track) = event(&service).created.unwrap() else {
+        }
+    } else {
+        Command::AddTrack {
+            name: "host automation".into(),
+        }
+    };
+    service.submit(Request::Edit(track_command)).unwrap();
+    let track_event = event(&service);
+    let revision = track_event.state.revision;
+    let Created::Track(track) = track_event.created.unwrap() else {
         panic!("track")
     };
+    if with_gain {
+        service
+            .submit(Request::Edit(Command::UpsertTrackGainPoint {
+                track,
+                point: hex_project::GainPoint {
+                    incoming_gain: None,
+                    beat: BeatTime::from_raw(2),
+                    gain: 1.0,
+                    outgoing: hex_project::GainInterpolation::Linear,
+                },
+            }))
+            .unwrap();
+        assert!(event(&service).error.is_none());
+    }
+    if let Some(path) = sampler_path {
+        service
+            .submit(Request::LoadFirstSampler {
+                request_id: 1,
+                project_generation: 0,
+                revision,
+                track,
+                empty_sampler: None,
+                path: path.to_path_buf(),
+                cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            })
+            .unwrap();
+        let loaded = event(&service);
+        assert!(loaded.error.is_none(), "{:?}", loaded.error);
+    }
     let state =
         hex_engine::default_native_device_state(DeviceTypeId::new(type_id).unwrap()).unwrap();
     let (owner, command) = match slot {
@@ -90,6 +161,7 @@ fn window(
     let Created::Device(device) = added.created.unwrap() else {
         panic!("device")
     };
+    let initial_state = added.state;
     let bootstrap = cx.add_window(|_, _| gpui::Empty);
     let handle = *bootstrap;
     let editor = cx
@@ -103,7 +175,7 @@ fn window(
                 )
             });
             editor.update(cx, |view, cx| {
-                view.state = Some(added.state);
+                view.state = Some(initial_state);
                 view.selected_track = Some(track);
                 view.device_panel_active = true;
                 view.clip_view_open = true;
@@ -157,7 +229,7 @@ fn header_menu(visual: &mut VisualTestContext, owner: Owner) {
     visual.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
     visual.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
 }
-fn header_assign(
+pub(in crate::editor) fn header_assign(
     visual: &mut VisualTestContext,
     editor: &Entity<EditorView>,
     owner: Owner,
@@ -169,7 +241,7 @@ fn header_assign(
     let index=editor.read_with(visual,|view,_|view.context_menu.as_ref().unwrap().items.iter().position(|item|matches!(&item.action,super::super::context_menu::EditorContextAction::Automation(Action::Show(entry,_)) if entry.target.kind==target)).unwrap());
     choose_index(visual, editor, index);
 }
-fn pump(visual: &mut VisualTestContext, editor: &Entity<EditorView>) {
+pub(in crate::editor) fn pump(visual: &mut VisualTestContext, editor: &Entity<EditorView>) {
     let deadline = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(visual, |view, cx| {
@@ -690,7 +762,7 @@ fn stale_reenable_keeps_pending_selection_until_its_terminal_then_restores_canon
     });
 }
 
-const CMD: Modifiers = Modifiers {
+pub(in crate::editor) const CMD: Modifiers = Modifiers {
     control: false,
     alt: false,
     shift: false,
@@ -709,7 +781,7 @@ const SHIFT_CMD: Modifiers = Modifiers {
     ..SHIFT
 };
 
-fn lane_point(
+pub(in crate::editor) fn lane_point(
     visual: &mut VisualTestContext,
     device: DeviceId,
     target: DeviceAutomationTarget,
@@ -722,7 +794,7 @@ fn lane_point(
     )
 }
 
-fn lane_points(
+pub(in crate::editor) fn lane_points(
     visual: &VisualTestContext,
     editor: &Entity<EditorView>,
     device: DeviceId,
@@ -900,13 +972,22 @@ fn unrelated_edit_refuses_during_automation_gesture_but_release_commits(cx: &mut
         assert!(view.automation_view.devices.draft.is_some());
         assert!(!view.enqueue(Request::Edit(Command::Mute { track, muted: true })));
         assert!(view.automation_view.devices.draft.is_some());
-        assert_eq!(view.worker_requests_pending, 0);
         assert!(
             view.error
                 .as_deref()
                 .unwrap()
                 .contains("automation point gesture")
         );
+        let generation = view.project_generation;
+        let revision = view.state.as_ref().unwrap().revision;
+        assert!(!view.enqueue(Request::GainLane {
+            project_generation: generation,
+            revision,
+            track,
+            edit: hex_session::service::GainLaneEdit::Clear,
+        }));
+        assert_eq!(view.worker_requests_pending, 0);
+        assert!(view.error.as_deref().unwrap().contains("local draft"));
     });
     visual.simulate_mouse_up(at, MouseButton::Left, CMD);
     visual.run_until_parked();
@@ -928,6 +1009,85 @@ fn selection_marquee_does_not_block_an_unrelated_edit(cx: &mut TestAppContext) {
         assert!(view.enqueue(Request::Edit(Command::Mute { track, muted: true })));
     });
     visual.simulate_mouse_up(at, MouseButton::Left, SHIFT);
+}
+
+#[gpui::test]
+fn invalid_gain_text_blocks_starting_an_automation_gesture(cx: &mut TestAppContext) {
+    let (mut visual, editor, owner, track, device) =
+        window_with_gain(cx, "hex.utility", Slot::Track, true, None);
+    let target =
+        DeviceAutomationTarget::Parameter(hex_lattice_contract::ParameterId::from_static(1));
+    editor.update(&mut visual, |view, cx| {
+        view.clip_view_open = false;
+        view.gain_lane.track = Some(track);
+        view.gain_lane.selected = Some(BeatTime::from_raw(2));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let gain = visual
+        .debug_bounds("gain-point-value-value")
+        .unwrap()
+        .center();
+    visual.simulate_click(gain, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("invalid");
+    header_assign(&mut visual, &editor, owner, target);
+    let at = lane_point(&mut visual, device, target, [0.6, 0.5]);
+    visual.simulate_mouse_down(at, MouseButton::Left, CMD);
+    editor.read_with(&visual, |view, cx| {
+        assert!(view.gain_numeric_editing(cx));
+        assert!(view.automation_view.devices.draft.is_none());
+    });
+    visual.simulate_mouse_up(at, MouseButton::Left, CMD);
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.cancel_gain_draft(cx));
+    });
+    visual.simulate_mouse_down(at, MouseButton::Left, CMD);
+    visual.simulate_mouse_up(at, MouseButton::Left, CMD);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.automation_view.devices.pending.is_some())
+    });
+}
+
+pub(in crate::editor) struct TestWave(pub(in crate::editor) std::path::PathBuf);
+impl TestWave {
+    pub(in crate::editor) fn new() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "hex-draft-test-{}-{}.wav",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&44_u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&48_000_u32.to_le_bytes());
+        wav.extend_from_slice(&96_000_u32.to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&8_u32.to_le_bytes());
+        wav.extend_from_slice(&[0_u8; 8]);
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap()
+            .write_all(&wav)
+            .unwrap();
+        Self(path)
+    }
+}
+impl Drop for TestWave {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 /// The bound control displays the in-flight gesture value before canonical state.

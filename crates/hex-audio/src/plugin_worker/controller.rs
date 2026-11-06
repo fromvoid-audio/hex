@@ -5,7 +5,8 @@ use super::*;
 use hex_plugin_host::{
     Error,
     protocol::{
-        ParameterConversionResult, ParameterPage, ParameterPageProgress, ParameterPageQuery,
+        ControllerRequest, ParameterConversionResult, ParameterPage, ParameterPageProgress,
+        PluginEditorState,
     },
 };
 use std::{
@@ -18,11 +19,12 @@ struct Reply {
     page: ParameterPage,
     changed: bool,
     conversion: Option<ParameterConversionResult>,
+    editor: Option<PluginEditorState>,
 }
 #[derive(Default)]
 pub(super) struct Slot {
     ordinal: u64,
-    query: ParameterPageQuery,
+    query: ControllerRequest,
     requested: bool,
     complete: bool,
     stopped: bool,
@@ -70,6 +72,7 @@ impl NativeWorkerControllerQuery {
 #[derive(Debug)]
 pub enum NativeWorkerControllerProgress {
     Pending,
+    Editor(PluginEditorState),
     Page(Box<ParameterPage>),
     Conversion(Box<ParameterConversionResult>),
     Changed { revision: u64, total: u16 },
@@ -82,8 +85,9 @@ impl NativeWorker {
     /// first joins the healthy original transport; it never revives playback.
     pub fn begin_controller_query_on_control(
         &mut self,
-        query: ParameterPageQuery,
+        query: impl Into<ControllerRequest>,
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
+        let query = query.into();
         query
             .validate()
             .map_err(|_| "invalid native controller query")?;
@@ -181,7 +185,9 @@ impl NativeWorker {
         let reply = slot.reply;
         slot.requested = false;
         drop(mailbox);
-        let progress = if let Some(conversion) = reply.conversion {
+        let progress = if let Some(editor) = reply.editor {
+            NativeWorkerControllerProgress::Editor(editor)
+        } else if let Some(conversion) = reply.conversion {
             NativeWorkerControllerProgress::Conversion(Box::new(conversion))
         } else if reply.changed {
             NativeWorkerControllerProgress::Changed {
@@ -281,7 +287,7 @@ impl State {
             }
             let (ordinal, query) = (slot.controller.ordinal, slot.controller.query);
             drop(slot);
-            instance.begin_parameter_page_on_worker(query)?;
+            instance.begin_controller_request_on_worker(query)?;
             self.controller.ordinal = Some(ordinal);
         } else if self.controller.result.is_none() {
             if self.controller.between_polls() {
@@ -289,10 +295,15 @@ impl State {
             }
             self.controller.result = match instance.poll_parameter_page_on_worker()? {
                 ParameterPageProgress::Pending => None,
+                ParameterPageProgress::Editor(editor) => Some(Reply {
+                    editor: Some(editor),
+                    ..Reply::default()
+                }),
                 ParameterPageProgress::Page(page) => Some(Reply {
                     page: *page,
                     changed: false,
                     conversion: None,
+                    editor: None,
                 }),
                 ParameterPageProgress::Conversion(conversion) => Some(Reply {
                     conversion: Some(*conversion),
@@ -306,6 +317,7 @@ impl State {
                         page,
                         changed: true,
                         conversion: None,
+                        editor: None,
                     })
                 }
             };

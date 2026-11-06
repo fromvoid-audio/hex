@@ -54,6 +54,18 @@ impl NativeEndpointBank {
         }
         Some(true)
     }
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn single_worker_phase_for_test(&self) -> Option<usize> {
+        let mut endpoints = self.entries.iter().flatten();
+        let callback = endpoints.next()?.0.callback.as_ref()?;
+        if endpoints.next().is_some() {
+            return None;
+        }
+        Some(
+            (callback.committed_frames_for_test()
+                % u64::try_from(callback.quantum_frames()).ok()?) as usize,
+        )
+    }
     pub(crate) fn runtime_transports_are_live(
         &self,
         playback: &hex_engine::playback::Playback,
@@ -571,6 +583,7 @@ mod tests {
             prepared,
             bypassed: false,
             input_gain: 1.0,
+            output_gain: 1.0,
         };
         let mut frames = [[0.5, -0.25]; 8];
         bank.begin_rendering(8).unwrap();
@@ -724,6 +737,7 @@ mod tests {
             prepared,
             bypassed: false,
             input_gain: 1.0,
+            output_gain: 1.0,
         };
         for block in 0..4_u64 {
             let mut frames = [[0.5, -0.25]; 8];

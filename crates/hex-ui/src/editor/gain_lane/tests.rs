@@ -449,6 +449,15 @@ pub(in crate::editor) mod native {
                 hex_project::Command::Mute { track, muted: true }
             )));
             assert!(view.gain_numeric_editing(cx));
+            let generation = view.project_generation;
+            let revision = view.state.as_ref().unwrap().revision;
+            assert!(
+                !view.enqueue(hex_session::service::Request::DeviceAutomationControl {
+                    project_generation: generation,
+                    revision,
+                    edit: hex_session::service::DeviceAutomationControlEdit::Reenable,
+                })
+            );
             assert_eq!(
                 view.gain_lane
                     .gain
@@ -685,8 +694,16 @@ pub(in crate::editor) mod native {
             }));
             let state = view.state.as_ref().unwrap();
             assert_eq!(preview_gain(state, track, 0), Some(0.25));
-            assert_eq!(preview_gain(state, track, 24000), Some(0.8));
-            assert_eq!(preview_gain(state, track, 2400000), Some(0.25));
+            // Read-only paint follows playback's 5 ms Touch and rejoin ramps.
+            // Authored targets remain unchanged, but their first frame is no
+            // longer an instantaneous jump to the final gain.
+            let first = preview_gain(state, track, 24000).unwrap();
+            let middle = preview_gain(state, track, 24119).unwrap();
+            assert!(0.25 < first && first < middle && middle < 0.8);
+            assert_eq!(preview_gain(state, track, 24239), Some(0.8));
+            let released = preview_gain(state, track, 2400000).unwrap();
+            assert!(0.25 < released && released < 0.8);
+            assert_eq!(preview_gain(state, track, 2400239), Some(0.25));
             assert!(
                 view.visible_viewport(content_extent)
                     .fraction(2400000)

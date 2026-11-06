@@ -1,5 +1,7 @@
 //! Lock-free peak handoff. Positive finite floats preserve bit ordering.
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+mod render_work;
+pub use render_work::{RenderWorkMeter, RenderWorkSample};
 
 /// Provider-reported attenuation, in positive dB, for its two working lanes.
 /// Lane meaning follows the device's active routing. Only committed processing
@@ -34,6 +36,7 @@ pub struct DeviceMeter {
     reduction: [AtomicU32; 2],
     clipped: AtomicU32,
     post_input_peak: AtomicU32,
+    render_work: RenderWorkMeter,
 }
 impl DeviceMeter {
     /// CONTROL ONLY: complete exclusive payload declaration for this value.
@@ -47,10 +50,17 @@ impl DeviceMeter {
             reduction: _,
             clipped: _,
             post_input_peak: _,
+            render_work: _,
         } = self;
         crate::PreparedStorageDeclaration::ExclusiveOnly {
             bytes: std::mem::size_of::<Self>(),
         }
+    }
+
+    /// Independent host-owner timing lane. Track/Return output endpoints use
+    /// this lane; signal peaks and device DSP never synthesize timing data.
+    pub fn render_work(&self) -> &RenderWorkMeter {
+        &self.render_work
     }
 
     /// Accumulate every block until the UI drains it, retaining short transients.

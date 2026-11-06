@@ -1,4 +1,5 @@
 use super::*;
+use crate::oversampling::spectrum::inharmonic_energy_db;
 use hex_lattice::{DevicePreparationContext, EMPTY_DEVICE_RESOURCES, TuningTable};
 
 fn state() -> NativeDeviceState {
@@ -149,7 +150,7 @@ fn mix_is_exact_bypass_advances_history_and_blocks_are_invariant() {
     let s = state();
     // Zero mix is the exact dry signal, delayed by the declared latency.
     let latency = prepared(&s, 48_000).algorithmic_latency_frames().unwrap() as usize;
-    assert_eq!(latency, oversampler::LATENCY_FRAMES);
+    assert_eq!(latency, crate::oversampling::LATENCY_FRAMES);
     let zero_mix = render(&patch(&s, parameter::DRY_WET, 0.0), 48_000, &input);
     assert!(zero_mix[..latency].iter().all(|f| *f == [0.0; 2]));
     assert_eq!(zero_mix[latency..], input[..input.len() - latency]);
@@ -309,74 +310,10 @@ fn filter_preview_matches_measured_runtime_band_response() {
     }
 }
 
-/// In-place iterative radix-2 FFT (test oracle only).
-fn fft(re: &mut [f64], im: &mut [f64]) {
-    let n = re.len();
-    let mut j = 0;
-    for i in 1..n {
-        let mut bit = n >> 1;
-        while j & bit != 0 {
-            j ^= bit;
-            bit >>= 1;
-        }
-        j |= bit;
-        if i < j {
-            re.swap(i, j);
-            im.swap(i, j);
-        }
-    }
-    let mut len = 2;
-    while len <= n {
-        let angle = -std::f64::consts::TAU / len as f64;
-        for start in (0..n).step_by(len) {
-            for k in 0..len / 2 {
-                let (s, c) = (angle * k as f64).sin_cos();
-                let (a, b) = (start + k, start + k + len / 2);
-                let (tr, ti) = (re[b] * c - im[b] * s, re[b] * s + im[b] * c);
-                re[b] = re[a] - tr;
-                im[b] = im[a] - ti;
-                re[a] += tr;
-                im[a] += ti;
-            }
-        }
-        len <<= 1;
-    }
-}
-/// Total non-harmonic spectral energy relative to the fundamental, in db.
-/// A 4-term Blackman-Harris window (-92 db sidelobes) over the last 65536
-/// frames; bins within 8 of any harmonic of `hz` (or dc) count as harmonic.
-fn inharmonic_energy_db(output: &[StereoFrame], hz: f64, rate: u32) -> f64 {
-    const N: usize = 1 << 16;
-    let frames = &output[output.len() - N..];
-    let mut re: Vec<f64> = frames
-        .iter()
-        .enumerate()
-        .map(|(i, f)| {
-            let x = std::f64::consts::TAU * i as f64 / N as f64;
-            let w =
-                0.35875 - 0.48829 * x.cos() + 0.14128 * (2.0 * x).cos() - 0.01168 * (3.0 * x).cos();
-            f64::from(f[0]) * w
-        })
-        .collect();
-    let mut im = vec![0.0; N];
-    fft(&mut re, &mut im);
-    let bin_hz = f64::from(rate) / N as f64;
-    let power = |k: usize| re[k] * re[k] + im[k] * im[k];
-    let fundamental_bin = (hz / bin_hz).round() as usize;
-    let fundamental: f64 = (fundamental_bin - 8..=fundamental_bin + 8).map(power).sum();
-    let mut inharmonic = 0.0_f64;
-    for k in 9..N / 2 {
-        let f = k as f64 * bin_hz;
-        let nearest = (f / hz).round() * hz;
-        if ((f - nearest) / bin_hz).abs() <= 8.0 {
-            continue;
-        }
-        inharmonic += power(k);
-    }
-    10.0 * (inharmonic / fundamental).log10()
-}
 /// Pulse #3958: a 7 kHz sine at full drive and 48 kHz keeps summed
-/// non-harmonic energy below -60 db relative to the fundamental.
+/// non-harmonic (aliased) energy below -60 db relative to the fundamental.
+/// The former 4x linear-interpolation path measured -23.1 db (tone 0.5) and
+/// -24.6 db (tone 1.0) for its largest single component.
 #[test]
 fn full_drive_7khz_sine_aliasing_stays_below_minus_60_db() {
     let rate = 48_000;

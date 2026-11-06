@@ -57,6 +57,7 @@ pub(super) fn render(
         | GestureTarget::EqNodeCreation { device } => !alive.contains(&device),
         GestureTarget::ReturnSend { .. }
         | GestureTarget::TrackGain { .. }
+        | GestureTarget::TrackGains { .. }
         | GestureTarget::TrackBalance { .. }
         | GestureTarget::ReturnGain { .. } => false,
     }) || stale_keys.iter().any(|key| {
@@ -229,8 +230,8 @@ pub(super) fn render_return_effect(
                     hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
                 })
         });
-    let leading = bypass_action(device, NativeDeviceClass::Effect, cx);
-    let mut actions = div().flex().items_center().gap(px(2.0));
+    let leading = bypass_action(view, device, NativeDeviceClass::Effect, cx);
+    let mut actions = div().flex().flex_col().items_center().gap(px(2.0));
     if device_view.is_ok() {
         actions = actions
             .child(super::super::device_preset::actions(
@@ -246,6 +247,11 @@ pub(super) fn render_return_effect(
                 selected,
                 cx,
             ));
+    }
+    if device.state().type_id().as_str() == Ok("hex.vst3")
+        && !view.degraded_plugins.contains(id.value())
+    {
+        actions = actions.child(vst3_editor_button(id, selected, cx));
     }
     actions = actions.child(
         action_button(
@@ -266,22 +272,20 @@ pub(super) fn render_return_effect(
     );
     let rendered = match &device_view {
         _ if device.state().type_id().as_str() == Ok("hex.vst3") => {
-            let body = vst3_status_body(view, device);
+            let body = vst3_status_body(view, device, cx);
             device_frame(
                 device_drag_title(
                     view,
                     cx,
                     device,
                     NativeDeviceClass::Effect,
-                    theme::text("vst3"),
+                    view.vst3_device_title(device),
                 ),
                 theme::device_frame_style(selected),
                 leading,
                 actions,
                 body,
             )
-            .debug_selector(move || format!("device-shell-{}", id.value()))
-            .into_any_element()
         }
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
@@ -354,8 +358,6 @@ pub(super) fn render_return_effect(
                 actions,
                 body,
             )
-            .debug_selector(move || format!("device-shell-{}", id.value()))
-            .into_any_element()
         }
         Err(error) => {
             let title = theme::text(
@@ -379,8 +381,6 @@ pub(super) fn render_return_effect(
                 actions,
                 body,
             )
-            .debug_selector(move || format!("device-shell-{}", id.value()))
-            .into_any_element()
         }
     };
     view.device_panel.views.insert(
@@ -391,26 +391,20 @@ pub(super) fn render_return_effect(
             device_view,
         ),
     );
-    let frame_width = match device.state().type_id().as_str() {
-        Ok("hex.utility") => UTILITY_FRAME_WIDTH,
-        Ok("hex.eq8" | "hex.eq") => super::eq8_panel::FRAME_WIDTH,
-        Ok("hex.saturator") => super::saturator_panel::FRAME_WIDTH,
-        Ok("hex.limiter") => super::limiter_panel::FRAME_WIDTH,
-        Ok("hex.compressor") => super::compressor_panel::FRAME_WIDTH,
-        Ok("hex.gate") => super::gate_panel::FRAME_WIDTH,
-        Ok("hex.reverb") => super::reverb_panel::FRAME_WIDTH,
-        Ok("hex.delay") => super::delay_panel::FRAME_WIDTH,
-        Ok("hex.auto-pan") => super::auto_pan_panel::FRAME_WIDTH,
-        Ok("hex.overdrive") => super::overdrive_panel::FRAME_WIDTH,
-        _ => DEVICE_FRAME_WIDTH,
-    };
-    let rendered = div().w(px(frame_width)).flex_shrink_0().child(rendered);
+    let card_width = device_card_width(NativeDeviceClass::Effect, device.state().type_id());
+    let rendered = rendered
+        .h_full()
+        .debug_selector(move || format!("device-shell-{}", id.value()));
+    let rendered = div()
+        .w(px(card_width - super::device_meter::WIDTH))
+        .flex_shrink_0()
+        .child(rendered);
     div()
         .id(ElementId::Name(
             format!("effect-device-{}", id.value()).into(),
         ))
         .debug_selector(move || format!("effect-device-{}", id.value()))
-        .w(px(frame_width + super::device_meter::WIDTH))
+        .w(px(card_width))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex()
         .flex_shrink_0()

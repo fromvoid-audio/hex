@@ -338,6 +338,9 @@ struct PreparedGate {
 }
 
 impl PreparedNativeProcessor for PreparedGate {
+    fn supports_smoothed_bypass(&self) -> bool {
+        true
+    }
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -489,6 +492,10 @@ impl GateRuntime {
 }
 
 impl NativeProcessorRuntime for GateRuntime {
+    fn supports_detached_source_rejoin(&self) -> bool {
+        true
+    }
+
     fn process_block(
         &mut self,
         frames: &mut [StereoFrame],

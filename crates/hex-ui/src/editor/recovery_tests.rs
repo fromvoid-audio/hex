@@ -21,6 +21,79 @@ use std::sync::{
 };
 use std::time::Instant;
 
+#[gpui::test]
+fn stop_renews_current_resident_vst3_playback_before_an_edit(cx: &mut gpui::TestAppContext) {
+    use super::super::audio_admission::StoppedPlaybackRestore;
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let client = output.take_client().unwrap();
+    let mut project =
+        hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Device(device) = project
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: hex_lattice_contract::NativeDeviceState::new(
+                hex_lattice_contract::DeviceTypeId::from_static("hex.vst3"),
+                1,
+                vec![0],
+            )
+            .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("vst3 effect");
+    };
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        project.project().clone(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, _| {
+        let revision = view.state.as_ref().unwrap().revision;
+        let identity = client.output_identity().unwrap();
+        view.audio = Some(EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "stopped vst3 fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        view.applied_project_revision = Some(revision);
+        view.audible_playback = Some(super::super::PlaybackCandidate {
+            worker_requires_preroll: None,
+            observation: None,
+            audio_revision: 0,
+            project_generation: view.project_generation,
+            state: view.state.as_ref().unwrap().clone(),
+            prepared_revision: None,
+            seek_request_id: None,
+            device_preview_identity: None,
+            tuning_preview_identity: None,
+        });
+        view.stop();
+        assert_eq!(
+            view.stopped_playback_restore,
+            Some(StoppedPlaybackRestore::Preparing)
+        );
+        view.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![device.value()]);
+        view.queue_audio_command(PlaybackCommand::PlayFrom(0));
+        assert!(view.deferred_play.is_some());
+        assert_eq!(
+            view.audio.as_ref().unwrap().control.output_identity(),
+            Some(identity)
+        );
+        assert!(view.enqueue(Request::Edit(Command::RemoveDevice(device))));
+        assert!(matches!(
+            view.pending_requests.back(),
+            Some(Request::Edit(Command::RemoveDevice(id))) if *id == device
+        ));
+    });
+    drop(backend);
+    output.publication.close();
+}
+
 // An already-open actual worker endpoint, without a second lifecycle implementation. The native
 // desktop tests own reopen/teardown; this fixture exercises UI recovery through the real Service
 // seek worker, ordinary resource book, callback and protected scalar observation channel.
@@ -95,6 +168,132 @@ fn restart_from_fault(cx: &mut gpui::TestAppContext, stop: bool) {
         }
         view.recover_audio();
         assert_eq!(view.offline_cursor, if stop { 0 } else { 64 });
+    });
+    drop(backend);
+    output.publication.close();
+}
+#[gpui::test]
+fn stop_restarts_audio_from_zero_when_a_vst3_worker_is_degraded(cx: &mut gpui::TestAppContext) {
+    degraded_worker_recovers(cx, true, None);
+}
+
+#[gpui::test]
+fn play_restarts_audio_if_stop_has_already_degraded_the_worker(cx: &mut gpui::TestAppContext) {
+    degraded_worker_recovers(cx, false, None);
+}
+
+#[gpui::test]
+fn explicit_play_from_recovers_degraded_vst3_at_the_requested_frame(cx: &mut gpui::TestAppContext) {
+    degraded_worker_recovers(cx, false, Some(18_000));
+}
+
+fn degraded_worker_recovers(
+    cx: &mut gpui::TestAppContext,
+    stop_first: bool,
+    explicit_frame: Option<u64>,
+) {
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let playback = Playback::new(hex_engine::Project::new(48_000, Vec::new()).unwrap());
+    output
+        .publication
+        .control()
+        .unwrap()
+        .publish(playback)
+        .unwrap();
+    let mut client = output.take_client().unwrap();
+    client.command(PlaybackCommand::Play).unwrap();
+    backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    assert_eq!(client.status().unwrap().position.load(Acquire), 64);
+    if !stop_first {
+        client.stop();
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    }
+
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, _| {
+        view.audio = Some(EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "degraded vst3 fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![2]);
+        if stop_first {
+            view.stop();
+            assert!(view.deferred_play.is_none());
+        }
+        if let Some(frame) = explicit_frame {
+            view.queue_audio_command(PlaybackCommand::PlayFrom(frame));
+        } else {
+            view.toggle_play();
+        }
+        assert_eq!(
+            view.deferred_play,
+            Some((
+                hex_engine::playback::PlaybackAction::Transport(PlaybackCommand::Play),
+                None,
+                view.project_generation
+            ))
+        );
+        assert!(!view.tick_deferred_play());
+        assert!(view.audio.is_none());
+        assert!(view.pending_restart_request.is_some());
+        assert!(view.stopped_playback_restore.is_none());
+        assert_eq!(view.recovery.position(), Some(explicit_frame.unwrap_or(0)));
+        view.stop();
+        assert!(view.deferred_play.is_none());
+    });
+    drop(backend);
+    output.publication.close();
+}
+
+#[gpui::test]
+fn a_changed_output_route_restarts_audio_once_its_guards_allow(cx: &mut gpui::TestAppContext) {
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let client = output.take_client().unwrap();
+    let identity = client.output_identity().unwrap();
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, _| {
+        view.audio = Some(EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "route fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        // A notice for an output that is no longer current is dropped.
+        view.route_follow = Some(identity + 1);
+        assert!(!view.follow_output_route());
+        assert_eq!(view.route_follow, None);
+        // An open dialog defers the move without reporting an error.
+        let error = view.error.clone();
+        view.route_follow = Some(identity);
+        view.save_dialog_open = true;
+        assert!(!view.follow_output_route());
+        assert_eq!(view.route_follow, Some(identity));
+        assert_eq!(view.error, error);
+        assert!(view.pending_recovery_generation.is_none());
+        // Once allowed, the move uses the restart-audio recovery exactly once.
+        view.save_dialog_open = false;
+        assert!(view.follow_output_route());
+        assert_eq!(view.route_follow, None);
+        assert!(view.pending_recovery_generation.is_some());
+        assert!(view.pending_restart_request.is_some());
+        assert_eq!(view.status.to_string(), "audio output changed · reopening");
+        assert!(!view.follow_output_route());
     });
     drop(backend);
     output.publication.close();
@@ -199,7 +398,7 @@ impl WorkerAudioSink for Sink {
                     error: "fixture does not publish stopped arrangement replacements".into(),
                 });
             }
-            ResidentPublicationPolicy::ReplaceDocument => {
+            ResidentPublicationPolicy::ReplaceDocument { .. } => {
                 return Err(ResidentPublicationRefusal {
                     playback,
                     error: "fixture does not replace documents".into(),
@@ -271,6 +470,9 @@ fn seek_during_latency_rebuild_cancels_the_automatic_resume(cx: &mut gpui::TestA
             },
             output: 1,
             frame: 123,
+            resume: true,
+            runtime_audio: None,
+            installed: false,
         });
         view.stopped_playback_restore =
             Some(super::super::audio_admission::StoppedPlaybackRestore::Preparing);
@@ -300,12 +502,67 @@ fn replaced_project_cannot_resume_an_older_latency_rebuild(cx: &mut gpui::TestAp
             },
             output: 1,
             frame: 123,
+            resume: true,
+            runtime_audio: None,
+            installed: false,
         });
         view.project_generation = 1;
         assert!(!view.tick_latency_rebuild());
         assert!(view.latency_rebuild.is_none());
         assert!(view.pending_audio_commands.is_empty());
     });
+}
+
+#[gpui::test]
+fn failed_native_latency_restore_cannot_resume_the_old_audio(cx: &mut gpui::TestAppContext) {
+    use super::super::audio_admission::{LatencyRebuild, ProjectRevision, StoppedPlaybackRestore};
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let client = output.take_client().unwrap();
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, _| {
+        let output = client.output_identity().unwrap();
+        view.audio = Some(EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "latency restore fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        let revision = view.state.as_ref().unwrap().revision;
+        view.applied_project_revision = Some(revision);
+        view.latency_rebuild = Some(LatencyRebuild::Restoring {
+            project: ProjectRevision {
+                generation: view.project_generation,
+                revision,
+            },
+            output,
+            frame: 123,
+            resume: true,
+            runtime_audio: Some(1),
+            installed: false,
+        });
+        view.stopped_playback_restore = Some(StoppedPlaybackRestore::Published(2));
+        assert!(!view.tick_latency_rebuild());
+        assert!(view.latency_rebuild.is_some());
+        // A failed publication clears its pending state. The old graph still
+        // represents the canonical project revision, but cannot justify Play.
+        view.stopped_playback_restore = None;
+        assert!(!view.tick_latency_rebuild());
+        assert!(view.latency_rebuild.is_none());
+        let mut pcm = [[0.0; 2]; 64];
+        backend.render(&mut pcm).unwrap();
+        let status = view.audio.as_ref().unwrap().status().unwrap();
+        assert!(!status.playing.load(Acquire));
+        assert_eq!(status.position.load(Acquire), 0);
+        view.audio.take().unwrap().control.close();
+    });
+    backend.close();
 }
 
 #[gpui::test]
@@ -797,11 +1054,19 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
             .command_with_ticket(PlaybackCommand::Play)
             .unwrap();
     });
-    let mut sample = [[0.0; 2]; 1];
-    backend.render(&mut sample).unwrap();
+    // Resume from a nonzero cursor ramps in (128 frames at 48 kHz, rate
+    // scaled; 257 frames cover up to 96 kHz). The prerolled voice must sound
+    // from the first frame and settle at its exact level after the ramp.
+    let mut ramp = [[0.0; 2]; 257];
+    backend.render(&mut ramp).unwrap();
+    assert!(
+        ramp[0][0] > 0.0 && ramp.windows(2).all(|pair| pair[0][0] <= pair[1][0]),
+        "prerolled sampler history must remain playable through the ramp-in: {:?}",
+        &ramp[..4]
+    );
     assert_eq!(
-        sample, [[0.25; 2]; 1],
-        "prerolled sampler history must remain playable"
+        ramp[256], [0.25; 2],
+        "prerolled sampler history must settle at its exact level"
     );
     hold.store(true, std::sync::atomic::Ordering::Release);
     editor.update(cx, |view, cx| {
@@ -899,6 +1164,65 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
 }
 
 #[gpui::test]
+fn automatic_latency_rebuild_renders_the_stop_fade_before_requesting_restore(
+    cx: &mut gpui::TestAppContext,
+) {
+    use super::super::audio_admission::{LatencyRebuild, ProjectRevision, StoppedPlaybackRestore};
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let dc = hex_engine::Audio::new(48_000, vec![[1.0, -1.0]; 4096]).unwrap();
+    let clip = hex_engine::Clip::new(dc, 0, 4096, false).unwrap();
+    let track = hex_engine::Track::new(vec![clip], 1.0, false).unwrap();
+    output
+        .publication
+        .control()
+        .unwrap()
+        .publish(Playback::new(
+            hex_engine::Project::new(48_000, vec![track]).unwrap(),
+        ))
+        .unwrap();
+    let mut client = output.take_client().unwrap();
+    client.command(PlaybackCommand::Play).unwrap();
+    let mut pcm = [[0.0; 2]; 64];
+    backend.render(&mut pcm).unwrap();
+    assert_eq!(pcm[63], [1.0, -1.0]);
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, _| {
+        let output = client.output_identity().unwrap();
+        let frame = client.status().unwrap().position.load(Acquire);
+        view.audio = Some(EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "latency fade fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.latency_rebuild = Some(LatencyRebuild::Waiting {
+            project: ProjectRevision { generation: view.project_generation, revision: view.state.as_ref().unwrap().revision },
+            output,
+            runtime_audio: None,
+        });
+        assert!(view.tick_latency_rebuild());
+        backend.render(&mut pcm).unwrap();
+        assert!(pcm[0][0] > 0.9 && pcm[63][0] > 0.0 && pcm[63][0] < pcm[0][0], "the automatic transition must render the falling ramp");
+        assert!(!view.tick_latency_rebuild(), "consuming Stop only starts the fade");
+        assert!(view.stopped_playback_restore.is_none());
+        backend.render(&mut pcm).unwrap();
+        assert_eq!(pcm[63], [0.0; 2]);
+        assert!(view.tick_latency_rebuild());
+        assert_eq!(view.stopped_playback_restore, Some(StoppedPlaybackRestore::Preparing));
+        assert!(matches!(view.latency_rebuild, Some(LatencyRebuild::Restoring { frame: saved, .. }) if saved == frame));
+        view.audio.take().unwrap().control.close();
+    });
+    backend.close();
+}
+
+#[gpui::test]
 fn refused_latency_edit_in_midi_project_shows_waiting_until_applied_or_stopped(
     cx: &mut gpui::TestAppContext,
 ) {
@@ -939,7 +1263,11 @@ fn refused_latency_edit_in_midi_project_shows_waiting_until_applied_or_stopped(
             generation: 0,
             revision,
         };
-        view.latency_rebuild = Some(LatencyRebuild::Waiting { project, output });
+        view.latency_rebuild = Some(LatencyRebuild::Waiting {
+            project,
+            output,
+            runtime_audio: None,
+        });
 
         // Playing: MIDI voices are kept, and the wait is visible, once.
         assert!(view.tick_latency_rebuild());
@@ -956,7 +1284,11 @@ fn refused_latency_edit_in_midi_project_shows_waiting_until_applied_or_stopped(
 
         // Stop installs the waiting revision through the stopped restore.
         view.applied_project_revision = None;
-        view.latency_rebuild = Some(LatencyRebuild::Waiting { project, output });
+        view.latency_rebuild = Some(LatencyRebuild::Waiting {
+            project,
+            output,
+            runtime_audio: None,
+        });
         assert!(view.tick_latency_rebuild());
         view.stop();
         assert!(view.latency_rebuild.is_none());

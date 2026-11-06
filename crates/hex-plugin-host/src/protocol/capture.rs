@@ -53,8 +53,8 @@ pub fn live_captured_state(
         1 => true,
         _ => return Err(Error::Protocol("invalid live capture disposition")),
     };
-    let count = usize::from(u16::from_le_bytes(reader.array()?));
-    if count > 4096 || (!complete && count != 0) {
+    let count = u32::from_le_bytes(reader.array()?) as usize;
+    if count > hex_plugin_state::MAX_ENVELOPE_BYTES || (!complete && count != 0) {
         return Err(Error::Protocol("invalid live capture extent"));
     }
     let payload = reader.take(count)?;
@@ -89,8 +89,8 @@ pub fn captured_state(
             "capture acknowledgement differs from original operation",
         ));
     }
-    let count = usize::from(u16::from_le_bytes(reader.array()?));
-    if count > 4096 {
+    let count = u32::from_le_bytes(reader.array()?) as usize;
+    if count > hex_plugin_state::MAX_ENVELOPE_BYTES {
         return Err(Error::Protocol("captured state exceeds envelope bound"));
     }
     let payload = reader.take(count)?;
@@ -113,33 +113,73 @@ fn copy_captured_state(payload: &[u8], config: &Configuration) -> Result<NativeD
 }
 
 /// Reply magic for a bounded, non-terminal refusal of one stopped or live
-/// capture: the plugin produced more opaque state than the saved profile holds.
-pub const CAPTURE_REFUSAL_MAGIC: [u8; 8] = *b"HXVICR01";
+/// capture. Version 02 adds reason 2 (state still changing); version 01
+/// carried only reason 1 and is no longer accepted. Body: binding, PCM
+/// sequence, frames, operation, reason byte, then the reason's fields.
+pub const CAPTURE_REFUSAL_MAGIC: [u8; 8] = *b"HXVICR02";
 const STATE_EXCEEDS_LIMIT: u8 = 1;
+const STATE_STILL_CHANGING: u8 = 2;
 
-/// The helper refused one exact capture because the plugin's state does not fit
-/// the `hex_plugin_state::MAX_OPAQUE_BYTES` profile. Nothing was captured, the
-/// processor keeps running and its epoch stays usable. Callers keep their last
-/// confirmed state; this never permits saving truncated or default state.
+/// The helper refused one exact capture. Nothing was captured, the processor
+/// keeps running and its epoch stays usable; only that operation is retired.
+/// Callers keep their last confirmed state; this never permits saving
+/// truncated, stale or default state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct StateCaptureRefusal {
-    /// Opaque state bytes the helper observed: always above the limit, and a
-    /// lower bound when the helper stopped reading at its capture buffer.
-    pub observed_bytes: u32,
+pub enum StateCaptureRefusal {
+    /// The plugin's state does not fit the `hex_plugin_state::MAX_OPAQUE_BYTES`
+    /// profile (reason 1, followed by a little-endian `u32`).
+    ExceedsLimit {
+        /// Opaque state bytes the helper observed: always above the limit, and a
+        /// lower bound when the helper stopped reading at its capture buffer.
+        observed_bytes: u32,
+    },
+    /// Parameter edits kept arriving, so no consistent component/controller
+    /// cut could be read within the helper's bound (reason 2, no fields).
+    /// A later capture may succeed once the plugin stops changing.
+    StillChanging,
 }
 
 impl std::fmt::Display for StateCaptureRefusal {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            out,
-            "plugin state exceeds the {}-byte limit · not saved · plugin keeps running",
-            hex_plugin_state::MAX_OPAQUE_BYTES
-        )
+        match self {
+            Self::ExceedsLimit { .. } => write!(
+                out,
+                "plugin state exceeds the {}-byte limit · not saved · plugin keeps running",
+                hex_plugin_state::MAX_OPAQUE_BYTES
+            ),
+            Self::StillChanging => out.write_str(
+                "plugin state kept changing during capture · not saved · plugin keeps running",
+            ),
+        }
     }
 }
 
-/// Exact original binding/prefix/operation, a known reason and an over-limit
-/// size; anything else is malformed and the caller treats it as terminal.
+/// One live capture start/poll reply: a worker error, a non-terminal refusal
+/// ([`Error::CaptureRefused`]), or a pending/completed acknowledgement bound
+/// to the exact operation. Any other frame is malformed.
+pub fn live_capture_reply(
+    magic: &[u8],
+    body: &[u8],
+    config: &Configuration,
+    sequence: u64,
+    operation: u64,
+) -> Result<Option<NativeDeviceState>> {
+    if magic == b"HXVIER01" {
+        return Err(Error::Worker(error(body, config.binding)?));
+    }
+    if magic == CAPTURE_REFUSAL_MAGIC {
+        return Err(Error::CaptureRefused(capture_refusal(
+            body, config, sequence, operation,
+        )?));
+    }
+    if magic != b"HXVLCA02" {
+        return Err(Error::Protocol("missing live capture acknowledgement"));
+    }
+    live_captured_state(body, config, sequence, operation)
+}
+
+/// Exact original binding/prefix/operation and a known reason with valid
+/// fields; anything else is malformed and the caller treats it as terminal.
 pub fn capture_refusal(
     body: &[u8],
     config: &Configuration,
@@ -161,15 +201,23 @@ pub fn capture_refusal(
             "capture refusal differs from original operation",
         ));
     }
-    if reader.byte()? != STATE_EXCEEDS_LIMIT {
-        return Err(Error::Protocol("unknown capture refusal reason"));
+    match reader.byte()? {
+        STATE_EXCEEDS_LIMIT => {
+            let observed_bytes = u32::from_le_bytes(reader.array()?);
+            reader.end()?;
+            if usize::try_from(observed_bytes)
+                .is_ok_and(|n| n <= hex_plugin_state::MAX_OPAQUE_BYTES)
+            {
+                return Err(Error::Protocol(
+                    "capture refusal names a state within the limit",
+                ));
+            }
+            Ok(StateCaptureRefusal::ExceedsLimit { observed_bytes })
+        }
+        STATE_STILL_CHANGING => {
+            reader.end()?;
+            Ok(StateCaptureRefusal::StillChanging)
+        }
+        _ => Err(Error::Protocol("unknown capture refusal reason")),
     }
-    let observed_bytes = u32::from_le_bytes(reader.array()?);
-    reader.end()?;
-    if usize::try_from(observed_bytes).is_ok_and(|n| n <= hex_plugin_state::MAX_OPAQUE_BYTES) {
-        return Err(Error::Protocol(
-            "capture refusal names a state within the limit",
-        ));
-    }
-    Ok(StateCaptureRefusal { observed_bytes })
 }

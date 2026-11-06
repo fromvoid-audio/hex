@@ -19,6 +19,8 @@
 //! beat interval. Authored tempo/meter points remain present even when their
 //! values match neighbors. Synthetic meter anchors are added only where the
 //! effective signature changes; equal-meter section seams do not restart bars.
+//! Copies draw a semantic color with reuse allowed. Preview and publication agree
+//! for the same candidate identity; history and storage retain the chosen color.
 //! Destination copies compose the adjacent-copy and stable-ID reorder laws in
 //! one private candidate; display previews compose only markers and tempo.
 //! The session/transport owner fences structural publication. Reorders/copies
@@ -206,8 +208,10 @@ impl Project {
             routing,
             audio_feeds,
             midi_routes,
+            sidechains,
             import_provenance,
             sample_rate,
+            sample_rate_mode,
             next_id: _,
             assets,
             offline_assets,
@@ -221,6 +225,7 @@ impl Project {
             meter_map,
         } = self;
         *sample_rate == other.sample_rate
+            && *sample_rate_mode == other.sample_rate_mode
             && master_gain.to_bits() == other.master_gain.to_bits()
             && *loop_region == other.loop_region
             && *tempo_map == other.tempo_map
@@ -231,6 +236,7 @@ impl Project {
             && *routing == other.routing
             && *audio_feeds == other.audio_feeds
             && *midi_routes == other.midi_routes
+            && *sidechains == other.sidechains
             && *import_provenance == other.import_provenance
             && *assets == other.assets
             && *offline_assets == other.offline_assets
@@ -435,6 +441,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
         }
     }
 }
+mod color;
 mod meter;
 mod reorder;
 use reorder::{reorder, reorder_after};

@@ -18,7 +18,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<Project, StorageError> {
 /// Opaque exact-byte content snapshot, shared cheaply between owners.
 /// This is a content check, not a filesystem lock, identity or overwrite permit.
 #[derive(Clone)]
-pub struct FileToken(pub(super) Arc<[u8]>, bool);
+pub struct FileToken(pub(super) Arc<[u8]>, Option<u32>);
 
 impl std::fmt::Debug for FileToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -29,11 +29,24 @@ impl std::fmt::Debug for FileToken {
 }
 
 impl FileToken {
-    /// True when saving would replace an older schema with the current format.
+    /// True when the file is older than [`crate::CURRENT_SCHEMA_VERSION`], so
+    /// saving any project over it writes a format older readers cannot open.
     /// Tokens are constructed only after validated decoding or current encoding;
     /// an unexpected header conservatively requires confirmation too.
     pub fn requires_format_upgrade(&self) -> bool {
-        self.1
+        self.1.is_none_or(|version| {
+            !(crate::CURRENT_SCHEMA_VERSION..=crate::NEWEST_SCHEMA_VERSION).contains(&version)
+        })
+    }
+
+    /// True when saving `project` writes a newer schema than this file's, for
+    /// example adding sinc v2 media to a schema63 file. Compares the actual
+    /// saved formats, not application versions.
+    pub fn requires_schema_upgrade_for(&self, project: &Project) -> bool {
+        self.requires_format_upgrade()
+            || self
+                .1
+                .is_none_or(|version| version < crate::schema_version_for(project))
     }
 
     /// Control-side preflight for replacing a file an older reader could open.
@@ -52,7 +65,7 @@ impl FileToken {
         project: &Project,
         limit: usize,
     ) -> Result<bool, StorageError> {
-        Ok(self.requires_format_upgrade()
+        Ok(self.requires_schema_upgrade_for(project)
             || (self.0.len() <= limit && encode(project)?.len() > limit))
     }
 
@@ -61,10 +74,10 @@ impl FileToken {
         struct Header {
             version: u32,
         }
-        let upgrade = serde_json::from_slice::<Header>(&bytes).map_or(true, |header| {
-            header.version != crate::CURRENT_SCHEMA_VERSION
-        });
-        Self(bytes, upgrade)
+        let version = serde_json::from_slice::<Header>(&bytes)
+            .ok()
+            .map(|header| header.version);
+        Self(bytes, version)
     }
 
     /// Compare the current document with the captured bytes without modifying it.
@@ -149,7 +162,10 @@ impl Drop for Temporary {
 }
 
 /// Create a complete new project without overwriting another file. Failed writes
-/// cannot expose partial JSON at the target path; old targets always remain intact.
+/// do not leave partial JSON at the target path; old targets always remain intact.
+/// Volumes without hard links or exclusive rename publish an exclusive synced
+/// copy instead, where only a crash during that copy can leave an incomplete
+/// new file (see `crate::publication`).
 /// A failure after linking reports `PublishedButNotDurable`; the complete target
 /// is retained and callers must not treat that error as absence of a saved file.
 pub fn save_new(path: impl AsRef<Path>, project: &Project) -> Result<(), StorageError> {
@@ -218,7 +234,7 @@ fn save_with_finish(
         ));
     }
     // Refuse known collisions before serialization or temporary-file work. The
-    // final hard link still enforces create-new atomically against races.
+    // final publication still refuses an existing destination against races.
     match fs::symlink_metadata(path) {
         Ok(_) => {
             return Err(std::io::Error::new(
@@ -259,7 +275,7 @@ fn save_with_finish(
     file.write_all(&bytes)?;
     file.sync_all()?;
     drop(file);
-    fs::hard_link(&temporary.0, path)?;
+    crate::publication::publish_new(&temporary.0, path)?;
     let warning = finish(&temporary.0, path)
         .err()
         .map(|(operation, source)| ReplaceWarning { operation, source });
@@ -275,7 +291,10 @@ fn save_with_finish(
 pub(crate) fn finish_publication(temporary: &Path, path: &Path) -> Result<(), FinishError> {
     // Attempt directory sync even when temporary cleanup failed. Neither step
     // may roll back a destination that has already been published.
-    let cleanup_error = fs::remove_file(temporary).err();
+    // An exclusive-rename publication already consumed the staging name.
+    let cleanup_error = fs::remove_file(temporary)
+        .err()
+        .filter(|error| error.kind() != std::io::ErrorKind::NotFound);
     #[cfg(unix)]
     let sync_error = {
         let parent = path
@@ -752,6 +771,37 @@ mod tests {
         let replacement = Project::new(44_100).expect("replacement");
         crate::replace_existing(&path, &token, &replacement).expect("next save");
         assert_eq!(load(&path).expect("replaced"), replacement);
+    }
+
+    /// Regression for #3915: exFAT/FAT/SMB volumes refuse hard links, which
+    /// used to fail Save As and the first overwrite's recovery sidecar.
+    #[cfg(unix)]
+    #[test]
+    fn volumes_without_hard_links_save_overwrite_and_recover() {
+        use crate::publication::simulate::{Volume, volume};
+        for capability in [
+            Volume::NoHardLinks(libc::ENOTSUP),
+            Volume::NoHardLinks(libc::EPERM),
+            Volume::NoAtomicCreate,
+        ] {
+            let dir = TestDir::new();
+            let _volume = volume(capability);
+            let path = dir.0.join("usb.hex");
+            let first = Project::new(48_000).expect("project");
+            let token = save_new_with_token(&path, &first).expect("save as");
+            assert_eq!(load(&path).expect("complete project"), first);
+            assert!(
+                matches!(save_new(&path, &first), Err(StorageError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists)
+            );
+            assert_eq!(load(&path).expect("untouched project"), first);
+            let second = Project::new(44_100).expect("replacement");
+            crate::replace_existing(&path, &token, &second).expect("first overwrite");
+            assert_eq!(load(&path).expect("replaced"), second);
+            let recovery = crate::load_recovery(&path).expect("recovery sidecar");
+            assert_eq!(recovery.project, first);
+            // Only the project and its sidecar remain: no staging leftovers.
+            assert_eq!(fs::read_dir(&dir.0).expect("directory").count(), 2);
+        }
     }
 
     #[test]

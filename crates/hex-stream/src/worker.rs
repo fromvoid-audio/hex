@@ -8,7 +8,7 @@ use crate::{
 use hex_engine::{StreamResourceKey, StreamedSourceMetadata};
 use std::collections::VecDeque;
 pub(crate) mod scalar;
-use hex_media::{ResampleKernel, ResamplePlan, VerifiedWavReader};
+use hex_media::{ResampleKernel, ResamplePlan, ResampleVersion, VerifiedWavReader};
 use rtrb::{Consumer, Producer, PushError};
 use scalar::ScalarJob;
 use std::{
@@ -309,12 +309,11 @@ pub(crate) fn run_worker(
             continue;
         }
         #[cfg(test)]
-        if let Some(job) = &scalar_job {
-            if let (Some(hooks), StreamResourceKey::Scalar(key)) = (&test_hooks, job.key.source) {
-                if !hooks.before_scalar_step(key, &stop) {
-                    break;
-                }
-            }
+        if let Some(job) = &scalar_job
+            && let (Some(hooks), StreamResourceKey::Scalar(key)) = (&test_hooks, job.key.source)
+            && !hooks.before_scalar_step(key, &stop)
+        {
+            break;
         }
         if let Some(mut job) = scalar_job.take() {
             let outcome = job.step(&mut scalar_definitions[job.source]);
@@ -669,11 +668,27 @@ fn build_catalog(
         let remaining_manifest = config.max_manifest_bytes.saturating_sub(manifest_bytes);
         let mut reader_limits = definition.reader_limits;
         reader_limits.max_manifest_bytes = reader_limits.max_manifest_bytes.min(remaining_manifest);
-        let mut reader =
-            VerifiedWavReader::open_with_cancel(&definition.path, reader_limits, || {
-                stop.load(Ordering::Acquire)
-            })
-            .map_err(map_import_error)?;
+        let cancelled = || stop.load(Ordering::Acquire);
+        // A caller-captured manifest avoids re-hashing a file whose length and
+        // mtime are unchanged; every page served later is still digest-verified.
+        // If that identity changed, re-hash in full: the fingerprint check below
+        // then accepts a touched-but-identical file and refuses a changed one.
+        let reused = definition.verified_manifest.as_ref().map(|manifest| {
+            VerifiedWavReader::open_verified_with_cancel(
+                &definition.path,
+                reader_limits,
+                manifest.clone(),
+                cancelled,
+            )
+        });
+        let mut reader = match reused {
+            Some(Ok(reader)) => reader,
+            None | Some(Err(hex_media::ImportError::SourceChanged)) => {
+                VerifiedWavReader::open_with_cancel(&definition.path, reader_limits, cancelled)
+                    .map_err(map_import_error)?
+            }
+            Some(Err(error)) => return Err(map_import_error(error)),
+        };
         let reader_manifest = reader.page_manifest_bytes();
         manifest_bytes = manifest_bytes
             .checked_add(reader_manifest)
@@ -687,10 +702,16 @@ fn build_catalog(
         {
             return Err(StreamFailureKind::SourceChanged);
         }
-        let kernel_index = kernels.iter().position(|(source_rate, target_rate, _)| {
-            *source_rate == reader.sample_rate()
-                && *target_rate == definition.metadata.project_rate()
-        });
+        // The asset's saved conversion version selects the law; v1 media stays v1.
+        let version = ResampleVersion::for_conversion(definition.metadata.conversion_version())
+            .map_err(map_import_error)?;
+        let kernel_index = kernels
+            .iter()
+            .position(|(source_rate, target_rate, kernel)| {
+                *source_rate == reader.sample_rate()
+                    && *target_rate == definition.metadata.project_rate()
+                    && kernel.version() == version
+            });
         let kernel = if let Some(index) = kernel_index {
             kernels[index].2.clone()
         } else {
@@ -706,9 +727,12 @@ fn build_catalog(
             if kernel_budget_reserved > config.max_kernel_table_bytes {
                 return Err(StreamFailureKind::CapacityExhausted);
             }
-            let kernel =
-                ResampleKernel::new(reader.sample_rate(), definition.metadata.project_rate())
-                    .map_err(map_import_error)?;
+            let kernel = ResampleKernel::with_version(
+                reader.sample_rate(),
+                definition.metadata.project_rate(),
+                version,
+            )
+            .map_err(map_import_error)?;
             kernel_bytes = kernel_bytes
                 .checked_add(kernel.table_payload_bytes())
                 .ok_or(StreamFailureKind::CapacityExhausted)?;
@@ -751,6 +775,7 @@ fn build_catalog(
             reader.sample_rate(),
             definition.metadata.project_rate(),
             reader.source_frames(),
+            plan.kernel_support_radius(),
         )?;
         if window_bound > source_scratch.len() || window_bound > reader.max_window_frames() {
             return Err(StreamFailureKind::CapacityExhausted);
@@ -790,6 +815,7 @@ fn build_catalog(
             path,
             metadata: _,
             reader_limits: _,
+            verified_manifest: _,
         } = definition;
         let layout = reader.control_data_layout();
         data.definition_paths = data
@@ -853,6 +879,7 @@ fn max_source_window(
     source_rate: u32,
     target_rate: u32,
     source_frames: u64,
+    support_radius: usize,
 ) -> Result<usize, StreamFailureKind> {
     if source_rate == target_rate {
         return usize::try_from(source_frames.min(hex_engine::STREAM_PAGE_FRAMES as u64))
@@ -862,14 +889,8 @@ fn max_source_window(
         .checked_mul(u128::from(source_rate))
         .ok_or(StreamFailureKind::CapacityExhausted)?
         .div_ceil(u128::from(target_rate));
-    let radius = if target_rate >= source_rate {
-        32_u128
-    } else {
-        32_u128
-            .checked_mul(u128::from(source_rate))
-            .ok_or(StreamFailureKind::CapacityExhausted)?
-            .div_ceil(u128::from(target_rate))
-    };
+    let radius =
+        u128::try_from(support_radius).map_err(|_| StreamFailureKind::CapacityExhausted)?;
     let span = output_span
         .checked_add(
             radius
@@ -1279,5 +1300,97 @@ pub(crate) mod tests {
         recovered.sort_by_key(|failure| failure.page_index);
         assert_eq!(recovered, failures[1..]);
         assert!(queue_rx.pop().is_err());
+    }
+
+    /// Catalog rebuild read cost: a pre-verified manifest reopens the source
+    /// from its header page; a changed file is refused rather than re-hashed.
+    #[test]
+    fn catalog_rebuild_reuses_a_captured_manifest_and_refuses_a_changed_file() {
+        const FRAMES: u16 = 32_767; // The fixture maximum: three raw pages.
+        let fixture = Fixture::pcm16_frames(FRAMES);
+        let limits = VerifiedWavReaderLimits::new(
+            WavReaderLimits::new(1024 * 1024, u64::from(FRAMES), 128, 8192),
+            1024 * 1024,
+        );
+        let verified = VerifiedWavReader::open(&fixture.0, limits).expect("verified source");
+        // Three hashed pages, then the verified header scan re-reads page 0.
+        assert_eq!(verified.raw_page_reads(), 4);
+        let mut editor = Editor::new(Project::new(48_000).expect("project"), 2).expect("editor");
+        let Created::Asset(asset) = editor
+            .execute(Command::AddAsset {
+                path: "rebuild-source.wav".into(),
+                sample_rate: 48_000,
+                frames: u64::from(FRAMES),
+            })
+            .expect("asset")
+        else {
+            panic!("asset fixture");
+        };
+        let metadata = StreamedSourceMetadata::new(
+            StreamSourceKey::new(95, asset),
+            48_000,
+            48_000,
+            u64::from(FRAMES),
+            u64::from(FRAMES),
+            IDENTITY_CONVERSION,
+            *verified.fingerprint(),
+        )
+        .expect("source metadata");
+        let definition = || {
+            SourceDefinition::new(fixture.0.clone(), metadata.clone(), limits)
+                .with_verified_manifest(verified.manifest().clone())
+        };
+        let config = StreamConfig::initial();
+        let mut scratch = vec![[0.0; 2]; config.source_scratch_frames];
+        let stop = AtomicBool::new(false);
+        let (sources, _, _) =
+            build_catalog(&config, vec![definition()], &mut scratch, &stop).expect("rebuild");
+        assert_eq!(
+            sources[0].reader.raw_page_reads(),
+            1,
+            "an unchanged pre-verified source reads only its header page"
+        );
+        // Without a manifest the same rebuild hashes every page.
+        let (sources, _, _) = build_catalog(
+            &config,
+            vec![SourceDefinition::new(
+                fixture.0.clone(),
+                metadata.clone(),
+                limits,
+            )],
+            &mut scratch,
+            &stop,
+        )
+        .expect("full rebuild");
+        assert_eq!(sources[0].reader.raw_page_reads(), 4);
+        drop(sources);
+        // A touched but byte-identical file fails the identity check and is
+        // re-hashed in full, which still matches the expected fingerprint.
+        let mut file = OpenOptions::new()
+            .write(true)
+            .open(&fixture.0)
+            .expect("open for mutation");
+        let modified = file.metadata().unwrap().modified().unwrap();
+        let touch = |file: &fs::File, seconds| {
+            file.set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(modified + std::time::Duration::from_secs(seconds)),
+            )
+            .unwrap()
+        };
+        touch(&file, 5);
+        let (sources, _, _) = build_catalog(&config, vec![definition()], &mut scratch, &stop)
+            .expect("touched rebuild");
+        assert_eq!(sources[0].reader.raw_page_reads(), 4);
+        drop(sources);
+        // A content change on disk is refused.
+        use std::io::{Seek, SeekFrom};
+        file.seek(SeekFrom::Start(100)).unwrap();
+        file.write_all(&[0x55, 0x55]).unwrap();
+        touch(&file, 10);
+        assert!(matches!(
+            build_catalog(&config, vec![definition()], &mut scratch, &stop),
+            Err(StreamFailureKind::SourceChanged)
+        ));
     }
 }

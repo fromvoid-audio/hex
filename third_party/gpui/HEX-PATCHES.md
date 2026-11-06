@@ -391,3 +391,43 @@ each shaped line copies and caches far less inline storage. Only
 the cumulative patch were regenerated from the verified published 0.2.2 archive.
 Hex's `text_decoration_runs` regression shapes and paints 1/4/5/32/33/80-run
 mixed-UTF-8 lines across both inline boundaries.
+
+1 November should-terminate hook (Pulse #4092): the macOS app delegate also
+registers `applicationShouldTerminate:`. When the app installed a handler with
+`App::on_should_quit`, the delegate runs it and returns NSTerminateLater; the app
+answers once with `App::reply_to_quit(bool)`, which sends
+`replyToApplicationShouldTerminate:` on a later main run-loop turn so that a YES
+reply (and the synchronous `applicationWillTerminate:` shutdown) never runs
+inside an App borrow. Without a handler the delegate returns NSTerminateNow, so
+upstream behavior is unchanged; replies with no pending request are ignored and
+a repeated request while one is pending stays deferred. `App::quit` reaches the
+same handler through `terminate:`. New `Platform::on_should_quit`/`reply_to_quit`
+methods have no-op defaults, so Linux/Windows sources are untouched. The test
+platform records the request and each reply; `TestAppContext::simulate_should_quit`,
+`quit_request_pending` and `quit_replies` drive it headlessly (Hex regression:
+`crates/hex-widgets/tests/should_quit.rs`). Native code stays in the existing
+delegate class inside this excluded dependency; no new framework, FFI owner or
+unsafe Hex code. Changes are confined to `src/platform.rs`, `src/app.rs`,
+`src/platform/mac/platform.rs`, `src/platform/test/platform.rs` and
+`src/app/test_context.rs`; changed-source hashes and their cumulative patch
+blocks were regenerated against the hash-verified published 0.2.2 sources.
+Dock Quit/logout/restart prompting and AppKit's modal-panel run-loop delivery
+during NSTerminateLater remain native user acceptance items.
+
+3 November quit-reply correction: `App::quit` invokes AppKit termination from
+the main dispatch queue. During `NSTerminateLater`, AppKit can run a nested
+main run loop while that queue remains occupied, so dispatching the reply to
+the same queue deadlocks. Schedule a copied Objective-C block in the main run
+loop's common modes and wake it instead; this retains the deferred App-borrow
+and one-reply contracts. Core Foundation copies the block before returning.
+The noninteractive `native_quit_probe` exercises the actual GPUI/AppKit path
+for acceptance and cancellation followed by acceptance; run it with
+`crates/hex-ui/tests/native_quit_test.py` after building the example. This uses the
+existing native dependency boundary and adds no unsafe Hex workspace code.
+
+6 November rotated device titles: the existing monochrome glyph raster cache
+and sprite transform support a bottom-to-top quarter turn at a shaped glyph's
+baseline. Scene admission and cached replay use the transformed sprite bounds
+for clipping and paint order. The app supplies the name and title hitbox, so
+normal text layout and pointer handling remain with their existing owners.
+Test support exposes the resulting rotated glyph bounds without GPU readback.

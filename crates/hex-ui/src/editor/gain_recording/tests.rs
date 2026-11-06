@@ -210,7 +210,12 @@ fn delivered_fixture(cx: &mut TestAppContext, release: bool) -> DeliveredFixture
         }
     });
     if release {
-        backend.render_direct(&mut frames, &mut host).unwrap();
+        // Finished follows the complete 5 ms rejoin, rather than the first
+        // callback after release. Deliver that terminal before testing custody.
+        let release_frames = 48_000_usize.div_ceil(200);
+        for _ in 0..release_frames.div_ceil(frames.len()) {
+            backend.render_direct(&mut frames, &mut host).unwrap();
+        }
     }
     DeliveredFixture {
         visual,
@@ -945,5 +950,103 @@ fn explicit_discard_can_release_unresolved_capture_receipts_without_committing(
                 .spans()
                 .is_empty()
         );
+    });
+}
+
+#[gpui::test]
+fn os_quit_during_active_gain_recording_is_cancelled_with_the_error(cx: &mut TestAppContext) {
+    let (mut visual, editor, _, _) = draft_window(cx);
+    visual.update(|_, cx| super::super::close::install_quit_gate(cx));
+    editor.update(&mut visual, |view, _| {
+        view.gain_recorder.mode = Mode::Touching
+    });
+    assert!(visual.simulate_should_quit());
+    visual.run_until_parked();
+    assert!(!visual.has_pending_prompt());
+    assert!(!visual.quit_request_pending());
+    assert_eq!(visual.quit_replies(), [false]);
+    editor.update(&mut visual, |view, _| {
+        assert_eq!(
+            view.error.as_deref(),
+            Some("finish or cancel gain recording before quitting")
+        );
+        view.gain_recorder.mode = Mode::Idle;
+    });
+}
+
+#[gpui::test]
+fn arming_gain_recording_preserves_active_sampler_text(cx: &mut TestAppContext) {
+    use crate::editor::device_automation::host_tests::{Slot, TestWave, window_with_gain};
+    use gpui::{Modifiers, px, size};
+
+    let source = TestWave::new();
+    let (mut visual, editor, _, track, _) =
+        window_with_gain(cx, "hex.utility", Slot::Track, false, Some(&source.0));
+    let sampler = editor.read_with(&visual, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id()
+    });
+    visual.simulate_resize(size(px(1600.0), px(800.0)));
+    visual.run_until_parked();
+    let selector = Box::leak(format!("sampler-attack-{}-value", sampler.value()).into_boxed_str());
+    let at = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_click(at, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("invalid");
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.sampler_parameter.numeric_draft_active());
+        view.toggle_gain_recording(track, cx);
+        assert_eq!(
+            view.error.as_deref(),
+            Some("finish local drafts before arming gain recording")
+        );
+        assert!(view.sampler_parameter.numeric_draft_active());
+        assert_eq!(
+            crate::editor::sampler_parameter::tests::sampler_text(view, cx),
+            "invalid"
+        );
+        assert!(view.gain_recorder.mode == Mode::Idle);
+        assert_eq!(view.worker_requests_pending, 0);
+    });
+}
+
+#[gpui::test]
+fn arming_gain_recording_preserves_active_gain_text(cx: &mut TestAppContext) {
+    use crate::editor::device_automation::host_tests::{Slot, window_with_gain};
+    use gpui::Modifiers;
+
+    let (mut visual, editor, _, track, _) =
+        window_with_gain(cx, "hex.utility", Slot::Track, true, None);
+    editor.update(&mut visual, |view, cx| {
+        view.clip_view_open = false;
+        view.gain_lane.track = Some(track);
+        view.gain_lane.selected = Some(hex_project::BeatTime::from_raw(2));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let at = visual
+        .debug_bounds("gain-point-value-value")
+        .unwrap()
+        .center();
+    visual.simulate_click(at, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("invalid");
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.gain_numeric_editing(cx));
+        view.toggle_gain_recording(track, cx);
+        assert_eq!(
+            view.error.as_deref(),
+            Some("finish local drafts before arming gain recording")
+        );
+        assert!(view.gain_numeric_editing(cx));
+        assert!(view.gain_recorder.mode == Mode::Idle);
+        assert_eq!(view.worker_requests_pending, 0);
     });
 }

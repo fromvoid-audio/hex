@@ -259,11 +259,13 @@ fn stamp(index: usize) -> TransportStamp {
     TransportStamp {
         tempo_micro_bpm: Some(123_000_000),
         performance_frame: index as u64,
-        transport_is_running: index % 3 != 0,
+        transport_is_running: !index.is_multiple_of(3),
         arrangement_frame: (index % 4) as u64,
         loop_pass: (index / 4) as u64,
         performance_beat_raw: (index as u64) << 30,
         arrangement_beat_raw: Some(((index % 4) as u64) << 30),
+        meter: None,
+        cycle_beats_raw: None,
     }
 }
 
@@ -318,13 +320,21 @@ fn stage_origin_preview_matches_actual_pushes_and_rollback() {
         runtime.push_transport_stamp(stamp(index)).unwrap();
     }
     runtime.commit_transaction().unwrap();
+    let incoming = std::array::from_fn::<_, 9, _>(|index| Some(stamp(7 + index)));
     for delay in [0, 3, 5] {
         let predicted: Vec<_> = (0..9)
             .map(|offset| preview(&runtime, delay, offset, 7))
             .collect();
+        let window = OriginWindow {
+            history: &runtime,
+            incoming: &incoming,
+            delay,
+        };
+        let projected = std::array::from_fn::<_, 9, _>(|index| window.stamp(index));
         runtime.begin_transaction().unwrap();
         for (offset, expected) in predicted.into_iter().enumerate() {
             runtime.push_transport_stamp(stamp(7 + offset)).unwrap();
+            assert_eq!(runtime.stamp_at_delay(delay), projected[offset]);
             assert_eq!(
                 runtime
                     .stamp_at_delay(delay)
@@ -494,6 +504,8 @@ fn bounded_history_copy_keeps_wrapped_full_origins_and_transaction_rollback() {
                 loop_pass: frame / 3,
                 performance_beat_raw: (frame << 30) + 27,
                 arrangement_beat_raw: (frame % 2 == 0).then_some(frame << 28),
+                meter: Some(hex_project::Meter::COMMON_TIME),
+                cycle_beats_raw: Some((0, 4 << 32)),
             }));
         }
         source.commit();
@@ -508,6 +520,8 @@ fn bounded_history_copy_keeps_wrapped_full_origins_and_transaction_rollback() {
                 loop_pass: 0,
                 performance_beat_raw: 0,
                 arrangement_beat_raw: None,
+                meter: None,
+                cycle_beats_raw: None,
             }));
         }
         target.commit();

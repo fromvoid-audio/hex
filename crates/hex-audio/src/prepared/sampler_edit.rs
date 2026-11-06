@@ -349,6 +349,14 @@ impl PublicationControl {
         self.arrangement_edit_position(token)
             .map(|_| self.status.sampler_edit.playing.load(Acquire))
     }
+    /// Stop after the stopped witness can revoke native endpoints staged
+    /// behind this gate. The output owner can retry saved state on a fresh Root.
+    pub fn stopped_arrangement_edit_interrupted(&self, token: StoppedEditFence) -> bool {
+        self.arrangement_edit_position(token).is_some()
+            && (self.status.pending_stop_marker.load(Acquire) != 0
+                || self.status.transport_epoch.load(Acquire)
+                    != self.status.sampler_edit.ready_transport_epoch.load(Acquire))
+    }
     /// Transient launched loop from the exact ready witness, rather than saved markers.
     pub fn arrangement_edit_section_loop(&self, token: StoppedEditFence) -> Option<(u64, u64)> {
         self.arrangement_edit_position(token)?;
@@ -514,6 +522,7 @@ mod tests {
         QueuedCommand {
             ticket,
             sampler_edit_gate,
+            project_generation: None,
             transport_epoch: 1,
             action: PlaybackAction::Transport(PlaybackCommand::Play),
         }

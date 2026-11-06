@@ -7,7 +7,7 @@
 //! time is not detected. A decode whose file changed while it was being read
 //! is refused instead of reporting an identity.
 use crate::ImportError;
-use std::{fs::Metadata, time::SystemTime};
+use std::{fs::Metadata, path::Path, time::SystemTime};
 
 /// Byte length and modification time of the file a decode actually read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -30,6 +30,18 @@ impl SourceFileIdentity {
     /// File modification time reported by the filesystem.
     pub const fn modified(&self) -> SystemTime {
         self.modified
+    }
+
+    /// Current length and modification time of the file at `path`, for
+    /// recognising an unchanged file before reading it. `None` when the
+    /// platform reports no modification time. Like every identity here, this
+    /// is not a content fingerprint, and a decode still checks its own read.
+    pub fn observe(path: impl AsRef<Path>) -> Result<Option<Self>, ImportError> {
+        let observation = Observation::of(&std::fs::metadata(path)?);
+        Ok(observation.modified.map(|modified| Self {
+            len: observation.len,
+            modified,
+        }))
     }
 }
 
@@ -111,6 +123,19 @@ mod tests {
             .open(path)
             .and_then(|file| file.set_modified(time))
             .expect("set modification time");
+    }
+
+    #[test]
+    fn observed_identity_matches_the_decoded_read() {
+        let path = temp_path();
+        std::fs::write(&path, wav(4)).expect("write fixture");
+        let observed = SourceFileIdentity::observe(&path).expect("stat fixture");
+        assert_eq!(observed, Some(identity(&path)));
+        std::fs::remove_file(&path).expect("remove fixture");
+        assert!(matches!(
+            SourceFileIdentity::observe(&path),
+            Err(ImportError::Io(_))
+        ));
     }
 
     #[test]

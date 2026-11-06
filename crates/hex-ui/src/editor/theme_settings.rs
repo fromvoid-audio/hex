@@ -334,6 +334,7 @@ impl EditorView {
             self.close_controller_input_menu(window, cx);
         }
         self.prepare_controller_settings(cx);
+        self.project_rate_settings.clear_draft();
         self.theme_settings.open = true;
         if self.theme_settings.loading {
             self.theme_settings.error = Some("loading theme settings…".into());
@@ -695,6 +696,9 @@ impl EditorView {
     }
 
     pub(super) fn save_theme_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.project_rate_settings.applying() {
+            return;
+        }
         if self.theme_settings.loading
             || self.theme_settings.saving
             || !self.theme_settings.writable
@@ -818,6 +822,10 @@ impl EditorView {
     }
 
     pub(super) fn cancel_theme_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.project_rate_settings.applying() {
+            return;
+        }
+        self.project_rate_settings.clear_draft();
         if self.theme_settings.saving {
             self.theme_settings.error = Some("theme save in progress".into());
             cx.notify();
@@ -840,6 +848,9 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.project_rate_settings.applying() {
+            return false;
+        }
         if self.theme_settings.saving {
             self.theme_settings.error = Some("theme save in progress".into());
             cx.notify();
@@ -969,7 +980,9 @@ impl EditorView {
                     )
                     .child(controls),
             );
+        let audio_rates = self.project_rate_settings_row(cx);
         let settings = self.audio_import_settings_row(cx);
+        let track_defaults = self.track_defaults_row(cx);
         let mut card = div()
             .id("theme settings panel")
             .debug_selector(|| "theme settings panel".into())
@@ -987,7 +1000,7 @@ impl EditorView {
             .font_family(theme::FONT_FAMILY)
             .text_color(rgb(style.text))
             .shadow_lg()
-            .child(settings)
+            .children([audio_rates, settings, track_defaults])
             .child(self.controller_input_settings(cx))
             .child(div().text_sm().child(theme::text("theme colors")))
             .child(rows)
@@ -1202,6 +1215,56 @@ mod tests {
     }
 
     #[gpui::test]
+    fn sample_rate_selector_cancel_and_apply_use_the_current_project(cx: &mut TestAppContext) {
+        let _restore = RestoreTheme(theme::preferences());
+        let directory = TestDirectory::new();
+        let (handle, editor) = editor_fixture(cx, &directory);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+
+        visual.simulate_keystrokes("cmd-,");
+        visual.run_until_parked();
+        click_bounds(&mut visual, "project rate 96000");
+        click_bounds(&mut visual, "cancel theme changes");
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project.sample_rate(), 48_000);
+            assert_eq!(view.worker_requests_pending, 0);
+        });
+
+        visual.simulate_keystrokes("cmd-,");
+        visual.run_until_parked();
+        click_bounds(&mut visual, "apply project rate");
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.worker_requests_pending, 0,
+                "cancelled draft was discarded"
+            );
+        });
+        click_bounds(&mut visual, "project rate 96000");
+        click_bounds(&mut visual, "apply project rate");
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            let done = editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                view.state.as_ref().unwrap().project.sample_rate() == 96_000
+            });
+            if done {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "sample rate did not apply"
+            );
+            std::thread::yield_now();
+        }
+        editor.read_with(&visual, |view, _| {
+            let state = view.state.as_ref().unwrap();
+            assert!(state.can_undo);
+            assert!(!view.project_rate_settings.applying());
+        });
+    }
+
+    #[gpui::test]
     fn settings_preview_cancel_restores_palette_and_editor_focus(cx: &mut TestAppContext) {
         let _restore = RestoreTheme(theme::preferences());
         theme::apply_preferences(ThemePreferences::default());
@@ -1212,6 +1275,7 @@ mod tests {
         visual.simulate_keystrokes("cmd-,");
         visual.run_until_parked();
         assert!(visual.debug_bounds("theme settings panel").is_some());
+        assert!(visual.debug_bounds("settings sample rates").is_some());
 
         let slider = visual
             .debug_bounds("theme-primary-r-slider")
@@ -1283,6 +1347,39 @@ mod tests {
     }
 
     #[gpui::test]
+    fn settings_modal_blocks_the_underlying_ruler(cx: &mut TestAppContext) {
+        let directory = TestDirectory::new();
+        let (handle, editor) = editor_fixture(cx, &directory);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        visual.simulate_keystrokes("cmd-,");
+        visual.run_until_parked();
+        visual.simulate_resize(size(px(880.0), px(540.0)));
+        visual.run_until_parked();
+        let backdrop = visual.debug_bounds("theme settings backdrop").unwrap();
+        let ruler = visual.debug_bounds("timeline-ruler").unwrap();
+        // Exercise modal occlusion even when added settings rows move the card
+        // away from the ruler; the backdrop still owns all underlying input.
+        let left = ruler.left().max(backdrop.left());
+        let right = ruler.right().min(backdrop.right());
+        let top = ruler.top().max(backdrop.top());
+        let bottom = ruler.bottom().min(backdrop.bottom());
+        assert!(
+            left < right && top < bottom,
+            "ruler and backdrop must overlap"
+        );
+        let overlap = point(left + px(1.0), (top + bottom) / 2.0);
+        visual.simulate_mouse_down(overlap, MouseButton::Left, Modifiers::default());
+        assert!(
+            !editor.read_with(cx, |view, _| view.scrub_active()),
+            "the modal surface blocks the underlying ruler"
+        );
+        visual.simulate_mouse_up(overlap, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        assert!(editor.read_with(cx, |view, _| view.loop_rail_gesture.is_none()));
+    }
+
+    #[gpui::test]
     fn selected_role_picker_drag_updates_hsb_rgb_preview_and_saved_preferences(
         cx: &mut TestAppContext,
     ) {
@@ -1332,23 +1429,10 @@ mod tests {
             );
         }
 
-        let role = visual.debug_bounds("theme-role-secondary").unwrap();
-        let ruler = visual.debug_bounds("timeline-ruler").unwrap();
-        let center = point(
-            role.origin.x + role.size.width / 2.0,
-            role.origin.y + role.size.height / 2.0,
-        );
-        // Exercise modal occlusion independently of which settings row happens
-        // to align with the underlying ruler as sections are added or resized.
-        let overlap = point(center.x, ruler.origin.y + ruler.size.height / 2.0);
-        assert!(ruler.contains(&overlap) && panel.contains(&overlap));
-        visual.simulate_mouse_down(overlap, MouseButton::Left, Modifiers::default());
-        assert!(
-            !editor.read_with(cx, |view, _| view.scrub_active()),
-            "the modal surface blocks the underlying ruler"
-        );
-        visual.simulate_mouse_up(overlap, MouseButton::Left, Modifiers::default());
-        visual.run_until_parked();
+        let center = visual
+            .debug_bounds("theme-role-secondary")
+            .unwrap()
+            .center();
         visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
         assert!(
             !editor.read_with(cx, |view, _| view.scrub_active()),
@@ -1362,7 +1446,7 @@ mod tests {
         visual.run_until_parked();
         assert_eq!(
             editor.read_with(cx, |view, _| view.theme_settings.selected_role),
-            ThemeRole::Secondary
+            ThemeRole::Secondary,
         );
         let field = visual
             .debug_bounds("theme-color-picker-field")
@@ -1634,7 +1718,10 @@ mod tests {
                     ))
                     .unwrap();
                 match request {
-                    hex_session::service::Request::Import(_) => hex_project::AudioImportWarp::Off,
+                    hex_session::service::Request::Import(_)
+                    | hex_session::service::Request::ImportToNewTrackWithGain { .. } => {
+                        hex_project::AudioImportWarp::Off
+                    }
                     hex_session::service::Request::ImportAudioBatch { options, .. } => options.warp,
                     _ => panic!("arrangement import did not retain its policy"),
                 }

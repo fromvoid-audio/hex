@@ -144,6 +144,7 @@ impl From<serde_json::Error> for Error {
 }
 
 pub fn encode(preset: &Preset) -> Result<Vec<u8>, Error> {
+    validate_state_sizes(&preset.state, preset.comparison.as_ref())?;
     if preset
         .comparison
         .as_ref()
@@ -222,6 +223,7 @@ pub fn decode(bytes: &[u8]) -> Result<Preset, Error> {
         .map(|value| value.into_comparison(&state))
         .transpose()
         .map_err(|_| Error::Invalid("invalid comparison state"))?;
+    validate_state_sizes(&state, comparison.as_ref())?;
     if comparison
         .as_ref()
         .is_some_and(|value| !value.inactive().asset_references().is_empty())
@@ -235,6 +237,21 @@ pub fn decode(bytes: &[u8]) -> Result<Preset, Error> {
         class: envelope.class,
         state,
     })
+}
+
+fn validate_state_sizes(
+    state: &NativeDeviceState,
+    comparison: Option<&hex_project::DeviceComparison>,
+) -> Result<(), Error> {
+    if std::iter::once(state)
+        .chain(comparison.map(hex_project::DeviceComparison::inactive))
+        .any(|state| state.payload().len() > MAX_NATIVE_DEVICE_STATE_BYTES)
+    {
+        return Err(Error::Invalid(
+            "device state exceeds the preset format limit · save it in a project",
+        ));
+    }
+    Ok(())
 }
 
 pub fn load(path: &Path) -> Result<Preset, Error> {
@@ -297,8 +314,11 @@ pub fn save_new(path: &Path, preset: &Preset) -> Result<(), Error> {
     file.write_all(&bytes)?;
     file.sync_all()?;
     drop(file);
-    fs::hard_link(&temporary.0, path)?;
-    let cleanup_error = fs::remove_file(&temporary.0).err();
+    let published = crate::publication::publish_new(&temporary.0, path)?;
+    let cleanup_error = published
+        .staging_remains()
+        .then(|| fs::remove_file(&temporary.0).err())
+        .flatten();
     #[cfg(unix)]
     let sync_error = File::open(parent).and_then(|file| file.sync_all()).err();
     #[cfg(not(unix))]
@@ -315,6 +335,28 @@ pub fn save_new(path: &Path, preset: &Preset) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn existing_preset_schemas_refuse_large_vst3_state() {
+        let mut preset = fixture();
+        preset.state = NativeDeviceState::new(
+            hex_lattice_contract::VST3_DEVICE_TYPE_ID,
+            1,
+            vec![0; MAX_NATIVE_DEVICE_STATE_BYTES + 1],
+        )
+        .unwrap();
+        assert!(encode(&preset).is_err());
+        let historical = serde_json::json!({
+            "format": "hex-device-preset",
+            "schema": 1,
+            "class": "instrument",
+            "type_id": "hex.vst3",
+            "state_version": 1,
+            "payload": preset.state.payload(),
+        });
+        assert!(decode(&serde_json::to_vec(&historical).unwrap()).is_err());
+    }
+
     fn fixture() -> Preset {
         Preset {
             comparison: None,

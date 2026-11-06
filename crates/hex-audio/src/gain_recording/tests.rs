@@ -43,6 +43,10 @@ fn only_written_compensated_samples_ack_values_and_release() {
     callback.finish_quantum(15, true);
     assert_eq!(control.target(), Some(target()));
     callback.finish_quantum(16, true);
+    assert!(control.try_receipt().is_none());
+    callback.finish_quantum(254, true);
+    assert!(control.try_receipt().is_none());
+    callback.finish_quantum(255, true);
     assert!(matches!(
         control.try_receipt(),
         Some(Receipt::Finished {
@@ -99,6 +103,7 @@ fn terminal_reservation_survives_full_undrained_normal_prefix() {
     control.release().unwrap();
     assert_eq!(callback.prepare(|_| Ok(clock(0, 0))), None);
     callback.finish_quantum(16, true);
+    callback.finish_quantum(240, true);
     let mut superseded = 0;
     let mut finished = 0;
     while let Some(receipt) = control.try_receipt() {

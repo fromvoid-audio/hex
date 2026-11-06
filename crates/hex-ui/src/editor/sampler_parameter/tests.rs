@@ -2,6 +2,17 @@ use super::*;
 use gpui::{TestAppContext, VisualTestContext};
 use hex_project::{Command, Created, Editor, Project};
 
+pub(in crate::editor) fn sampler_text(view: &EditorView, cx: &gpui::App) -> String {
+    view.sampler_parameter
+        .controls
+        .get(&SamplerParameter::AttackMs)
+        .unwrap()
+        .entity
+        .read(cx)
+        .display_text()
+        .to_owned()
+}
+
 fn numeric_sampler_fixture(
     cx: &mut TestAppContext,
 ) -> (
@@ -39,6 +50,16 @@ fn numeric_sampler_fixture(
     else {
         panic!("device")
     };
+    let Created::Clip(clip) = authored
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: hex_project::BeatTime::ZERO,
+            length: hex_project::BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
     let (window, editor) = super::super::clip_drag_ui_test::editor_window(
         cx,
         authored.project().clone(),
@@ -47,6 +68,7 @@ fn numeric_sampler_fixture(
     let mut visual = VisualTestContext::from_window(window, cx);
     editor.update(&mut visual, |view, cx| {
         view.selected_track = Some(track);
+        view.selected_clip = Some(clip);
         view.device_panel.owner = Some(device_panel::DevicePanelOwner::Track(track));
         view.device_panel_active = true;
         view.clip_view_open = true;
@@ -73,6 +95,41 @@ fn unrelated_edit_preserves_sampler_numeric_text_and_valid_commit(cx: &mut TestA
         assert!(control.edit_state.is_editing());
         assert_eq!(control.entity.read(cx).display_text(), "invalid");
         assert!(!view.enqueue(Request::Edit(Command::Mute { track, muted: true })));
+        let generation = view.project_generation;
+        let revision = view.state.as_ref().unwrap().revision;
+        assert!(!view.enqueue(Request::GainLane {
+            project_generation: generation,
+            revision,
+            track,
+            edit: hex_session::service::GainLaneEdit::Clear,
+        }));
+        assert!(!view.enqueue(Request::ImportToTrack {
+            path: "other.wav".into(),
+            track,
+            start: 0,
+        }));
+        let asset = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .assets()
+            .next()
+            .unwrap()
+            .id();
+        assert!(!view.enqueue(Request::RelinkMedia([(asset, "other.wav".into())].into(),)));
+        assert!(!view.enqueue(Request::EditArrangementSection {
+            project_generation: generation,
+            revision,
+            command: Command::AddArrangementSection {
+                name: "section".into(),
+                color: hex_project::ElementColor::Cyan,
+                start: hex_project::BeatTime::ZERO,
+                end: hex_project::BeatTime::ONE,
+            },
+        }));
+        view.duplicate_selected();
+        assert!(!view.duplicate_intent.is_pending());
         let control = view
             .sampler_parameter
             .controls
@@ -88,6 +145,45 @@ fn unrelated_edit_preserves_sampler_numeric_text_and_valid_commit(cx: &mut TestA
     editor.update(&mut visual, |view, _| {
         assert!(view.sampler_parameter.pending.is_some());
         assert_eq!(view.worker_requests_pending, 1);
+    });
+}
+
+#[gpui::test]
+fn clipboard_edits_refuse_while_copy_and_sampler_text_remain_available(cx: &mut TestAppContext) {
+    let (mut visual, editor, track, device) = numeric_sampler_fixture(cx);
+    let selector = Box::leak(format!("sampler-attack-{}-value", device.value()).into_boxed_str());
+    let position = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_click(position, gpui::Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("invalid");
+    editor.update(&mut visual, |view, cx| {
+        let generation = view.project_generation;
+        let revision = view.state.as_ref().unwrap().revision;
+        let range = hex_project::TimeRange::new(vec![track], 0, 1_024).unwrap();
+        for request in [
+            Request::CutTimeRange(range.clone()),
+            Request::TrackClipboard {
+                project_generation: generation,
+                revision,
+                action: hex_session::service::TrackClipboardAction::Cut(
+                    hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                ),
+            },
+            Request::DeviceClipboard {
+                project_generation: generation,
+                revision,
+                action: hex_session::service::DeviceClipboardAction::Cut {
+                    owner: hex_project::DeviceChainOwner::Track(track),
+                    selected: hex_project::DeviceSelectionIds::new(&[device]).unwrap(),
+                },
+            },
+        ] {
+            assert!(!view.enqueue(request));
+        }
+        assert_eq!(view.worker_requests_pending, 0);
+        assert!(view.enqueue(Request::CopyTimeRange(range)));
+        assert_eq!(view.worker_requests_pending, 1);
+        assert_eq!(sampler_text(view, cx), "invalid");
     });
 }
 
