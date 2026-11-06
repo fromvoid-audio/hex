@@ -189,10 +189,10 @@ impl EditorView {
                 };
                 if wave.preview != Some((output, generation))
                     || audio.control.output_identity() != Some(output)
-                    || !audio
+                    || audio
                         .control
                         .preview_snapshot()
-                        .is_some_and(|p| p.generation == generation)
+                        .is_none_or(|p| p.generation != generation)
                 {
                     return;
                 }
