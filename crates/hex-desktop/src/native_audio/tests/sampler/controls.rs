@@ -373,7 +373,7 @@ pub(super) fn exercise(
                     .and_then(|s| s.rendered_current(h))
                     .is_some_and(|a| {
                         a.context.project_generation == before.context.project_generation + 2
-                            && a.output_identity != before.output_identity
+                            && a.context.editor_revision > before.context.editor_revision
                     })
                 {
                     break;
