@@ -131,6 +131,14 @@ struct Fixture {
     samples: Vec<[f32; 2]>,
 }
 fn fixture(location: usize, bypassed: bool) -> Fixture {
+    fixture_with_authored_parameter(location, bypassed, None)
+}
+
+fn fixture_with_authored_parameter(
+    location: usize,
+    bypassed: bool,
+    parameter: Option<u32>,
+) -> Fixture {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
     let Created::Imported { track, asset, .. } = editor
         .execute(Command::ImportPreparedAudioTrack {
@@ -170,14 +178,19 @@ fn fixture(location: usize, bypassed: bool) -> Fixture {
         _ => ProcessorChainOwner::Main,
     };
     let identity = ProcessorInstanceIdentity::new(owner, editor.project().next_identity()).unwrap();
-    let effect = NativeEffect::prepare_on_control(
+    let source = original_instance_for_binding(Binding {
+        root: 1,
+        instance: identity.device_id(),
+        graph: 3,
+        epoch: 4,
+    });
+    let selected = parameter.map(|id| [id]);
+    let class = source.configuration().identity.class;
+    let effect = NativeEffect::prepare_retained_with_authored_selection_on_control(
         identity,
-        original_instance_for_binding(Binding {
-            root: 1,
-            instance: identity.device_id(),
-            graph: 3,
-            epoch: 4,
-        }),
+        source,
+        usize::MAX,
+        selected.as_ref().map(|ids| (class, ids.as_slice())),
     )
     .unwrap();
     let state = effect.configuration().clone();
@@ -1313,4 +1326,153 @@ fn actual_arrangement_instrument_renders_authored_notes_at_compensated_offsets()
     let retired = workers[0].retire_on_control().unwrap();
     assert!(retired.failure.is_none() && retired.native.status.success());
     assert_eq!(retired.native.terminal.unwrap().blocks, 4);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+#[cfg(feature = "allocation-probe")]
+fn actual_arrangement_renderer_clock_drives_the_signed_authored_effect() {
+    use hex_engine::foreign_automation::BoundProgram;
+    use hex_lattice::{DevicePreparationContext, ForeignAutomation, NativeInstrumentClock};
+    use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime};
+
+    const NAME: &str = "plugin_effects::tests::actual_arrangement_renderer_clock_drives_the_signed_authored_effect";
+    const CHILD: &str = "HEX_ARRANGEMENT_AUTHORED_EFFECT_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "91")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success() && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+
+    // Use the normal Arrangement renderer and endpoint carrier. This shim
+    // lends one separately prepared program until graph admission owns it.
+    struct AuthoredEndpoint<'a> {
+        endpoints: &'a mut NativeEffectCallbacks,
+        program: ForeignAutomation<'a>,
+    }
+    impl ForeignProcessors for AuthoredEndpoint<'_> {
+        fn returns_post_trim(&self, node: ForeignProcessorNode<'_>) -> bool {
+            self.endpoints.returns_post_trim(node)
+        }
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            offset: usize,
+            frames: &mut [[f32; 2]],
+            clock: Option<&dyn NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            let node = ForeignProcessorNode {
+                automation: Some(self.program),
+                ..node
+            };
+            self.endpoints.process_segment(node, offset, frames, clock)
+        }
+        fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
+            self.endpoints.committed_tail_is_drained(node)
+        }
+        fn reject_callback(&mut self) {
+            self.endpoints.reject_callback();
+        }
+    }
+
+    let mut fixture = fixture_with_authored_parameter(2, false, Some(7));
+    let revision = prepare(&fixture);
+    let mut runtime = hex_engine::SessionPlayback::new(revision).unwrap();
+    fixture
+        .editor
+        .execute(Command::ReplaceDeviceAutomationTarget {
+            device: fixture.device,
+            target: hex_project::DeviceAutomationTarget::Vst3 { parameter: 7 },
+            points: [
+                (BeatTime::ZERO, 0.25),
+                (BeatTime::from_ratio(1, 800).unwrap(), 0.75),
+            ]
+            .map(|(beat, value)| AutomationPoint {
+                beat,
+                value: AutomationValue::new(value).unwrap(),
+                outgoing: AutomationInterpolation::Step,
+            })
+            .to_vec(),
+        })
+        .unwrap();
+    let definition = NativeEffectDefinition::new(std::slice::from_ref(&fixture.effect)).unwrap();
+    let source = definition
+        .foreign_automation_source(
+            fixture.effect.identity(),
+            fixture.effect.configuration(),
+            &DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
+        .unwrap()
+        .unwrap();
+    let project = fixture.editor.project();
+    let program = BoundProgram::prepare(
+        project.device(fixture.device).unwrap().automation(),
+        source,
+        project.tempo_map(),
+        1,
+        std::num::NonZeroU64::MIN,
+    )
+    .unwrap()
+    .unwrap();
+    let (mut workers, mut endpoints) =
+        NativeEffectCallbacks::from_effects_on_control(vec![fixture.effect]).unwrap();
+    runtime
+        .apply(hex_engine::SessionPlaybackCommand::Play)
+        .unwrap();
+    let mut output = [[0.0; 2]; 64];
+    let mut rendered = 0;
+    for frames in output.chunks_mut(5) {
+        let measured = allocation_counter::measure(|| {
+            endpoints.begin_host_callback(frames.len()).unwrap();
+            runtime
+                .render_with_foreign_processors(
+                    frames,
+                    None,
+                    None,
+                    None,
+                    &mut AuthoredEndpoint {
+                        endpoints: &mut endpoints,
+                        program: program.borrow(),
+                    },
+                )
+                .unwrap();
+            endpoints.finish_host_callback(true).unwrap();
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        rendered += frames.len();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while workers[0].published_blocks_on_control() < rendered as u64 / 8 {
+            assert!(Instant::now() < deadline, "signed authored PCM completion");
+            std::thread::yield_now();
+        }
+    }
+    let mut expected = [[0.0; 2]; 64];
+    expected[16] = fixture.samples[0].map(|sample| sample * 0.5);
+    expected[47] = fixture.samples[31].map(|sample| sample * (3.0 * 0.875));
+    assert_eq!(output, expected);
+    let retired = workers[0].quiesce_on_control().unwrap();
+    assert_eq!(retired.completed_blocks(), 8);
+    assert!(retired.retire_on_control().unwrap().status.success());
 }

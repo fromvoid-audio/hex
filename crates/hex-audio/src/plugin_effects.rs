@@ -43,6 +43,7 @@ struct Configuration {
     sample_rate: u32,
     state: NativeDeviceState,
     prepared: PreparedForeignProcessor,
+    authored: automation::SourceCapabilities,
 }
 
 /// One actually prepared native source and its exact constructor-paired queues.
@@ -126,10 +127,28 @@ impl NativeEffect {
     #[allow(clippy::result_large_err)]
     pub(crate) fn prepare_retained_with_data_limit_on_control(
         identity: ProcessorInstanceIdentity,
-        mut instance: Prepared,
+        instance: Prepared,
         max_data_bytes: usize,
     ) -> Result<Self, NativeWorkerStartFailure> {
-        let configuration = match Self::configuration_on_control(identity, &instance) {
+        Self::prepare_retained_with_authored_selection_on_control(
+            identity,
+            instance,
+            max_data_bytes,
+            None,
+        )
+    }
+
+    /// Query and arm selected raw parameters on the original source before it
+    /// moves to the worker. IDs must be sorted and unique. This control-only
+    /// preparation grants no graph admission, and refusal preserves custody.
+    #[allow(clippy::result_large_err)]
+    pub fn prepare_retained_with_authored_selection_on_control(
+        identity: ProcessorInstanceIdentity,
+        mut instance: Prepared,
+        max_data_bytes: usize,
+        authored: Option<(hex_plugin_state::ClassId, &[u32])>,
+    ) -> Result<Self, NativeWorkerStartFailure> {
+        let mut configuration = match Self::configuration_on_control(identity, &instance) {
             Ok(configuration) => configuration,
             Err(cause) => {
                 return Err(NativeWorkerStartFailure::retain_source_on_control(
@@ -143,6 +162,17 @@ impl NativeEffect {
             return Err(NativeWorkerStartFailure::retain_source_on_control(
                 cause, instance,
             ));
+        }
+        if let Some((class, ids)) = authored {
+            configuration.authored =
+                match automation::SourceCapabilities::arm(&mut instance, class, ids) {
+                    Ok(capabilities) => capabilities,
+                    Err(cause) => {
+                        return Err(NativeWorkerStartFailure::retain_source_on_control(
+                            cause, instance,
+                        ));
+                    }
+                };
         }
         let dry_frames = configuration.prepared.total_latency_frames() as usize;
         // Reserve the actual retirement diagnostics before starting the worker;
@@ -260,6 +290,7 @@ impl NativeEffect {
             sample_rate: config.sample_rate as u32,
             state,
             prepared,
+            authored: automation::SourceCapabilities::default(),
         })
     }
     pub(crate) fn retire_on_control(
@@ -446,6 +477,7 @@ impl NativeEffectCallback {
                 sample_rate: 48_000,
                 state,
                 prepared,
+                authored: automation::SourceCapabilities::default(),
             },
             transport,
             input: [[0.0; 2]; MAX_FRAMES],
@@ -500,7 +532,9 @@ impl ForeignProcessors for NativeEffectCallback {
     ) -> Result<(), DeviceContractError> {
         if !self.matches(node)
             || node.automation.is_some_and(|program| {
-                program.binding != self.configuration.binding || !parameters.is_empty()
+                program.binding != self.configuration.binding
+                    || !self.configuration.authored.is_armed()
+                    || !parameters.is_empty()
             })
             || (!notes.is_empty() && !self.configuration.prepared.is_instrument_profile())
             || frames.len() > MAX_FRAMES

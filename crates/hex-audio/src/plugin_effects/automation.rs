@@ -35,3 +35,74 @@ impl AuthoredParameterProgram for TransportProgram<'_> {
         Ok(())
     }
 }
+
+/// The configuration is copied between existing paired owners. Fixed inline
+/// storage accounts for both copies through their enclosing owner sizes.
+#[derive(Clone)]
+pub(super) struct SourceCapabilities {
+    class: Option<hex_plugin_state::ClassId>,
+    parameters: [hex_lattice::ForeignParameterCapability; MAX_PARAMETER_POINTS],
+    len: usize,
+}
+
+impl Default for SourceCapabilities {
+    fn default() -> Self {
+        Self {
+            class: None,
+            parameters: [hex_lattice::ForeignParameterCapability { id: 0, steps: 0 };
+                MAX_PARAMETER_POINTS],
+            len: 0,
+        }
+    }
+}
+
+impl SourceCapabilities {
+    pub(super) fn arm(
+        instance: &mut hex_plugin_host::native::Prepared,
+        class: hex_plugin_state::ClassId,
+        ids: &[u32],
+    ) -> Result<Self, hex_plugin_host::Error> {
+        use hex_plugin_host::Error;
+
+        if ids.len() > MAX_PARAMETER_POINTS {
+            return Err(Error::Protocol(
+                "authored parameter selection exceeds the PCM point budget",
+            ));
+        }
+        let metadata = instance.read_authored_parameter_metadata_on_control(class, ids)?;
+        let mut source = Self {
+            class: Some(class),
+            len: ids.len(),
+            ..Self::default()
+        };
+        for (entry, &id) in source.parameters.iter_mut().zip(ids) {
+            *entry = hex_lattice::ForeignParameterCapability {
+                id,
+                steps: metadata
+                    .step_count(id)
+                    .ok_or(Error::Protocol("authored parameter capability missing"))?,
+            };
+        }
+        instance.arm_authored_parameter_metadata_on_control(metadata)?;
+        Ok(source)
+    }
+
+    pub(super) fn is_armed(&self) -> bool {
+        self.class.is_some()
+    }
+
+    pub(super) fn view(
+        &self,
+        binding: hex_lattice_contract::ForeignProcessorBinding,
+        sample_rate: u32,
+        quantum_frames: u16,
+    ) -> Option<hex_lattice::ForeignAutomationSource<'_>> {
+        Some(hex_lattice::ForeignAutomationSource {
+            binding,
+            class: self.class?.bytes(),
+            sample_rate,
+            quantum_frames,
+            parameters: &self.parameters[..self.len],
+        })
+    }
+}

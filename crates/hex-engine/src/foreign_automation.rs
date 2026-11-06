@@ -8,13 +8,7 @@ use hex_project::{AutomationInterpolation, AutomationPoint, DeviceAutomation, Te
 const MAX_QUANTUM_FRAMES: u16 = 256;
 const MAX_POINTS: usize = 64;
 
-/// Capabilities copied from the exact loaded source. A zero step count means
-/// continuous. The host must fence these facts to the processor's own lease.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ParameterCapability {
-    pub id: u32,
-    pub steps: u32,
-}
+pub use hex_lattice::ForeignParameterCapability as ParameterCapability;
 
 /// One physical processing quantum's admitted extent. A run ends at an SDK
 /// slice cut, a missing origin or any origin that does not advance by one.
@@ -42,6 +36,57 @@ struct Knot {
     frame: u64,
     value: f64,
     linear: bool,
+}
+
+/// An engine-owned program paired to the graph's original worker epoch.
+#[derive(Debug)]
+pub struct BoundProgram {
+    program: Program,
+    binding: hex_lattice_contract::ForeignProcessorBinding,
+    revision: std::num::NonZeroU64,
+}
+
+impl BoundProgram {
+    /// The graph owner supplies its proven origin-run bound. Source facts
+    /// supply the class, rate, quantum extent and admissible SDK parameter
+    /// IDs. The graph owner must use a fresh revision when the program changes.
+    pub fn prepare(
+        lanes: &[DeviceAutomation],
+        source: hex_lattice::ForeignAutomationSource<'_>,
+        tempo: &TempoMap,
+        max_runs: u16,
+        revision: std::num::NonZeroU64,
+    ) -> Result<Option<Self>, Invalid> {
+        if !source.binding.is_valid() {
+            return Err(Invalid("invalid foreign automation source binding"));
+        }
+        if source.sample_rate != tempo.sample_rate() {
+            return Err(Invalid("foreign automation source and tempo rates differ"));
+        }
+        Ok(Program::prepare(
+            lanes,
+            source.class,
+            source.parameters,
+            tempo,
+            QuantumProfile {
+                frames: source.quantum_frames,
+                max_runs,
+            },
+        )?
+        .map(|program| Self {
+            program,
+            binding: source.binding,
+            revision,
+        }))
+    }
+
+    pub fn borrow(&self) -> hex_lattice::ForeignAutomation<'_> {
+        hex_lattice::ForeignAutomation {
+            binding: self.binding,
+            revision: self.revision,
+            program: &self.program,
+        }
+    }
 }
 
 impl Program {

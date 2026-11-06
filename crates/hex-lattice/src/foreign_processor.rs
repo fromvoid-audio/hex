@@ -92,6 +92,26 @@ impl PreparedForeignProcessor {
     }
 }
 
+/// One SDK parameter observed on the exact selected source. Zero steps means
+/// continuous. Raw parameter ID zero is valid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ForeignParameterCapability {
+    pub id: u32,
+    pub steps: u32,
+}
+
+/// Control-only authored capabilities from the original worker's preparation.
+/// This view owns no worker, endpoint or authority to publish a graph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ForeignAutomationSource<'a> {
+    pub binding: ForeignProcessorBinding,
+    pub class: [u8; 16],
+    pub sample_rate: u32,
+    pub quantum_frames: u16,
+    /// Strictly increasing raw parameter IDs.
+    pub parameters: &'a [ForeignParameterCapability],
+}
+
 /// An immutable, control-prepared program that fills bounded storage for a
 /// complete physical foreign processing quantum. This call borrows the program
 /// and must perform no allocation, waiting or I/O.

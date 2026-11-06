@@ -24,8 +24,9 @@ mod parameter_automation;
 mod static_processing_tests;
 mod tail_split;
 pub use foreign_processor::{
-    ForeignAutomation, ForeignAutomationProgram, ForeignNote, ForeignProcessorNode,
-    ForeignProcessors, PreparedForeignProcessor, RefuseForeign,
+    ForeignAutomation, ForeignAutomationProgram, ForeignAutomationSource, ForeignNote,
+    ForeignParameterCapability, ForeignProcessorNode, ForeignProcessors, PreparedForeignProcessor,
+    RefuseForeign,
 };
 pub use parameter_automation::{
     ExternalParameterAutomation, HostAutomationLane, NativeParameterAutomation,
@@ -126,6 +127,17 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
         context: &crate::DevicePreparationContext<'_>,
     ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
         self.prepare_runtime_factory(state, context)
+    }
+
+    /// Borrow the authored capabilities armed on the exact instance-bound
+    /// source. This performs no SDK exchange or resource transfer.
+    fn foreign_automation_source(
+        &self,
+        _identity: ProcessorInstanceIdentity,
+        _state: &NativeDeviceState,
+        _context: &DevicePreparationContext<'_>,
+    ) -> Result<Option<ForeignAutomationSource<'_>>, DeviceContractError> {
+        Ok(None)
     }
 
     /// Prepare an optional stateful processor using the active sample rate.

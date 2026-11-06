@@ -234,3 +234,40 @@ fn refuses_dense_or_mismatched_programs_and_checks_admitted_runs() {
             .is_err()
     );
 }
+
+#[test]
+fn bound_program_requires_the_source_rate_and_preserves_the_worker_revision() {
+    let lane = lane(
+        0,
+        vec![point(BeatTime::ZERO, 0.25, AutomationInterpolation::Step)],
+    );
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    };
+    let capabilities = [ParameterCapability { id: 0, steps: 0 }];
+    let source = hex_lattice::ForeignAutomationSource {
+        binding,
+        class: CLASS,
+        sample_rate: 8000,
+        quantum_frames: 8,
+        parameters: &capabilities,
+    };
+    let tempo = tempo();
+    let revision = std::num::NonZeroU64::new(7).unwrap();
+    let wrong_rate = hex_lattice::ForeignAutomationSource {
+        sample_rate: 48_000,
+        ..source
+    };
+    assert!(
+        BoundProgram::prepare(std::slice::from_ref(&lane), wrong_rate, &tempo, 1, revision)
+            .is_err()
+    );
+    let program = BoundProgram::prepare(&[lane], source, &tempo, 1, revision)
+        .unwrap()
+        .unwrap();
+    assert_eq!(program.borrow().binding, binding);
+    assert_eq!(program.borrow().revision, revision);
+}

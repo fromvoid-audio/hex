@@ -556,11 +556,11 @@ fn rejected_physical_callback_never_consumes_queued_host_parameter_input() {
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn compiled_saved_vst3_lane_reaches_the_signed_worker_without_callback_allocations() {
-    use crate::plugin_effects::{NativeEffect, NativeEffectCallbacks};
-    use hex_engine::foreign_automation::{ParameterCapability, Program, QuantumProfile};
+    use crate::plugin_effects::{NativeEffect, NativeEffectCallbacks, NativeEffectDefinition};
+    use hex_engine::foreign_automation::BoundProgram;
     use hex_lattice::{
-        ForeignAutomation, ForeignProcessorNode, ForeignProcessors, NativeInstrumentClock,
-        ProcessorChainOwner, ProcessorInstanceIdentity,
+        DevicePreparationContext, ForeignProcessorNode, ForeignProcessors, NativeDeviceDefinition,
+        NativeInstrumentClock, ProcessorChainOwner, ProcessorInstanceIdentity,
     };
     use hex_project::{
         AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, Command, Created,
@@ -589,11 +589,8 @@ fn compiled_saved_vst3_lane_reaches_the_signed_worker_without_callback_allocatio
         }
     }
 
-    let mut instance = original_instance();
+    let instance = original_instance();
     let class = instance.configuration().identity.class;
-    let metadata = instance
-        .read_authored_parameter_metadata_on_control(class, &[7])
-        .unwrap();
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let Created::Device(device) = editor
         .execute(Command::InsertMainDevice {
@@ -632,29 +629,57 @@ fn compiled_saved_vst3_lane_reaches_the_signed_worker_without_callback_allocatio
     let path = trace_path().with_extension("hex");
     hex_storage::save_new(&path, editor.project()).unwrap();
     let reopened = hex_storage::load(&path).unwrap();
-    let program = Program::prepare(
-        reopened.device(device).unwrap().automation(),
-        class.bytes(),
-        &[ParameterCapability {
-            id: 7,
-            steps: metadata.step_count(7).unwrap(),
-        }],
-        reopened.tempo_map(),
-        QuantumProfile {
-            frames: 8,
-            max_runs: 2,
-        },
-    )
-    .unwrap()
-    .unwrap();
-    instance
-        .arm_authored_parameter_metadata_on_control(metadata)
-        .unwrap();
     let binding = instance.configuration().binding;
     let identity =
         ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, binding.instance).unwrap();
-    let effect = NativeEffect::prepare_on_control(identity, instance).unwrap();
+    let effect = NativeEffect::prepare_retained_with_authored_selection_on_control(
+        identity,
+        instance,
+        usize::MAX,
+        Some((class, &[7])),
+    )
+    .unwrap();
     let state = effect.configuration().clone();
+    let definition = NativeEffectDefinition::new(std::slice::from_ref(&effect)).unwrap();
+    let mut context = DevicePreparationContext {
+        sample_rate: 48_000,
+        tuning: &hex_lattice::TuningTable::default(),
+        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    };
+    let source = definition
+        .foreign_automation_source(identity, &state, &context)
+        .unwrap()
+        .unwrap();
+    assert_eq!(source.binding, binding);
+    assert_eq!(
+        source.parameters,
+        [hex_lattice::ForeignParameterCapability { id: 7, steps: 0 }]
+    );
+    assert!(
+        definition
+            .foreign_automation_source(
+                ProcessorInstanceIdentity::new(ProcessorChainOwner::Track(9), binding.instance)
+                    .unwrap(),
+                &state,
+                &context,
+            )
+            .is_err()
+    );
+    context.sample_rate = 44_100;
+    assert!(
+        definition
+            .foreign_automation_source(identity, &state, &context)
+            .is_err()
+    );
+    let program = BoundProgram::prepare(
+        reopened.device(device).unwrap().automation(),
+        source,
+        reopened.tempo_map(),
+        2,
+        NonZeroU64::MIN,
+    )
+    .unwrap()
+    .unwrap();
     let node = ForeignProcessorNode {
         owner: identity.owner(),
         device_id: identity.device_id(),
@@ -662,11 +687,7 @@ fn compiled_saved_vst3_lane_reaches_the_signed_worker_without_callback_allocatio
         sample_rate: 48_000,
         configuration: &state,
         prepared: effect.prepared(),
-        automation: Some(ForeignAutomation {
-            binding,
-            revision: NonZeroU64::MIN,
-            program: &program,
-        }),
+        automation: Some(program.borrow()),
         bypassed: false,
         input_gain: 1.0,
         output_gain: 1.0,
@@ -757,4 +778,46 @@ fn compiled_saved_vst3_lane_reaches_the_signed_worker_without_callback_allocatio
     assert_eq!(refused, [[0.0; 2]; 8]);
     let retired = owner.retire_on_control().unwrap();
     assert!(retired.failure.is_none() && retired.native.status.success());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn unavailable_authored_parameter_refuses_worker_and_retains_original_disposal() {
+    const NAME: &str = "plugin_worker::capture::tests::parameter_change::unavailable_authored_parameter_refuses_worker_and_retains_original_disposal";
+    if fixture_child(91, NAME) {
+        return;
+    }
+
+    use crate::plugin_effects::NativeEffect;
+    use hex_lattice::{ProcessorChainOwner, ProcessorInstanceIdentity};
+    use hex_plugin_host::native::PreparationDisposal;
+
+    let instance = original_instance();
+    let binding = instance.configuration().binding;
+    let class = instance.configuration().identity.class;
+    let identity =
+        ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, binding.instance).unwrap();
+    let mut failure = NativeEffect::prepare_retained_with_authored_selection_on_control(
+        identity,
+        instance,
+        usize::MAX,
+        Some((class, &[7, 99])),
+    )
+    .err()
+    .expect("missing parameter must refuse the entire selection");
+    assert_eq!(failure.binding(), binding);
+    assert!(
+        failure
+            .to_string()
+            .contains("authored parameter is missing")
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if let Some(disposal) = failure.poll_disposal_on_control().unwrap() {
+            assert!(matches!(disposal, PreparationDisposal::Reaped(_)));
+            break;
+        }
+        assert!(Instant::now() < deadline, "original source disposal");
+        thread::yield_now();
+    }
 }
