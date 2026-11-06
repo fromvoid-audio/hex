@@ -127,6 +127,7 @@ pub fn project_with_operators(
         sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: SAMPLE_RATE,
+        sample_rate_mode: Default::default(),
         next_id,
         assets: Vec::new(),
         tracks: track_snapshots,
