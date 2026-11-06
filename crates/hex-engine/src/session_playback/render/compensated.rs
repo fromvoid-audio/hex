@@ -528,7 +528,7 @@ impl SessionPlayback {
         capture: &mut Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
-        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
+        external: Option<&dyn hex_lattice::NativeExternalAutomationSet>,
         resident_source: Option<BatchedSources<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         let loop_fade = self

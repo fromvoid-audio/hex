@@ -147,7 +147,7 @@ pub struct PreparedRevision {
     authored_midi_sources: Vec<authored_midi::Source>,
     gain_recording_track: Option<TrackId>,
     native_parameter_input: Option<crate::device_automation::NativeParameterInputTarget>,
-    pub(crate) scalar_automation: Option<Box<crate::scalar_automation::ScalarAutomationBinding>>,
+    pub(crate) scalar_automation: Option<Box<[crate::scalar_automation::PreparedBinding]>>,
 }
 
 impl std::fmt::Debug for PreparedRevision {
@@ -227,20 +227,18 @@ impl PreparedRevision {
         previous_session: Option<&PreparedSessionInventory>,
         binding: crate::scalar_automation::ScalarAutomationBinding,
     ) -> Result<Self, Invalid> {
-        crate::scalar_automation::validate_source(project, &binding)?;
-        let prepared = Self::prepare_for_native_parameter_input(
+        let live = Some((binding.device, binding.target));
+        Self::prepare_with_scalar_automation_sources(
             project,
-            media,
+            crate::compile::SourceBank::Resident(media),
             sine_table,
             previous_session,
-            binding.device,
-            binding.target,
-        )?;
-        prepared.finish_scalar_automation(binding)
+            vec![binding],
+            live,
+        )
     }
-    /// The same recorded target and factory admission with prepared PCM sources.
-    /// This adds no source worker or resource owner; native publication must
-    /// match every audio/scalar dependency against its actual retained catalog.
+
+    /// Same recorded target and factory admission with prepared PCM sources.
     pub fn prepare_with_scalar_automation_and_prepared_sources(
         project: &Project,
         sources: &BTreeMap<AssetId, crate::compile::PreparedAudioSource>,
@@ -249,45 +247,145 @@ impl PreparedRevision {
         previous_session: Option<&PreparedSessionInventory>,
         binding: crate::scalar_automation::ScalarAutomationBinding,
     ) -> Result<Self, Invalid> {
-        crate::scalar_automation::validate_source(project, &binding)?;
-        let input = crate::device_automation::native_parameter_input_target(
+        let live = Some((binding.device, binding.target));
+        Self::prepare_with_scalar_automation_bindings(
             project,
-            binding.device,
-            binding.target,
-        )?;
+            sources,
+            source_generation,
+            sine_table,
+            previous_session,
+            vec![binding],
+            live,
+        )
+    }
+
+    /// Prepare a bounded group of recorded targets against the actual stage
+    /// origins and one optional, independent live-input arm. Source metadata
+    /// grants no page lease or native publication authority.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_with_scalar_automation_bindings(
+        project: &Project,
+        sources: &BTreeMap<AssetId, crate::compile::PreparedAudioSource>,
+        source_generation: u64,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        bindings: Vec<crate::scalar_automation::ScalarAutomationBinding>,
+        live: Option<(
+            hex_project::DeviceId,
+            hex_lattice_contract::DeviceAutomationTarget,
+        )>,
+    ) -> Result<Self, Invalid> {
+        Self::prepare_with_scalar_automation_sources(
+            project,
+            crate::compile::SourceBank::Mixed(sources, source_generation),
+            sine_table,
+            previous_session,
+            bindings,
+            live,
+        )
+    }
+
+    fn prepare_with_scalar_automation_sources<'a>(
+        project: &'a Project,
+        sources: crate::compile::SourceBank<'a>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        mut bindings: Vec<crate::scalar_automation::ScalarAutomationBinding>,
+        live: Option<(
+            hex_project::DeviceId,
+            hex_lattice_contract::DeviceAutomationTarget,
+        )>,
+    ) -> Result<Self, Invalid> {
+        use crate::scalar_automation::{MAX_SCALAR_AUTOMATION_BINDINGS, PreparedBinding};
+
+        if !(1..=MAX_SCALAR_AUTOMATION_BINDINGS).contains(&bindings.len()) {
+            return Err(Invalid("scalar automation binding count exceeds its limit"));
+        }
+        bindings.sort_unstable_by_key(|binding| (binding.device, binding.target));
+        if bindings
+            .windows(2)
+            .any(|pair| (pair[0].device, pair[0].target) == (pair[1].device, pair[1].target))
+        {
+            return Err(Invalid("duplicate scalar automation target"));
+        }
+        let mut targets = Vec::new();
+        targets
+            .try_reserve_exact(bindings.len())
+            .map_err(|_| Invalid("scalar binding allocation failed"))?;
+        for (index, binding) in bindings.iter().enumerate() {
+            if bindings[..index]
+                .iter()
+                .any(|old| old.source.key() == binding.source.key())
+            {
+                return Err(Invalid("duplicate scalar automation source key"));
+            }
+            crate::scalar_automation::validate_source(project, binding)?;
+            targets.push(crate::device_automation::native_parameter_input_target(
+                project,
+                binding.device,
+                binding.target,
+            )?);
+        }
+        let live = live
+            .map(|(device, target)| {
+                crate::device_automation::native_parameter_input_target(project, device, target)
+            })
+            .transpose()?;
         let effects = hex_devices::native_registry()
             .map_err(|_| Invalid("invalid built-in native device registry"))?;
         let instruments = hex_devices::native_instrument_registry()
             .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
-        Self::prepare_with_source_bank(
+        let mut prepared = Self::prepare_with_source_bank(
             project,
-            crate::compile::SourceBank::Mixed(sources, source_generation),
+            sources,
             sine_table,
             previous_session,
             &effects,
             &instruments,
             &crate::audio_transform::AudioTransformPreparation::default(),
             None,
-            Some(input),
-        )?
-        .finish_scalar_automation(binding)
+            live,
+            &targets,
+        )?;
+        let graph = prepared
+            .arrangement
+            .signal_graph
+            .as_ref()
+            .ok_or(Invalid("scalar signal graph is unavailable"))?;
+        let mut result = Vec::new();
+        result
+            .try_reserve_exact(bindings.len())
+            .map_err(|_| Invalid("scalar binding allocation failed"))?;
+        for (request, input) in bindings.into_iter().zip(targets) {
+            result.push(PreparedBinding {
+                request,
+                input,
+                arrival_frames: graph.parameter_arrival(input)?,
+            });
+        }
+        for binding in &result {
+            prepared
+                .arrangement
+                .prepare_scalar_automation(binding.input)?;
+        }
+        prepared.scalar_automation = Some(result.into_boxed_slice());
+        Ok(prepared)
     }
-    fn finish_scalar_automation(
-        mut self,
-        binding: crate::scalar_automation::ScalarAutomationBinding,
-    ) -> Result<Self, Invalid> {
-        let input = self
-            .native_parameter_input
-            .filter(|input| input.device() == binding.device && input.target() == binding.target)
-            .ok_or(Invalid("scalar automation native target is unavailable"))?;
-        self.arrangement.prepare_scalar_automation(input)?;
-        self.scalar_automation = Some(Box::new(binding));
-        Ok(self)
-    }
+
     pub fn scalar_automation_binding(
         &self,
     ) -> Option<&crate::scalar_automation::ScalarAutomationBinding> {
-        self.scalar_automation.as_deref()
+        self.scalar_automation_bindings().next()
+    }
+
+    pub fn scalar_automation_bindings(
+        &self,
+    ) -> impl Iterator<Item = &crate::scalar_automation::ScalarAutomationBinding> {
+        self.scalar_automation
+            .as_deref()
+            .into_iter()
+            .flatten()
+            .map(|binding| &binding.request)
     }
 
     /// Prepare a tuning-only publication in the authoritative Session's existing
@@ -488,6 +586,7 @@ impl PreparedRevision {
             transforms,
             None,
             Some(input),
+            &[],
         )
     }
     /// Exact source locator armed during preparation, never a live application ACK.
@@ -628,6 +727,7 @@ impl PreparedRevision {
             transforms,
             samplers,
             None,
+            &[],
         )
     }
 
@@ -642,6 +742,7 @@ impl PreparedRevision {
         transforms: &crate::audio_transform::AudioTransformPreparation,
         samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
         native_input: Option<crate::device_automation::NativeParameterInputTarget>,
+        external_inputs: &[crate::device_automation::NativeParameterInputTarget],
     ) -> Result<Self, Invalid> {
         transforms.compile_transaction(|| {
             crate::gain_envelope::validate_project(project)?;
@@ -670,7 +771,7 @@ impl PreparedRevision {
                 Some(transforms),
                 samplers,
                 native_input,
-                &[],
+                external_inputs,
             )?;
             let session = PreparedSessionInventory::prepare_with_source_bank(
                 project,
@@ -877,6 +978,7 @@ impl PreparedRevision {
             transforms,
             Some(&preparation),
             None,
+            &[],
         )
     }
 

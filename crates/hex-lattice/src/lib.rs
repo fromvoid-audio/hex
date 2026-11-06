@@ -2434,13 +2434,44 @@ impl NativeRuntimeChain {
             &[StereoFrame],
         ),
     ) -> Result<(), DeviceContractError> {
+        let set = external
+            .as_ref()
+            .map(|window| window as &dyn NativeExternalAutomationSet);
+        self.process_auxiliary_stage_with_external_set(
+            stage,
+            block,
+            frame_offset,
+            clock,
+            output_clock,
+            transient,
+            set,
+            observer,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn process_auxiliary_stage_with_external_set(
+        &mut self,
+        stage: usize,
+        block: StereoAuxiliaryBlock<'_>,
+        frame_offset: usize,
+        clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
+        transient: Option<&mut NativeTransientProcessing>,
+        external: Option<&dyn NativeExternalAutomationSet>,
+        observer: &mut impl FnMut(
+            ProcessorChainOwner,
+            u64,
+            DeviceTypeId,
+            NodeSignalPhase,
+            usize,
+            &[StereoFrame],
+        ),
+    ) -> Result<(), DeviceContractError> {
         let end = stage
             .checked_add(1)
             .ok_or(DeviceContractError::InvalidDescriptor)?;
         let (main, key) = block.into_parts();
-        let set = external
-            .as_ref()
-            .map(|window| window as &dyn NativeExternalAutomationSet);
         self.process_tapped(
             stage..end,
             main,
@@ -2450,7 +2481,7 @@ impl NativeRuntimeChain {
             output_clock,
             &mut RefuseForeign,
             transient,
-            set,
+            external,
             observer,
         )
     }
