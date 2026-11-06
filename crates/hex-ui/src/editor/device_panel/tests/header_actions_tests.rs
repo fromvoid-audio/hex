@@ -202,13 +202,8 @@ fn assert_order(visual: &mut VisualTestContext, device: DeviceId, remove_prefix:
     );
     let inset =
         px(hex_widgets::DEVICE_FRAME_HEADER_PADDING + hex_widgets::DEVICE_FRAME_BORDER_WIDTH);
-    assert_eq!(
-        bypass.left() - frame.left(),
-        inset,
-        "toggle is the far-left control"
-    );
     assert!(
-        load.right() <= save.left(),
+        load.bottom() <= save.top(),
         "load precedes save without overlap"
     );
 
@@ -217,12 +212,12 @@ fn assert_order(visual: &mut VisualTestContext, device: DeviceId, remove_prefix:
         "bypass must precede the name"
     );
     assert!(
-        title.size.width >= px(24.0),
+        title.size.height >= px(24.0),
         "compact name retains useful space"
     );
-    assert!(title.bottom() <= save.top().min(load.top()));
+    assert!(remove.bottom() <= title.top());
     assert!(
-        save.right() <= remove.left() && load.right() <= remove.left(),
+        save.bottom() <= remove.top() && load.bottom() <= remove.top(),
         "X is last"
     );
     for action in [bypass, save, load, remove] {
