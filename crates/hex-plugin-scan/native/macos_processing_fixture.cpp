@@ -152,6 +152,13 @@ class RestoreController final : public IEditController {
         }
         else if(self->fault==133)
             self->handler->performEdit(id,std::numeric_limits<ParamValue>::quiet_NaN());
+        else if(self->fault==135) {
+            self->handler->beginEdit(id);
+            for(int n=0;n<12;++n) self->handler->performEdit(id,0.25);
+            self->component_gain=3.5;
+            self->handler->performEdit(id,0.875);
+            self->handler->endEdit(id);
+        }
         else if(saturated_editor_drag(self->fault)) {
             // Emit the next gesture before main can dispatch the previous one.
             const int gestures=self->fault==131?5:1;
@@ -209,7 +216,7 @@ public:
         if (!control() || !context || (value && handler)) return kResultFalse;
         if(value)value->addRef();if(handler)handler->release();handler=value;
         if(fault==104 || fault==105 || fault==118 || fault==119) latency_handler=handler;
-        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || (fault>=131 && fault<=134))) {
+        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || (fault>=131 && fault<=135))) {
             CFRunLoopTimerContext timer_context{};timer_context.info=this;
             edit_timer=CFRunLoopTimerCreate(nullptr,CFAbsoluteTimeGetCurrent(),0.001,0,0,edit_tick,&timer_context);
             if(!edit_timer) return kResultFalse;
@@ -346,6 +353,9 @@ public:
         if(!control() || !context || !handler || !std::isfinite(value) || value<0 || value>1)
             return kInvalidArgument;
         if((fault==86 || saturated_editor_drag(fault) || fault==132) && edits_sent) return kResultFalse;
+        // The editor has already painted 0.875. The fixture also accepts a
+        // deliberately later authored value, but rejects replay of 0.25.
+        if(fault==135 && edits_sent && value!=0.875 && value!=0.5) return kResultFalse;
         if(saturated_editor_drag(fault) && id==drag_axis_id) {drag_axis=value;return kResultOk;}
         if(id!=parameter_id(fault)) return kInvalidArgument;
         if(fault==76 && observed.flushes.load()) return kResultFalse;
@@ -940,7 +950,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>134) return false;next_fault=value;
+        if (value>135) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

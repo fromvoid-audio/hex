@@ -552,7 +552,7 @@ public:
             uint32 index=0;
             while(index<metadata.count && metadata.parameters[index].info.id!=value.id) ++index;
             if(index==metadata.count) {refuse(FeedbackParameterMissing);return false;}
-            // An idle flush can finish long after the controller has moved
+            // DSP can finish long after the controller has moved
             // on to a newer drag position. Its DSP receipt remains valid.
             if(value.editor_sequence && metadata.parameters[index].editor_sequence>value.editor_sequence) continue;
             auto normalized=value.editor_sequence?controller->getParamNormalized(value.id):-1.0;
