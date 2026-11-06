@@ -52,12 +52,23 @@ fn actual_foreign_instrument_notes_follow_accepted_callback_segments() {
         pitch: 60,
         velocity: 127,
         on: true,
+        note_id: std::num::NonZeroU32::new(70_001),
     };
-    let off = ForeignNote {
-        frame: 2,
+    let second_on = ForeignNote {
+        frame: 3,
+        note_id: std::num::NonZeroU32::new(70_002),
+        ..on
+    };
+    let first_off = ForeignNote {
         velocity: 0,
         on: false,
         ..on
+    };
+    let second_off = ForeignNote {
+        frame: 2,
+        velocity: 0,
+        on: false,
+        ..second_on
     };
     let mut render = |notes: &[ForeignNote], accept| {
         let mut output = [[1.0; 2]; 8];
@@ -78,11 +89,14 @@ fn actual_foreign_instrument_notes_follow_accepted_callback_segments() {
         callback();
         output
     };
-    for (index, notes) in [&[on][..], &[off], &[], &[]].into_iter().enumerate() {
+    for (index, notes) in [&[on, second_on][..], &[first_off, second_off], &[], &[]]
+        .into_iter()
+        .enumerate()
+    {
         let output = render(notes, true);
         let expected = match index {
-            2 => [0., 0., 0., 0., 0.5, 0.5, 0.5, 0.5],
-            3 => [0.625, 0.625, 0.625, 0.625, 0.625, 0., 0., 0.],
+            2 => [0., 0., 0., 0., 0.5, 0.5, 1., 1.],
+            3 => [1.25, 1.25, 1.25, 1.25, 0.625, 0., 0., 0.],
             _ => [0.; 8],
         };
         assert_eq!(output, expected.map(|sample| [sample; 2]));

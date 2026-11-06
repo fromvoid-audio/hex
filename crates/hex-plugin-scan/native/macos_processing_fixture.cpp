@@ -299,6 +299,8 @@ class ProcessingProcessor final : public Processor,public IAudioPresentationLate
     bool auxiliary_disabled=false;
     bool event_active=false;
     float note_signal=0;
+    struct Voice { int32 id=-1; float gain=0; };
+    std::array<Voice,2> named_voices{};
     bool activation_restart_sent=false;
     bool activated_once=false;
     int32 inputs=2,outputs=2,maximum=0,precision=kSample32;
@@ -630,13 +632,26 @@ public:
         for (int32 frame=0;frame<data.numSamples;++frame) {
             while (next_event<event_count && event.sampleOffset==frame) {
                 if (event.busIndex!=0) return kResultFalse;
-                if (event.type==Event::kNoteOnEvent && event.noteOn.channel==2 &&
-                    event.noteOn.pitch==60 && event.noteOn.noteId==-1)
-                    note_signal=event.noteOn.velocity;
-                else if (event.type==Event::kNoteOffEvent && event.noteOff.channel==2 &&
-                    event.noteOff.pitch==60 && event.noteOff.noteId==-1)
-                    note_signal=0;
-                else return kResultFalse;
+                const bool on=event.type==Event::kNoteOnEvent;
+                if ((!on && event.type!=Event::kNoteOffEvent) ||
+                    (on?event.noteOn.channel:event.noteOff.channel)!=2 ||
+                    (on?event.noteOn.pitch:event.noteOff.pitch)!=60) return kResultFalse;
+                const auto id=on?event.noteOn.noteId:event.noteOff.noteId;
+                if(id==-1) note_signal=on?event.noteOn.velocity:0;
+                else {
+                    const auto existing=std::find_if(named_voices.begin(),named_voices.end(),
+                        [id](const Voice& voice) {return voice.id==id;});
+                    if(on) {
+                        if(existing!=named_voices.end()) return kResultFalse;
+                        const auto free=std::find_if(named_voices.begin(),named_voices.end(),
+                            [](const Voice& voice) {return voice.id==-1;});
+                        if(free==named_voices.end()) return kResultFalse;
+                        *free={id,event.noteOn.velocity};
+                    } else {
+                        if(existing==named_voices.end()) return kResultFalse;
+                        *existing={};
+                    }
+                }
                 if (++next_event<event_count && data.inputEvents->getEvent(next_event,event)!=kResultOk)
                     return kResultFalse;
             }
@@ -658,7 +673,8 @@ public:
             if(fault==79 && point_count && frame==0) current_gain=1.0;
             if(fault==83 || fault==84) current_gain=2.0;
             // Read all inputs for this sample before writing any aliased output.
-            const double left=mode==1?(fault==115?note_signal:0.25):(input?(precision==kSample32?data.inputs[0].channelBuffers32[0][frame]:data.inputs[0].channelBuffers64[0][frame]):0.0);
+            const double note_output=note_signal+named_voices[0].gain+named_voices[1].gain;
+            const double left=mode==1?(fault==115?note_output:0.25):(input?(precision==kSample32?data.inputs[0].channelBuffers32[0][frame]:data.inputs[0].channelBuffers64[0][frame]):0.0);
             const double right=mode==1?left:(input && inputs==2?(precision==kSample32?data.inputs[0].channelBuffers32[1][frame]:data.inputs[0].channelBuffers64[1][frame]):left);
             if (output) for (int32 channel=0;channel<outputs;++channel) {
                 double value=(channel?right:left)*(fault==82?(current_gain>=2.0?1.0:scale):scale*current_gain);

@@ -502,6 +502,7 @@ impl ForeignProcessors for NativeEffectCallback {
                         frame: note.frame,
                         bytes: [status | note.channel, note.pitch, note.velocity],
                         len: 3,
+                        note_id: note.note_id,
                     })
                     .is_err()
             {

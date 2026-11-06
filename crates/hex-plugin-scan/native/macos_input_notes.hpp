@@ -17,6 +17,7 @@ struct InputNote {
     int16 channel=0,pitch=0;
     uint8 velocity=0;
     bool on=false;
+    int32 note_id=-1;
 };
 
 class InputNotes final : public IEventList {
@@ -40,15 +41,14 @@ public:
             const auto& note=notes[index];
             auto& event=events[index];
             event={};event.sampleOffset=note.offset;
-            // MIDI 1.0 messages carry no voice identifier. The SDK's absent
-            // note ID preserves the original channel/pitch note-off contract.
+            // A byte-only MIDI message retains the SDK's absent note ID.
             const auto velocity=note.velocity/127.0f;
             if(note.on) {
                 event.type=Event::kNoteOnEvent;
-                event.noteOn={note.channel,note.pitch,0,velocity,0,-1};
+                event.noteOn={note.channel,note.pitch,0,velocity,0,note.note_id};
             } else {
                 event.type=Event::kNoteOffEvent;
-                event.noteOff={note.channel,note.pitch,velocity,-1,0};
+                event.noteOff={note.channel,note.pitch,velocity,note.note_id,0};
             }
         }
         active=true;

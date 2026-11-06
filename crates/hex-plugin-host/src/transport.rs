@@ -71,6 +71,8 @@ pub struct MidiEvent {
     pub frame: u16,
     pub bytes: [u8; 3],
     pub len: u8,
+    /// An optional scheduled note identity, bound to one native epoch.
+    pub note_id: Option<std::num::NonZeroU32>,
 }
 impl MidiEvent {
     fn valid(self, frames: usize) -> bool {
@@ -85,6 +87,9 @@ impl MidiEvent {
                 .iter()
                 .all(|b| *b < 128)
             && (self.len == 3 || self.bytes[2] == 0)
+            && self.note_id.is_none_or(|id| {
+                matches!(self.bytes[0] & 0xf0, 0x80 | 0x90) && i32::try_from(id.get()).is_ok()
+            })
     }
 }
 
