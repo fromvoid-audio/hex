@@ -1,7 +1,10 @@
 //! Bounded FDN history; preparation is the only allocation and coefficient owner.
 use super::{PARAMETER_COUNT, Settings, parameter as p};
-use hex_lattice::{NativeProcessorRuntime, OutputTail, PreparedNativeProcessor, StereoFrame};
-use hex_lattice_contract::DeviceContractError;
+use hex_lattice::{
+    DeviceResources, NativeInstrumentClock, NativeParameterAutomation, NativeProcessorRuntime,
+    OutputTail, PreparedNativeProcessor, StereoFrame,
+};
+use hex_lattice_contract::{DeviceContractError, ParameterDescriptor, ParameterId, ParameterValue};
 use std::any::Any;
 const TIMES: [f32; 8] = [
     0.0233, 0.0297, 0.0311, 0.0371, 0.0411, 0.0437, 0.0479, 0.0539,
@@ -176,6 +179,22 @@ impl PreparedReverb {
     }
 }
 impl PreparedNativeProcessor for PreparedReverb {
+    fn parameter_automation_descriptor(
+        &self,
+        parameter: ParameterId,
+    ) -> Option<ParameterDescriptor> {
+        if parameter != p::DRY_WET {
+            return None;
+        }
+        super::DESCRIPTORS
+            .iter()
+            .find(|descriptor| descriptor.id == parameter)
+            .copied()
+    }
+    fn supports_parameter_automation(&self, parameter: ParameterId) -> bool {
+        parameter == p::DRY_WET
+    }
+
     fn supports_smoothed_bypass(&self) -> bool {
         // Zero latency and history advancement under bypass permit the host's
         // reversible 5 ms blend without a second room or retained-tail owner.
@@ -555,7 +574,7 @@ impl ReverbRuntime {
         self.spin_phase = (self.spin_phase + self.v(p::SPIN_RATE) / self.tank_rate).fract();
         self.chorus_phase = (self.chorus_phase + self.v(p::CHORUS_RATE) / self.tank_rate).fract();
     }
-    fn frame(&mut self, frame: &mut StereoFrame) {
+    fn frame(&mut self, frame: &mut StereoFrame, dry_wet: Option<f32>) {
         if self.tank_ramp_remaining != 0 {
             for ramp in &mut self.parameters {
                 ramp.advance();
@@ -593,7 +612,7 @@ impl ReverbRuntime {
             }
         }
         let fraction = (self.phase + 1) as f32 / self.factor as f32;
-        let wet = self.v(p::DRY_WET) * 0.01;
+        let wet = dry_wet.unwrap_or_else(|| self.v(p::DRY_WET)) * 0.01;
         for c in 0..2 {
             let room = self.previous[c] + fraction * (self.next[c] - self.previous[c]);
             frame[c] = ((1.0 - wet) * input[c] + wet * room).clamp(-16.0, 16.0);
@@ -636,8 +655,35 @@ fn scatter(mut output: [f32; 8], rotations: Rotations) -> [f32; 8] {
 impl NativeProcessorRuntime for ReverbRuntime {
     fn process_block(&mut self, frames: &mut [StereoFrame], _: &dyn hex_lattice::DeviceResources) {
         for frame in frames {
-            self.frame(frame);
+            self.frame(frame, None);
         }
+    }
+    fn supports_parameter_automation(&self, parameter: ParameterId) -> bool {
+        parameter == p::DRY_WET
+    }
+    fn process_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _: Option<&dyn NativeInstrumentClock>,
+        automation: &dyn NativeParameterAutomation,
+        _: &dyn DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        if automation.parameter_ids() != [p::DRY_WET] {
+            return Err(DeviceContractError::UnknownParameter);
+        }
+        for (offset, frame) in frames.iter_mut().enumerate() {
+            let mut values = [None];
+            automation.values_at(offset, &mut values)?;
+            let dry_wet = match values[0] {
+                Some(ParameterValue::Float(percent)) if (0.0..=100.0).contains(&percent) => {
+                    Some(percent)
+                }
+                None => None,
+                _ => return Err(DeviceContractError::InvalidParameterValue),
+            };
+            self.frame(frame, dry_wet);
+        }
+        Ok(())
     }
     fn reset(&mut self) {
         self.clear();
@@ -771,8 +817,8 @@ mod tests {
                         [0.0; 2]
                     };
                     let mut right = left;
-                    cached.frame(&mut left);
-                    recalculated.frame(&mut right);
+                    cached.frame(&mut left, None);
+                    recalculated.frame(&mut right, None);
                     assert_eq!(left.map(f32::to_bits), right.map(f32::to_bits));
                 }
                 assert_eq!(cached.tank_ramp_remaining, 0);
