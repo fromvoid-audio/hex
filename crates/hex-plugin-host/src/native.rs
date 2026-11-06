@@ -5,6 +5,7 @@ mod epoch;
 mod live_capture;
 mod parameter_page;
 pub use epoch::Quiescent;
+pub use parameter_page::AuthoredParameterMetadata;
 mod preparation_failure;
 pub use preparation_failure::{PreparationDisposal, PreparationFailure};
 mod storage;

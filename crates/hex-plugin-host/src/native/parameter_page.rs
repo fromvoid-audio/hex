@@ -3,6 +3,9 @@
 use super::*;
 use protocol::{ControllerRequest, ParameterPageProgress, ParameterPageQuery};
 
+mod automation;
+pub use automation::AuthoredParameterMetadata;
+
 #[derive(Clone, Copy)]
 pub(super) struct PendingPage {
     operation: u64,
@@ -18,10 +21,21 @@ impl Prepared {
     }
     /// Includes the editor toggle on the same one-request lane and source.
     pub fn begin_controller_request_on_worker(&mut self, query: ControllerRequest) -> Result<()> {
+        self.begin_controller_request_until(query, end_after(self.limits.startup)?)
+    }
+
+    fn begin_controller_request_until(
+        &mut self,
+        query: ControllerRequest,
+        until: Instant,
+    ) -> Result<()> {
         query.validate()?;
         self.require_live_epoch()?;
         if self.parameter_page.is_some() {
             return Err(Error::Protocol("controller page is still pending"));
+        }
+        if Instant::now() >= until {
+            return Err(Error::Timeout);
         }
         let operation = self
             .parameter_page_sequence
@@ -30,7 +44,7 @@ impl Prepared {
         let pending = PendingPage {
             operation,
             query,
-            until: end_after(self.limits.startup)?,
+            until,
         };
         match self.parameter_page_exchange(pending, false) {
             Ok(ParameterPageProgress::Pending) => {

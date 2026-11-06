@@ -535,3 +535,65 @@ fn actual_controller_pages_use_sdk_conversions_without_processing_or_replacing_s
         assert_eq!(case.observation().unwrap()[1], 0);
     }
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn authored_parameter_metadata_uses_loaded_class_and_sdk_flags() {
+    let build = build();
+    for (variant, id, steps) in [
+        (80, 0, Some(0)),
+        (81, 7, Some(3)),
+        (83, 7, None),
+        (84, 7, None),
+    ] {
+        let case = Case::new();
+        let setup = case.setup(variant);
+        let mut instance = Prepared::prepare(
+            &build,
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            move |command| {
+                setup(command);
+                command.env("HEX_ORIGINAL_PARAMETER_INVENTORY", "9");
+            },
+        )
+        .unwrap();
+        let binding = instance.configuration().binding;
+        let class = instance.configuration().identity.class;
+        let wrong_class = ClassId::new([0xff; 16]).unwrap();
+        assert!(
+            instance
+                .read_authored_parameter_metadata_on_control(wrong_class, &[id])
+                .is_err()
+        );
+        assert!(
+            instance
+                .read_authored_parameter_metadata_on_control(class, &[id, 99])
+                .is_err()
+        );
+        assert!(
+            instance
+                .read_authored_parameter_metadata_on_control(class, &[1001])
+                .is_err()
+        );
+        let result = instance.read_authored_parameter_metadata_on_control(class, &[id]);
+        if let Some(steps) = steps {
+            let facts = result.unwrap();
+            assert_eq!(facts.class(), class);
+            assert_eq!(facts.binding(), binding);
+            assert!(facts.revision() > 0);
+            assert_eq!(facts.step_count(id), Some(steps));
+        } else {
+            assert!(result.is_err());
+        }
+        assert_eq!(instance.completed_blocks_on_control(), 0);
+        assert!(
+            instance
+                .stop_and_reap_on_control()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+}
