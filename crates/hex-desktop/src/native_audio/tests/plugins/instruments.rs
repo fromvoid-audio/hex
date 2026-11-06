@@ -47,6 +47,13 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
     }
     let _native = native_fixture();
     let controlled_fixture = installed.is_none();
+    // Installed drum instruments may map their default sounds below middle C.
+    let installed_pitch = installed.as_ref().and_then(|_| {
+        std::env::var("HEX_TEST_VST3_INSTRUMENT_PITCH")
+            .ok()
+            .map(|pitch| pitch.parse::<u8>().expect("installed instrument pitch"))
+    });
+    let pitch = installed_pitch.unwrap_or(60);
     let rate = if installed.is_some() { 44_100 } else { 48_000 };
     let mut harness = ResidentHarness::with_plugins_at_rate(
         host(),
@@ -78,7 +85,7 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
         clip,
         start: BeatTime::ZERO,
         duration: BeatTime::from_ratio(1, 2).unwrap(),
-        pitch: 60,
+        pitch,
         channel: 0,
         velocity: 112,
     }));
@@ -104,7 +111,7 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
         clip: console,
         start: BeatTime::ZERO,
         duration: BeatTime::from_quarters(1).unwrap(),
-        pitch: if controlled_fixture { 60 } else { 64 },
+        pitch: installed_pitch.unwrap_or(if controlled_fixture { 60 } else { 64 }),
         channel: 0,
         velocity: 88,
     }));
@@ -158,7 +165,7 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
             .map(f32::abs)
             .fold(0.0, f32::max)
     };
-    keys.set_key(0, Some((60, 100, 1))).unwrap();
+    keys.set_key(0, Some((pitch, 100, 1))).unwrap();
     let keyboard_peak = (0..6)
         .map(|_| pcm_peak(render_completed_block(&harness)))
         .fold(0.0, f32::max);
@@ -181,10 +188,16 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
         assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
     } else {
         let mut release_peak = f32::INFINITY;
+        let mut quiet_blocks = 0;
         assert!(
             (0..1000).any(|_| {
                 release_peak = pcm_peak(render_completed_block(&harness));
-                release_peak < 0.001
+                quiet_blocks = if release_peak < 0.001 {
+                    quiet_blocks + 1
+                } else {
+                    0
+                };
+                quiet_blocks == 4
             }),
             "keyboard release must settle, held peak={keyboard_peak}, release peak={release_peak}"
         );
@@ -233,7 +246,8 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
     for block in 0..20 {
         let frames = render_completed_block(&harness);
         if block < 2 {
-            assert!(pcm_peak(frames) < 0.001);
+            let early_peak = pcm_peak(frames);
+            assert!(early_peak < 0.001, "early block {block}: {early_peak}");
         }
         for sample in frames.iter().flatten() {
             peak = peak.max(sample.abs());

@@ -12,7 +12,7 @@
 namespace hex_instance {
 // Rich metadata lives in the helper. This bound admits controllers exposing
 // full per-channel MIDI mappings alongside their ordinary parameter inventory.
-inline constexpr size_t HOST_PARAMETER_COUNT=2304;
+inline constexpr size_t HOST_PARAMETER_COUNT=2624;
 inline constexpr size_t HOST_FEEDBACK_COUNT=128;
 inline constexpr size_t HOST_RESTART_COUNT=8;
 // A single native editor event can synchronously report a group of gestures.
