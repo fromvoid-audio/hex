@@ -690,8 +690,12 @@ int main(int argc,char** argv) {
                             valid=valid && (config->inputs==2 || right[n]==0) && (config->inputs!=0 || left[n]==0);
                         }
                         const auto event_channels=instance.event_input_channels();
-                        for (size_t n=0;n<packet.note_count;++n)
-                            valid=valid && packet.notes[n].channel<event_channels;
+                        // The wire has already validated the notes. A generator
+                        // with no event bus still renders with inputEvents=null.
+                        if(event_channels) {
+                            for (size_t n=0;n<packet.note_count;++n)
+                                valid=valid && packet.notes[n].channel<event_channels;
+                        }
                         if(!valid) { worker_failure.store(ProtocolFailure);break; }
                         instance.refresh_processing_parameters(processing_parameters);
                         if(!parameter_input.reset(packet.frames,false) || !parameter_output.reset(packet.frames,true)) {
