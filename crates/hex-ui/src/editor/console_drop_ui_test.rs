@@ -1496,3 +1496,78 @@ fn recorded_take_range_drag_imports_exact_pcm_in_arrangement_and_session(cx: &mu
         });
     }
 }
+
+#[gpui::test]
+fn released_sample_drop_keeps_target_through_delayed_worker_repaints(cx: &mut TestAppContext) {
+    for (mode, refuse) in [
+        (EditorMode::Arrangement, false),
+        (EditorMode::Session, false),
+        (EditorMode::Session, true),
+    ] {
+        let (handle, editor, track, scene, path) = fixture(cx);
+        editor.update(cx, |view, cx| {
+            view.mode = mode;
+            cx.notify();
+        });
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        begin_browser(&mut visual, &editor);
+        let (target, selector) = if mode == EditorMode::Arrangement {
+            (
+                bounds(&mut visual, format!("arrangement-lane-{}", track.value())).center(),
+                "clip-drop-preview",
+            )
+        } else {
+            let column = bounds(&mut visual, format!("session-track-{}", track.value()));
+            let row = visual.debug_bounds("session-scene-column").unwrap();
+            (
+                point(column.center().x, row.center().y),
+                "console-sample-drop-preview",
+            )
+        };
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let before = visual.debug_bounds(selector).expect("held target paint");
+        if refuse {
+            std::fs::remove_file(&path).unwrap();
+        }
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        let terminal = editor.update(&mut visual, |view, cx| {
+            assert!(view.active_browser_audio_drag.is_none());
+            assert!(view.pending_sample_drop.is_some());
+            let deadline = crate::test_wait::hang_deadline();
+            loop {
+                if let Ok(event) = view.service.try_event() {
+                    if event.request_complete {
+                        assert_eq!(event.error.is_some(), refuse);
+                        cx.notify();
+                        break event;
+                    }
+                    view.receive(event);
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "sample import terminal"
+                );
+                std::thread::yield_now();
+            }
+        });
+        for _ in 0..2 {
+            visual.run_until_parked();
+            assert_eq!(visual.debug_bounds(selector), Some(before));
+            visual.simulate_keystrokes("escape");
+        }
+        editor.update(&mut visual, |view, cx| {
+            view.receive(terminal);
+            assert!(view.pending_sample_drop.is_none());
+            let project = &view.state.as_ref().unwrap().project;
+            if mode == EditorMode::Arrangement {
+                assert_eq!(project.track(track).unwrap().clips().len(), 1);
+            } else {
+                assert_eq!(project.session_cell(track, scene).is_some(), !refuse);
+            }
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds(selector).is_none());
+    }
+}

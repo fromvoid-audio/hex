@@ -2328,6 +2328,7 @@ impl EditorView {
             .observe(self.project_generation, &event);
         self.section_request_complete(&event);
         self.track_reorder_complete(&event);
+        self.sample_drop_complete(&event);
         self.midi_drag_request_complete(&event);
         self.advance_midi_origin_view(&event);
         self.fade_request_complete(&event);
