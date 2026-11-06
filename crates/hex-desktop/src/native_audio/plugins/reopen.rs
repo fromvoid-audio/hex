@@ -250,6 +250,11 @@ impl Plugins {
             )
         })();
         let binding = selected.and_then(|selected| {
+            let authored = AuthoredSelection::from_targets(input.authored_plugin_targets(device))?;
+            if destination.is_instrument() && authored.is_some() {
+                return Err("authored vst3 instrument automation is not prepared".into());
+            }
+
             self.host
                 .as_ref()
                 .ok_or("qualified vst3 helper unavailable")?
@@ -269,15 +274,17 @@ impl Plugins {
                     hosting_profile(destination),
                     Some(state.clone()),
                 )
+                .map(|binding| (binding, authored))
         });
         match binding {
-            Ok(binding) => {
+            Ok((binding, authored)) => {
                 self.sources.push(Source {
                     binding,
                     owner,
                     device,
                     project_generation: restore.context.project_generation,
                     operation: SourceOperation::Reopen,
+                    authored,
                     accepted: false,
                     retiring: false,
                     queued: false,

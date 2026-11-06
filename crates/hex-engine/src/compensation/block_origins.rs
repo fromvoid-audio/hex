@@ -39,6 +39,11 @@ impl NativeInstrumentClock for OriginWindow<'_> {
     fn arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
         self.stamp(offset).map(|stamp| stamp.arrangement_frame)
     }
+    fn authored_arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+        self.stamp(offset)
+            .filter(|stamp| stamp.transport_is_running)
+            .map(|stamp| stamp.arrangement_frame)
+    }
     fn loop_pass_at_offset(&self, offset: usize) -> Option<u64> {
         self.stamp(offset).map(|stamp| stamp.loop_pass)
     }

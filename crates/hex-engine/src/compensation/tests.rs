@@ -354,6 +354,45 @@ fn stage_origin_preview_matches_actual_pushes_and_rollback() {
 }
 
 #[test]
+fn authored_origins_use_running_content_after_compensation_and_epoch_reset() {
+    use crate::signal_graph::OriginClock;
+    use hex_lattice::NativeInstrumentClock;
+
+    let graph = plan(&[node(1, 3), node(2, 0)], &[edge(1, 1, 2)]);
+    let mut runtime = CompensationRuntime::new(graph, CompensationLimits::default()).unwrap();
+    let incoming = std::array::from_fn::<_, 8, _>(|index| Some(stamp(index)));
+    let window = OriginWindow {
+        history: &runtime,
+        incoming: &incoming,
+        delay: 3,
+    };
+    let expected = [None, None, None, None, Some(1), Some(2), None, Some(0)];
+    assert_eq!(
+        std::array::from_fn(|offset| window.authored_arrangement_frame_at_offset(offset)),
+        expected
+    );
+
+    runtime.begin_transaction().unwrap();
+    for (index, expected) in expected.into_iter().enumerate() {
+        runtime.push_transport_stamp(stamp(index)).unwrap();
+        let clock = OriginClock(runtime.node_input_stamp(1).unwrap());
+        assert_eq!(clock.authored_arrangement_frame_at_offset(0), expected);
+        assert_eq!(clock.authored_arrangement_frame_at_offset(1), None);
+    }
+    runtime.commit_transaction().unwrap();
+    runtime.reset_epoch();
+    runtime.begin_transaction().unwrap();
+    for index in 101..105 {
+        runtime.push_transport_stamp(stamp(index)).unwrap();
+        let clock = OriginClock(runtime.node_input_stamp(1).unwrap());
+        assert_eq!(
+            clock.authored_arrangement_frame_at_offset(0),
+            (index == 104).then_some(1)
+        );
+    }
+}
+
+#[test]
 fn invalid_calls_refuse_before_mutating_ring_state() {
     let mut delayed = pair(2);
     assert_eq!(

@@ -414,6 +414,7 @@ fn bounded_input_validation_and_queue_independent_stop() {
                         .push(InputRequest {
                             block: Block::empty(BINDING, 8),
                             parameter_capacity: MAX_PARAMETER_POINTS,
+                            authored: false,
                         })
                         .unwrap();
                 }
@@ -427,6 +428,7 @@ fn bounded_input_validation_and_queue_independent_stop() {
                         .push(InputRequest {
                             block: Block::empty(BINDING, 8),
                             parameter_capacity: MAX_PARAMETER_POINTS,
+                            authored: false,
                         })
                         .unwrap();
                 }

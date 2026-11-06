@@ -583,10 +583,22 @@ impl PublicationControl {
     /// Ok acknowledges retained custody, including constructor refusal. Neither
     /// the pair nor its facts grant graph/publication admission yet.
     pub fn start_native_effect(&mut self, binding: Binding) -> Result<(), &'static str> {
+        self.start_native_effect_with_authored_selection(binding, None)
+    }
+
+    /// Arm the saved targets on the actual source before transferring the
+    /// prepared lease to its original worker. Existing Root refusal custody
+    /// applies to both SDK metadata validation and worker construction.
+    pub fn start_native_effect_with_authored_selection(
+        &mut self,
+        binding: Binding,
+        authored: Option<&crate::plugin_effects::AuthoredSelection>,
+    ) -> Result<(), &'static str> {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native preparation output is closing");
         }
-        self.candidate_root.start_native_effect(binding)
+        self.candidate_root
+            .start_native_effect_with_authored_selection(binding, authored)
     }
     /// Run pure graph compilation with definitions borrowed from these exact
     /// Root-owned effect pairs. This does not transfer endpoints or authorize

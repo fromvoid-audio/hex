@@ -275,10 +275,13 @@ class NativeInstanceTests(unittest.TestCase):
     def sliced_request(self, session, initial, changes, *, pcm=bytes(64), notes=(), points=()):
         header = bytearray(session.packet(8))
         struct.pack_into("<HHHHB", header, 4, 6, 8, len(notes), len(points), len(changes))
+        header[13] = int(initial is None)
         events = b"".join(struct.pack("<HBBBB2xI", offset, 3, status, 60, velocity, identity)
                           for offset, status, velocity, identity in notes)
         parameters = b"".join(struct.pack("<H2xId", *point) for point in points)
-        timing = initial + b"".join(struct.pack("<H6x", offset) + context for offset, context in changes)
+        timing = (initial or b"") + b"".join(
+            struct.pack("<H6x", offset) + context for offset, context in changes
+        )
         session.socket.sendall(header + pcm + events + parameters + timing)
 
     def test_sliced_transport_contexts_use_exact_origins_in_one_copied_reply(self):
@@ -314,23 +317,32 @@ class NativeInstanceTests(unittest.TestCase):
 
         effect = self.session(variant=37)
         self.ready(effect, controller=True)
-        self.sliced_request(effect, stopped, [(3, playing)], pcm=struct.pack("<16f", *([.25] * 16)),
+        later_playing = struct.pack("<qQIBBBxQQ", 5, 0, 95_000_000, 1, 0, 0, 0, 0)
+        self.sliced_request(effect, None, [(3, playing), (5, later_playing)],
+                            pcm=struct.pack("<16f", *([.25] * 16)),
                             points=[(0, 7, .5), (3, 7, .25)])
         magic, reply = effect.message()
         self.assertEqual((magic, struct.unpack_from("<HHHHB", reply, 4)), (b"HXVB", (2, 8, 0, 2, 0)))
-        self.assertEqual(struct.unpack_from("<16f", reply, 64), (.25,) * 6 + (.15625,) * 10)
-        self.assertEqual(list(struct.iter_unpack("<HHId", reply[128:])), [(2, 0, 7, .5), (7, 0, 7, .25)])
+        self.assertEqual(struct.unpack_from("<16f", reply, 64), (.25,) * 6 + (.15625,) * 4 + (.1875,) * 6)
+        self.assertEqual(list(struct.iter_unpack("<HHId", reply[128:])), [(2, 0, 7, .5), (4, 0, 7, .25)])
         effect.sequence, effect.frames = 1, 8
         self.assertEqual(self.terminal(effect, 0, message=effect.stop())[5:7], (1, 8))
 
     def test_malformed_sliced_transport_never_enters_dsp(self):
         stopped, playing = bytes(40), struct.pack("<qQIBBBxQQ", 0, 0, 0, 1, 0, 0, 0, 0)
-        for changes in ([], [(0, playing)], [(8, playing)], [(2, stopped)],
-                        [(3, playing), (3, stopped)], [(n, playing) for n in range(8)]):
-            with self.subTest(changes=len(changes)):
+        for initial, changes in (
+            (stopped, []),
+            (stopped, [(0, playing)]),
+            (stopped, [(8, playing)]),
+            (stopped, [(2, stopped)]),
+            (None, [(2, stopped)]),
+            (stopped, [(3, playing), (3, stopped)]),
+            (stopped, [(n, playing) for n in range(8)]),
+        ):
+            with self.subTest(initial=initial is not None, offsets=[offset for offset, _ in changes]):
                 session = self.session(variant=126)
                 self.ready(session, controller=True)
-                self.sliced_request(session, stopped, changes)
+                self.sliced_request(session, initial, changes)
                 self.error(session, 8)
                 self.assertEqual(self.terminal(session, 8)[5:7], (0, 0))
                 self.assertEqual(self.observation()[10], 0)

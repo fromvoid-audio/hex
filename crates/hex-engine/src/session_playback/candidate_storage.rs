@@ -233,6 +233,21 @@ fn chain_storage<'a>(
         return Err(AudioStorageError::SourceMismatch);
     }
     for (index, (entry, prepared)) in view.entries().zip(prepared).enumerate() {
+        if let Some(program) = entry.automation().foreign() {
+            let owner = program.storage_owner();
+            if !prepared
+                .automation
+                .foreign()
+                .is_some_and(|expected| std::sync::Arc::ptr_eq(owner, expected.storage_owner()))
+            {
+                return Err(AudioStorageError::SourceMismatch);
+            }
+            l.existing_shared(
+                owner,
+                Owner::exclusive(owner),
+                Location("foreign-automation-runtime", 0),
+            )?;
+        }
         let (ids, lanes, points) = entry.automation().storage_vectors();
         l.vec(ids)?;
         l.vec(lanes)?;

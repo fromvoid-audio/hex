@@ -5,6 +5,7 @@ mod epoch;
 mod live_capture;
 mod parameter_page;
 pub use epoch::Quiescent;
+pub use parameter_page::AuthoredParameterMetadata;
 mod preparation_failure;
 pub use preparation_failure::{PreparationDisposal, PreparationFailure};
 mod storage;
@@ -194,6 +195,7 @@ pub struct Prepared {
     last_edit_frame: u64,
     parameter_page: Option<parameter_page::PendingPage>,
     parameter_page_sequence: u64,
+    authored_parameter_metadata: Option<AuthoredParameterMetadata>,
 }
 /// Source-bound configured component awaiting actual graph presentation facts.
 /// No processing/state capture or canonical/audio acceptance has occurred. Keep
@@ -592,6 +594,7 @@ impl Pending {
             last_edit_frame: 0,
             parameter_page: None,
             parameter_page_sequence: 0,
+            authored_parameter_metadata: None,
         })
     }
 }
@@ -646,17 +649,68 @@ impl Prepared {
     /// Only on the existing joining transport worker. A failed operation
     /// permanently faults this lease; no foreign DSP retry/replay is possible.
     pub fn exchange_on_worker(&mut self, block: Block) -> Result<Block> {
+        self.exchange_on_worker_with_metadata(block, None)
+    }
+    /// Deliver one authored input block to the same lease that observed the
+    /// selected parameters. The SDK processing snapshot rechecks eligibility
+    /// and steps before entering DSP. Normalized feedback cannot stale them.
+    pub fn exchange_authored_on_worker(
+        &mut self,
+        block: Block,
+        metadata: &AuthoredParameterMetadata,
+    ) -> Result<Block> {
+        if !metadata.matches(self) {
+            return Err(Error::Protocol("authored parameter source differs"));
+        }
+        self.exchange_on_worker_with_metadata(block, Some(metadata))
+    }
+    /// Retain the exact capability observation with the lease that will run
+    /// authored requests. Admission and endpoint construction remain with
+    /// the caller. A renewed epoch must install a new observation.
+    pub fn arm_authored_parameter_metadata_on_control(
+        &mut self,
+        metadata: AuthoredParameterMetadata,
+    ) -> Result<()> {
+        self.require_live_epoch()?;
+        if !metadata.matches(self) {
+            return Err(Error::Protocol("authored parameter source differs"));
+        }
+        self.authored_parameter_metadata = Some(metadata);
+        Ok(())
+    }
+
+    pub fn exchange_armed_authored_on_worker(&mut self, block: Block) -> Result<Block> {
+        let metadata = self
+            .authored_parameter_metadata
+            .take()
+            .ok_or(Error::Protocol(
+                "authored parameter capability is not armed",
+            ))?;
+        let result = self.exchange_authored_on_worker(block, &metadata);
+        self.authored_parameter_metadata = Some(metadata);
+        result
+    }
+
+    fn exchange_on_worker_with_metadata(
+        &mut self,
+        block: Block,
+        metadata: Option<&AuthoredParameterMetadata>,
+    ) -> Result<Block> {
         if self.faulted || self.retired.is_some() {
             return Err(Error::Protocol("instance lease is retired or faulted"));
         }
-        let result = self.exchange(block);
+        let result = self.exchange(block, metadata);
         if result.is_err() {
             self.faulted = true;
             self.lease.cancel_native();
         }
         result
     }
-    fn exchange(&mut self, block: Block) -> Result<Block> {
+    fn exchange(
+        &mut self,
+        block: Block,
+        metadata: Option<&AuthoredParameterMetadata>,
+    ) -> Result<Block> {
         self.check_live_capture_deadline()?;
         self.check_parameter_page_deadline()?;
         self.config.validate_block(&block, self.sequence)?;
@@ -666,7 +720,14 @@ impl Prepared {
             .ok_or(Error::Protocol("instance sequence exhausted"))?;
         let mut bytes = [0; crate::transport::wire::MAX_PACKET_BYTES];
         let mut cursor = Cursor::new(bytes.as_mut_slice());
-        crate::transport::wire::write(&mut cursor, &block).map_err(Error::Io)?;
+        if let Some(metadata) = metadata {
+            crate::transport::wire::write_authored(&mut cursor, &block, &|id| {
+                metadata.step_count(id)
+            })
+        } else {
+            crate::transport::wire::write(&mut cursor, &block)
+        }
+        .map_err(Error::Io)?;
         let length = cursor.position() as usize;
         let until = end_after(self.limits.exchange)?;
         let token = self.lease.cancellation.clone();

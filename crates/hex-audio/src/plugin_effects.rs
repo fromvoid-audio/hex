@@ -20,6 +20,8 @@ use hex_plugin_host::{
     },
 };
 
+mod automation;
+pub use automation::AuthoredSelection;
 mod bypass;
 mod definition;
 mod tail;
@@ -42,6 +44,7 @@ struct Configuration {
     sample_rate: u32,
     state: NativeDeviceState,
     prepared: PreparedForeignProcessor,
+    authored: automation::SourceCapabilities,
 }
 
 /// One actually prepared native source and its exact constructor-paired queues.
@@ -125,10 +128,28 @@ impl NativeEffect {
     #[allow(clippy::result_large_err)]
     pub(crate) fn prepare_retained_with_data_limit_on_control(
         identity: ProcessorInstanceIdentity,
-        mut instance: Prepared,
+        instance: Prepared,
         max_data_bytes: usize,
     ) -> Result<Self, NativeWorkerStartFailure> {
-        let configuration = match Self::configuration_on_control(identity, &instance) {
+        Self::prepare_retained_with_authored_selection_on_control(
+            identity,
+            instance,
+            max_data_bytes,
+            None,
+        )
+    }
+
+    /// Query and arm selected raw parameters on the original source before it
+    /// moves to the worker. IDs must be sorted and unique. This control-only
+    /// preparation grants no graph admission, and refusal preserves custody.
+    #[allow(clippy::result_large_err)]
+    pub fn prepare_retained_with_authored_selection_on_control(
+        identity: ProcessorInstanceIdentity,
+        mut instance: Prepared,
+        max_data_bytes: usize,
+        authored: Option<(hex_plugin_state::ClassId, &[u32])>,
+    ) -> Result<Self, NativeWorkerStartFailure> {
+        let mut configuration = match Self::configuration_on_control(identity, &instance) {
             Ok(configuration) => configuration,
             Err(cause) => {
                 return Err(NativeWorkerStartFailure::retain_source_on_control(
@@ -142,6 +163,17 @@ impl NativeEffect {
             return Err(NativeWorkerStartFailure::retain_source_on_control(
                 cause, instance,
             ));
+        }
+        if let Some((class, ids)) = authored {
+            configuration.authored =
+                match automation::SourceCapabilities::arm(&mut instance, class, ids) {
+                    Ok(capabilities) => capabilities,
+                    Err(cause) => {
+                        return Err(NativeWorkerStartFailure::retain_source_on_control(
+                            cause, instance,
+                        ));
+                    }
+                };
         }
         let dry_frames = configuration.prepared.total_latency_frames() as usize;
         // Reserve the actual retirement diagnostics before starting the worker;
@@ -259,6 +291,7 @@ impl NativeEffect {
             sample_rate: config.sample_rate as u32,
             state,
             prepared,
+            authored: automation::SourceCapabilities::default(),
         })
     }
     pub(crate) fn retire_on_control(
@@ -445,6 +478,7 @@ impl NativeEffectCallback {
                 sample_rate: 48_000,
                 state,
                 prepared,
+                authored: automation::SourceCapabilities::default(),
             },
             transport,
             input: [[0.0; 2]; MAX_FRAMES],
@@ -498,6 +532,11 @@ impl ForeignProcessors for NativeEffectCallback {
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
         if !self.matches(node)
+            || node.automation.is_some_and(|program| {
+                program.binding != self.configuration.binding
+                    || !self.configuration.authored.is_armed()
+                    || !parameters.is_empty()
+            })
             || (!notes.is_empty() && !self.configuration.prepared.is_instrument_profile())
             || frames.len() > MAX_FRAMES
             || !node.input_gain.is_finite()
@@ -544,41 +583,59 @@ impl ForeignProcessors for NativeEffectCallback {
         // The original joining worker retains processor parameter observations
         // for control queries; the native helper mirrors them to its controller.
         // Receiving that feedback here must not revoke an otherwise valid epoch.
-        let playing = if node.prepared.is_instrument_profile() {
+        let playing = if node.prepared.is_instrument_profile() || node.automation.is_some() {
             clock.and_then(|clock| clock.transport_is_running())
         } else {
             None
         };
-        if self
-            .transport
-            .stage_segment_with_timing(
+        let timing = SegmentTiming {
+            playing,
+            at: |index| {
+                let clock = clock?;
+                Some(ProcessTiming {
+                    arrangement_frame: i64::try_from(clock.arrangement_frame_at_offset(index)?)
+                        .ok()?,
+                    playing: if node.automation.is_some()
+                        && clock.authored_arrangement_frame_at_offset(index).is_some()
+                    {
+                        true
+                    } else {
+                        playing.or_else(|| clock.transport_is_running())?
+                    },
+                    arrangement_beat_raw: clock.arrangement_beat_at_offset(index),
+                    tempo_micro_bpm: clock
+                        .tempo_micro_bpm_at_offset(index)
+                        .and_then(std::num::NonZeroU32::new),
+                    meter: clock.arrangement_meter_at_offset(index),
+                    cycle_beats_raw: clock.arrangement_cycle_at_offset(index),
+                })
+            },
+        };
+        let input = &self.input[..frames.len()];
+        let result = if let Some(program) = node.automation {
+            let program = automation::TransportProgram(program);
+            self.transport.stage_segment_with_authored_parameters(
                 offset,
-                &self.input[..frames.len()],
+                input,
+                events.as_slice(),
+                frames,
+                timing,
+                hex_plugin_host::transport::AuthoredSegment {
+                    program: &program,
+                    origin: &|index| clock?.authored_arrangement_frame_at_offset(index),
+                },
+            )
+        } else {
+            self.transport.stage_segment_with_timing(
+                offset,
+                input,
                 events.as_slice(),
                 parameters,
                 frames,
-                SegmentTiming {
-                    playing,
-                    at: |index| {
-                        let clock = clock?;
-                        Some(ProcessTiming {
-                            arrangement_frame: i64::try_from(
-                                clock.arrangement_frame_at_offset(index)?,
-                            )
-                            .ok()?,
-                            playing: playing.or_else(|| clock.transport_is_running())?,
-                            arrangement_beat_raw: clock.arrangement_beat_at_offset(index),
-                            tempo_micro_bpm: clock
-                                .tempo_micro_bpm_at_offset(index)
-                                .and_then(std::num::NonZeroU32::new),
-                            meter: clock.arrangement_meter_at_offset(index),
-                            cycle_beats_raw: clock.arrangement_cycle_at_offset(index),
-                        })
-                    },
-                },
+                timing,
             )
-            .is_err()
-        {
+        };
+        if result.is_err() {
             // The transport revoked only this endpoint's epoch. Leave the
             // aligned dry input so a containing carrier can keep rendering.
             frames.copy_from_slice(&self.dry_output[..frames.len()]);
