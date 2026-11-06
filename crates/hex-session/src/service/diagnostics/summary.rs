@@ -1484,6 +1484,7 @@ pub(super) fn request(value: &Request) -> Description {
             device,
             target,
             points,
+            ..
         } => {
             describe!("device_automation"; ["project_generation" => project_generation, "revision" => revision, "device" => device.value(), "target" => target, "points_count" => points.len()]; omitted="")
         }

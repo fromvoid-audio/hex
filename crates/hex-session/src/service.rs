@@ -76,7 +76,9 @@ mod effect_bus;
 mod plugin_effect;
 mod plugin_parameters;
 mod plugin_state_save;
-pub use plugin_parameters::{PluginParameterQuery, PluginParameterResult, PluginParameterRow};
+pub use plugin_parameters::{
+    PluginParameterQuery, PluginParameterResult, PluginParameterRow, vst3_automation_class,
+};
 pub use plugin_state_save::{PluginStateCapture, PluginStateSaveInput};
 pub mod diagnostics;
 mod request_cancellation;
@@ -662,6 +664,7 @@ pub enum Request {
         revision: u64,
         device: hex_project::DeviceId,
         target: hex_lattice_contract::DeviceAutomationTarget,
+        vst3_class: Option<[u8; 16]>,
         points: Vec<hex_project::AutomationPoint>,
     },
     /// The same bounded source-stamped Edit seam for manual values/read selection.
@@ -2742,13 +2745,15 @@ fn run_worker(
                 revision: _,
                 device,
                 target,
+                vst3_class,
                 points,
             } => Some(if let Some(reason) = automation_source_error {
                 Err(reason.into())
-            } else if !hex_engine::project_device_automation_target_supported(
-                session.project(),
+            } else if !device_automation_control::accepts_lane_target(
+                &session,
                 *device,
                 *target,
+                *vst3_class,
             ) {
                 Err("automation edit refused · target no longer available".into())
             } else {
