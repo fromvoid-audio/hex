@@ -65,28 +65,11 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
     (applied, _) = harness.applied(applied);
     let mut insertion = request(&note.state, PluginEffectDestination::Instrument(track));
     if let Some(bundle) = installed {
-        let catalog = hex_plugin_catalog::Catalog::load(&PathBuf::from(
-            std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap(),
-        ))
-        .unwrap();
-        let selected = catalog
-            .rows("")
-            .into_iter()
-            .find_map(|row| {
-                (row.module.file_name()?.to_str()? == bundle)
-                    .then_some(row.selection?)
-                    .filter(|selection| {
-                        selection.role == hex_plugin_catalog::PluginRole::Instrument
-                    })
-            })
-            .unwrap();
-        insertion.selection = PluginEffectSelection {
-            module: selected.module.clone(),
-            executable: selected.executable_relative_path.clone(),
-            cid: selected.cid,
-            executable_sha256: selected.executable_sha256.clone(),
-            info_sha256: selected.info_sha256.clone(),
-        };
+        insertion.selection = installed_selection(
+            &PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap()),
+            &bundle,
+            hex_plugin_catalog::PluginRole::Instrument,
+        );
     }
     harness
         .service

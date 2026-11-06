@@ -175,6 +175,7 @@ public:
         std::memcpy(&component_gain,data.data()+8,4);
         if(!std::isfinite(component_gain) || component_gain<0 || component_gain>4)return kResultFalse;
         if((fault==110 || fault==111) && handler->restartComponent(kLatencyChanged)!=kResultOk) return kResultFalse;
+        if(fault==123) handler->restartComponent(kParamValuesChanged|kParamIDMappingChanged);
         if(fault==53)stream->write(data.data(),1,nullptr); // ignored illegal write must still invalidate stream
         restoration.controller_gain=bits(component_gain);restoration.phase=2;trace(17);return kResultOk;
     }
@@ -189,11 +190,13 @@ public:
         if(stream->read(data.data(),data.size(),&read)!=kResultOk || read!=8 || std::memcmp(data.data(),"HXCT",4))return kResultFalse;
         std::memcpy(&scroll,data.data()+4,4);
         if(fault==54)stream->write(data.data(),1,nullptr);
+        if(fault==123) handler->restartComponent(kParamValuesChanged|kParamIDMappingChanged);
         restoration.scroll=static_cast<int>(scroll);restoration.phase=3;trace(18);return kResultOk;
     }
     tresult PLUGIN_API getState(IBStream* stream) override {
         if (!control() || !context || !handler || !stream) return kResultFalse;
         ++restoration.controller_get;
+        if(fault==123 && restoration.controller_get==2) handler->restartComponent(kParamIDMappingChanged);
         if(fault==96 && restoration.controller_get==2) {
             std::vector<unsigned char> huge(512*1024);return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
         }
@@ -796,7 +799,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>122) return false;next_fault=value;
+        if (value>123) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

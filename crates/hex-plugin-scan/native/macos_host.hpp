@@ -270,9 +270,13 @@ public:
         if (dispatching && !(applying_feedback && latency_enabled && (flags & kLatencyChanged))) {
             recursive=true; refuse(RecursiveRestart); return kResultFalse;
         }
-        if (!flags) return kResultOk;
         const uint32 bits=static_cast<uint32>(flags);
         if (bits & ~uint32{0xFFF}) { refuse(UnknownRestart); return kInvalidArgument; }
+        // State setters run before the first processing epoch. The current
+        // host profile has no saved vendor parameter bindings to remap, and
+        // startup refreshes the inventory after applying the state.
+        if (applying_saved_state) flags &= ~kParamIDMappingChanged;
+        if (!flags) return kResultOk;
         const auto supported=supported_restarts |
             (latency_enabled?kLatencyChanged:0);
         if (flags & ~supported) {
