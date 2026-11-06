@@ -12,6 +12,10 @@ pub const PARAMETER_PAGE_SIZE: usize = 4;
 pub const MAX_CONTROLLER_PARAMETERS: u16 = 2_624;
 const TEXT_UNITS: usize = 128;
 const PARAMETER_FLAGS: u32 = 0x0001_801f;
+const CAN_AUTOMATE: u32 = 1;
+const IS_READ_ONLY: u32 = 1 << 1;
+const IS_HIDDEN: u32 = 1 << 4;
+const IS_PROGRAM_CHANGE: u32 = 1 << 15;
 
 /// Valid, terminated SDK UTF-16, copied without SDK pointers or unbounded text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,7 +118,13 @@ impl ControllerParameter {
     /// Preserve unknown flags in observations, but do not expose a writer for
     /// semantics this host does not understand.
     pub fn is_editable(&self) -> bool {
-        self.flags & (!PARAMETER_FLAGS | 2 | 16) == 0
+        self.flags & (!PARAMETER_FLAGS | IS_READ_ONLY | IS_HIDDEN) == 0
+    }
+
+    /// Eligibility for authored envelopes. Program selection can change other
+    /// parameter definitions and has no authored playback contract here.
+    pub fn supports_authored_automation(&self) -> bool {
+        self.is_editable() && self.flags & (CAN_AUTOMATE | IS_PROGRAM_CHANGE) == CAN_AUTOMATE
     }
 }
 

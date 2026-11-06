@@ -586,6 +586,7 @@ impl ForeignArrangement {
             sample_rate: node.sample_rate,
             configuration,
             prepared,
+            automation: None,
             bypassed: false,
             // The compensated generator merge owns the instrument output gain.
             input_gain: 1.0,

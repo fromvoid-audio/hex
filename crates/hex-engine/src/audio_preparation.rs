@@ -780,6 +780,16 @@ impl AudioPreparationCustody {
         } = stages;
         let mut slots = Vec::new();
         let mut capacity = AudioArrangementCapacity::default();
+        let foreign_bytes = match crate::foreign_automation::candidate::quote(project) {
+            Ok((bytes, _)) => bytes,
+            Err(reason) => return Err(Box::new(AudioArrangementStartRefusal { reason, capacity })),
+        };
+        if foreign_bytes != 0 && (!assemble_revision || effects.is_none()) {
+            return Err(Box::new(AudioArrangementStartRefusal {
+                reason: AudioStorageError::UnsupportedGraph,
+                capacity,
+            }));
+        }
         let result = self.preflight(
             project,
             generation,
@@ -794,6 +804,20 @@ impl AudioPreparationCustody {
                 return Err(Box::new(AudioArrangementStartRefusal { reason, capacity }));
             }
         };
+        if capacity
+            .retained_stage_bytes
+            .checked_add(foreign_bytes)
+            .is_none_or(|bytes| bytes > inputs.reservation.max_prepared_data_bytes)
+            || capacity
+                .construction_peak_bytes
+                .checked_add(foreign_bytes)
+                .is_none_or(|bytes| bytes > inputs.reservation.max_construction_data_bytes)
+        {
+            return Err(Box::new(AudioArrangementStartRefusal {
+                reason: AudioStorageError::ReservationExceeded,
+                capacity,
+            }));
+        }
         if native_input.is_some() && !assemble_revision {
             return Err(Box::new(AudioArrangementStartRefusal {
                 reason: AudioStorageError::UnsupportedGraph,
@@ -903,7 +927,14 @@ impl AudioPreparationCustody {
                         .chain(project.return_tracks().iter().map(|r| r.devices()))
                         .chain(std::iter::once(project.main_devices()))
                         .try_fold(0usize, |n, devices| {
-                            n.checked_add(devices.len().checked_mul(4)?)
+                            n.checked_add(devices.len().checked_mul(4)?)?.checked_add(
+                                devices
+                                    .iter()
+                                    .filter(|device| {
+                                        crate::foreign_automation::candidate::has_authored(device)
+                                    })
+                                    .count(),
+                            )
                         })
                         .ok_or(AudioStorageError::Overflow)?
                 } else {

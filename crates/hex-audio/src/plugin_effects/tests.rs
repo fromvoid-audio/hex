@@ -131,6 +131,14 @@ struct Fixture {
     samples: Vec<[f32; 2]>,
 }
 fn fixture(location: usize, bypassed: bool) -> Fixture {
+    fixture_with_authored_parameter(location, bypassed, None)
+}
+
+fn fixture_with_authored_parameter(
+    location: usize,
+    bypassed: bool,
+    parameter: Option<u32>,
+) -> Fixture {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
     let Created::Imported { track, asset, .. } = editor
         .execute(Command::ImportPreparedAudioTrack {
@@ -170,14 +178,19 @@ fn fixture(location: usize, bypassed: bool) -> Fixture {
         _ => ProcessorChainOwner::Main,
     };
     let identity = ProcessorInstanceIdentity::new(owner, editor.project().next_identity()).unwrap();
-    let effect = NativeEffect::prepare_on_control(
+    let source = original_instance_for_binding(Binding {
+        root: 1,
+        instance: identity.device_id(),
+        graph: 3,
+        epoch: 4,
+    });
+    let selected = parameter.map(|id| [id]);
+    let class = source.configuration().identity.class;
+    let effect = NativeEffect::prepare_retained_with_authored_selection_on_control(
         identity,
-        original_instance_for_binding(Binding {
-            root: 1,
-            instance: identity.device_id(),
-            graph: 3,
-            epoch: 4,
-        }),
+        source,
+        usize::MAX,
+        selected.as_ref().map(|ids| (class, ids.as_slice())),
     )
     .unwrap();
     let state = effect.configuration().clone();
@@ -499,6 +512,7 @@ fn equal_state_and_device_id_cannot_select_another_actual_native_epoch() {
         sample_rate: 48_000,
         configuration: first.configuration(),
         prepared: first.prepared(),
+        automation: None,
         bypassed: false,
         input_gain: 1.0,
         output_gain: 1.0,
@@ -1106,6 +1120,7 @@ fn actual_tail_drain_waits_for_final_acceptance_and_preserves_last_bridge_sample
             sample_rate: config.sample_rate,
             configuration: &config.state,
             prepared: config.prepared,
+            automation: None,
             bypassed: false,
             input_gain: 1.0,
             output_gain: 1.0,
@@ -1312,4 +1327,398 @@ fn actual_arrangement_instrument_renders_authored_notes_at_compensated_offsets()
     let retired = workers[0].retire_on_control().unwrap();
     assert!(retired.failure.is_none() && retired.native.status.success());
     assert_eq!(retired.native.terminal.unwrap().blocks, 4);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+#[cfg(feature = "allocation-probe")]
+fn actual_arrangement_renderer_clock_drives_the_signed_authored_effect() {
+    use hex_engine::{PlaybackAction, PlaybackCommand};
+    use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime};
+
+    const NAME: &str = "plugin_effects::tests::actual_arrangement_renderer_clock_drives_the_signed_authored_effect";
+    const CHILD: &str = "HEX_ARRANGEMENT_AUTHORED_EFFECT_TEST_CHILD";
+    let Some(scenario) = std::env::var_os(CHILD) else {
+        for scenario in ["pause", "loop-seek", "loop-live"] {
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--ignored", "--nocapture"])
+                .env(CHILD, scenario)
+                .env("HEX_ORIGINAL_INSTANCE_VARIANT", "91")
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success()
+                    && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+                "{scenario}: {}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+        return;
+    };
+    let loop_live = scenario == "loop-live";
+    let loop_seek = scenario == "loop-seek" || loop_live;
+
+    let mut fixture = fixture_with_authored_parameter(2, false, Some(7));
+    fixture.samples[8] = [0.125, -0.25];
+    *fixture.media.values_mut().next().unwrap() =
+        hex_engine::Audio::new(48_000, fixture.samples.clone()).unwrap();
+    fixture
+        .editor
+        .execute(Command::ReplaceDeviceAutomationTarget {
+            device: fixture.device,
+            target: hex_project::DeviceAutomationTarget::Vst3 { parameter: 7 },
+            points: [
+                (BeatTime::ZERO, 0.25, AutomationInterpolation::Linear),
+                (
+                    BeatTime::from_ratio(1, 1500).unwrap(),
+                    0.5,
+                    AutomationInterpolation::Step,
+                ),
+                (
+                    BeatTime::from_ratio(1, 800).unwrap(),
+                    0.75,
+                    AutomationInterpolation::Step,
+                ),
+            ]
+            .map(|(beat, value, outgoing)| AutomationPoint {
+                beat,
+                value: AutomationValue::new(value).unwrap(),
+                outgoing,
+            })
+            .to_vec(),
+        })
+        .unwrap();
+    if loop_seek {
+        fixture
+            .editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end: 512,
+                enabled: true,
+            })
+            .unwrap();
+    }
+    let prepare_candidate = |project: &Project, effect: &NativeEffect, generation: u64| {
+        let definition = NativeEffectDefinition::new(std::slice::from_ref(effect)).unwrap();
+        let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let effects = hex_engine::AudioCandidateEffects::new(&registry);
+        let (&asset, media) = fixture.media.first_key_value().unwrap();
+        let quote = effects.quote(project, 1).unwrap();
+        let limits = quote
+            .storage_reservation(std::mem::size_of_val(media.frames()))
+            .unwrap();
+        let bank = hex_engine::OwnedAudioInputs::try_new(
+            vec![(
+                asset,
+                hex_engine::OwnedAudioSource::try_resident(48_000, media.frames().to_vec())
+                    .ok()
+                    .unwrap(),
+            )],
+            limits,
+        )
+        .ok()
+        .unwrap();
+        let mut custody = hex_engine::AudioPreparationCustody::try_new_on_control().unwrap();
+        let token = custody
+            .begin_input_on_control(
+                hex_engine::AudioArrangementInput::new(project, generation, bank)
+                    .with_audio_prepared_revision()
+                    .with_effect_registry(&registry),
+            )
+            .ok()
+            .unwrap();
+        let mut owner = hex_engine::AudioCandidateOwner::try_new_on_control(custody, token)
+            .ok()
+            .unwrap();
+        owner
+            .seal_constructor_on_control(hex_engine::AudioStorageLedgerReservation {
+                data_rows: quote.data_rows,
+                handle_rows: quote.handle_rows,
+                root_rows: 1,
+                max_retained_bytes: limits.max_prepared_data_bytes,
+                max_construction_peak_bytes: limits.max_construction_data_bytes,
+            })
+            .unwrap();
+        owner.split_constructor_on_control().ok().unwrap()
+    };
+    let mut previous =
+        loop_live.then(|| prepare_candidate(fixture.editor.project(), &fixture.effect, 10));
+    if loop_seek {
+        fixture
+            .editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end: 320,
+                enabled: true,
+            })
+            .unwrap();
+    }
+    let mut effects = vec![fixture.effect];
+    if loop_live {
+        let original = &effects[0];
+        let mut binding = original.binding();
+        binding.epoch += 1;
+        let instance = original_instance_for_binding(binding);
+        let class = instance.configuration().identity.class;
+        effects.push(
+            NativeEffect::prepare_retained_with_authored_selection_on_control(
+                original.identity(),
+                instance,
+                usize::MAX,
+                Some((class, &[7])),
+            )
+            .unwrap(),
+        );
+    }
+    let path = std::env::temp_dir().join(format!(
+        "hex-authored-arrangement-{}.hex",
+        std::process::id()
+    ));
+    hex_storage::save_new(&path, fixture.editor.project()).unwrap();
+    let reopened = hex_storage::load(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let (mut runtime, anchor) = prepare_candidate(&reopened, effects.last().unwrap(), 11);
+    let (mut workers, mut endpoints) =
+        NativeEffectCallbacks::from_effects_on_control(effects).unwrap();
+    if loop_seek && !loop_live {
+        runtime
+            .apply_action(PlaybackAction::Transport(PlaybackCommand::Seek(304)))
+            .unwrap();
+    }
+    if !loop_live {
+        runtime
+            .apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+            .unwrap();
+    }
+    let mut retired_graph = None;
+    let mut retired_anchor = None;
+    if let Some((mut old, old_anchor)) = previous.take() {
+        old.apply_action(PlaybackAction::Transport(PlaybackCommand::Seek(304)))
+            .unwrap();
+        old.apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+            .unwrap();
+        let mut before_edit = [[0.0; 2]; 5];
+        endpoints.begin_host_callback(before_edit.len()).unwrap();
+        old.render_with_foreign_processors(&mut before_edit, None, None, None, &mut endpoints)
+            .unwrap();
+        endpoints.finish_host_callback(true).unwrap();
+        assert_eq!(before_edit, [[0.0; 2]; 5]);
+        let mut transfer = None;
+        runtime
+            .try_inherit_and_retire_in_place(&mut Some(old), &mut retired_graph, &mut transfer)
+            .unwrap();
+        assert!(transfer.is_some());
+        retired_anchor = Some(old_anchor);
+    }
+    let mut output = [[0.0; 2]; 64];
+    let mut rendered = 0;
+    for frames in output.chunks_mut(5) {
+        if !loop_seek && rendered == 5 {
+            runtime
+                .apply_action(PlaybackAction::Transport(PlaybackCommand::Pause))
+                .unwrap();
+            let mut paused = [[9.0; 2]; 3];
+            endpoints.begin_host_callback(paused.len()).unwrap();
+            runtime
+                .render_with_foreign_processors(&mut paused, None, None, None, &mut endpoints)
+                .unwrap();
+            endpoints.finish_host_callback(true).unwrap();
+            assert_eq!(paused, [[0.0; 2]; 3]);
+            runtime
+                .apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+                .unwrap();
+        }
+        let measured = allocation_counter::measure(|| {
+            endpoints.begin_host_callback(frames.len()).unwrap();
+            runtime
+                .render_with_foreign_processors(frames, None, None, None, &mut endpoints)
+                .unwrap();
+            endpoints.finish_host_callback(true).unwrap();
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        rendered += frames.len();
+        endpoints
+            .wait_offline_on_control(&workers, || false)
+            .unwrap();
+    }
+    let mut expected = [[0.0; 2]; 64];
+    if loop_live {
+        expected[27] = fixture.samples[0].map(|sample| sample * 0.625);
+        expected[35] = fixture.samples[8].map(|sample| sample * (1.5 * 0.75));
+        expected[58] = fixture.samples[31].map(|sample| sample * (3.0 * 1.125));
+    } else if loop_seek {
+        expected[32] = fixture.samples[0].map(|sample| sample * 0.75);
+        expected[40] = fixture.samples[8].map(|sample| sample * (1.5 * 0.875));
+        expected[63] = fixture.samples[31].map(|sample| sample * (3.0 * 1.125));
+    } else {
+        expected[16] = fixture.samples[0].map(|sample| sample * 0.5);
+        expected[24] = fixture.samples[8].map(|sample| sample * (1.5 * 0.625));
+        expected[47] = fixture.samples[31].map(|sample| sample * (3.0 * 0.875));
+    }
+    assert_eq!(output, expected);
+    let proof = runtime.dispose_on_control().unwrap();
+    let mut anchors = [Some(anchor), retired_anchor];
+    proof.record_anchor_cells_on_control(&mut anchors).unwrap();
+    if let Some(mut old) = retired_graph {
+        old.dispose_on_control()
+            .unwrap()
+            .record_anchor_cells_on_control(&mut anchors)
+            .unwrap();
+    }
+    for anchor in anchors.iter_mut().flatten() {
+        anchor.finish_disposal_on_control().unwrap();
+    }
+    let current = workers.last_mut().unwrap().quiesce_on_control().unwrap();
+    assert_eq!(current.completed_blocks(), 8);
+    assert!(current.retire_on_control().unwrap().status.success());
+    if loop_live {
+        assert!(
+            workers[0].transport_is_live_on_control(),
+            "outgoing worker faulted after the edit"
+        );
+        let old = workers[0].quiesce_on_control().unwrap();
+        assert!(old.retire_on_control().unwrap().status.success());
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+#[cfg(feature = "allocation-probe")]
+fn ordinary_resident_compiler_drives_signed_vst3_automation() {
+    use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime};
+
+    const NAME: &str =
+        "plugin_effects::tests::ordinary_resident_compiler_drives_signed_vst3_automation";
+    const CHILD: &str = "HEX_ORDINARY_AUTHORED_EFFECT_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "91")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success() && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+
+    let mut fixture = fixture_with_authored_parameter(2, false, Some(7));
+    fixture.samples[8] = [0.25, -0.125];
+    fixture.samples[29] = [-0.25, 0.125];
+    *fixture.media.values_mut().next().unwrap() =
+        hex_engine::Audio::new(48_000, fixture.samples.clone()).unwrap();
+    fixture
+        .editor
+        .execute(Command::ReplaceDeviceAutomationTarget {
+            device: fixture.device,
+            target: hex_project::DeviceAutomationTarget::Vst3 { parameter: 7 },
+            points: [
+                (BeatTime::ZERO, 0.25, AutomationInterpolation::Linear),
+                (
+                    BeatTime::from_ratio(1, 1000).unwrap(),
+                    0.625,
+                    AutomationInterpolation::Step,
+                ),
+                (
+                    BeatTime::from_ratio(1, 800).unwrap(),
+                    0.75,
+                    AutomationInterpolation::Step,
+                ),
+            ]
+            .map(|(beat, value, outgoing)| AutomationPoint {
+                beat,
+                value: AutomationValue::new(value).unwrap(),
+                outgoing,
+            })
+            .to_vec(),
+        })
+        .unwrap();
+    let path = std::env::temp_dir().join(format!("hex-ordinary-vst3-{}.hex", std::process::id()));
+    hex_storage::save_new(&path, fixture.editor.project()).unwrap();
+    let reopened = hex_storage::load(&path);
+    std::fs::remove_file(path).unwrap();
+    let project = reopened.unwrap();
+    assert_eq!(&project, fixture.editor.project());
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let store = hex_engine::native_device_resources::ResidentDeviceAssets::default();
+    let resources =
+        hex_engine::native_device_resources::PreparedDeviceResources::prepare_on_control(
+            &store, &project, 20_000_000, &cancel,
+        )
+        .unwrap();
+    let definition = NativeEffectDefinition::new(std::slice::from_ref(&fixture.effect)).unwrap();
+    let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let compiler = hex_engine::AudioCandidateEffects::new(&registry);
+    let revision = Arc::new(
+        compiler
+            .prepare_registered_revision(
+                &project,
+                &fixture.media,
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+                &hex_engine::audio_transform::AudioTransformPreparation::default(),
+                &resources,
+                0,
+                &cancel,
+                None,
+            )
+            .unwrap(),
+    );
+    let mut runtime =
+        hex_engine::SessionPlayback::new_with_device_resources(revision, &resources).unwrap();
+    let (mut workers, mut endpoints) =
+        NativeEffectCallbacks::from_effects_on_control(vec![fixture.effect]).unwrap();
+    runtime
+        .apply(hex_engine::SessionPlaybackCommand::Play)
+        .unwrap();
+    let mut output = [[0.0; 2]; 64];
+    let mut rendered = 0;
+    for frames in output.chunks_mut(5) {
+        let measured = allocation_counter::measure(|| {
+            endpoints.begin_host_callback(frames.len()).unwrap();
+            runtime
+                .render_with_foreign_processors(frames, None, None, None, &mut endpoints)
+                .unwrap();
+            endpoints.finish_host_callback(true).unwrap();
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        rendered += frames.len();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while workers[0].published_blocks_on_control() < rendered as u64 / 8 {
+            assert!(Instant::now() < deadline, "signed authored PCM completion");
+            std::thread::yield_now();
+        }
+    }
+    let mut expected = [[0.0; 2]; 64];
+    expected[16] = fixture.samples[0].map(|sample| sample * 0.5);
+    expected[24] = fixture.samples[8].map(|sample| sample * (1.5 * 0.625));
+    expected[45] = fixture.samples[29].map(|sample| sample * (2.5 * 0.875));
+    expected[47] = fixture.samples[31].map(|sample| sample * (3.0 * 0.875));
+    assert_eq!(output, expected);
+    let retired = workers[0].quiesce_on_control().unwrap();
+    assert_eq!(retired.completed_blocks(), 8);
+    assert!(retired.retire_on_control().unwrap().status.success());
 }

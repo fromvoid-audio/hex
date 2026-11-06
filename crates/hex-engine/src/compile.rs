@@ -545,6 +545,13 @@ fn compile_project_inner<'a>(
     // #2740 supplies the pitch-aware runtime. Refuse until then rather than
     // accepting a saved tuned project and silently playing equal temperament.
     crate::device_automation::validate_project_with_registry(snapshot, registry)?;
+    let (foreign_bytes, _) = crate::foreign_automation::candidate::quote(snapshot)
+        .map_err(|_| Invalid("authored vst3 project exceeds its preparation bounds"))?;
+    if foreign_bytes > hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES {
+        return Err(Invalid(
+            "authored vst3 project exceeds its preparation bounds",
+        ));
+    }
     crate::gain_envelope::validate_project(snapshot)?;
     validate_source_midi_roots(snapshot)?;
     let return_feed_plan = crate::return_feed_plan::ReturnFeedPlan::prepare(snapshot)?;
@@ -810,6 +817,7 @@ fn compile_project_inner<'a>(
         }
         let effect_plan = compile_device_effects(
             track,
+            snapshot,
             registry,
             &device_context,
             native_input,
@@ -911,7 +919,7 @@ fn compile_project_inner<'a>(
         let effect_plan = compile_effect_devices(
             return_track.devices(),
             hex_lattice::ProcessorChainOwner::Return(return_track.id().value()),
-            0,
+            snapshot,
             &device_context,
             registry,
             native_input,
@@ -950,7 +958,7 @@ fn compile_project_inner<'a>(
     let main_plan = compile_effect_devices(
         snapshot.main_devices(),
         hex_lattice::ProcessorChainOwner::Main,
-        0,
+        snapshot,
         &device_context,
         registry,
         native_input,
@@ -1128,6 +1136,7 @@ struct CompiledEffectPlan {
 
 fn compile_device_effects(
     track: &hex_project::Track,
+    arrangement: &hex_project::Project,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     context: &hex_lattice::DevicePreparationContext<'_>,
     native_input: Option<crate::device_automation::NativeParameterInputTarget>,
@@ -1136,7 +1145,7 @@ fn compile_device_effects(
     compile_effect_devices(
         track.devices(),
         hex_lattice::ProcessorChainOwner::Track(track.id().value()),
-        track.instrument_position().unwrap_or(0),
+        arrangement,
         context,
         registry,
         native_input,
@@ -1147,7 +1156,7 @@ fn compile_device_effects(
 fn compile_effect_devices(
     source_devices: &[hex_project::Device],
     owner: hex_lattice::ProcessorChainOwner,
-    _split: usize,
+    arrangement: &hex_project::Project,
     context: &hex_lattice::DevicePreparationContext<'_>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     native_input: Option<crate::device_automation::NativeParameterInputTarget>,
@@ -1166,12 +1175,30 @@ fn compile_effect_devices(
         let migrated = registry
             .migrate_state(device.state())
             .map_err(|_| Invalid("native device state is unsupported or malformed"))?;
-        let automation = crate::device_automation::prepare_with_registry_inputs_and_external(
-            device,
-            registry,
-            native_input,
-            external_inputs,
-        )?;
+        let has_vst3_lane = device.automation().iter().any(|lane| {
+            matches!(
+                lane.target,
+                hex_lattice_contract::DeviceAutomationTarget::Vst3 { .. }
+            )
+        });
+        let mut automation = if has_vst3_lane {
+            if external_inputs
+                .iter()
+                .any(|target| target.device() == device.id())
+            {
+                return Err(Invalid(
+                    "recorded native automation cannot target a foreign effect",
+                ));
+            }
+            crate::device_automation::prepare_closed_effect(device, registry, native_input)?
+        } else {
+            crate::device_automation::prepare_with_registry_inputs_and_external(
+                device,
+                registry,
+                native_input,
+                external_inputs,
+            )?
+        };
         let prepared_device = registry
             .prepare_runtime_instance_with_automation(
                 identity,
@@ -1181,6 +1208,28 @@ fn compile_effect_devices(
             )
             .map_err(|_| Invalid("native device state or automation could not be prepared"))?;
         let processor = prepared_device.processor;
+        if crate::foreign_automation::candidate::has_authored(device) {
+            let Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) = processor.as_ref()
+            else {
+                return Err(Invalid("authored vst3 source metadata is unavailable"));
+            };
+            let program = crate::foreign_automation::candidate::prepare_device(
+                device,
+                identity,
+                registry,
+                *facts,
+                arrangement.tempo_map(),
+                arrangement.loop_region(),
+            )
+            .map_err(|_| Invalid("authored vst3 program or source could not be prepared"))?
+            .ok_or(Invalid("authored vst3 program is missing"))?;
+            if !automation.is_empty() {
+                return Err(Invalid(
+                    "vst3 playback does not support native parameter automation",
+                ));
+            }
+            automation = hex_lattice::PreparedParameterAutomation::for_foreign(program);
+        }
 
         let prepared = if device.bypassed() {
             hex_lattice::StereoMatrix::identity()

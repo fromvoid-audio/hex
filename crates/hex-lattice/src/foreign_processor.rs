@@ -6,6 +6,7 @@ use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, ForeignParameterPoint, ForeignProcessorBinding,
     NativeDeviceState,
 };
+use std::{alloc::Layout, num::NonZeroU64, sync::Arc};
 
 /// Control-validated facts for a copied foreign endpoint. No runtime factory,
 /// native pointer or resource owner lives here. The host must bind these facts
@@ -92,6 +93,124 @@ impl PreparedForeignProcessor {
     }
 }
 
+/// One SDK parameter observed on the exact selected source. Zero steps means
+/// continuous. Raw parameter ID zero is valid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ForeignParameterCapability {
+    pub id: u32,
+    pub steps: u32,
+}
+
+/// Control-only authored capabilities from the original worker's preparation.
+/// This view owns no worker, endpoint or authority to publish a graph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ForeignAutomationSource<'a> {
+    pub binding: ForeignProcessorBinding,
+    pub class: [u8; 16],
+    pub sample_rate: u32,
+    pub quantum_frames: u16,
+    /// Strictly increasing raw parameter IDs.
+    pub parameters: &'a [ForeignParameterCapability],
+}
+
+/// An immutable, control-prepared program that fills bounded storage for a
+/// complete physical foreign processing quantum. This call borrows the program
+/// and must perform no allocation, waiting or I/O.
+pub trait ForeignAutomationProgram: Sync {
+    fn render_quantum(
+        &self,
+        origins: &[Option<u64>],
+        slice_cuts: &[u16],
+        output: &mut [ForeignParameterPoint],
+    ) -> Result<usize, DeviceContractError>;
+}
+
+/// A graph's prepared automation for one exact foreign endpoint. The graph
+/// owner must admit the program and reserve a unique revision for it within
+/// the binding's lifetime. Equal scalar bindings alone grant no SDK capability.
+#[derive(Clone, Copy)]
+pub struct ForeignAutomation<'a> {
+    pub binding: ForeignProcessorBinding,
+    pub revision: std::num::NonZeroU64,
+    pub program: &'a dyn ForeignAutomationProgram,
+}
+
+/// Immutable graph data. Prepared and runtime entries share the allocation
+/// on control. The callback borrows it without acquiring or releasing custody.
+#[derive(Clone)]
+pub struct PreparedForeignAutomation {
+    binding: ForeignProcessorBinding,
+    revision: NonZeroU64,
+    program: Arc<dyn ForeignAutomationProgram + Send>,
+    storage_bytes: usize,
+}
+
+impl PreparedForeignAutomation {
+    /// The compiler supplies actual retained backing bytes beyond the inline
+    /// program payload. Include both in the existing chain storage budget.
+    pub fn new<P: ForeignAutomationProgram + Send + 'static>(
+        binding: ForeignProcessorBinding,
+        revision: NonZeroU64,
+        program: P,
+        backing_bytes: usize,
+    ) -> Result<Self, DeviceContractError> {
+        if !binding.is_valid() {
+            return Err(DeviceContractError::InvalidId);
+        }
+        let layout = Layout::new::<[usize; 2]>()
+            .extend(Layout::new::<P>())
+            .map_err(|_| DeviceContractError::RuntimeBudgetExceeded)?
+            .0
+            .pad_to_align();
+        let storage_bytes = layout
+            .size()
+            .checked_add(backing_bytes)
+            .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
+        Ok(Self {
+            binding,
+            revision,
+            program: Arc::new(program),
+            storage_bytes,
+        })
+    }
+
+    pub fn storage_bytes(&self) -> usize {
+        self.storage_bytes
+    }
+
+    /// Exact shared allocation identity for control-side storage inventory.
+    pub fn storage_owner(&self) -> &Arc<dyn ForeignAutomationProgram + Send> {
+        &self.program
+    }
+
+    pub fn borrow(&self) -> ForeignAutomation<'_> {
+        ForeignAutomation {
+            binding: self.binding,
+            revision: self.revision,
+            program: self.program.as_ref(),
+        }
+    }
+}
+
+impl PartialEq for PreparedForeignAutomation {
+    fn eq(&self, other: &Self) -> bool {
+        // The compiler keeps one immutable program revision per worker
+        // binding. Independently prepared graphs may own equal programs.
+        self.binding == other.binding && self.revision == other.revision
+    }
+}
+
+impl std::fmt::Debug for PreparedForeignAutomation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreparedForeignAutomation")
+            .field("binding", &self.binding)
+            .field("revision", &self.revision)
+            .field("storage_bytes", &self.storage_bytes)
+            .finish_non_exhaustive()
+    }
+}
+
 /// One invocation of an existing graph node. Configuration borrows the actual
 /// prepared state; providers do not invent a second source-ID/state namespace.
 /// Equality is a matching fence, never native custody or publication authority.
@@ -103,6 +222,9 @@ pub struct ForeignProcessorNode<'a> {
     pub sample_rate: u32,
     pub configuration: &'a NativeDeviceState,
     pub prepared: PreparedForeignProcessor,
+    /// Borrowed authored input for this segment. An endpoint without
+    /// authored support must refuse the segment before staging any work.
+    pub automation: Option<ForeignAutomation<'a>>,
     pub bypassed: bool,
     /// Cached finite host input trim. Segments contain the original untrimmed
     /// signal so the host can preserve aligned dry history. Apply this gain to
@@ -167,7 +289,7 @@ pub trait ForeignProcessors {
         parameters: &[ForeignParameterPoint],
         clock: Option<&dyn NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
-        if parameters.is_empty() {
+        if parameters.is_empty() && node.automation.is_none() {
             self.process_segment(node, frame_offset, frames, clock)
         } else {
             self.reject_callback();
