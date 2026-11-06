@@ -1,8 +1,11 @@
-//! Authored route gate ownership for prepared VST3 generators. The engine owns
+//! Authored and physical-key gate ownership for prepared VST3 generators. The engine owns
 //! the bounded note ledger. The audio host owns the worker and accepts or
 //! revokes staged events with the complete physical callback.
 use super::{
     MAX_TRACKS, MidiSpanBuffer, PreparedRevision, RouteOwner, SessionPlaybackError, TrackRoute,
+};
+use crate::computer_keyboard::{
+    COMPUTER_KEY_COUNT, ComputerKeyboardInput, KeyboardActivationClock,
 };
 use crate::mutable_instrument::{
     MutableInstrumentRuntimeError, MutableNoteOnset, MutableOccurrence, MutableOccurrenceKey,
@@ -15,7 +18,11 @@ use hex_lattice::{
     PreparedForeignProcessor, PreparedProcessorFactory,
 };
 use hex_project::TrackId;
-use std::mem::size_of;
+use std::{mem::size_of, sync::Arc};
+
+mod live_keys;
+
+const MAX_RENDER_EVENTS: usize = MAX_FOREIGN_NOTES + 2 * COMPUTER_KEY_COUNT;
 
 #[derive(Default)]
 struct Ledger {
@@ -24,11 +31,17 @@ struct Ledger {
     loop_pass: Option<u64>,
     route: Option<RouteOwner>,
     cut: bool,
+    live: live_keys::Gates,
+    quantum_offset: u16,
 }
 
 impl Ledger {
     fn has_held_notes(&self) -> bool {
         self.notes.iter().any(|note| !note.note_off_sent)
+    }
+
+    fn has_any_held_notes(&self) -> bool {
+        self.has_held_notes() || self.live.held()
     }
 }
 
@@ -86,6 +99,7 @@ pub(super) const INCOMPATIBLE_HANDOFF: SessionPlaybackError =
 pub(super) struct ForeignArrangement {
     generators: Vec<Option<Generator>>,
     events: Vec<ForeignNote>,
+    keyboard: Option<live_keys::Input>,
 }
 
 fn has_generator(track: &Track) -> bool {
@@ -102,7 +116,7 @@ impl ForeignArrangement {
         let mut events = Vec::new();
         if tracks.iter().any(has_generator) {
             events
-                .try_reserve_exact(MAX_FOREIGN_NOTES)
+                .try_reserve_exact(MAX_RENDER_EVENTS)
                 .map_err(|_| SessionPlaybackError::Allocation)?;
             generators
                 .try_reserve_exact(tracks.len())
@@ -122,7 +136,11 @@ impl ForeignArrangement {
                 }
             }
         }
-        Ok(Self { generators, events })
+        Ok(Self {
+            generators,
+            events,
+            keyboard: None,
+        })
     }
 
     pub(super) fn preflight_bytes(revision: &PreparedRevision) -> Option<usize> {
@@ -137,7 +155,7 @@ impl ForeignArrangement {
             .checked_add(
                 count.checked_mul(2 * MAX_FOREIGN_NOTES * size_of::<MutableOccurrence>())?,
             )?
-            .checked_add(MAX_FOREIGN_NOTES * size_of::<ForeignNote>())
+            .checked_add(MAX_RENDER_EVENTS * size_of::<ForeignNote>())
     }
 
     pub(super) fn storage_bytes(&self) -> Option<usize> {
@@ -149,6 +167,11 @@ impl ForeignArrangement {
                     self.events
                         .capacity()
                         .checked_mul(size_of::<ForeignNote>())?,
+                )?
+                .checked_add(
+                    self.keyboard
+                        .as_ref()
+                        .map_or(0, |input| input.root.control_storage_bytes()),
                 )?,
             |bytes, generator| {
                 bytes.checked_add(
@@ -172,6 +195,70 @@ impl ForeignArrangement {
             .iter()
             .flatten()
             .any(|generator| generator.committed.loop_pass.is_some())
+    }
+
+    pub(super) fn has_keyboard(&self) -> bool {
+        self.keyboard
+            .as_ref()
+            .is_some_and(|input| !input.detached && !input.root.is_cancelled())
+    }
+
+    pub(super) fn attach_keyboard(
+        &mut self,
+        track: TrackId,
+        root: Arc<ComputerKeyboardInput>,
+    ) -> Result<(), crate::Invalid> {
+        if self.keyboard.is_some()
+            || root.is_cancelled()
+            || !self
+                .generators
+                .iter()
+                .flatten()
+                .any(|generator| generator.track == track)
+        {
+            return Err(crate::Invalid(
+                "vst3 computer keyboard target is unavailable",
+            ));
+        }
+        if root.live_notes().is_some() || root.is_note_audition() || root.ordered_keys.is_some() {
+            return Err(crate::Invalid(
+                "vst3 monitoring supports physical keyboard keys only",
+            ));
+        }
+        self.keyboard = Some(live_keys::Input {
+            track,
+            root,
+            detached: false,
+        });
+        Ok(())
+    }
+
+    pub(super) fn remove_keyboard_on_control(&mut self) {
+        self.keyboard = None;
+    }
+
+    pub(super) fn shares_keyboard(&self, previous: &Self) -> bool {
+        self.keyboard
+            .as_ref()
+            .zip(previous.keyboard.as_ref())
+            .is_some_and(|(next, old)| {
+                !next.detached && !old.detached && Arc::ptr_eq(&next.root, &old.root)
+            })
+    }
+
+    pub(super) fn detach_keyboard(&mut self) {
+        if let Some(input) = self.keyboard.as_mut() {
+            input.detached = true;
+        }
+    }
+
+    pub(super) fn cancel_keyboard(&self, keep_clock: Option<&KeyboardActivationClock>) {
+        if let Some(input) = &self.keyboard
+            && !input.detached
+            && keep_clock.is_none_or(|clock| !input.root.bound_to_clock(clock))
+        {
+            input.root.cancel();
+        }
     }
 
     pub(super) fn plan_handoff(
@@ -206,7 +293,7 @@ impl ForeignArrangement {
                 .get_mut(old_index)
                 .ok_or(SessionPlaybackError::RevisionTrackMismatch)? = true;
             plan.requires_clock_continuity |=
-                ledger.loop_pass.is_some() && (cut.playing || ledger.has_held_notes());
+                ledger.loop_pass.is_some() && (cut.playing || ledger.has_any_held_notes());
             if !ledger.cut
                 && matches!(ledger.route, Some(RouteOwner::Session { .. }))
                 && ledger.has_held_notes()
@@ -227,7 +314,7 @@ impl ForeignArrangement {
             if let Some(generator) = generator
                 && !retained.get(index).copied().unwrap_or(false)
                 && generator.committed.loop_pass.is_some()
-                && (cut.playing || generator.committed.has_held_notes())
+                && (cut.playing || generator.committed.has_any_held_notes())
             {
                 return Err(INCOMPATIBLE_HANDOFF);
             }
@@ -238,6 +325,13 @@ impl ForeignArrangement {
     /// Commit only after the graph preflight. Both graphs keep their reserved
     /// buffers, and the host retains the exact worker on its existing binding.
     pub(super) fn inherit_handoff(&mut self, old: &mut Self, plan: Handoff, keep_clock: bool) {
+        let same_keyboard = self
+            .keyboard
+            .as_ref()
+            .zip(old.keyboard.as_ref())
+            .is_some_and(|(next, previous)| {
+                next.track == previous.track && Arc::ptr_eq(&next.root, &previous.root)
+            });
         for (candidate, old_index) in self.generators.iter_mut().zip(plan.old_indices) {
             if let Some((candidate, donor)) = candidate.as_mut().zip(
                 old_index
@@ -246,10 +340,14 @@ impl ForeignArrangement {
             ) {
                 if keep_clock {
                     std::mem::swap(&mut candidate.committed, &mut donor.committed);
+                    if !same_keyboard {
+                        candidate.committed.live.disconnect();
+                    }
                 } else {
                     // A stopped reset has no held gates, but the retained
                     // worker still needs monotonically increasing note IDs.
                     candidate.committed.next_id = donor.committed.next_id;
+                    candidate.committed.quantum_offset = donor.committed.quantum_offset;
                 }
             }
         }
@@ -266,6 +364,8 @@ impl ForeignArrangement {
             scratch.loop_pass = committed.loop_pass;
             scratch.route = committed.route;
             scratch.cut = committed.cut;
+            scratch.live = committed.live;
+            scratch.quantum_offset = committed.quantum_offset;
         }
     }
 
@@ -298,7 +398,14 @@ impl ForeignArrangement {
             return Ok(());
         };
         let ledger = &mut runtime.scratch;
-        if !context.playing && ledger.loop_pass.is_none() {
+        let keyboard = self
+            .keyboard
+            .as_ref()
+            .filter(|input| !input.detached && input.track == runtime.track);
+        if !context.playing
+            && ledger.loop_pass.is_none()
+            && keyboard.is_none_or(|input| input.root.is_cancelled())
+        {
             return Ok(());
         }
         let node = track
@@ -409,6 +516,18 @@ impl ForeignArrangement {
                 emit,
             )
             .map_err(|error| error.render_error())?;
+        }
+        // One physical callback spans at most one quantum boundary. Preserve
+        // headroom for this snapshot even when the authored slice is full.
+        if ledger.quantum_offset == 0 && (keyboard.is_some() || ledger.live.held()) {
+            ledger
+                .live
+                .stage(keyboard, &mut ledger.next_id, events)
+                .map_err(|error| error.render_error())?;
+        }
+        ledger.quantum_offset += 1;
+        if ledger.quantum_offset == prepared.quantum_frames() {
+            ledger.quantum_offset = 0;
         }
         ledger.loop_pass = Some(context.loop_pass);
         ledger.route = Some(session.route.owner);
