@@ -641,6 +641,7 @@ impl TrackAssembly {
                     source_mix,
                     gain_envelope: r.prepared_gain.take(),
                     instrument: None,
+                    foreign_instrument: None,
                     instrument_position: 0,
                     ordered_prefix: None,
                     ordered_suffix: None,
@@ -754,6 +755,7 @@ impl TrackAssembly {
                 source_mix: _,
                 gain_envelope,
                 instrument: _,
+                foreign_instrument: _,
                 instrument_position: _,
                 ordered_prefix: _,
                 ordered_suffix: _,
@@ -1106,6 +1108,7 @@ impl TrackAssembly {
                     source_mix: _,
                     gain_envelope,
                     instrument,
+                    foreign_instrument,
                     instrument_position: _,
                     ordered_prefix: _,
                     ordered_suffix: _,
@@ -1126,6 +1129,7 @@ impl TrackAssembly {
                 } = t;
                 if (!sampler.present() && (instrument.is_some() || *mutable_instrument))
                     || instrument_state.is_some()
+                    || foreign_instrument.is_some()
                     || (!sampler.present() && *mutable_looping_source)
                     || midi_source_index.is_some()
                 {

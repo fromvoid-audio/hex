@@ -38,7 +38,6 @@ struct Configuration {
     identity: ProcessorInstanceIdentity,
     binding: Binding,
     sample_rate: u32,
-    inputless: bool,
     state: NativeDeviceState,
     prepared: PreparedForeignProcessor,
 }
@@ -228,6 +227,11 @@ impl NativeEffect {
             u32::from(config.quantum) * 2,
         )
         .map(|prepared| {
+            let prepared = if config.input_channels == 0 {
+                prepared.with_instrument_profile()
+            } else {
+                prepared
+            };
             prepared.with_output_tail(if instance.ready().tail_frames == u32::MAX {
                 hex_lattice::OutputTail::Unbounded
             } else {
@@ -251,7 +255,6 @@ impl NativeEffect {
             identity,
             binding: config.binding,
             sample_rate: config.sample_rate as u32,
-            inputless: config.input_channels == 0,
             state,
             prepared,
         })
@@ -361,7 +364,9 @@ impl NativeEffectCallback {
     pub fn reported_tail_is_drained(&self) -> bool {
         // Silence at an instrument's audio input says nothing about held MIDI
         // notes. Only the graph's future note owner can prove its release.
-        !self.configuration.inputless && !self.transport.is_revoked() && self.tail.drained()
+        !self.configuration.prepared.is_instrument_profile()
+            && !self.transport.is_revoked()
+            && self.tail.drained()
     }
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn transport_fault_for_test(&self) -> Option<Fault> {
@@ -385,7 +390,7 @@ impl NativeEffectCallback {
             frames.fill([0.0; 2]);
             return;
         }
-        if self.configuration.inputless {
+        if self.configuration.prepared.is_instrument_profile() {
             frames.fill([0.0; 2]);
         }
         self.advance_dry(frames);
@@ -427,7 +432,6 @@ impl NativeEffectCallback {
                 identity,
                 binding,
                 sample_rate: 48_000,
-                inputless: false,
                 state,
                 prepared,
             },
@@ -483,7 +487,7 @@ impl ForeignProcessors for NativeEffectCallback {
         _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
         if !self.matches(node)
-            || (!notes.is_empty() && !self.configuration.inputless)
+            || (!notes.is_empty() && !self.configuration.prepared.is_instrument_profile())
             || frames.len() > MAX_FRAMES
             || !node.input_gain.is_finite()
             || node.input_gain < 0.0
@@ -511,7 +515,7 @@ impl ForeignProcessors for NativeEffectCallback {
                 return Err(DeviceContractError::ForeignProcessingFailed);
             }
         }
-        if self.configuration.inputless {
+        if self.configuration.prepared.is_instrument_profile() {
             frames.fill([0.0; 2]);
         }
         self.input[..frames.len()].copy_from_slice(frames);
