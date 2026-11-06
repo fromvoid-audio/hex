@@ -614,6 +614,19 @@ pub struct NativeExternalAutomation<'a> {
     pub frame_offset: usize,
     pub values: &'a dyn ExternalParameterAutomation,
 }
+
+/// A stable, already-materialized set of per-processor windows. Implementors
+/// must return the same identity/window throughout one processing transaction
+/// without allocation, blocking, I/O or changing the underlying values. Each
+/// window may contain several sorted distinct targets for that processor.
+pub trait NativeExternalAutomationSet {
+    fn window(&self, identity: ProcessorInstanceIdentity) -> Option<NativeExternalAutomation<'_>>;
+}
+impl NativeExternalAutomationSet for NativeExternalAutomation<'_> {
+    fn window(&self, identity: ProcessorInstanceIdentity) -> Option<NativeExternalAutomation<'_>> {
+        (self.identity == identity).then_some(*self)
+    }
+}
 struct ExternalSegment<'a> {
     values: &'a dyn ExternalParameterAutomation,
     start: usize,
@@ -2346,6 +2359,44 @@ impl NativeRuntimeChain {
             &[StereoFrame],
         ),
     ) -> Result<(), DeviceContractError> {
+        let set = external
+            .as_ref()
+            .map(|window| window as &dyn NativeExternalAutomationSet);
+        self.process_range_tapped_with_foreign_input_and_external_set(
+            range,
+            frames,
+            frame_offset,
+            clock,
+            output_clock,
+            foreign,
+            transient,
+            set,
+            observer,
+        )
+    }
+
+    /// The same transaction with at most one materialized target group per
+    /// exact processor. Frozen tails cannot consume current groups.
+    #[allow(clippy::too_many_arguments)]
+    pub fn process_range_tapped_with_foreign_input_and_external_set(
+        &mut self,
+        range: std::ops::Range<usize>,
+        frames: &mut [StereoFrame],
+        frame_offset: usize,
+        clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
+        foreign: &mut dyn ForeignProcessors,
+        transient: Option<&mut NativeTransientProcessing>,
+        external: Option<&dyn NativeExternalAutomationSet>,
+        observer: &mut impl FnMut(
+            ProcessorChainOwner,
+            u64,
+            DeviceTypeId,
+            NodeSignalPhase,
+            usize,
+            &[StereoFrame],
+        ),
+    ) -> Result<(), DeviceContractError> {
         self.process_tapped(
             range,
             frames,
@@ -2374,6 +2425,40 @@ impl NativeRuntimeChain {
         output_clock: Option<&dyn NativeInstrumentClock>,
         transient: Option<&mut NativeTransientProcessing>,
         external: Option<NativeExternalAutomation<'_>>,
+        observer: &mut impl FnMut(
+            ProcessorChainOwner,
+            u64,
+            DeviceTypeId,
+            NodeSignalPhase,
+            usize,
+            &[StereoFrame],
+        ),
+    ) -> Result<(), DeviceContractError> {
+        let set = external
+            .as_ref()
+            .map(|window| window as &dyn NativeExternalAutomationSet);
+        self.process_auxiliary_stage_with_external_set(
+            stage,
+            block,
+            frame_offset,
+            clock,
+            output_clock,
+            transient,
+            set,
+            observer,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn process_auxiliary_stage_with_external_set(
+        &mut self,
+        stage: usize,
+        block: StereoAuxiliaryBlock<'_>,
+        frame_offset: usize,
+        clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
+        transient: Option<&mut NativeTransientProcessing>,
+        external: Option<&dyn NativeExternalAutomationSet>,
         observer: &mut impl FnMut(
             ProcessorChainOwner,
             u64,
@@ -2412,7 +2497,7 @@ impl NativeRuntimeChain {
         output_clock: Option<&dyn NativeInstrumentClock>,
         foreign: &mut dyn ForeignProcessors,
         mut transient: Option<&mut NativeTransientProcessing>,
-        external: Option<NativeExternalAutomation<'_>>,
+        external: Option<&dyn NativeExternalAutomationSet>,
         observer: &mut impl FnMut(
             ProcessorChainOwner,
             u64,
@@ -2442,19 +2527,27 @@ impl NativeRuntimeChain {
             {
                 return Err(DeviceContractError::InvalidDescriptor);
             }
-            if let Some(window) = external
-                && entries
+            if let Some(set) = external {
+                for (index, entry) in entries
                     .iter()
-                    .filter(|entry| {
-                        !entry.automation_frozen
-                            && entry.owner == window.identity.owner()
-                            && entry.device_id == window.identity.device_id()
-                    })
-                    .take(2)
-                    .count()
-                    > 1
-            {
-                return Err(DeviceContractError::InvalidDescriptor);
+                    .enumerate()
+                    .filter(|(_, entry)| !entry.automation_frozen)
+                {
+                    let identity = ProcessorInstanceIdentity {
+                        owner: entry.owner,
+                        device_id: entry.device_id,
+                    };
+                    if let Some(window) = set.window(identity)
+                        && (window.identity != identity
+                            || entries[..index].iter().any(|previous| {
+                                !previous.automation_frozen
+                                    && previous.owner == entry.owner
+                                    && previous.device_id == entry.device_id
+                            }))
+                    {
+                        return Err(DeviceContractError::InvalidDescriptor);
+                    }
+                }
             }
             for entry in entries {
                 let input = requested
@@ -2494,6 +2587,18 @@ impl NativeRuntimeChain {
                     frame_offset,
                     frames,
                 );
+                let identity = ProcessorInstanceIdentity {
+                    owner: entry.owner,
+                    device_id: entry.device_id,
+                };
+                let window = if entry.automation_frozen {
+                    None
+                } else {
+                    external.and_then(|set| set.window(identity))
+                };
+                if window.is_some_and(|window| window.identity != identity) {
+                    return Err(DeviceContractError::InvalidDescriptor);
+                }
                 Self::process_entry_with_foreign(
                     entry,
                     frames,
@@ -2505,7 +2610,7 @@ impl NativeRuntimeChain {
                     input
                         .and_then(NativeTransientOperation::value)
                         .filter(|value| !matches!(value, NativeTransientValue::HostOutputGain(_))),
-                    external,
+                    window,
                 )?;
                 if !frames.is_empty()
                     && let Some(operation) = input

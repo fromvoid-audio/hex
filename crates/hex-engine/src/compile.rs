@@ -419,6 +419,7 @@ fn compile_with_midi_preview<'a>(
         transforms,
         None,
         None,
+        &[],
     )
 }
 
@@ -433,6 +434,7 @@ fn compile_with_midi_preview_scoped<'a>(
     transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
     samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
     native_input: Option<crate::device_automation::NativeParameterInputTarget>,
+    external_inputs: &[crate::device_automation::NativeParameterInputTarget],
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     let mut previews = Vec::new();
     let clip_count = snapshot
@@ -458,6 +460,7 @@ fn compile_with_midi_preview_scoped<'a>(
         transforms,
         samplers,
         native_input,
+        external_inputs,
     )?;
     compiled_previews.sort_unstable_by_key(|clip| clip.clip_id);
     Ok((
@@ -488,6 +491,7 @@ fn compile_project<'a>(
         transforms,
         None,
         None,
+        &[],
     )
 }
 
@@ -503,6 +507,7 @@ fn compile_project_scoped<'a>(
     transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
     samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
     native_input: Option<crate::device_automation::NativeParameterInputTarget>,
+    external_inputs: &[crate::device_automation::NativeParameterInputTarget],
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
     let fallback = crate::audio_transform::AudioTransformPreparation::default();
     let transforms = transforms.unwrap_or(&fallback);
@@ -518,6 +523,7 @@ fn compile_project_scoped<'a>(
             transforms,
             samplers,
             native_input,
+            external_inputs,
         )
     })
 }
@@ -534,6 +540,7 @@ fn compile_project_inner<'a>(
     transforms: &crate::audio_transform::AudioTransformPreparation,
     samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
     native_input: Option<crate::device_automation::NativeParameterInputTarget>,
+    external_inputs: &[crate::device_automation::NativeParameterInputTarget],
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
     // #2740 supplies the pitch-aware runtime. Refuse until then rather than
     // accepting a saved tuned project and silently playing equal temperament.
@@ -801,7 +808,13 @@ fn compile_project_inner<'a>(
                 crate::midi_note_bank::MAX_ARRANGEMENT_NOTE_BANK_REFERENCES,
             )?;
         }
-        let effect_plan = compile_device_effects(track, registry, &device_context, native_input)?;
+        let effect_plan = compile_device_effects(
+            track,
+            registry,
+            &device_context,
+            native_input,
+            external_inputs,
+        )?;
         let device_chain = effect_plan.device_chain;
         for device in &device_chain {
             if let Some(definition) = &device.definition {
@@ -902,6 +915,7 @@ fn compile_project_inner<'a>(
             &device_context,
             registry,
             native_input,
+            external_inputs,
         )?;
         for device in &effect_plan.device_chain {
             if let Some(definition) = &device.definition {
@@ -940,6 +954,7 @@ fn compile_project_inner<'a>(
         &device_context,
         registry,
         native_input,
+        external_inputs,
     )?;
     for device in &main_plan.device_chain {
         if let Some(definition) = &device.definition {
@@ -1116,6 +1131,7 @@ fn compile_device_effects(
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     context: &hex_lattice::DevicePreparationContext<'_>,
     native_input: Option<crate::device_automation::NativeParameterInputTarget>,
+    external_inputs: &[crate::device_automation::NativeParameterInputTarget],
 ) -> Result<CompiledEffectPlan, Invalid> {
     compile_effect_devices(
         track.devices(),
@@ -1124,6 +1140,7 @@ fn compile_device_effects(
         context,
         registry,
         native_input,
+        external_inputs,
     )
 }
 
@@ -1134,6 +1151,7 @@ fn compile_effect_devices(
     context: &hex_lattice::DevicePreparationContext<'_>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     native_input: Option<crate::device_automation::NativeParameterInputTarget>,
+    external_inputs: &[crate::device_automation::NativeParameterInputTarget],
 ) -> Result<CompiledEffectPlan, Invalid> {
     let sample_rate = context.sample_rate;
     let mut devices = Vec::new();
@@ -1148,10 +1166,11 @@ fn compile_effect_devices(
         let migrated = registry
             .migrate_state(device.state())
             .map_err(|_| Invalid("native device state is unsupported or malformed"))?;
-        let automation = crate::device_automation::prepare_with_registry_and_input(
+        let automation = crate::device_automation::prepare_with_registry_inputs_and_external(
             device,
             registry,
             native_input,
+            external_inputs,
         )?;
         let prepared_device = registry
             .prepare_runtime_instance_with_automation(
@@ -1268,6 +1287,7 @@ pub(crate) fn project_with_source_bank<'a>(
     transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
     samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
     native_input: Option<crate::device_automation::NativeParameterInputTarget>,
+    external_inputs: &[crate::device_automation::NativeParameterInputTarget],
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     compile_with_midi_preview_scoped(
         snapshot,
@@ -1279,5 +1299,6 @@ pub(crate) fn project_with_source_bank<'a>(
         transforms,
         samplers,
         native_input,
+        external_inputs,
     )
 }

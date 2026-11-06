@@ -12,7 +12,7 @@ use hex_lattice_contract::DeviceAutomationTarget;
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn process_range_with_external(
     input: Option<&mut Processing>,
-    external: Option<hex_lattice::NativeExternalAutomation<'_>>,
+    external: Option<&dyn hex_lattice::NativeExternalAutomationSet>,
     chain: &mut NativeRuntimeChain,
     range: std::ops::Range<usize>,
     frames: &mut [Frame],
@@ -44,7 +44,7 @@ pub(crate) fn process_range_with_external(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn process_range_with_key(
     input: Option<&mut Processing>,
-    external: Option<hex_lattice::NativeExternalAutomation<'_>>,
+    external: Option<&dyn hex_lattice::NativeExternalAutomationSet>,
     chain: &mut NativeRuntimeChain,
     range: std::ops::Range<usize>,
     frames: &mut [Frame],
@@ -100,7 +100,7 @@ fn dispatch_stage(
     output_clock: Option<&dyn NativeInstrumentClock>,
     foreign: &mut dyn ForeignProcessors,
     transient: Option<&mut NativeTransientProcessing>,
-    external: Option<hex_lattice::NativeExternalAutomation<'_>>,
+    external: Option<&dyn hex_lattice::NativeExternalAutomationSet>,
     key: Option<Frame>,
     observer: &mut Option<&mut NodeSignalObserver<'_>>,
 ) -> Result<(), hex_lattice_contract::DeviceContractError> {
@@ -125,7 +125,7 @@ fn dispatch_stage(
             1,
         )
         .map_err(|_| hex_lattice_contract::DeviceContractError::InvalidDescriptor)?;
-        chain.process_auxiliary_stage(
+        chain.process_auxiliary_stage_with_external_set(
             range.start,
             block,
             offset,
@@ -136,7 +136,7 @@ fn dispatch_stage(
             &mut observe,
         )
     } else {
-        chain.process_range_tapped_with_foreign_input_and_external(
+        chain.process_range_tapped_with_foreign_input_and_external_set(
             range,
             frames,
             offset,
@@ -191,7 +191,7 @@ impl Processing {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn process_with_external(
         &mut self,
-        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
+        external: Option<&dyn hex_lattice::NativeExternalAutomationSet>,
         chain: &mut NativeRuntimeChain,
         range: std::ops::Range<usize>,
         frames: &mut [Frame],

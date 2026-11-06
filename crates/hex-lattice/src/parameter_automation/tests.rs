@@ -1322,3 +1322,127 @@ fn external_only_provider_and_host_slots_do_not_arm_live_input() {
     };
     assert!(prepared.block_with_external(None, 2, None, &bad).is_err());
 }
+
+#[test]
+fn external_groups_apply_multiple_targets_and_processors_once() {
+    use crate::{
+        NativeExternalAutomation, NativeExternalAutomationSet, NativeRuntimeChain,
+        PreparedRuntimeInstance, ProcessorChainOwner, ProcessorInstanceIdentity,
+    };
+    struct Windows<'a>([NativeExternalAutomation<'a>; 2]);
+    impl NativeExternalAutomationSet for Windows<'_> {
+        fn window(
+            &self,
+            identity: ProcessorInstanceIdentity,
+        ) -> Option<NativeExternalAutomation<'_>> {
+            self.0
+                .iter()
+                .copied()
+                .find(|window| window.identity == identity)
+        }
+    }
+    let owner = ProcessorChainOwner::Track(1);
+    let first = ProcessorInstanceIdentity::new(owner, 1).unwrap();
+    let second = ProcessorInstanceIdentity::new(owner, 2).unwrap();
+    let mut first_targets = [
+        DeviceAutomationTarget::HostInputGain,
+        DeviceAutomationTarget::HostOutputGain,
+    ];
+    first_targets.sort_unstable();
+    let second_targets = [DeviceAutomationTarget::HostInputGain];
+    let first_values = [Some(NormalizedAutomationValue::new(0.0).unwrap()), None];
+    let second_values = [
+        Some(NormalizedAutomationValue::new(1.0).unwrap()),
+        Some(NormalizedAutomationValue::new(0.5).unwrap()),
+    ];
+    let first_external = External {
+        targets: &first_targets,
+        values: &first_values,
+    };
+    let second_external = External {
+        targets: &second_targets,
+        values: &second_values,
+    };
+    let windows = Windows([
+        NativeExternalAutomation {
+            identity: first,
+            frame_offset: 0,
+            values: &first_external,
+        },
+        NativeExternalAutomation {
+            identity: second,
+            frame_offset: 0,
+            values: &second_external,
+        },
+    ]);
+    let instance = |id, targets: &[DeviceAutomationTarget]| {
+        let mut automation = PreparedParameterAutomation::default();
+        for &target in targets {
+            automation.prepare_external_host(target).unwrap();
+        }
+        PreparedRuntimeInstance {
+            automation,
+            meter: std::sync::Arc::new(crate::DeviceMeter::default()),
+            owner,
+            device_id: id,
+            device_type: DeviceTypeId::from_static("test.host"),
+            matrix: crate::StereoMatrix::identity(),
+            bypassed: false,
+            sample_rate: 48_000,
+            configuration: Some(std::sync::Arc::new(
+                NativeDeviceState::new(DeviceTypeId::from_static("test.host"), 1, vec![]).unwrap(),
+            )),
+            definition: None,
+        }
+    };
+    let mut chain = NativeRuntimeChain::new_prepared(vec![
+        instance(1, &first_targets),
+        instance(2, &second_targets),
+    ])
+    .unwrap();
+    chain.begin_block();
+    let mut output = [[1.0; 2]; 2];
+    chain
+        .process_range_tapped_with_foreign_input_and_external_set(
+            0..2,
+            &mut output,
+            0,
+            None,
+            None,
+            &mut crate::RefuseForeign,
+            None,
+            Some(&windows),
+            &mut |_, _, _, _, _, _| {},
+        )
+        .unwrap();
+    let low = HostGain::from_normalized(0.0).unwrap().linear();
+    let high = HostGain::from_normalized(1.0).unwrap().linear();
+    let middle = HostGain::from_normalized(0.5).unwrap().linear();
+    assert!((output[0][0] - low * low * high).abs() < 1e-7);
+    assert!((output[1][0] - middle).abs() < 1e-6);
+    chain.commit_block();
+
+    let mut duplicate = NativeRuntimeChain::new_prepared(vec![
+        instance(1, &first_targets),
+        instance(1, &first_targets),
+    ])
+    .unwrap();
+    duplicate.begin_block();
+    let mut untouched = [[1.0; 2]; 2];
+    assert!(
+        duplicate
+            .process_range_tapped_with_foreign_input_and_external_set(
+                0..2,
+                &mut untouched,
+                0,
+                None,
+                None,
+                &mut crate::RefuseForeign,
+                None,
+                Some(&windows),
+                &mut |_, _, _, _, _, _| {},
+            )
+            .is_err()
+    );
+    assert_eq!(untouched, [[1.0; 2]; 2]);
+}

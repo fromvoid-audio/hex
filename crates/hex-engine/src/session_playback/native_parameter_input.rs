@@ -9,7 +9,7 @@ pub(super) struct State {
     pub(super) input: Option<NativeTransientInput>,
     pub(super) processing: Option<crate::native_parameter_input::Processing>,
     pub(super) application: Option<NativeParameterApplication>,
-    pub(super) scalar: Option<Box<crate::scalar_automation::State>>,
+    pub(super) scalar: Option<Box<crate::scalar_automation::StateSet>>,
 }
 impl State {
     pub(super) fn is_empty(&self) -> bool {

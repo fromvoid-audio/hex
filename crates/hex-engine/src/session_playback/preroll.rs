@@ -563,7 +563,9 @@ impl RuntimeStorage<'_> {
         if self.scalar_automation {
             checked_add(
                 &mut total,
-                crate::scalar_automation::State::requested_data_bytes(),
+                crate::scalar_automation::StateSet::requested_data_bytes(
+                    self.revision.scalar_automation.as_deref()?,
+                )?,
             )?;
         }
         if self.native_parameter_state {
@@ -701,13 +703,13 @@ fn runtime_storage_preflight_bytes(
         .checked_sub(std::mem::size_of::<hex_lattice::NativeRuntimeChain>())?;
     let mut total = std::mem::size_of::<SessionPlayback>();
     checked_add(&mut total, std::mem::size_of::<MidiSpanBuffer>())?;
-    if revision.scalar_automation.is_some() {
+    if let Some(bindings) = revision.scalar_automation.as_deref() {
         checked_add(
             &mut total,
-            crate::scalar_automation::State::requested_data_bytes(),
+            crate::scalar_automation::StateSet::requested_data_bytes(bindings)?,
         )?;
     }
-    if revision.native_parameter_input_target().is_some() {
+    if revision.native_parameter_input_target().is_some() || revision.scalar_automation.is_some() {
         checked_add(
             &mut total,
             SessionPlayback::native_parameter_input_state_bytes(),
