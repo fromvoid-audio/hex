@@ -22,6 +22,25 @@ finally:
     sys.path.pop(0)
 
 
+@unittest.skipUnless(
+    sys.platform == "darwin" and os.environ.get("HEX_VST3_MACOS_SDK"),
+    "explicit macOS VST3 SDK required for the hidden AppKit fixture",
+)
+class EditorFrameTests(unittest.TestCase):
+    def test_refused_resize_restores_the_last_accepted_window_frame(self):
+        sdk = Path(os.environ["HEX_VST3_MACOS_SDK"])
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "editor-resize"
+            subprocess.run(
+                ["xcrun", "clang++", "-std=c++17", "-arch", "arm64", "-I" + str(sdk),
+                 str(NATIVE / "macos_editor_resize_fixture.mm"), "-framework", "AppKit",
+                 "-o", str(binary)],
+                check=True, timeout=120,
+            )
+            result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+
 class MachHeaderTests(unittest.TestCase):
     def test_wrong_role_and_architecture_refuse(self):
         # Parser component evidence only; not an executable native fixture.

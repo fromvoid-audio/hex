@@ -45,9 +45,12 @@ public:
         NSSize size{};
         if(!extent(*rect,size)) return kInvalidArgument;
         if(NSEqualSizes(size,[[window contentView] bounds].size)) return kResultOk;
+        const auto accepted_frame=[window frame];
         resizing=true;
         [window setContentSize:size];
         const auto result=view->onSize(rect);
+        // Keep AppKit and the view at the last accepted size after a refusal.
+        if(result!=kResultOk) [window setFrame:accepted_frame display:NO];
         resizing=false;
         return result;
     }
