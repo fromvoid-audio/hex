@@ -183,6 +183,141 @@ fn render_completed_block(harness: &ResidentHarness) -> [hex_engine::Frame; 256]
 
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts and optional installed catalog"]
+fn second_vst3_instrument_sounds_during_the_same_playback() {
+    const CHILD: &str = "HEX_DESKTOP_TEST_SECOND_LIVE_INSTRUMENT";
+    let installed = std::env::var("HEX_TEST_VST3_INSTRUMENT_BUNDLE").ok();
+    if std::env::var_os(CHILD).is_none() {
+        let test = std::thread::current().name().unwrap().to_owned();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .args(["--exact", &test, "--ignored", "--nocapture"])
+            .env(CHILD, "1");
+        if installed.is_none() {
+            child.env("HEX_ORIGINAL_INSTANCE_VARIANT", "127");
+        }
+        let result = child.output().unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let _native = native_fixture();
+    let rate = if installed.is_some() { 44_100 } else { 48_000 };
+    let mut harness = ResidentHarness::with_plugins_at_rate(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        rate,
+    );
+    assert!(harness.next().error.is_none());
+    let (mut applied, _) = harness.applied(0);
+    let mut expected_output = None;
+    harness.run(Request::Edit(Command::SetLoopRegion {
+        start: 0,
+        end: u64::from(rate) * 4,
+        enabled: true,
+    }));
+    (applied, _) = harness.applied(applied);
+    for (name, balance) in [("left", -1.0), ("right", 1.0)] {
+        let added = harness.run(Request::Edit(Command::AddMidiTrack { name: name.into() }));
+        let Some(Created::Track(track)) = added.created else {
+            panic!("midi track")
+        };
+        (applied, _) = harness.applied(applied);
+        harness.run(Request::Edit(Command::Balance { track, balance }));
+        (applied, _) = harness.applied(applied);
+        let length = BeatTime::from_quarters(8).unwrap();
+        let placed = harness.run(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length,
+        }));
+        let Some(Created::Clip(clip)) = placed.created else {
+            panic!("midi clip")
+        };
+        (applied, _) = harness.applied(applied);
+        let note = harness.run(Request::Edit(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: length,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        }));
+        (applied, _) = harness.applied(applied);
+        let mut insertion = request(&note.state, PluginEffectDestination::Instrument(track));
+        if let Some(bundle) = installed.as_ref() {
+            let catalog =
+                PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap());
+            insertion.selection =
+                installed_selection(&catalog, bundle, hex_plugin_catalog::PluginRole::Instrument);
+        }
+        harness
+            .service
+            .submit(Request::InsertPluginEffect(insertion))
+            .unwrap();
+        let end = Instant::now() + Duration::from_secs(5);
+        let accepted = loop {
+            harness.pump();
+            harness.render_worker_step();
+            if let Ok(event) = harness.service.try_event()
+                && !event.plugin_effect_complete.is_empty()
+            {
+                break event;
+            }
+            assert!(Instant::now() < end, "matching live insertion terminal");
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert!(
+            accepted.error.is_none() && accepted.plugin_effect_complete[0].accepted,
+            "{:?}",
+            accepted.error
+        );
+        let (next, metadata) = harness.applied(applied);
+        assert_eq!(metadata.context.editor_revision, accepted.state.revision);
+        applied = next;
+        let audio = harness.audio.as_mut().unwrap();
+        let output = audio.control.output_identity().unwrap();
+        if let Some(original) = expected_output {
+            assert_eq!(output, original);
+            assert!(audio.status().unwrap().playing.load(Acquire));
+        } else {
+            expected_output = Some(output);
+            audio.control.command(PlaybackCommand::Play).unwrap();
+        }
+        let mut peak = [0.0_f32; 2];
+        for _ in 0..12 {
+            for frame in render_completed_block(&harness) {
+                for channel in 0..2 {
+                    peak[channel] = peak[channel].max(frame[channel].abs());
+                }
+            }
+        }
+        assert!(
+            peak[0] > 0.001,
+            "original instrument must keep sounding: {peak:?}"
+        );
+        if name == "left" {
+            assert!(
+                peak[1] < 0.001,
+                "first instrument is isolated left: {peak:?}"
+            );
+        } else {
+            assert!(
+                peak[1] > 0.001,
+                "second instrument must sound on the same playback: {peak:?}"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires explicit source-bound SDK receipts and optional installed catalog"]
 fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
     const NAME: &str = "native_audio::tests::plugins::instruments::instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph";
     const CHILD: &str = "HEX_DESKTOP_TEST_INSTRUMENT_CHILD";

@@ -391,6 +391,13 @@ impl CompensationRuntime {
     pub(crate) fn history_horizon(&self) -> u32 {
         self.plan.max_latency_frames()
     }
+    pub(crate) fn edge_history_is_silent(&self, index: usize) -> bool {
+        self.is_closed()
+            && self
+                .edges
+                .get(index)
+                .is_some_and(DelayPair::history_is_silent)
+    }
     pub(crate) fn can_copy_edge_history_from(
         &self,
         target: usize,

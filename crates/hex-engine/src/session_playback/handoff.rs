@@ -1,5 +1,5 @@
 use super::*;
-use crate::MidiTiming;
+use crate::{MidiTiming, Track};
 mod shared_sources;
 use shared_sources::SharedSourceHandoff;
 
@@ -512,6 +512,14 @@ impl SessionPlayback {
         {
             return Err(SessionPlaybackError::RevisionSampleRateMismatch);
         }
+        let fresh = if previous.playing && !previous.foreign_arrangement.is_empty() {
+            fresh_instrument_track(
+                self.revision.arrangement().tracks(),
+                previous.revision.arrangement().tracks(),
+            )
+        } else {
+            None
+        };
         let foreign_handoff = self.foreign_arrangement.plan_handoff(
             &previous.foreign_arrangement,
             self.revision.arrangement().tracks(),
@@ -522,6 +530,7 @@ impl SessionPlayback {
                 playing: previous.playing,
                 chase: false,
             },
+            fresh,
         )?;
         if self.analytic_continuations.len() != MAX_TRACKS
             || self.analytic_continuation_scratch.len() != MAX_TRACKS
@@ -699,11 +708,17 @@ impl SessionPlayback {
                 .any(|tail| tail.output_active);
         // None: the delay layout cannot carry the moved clock (refused below
         // unless a paused donor takes the reset at its cursor).
+        let fresh_history = fresh.filter(|_| {
+            self.compensation
+                .as_ref()
+                .zip(previous.compensation.as_ref())
+                .is_some_and(|(candidate, old)| !candidate.can_copy_from(old, None))
+        });
         let planned_transfer = match (&self.compensation, &previous.compensation) {
             (Some(candidate), Some(old))
                 if (candidate.graph.compatible(&old.graph) || mapped_main_clock)
                     && donor_epoch_matches
-                    && candidate.can_copy_from(old) =>
+                    && candidate.can_copy_from(old, fresh_history) =>
             {
                 Some(1_u8)
             }
@@ -4604,7 +4619,7 @@ impl SessionPlayback {
         if clock_transfer == 1 {
             if let (Some(candidate), Some(old)) = (&mut self.compensation, &previous.compensation) {
                 candidate
-                    .copy_from(old)
+                    .copy_from(old, fresh_history)
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
             }
         } else if clock_transfer == 2 {
@@ -5332,6 +5347,44 @@ fn cut_arrangement_voices_for_remap(
         }
     }
     Ok(())
+}
+
+/// Only one independent cold track can acquire fresh pre-Main history in a
+/// handoff. Graph and runtime preflight separately prove routing and PCM.
+fn fresh_instrument_track(candidate: &[Track], previous: &[Track]) -> Option<TrackId> {
+    let unconnected = |track: &Track| {
+        track.clips.is_empty() && track.device_chain.is_empty() && track.midi_source_index.is_none()
+    };
+    let mut fresh = None;
+    for (index, track) in candidate
+        .iter()
+        .enumerate()
+        .filter(|(_, track)| unconnected(track))
+    {
+        let Some(id) = track.canonical_track_id() else {
+            continue;
+        };
+        if track.source_id.is_some()
+            && (track.foreign_instrument.is_none() || track.source_receiver_index != Some(index))
+        {
+            continue;
+        }
+        let same_id = |old: &&Track| old.canonical_track_id() == Some(id);
+        let old = previous
+            .get(index)
+            .filter(same_id)
+            .or_else(|| previous.iter().find(same_id));
+        let added =
+            old.is_none() && (track.instrument_id.is_none() || track.foreign_instrument.is_some());
+        let populated = track.foreign_instrument.is_some()
+            && old.is_some_and(|old| {
+                old.instrument_id.is_none() && old.source_id.is_none() && unconnected(old)
+            });
+        if (added || populated) && fresh.replace(id).is_some() {
+            return None;
+        }
+    }
+    fresh
 }
 
 /// The candidate frame and loop pass at the donor cursor's Arrangement beat.
