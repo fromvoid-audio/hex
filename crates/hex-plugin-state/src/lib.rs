@@ -21,8 +21,9 @@
 //! byte swapping or case folding occurs. Initially only macOS arm64 is supported.
 //! Paths are deliberately absent: moving identical bytes cannot change identity.
 //!
-//! The existing 4096-byte generic envelope limit remains in force: at most4000
-//! combined opaque bytes. This is an explicit bounded profile, not arbitrary vendor
+//! The live codec still admits a 4096-byte envelope: at most 4000 combined
+//! opaque bytes. Project storage can preserve larger opaque state until the
+//! worker supports it. This is a bounded profile, not arbitrary vendor
 //! state support. Oversize capture refuses before allocation/copy without consuming
 //! caller buffers. Empty captured chunks differ from missing chunks. Unknown or
 //! malformed envelopes remain generic project state and must be retained intact;
@@ -30,10 +31,12 @@
 use hex_lattice_contract::{DeviceTypeId, MAX_NATIVE_DEVICE_STATE_BYTES, NativeDeviceState};
 use std::fmt;
 
-pub const TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.vst3");
+pub const TYPE_ID: DeviceTypeId = hex_lattice_contract::VST3_DEVICE_TYPE_ID;
 pub const STATE_VERSION: u32 = 1;
 const HEADER_BYTES: usize = 96;
-pub const MAX_OPAQUE_BYTES: usize = MAX_NATIVE_DEVICE_STATE_BYTES - HEADER_BYTES;
+/// Maximum complete envelope the live native worker protocol admits.
+pub const MAX_ENVELOPE_BYTES: usize = MAX_NATIVE_DEVICE_STATE_BYTES;
+pub const MAX_OPAQUE_BYTES: usize = MAX_ENVELOPE_BYTES - HEADER_BYTES;
 
 /// SDK factory class identity, independent of module path and project instance ID.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -140,7 +143,7 @@ pub fn decode(state: &NativeDeviceState) -> Result<State<'_>, Error> {
         return Err(Error::UnsupportedVersion(state.state_version()));
     }
     let bytes = state.payload();
-    if bytes.len() > MAX_NATIVE_DEVICE_STATE_BYTES {
+    if bytes.len() > MAX_ENVELOPE_BYTES {
         return Err(Error::TooLarge);
     }
     let header = bytes.get(..HEADER_BYTES).ok_or(Error::Malformed)?;

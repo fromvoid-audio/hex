@@ -263,18 +263,32 @@ class NativeInstanceTests(unittest.TestCase):
         return reply
 
     def test_instrument_note_offsets_gate_pcm_across_blocks(self):
-        session = self.session(variant=115, channels=(0, 2))
+        for variant in (115, 120):
+            with self.subTest(variant=variant):
+                session = self.session(variant=variant, channels=(0, 2))
+                self.assertEqual(session.message()[0], b"HXVIRD04")
+                for notes, expected in [
+                    ([(3, 0x92, 60, 127)], [0.] * 3 + [.5] * 5),
+                    ([(4, 0x92, 60, 0)], [.625] * 4 + [0.] * 4),
+                    ([], [0.] * 8),
+                ]:
+                    magic, reply = self.instrument_block(session, notes)
+                    self.assertEqual(magic, b"HXVB")
+                    self.assertEqual(reply[8:10], bytes(2))
+                    self.assertEqual(struct.unpack("<16f", reply[64:]), tuple(x for v in expected for x in (v, v)))
+                self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (3, 24))
+
+    def test_silent_input_instrument_refuses_routed_pcm_and_requires_a_midi_bus(self):
+        audio_only = self.session(variant=0, channels=(0, 2))
+        self.error(audio_only, 20)
+        self.terminal(audio_only, 20)
+
+        session = self.session(variant=120, channels=(0, 2))
         self.assertEqual(session.message()[0], b"HXVIRD04")
-        for notes, expected in [
-            ([(3, 0x92, 60, 127)], [0.] * 3 + [.5] * 5),
-            ([(4, 0x92, 60, 0)], [.625] * 4 + [0.] * 4),
-            ([], [0.] * 8),
-        ]:
-            magic, reply = self.instrument_block(session, notes)
-            self.assertEqual(magic, b"HXVB")
-            self.assertEqual(reply[8:10], bytes(2))
-            self.assertEqual(struct.unpack("<16f", reply[64:]), tuple(x for v in expected for x in (v, v)))
-        self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (3, 24))
+        session.socket.sendall(session.packet(8) + struct.pack("<16f", 1., *([0.] * 15)))
+        self.error(session, 8)
+        self.terminal(session, 8)
+        self.assertEqual(self.observation()[10], 0)
 
     def test_out_of_range_note_identity_refuses_before_dsp(self):
         session = self.session(variant=115, channels=(0, 2))
@@ -451,6 +465,36 @@ class NativeInstanceTests(unittest.TestCase):
         self.assertEqual(observed[6], struct.unpack("<i", struct.pack("<f", 1.))[0])
         self.terminal(session, 0, message=session.stop())
 
+    def test_unimplemented_controller_sync_preserves_both_chunks_and_restored_pcm(self):
+        fresh = self.session(variant=117)
+        self.ready(fresh, controller=True)
+        self.terminal(fresh, 0, message=fresh.stop())
+
+        state = self.startup_state(gain=.75, latency=0, scroll=91)
+        restored = self.session(variant=117, startup_state=state)
+        magic, ready = restored.message()
+        self.assertEqual((magic, ready[80:82]), (b"HXVIRD04", b"\x01\x01"))
+        self.assertEqual(struct.unpack_from("<If", ready[84:], 100), (0, .75))
+        self.assertEqual(ready[-8:], b"HXCT" + struct.pack("<I", 91))
+        _, inputs, (magic, pcm) = restored.render(7)
+        self.assertEqual(magic, b"HXVB")
+        self.assertEqual(struct.unpack("<14f", pcm[64:]), tuple(v * .375 for v in inputs))
+        self.terminal(restored, 0, message=restored.stop())
+
+    def test_restore_parameter_echo_and_empty_restart_do_not_change_restored_pcm(self):
+        for variant in (118, 119):
+            with self.subTest(variant=variant):
+                state = self.startup_state(gain=.75, latency=0, scroll=91)
+                session = self.session(variant=variant, startup_state=state)
+                magic, ready = session.message()
+                self.assertEqual((magic, ready[80:82]), (b"HXVIRD04", b"\x01\x01"))
+                self.assertEqual(struct.unpack_from("<If", ready[84:], 100), (0, .75))
+                self.assertEqual(ready[-8:], b"HXCT" + struct.pack("<I", 91))
+                _, inputs, (magic, pcm) = session.render(7)
+                self.assertEqual(magic, b"HXVB")
+                self.assertEqual(struct.unpack("<14f", pcm[64:]), tuple(v * .375 for v in inputs))
+                self.terminal(session, 0, message=session.stop())
+
     def test_startup_state_malformed_source_or_presence_never_enters_the_module(self):
         captured = self.startup_state()
         cases = []
@@ -470,9 +514,10 @@ class NativeInstanceTests(unittest.TestCase):
         for variant in [38, 42, 46, 50, 51, 52, 53, 54, 55, 56]:
             with self.subTest(variant=variant):
                 session = self.session(variant=variant, startup_state=self.startup_state())
-                self.error(session, 14)
+                expected = 26 if variant == 56 else 14
+                self.error(session, expected)
                 retained = variant == 52
-                self.terminal(session, 10 if retained else 14, closed=not retained, unloaded=not retained)
+                self.terminal(session, 10 if retained else expected, closed=not retained, unloaded=not retained)
                 self.assertEqual((self.observation()[8], self.observation()[10]), (0, 0))
                 if variant == 55:
                     self.assertEqual(self.restore_observation()[:3], (0, 0, 0), "controller topology refuses before applying component state")

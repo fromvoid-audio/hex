@@ -11,7 +11,8 @@ pub(super) fn reserved_backing(
     let processor_bytes = match state.processor.as_ref()? {
         Processor::Function(process) => std::mem::size_of_val(process.as_ref()),
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        Processor::Native(instance) => std::mem::size_of_val(instance.as_ref()),
+        Processor::Native(instance) => std::mem::size_of_val(instance.as_ref())
+            .checked_add(capture::MAX_RETAINED_PAYLOAD_BYTES)?,
     };
     Some(ChannelStorage {
         data_bytes: std::mem::size_of_val(state)
@@ -62,6 +63,7 @@ impl NativeWorker {
             .checked_add(ChannelStorage::owner_reservation::<State>()?.data_bytes)?
             .checked_add(std::mem::size_of::<hex_plugin_host::native::Prepared>())?
             .checked_add(std::mem::size_of::<Signal>())?
+            .checked_add(capture::MAX_RETAINED_PAYLOAD_BYTES)?
             .checked_add(capture_bytes(transport_runner))?
             .checked_add(std::mem::size_of::<Completion>())
     }

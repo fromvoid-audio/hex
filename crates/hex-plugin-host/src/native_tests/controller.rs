@@ -335,14 +335,14 @@ fn large_controller_inventory_pages_pcm_and_saved_state_remain_bounded() {
         .and_then(|pending| pending.complete_on_control(Some(options().presentation)))
     };
     let case = Case::new();
-    let mut instance = start(&case, "519", None).unwrap();
+    let mut instance = start(&case, "2304", None).unwrap();
     let first = page(&mut instance, ParameterPageQuery::default());
-    assert_eq!((first.total, first.as_slice()[0].id), (519, 1001));
+    assert_eq!((first.total, first.as_slice()[0].id), (2304, 1001));
     let last_page = |instance: &mut Prepared, revision| {
         page(
             instance,
             ParameterPageQuery {
-                first: 516,
+                first: 2300,
                 revision,
                 conversion: None,
             },
@@ -354,7 +354,7 @@ fn large_controller_inventory_pages_pcm_and_saved_state_remain_bounded() {
             .iter()
             .map(|parameter| parameter.id)
             .collect::<Vec<_>>(),
-        [1517, 1518, 7]
+        [3301, 3302, 3303, 7]
     );
     let mut input = request(instance.configuration(), 0);
     input
@@ -370,19 +370,19 @@ fn large_controller_inventory_pages_pcm_and_saved_state_remain_bounded() {
     let updated = page(&mut instance, ParameterPageQuery::default());
     let updated_gain = last_page(&mut instance, updated.revision);
     assert_eq!(
-        (updated.total, updated_gain.as_slice()[2].normalized),
-        (519, 0.5)
+        (updated.total, updated_gain.as_slice()[3].normalized),
+        (2304, 0.5)
     );
     let stopped = instance.quiesce_retained_on_control().unwrap();
     let (stopped, captured) = stopped.capture_state_retained_on_control().unwrap();
     assert!(stopped.retire_on_control().unwrap().status.success());
     let independent = Case::new();
-    let mut restored = start(&independent, "519", Some(captured)).unwrap();
+    let mut restored = start(&independent, "2304", Some(captured)).unwrap();
     let values = page(&mut restored, ParameterPageQuery::default());
     let restored_gain = last_page(&mut restored, values.revision);
     assert_eq!(
-        (values.total, restored_gain.as_slice()[2].normalized),
-        (519, 0.5)
+        (values.total, restored_gain.as_slice()[3].normalized),
+        (2304, 0.5)
     );
     assert!(
         restored
@@ -392,7 +392,7 @@ fn large_controller_inventory_pages_pcm_and_saved_state_remain_bounded() {
             .success()
     );
     for (malformed, diagnostic) in [
-        ("577", "inventory exceeds the host capacity"),
+        ("2305", "inventory exceeds the host capacity"),
         ("duplicate", "invalid controller parameter inventory"),
     ] {
         let case = Case::new();

@@ -34,6 +34,7 @@ class Instance final {
     bool component_initialized = false, controller_initialized = false;
     bool handler_set = false, connected_component = false, connected_controller = false;
     bool input_active = false, output_active = false, active = false;
+    bool silent_input_ = false;
     int32 event_input_channels_ = 0;
     bool configured = false, configuration_started = false, opened = false, used = false;
     ProcessingConfiguration configuration_{};
@@ -63,6 +64,13 @@ class Instance final {
         if (a) a->release();
         if (b) b->release();
         return first && second;
+    }
+    bool sync_controller_component_state(StateStream* stream) {
+        if (!stream->rewind_read_only_on_control()) return false;
+        const auto result=host->apply_saved_state([&] { return controller->setComponentState(stream); });
+        // A controller can decline this synchronization method while the
+        // processor and controller still own their separate state chunks.
+        return (result==kResultOk || result==kNotImplemented) && stream->valid() && stream->exclusive();
     }
     bool refuse_cleanup() { quarantined.store(true); return false; }
 public:
@@ -145,17 +153,15 @@ public:
         restoration_started=true;
         restore_component_stream=new(std::nothrow) StateStream(state.bytes.data(),state.component_bytes);
         if (!restore_component_stream || !restore_component_stream->valid() ||
-            component->setState(restore_component_stream)!=kResultOk ||
+            host->apply_saved_state([&] { return component->setState(restore_component_stream); })!=kResultOk ||
             !restore_component_stream->valid() || !restore_component_stream->exclusive()) return false;
         if (controller) {
-            if (!restore_component_stream->rewind_read_only_on_control() ||
-                controller->setComponentState(restore_component_stream)!=kResultOk ||
-                !restore_component_stream->valid() || !restore_component_stream->exclusive()) return false;
+            if (!sync_controller_component_state(restore_component_stream)) return false;
             if (state.controller) {
                 restore_controller_stream=new(std::nothrow) StateStream(
                     state.bytes.data()+state.component_bytes,state.controller_bytes);
                 if (!restore_controller_stream || !restore_controller_stream->valid() ||
-                    controller->setState(restore_controller_stream)!=kResultOk ||
+                    host->apply_saved_state([&] { return controller->setState(restore_controller_stream); })!=kResultOk ||
                     !restore_controller_stream->valid() || !restore_controller_stream->exclusive()) return false;
             }
             if (host->refresh_on_control(controller).disposition!=HostDisposition::Refreshed ||
@@ -181,7 +187,19 @@ public:
             return ConfigurationResult::UnsupportedPrecision;
         const auto input_count=component->getBusCount(kAudio,kInput);
         const auto output_count=component->getBusCount(kAudio,kOutput);
-        if (!audio_buses(component,kInput,input_count,request.input_channels,false) ||
+        // A MIDI generator may advertise one main audio input. The helper
+        // preserves its native layout and supplies silence; Hex routes no
+        // audio to it. The wire and graph still see a zero-input instrument.
+        auto sdk=request;
+        const bool silent_input=!request.input_channels && input_count==1;
+        if (silent_input) {
+            BusInfo info{};
+            if (!audio_bus_info(component,kInput,0,kMain,info) || info.channelCount>2)
+                return ConfigurationResult::UnsupportedTopology;
+            sdk.input_channels=info.channelCount;
+            sdk.input_enabled=true;
+        }
+        if (!audio_buses(component,kInput,input_count,sdk.input_channels,false) ||
             !audio_buses(component,kOutput,output_count,request.output_channels,false))
             return ConfigurationResult::UnsupportedTopology;
         int32 event_channels=0;
@@ -195,19 +213,29 @@ public:
                 event_channels=event.channelCount;
             }
         }
-        const auto main_input=arrangement(request.input_channels);
+        if (silent_input && !event_channels) return ConfigurationResult::UnsupportedTopology;
+        auto main_input=arrangement(sdk.input_channels);
+        if (silent_input &&
+            (processor->getBusArrangement(kInput,0,main_input)!=kResultOk ||
+             SpeakerArr::getChannelCount(main_input)!=sdk.input_channels))
+            return ConfigurationResult::ArrangementMismatch;
         const auto main_output=arrangement(request.output_channels);
         SpeakerArrangement aux_input{};
         if (input_count==2 &&
             (processor->getBusArrangement(kInput,1,aux_input)!=kResultOk || !aux_input))
             return ConfigurationResult::ArrangementMismatch;
         SpeakerArrangement inputs[]{main_input,aux_input},output=main_output;
-        if (processor->setBusArrangements(input_count?inputs:nullptr,input_count,&output,output_count)!=kResultOk)
-            return ConfigurationResult::ArrangementRefused;
         SpeakerArrangement observed{};
+        // Reuse a matching default for silent-input instruments. Some
+        // processors refuse a redundant setBusArrangements call.
+        const bool reuse_layout=silent_input &&
+            processor->getBusArrangement(kOutput,0,observed)==kResultOk && observed==main_output;
+        if (!reuse_layout &&
+            processor->setBusArrangements(input_count?inputs:nullptr,input_count,&output,output_count)!=kResultOk)
+            return ConfigurationResult::ArrangementRefused;
         if (component->getBusCount(kAudio,kInput)!=input_count ||
             component->getBusCount(kAudio,kOutput)!=output_count ||
-            !audio_buses(component,kInput,input_count,request.input_channels,true) ||
+            !audio_buses(component,kInput,input_count,sdk.input_channels,true) ||
             !audio_buses(component,kOutput,output_count,request.output_channels,true) ||
             processor->getBusArrangement(kOutput,0,observed)!=kResultOk || observed!=main_output ||
             (input_count && (processor->getBusArrangement(kInput,0,observed)!=kResultOk || observed!=main_input)) ||
@@ -223,10 +251,10 @@ public:
         if (component->activateBus(kAudio,kOutput,0,request.output_enabled)!=kResultOk)
             return ConfigurationResult::ActivationRefused;
         output_active = request.output_enabled;
-        if (request.input_channels) {
-            if (component->activateBus(kAudio,kInput,0,request.input_enabled)!=kResultOk)
+        if (sdk.input_channels) {
+            if (component->activateBus(kAudio,kInput,0,sdk.input_enabled)!=kResultOk)
                 return ConfigurationResult::ActivationRefused;
-            input_active = request.input_enabled;
+            input_active = sdk.input_enabled;
         }
         if (event_channels) {
             if (component->activateBus(kEvent,kInput,0,true)!=kResultOk)
@@ -234,7 +262,8 @@ public:
             event_input_channels_=event_channels;
         }
         if (component->setActive(true) != kResultOk) return ConfigurationResult::ActivationRefused;
-        configuration_=request;
+        configuration_=sdk;
+        silent_input_=silent_input;
         active = true; configured = true;
         return ConfigurationResult::Prepared;
     }
@@ -286,9 +315,7 @@ private:
         } else if (first!=kNotImplemented && first!=kResultFalse) return CaptureResult::Refused;
         if (controller) {
             if (initial && !restored && captured.component) {
-                if (!component_stream->rewind_read_only_on_control() ||
-                    controller->setComponentState(component_stream)!=kResultOk ||
-                    !component_stream->valid() || !component_stream->exclusive()) return CaptureResult::Refused;
+                if (!sync_controller_component_state(component_stream)) return CaptureResult::Refused;
                 if (host->refresh_on_control(controller).disposition!=HostDisposition::Refreshed ||
                     host->refusal_flags()) return CaptureResult::Refused;
             }
@@ -333,7 +360,8 @@ public:
         const auto queried=component->queryInterface(INLINE_UID_OF(IAudioPresentationLatency),reinterpret_cast<void**>(&view));
         if (interface_absent(queried,view)) return PresentationResult::Absent;
         if (queried!=kResultOk || !view) { if (view) view->release();return PresentationResult::Refused; }
-        const bool ok=(!configuration_.input_channels || view->setAudioPresentationLatencySamples(kInput,0,input)==kResultOk) &&
+        const bool ok=(silent_input_ || !configuration_.input_channels ||
+            view->setAudioPresentationLatencySamples(kInput,0,input)==kResultOk) &&
             view->setAudioPresentationLatencySamples(kOutput,0,output)==kResultOk;
         view->release();return ok?PresentationResult::Applied:PresentationResult::Refused;
     }
