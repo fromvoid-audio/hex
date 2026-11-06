@@ -279,7 +279,7 @@ pub(super) fn render_return_effect(
                     cx,
                     device,
                     NativeDeviceClass::Effect,
-                    theme::text("vst3"),
+                    view.vst3_device_title(device),
                 ),
                 theme::device_frame_style(selected),
                 leading,
