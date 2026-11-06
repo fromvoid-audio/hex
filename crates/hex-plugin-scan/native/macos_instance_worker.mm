@@ -401,6 +401,37 @@ int main(int argc,char** argv) {
                         }
                         return true;
                     };
+                    const auto flush_idle_editor=[&] {
+                        // Leave a full receipt batch for its reader to consume.
+                        // The next poll can apply another fixed-size batch.
+                        if(completed_edit_count==completed_edits.size() || !instance.ready_parameter_edits()) return true;
+                        instance.refresh_processing_parameters(processing_parameters);
+                        if(!parameter_input.reset(0,false) || !parameter_output.reset(0,true) || !stage_edits()) return false;
+                        if(parameter_input.size()) {
+                            if(!parameter_input.begin_sdk() || !parameter_output.begin_sdk()) {
+                                error(channel,&*config,Processing);std::_Exit(Processing);
+                            }
+                            ProcessData flush{};flush.processMode=kRealtime;flush.symbolicSampleSize=kSample32;
+                            flush.inputParameterChanges=&parameter_input;flush.outputParameterChanges=&parameter_output;
+                            phase.store(2,std::memory_order_release);
+                            const auto result=instance.flush_idle(flush);
+                            const bool input_returned=parameter_input.end_sdk(),output_returned=parameter_output.end_sdk();
+                            if(!input_returned || !output_returned) {error(channel,&*config,Processing);std::_Exit(Processing);}
+                            if(result!=hex_instance::FlushResult::Applied) return false;
+                            // All offsets are zero. Mirror the processor's
+                            // returned value over the input value for each ID.
+                            for(const auto* changes : {&parameter_input,&parameter_output}) {
+                                for(size_t n=0;n<changes->size();++n) {
+                                    hex_instance::ParameterPoint point{};
+                                    if(!changes->point(n,point) || !processing_parameters.find(point.id) ||
+                                        !parameter_feedback.put(point.id,point.normalized)) return false;
+                                }
+                            }
+                            instance.publish_parameter_feedback(parameter_feedback);
+                        }
+                        for(size_t n=0;n<applying_edit_count;++n) complete_edit(applying_edits[n]);
+                        return true;
+                    };
                     uint64_t page_operation=0;
                     const auto page_reply=[&](const wire::Packet& request,bool poll) {
                         auto state=page_stage.load(std::memory_order_acquire);
@@ -493,6 +524,7 @@ int main(int argc,char** argv) {
                             continue;
                         }
                         if(received==9) {
+                            if(packet.flush_idle_edits && !flush_idle_editor()) {worker_failure.store(Processing);break;}
                             if(!read_edit_receipts(packet)) {worker_failure.store(ProtocolFailure);break;}
                             continue;
                         }
@@ -572,7 +604,7 @@ int main(int argc,char** argv) {
                                     resumed=packet.read(channel,*config,blocks,frames);continue;
                                 }
                                 if(resumed==9) {
-                                    if(!read_edit_receipts(packet)) {worker_failure.store(ProtocolFailure);break;}
+                                    if(packet.flush_idle_edits || !read_edit_receipts(packet)) {worker_failure.store(ProtocolFailure);break;}
                                     resumed=packet.read(channel,*config,blocks,frames);continue;
                                 }
                                 if(resumed==8) {

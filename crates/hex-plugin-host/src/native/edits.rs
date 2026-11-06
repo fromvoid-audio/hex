@@ -7,7 +7,7 @@ impl Prepared {
     /// callbacks remain native-owned under backpressure. Source cancellation or
     /// refusal terminates queued operations; no receipt grants canonical edits.
     pub fn poll_parameter_edits_on_worker(&mut self) -> Result<protocol::ParameterEdits> {
-        Ok(self.poll_edits_on_worker(false)?.edits)
+        Ok(self.poll_edits_on_worker(false, false)?.edits)
     }
 
     /// Opt this source into latency restart recovery and read a bounded batch.
@@ -15,17 +15,29 @@ impl Prepared {
     /// this poll for subsequent observations on the same source. Reading an
     /// ordinal does not cover it or grant permission to resume.
     pub fn poll_recovery_edits_on_worker(&mut self) -> Result<protocol::RecoveryEdits> {
-        self.poll_edits_on_worker(true)
+        self.poll_edits_on_worker(true, false)
     }
 
-    fn poll_edits_on_worker(&mut self, recovery: bool) -> Result<protocol::RecoveryEdits> {
+    /// Apply one batch of queued editor changes on the original SDK worker
+    /// using a parameter-only call and preserving the completed PCM prefix.
+    pub fn service_idle_editor_edits_on_worker(&mut self) -> Result<protocol::RecoveryEdits> {
+        self.poll_edits_on_worker(true, true)
+    }
+
+    fn poll_edits_on_worker(
+        &mut self,
+        recovery: bool,
+        flush_idle: bool,
+    ) -> Result<protocol::RecoveryEdits> {
         let result = (|| {
             self.require_live_epoch()?;
             let operation = self
                 .edit_query_sequence
                 .checked_add(1)
                 .ok_or(Error::Protocol("parameter edit operation exhausted"))?;
-            let request = if recovery {
+            let request = if flush_idle {
+                protocol::idle_editor_edit_request(&self.config, self.sequence, operation)?
+            } else if recovery {
                 protocol::recovery_edit_request(&self.config, self.sequence, operation)?
             } else {
                 protocol::edit_request(&self.config, self.sequence, operation)?

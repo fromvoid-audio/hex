@@ -101,10 +101,11 @@ impl Custody {
     pub(in crate::candidate_custody) fn native_recovery_edits(
         &self,
         binding: Binding,
+        flush_idle: bool,
     ) -> Result<Option<hex_plugin_host::protocol::RecoveryEdits>, &'static str> {
         self.with_live_capture(binding, |owner| match owner {
-            Owner::Effect(owner) => owner.poll_recovery_edits(),
-            Owner::Loaned(owner) => owner.poll_recovery_edits(),
+            Owner::Effect(owner) => owner.poll_recovery_edits(flush_idle),
+            Owner::Loaned(owner) => owner.poll_recovery_edits(flush_idle),
             _ => Err("native edit owner differs"),
         })
     }
@@ -355,9 +356,10 @@ impl CandidateRoot {
     pub(crate) fn native_source_recovery_edits(
         &self,
         binding: Binding,
+        flush_idle: bool,
     ) -> Result<Option<hex_plugin_host::protocol::RecoveryEdits>, &'static str> {
         self.require_native_source_control_open()?;
-        let result = self.0.eligible.native_recovery_edits(binding)?;
+        let result = self.0.eligible.native_recovery_edits(binding, flush_idle)?;
         self.require_native_source_control_open()?;
         Ok(result)
     }
