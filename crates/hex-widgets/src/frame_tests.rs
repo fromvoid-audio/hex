@@ -140,12 +140,18 @@ fn rendered_shell_and_rounded_sections_clip_oversized_artwork_and_hits(cx: &mut 
             Some(gpui::Background::from(rgb(STYLE.background)))
         );
 
-        assert_eq!(header.size.height, px(DEVICE_FRAME_HEADER_HEIGHT));
+        assert_eq!(header.size.width, px(DEVICE_FRAME_HEADER_WIDTH));
+        assert_eq!(
+            header.origin.x,
+            frame.origin.x + px(DEVICE_FRAME_BORDER_WIDTH)
+        );
         assert_eq!(
             header.origin.y,
             frame.origin.y + px(DEVICE_FRAME_BORDER_WIDTH)
         );
-        assert_eq!(body.origin.y, header.bottom_left().y);
+        assert_eq!(body.origin.y, header.origin.y);
+        assert_eq!(body.origin.x, header.right());
+        assert_eq!(header.size.height, body.size.height);
         assert_eq!(
             body.bottom_left().y,
             frame.bottom_left().y - px(DEVICE_FRAME_BORDER_WIDTH)

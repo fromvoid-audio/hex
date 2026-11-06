@@ -397,26 +397,17 @@ pub(super) fn render_return_effect(
             device_view,
         ),
     );
-    let frame_width = match device.state().type_id().as_str() {
-        Ok("hex.utility") => UTILITY_FRAME_WIDTH,
-        Ok("hex.eq8" | "hex.eq") => super::eq8_panel::FRAME_WIDTH,
-        Ok("hex.saturator") => super::saturator_panel::FRAME_WIDTH,
-        Ok("hex.limiter") => super::limiter_panel::FRAME_WIDTH,
-        Ok("hex.compressor") => super::compressor_panel::FRAME_WIDTH,
-        Ok("hex.gate") => super::gate_panel::FRAME_WIDTH,
-        Ok("hex.reverb") => super::reverb_panel::FRAME_WIDTH,
-        Ok("hex.delay") => super::delay_panel::FRAME_WIDTH,
-        Ok("hex.auto-pan") => super::auto_pan_panel::FRAME_WIDTH,
-        Ok("hex.overdrive") => super::overdrive_panel::FRAME_WIDTH,
-        _ => DEVICE_FRAME_WIDTH,
-    };
-    let rendered = div().w(px(frame_width)).flex_shrink_0().child(rendered);
+    let card_width = device_card_width(NativeDeviceClass::Effect, device.state().type_id());
+    let rendered = div()
+        .w(px(card_width - super::device_meter::WIDTH))
+        .flex_shrink_0()
+        .child(rendered.h_full());
     div()
         .id(ElementId::Name(
             format!("effect-device-{}", id.value()).into(),
         ))
         .debug_selector(move || format!("effect-device-{}", id.value()))
-        .w(px(frame_width + super::device_meter::WIDTH))
+        .w(px(card_width))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex()
         .flex_shrink_0()
