@@ -98,6 +98,50 @@ impl Editor {
         .is_some_and(|entry| entry.section_publication)
     }
 
+    /// Apply a resolved clock choice as one history step, after the caller
+    /// has prepared the exact successor media and output. Undo and Redo can
+    /// inspect and prepare the original clocks through the usual history API.
+    pub fn change_sample_rate_prepared<T, E: From<Invalid>>(
+        &mut self,
+        rate: u32,
+        mode: crate::SampleRateMode,
+        prepare: impl FnOnce(&Project) -> Result<T, E>,
+    ) -> Result<Option<T>, E> {
+        let candidate = self
+            .project
+            .at_sample_rate(rate)?
+            .with_sample_rate_mode(mode);
+        if candidate == self.project {
+            return Ok(None);
+        }
+        self.undo
+            .try_reserve(1)
+            .map_err(|_| E::from(Invalid("could not reserve sample rate history")))?;
+        let prepared = prepare(&candidate)?;
+        self.commit_candidate(candidate, None, false, false);
+        Ok(Some(prepared))
+    }
+
+    fn commit_candidate(
+        &mut self,
+        candidate: Project,
+        midi_effect: Option<crate::MidiHistoryEffect>,
+        section_publication: bool,
+        stopped_bounce: bool,
+    ) {
+        let previous = std::mem::replace(&mut self.project, candidate);
+        if self.undo.len() == self.capacity {
+            self.undo.pop_front();
+        }
+        self.undo.push_back(HistoryEntry {
+            project: previous,
+            midi_effect,
+            section_publication,
+            stopped_bounce,
+        });
+        self.redo.clear();
+    }
+
     pub fn execute(&mut self, command: Command) -> Result<Created, Invalid> {
         self.execute_validated(command, |_| Ok(()))
     }
@@ -195,17 +239,7 @@ impl Editor {
         if candidate == self.project {
             return Ok((result, prepared));
         }
-        let previous = std::mem::replace(&mut self.project, candidate);
-        if self.undo.len() == self.capacity {
-            self.undo.pop_front();
-        }
-        self.undo.push_back(HistoryEntry {
-            project: previous,
-            midi_effect: effect,
-            section_publication,
-            stopped_bounce,
-        });
-        self.redo.clear();
+        self.commit_candidate(candidate, effect, section_publication, stopped_bounce);
         Ok((result, prepared))
     }
     /// Apply at most MAX_CLIPS ordered commands to one private candidate and
