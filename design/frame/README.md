@@ -3,7 +3,7 @@
 ## Continue editing in Frame
 
 [hex-orbital.frame.json](hex-orbital.frame.json) is the current editable prototype,
-saved at r151. It includes the structured design, prototype actions, and orbital
+saved at r153. It includes the structured design, prototype actions, and orbital
 styleguide in one portable project.
 
 In Frame, choose **Designs → Import design**, select the file, and open the
@@ -16,6 +16,18 @@ Choose `group-track-selected` in the State picker to see the selected group trac
 To save a later design revision back to Hex, use **Designs → Download design** in
 Frame and update the portable project on the design branch. The older artifacts
 below document earlier iterations.
+
+## Operator redesign
+
+[operator-redesign.frame.json](operator-redesign.frame.json) is a separate editable
+design. Open **operator / redesign** from **Designs**, or import the file in a
+different Frame session. Turn on **Interact** to switch editors, select operators
+A–D, change the harmonic range, and preview two routing diagrams. Parameter
+values and the harmonic painter are illustrative.
+
+References for the control set include
+[Robert Henke’s design notes](https://roberthenke.com/technology/operator.html)
+and [Ableton’s Operator manual](https://www.ableton.com/en/manual/live-instrument-reference/#operator).
 
 ## Earlier design and implementation reference
 
