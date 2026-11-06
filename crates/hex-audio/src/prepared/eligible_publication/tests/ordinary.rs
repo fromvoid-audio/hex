@@ -157,6 +157,34 @@ fn ordinary_streamed_actions_deliver_split_client_outcomes() {
     data.owner_mut()
         .unwrap()
         .run(|callback, _| assert!(callback.streamed_transport_mode()));
+    let track = project.tracks()[0].id();
+    let mut take = client
+        .start_sample_recording(7, &[hex_engine::OutputCaptureId::Track(track)], true)
+        .unwrap();
+    assert!(take.ready());
+    let output = measured_block(&mut data);
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.finish_sample_recording(true));
+    client.stop_sample_recording();
+    measured_block(&mut data);
+    let mut seen = false;
+    assert_eq!(
+        take.drain(|frames, _, pcm| {
+            assert!(!seen);
+            assert!(output.iter().flatten().any(|sample| *sample != 0.0));
+            for layer in 0..2 {
+                assert_eq!(
+                    crate::sample_recording::Reader::source_frames(pcm, frames, layer),
+                    Some(&output[..])
+                );
+            }
+            seen = true;
+        }),
+        Some(crate::sample_recording::End::Stopped)
+    );
+    assert!(seen);
+    client.reclaim_sample_recording();
     assert!(
         !client
             .status()

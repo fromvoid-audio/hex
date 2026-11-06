@@ -2556,6 +2556,19 @@ impl Playback {
         self.session_runtime.is_some() && self.project.project_track_ids.contains(tracks, || {})
     }
 
+    /// Check selected sources against the current canonical render graph.
+    pub fn project_sample_sources_supported(
+        &self,
+        tracks: &[u64],
+        returns: &[crate::ReturnId],
+    ) -> bool {
+        self.project_output_supported(tracks)
+            && returns.len() <= crate::MAX_RETURN_TRACKS
+            && returns
+                .iter()
+                .all(|id| self.project.return_buses().iter().any(|bus| bus.id == *id))
+    }
+
     fn render_pages_fallback<P: MediaPages + ?Sized>(
         &mut self,
         output: &mut [Frame],
