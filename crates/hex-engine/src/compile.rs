@@ -159,8 +159,10 @@ fn prepare_foreign_instrument(
     let prepared = registry
         .prepare_runtime_instance(identity, &migrated, context)
         .map_err(|_| Invalid("vst3 instrument source could not be prepared"))?;
-    let Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) = prepared.processor else {
-        return Err(Invalid("vst3 instrument has no foreign worker"));
+    let facts = match prepared.processor {
+        Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) => facts,
+        None if prepared.matrix.is_identity() => return Ok(None),
+        _ => return Err(Invalid("vst3 instrument has no foreign worker")),
     };
     if !prepared.matrix.is_identity()
         || !facts.is_instrument_profile()

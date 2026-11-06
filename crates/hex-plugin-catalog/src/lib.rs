@@ -385,15 +385,35 @@ pub struct Row {
     pub name: String,
     pub vendor: String,
     pub status: String,
-    /// Current metadata for a draggable effect class. Native admission is separate.
-    pub effect: Option<Arc<EffectSelection>>,
+    /// Current metadata for a draggable class. Native admission is separate.
+    pub selection: Option<Arc<PluginSelection>>,
 }
-/// Exact copied metadata for an explicit effect activation request. This is
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PluginRole {
+    Effect,
+    Instrument,
+}
+
+impl PluginRole {
+    fn reported_by(self, class: &hex_plugin_scan::Class) -> bool {
+        let token = match self {
+            Self::Effect => "Fx",
+            Self::Instrument => "Instrument",
+        };
+        class
+            .subcategories
+            .as_deref()
+            .is_some_and(|categories| categories.split('|').any(|category| category == token))
+    }
+}
+
+/// Exact copied metadata for an explicit plug-in activation request. This is
 /// neither source admission nor permission to reuse a cached executable: the
 /// processing owner must inspect the selected module again, compare both
 /// digests/class and retain its actual native preparation through the terminal.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EffectSelection {
+pub struct PluginSelection {
+    pub role: PluginRole,
     pub module: PathBuf,
     pub cid: [u8; 16],
     pub class_name: String,
@@ -423,23 +443,36 @@ impl Catalog {
     /// Duplicate CIDs in different modules never select a replacement. Unknown
     /// type tokens, stale/error rows and dynamic inventories require a fresh
     /// successful scan; original last-good records remain untouched.
-    pub fn select_effect(&self, module: &Path, cid: [u8; 16]) -> Result<EffectSelection, String> {
+    pub fn select_effect(&self, module: &Path, cid: [u8; 16]) -> Result<PluginSelection, String> {
+        self.select_with_role(module, cid, Some(PluginRole::Effect))
+    }
+
+    pub fn select_plugin(&self, module: &Path, cid: [u8; 16]) -> Result<PluginSelection, String> {
+        self.select_with_role(module, cid, None)
+    }
+
+    fn select_with_role(
+        &self,
+        module: &Path,
+        cid: [u8; 16],
+        role: Option<PluginRole>,
+    ) -> Result<PluginSelection, String> {
         self.validate()?;
         let entry = self
             .entries
             .iter()
             .find(|entry| entry.path == module)
             .ok_or("selected vst3 module is no longer in the catalog")?;
-        let (report, discovery) = self.effect_inventory(entry)?;
+        let (report, discovery) = self.plugin_inventory(entry)?;
         let class = discovery
             .classes
             .iter()
             .find(|class| class.cid == cid)
             .ok_or("selected vst3 class is no longer in the catalog")?;
-        Self::effect_selection(entry, report, class)
+        Self::plugin_selection(entry, report, class, role)
     }
 
-    fn effect_inventory<'a>(
+    fn plugin_inventory<'a>(
         &self,
         entry: &'a Entry,
     ) -> Result<(&'a Report, &'a Discovery), String> {
@@ -460,24 +493,29 @@ impl Catalog {
         Ok((report, discovery))
     }
 
-    fn effect_selection(
+    fn plugin_selection(
         entry: &Entry,
         report: &Report,
         class: &hex_plugin_scan::Class,
-    ) -> Result<EffectSelection, String> {
-        if class.category != "Audio Module Class"
-            || !class
-                .subcategories
-                .as_ref()
-                .is_some_and(|categories| categories.split('|').any(|token| token == "Fx"))
-        {
-            return Err("selected vst3 class is not a reported effect".into());
-        }
+        role: Option<PluginRole>,
+    ) -> Result<PluginSelection, String> {
+        // Preserve the existing effect choice for dual-role classes.
+        let role = role.or_else(|| {
+            [PluginRole::Effect, PluginRole::Instrument]
+                .into_iter()
+                .find(|role| role.reported_by(class))
+        });
+        let Some(role) =
+            role.filter(|role| class.category == "Audio Module Class" && role.reported_by(class))
+        else {
+            return Err("selected vst3 class does not report the requested role".into());
+        };
         let executable = report
             .executable
             .as_ref()
             .ok_or("selected vst3 executable is unavailable")?;
-        Ok(EffectSelection {
+        Ok(PluginSelection {
+            role,
             module: entry.path.clone(),
             cid: class.cid,
             class_name: class.name.clone(),
@@ -528,7 +566,7 @@ impl Catalog {
                     rows.push(Row {
                         module: entry.path.clone(),
                         cid: None,
-                        effect: None,
+                        selection: None,
                         name,
                         vendor: String::new(),
                         status: entry
@@ -541,7 +579,7 @@ impl Catalog {
             if let Some(report) = &entry.last_good
                 && let Some(discovery) = &report.discovery
             {
-                let effect_report = self.effect_inventory(entry).ok().map(|(report, _)| report);
+                let selectable_report = self.plugin_inventory(entry).ok().map(|(report, _)| report);
                 for class in &discovery.classes {
                     if class.category != "Audio Module Class" {
                         continue;
@@ -559,8 +597,8 @@ impl Catalog {
                     {
                         continue;
                     }
-                    let effect = effect_report
-                        .and_then(|report| Self::effect_selection(entry, report, class).ok())
+                    let selection = selectable_report
+                        .and_then(|report| Self::plugin_selection(entry, report, class, None).ok())
                         .map(Arc::new);
                     rows.push(Row {
                         module: entry.path.clone(),
@@ -581,14 +619,14 @@ impl Catalog {
                                     format!("source unavailable · rescan required · {error} · ")
                                 },
                             );
-                            let action = if effect.is_some() {
+                            let action = if selection.is_some() {
                                 "drag or enter to insert"
                             } else {
                                 "hosting unavailable"
                             };
                             format!("{source}{state}vst3 {kind} · {action}")
                         },
-                        effect,
+                        selection,
                     });
                 }
             }
@@ -792,7 +830,7 @@ mod tests {
         assert_eq!(selected.executable_sha256, "f".repeat(64));
         assert_eq!(selected.info_sha256, "c".repeat(64));
         let rows = catalog.rows("");
-        assert_eq!(rows[1].effect.as_deref(), Some(&selected));
+        assert_eq!(rows[1].selection.as_deref(), Some(&selected));
         assert_eq!(
             catalog
                 .select_effect(&first, [1; 16])
@@ -994,9 +1032,19 @@ mod tests {
             })
             .unwrap();
             let loaded = Catalog::load(&fixture.catalog()).unwrap();
+            let role = match categories {
+                "Instrument|Synth" => Some(PluginRole::Instrument),
+                "Fx|Delay" | "Fx|Instrument" => Some(PluginRole::Effect),
+                _ => None,
+            };
+            let rows = loaded.rows("");
             assert_eq!(
-                loaded.rows("")[0].status,
-                if matches!(categories, "Fx|Delay" | "Fx|Instrument") {
+                rows[0].selection.as_ref().map(|selected| selected.role),
+                role
+            );
+            assert_eq!(
+                rows[0].status,
+                if role.is_some() {
                     format!("vst3 {expected} · drag or enter to insert")
                 } else {
                     format!("vst3 {expected} · hosting unavailable")

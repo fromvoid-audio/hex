@@ -48,6 +48,13 @@ pub struct EffectPresentation {
     pub output_frames: u32,
 }
 
+/// Fixed audio-bus shape for the selected project device slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PluginProfile {
+    Effect,
+    Instrument,
+}
+
 /// Checked helper artifact held by the canonical worker. Actual native source,
 /// worker, endpoint, cancellation and retirement owners remain in its output Root.
 pub struct Hosting {
@@ -167,6 +174,7 @@ impl Hosting {
         device_id: u64,
         graph: u64,
         sample_rate: u32,
+        profile: PluginProfile,
         restore: Option<NativeDeviceState>,
     ) -> Result<Binding, String> {
         let quantum = output
@@ -194,7 +202,10 @@ impl Hosting {
                     },
                     sample_rate: f64::from(sample_rate),
                     quantum,
-                    input_channels: 2,
+                    input_channels: match profile {
+                        PluginProfile::Effect => 2,
+                        PluginProfile::Instrument => 0,
+                    },
                     output_channels: 2,
                     limits: self.limits,
                 },

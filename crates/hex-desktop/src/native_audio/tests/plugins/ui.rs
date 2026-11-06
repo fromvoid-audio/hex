@@ -140,6 +140,7 @@ fn open_browser_metadata(
                 before: None,
                 state: utility,
             },
+            PluginEffectDestination::Instrument(_) => panic!("effect fixture destination"),
             PluginEffectDestination::Main => Command::InsertMainDevice {
                 before: None,
                 state: utility,
@@ -289,6 +290,7 @@ fn rendered_vst3_effect_drop_inserts_before_the_pointed_device_on_each_owner(
                     .find(|bus| bus.id() == id)
                     .unwrap()
                     .devices(),
+                PluginEffectDestination::Instrument(_) => panic!("effect fixture destination"),
                 PluginEffectDestination::Main => state.project.main_devices(),
             }
             .iter()
@@ -301,6 +303,7 @@ fn rendered_vst3_effect_drop_inserts_before_the_pointed_device_on_each_owner(
             PluginEffectDestination::Return(_) => {
                 format!("return-device-drop-card-{}", anchor.value())
             }
+            PluginEffectDestination::Instrument(_) => panic!("effect fixture destination"),
             PluginEffectDestination::Main => format!("main-device-drop-card-{}", anchor.value()),
         };
         let row = fixture.visual.debug_bounds("browser-vst3-row-0").unwrap();
@@ -458,7 +461,8 @@ fn rendered_native_effect_refuses_changed_sources_and_unsupported_inventory_befo
             InvalidSource::ReplacedExecutable | InvalidSource::ReplacedInfo => {
                 "selected vst3 source changed"
             }
-            InvalidSource::InstrumentOnly | InvalidSource::UnknownType => "not a reported effect",
+            InvalidSource::InstrumentOnly => "select a track for the vst3 instrument",
+            InvalidSource::UnknownType => "does not report the requested role",
             InvalidSource::DynamicInventory => "requires a rescan",
         };
         assert!(
@@ -998,6 +1002,7 @@ fn rendered_native_effect_browser_enters_actual_track_return_main_after_ack(
                 .find(|r| r.id() == id)
                 .unwrap()
                 .devices(),
+            PluginEffectDestination::Instrument(_) => panic!("effect fixture destination"),
             PluginEffectDestination::Main => accepted.project.main_devices(),
         };
         assert_eq!(devices.len(), 1);
@@ -1175,4 +1180,87 @@ fn rendered_native_effect_browser_enters_actual_track_return_main_after_ack(
         drop(visual);
         drop(callback);
     }
+}
+
+#[gpui::test]
+#[ignore = "requires source-bound SDK receipts with native fixture variant 115"]
+fn rendered_vst3_instrument_drop_targets_the_instrument_slot_and_shows_editor_toggle(
+    cx: &mut TestAppContext,
+) {
+    let _native = native_fixture();
+    let mut fixture = open_browser_metadata(
+        cx,
+        0,
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        "Instrument|Synth",
+        0,
+        true,
+    );
+    let track = fixture.track;
+    let anchor = fixture.state.project.track(track).unwrap().devices()[0].id();
+    let start = fixture
+        .visual
+        .debug_bounds("browser-vst3-row-0")
+        .unwrap()
+        .center();
+    let card = fixture
+        .visual
+        .debug_bounds(Box::leak(
+            format!("device-drop-card-{}", anchor.value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
+    let modifiers = Modifiers::default();
+    fixture
+        .visual
+        .simulate_mouse_down(start, MouseButton::Left, modifiers);
+    fixture.visual.simulate_mouse_move(
+        gpui::point(start.x + gpui::px(12.0), start.y),
+        MouseButton::Left,
+        modifiers,
+    );
+    fixture
+        .visual
+        .simulate_mouse_move(card, MouseButton::Left, modifiers);
+    repaint(cx, &mut fixture.visual);
+    assert!(!fixture.view(cx).pending);
+    fixture
+        .visual
+        .simulate_mouse_up(card, MouseButton::Left, modifiers);
+    until("instrument drop reached native facts", || {
+        repaint(cx, &mut fixture.visual);
+        let view = fixture.view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        view.pending && fixture.facts.try_recv().is_ok()
+    });
+    fixture.resume.send(()).unwrap();
+    until("instrument graph applied", || {
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        !view.pending
+            && view
+                .applied
+                .is_some_and(|source| source.context.editor_revision == fixture.state.revision + 1)
+    });
+    let accepted = fixture.view(cx).state.unwrap();
+    let track = accepted.project.track(track).unwrap();
+    let instrument = track.instrument().unwrap();
+    assert_eq!(
+        instrument.id().value(),
+        fixture.state.project.next_identity()
+    );
+    assert_eq!(track.devices()[0].id(), anchor);
+    assert_eq!(track.devices().len(), 1);
+    let selector =
+        Box::leak(format!("device-vst3-editor-{}", instrument.id().value()).into_boxed_str());
+    until("instrument editor button rendered", || {
+        repaint(cx, &mut fixture.visual);
+        fixture.visual.debug_bounds(selector).is_some()
+    });
+    fixture.visual.update(|window, _| window.remove_window());
+    fixture.visual.run_until_parked();
 }

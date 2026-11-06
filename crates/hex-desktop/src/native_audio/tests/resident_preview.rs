@@ -532,11 +532,19 @@ impl ResidentHarness {
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
     ) -> Self {
+        Self::with_plugins_at_rate(host, presentation, 48_000)
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn with_plugins_at_rate(
+        host: hex_audio::plugin_effects::Hosting,
+        presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
+        rate: u32,
+    ) -> Self {
         Self::with_plugin_fixture(
             8192,
             Arc::new(AtomicBool::new(true)),
             4,
-            48_000,
+            rate,
             Some((host, presentation)),
             None,
             None,
