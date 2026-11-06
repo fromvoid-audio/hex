@@ -2330,6 +2330,7 @@ impl SessionPlayback {
     /// render at least the full output-path latency and recheck before stopping.
     pub fn arrangement_bounce_is_quiescent(&self) -> bool {
         !self.has_active_arrangement_voices()
+            && !self.foreign_arrangement.has_held_notes()
             && self.releases.is_empty()
             && self
                 .mutable_instruments

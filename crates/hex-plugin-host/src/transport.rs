@@ -552,6 +552,11 @@ fn channel_with_policy(
 }
 
 impl Callback {
+    /// Committed request prefix for an exclusively owned offline endpoint.
+    /// No observation or borrow of the device callback is permitted.
+    pub fn dispatched_blocks_on_control(&self) -> u64 {
+        self.state.position / u64::from(self.quantum)
+    }
     /// Permanently refuse this exchange at its actual host validation boundary.
     /// Rejection neither replays work nor destroys either endpoint.
     pub fn reject(&mut self, fault: Fault) {

@@ -212,6 +212,13 @@ impl ForeignArrangement {
             .any(|generator| generator.committed.loop_pass.is_some())
     }
 
+    pub(super) fn has_held_notes(&self) -> bool {
+        self.generators
+            .iter()
+            .flatten()
+            .any(|generator| generator.committed.has_any_held_notes())
+    }
+
     pub(super) fn has_keyboard(&self) -> bool {
         self.keyboard
             .as_ref()

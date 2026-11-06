@@ -193,6 +193,39 @@ impl NativeEffectCallbacks {
     pub fn quantum_frames(&self) -> usize {
         self.quantum
     }
+    /// Offline only. Wait outside rendering for the exact committed prefixes
+    /// so a later callback sees their replies. A failed source is fatal to
+    /// the file render even though interactive carriers can contain it.
+    pub fn wait_offline_on_control(
+        &self,
+        workers: &[NativeWorker],
+        cancelled: impl Fn() -> bool,
+    ) -> Result<(), Error> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if cancelled() {
+                return Err(Error::Cancelled);
+            }
+            if self.entries.len() != workers.len() {
+                return Err(Error::Protocol("offline vst3 endpoint count differs"));
+            }
+            let mut ready = true;
+            for (entry, worker) in self.entries.iter().zip(workers) {
+                if !entry.callback.matches_worker(worker) || !entry.transport_is_live() {
+                    return Err(Error::Protocol("offline vst3 worker failed"));
+                }
+                ready &= worker.published_blocks_on_control()
+                    >= entry.callback.transport.dispatched_blocks_on_control();
+            }
+            if ready {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(Error::Timeout);
+            }
+            std::thread::sleep(std::time::Duration::from_micros(50));
+        }
+    }
     /// Declare the complete physical callback. Endpoints begin only when the
     /// actual graph visits them, so stopped rendering or an unrelated retained
     /// source does not fabricate processing, silence input or advance its epoch.

@@ -267,7 +267,7 @@ public:
             if (!additional_output_matches(i,observed) || observed!=outputs[i])
                 return ConfigurationResult::ArrangementMismatch;
         ProcessSetup setup{};
-        setup.processMode = kRealtime; setup.symbolicSampleSize = kSample32;
+        setup.processMode = request.process_mode; setup.symbolicSampleSize = kSample32;
         setup.maxSamplesPerBlock = request.maximum_frames; setup.sampleRate = request.sample_rate;
         if (processor->setupProcessing(setup) != kResultOk) return ConfigurationResult::SetupRefused;
         // An inactive trailing bus needs no PCM buffer, even if default active.
@@ -466,7 +466,7 @@ private:
             processing_fault.load() || quarantined.load() ||
             (processing_thread!=std::thread::id{} && processing_thread!=std::this_thread::get_id()))
             return FlushResult::InvalidState;
-        if (data.processMode!=kRealtime || data.symbolicSampleSize!=kSample32 || data.numSamples!=0 ||
+        if (data.processMode!=configuration_.process_mode || data.symbolicSampleSize!=kSample32 || data.numSamples!=0 ||
             data.numInputs!=0 || data.numOutputs!=0 || data.inputs || data.outputs || data.inputEvents || data.outputEvents)
             return FlushResult::InvalidData;
         if (!data.inputParameterChanges) return FlushResult::Empty;
