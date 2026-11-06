@@ -267,6 +267,107 @@ impl NoteEndpoint {
 }
 
 #[test]
+fn console_clip_replaces_arrangement_gates_and_stop_releases_its_note() {
+    use crate::LaunchQuantization::Immediate;
+    let (mut editor, identity) = fixture();
+    let track = editor.project().tracks()[0].id();
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene {
+            name: "console".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    let Created::SessionClip(clip) = editor
+        .execute(Command::CreateSessionMidiClip {
+            track,
+            scene,
+            name: "console notes".into(),
+            source_length: BeatTime::from_quarters(1).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_quarters(1).unwrap(),
+            pitch: 64,
+            channel: 3,
+            velocity: 98,
+        })
+        .unwrap();
+    let mut playback = SessionPlayback::new(prepare(&editor, identity, true).unwrap()).unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    endpoint.render(&mut playback, &mut [[0.0; 2]; 2]).unwrap();
+    let original = endpoint.notes[0].1;
+    assert!(original.on && original.pitch == 60);
+    playback
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: Immediate,
+        })
+        .unwrap();
+    endpoint.render(&mut playback, &mut [[0.0; 2]; 2]).unwrap();
+    let [(0, release), (0, console)] = endpoint.notes.as_slice() else {
+        panic!(
+            "expected arrangement release and console onset, got {:?}",
+            endpoint.notes
+        );
+    };
+    assert!(!release.on && release.note_id == original.note_id);
+    assert!(
+        console.on
+            && console.pitch == 64
+            && console.channel == 3
+            && console.note_id != original.note_id
+    );
+    let console_id = console.note_id;
+    playback
+        .apply(SessionPlaybackCommand::StopTrack {
+            track,
+            quantization: Immediate,
+        })
+        .unwrap();
+    endpoint.render(&mut playback, &mut [[0.0; 2]; 2]).unwrap();
+    let [(0, release)] = endpoint.notes.as_slice() else {
+        panic!("expected console release")
+    };
+    assert!(!release.on && release.note_id == console_id);
+    playback
+        .apply(SessionPlaybackCommand::BackToArrangement {
+            quantization: Immediate,
+        })
+        .unwrap();
+    endpoint.render(&mut playback, &mut [[0.0; 2]; 2]).unwrap();
+    assert!(
+        endpoint.notes.is_empty(),
+        "old arrangement note must not restart"
+    );
+
+    editor
+        .execute(Command::SetMidiClipGain {
+            clip,
+            gain: hex_project::ClipGain::new(-6_000).unwrap(),
+        })
+        .unwrap();
+    let mut playback = SessionPlayback::new(prepare(&editor, identity, true).unwrap()).unwrap();
+    assert!(matches!(
+        playback.apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: Immediate
+        }),
+        Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+            "console clip volume is unavailable for vst3 instruments"
+        ))
+    ));
+}
+
+#[test]
 fn seek_and_stop_release_original_notes_and_a_late_fault_refuses_the_block() {
     let (editor, identity) = fixture();
     let revision = prepare(&editor, identity, true).unwrap();

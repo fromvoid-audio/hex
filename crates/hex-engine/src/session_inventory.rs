@@ -31,6 +31,7 @@ struct PreparedTrackInstrumentConfig {
     track: TrackId,
     config: Option<Arc<dyn PreparedNativeInstrument>>,
     mutable_limits: Option<crate::midi_compile::MutableInstrumentLimits>,
+    foreign_events: bool,
     device_id: Option<DeviceId>,
     tuning_identity: crate::shared_analytic::TuningIdentity,
     state: Option<hex_lattice_contract::NativeDeviceState>,
@@ -40,6 +41,18 @@ struct PreparedTrackInstrumentConfig {
     resource_factory_inline_bound: Option<usize>,
     history_retarget_target: Option<Box<dyn PreparedInstrumentHistoryRetarget>>,
     history_retarget_requires_quiescence: bool,
+}
+
+impl PreparedTrackInstrumentConfig {
+    fn instrument_enabled(&self) -> bool {
+        !self.bypassed && (self.config.is_some() || self.foreign_events)
+    }
+
+    fn clip_instrument_enabled(&self, clip: &hex_project::SessionMidiClip) -> bool {
+        clip.active()
+            && self.instrument_enabled()
+            && (!self.foreign_events || clip.volume().is_unity())
+    }
 }
 
 struct PreparedMutableTrackInstrument {
@@ -589,9 +602,16 @@ impl PreparedSessionInventory {
                 .as_ref()
                 .filter(|_| has_receiver)
                 .map(|prepared| Arc::clone(&prepared.config));
+            let foreign_events = slot.is_some_and(|device| {
+                !device.bypassed() && crate::compile::is_vst3_instrument(device)
+            });
             let mutable_limits = source_config
                 .as_ref()
-                .and_then(|prepared| prepared.mutable_limits);
+                .and_then(|prepared| prepared.mutable_limits)
+                .or_else(|| {
+                    foreign_events
+                        .then_some(crate::mutable_instrument::authored_gate::FOREIGN_GATE_LIMITS)
+                });
             let mutable_runtime = source_config.and_then(|prepared| {
                 track
                     .receives_source_audio()
@@ -639,6 +659,7 @@ impl PreparedSessionInventory {
                 track: track.id(),
                 config,
                 mutable_limits,
+                foreign_events,
                 device_id: slot.map(|device| device.id()),
                 tuning_identity: shared_contexts.tuning_identity(),
                 state: slot.map(|device| device.state().clone().without_host_gains()),
@@ -687,7 +708,7 @@ impl PreparedSessionInventory {
             let config = instrument_configs
                 .get(track_index)
                 .ok_or(crate::Invalid("Session MIDI instrument is missing"))?;
-            let enabled = clip.active() && config.config.is_some() && !config.bypassed;
+            let enabled = config.clip_instrument_enabled(clip);
             let shared_context = config.device_id.and_then(|device| {
                 shared_contexts
                     .index_for_device(device)
@@ -844,7 +865,7 @@ impl PreparedSessionInventory {
             .zip(note_keys_by_track)
             .enumerate()
         {
-            let enabled = config.config.is_some() && !config.bypassed;
+            let enabled = config.instrument_enabled();
             if unchanged_sources
                 .get(index)
                 .copied()

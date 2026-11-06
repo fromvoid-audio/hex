@@ -632,13 +632,7 @@ fn compile_project_inner<'a>(
         let foreign_limits = foreign_instrument
             .as_ref()
             .filter(|node| !node.bypassed)
-            .map(|_| crate::midi_compile::MutableInstrumentLimits {
-                max_events_per_query: crate::mutable_instrument::authored_gate::MAX_FOREIGN_NOTES,
-                max_active_occurrences: crate::mutable_instrument::authored_gate::MAX_FOREIGN_NOTES,
-                max_release_tail_frames: 0,
-                supports_clip_volume: false,
-                steals_releasing_voices: true,
-            });
+            .map(|_| crate::mutable_instrument::authored_gate::FOREIGN_GATE_LIMITS);
         let mutable_limits = built_in_limits.or(foreign_limits);
         if mutable_limits.is_some()
             && let Some(instrument) = instrument_config.map(Arc::as_ref)

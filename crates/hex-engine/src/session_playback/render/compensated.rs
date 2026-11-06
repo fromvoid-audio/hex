@@ -854,6 +854,19 @@ impl SessionPlayback {
                                 playing: self.playing,
                                 chase: self.interactive_start_frame == Some(performance_frame),
                             },
+                            foreign_arrangement::SessionRoute {
+                                route: effective_midi_route(
+                                    &self.revision,
+                                    &self.route_scratch,
+                                    index,
+                                )?,
+                                midi: crate::session_inventory::EffectiveSessionMidi::new(
+                                    self.revision.session(),
+                                    self.midi_admission.as_ref(),
+                                ),
+                                timing: &timing,
+                                spans: &mut self.spans,
+                            },
                             &mut wet,
                             &mut self.mutable_onsets,
                             frame_offset,
