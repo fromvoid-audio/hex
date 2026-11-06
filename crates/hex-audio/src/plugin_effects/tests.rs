@@ -1359,19 +1359,31 @@ fn actual_arrangement_renderer_clock_drives_the_signed_authored_effect() {
     let loop_seek = scenario == "loop-seek" || loop_live;
 
     let mut fixture = fixture_with_authored_parameter(2, false, Some(7));
+    fixture.samples[8] = [0.125, -0.25];
+    *fixture.media.values_mut().next().unwrap() =
+        hex_engine::Audio::new(48_000, fixture.samples.clone()).unwrap();
     fixture
         .editor
         .execute(Command::ReplaceDeviceAutomationTarget {
             device: fixture.device,
             target: hex_project::DeviceAutomationTarget::Vst3 { parameter: 7 },
             points: [
-                (BeatTime::ZERO, 0.25),
-                (BeatTime::from_ratio(1, 800).unwrap(), 0.75),
+                (BeatTime::ZERO, 0.25, AutomationInterpolation::Linear),
+                (
+                    BeatTime::from_ratio(1, 1500).unwrap(),
+                    0.5,
+                    AutomationInterpolation::Step,
+                ),
+                (
+                    BeatTime::from_ratio(1, 800).unwrap(),
+                    0.75,
+                    AutomationInterpolation::Step,
+                ),
             ]
-            .map(|(beat, value)| AutomationPoint {
+            .map(|(beat, value, outgoing)| AutomationPoint {
                 beat,
                 value: AutomationValue::new(value).unwrap(),
-                outgoing: AutomationInterpolation::Step,
+                outgoing,
             })
             .to_vec(),
         })
@@ -1459,8 +1471,14 @@ fn actual_arrangement_renderer_clock_drives_the_signed_authored_effect() {
             .unwrap(),
         );
     }
-    let (mut runtime, anchor) =
-        prepare_candidate(fixture.editor.project(), effects.last().unwrap(), 11);
+    let path = std::env::temp_dir().join(format!(
+        "hex-authored-arrangement-{}.hex",
+        std::process::id()
+    ));
+    hex_storage::save_new(&path, fixture.editor.project()).unwrap();
+    let reopened = hex_storage::load(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let (mut runtime, anchor) = prepare_candidate(&reopened, effects.last().unwrap(), 11);
     let (mut workers, mut endpoints) =
         NativeEffectCallbacks::from_effects_on_control(effects).unwrap();
     if loop_seek && !loop_live {
@@ -1535,12 +1553,15 @@ fn actual_arrangement_renderer_clock_drives_the_signed_authored_effect() {
     let mut expected = [[0.0; 2]; 64];
     if loop_live {
         expected[27] = fixture.samples[0].map(|sample| sample * 0.625);
+        expected[35] = fixture.samples[8].map(|sample| sample * (1.5 * 0.75));
         expected[58] = fixture.samples[31].map(|sample| sample * (3.0 * 1.125));
     } else if loop_seek {
         expected[32] = fixture.samples[0].map(|sample| sample * 0.75);
+        expected[40] = fixture.samples[8].map(|sample| sample * (1.5 * 0.875));
         expected[63] = fixture.samples[31].map(|sample| sample * (3.0 * 1.125));
     } else {
         expected[16] = fixture.samples[0].map(|sample| sample * 0.5);
+        expected[24] = fixture.samples[8].map(|sample| sample * (1.5 * 0.625));
         expected[47] = fixture.samples[31].map(|sample| sample * (3.0 * 0.875));
     }
     assert_eq!(output, expected);
