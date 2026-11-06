@@ -222,7 +222,7 @@ wire::Bytes ready_body(const wire::Config& config,const hex_instance::CapturedSt
     wire::number(out,restored?1:0,1);
     // State existence is not availability or an application/graph ACK.
     wire::number(out,state.component?1:0,1);auto payload=state_payload(config,state);
-    wire::number(out,payload.size(),2);out.insert(out.end(),payload.begin(),payload.end());
+    wire::number(out,payload.size(),4);out.insert(out.end(),payload.begin(),payload.end());
     return out;
 }
 }
@@ -280,7 +280,7 @@ int main(int argc,char** argv) {
             auto available=instance.presentation_latency_available_on_control();
             if(!latency || !tail || !available) throw Refusal{};
             failure=ProtocolFailure;
-            if(!wire::send(channel,"HXVIFA03",facts_body(*config,*latency,*tail,*available,restoration))) throw Refusal{};
+            if(!wire::send(channel,"HXVIFA04",facts_body(*config,*latency,*tail,*available,restoration))) throw Refusal{};
             wire::PresentationPlan supplied;
             if(!wire::presentation(channel,*config,supplied)) throw Refusal{};
             failure=Presentation;
@@ -560,8 +560,8 @@ int main(int argc,char** argv) {
                             wire::number(body,blocks,8);wire::number(body,frames,8);wire::number(body,live_operation,8);
                             wire::number(body,complete?1:0,1);
                             const auto payload=complete?state_payload(*config,live_state):wire::Bytes{};
-                            wire::number(body,payload.size(),2);body.insert(body.end(),payload.begin(),payload.end());
-                            if(!wire::send(channel,"HXVLCA01",body)) std::_Exit(Cancelled);
+                            wire::number(body,payload.size(),4);body.insert(body.end(),payload.begin(),payload.end());
+                            if(!wire::send(channel,"HXVLCA02",body)) std::_Exit(Cancelled);
                             if(complete) live_stage.store(LiveIdle,std::memory_order_release);
                             continue;
                         }
@@ -774,7 +774,7 @@ int main(int argc,char** argv) {
                 CFRunLoopRunInMode(kCFRunLoopDefaultMode,0.001,true);
             }
             if(instance.host_refusals()) worker_failure.store(HostControl);
-            accepted=startup.load(std::memory_order_acquire)==1 && !worker_failure.load() && wire::send(channel,"HXVIRD04",hello);
+            accepted=startup.load(std::memory_order_acquire)==1 && !worker_failure.load() && wire::send(channel,"HXVIRD05",hello);
             if(!accepted && !worker_failure.load()) worker_failure.store(Cancelled);
             { std::lock_guard<std::mutex> lock(startup_mutex);go=true;startup_changed.notify_all(); }
             // Pump the helper main lane, never the Hex callback. Unsupported
@@ -871,7 +871,7 @@ int main(int argc,char** argv) {
                         if(!latency || !tail || !available) { error(channel,&*config,Quiescence);std::_Exit(Quiescence); }
                         auto body=facts_body(*config,*latency,*tail,*available,restoration);
                         wire::number(body,blocks,8);wire::number(body,frames,8);
-                        if(!wire::send(channel,"HXVIQF02",body)) std::_Exit(Cancelled);
+                        if(!wire::send(channel,"HXVIQF03",body)) std::_Exit(Cancelled);
                         std::lock_guard<std::mutex> lock(startup_mutex);
                         epoch_stage=FactsSent;startup_changed.notify_all();
                     } else if(stage==ReactivateRequested) {
@@ -887,7 +887,7 @@ int main(int argc,char** argv) {
                             instance.cover_latency_restart(covered);
                             auto body=facts_body(*config,*latency,*tail,*available,restoration);
                             wire::number(body,blocks,8);wire::number(body,frames,8);wire::number(body,reactivate_operation,8);
-                            if(!wire::send(channel,"HXVIAR01",body)) std::_Exit(Cancelled);
+                            if(!wire::send(channel,"HXVIAR02",body)) std::_Exit(Cancelled);
                         } catch(...) {
                             // Foreign activation/facts have unknown side effects.
                             // Never retry teardown/release/unload beneath them.
@@ -953,9 +953,9 @@ int main(int argc,char** argv) {
                         }
                         wire::Bytes body;config->stamp(body);
                         wire::number(body,blocks,8);wire::number(body,frames,8);wire::number(body,capture_operation,8);
-                        const auto payload=state_payload(*config,current);wire::number(body,payload.size(),2);
+                        const auto payload=state_payload(*config,current);wire::number(body,payload.size(),4);
                         body.insert(body.end(),payload.begin(),payload.end());
-                        if(!wire::send(channel,"HXVICS01",body)) std::_Exit(Cancelled);
+                        if(!wire::send(channel,"HXVICS02",body)) std::_Exit(Cancelled);
                         std::lock_guard<std::mutex> lock(startup_mutex);
                         epoch_stage=CaptureSent;startup_changed.notify_all();
                     } else if(stage==ResumeRequested) {
@@ -979,7 +979,7 @@ int main(int argc,char** argv) {
                         auto body=facts_body(*config,*latency,*tail,*available,restoration);
                         wire::number(body,blocks,8);wire::number(body,frames,8);
                         presentation_receipt(body,*presentation,supplied);
-                        if(!wire::send(channel,"HXVIRR02",body)) std::_Exit(Cancelled);
+                        if(!wire::send(channel,"HXVIRR03",body)) std::_Exit(Cancelled);
                         std::lock_guard<std::mutex> lock(startup_mutex);
                         epoch_stage=ResumeSent;startup_changed.notify_all();
                     }

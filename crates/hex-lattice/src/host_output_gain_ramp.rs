@@ -202,7 +202,9 @@ pub(super) fn inherit(
             && entry.matrix == old.matrix
             && entry.automation == old.automation
             && match (&entry.configuration, &old.configuration) {
-                (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b) || a.processing_eq(b),
+                (Some(a), Some(b)) => {
+                    std::sync::Arc::ptr_eq(a, b) || a.processing_eq_on_callback(b)
+                }
                 _ => false,
             };
         let eligible = !excluded.contains(&index)

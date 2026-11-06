@@ -62,6 +62,8 @@ pub struct Hosting {
     limits: native::Limits,
 }
 impl Hosting {
+    /// Maximum payload for the single pending native capture response.
+    pub const CAPTURE_RESPONSE_DATA_BYTES: usize = hex_plugin_state::MAX_ENVELOPE_BYTES;
     /// Inspect the saved envelope's copied class/binary identity. This resolves
     /// no file, grants no native source and never replaces opaque state.
     pub fn saved_identity_on_control(
@@ -80,7 +82,7 @@ impl Hosting {
             .retained_storage()?
             .data_bytes
             .checked_add(std::mem::size_of::<Self>())?
-            .checked_add(hex_lattice_contract::MAX_NATIVE_DEVICE_STATE_BYTES)
+            .checked_add(Self::CAPTURE_RESPONSE_DATA_BYTES)
     }
     /// Initial finite source profile. Listed control/transport DATA is capped
     /// at4MiB per source; opaque plugin/OS memory is not an RSS claim. Reserve

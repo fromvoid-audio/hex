@@ -70,7 +70,7 @@ impl Prepared {
                     self.config.binding,
                 )?));
             }
-            if self.packet.magic() != b"HXVIQF02" {
+            if self.packet.magic() != b"HXVIQF03" {
                 return Err(Error::Protocol("missing actual quiescent acknowledgement"));
             }
             let facts =
@@ -144,7 +144,7 @@ impl Quiescent {
                     self.instance.config.binding,
                 )?));
             }
-            if self.instance.packet.magic() != b"HXVIAR01" {
+            if self.instance.packet.magic() != b"HXVIAR02" {
                 return Err(Error::Protocol(
                     "missing component reactivation acknowledgement",
                 ));
@@ -253,7 +253,7 @@ impl Quiescent {
                     self.instance.sequence,
                     operation,
                 )?)
-            } else if self.instance.packet.magic() == b"HXVICS01" {
+            } else if self.instance.packet.magic() == b"HXVICS02" {
                 Ok(protocol::captured_state(
                     self.instance.packet.body()?,
                     &self.instance.config,
@@ -428,7 +428,7 @@ impl Quiescent {
                     .or_else(|_| protocol::error(body, self.instance.config.binding))?;
                 return Err(Error::Worker(code));
             }
-            if self.instance.packet.magic() != b"HXVIRR02" {
+            if self.instance.packet.magic() != b"HXVIRR03" {
                 return Err(Error::Protocol("missing actual resumed acknowledgement"));
             }
             let applied = protocol::resumed(

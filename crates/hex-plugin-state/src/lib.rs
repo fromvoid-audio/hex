@@ -21,21 +21,19 @@
 //! byte swapping or case folding occurs. Initially only macOS arm64 is supported.
 //! Paths are deliberately absent: moving identical bytes cannot change identity.
 //!
-//! The live codec still admits a 4096-byte envelope: at most 4000 combined
-//! opaque bytes. Project storage can preserve larger opaque state until the
-//! worker supports it. This is a bounded profile, not arbitrary vendor
-//! state support. Oversize capture refuses before allocation/copy without consuming
+//! The live codec admits a 512 KiB envelope with a combined component and
+//! controller limit. This is a bounded profile for opaque vendor state. Oversize capture refuses before allocation/copy without consuming
 //! caller buffers. Empty captured chunks differ from missing chunks. Unknown or
 //! malformed envelopes remain generic project state and must be retained intact;
 //! decoding/availability errors never reconstruct, normalize or overwrite them.
-use hex_lattice_contract::{DeviceTypeId, MAX_NATIVE_DEVICE_STATE_BYTES, NativeDeviceState};
+use hex_lattice_contract::{DeviceTypeId, MAX_VST3_DEVICE_STATE_BYTES, NativeDeviceState};
 use std::fmt;
 
 pub const TYPE_ID: DeviceTypeId = hex_lattice_contract::VST3_DEVICE_TYPE_ID;
 pub const STATE_VERSION: u32 = 1;
 const HEADER_BYTES: usize = 96;
 /// Maximum complete envelope the live native worker protocol admits.
-pub const MAX_ENVELOPE_BYTES: usize = MAX_NATIVE_DEVICE_STATE_BYTES;
+pub const MAX_ENVELOPE_BYTES: usize = MAX_VST3_DEVICE_STATE_BYTES;
 pub const MAX_OPAQUE_BYTES: usize = MAX_ENVELOPE_BYTES - HEADER_BYTES;
 
 /// SDK factory class identity, independent of module path and project instance ID.
@@ -125,7 +123,7 @@ pub fn encode(state: State<'_>) -> Result<NativeDeviceState, Error> {
     payload.extend_from_slice(&state.identity.class.bytes());
     payload.extend_from_slice(&state.identity.binary.executable_sha256);
     payload.extend_from_slice(&state.identity.binary.info_sha256);
-    // Both lengths are bounded by4000 before either narrowing conversion.
+    // The combined bound fits the two u32 chunk lengths.
     payload.extend_from_slice(&(component.len() as u32).to_le_bytes());
     payload.extend_from_slice(&(controller.len() as u32).to_le_bytes());
     payload.extend_from_slice(component);

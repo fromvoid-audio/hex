@@ -996,7 +996,7 @@ fn overflow_capture_recovers(variant: u32) {
         .capture_state_or_refusal_retained_while_on_control(|| false)
         .unwrap();
     assert!(
-        matches!(result, Err(crate::protocol::StateCaptureRefusal::ExceedsLimit { observed_bytes }) if observed_bytes == if variant == 95 { 5000 } else { 5032 })
+        matches!(result, Err(crate::protocol::StateCaptureRefusal::ExceedsLimit { observed_bytes }) if observed_bytes == if variant == 95 { 524288 } else { 524320 })
     );
     assert_eq!(stopped.child_id_on_control(), child);
     let (stopped, result) = stopped
