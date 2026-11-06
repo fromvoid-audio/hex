@@ -33,8 +33,18 @@ impl Inventory {
 impl Plugins {
     pub(in crate::native_audio) fn query_parameters(
         &mut self,
+        control: &mut hex_audio::prepared::PublicationControl,
         query: PluginParameterQuery,
     ) -> Result<(), String> {
+        // The editor can see the exact callback ACK before the worker's next
+        // poll. Release the submitted fence before accepting a renewed query.
+        if self
+            .restore
+            .as_ref()
+            .is_some_and(super::restore::Restore::submitted)
+        {
+            self.poll_restore(control, Some(query.context));
+        }
         if self.parameters.is_some()
             || self.editor.is_some()
             || self.restore.is_some()

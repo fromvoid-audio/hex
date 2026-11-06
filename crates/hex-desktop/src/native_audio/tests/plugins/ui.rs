@@ -1400,10 +1400,12 @@ fn live_vst3_pointer_drag_reaches_native_device_during_playback(cx: &mut gpui::T
             && visual.debug_bounds(knob).is_some();
         assert!(
             ready || Instant::now() < deadline,
-            "restore status: {:?}; applied: {:?}; before: {before_stop}; knob: {:?}; pending: {}; queued: {}",
+            "restore status: {:?}; applied: {:?}; before: {before_stop}; knob: {:?}; restoring: {}; retry: {}; pending: {}; queued: {}",
             view.status,
             view.applied,
             visual.debug_bounds(knob),
+            visual.debug_bounds("vst3-controls-restoring").is_some(),
+            visual.debug_bounds("vst3-controls-retry").is_some(),
             view.pending,
             view.queued_requests
         );

@@ -1697,6 +1697,26 @@ impl EditorView {
                 ..
             })
         );
+        // Ordinary native-source ACKs can arrive after their view candidate
+        // was coalesced. Retire the VST3 panel gate on the exact installed
+        // source and repaint so it can request the renewed controller page.
+        if !awaiting_native_restore
+            && let Some(super::audio_admission::StoppedPlaybackRestore::Published(required)) =
+                self.stopped_playback_restore
+            && let Some(source) = audio
+                .control
+                .status()
+                .and_then(|status| status.native_effect_source())
+            && source.audio_revision == required
+            && audio.control.output_identity() == Some(source.output_identity)
+            && source.context.project_generation == self.project_generation
+            && self.state.as_ref().is_some_and(|state| {
+                state.audio_authoring_revision(source.context) == Some(state.revision)
+            })
+        {
+            self.stopped_playback_restore = None;
+            visible_change = true;
+        }
         let (reconciled, current_applied) = reconcile_verified_source_binding(
             &mut self.audio_admission,
             self.document_audio_mode,
@@ -1768,6 +1788,7 @@ impl EditorView {
                                 || (candidate.audio_revision == required && !awaiting_native_restore)
                     ) {
                         self.stopped_playback_restore = None;
+                        visible_change = true;
                     }
                 }
                 self.audible_playback = Some(candidate);
