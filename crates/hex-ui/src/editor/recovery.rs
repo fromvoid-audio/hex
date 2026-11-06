@@ -8,9 +8,24 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 mod tests;
 
 impl EditorView {
+    pub(super) fn has_resident_vst3(&self) -> bool {
+        self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            && self.state.as_ref().is_some_and(|state| {
+                state
+                    .project
+                    .automation_devices()
+                    .any(|device| device.state().type_id().as_str() == Ok("hex.vst3"))
+            })
+    }
+
+    pub(super) fn holds_stopped_vst3_requests(&self) -> bool {
+        self.stopped_playback_restore.is_some() && self.has_resident_vst3()
+    }
+
     pub(super) fn has_degraded_vst3_output(&self) -> bool {
         self.audio.is_some()
             && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            && self.stopped_playback_restore.is_none()
             && !self.degraded_plugins.is_empty()
     }
 
@@ -21,6 +36,18 @@ impl EditorView {
             self.project_generation,
         ));
         self.status = "restarting audio output · playback starts when ready".into();
+    }
+
+    /// Use the requested start as the restored cursor before admitting Play.
+    pub(super) fn recover_degraded_play_at(&mut self, frame: u64) -> bool {
+        if self.recovery.generation().is_some() || !self.has_degraded_vst3_output() {
+            return false;
+        }
+        self.recover_audio_at(frame);
+        if self.recovery.generation().is_some() {
+            self.defer_play_until_audio_recovers();
+        }
+        true
     }
 
     pub(super) fn recover_audio(&mut self) {
