@@ -944,7 +944,7 @@ impl ResidentHarness {
     /// Advance the simulated callback, then observe each exact original
     /// endpoint's committed requests on control. The Session worker may be
     /// waiting for page/callback progress and is not the DSP completion clock.
-    fn render_worker_step(&self) {
+    pub(super) fn render_worker_step(&self) {
         self.render();
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if self.native_plugins
