@@ -150,7 +150,8 @@ impl Programs {
                 )
                 .chain(arrangement.main_device_chain.iter())
                 .filter(|node| {
-                    node.sample_rate == program.sample_rate
+                    node.automation.foreign().is_none()
+                        && node.sample_rate == program.sample_rate
                         && node.device_id == program.binding.instance
                         && matches!(
                             node.definition,

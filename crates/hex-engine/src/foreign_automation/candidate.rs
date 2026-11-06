@@ -1,5 +1,5 @@
 //! Canonical VST3 effect lanes for the closed Arrangement revision builder.
-use super::{BoundProgram, Knot, Lane, QuantumProfile};
+use super::{Knot, Lane, Program, QuantumProfile};
 use crate::AudioStorageError as Error;
 use hex_lattice::{
     DevicePreparationContext, NativeDeviceRegistry, ProcessorChainOwner, ProcessorInstanceIdentity,
@@ -36,6 +36,10 @@ fn lanes(device: &Device) -> impl Iterator<Item = &DeviceAutomation> {
         .filter(|lane| matches!(lane.target, DeviceAutomationTarget::Vst3 { .. }))
 }
 
+pub(crate) fn has_authored(device: &Device) -> bool {
+    lanes(device).next().is_some()
+}
+
 pub(crate) fn quote(project: &Project) -> Result<(usize, usize), Error> {
     if project
         .tracks()
@@ -54,7 +58,7 @@ pub(crate) fn quote(project: &Project) -> Result<(usize, usize), Error> {
     let mut bytes = 0usize;
     for (_, device) in devices(project).filter(|(_, device)| lanes(device).next().is_some()) {
         bytes = bytes
-            .checked_add(std::mem::size_of::<BoundProgram>())
+            .checked_add(std::mem::size_of::<Program>() + 3 * std::mem::size_of::<usize>())
             .ok_or(Error::Overflow)?;
         rows = rows.checked_add(1).ok_or(Error::Overflow)?;
         for lane in lanes(device) {
@@ -66,64 +70,44 @@ pub(crate) fn quote(project: &Project) -> Result<(usize, usize), Error> {
                     bytes.checked_add(knots.checked_mul(std::mem::size_of::<Knot>())?)
                 })
                 .ok_or(Error::Overflow)?;
-            rows = rows.checked_add(1).ok_or(Error::Overflow)?;
         }
     }
-    Ok((
-        bytes,
-        rows.checked_add(usize::from(rows != 0))
-            .ok_or(Error::Overflow)?,
-    ))
+    Ok((bytes, rows))
 }
 
-pub(crate) fn prepare(
-    project: &Project,
-    effects: Option<&NativeDeviceRegistry<'_>>,
-) -> Result<Vec<BoundProgram>, Error> {
-    let count = devices(project)
-        .filter(|(_, device)| lanes(device).next().is_some())
-        .count();
-    if count == 0 {
-        return Ok(Vec::new());
+pub(crate) fn prepare_device(
+    device: &Device,
+    identity: ProcessorInstanceIdentity,
+    effects: &NativeDeviceRegistry<'_>,
+    tempo: &hex_project::TempoMap,
+    region: Option<hex_project::LoopRegion>,
+) -> Result<Option<hex_lattice::PreparedForeignAutomation>, Error> {
+    if lanes(device).next().is_none() {
+        return Ok(None);
     }
-    if count > hex_lattice::MAX_STATEFUL_PROCESSORS {
-        return Err(Error::Capacity);
-    }
-    let effects = effects.ok_or(Error::UnsupportedGraph)?;
     let context = DevicePreparationContext {
-        sample_rate: project.sample_rate(),
+        sample_rate: tempo.sample_rate(),
         tuning: &hex_lattice::TuningTable::default(),
         resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
     };
-    let mut programs = Vec::new();
-    programs
-        .try_reserve_exact(count)
-        .map_err(|_| Error::Allocation)?;
-    for (owner, device) in devices(project).filter(|(_, device)| lanes(device).next().is_some()) {
-        let identity = ProcessorInstanceIdentity::new(owner, device.id().value())
-            .map_err(|_| Error::SourceMismatch)?;
-        let source = effects
-            .definition(device.state().type_id())
-            .ok_or(Error::UnsupportedGraph)?
-            .foreign_automation_source(identity, device.state(), &context)
-            .map_err(|_| Error::UnsupportedGraph)?
-            .ok_or(Error::UnsupportedGraph)?;
-        // Reused source epochs have the same authored curves and tempo. Loop
-        // changes only change the admitted bound, so a partial quantum keeps
-        // its program identity across publication.
-        let revision =
-            std::num::NonZeroU64::new(source.binding.epoch).ok_or(Error::SourceMismatch)?;
-        let quantum = QuantumProfile::arrangement(source.quantum_frames, project.loop_region());
-        let program = BoundProgram::prepare(
-            device.automation(),
-            source,
-            project.tempo_map(),
-            quantum.max_runs,
-            revision,
-        )
+    let source = effects
+        .definition(device.state().type_id())
+        .ok_or(Error::UnsupportedGraph)?
+        .foreign_automation_source(identity, device.state(), &context)
         .map_err(|_| Error::UnsupportedGraph)?
-        .ok_or(Error::SourceMismatch)?;
-        programs.push(program);
-    }
-    Ok(programs)
+        .ok_or(Error::UnsupportedGraph)?;
+    let revision = std::num::NonZeroU64::new(source.binding.epoch).ok_or(Error::SourceMismatch)?;
+    let program = Program::prepare(
+        device.automation(),
+        source.class,
+        source.parameters,
+        tempo,
+        QuantumProfile::arrangement(source.quantum_frames, region),
+    )
+    .map_err(|_| Error::UnsupportedGraph)?
+    .ok_or(Error::SourceMismatch)?;
+    let bytes = program.backing_bytes().ok_or(Error::Overflow)?;
+    hex_lattice::PreparedForeignAutomation::new(source.binding, revision, program, bytes)
+        .map(Some)
+        .map_err(|_| Error::Overflow)
 }

@@ -1554,6 +1554,25 @@ impl SessionPlayback {
         resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
         transient_loop: Option<hex_project::LoopRegion>,
     ) -> Result<Self, SessionPlaybackError> {
+        let arrangement = revision.arrangement();
+        if transient_loop.is_some_and(|region| Some(region) != arrangement.loop_region())
+            && arrangement
+                .tracks
+                .iter()
+                .flat_map(|track| track.device_chain.iter())
+                .chain(
+                    arrangement
+                        .return_buses
+                        .iter()
+                        .flat_map(|bus| bus.device_chain.iter()),
+                )
+                .chain(arrangement.main_device_chain.iter())
+                .any(|device| device.automation.foreign().is_some())
+        {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "vst3 automation requires the prepared arrangement loop",
+            ));
+        }
         if transient_loop.is_some() && !revision.foreign_automation.admits_loop(transient_loop) {
             return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
                 "audition loop exceeds the prepared vst3 automation capacity",

@@ -178,6 +178,11 @@ impl PreparedForeignAutomation {
         self.storage_bytes
     }
 
+    /// Exact shared allocation identity for control-side storage inventory.
+    pub fn storage_owner(&self) -> &Arc<dyn ForeignAutomationProgram + Send> {
+        &self.program
+    }
+
     pub fn borrow(&self) -> ForeignAutomation<'_> {
         ForeignAutomation {
             binding: self.binding,

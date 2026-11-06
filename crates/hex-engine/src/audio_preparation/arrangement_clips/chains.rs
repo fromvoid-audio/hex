@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 struct Entry {
     automation_bytes: usize,
+    authored: bool,
     device_id: u64,
     owner: ProcessorChainOwner,
     device_type: hex_lattice_contract::DeviceTypeId,
@@ -210,7 +211,7 @@ impl ChainCustody {
         rate: u32,
         effects: Option<&NativeDeviceRegistry<'_>>,
     ) -> Result<OwnedShared<[PreparedRuntimeInstance]>, AudioStorageError> {
-        self.prepare_with_effects_and_input(devices, owner, rate, effects, None)
+        self.prepare_with_effects_and_input(devices, owner, rate, effects, None, None)
     }
     pub(in crate::audio_preparation) fn prepare_with_effects_and_input(
         &mut self,
@@ -219,6 +220,7 @@ impl ChainCustody {
         rate: u32,
         effects: Option<&NativeDeviceRegistry<'_>>,
         native_input: Option<crate::device_automation::NativeParameterInputTarget>,
+        project: Option<&hex_project::Project>,
     ) -> Result<OwnedShared<[PreparedRuntimeInstance]>, AudioStorageError> {
         if !self.entries.is_empty() {
             return Err(AudioStorageError::SourceMismatch);
@@ -276,7 +278,7 @@ impl ChainCustody {
         }
         let mut admission = StereoMatrix::identity();
         for device in devices {
-            let automation = if let Some(effects) = effects {
+            let mut automation = if let Some(effects) = effects {
                 crate::device_automation::prepare_closed_effect(device, effects, native_input)
             } else if native_input.is_some() {
                 let automation_registry = hex_devices::native_registry()
@@ -290,9 +292,6 @@ impl ChainCustody {
                 crate::device_automation::prepare(device)
             }
             .map_err(|_| AudioStorageError::UnsupportedGraph)?;
-            let automation_bytes = automation
-                .storage_bytes()
-                .ok_or(AudioStorageError::Overflow)?;
             device
                 .state()
                 .require_asset_free_processing()
@@ -362,6 +361,27 @@ impl ChainCustody {
                     _ => return Err(AudioStorageError::UnsupportedGraph),
                 }
             };
+            if let (Some(project), Some(effects), Some(foreign)) = (project, effects, foreign) {
+                let identity = ProcessorInstanceIdentity::new(owner, device.id().value())
+                    .map_err(|_| AudioStorageError::SourceMismatch)?;
+                if let Some(program) = crate::foreign_automation::candidate::prepare_device(
+                    device,
+                    identity,
+                    effects,
+                    project.tempo_map(),
+                    project.loop_region(),
+                )? {
+                    if !automation.is_empty() || Some(program.borrow().binding) != foreign.binding()
+                    {
+                        return Err(AudioStorageError::UnsupportedGraph);
+                    }
+                    automation = hex_lattice::PreparedParameterAutomation::for_foreign(program);
+                }
+            }
+            let authored = automation.foreign().is_some();
+            let automation_bytes = automation
+                .storage_bytes()
+                .ok_or(AudioStorageError::Overflow)?;
             let matrix = if device.bypassed()
                 || !native
                 || !automation.parameter_ids().is_empty()
@@ -459,6 +479,7 @@ impl ChainCustody {
             let handles = [handle()?, handle()?, handle()?, handle()?];
             self.entries.push(Entry {
                 automation_bytes,
+                authored,
                 device_id: device.id().value(),
                 owner,
                 device_type: migrated_type,
@@ -571,7 +592,7 @@ impl ChainCustody {
     pub(in crate::audio_preparation) fn handles(&self) -> usize {
         self.entries
             .iter()
-            .map(|e| 3 + usize::from(e.processor.is_some()))
+            .map(|e| 3 + usize::from(e.processor.is_some()) + usize::from(e.authored))
             .sum()
     }
     pub(in crate::audio_preparation) fn visit_metadata<'a>(
@@ -605,6 +626,16 @@ impl ChainCustody {
             l.vec(ids)?;
             l.vec(lanes)?;
             l.vec(points)?;
+            if let Some(program) = value.automation.foreign() {
+                let owner = program.storage_owner();
+                l.shared(
+                    owner,
+                    Some((program.storage_bytes(), 0)),
+                    Owner::exclusive(owner),
+                    handle()?,
+                    None,
+                )?;
+            }
             let state = value
                 .configuration
                 .as_ref()
@@ -717,6 +748,7 @@ mod tests {
                     project.sample_rate(),
                     Some(&registry),
                     Some(input),
+                    None,
                 )
                 .unwrap();
             assert!(custody.bytes(&chain).unwrap() <= quoted);

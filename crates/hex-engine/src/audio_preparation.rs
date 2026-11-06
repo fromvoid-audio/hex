@@ -804,6 +804,20 @@ impl AudioPreparationCustody {
                 return Err(Box::new(AudioArrangementStartRefusal { reason, capacity }));
             }
         };
+        if capacity
+            .retained_stage_bytes
+            .checked_add(foreign_bytes)
+            .is_none_or(|bytes| bytes > inputs.reservation.max_prepared_data_bytes)
+            || capacity
+                .construction_peak_bytes
+                .checked_add(foreign_bytes)
+                .is_none_or(|bytes| bytes > inputs.reservation.max_construction_data_bytes)
+        {
+            return Err(Box::new(AudioArrangementStartRefusal {
+                reason: AudioStorageError::ReservationExceeded,
+                capacity,
+            }));
+        }
         if native_input.is_some() && !assemble_revision {
             return Err(Box::new(AudioArrangementStartRefusal {
                 reason: AudioStorageError::UnsupportedGraph,
@@ -884,14 +898,14 @@ impl AudioPreparationCustody {
                         self.revision.reserve_with_sampler_and_effects(
                             project,
                             Some(metadata.id),
-                            effects,
+                            effects.is_some(),
                             native_input,
                         )?;
                     } else {
                         self.revision.reserve_with_sampler_and_effects(
                             project,
                             None,
-                            effects,
+                            effects.is_some(),
                             native_input,
                         )?;
                     }
@@ -913,7 +927,14 @@ impl AudioPreparationCustody {
                         .chain(project.return_tracks().iter().map(|r| r.devices()))
                         .chain(std::iter::once(project.main_devices()))
                         .try_fold(0usize, |n, devices| {
-                            n.checked_add(devices.len().checked_mul(4)?)
+                            n.checked_add(devices.len().checked_mul(4)?)?.checked_add(
+                                devices
+                                    .iter()
+                                    .filter(|device| {
+                                        crate::foreign_automation::candidate::has_authored(device)
+                                    })
+                                    .count(),
+                            )
                         })
                         .ok_or(AudioStorageError::Overflow)?
                 } else {

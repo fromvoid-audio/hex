@@ -1528,11 +1528,9 @@ fn actual_arrangement_renderer_clock_drives_the_signed_authored_effect() {
             (0, 0, 0, 0)
         );
         rendered += frames.len();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while workers.last().unwrap().published_blocks_on_control() < rendered as u64 / 8 {
-            assert!(Instant::now() < deadline, "signed authored PCM completion");
-            std::thread::yield_now();
-        }
+        endpoints
+            .wait_offline_on_control(&workers, || false)
+            .unwrap();
     }
     let mut expected = [[0.0; 2]; 64];
     if loop_live {
