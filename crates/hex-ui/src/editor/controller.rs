@@ -17,6 +17,7 @@ use hex_session::service::{
     DeviceClipboardAction, DevicePreviewIdentity, Event, Request, SubmitError,
     TrackClipboardAction, ViewState,
 };
+use hex_session::tuning_gesture::TuningLibraryOperation;
 use std::{
     collections::VecDeque,
     sync::Arc,
@@ -3318,6 +3319,100 @@ impl EditorView {
         self.enqueue_request(request, true)
     }
 
+    fn mutates_clipboard_or_project(request: &Request) -> bool {
+        // Copy only reads the project. Cut, paste, insert and duplicate can
+        // change it and invalidate both local drafts and prepared seeks.
+        matches!(
+            request,
+            Request::DeviceClipboard {
+                action: DeviceClipboardAction::Cut { .. }
+                    | DeviceClipboardAction::Paste { .. }
+                    | DeviceClipboardAction::Duplicate { .. },
+                ..
+            } | Request::TrackClipboard {
+                action: TrackClipboardAction::Cut(_)
+                    | TrackClipboardAction::Duplicate { .. }
+                    | TrackClipboardAction::Paste { .. },
+                ..
+            } | Request::CutTimeRange(_)
+                | Request::PasteTimeRange { .. }
+                | Request::InsertTimeRange { .. }
+        )
+    }
+
+    /// Apply the same gate before FIFO and device-barrier custody. Owned
+    /// commits, document replacement, and read-only requests keep their
+    /// separate admission and terminal contracts.
+    pub(super) fn admit_independent_edit_with_local_draft(&mut self, request: &Request) -> bool {
+        // Independent edits can advance the canonical revision even when they
+        // carry source stamps. Refuse them before taking worker custody.
+        // Duplicate repeats submit a new edit after the prior terminal.
+        let independent_edit = matches!(
+            request,
+            Request::Edit(_)
+                | Request::ChangeProjectSampleRate { .. }
+                | Request::Import(_)
+                | Request::ImportAudioBatch { .. }
+                | Request::ImportToTrack { .. }
+                | Request::ImportToTrackWithOverwrite { .. }
+                | Request::ImportToNewTrack { .. }
+                | Request::ImportToNewTrackWithGain { .. }
+                | Request::ImportToSession { .. }
+                | Request::ImportDeviceAsset { .. }
+                | Request::LoadFirstSampler { .. }
+                | Request::AssignSampler { .. }
+                | Request::RecoverTruncatedImport(_)
+                | Request::RelinkMedia(_)
+                | Request::EditArrangementSection { .. }
+                | Request::MoveExistingClips { .. }
+                | Request::DuplicateClips { .. }
+                | Request::DuplicateAliasClips { .. }
+                | Request::DuplicateSessionCell { .. }
+                | Request::GroupClips { .. }
+                | Request::GroupTimeRange { .. }
+                | Request::GroupAudioEvents { .. }
+                | Request::CopyArrangementClipToConsoleTrack { .. }
+                | Request::ReorderTracks { .. }
+                | Request::ReparentTracks { .. }
+                | Request::DropNativeDevice { .. }
+                | Request::AddNativeDevice { .. }
+                | Request::ReplaceNativeDevice { .. }
+                | Request::DropBrowserDeviceOnArrangement { .. }
+                | Request::InsertBrowserInstrumentTrack { .. }
+                | Request::InsertEffectBusDevice { .. }
+                | Request::InsertPluginEffect(_)
+                | Request::CompareDevice { .. }
+                | Request::LoadDevicePreset { .. }
+                | Request::SetDeviceParameter { .. }
+                | Request::BounceArrangement { .. }
+                | Request::ConvertClip { .. }
+                | Request::Undo
+                | Request::Redo
+                | Request::TuningLibrary {
+                    operation: TuningLibraryOperation::Load { .. }
+                        | TuningLibraryOperation::Import { .. },
+                    ..
+                }
+        ) || Self::mutates_clipboard_or_project(request);
+        if independent_edit && self.gain_lane.draft.is_some() {
+            self.error = Some("finish or cancel the gain point gesture before editing".into());
+            return false;
+        }
+        if independent_edit && self.automation_view.devices.point_draft_active() {
+            self.error =
+                Some("finish or cancel the automation point gesture before editing".into());
+            return false;
+        }
+        if independent_edit
+            && (self.gain_lane.numeric_draft_active()
+                || self.sampler_parameter.numeric_draft_active())
+        {
+            self.error = Some("finish or cancel the numeric draft before editing".into());
+            return false;
+        }
+        true
+    }
+
     fn enqueue_request(&mut self, request: Request, duplicate_continuation: bool) -> bool {
         self.wake_poll();
         if self.update_preparing() {
@@ -3378,66 +3473,7 @@ impl EditorView {
             });
             return false;
         }
-        // Copy only reads the project. Cut, paste, insert and duplicate can
-        // change it and invalidate both local drafts and prepared seeks.
-        let clipboard_edit = matches!(
-            &request,
-            Request::DeviceClipboard {
-                action: DeviceClipboardAction::Cut { .. }
-                    | DeviceClipboardAction::Paste { .. }
-                    | DeviceClipboardAction::Duplicate { .. },
-                ..
-            } | Request::TrackClipboard {
-                action: TrackClipboardAction::Cut(_)
-                    | TrackClipboardAction::Duplicate { .. }
-                    | TrackClipboardAction::Paste { .. },
-                ..
-            } | Request::CutTimeRange(_)
-                | Request::PasteTimeRange { .. }
-                | Request::InsertTimeRange { .. }
-        );
-        // Independent edits can advance the canonical revision even when they
-        // carry source stamps. Refuse them before taking worker custody.
-        // Duplicate repeats submit a new edit after the prior terminal.
-        let independent_edit = matches!(
-            &request,
-            Request::Edit(_)
-                | Request::ChangeProjectSampleRate { .. }
-                | Request::Import(_)
-                | Request::ImportAudioBatch { .. }
-                | Request::ImportToTrack { .. }
-                | Request::ImportToTrackWithOverwrite { .. }
-                | Request::ImportToNewTrack { .. }
-                | Request::ImportToNewTrackWithGain { .. }
-                | Request::ImportToSession { .. }
-                | Request::ImportDeviceAsset { .. }
-                | Request::LoadFirstSampler { .. }
-                | Request::AssignSampler { .. }
-                | Request::RelinkMedia(_)
-                | Request::EditArrangementSection { .. }
-                | Request::MoveExistingClips { .. }
-                | Request::DuplicateClips { .. }
-                | Request::DuplicateAliasClips { .. }
-                | Request::DuplicateSessionCell { .. }
-                | Request::GroupClips { .. }
-                | Request::GroupTimeRange { .. }
-                | Request::GroupAudioEvents { .. }
-                | Request::CopyArrangementClipToConsoleTrack { .. }
-        ) || clipboard_edit;
-        if independent_edit && self.gain_lane.draft.is_some() {
-            self.error = Some("finish or cancel the gain point gesture before editing".into());
-            return false;
-        }
-        if independent_edit && self.automation_view.devices.point_draft_active() {
-            self.error =
-                Some("finish or cancel the automation point gesture before editing".into());
-            return false;
-        }
-        if independent_edit
-            && (self.gain_lane.numeric_draft_active()
-                || self.sampler_parameter.numeric_draft_active())
-        {
-            self.error = Some("finish or cancel the numeric draft before editing".into());
+        if !self.admit_independent_edit_with_local_draft(&request) {
             return false;
         }
         // The exact sealed recording already owns its terminal. It shares
@@ -3670,7 +3706,7 @@ impl EditorView {
                 | Request::Redo
                 | Request::RestorePlayback { .. }
                 | Request::RestoreStoppedPlayback
-        ) || clipboard_edit
+        ) || Self::mutates_clipboard_or_project(&request)
         {
             self.invalidate_prepared_seek();
         }

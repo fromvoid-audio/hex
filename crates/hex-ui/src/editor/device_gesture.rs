@@ -280,6 +280,9 @@ impl EditorView {
         if self.device_gesture.snapshot().is_none() {
             return self.enqueue(request);
         }
+        if !self.admit_independent_edit_with_local_draft(&request) {
+            return false;
+        }
         if self.pending_requests.len() + self.device_gesture_barriers.len()
             >= super::UI_REQUEST_CAPACITY
         {
