@@ -2396,7 +2396,13 @@ impl EditorView {
                     })
                     .cloned()
                     .unwrap_or_default();
-                self.audio_file_drag_payload(path.clone(), name.clone(), slot.metadata, slot.error)
+                self.audio_file_drag_payload(
+                    path.clone(),
+                    name.clone(),
+                    Some(self.browser.scan_generation()),
+                    slot.metadata,
+                    slot.error,
+                )
             })
         } else {
             None
