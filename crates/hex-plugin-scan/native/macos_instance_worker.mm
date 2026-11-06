@@ -383,7 +383,7 @@ int main(int argc,char** argv) {
                         ++edit_query_operation;completed_edit_count=0;return true;
                     };
                     std::array<hex_instance::EditEvent,hex_instance::HOST_EDIT_COUNT> applying_edits{};size_t applying_edit_count=0;
-                    const auto stage_edits=[&] {
+                    const auto stage_edits=[&](size_t later_points=0) {
                         applying_edit_count=0;hex_instance::EditEvent event{};
                         while(completed_edit_count+applying_edit_count<completed_edits.size() && instance.peek_parameter_edit(event)) {
                             if(event.kind==hex_instance::Perform) {
@@ -394,7 +394,7 @@ int main(int argc,char** argv) {
                                     hex_instance::ParameterPoint point{};if(!parameter_input.point(n,point)) return false;
                                     if(point.id==event.id && point.offset==0) duplicate=true;
                                 }
-                                if(parameter_input.size()==hex_instance::PARAMETER_POINT_COUNT && !duplicate) break;
+                                if(parameter_input.size()+later_points>=hex_instance::PARAMETER_POINT_COUNT && !duplicate) break;
                                 if(!parameter_input.input(event.id,0,event.normalized)) return false;
                             }
                             applying_edits[applying_edit_count++]=event;instance.consume_parameter_edit();
@@ -729,66 +729,85 @@ int main(int argc,char** argv) {
                         }
                         if(!valid) { worker_failure.store(ProtocolFailure);break; }
                         instance.refresh_processing_parameters(processing_parameters);
-                        if(!parameter_input.reset(packet.frames,false) || !parameter_output.reset(packet.frames,true)) {
-                            error(channel,&*config,Processing);std::_Exit(Processing);
-                        }
                         for(size_t n=0;n<packet.parameter_count;++n) {
-                            const auto& point=packet.parameters[n];
-                            const auto* info=processing_parameters.find(point.id);
-                            if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden)) ||
-                                !parameter_input.input(point.id,point.offset,point.normalized)) valid=false;
+                            const auto* info=processing_parameters.find(packet.parameters[n].id);
+                            if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden))) valid=false;
                         }
-                        if(!valid || !stage_edits()) { worker_failure.store(ProtocolFailure);break; }
-                        if(event_channels && !held_notes.stage(packet.notes,packet.note_count)) {
+                        if(!valid || (event_channels && !held_notes.stage(packet.notes,packet.note_count))) {
                             worker_failure.store(ProtocolFailure);break;
                         }
-                        if(!parameter_input.begin_sdk() || !parameter_output.begin_sdk()) {
-                            error(channel,&*config,Processing);std::_Exit(Processing);
-                        }
-                        if (event_channels && !input_notes.begin(packet.notes,packet.note_count)) {
-                            error(channel,&*config,Processing);std::_Exit(Processing);
-                        }
-                        data.inputParameterChanges=parameter_input.size()?&parameter_input:nullptr;
-                        data.outputParameterChanges=&parameter_output;
-                        data.inputEvents=event_channels?&input_notes:nullptr;
-                        data.processContext=packet.context?&*packet.context:nullptr;
-                        data.numSamples=packet.frames;phase.store(2,std::memory_order_release);
-                        const bool processed=instance.process(data);
-                        // No SDK stop/unload beneath retained or malformed
-                        // borrowed queues. Their existing process owner retires
-                        // the isolated instance without claiming rollback.
-                        const bool input_returned=parameter_input.end_sdk();
-                        const bool output_returned=parameter_output.end_sdk();
-                        const bool notes_returned=!event_channels || input_notes.end();
-                        if(!input_returned || !output_returned || !notes_returned) {
-                            error(channel,&*config,Processing);std::_Exit(Processing);
-                        }
-                        if(!processed) { worker_failure.store(Processing);break; }
-                        // Both streams are globally sample-ordered. Mirror
-                        // their latest value per ID; DSP feedback wins a tie,
-                        // never a later host point. Optional output is returned
-                        // unchanged rather than manufacturing an input echo.
-                        size_t incoming=0,outgoing=0;
-                        while(incoming<parameter_input.size() || outgoing<parameter_output.size()) {
-                            hex_instance::ParameterPoint output_point{},input_point{};
-                            if(incoming<parameter_input.size() && !parameter_input.point(incoming,input_point)) {valid=false;break;}
-                            if(outgoing<parameter_output.size() && !parameter_output.point(outgoing,output_point)) {
-                                valid=false;break;
+                        // Each transport context starts an SDK call, but the
+                        // copied exchange and its reply remain one quantum.
+                        packet.reply_parameter_count=0;
+                        size_t next_note=0,next_parameter=0;
+                        for(size_t slice=0;slice<=packet.timing_change_count;++slice) {
+                            const size_t first=slice?packet.timing_changes[slice-1].offset:0;
+                            const size_t end=slice<packet.timing_change_count?packet.timing_changes[slice].offset:packet.frames;
+                            const auto width=static_cast<int32_t>(end-first);
+                            if(!parameter_input.reset(width,false) || !parameter_output.reset(width,true)) {
+                                error(channel,&*config,Processing);std::_Exit(Processing);
                             }
-                            const bool use_input=incoming<parameter_input.size() &&
-                                (outgoing==parameter_output.size() || input_point.offset<=output_point.offset);
-                            const auto point=use_input?input_point:output_point;
-                            if(use_input) ++incoming;else ++outgoing;
-                            if(!processing_parameters.find(point.id) || !parameter_feedback.put(point.id,point.normalized)) valid=false;
+                            while(next_parameter<packet.parameter_count && static_cast<size_t>(packet.parameters[next_parameter].offset)<end) {
+                                const auto& point=packet.parameters[next_parameter++];
+                                if(!parameter_input.input(point.id,point.offset-static_cast<int32_t>(first),point.normalized)) valid=false;
+                            }
+                            if(!valid || (!slice && !stage_edits(packet.parameter_count-next_parameter))) {
+                                worker_failure.store(ProtocolFailure);break;
+                            }
+                            const size_t first_note=next_note;
+                            while(next_note<packet.note_count && static_cast<size_t>(packet.notes[next_note].offset)<end)
+                                ++next_note;
+                            if(!parameter_input.begin_sdk() || !parameter_output.begin_sdk() ||
+                                (event_channels && !input_notes.begin(packet.notes,next_note-first_note,
+                                    first_note,static_cast<int32_t>(first)))) {
+                                error(channel,&*config,Processing);std::_Exit(Processing);
+                            }
+                            float* slice_inputs[]={left.data()+first,right.data()+first};
+                            float* slice_outputs[]={output_left.data()+first,output_right.data()+first};
+                            auto slice_input=input,slice_output=output;
+                            slice_input.channelBuffers32=slice_inputs;slice_output.channelBuffers32=slice_outputs;
+                            auto window=data;
+                            window.inputs=window.numInputs?&slice_input:nullptr;window.outputs=&slice_output;
+                            window.inputParameterChanges=parameter_input.size()?&parameter_input:nullptr;
+                            window.outputParameterChanges=&parameter_output;
+                            window.inputEvents=event_channels?&input_notes:nullptr;
+                            window.processContext=slice?&packet.timing_changes[slice-1].context:(packet.context?&*packet.context:nullptr);
+                            window.numSamples=width;phase.store(2,std::memory_order_release);
+                            const bool processed=instance.process(window);
+                            // No SDK stop/unload beneath a retained borrowed queue.
+                            const bool input_returned=parameter_input.end_sdk(),output_returned=parameter_output.end_sdk();
+                            const bool notes_returned=!event_channels || input_notes.end();
+                            if(!input_returned || !output_returned || !notes_returned) {
+                                error(channel,&*config,Processing);std::_Exit(Processing);
+                            }
+                            if(!processed) { worker_failure.store(Processing);break; }
+                            // Mirror the latest chronological value per ID. DSP
+                            // feedback wins a tie, never a later host point.
+                            size_t incoming=0,outgoing=0;
+                            while(incoming<parameter_input.size() || outgoing<parameter_output.size()) {
+                                hex_instance::ParameterPoint output_point{},input_point{};
+                                if(incoming<parameter_input.size() && !parameter_input.point(incoming,input_point)) {valid=false;break;}
+                                if(outgoing<parameter_output.size() && !parameter_output.point(outgoing,output_point)) {
+                                    valid=false;break;
+                                }
+                                const bool use_input=incoming<parameter_input.size() &&
+                                    (outgoing==parameter_output.size() || input_point.offset<=output_point.offset);
+                                const auto point=use_input?input_point:output_point;
+                                if(use_input) ++incoming;else ++outgoing;
+                                if(!processing_parameters.find(point.id) || !parameter_feedback.put(point.id,point.normalized)) valid=false;
+                            }
+                            if(!valid || !packet.append_parameter_reply(first,parameter_output)) {
+                                worker_failure.store(ProtocolFailure);break;
+                            }
                         }
-                        if(!valid) { worker_failure.store(ProtocolFailure);break; }
+                        if(worker_failure.load()) break;
                         for(size_t n=0;n<packet.frames;++n) {
                             wire::sample(packet.bytes.data()+wire::header_size+n*8,output_left[n]);
                             wire::sample(packet.bytes.data()+wire::header_size+n*8+4,output_right[n]);
                         }
                         for(size_t n=0;n<applying_edit_count;++n) complete_edit(applying_edits[n]);
                         instance.publish_parameter_feedback(parameter_feedback);
-                        if(!packet.write(channel,parameter_output)) { worker_failure.store(Cancelled);break; }
+                        if(!packet.write(channel)) { worker_failure.store(Cancelled);break; }
                         ++blocks;frames+=packet.frames;
                     }
                     if(worker_failure.load()) error(channel,&*config,worker_failure.load());

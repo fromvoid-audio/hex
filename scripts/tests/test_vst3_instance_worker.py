@@ -272,6 +272,69 @@ class NativeInstanceTests(unittest.TestCase):
             magic, reply = session.message()
             self.assertEqual((magic, struct.unpack_from("<I", reply, 35)[0]), (b"HXVIER01", 8))
 
+    def sliced_request(self, session, initial, changes, *, pcm=bytes(64), notes=(), points=()):
+        header = bytearray(session.packet(8))
+        struct.pack_into("<HHHHB", header, 4, 6, 8, len(notes), len(points), len(changes))
+        events = b"".join(struct.pack("<HBBBB2xI", offset, 3, status, 60, velocity, identity)
+                          for offset, status, velocity, identity in notes)
+        parameters = b"".join(struct.pack("<H2xId", *point) for point in points)
+        timing = initial + b"".join(struct.pack("<H6x", offset) + context for offset, context in changes)
+        session.socket.sendall(header + pcm + events + parameters + timing)
+
+    def test_sliced_transport_contexts_use_exact_origins_in_one_copied_reply(self):
+        session = self.session(variant=126)
+        self.ready(session, controller=True)
+        self.assertEqual(session.render(8)[2][0], b"HXVB")
+        initial = struct.pack("<qQIBBBxQQ", 48000, 5 << 31, 123_125_000, 3, 0, 0, 0, 0)
+        cycle = struct.pack("<qQIBBBxQQ", 30000, 0, 0, 13, 7, 8, 5 << 30, 11 << 31)
+        meter = struct.pack("<qQIBBBxQQ", 0, 0, 0, 4, 3, 4, 0, 0)
+        self.sliced_request(session, initial, [(2, bytes(40)), (4, cycle), (6, meter)],
+                            pcm=struct.pack("<16f", *([.25] * 16)))
+        magic, reply = session.message()
+        self.assertEqual((magic, struct.unpack_from("<HHHHB", reply, 4)), (b"HXVB", (1, 8, 0, 0, 0)))
+        expected = tuple(value for block in range(1, 5) for value in [(.5 + block * .125) * .25] * 4)
+        self.assertEqual(struct.unpack("<16f", reply[64:]), expected)
+        session.sequence += 1
+        session.frames += 8
+        self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (2, 16))
+
+    def test_sliced_transport_preserves_note_and_parameter_offsets(self):
+        stopped, playing = bytes(40), struct.pack("<qQIBBBxQQ", 0, 0, 0, 1, 0, 0, 0, 0)
+        instrument = self.session(variant=115, channels=(0, 2))
+        self.assertEqual(instrument.message()[0], b"HXVIRD05")
+        self.sliced_request(instrument, stopped, [(3, playing)],
+                            notes=[(1, 0x92, 127, 41), (3, 0x92, 127, 42),
+                                   (5, 0x82, 0, 41), (6, 0x82, 0, 42)])
+        magic, reply = instrument.message()
+        self.assertEqual(magic, b"HXVB")
+        self.assertEqual(struct.unpack("<16f", reply[64:]),
+                         tuple(x for v in [0., .5, .5, 1.25, 1.25, .625, 0., 0.] for x in (v, v)))
+        instrument.sequence, instrument.frames = 1, 8
+        self.assertEqual(self.terminal(instrument, 0, message=instrument.stop())[5:7], (1, 8))
+
+        effect = self.session(variant=37)
+        self.ready(effect, controller=True)
+        self.sliced_request(effect, stopped, [(3, playing)], pcm=struct.pack("<16f", *([.25] * 16)),
+                            points=[(0, 7, .5), (3, 7, .25)])
+        magic, reply = effect.message()
+        self.assertEqual((magic, struct.unpack_from("<HHHHB", reply, 4)), (b"HXVB", (2, 8, 0, 2, 0)))
+        self.assertEqual(struct.unpack_from("<16f", reply, 64), (.25,) * 6 + (.15625,) * 10)
+        self.assertEqual(list(struct.iter_unpack("<HHId", reply[128:])), [(2, 0, 7, .5), (7, 0, 7, .25)])
+        effect.sequence, effect.frames = 1, 8
+        self.assertEqual(self.terminal(effect, 0, message=effect.stop())[5:7], (1, 8))
+
+    def test_malformed_sliced_transport_never_enters_dsp(self):
+        stopped, playing = bytes(40), struct.pack("<qQIBBBxQQ", 0, 0, 0, 1, 0, 0, 0, 0)
+        for changes in ([], [(0, playing)], [(8, playing)], [(2, stopped)],
+                        [(3, playing), (3, stopped)], [(n, playing) for n in range(8)]):
+            with self.subTest(changes=len(changes)):
+                session = self.session(variant=126)
+                self.ready(session, controller=True)
+                self.sliced_request(session, stopped, changes)
+                self.error(session, 8)
+                self.assertEqual(self.terminal(session, 8)[5:7], (0, 0))
+                self.assertEqual(self.observation()[10], 0)
+
     def test_retained_output_parameter_queue_still_retires_the_worker(self):
         session = self.session(variant=125)
         self.ready(session, controller=True)

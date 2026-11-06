@@ -73,13 +73,15 @@ class InputNotes final : public IEventList {
         return false;
     }
 public:
-    bool begin(const std::array<InputNote,INPUT_NOTE_COUNT>& notes,size_t length) {
-        if(active || refused.load() || references.load()!=1 || length>events.size()) return false;
+    bool begin(const std::array<InputNote,INPUT_NOTE_COUNT>& notes,size_t length,
+               size_t first=0,int32 start_frame=0) {
+        if(active || refused.load() || references.load()!=1 || first>notes.size() ||
+            length>notes.size()-first) return false;
         count=length;
         for(size_t index=0;index<count;++index) {
-            const auto& note=notes[index];
+            const auto& note=notes[first+index];
             auto& event=events[index];
-            event={};event.sampleOffset=note.offset;
+            event={};event.sampleOffset=note.offset-start_frame;
             // A byte-only MIDI message retains the SDK's absent note ID.
             const auto velocity=note.velocity/127.0f;
             if(note.on) {
