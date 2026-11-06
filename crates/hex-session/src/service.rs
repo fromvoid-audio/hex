@@ -59,8 +59,9 @@ mod sampler_parameter;
 use audio_sink::WorkerEvents;
 pub use audio_sink::{
     ArrangementEditPosition, NativeSamplerInput, NativeSamplerReservationHold,
-    NativeSamplerRetryFacts, OfflineBounceSource, ResidentEffectPreparation, ResidentFileInput,
-    ResidentFileMetadata, ResidentFilePublication, ResidentFileSeekPreparer,
+    NativeSamplerRetryFacts, OfflineBounceSource, PluginParameterGestureError,
+    PluginParameterGestureInput, PluginParameterGestureResult, ResidentEffectPreparation,
+    ResidentFileInput, ResidentFileMetadata, ResidentFilePublication, ResidentFileSeekPreparer,
     ResidentFileSeekRequest, ResidentFileSet, ResidentFreshRuntimeFence,
     ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
     ResidentPublicationReadiness, ResidentPublicationRefusal, ResidentRuntimeLoop, WorkerAudioSink,
@@ -3564,6 +3565,7 @@ fn run_worker(
                 gesture_request = true;
                 gesture_protocol_ack = true;
                 gesture_ack = Some(GestureAck {
+                    source_lost: false,
                     key: gesture.key(),
                     phase: gesture.phase(),
                     sequence: gesture.sequence(),
@@ -3779,12 +3781,14 @@ fn run_worker(
                             gesture,
                             GestureRequest::Begin { .. }
                                 | GestureRequest::BeginTrackGains { .. }
+                                | GestureRequest::BeginPlugin { .. }
                                 | GestureRequest::BeginSnapshot { .. }
                                 | GestureRequest::BeginEqCreation { .. }
                         ) {
                         crate::device_gesture::GestureOutcome {
                             ack: GestureAck {
                                 preview_retained: false,
+                                source_lost: false,
                                 key: gesture.key(),
                                 phase: gesture.phase(),
                                 sequence: gesture.sequence(),
@@ -3858,6 +3862,7 @@ fn run_worker(
                         } else if matches!(
                             gesture,
                             GestureRequest::Change { .. }
+                                | GestureRequest::ChangePlugin { .. }
                                 | GestureRequest::ChangePair { .. }
                                 | GestureRequest::ChangeSnapshot { .. }
                                 | GestureRequest::ChangeEqCreation { .. }

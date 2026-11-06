@@ -21,6 +21,39 @@ pub struct ResidentEffectPreparation<'a> {
     pub(in crate::service) restoring_plugin_state: bool,
     pub(in crate::service) preparing_edit: bool,
 }
+
+/// One ordered plugin gesture request and its exact canonical baseline. This
+/// is borrowed DATA, never native source/endpoint custody or SDK admission.
+pub struct PluginParameterGestureInput<'a> {
+    pub(in crate::service) context: hex_engine::AudioSourceContext,
+    pub(in crate::service) operation: crate::device_gesture::PluginGesturePreparation,
+    pub(in crate::service) canonical_state: &'a NativeDeviceState,
+}
+impl<'a> PluginParameterGestureInput<'a> {
+    pub fn context(&self) -> hex_engine::AudioSourceContext {
+        self.context
+    }
+    pub fn operation(&self) -> crate::device_gesture::PluginGesturePreparation {
+        self.operation
+    }
+    pub fn canonical_state(&self) -> &'a NativeDeviceState {
+        self.canonical_state
+    }
+}
+pub enum PluginParameterGestureResult {
+    /// Validated Begin or completed Preview/Restore, not physical delivery or
+    /// an assertion that a plugin returned the exact requested normalized value.
+    /// SDK readback remains separate from the client's lossless intent.
+    Applied,
+    /// Actual host capture. The host retains its private matching receipt and
+    /// staged compiler permission until finish_plugin_parameter_commit.
+    Captured(NativeDeviceState),
+}
+#[derive(Debug)]
+pub enum PluginParameterGestureError {
+    Refused(String),
+    SourceLost(String),
+}
 impl<'a> ResidentEffectPreparation<'a> {
     pub fn sample_rate(&self) -> u32 {
         self.project.sample_rate()
@@ -272,6 +305,32 @@ impl std::fmt::Debug for ResidentPublicationRefusal {
 /// Construction must not start device work or hold an opened output: a failed
 /// thread spawn may drop the uninitialized adapter on the constructing thread.
 pub trait WorkerAudioSink: Send {
+    /// Use the existing actual source for one keyed plugin operation. Begin
+    /// revalidates observed metadata/context. Preview/Restore must apply the
+    /// real point before returning Applied; they never edit canonical state.
+    /// Commit captures/stages that same source and returns DATA only. A refusal
+    /// must preserve the last acknowledged preview or report source loss; it
+    /// must not fabricate application, restore or a canonical terminal.
+    fn prepare_plugin_parameter_gesture(
+        &mut self,
+        _input: PluginParameterGestureInput<'_>,
+    ) -> Result<PluginParameterGestureResult, PluginParameterGestureError> {
+        Err(PluginParameterGestureError::Refused(
+            "plugin parameter controls are unavailable for this output".into(),
+        ))
+    }
+    /// Called for every Commit attempt, including capture/compilation/publication
+    /// refusal. Retire only the exact key/sequence/input context's pending
+    /// compiler permission. This is the canonical worker's actual terminal,
+    /// never a request to force acceptance or roll back foreign DSP.
+    fn finish_plugin_parameter_commit(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _key: crate::device_gesture::GestureKey,
+        _sequence: u64,
+        _accepted: bool,
+    ) {
+    }
     /// Capture every active hosted instance required by this exact canonical
     /// save input. The existing worker retains request order while the adapter
     /// drains each admitted native token to its matching terminal, including

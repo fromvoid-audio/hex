@@ -53,6 +53,9 @@ pub(crate) fn command_for_snapshot(
         ));
     }
     match snapshot.target {
+        GestureTarget::PluginParameter { .. } => Err(SessionError::Invalid(
+            "plugin parameter commit requires original host capture",
+        )),
         GestureTarget::TrackGain { track } => Ok(Command::Gain {
             track,
             gain: track_gain_value(snapshot.value)?,

@@ -213,6 +213,7 @@ fn group_client_coalesces_scalar_values_and_reserves_one_terminal_without_losing
     assert_eq!(client.preview_track_gain(0, ids[2]), Some(0.0));
     assert_eq!(client.preview_track_gain(1, ids[1]), None);
     assert!(client.acknowledge(&GestureAck {
+        source_lost: false,
         preview_retained: false,
         key,
         phase: GesturePhase::Begin,

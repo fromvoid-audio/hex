@@ -209,7 +209,8 @@ impl EditorView {
         ack: &hex_session::device_gesture::GestureAck,
         snapshot: Option<hex_session::device_gesture::GestureSnapshot>,
     ) -> bool {
-        let terminal = matches!(ack.phase, GesturePhase::Commit | GesturePhase::Cancel);
+        let terminal =
+            matches!(ack.phase, GesturePhase::Commit | GesturePhase::Cancel) || ack.source_lost;
         let matched = self.device_gesture.acknowledge_with_snapshot(ack, snapshot);
         if !matched {
             self.refuse_effect_bus_barriers(
@@ -370,6 +371,99 @@ mod tests {
 
     #[cfg(feature = "ui-test-support")]
     #[gpui::test]
+    fn plugin_source_loss_on_change_releases_edits_and_refuses_deferred_save(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
+        use hex_project::{Command, Created, Editor, Project};
+        use hex_session::device_gesture::{
+            GestureAck, GesturePhase, PluginParameterOrigin, PluginParameterValue,
+        };
+        use std::sync::Arc;
+        let mut project = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+        let Created::Track(track) = project
+            .execute(Command::AddTrack {
+                name: "plugin control".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Device(device) = project
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: NativeDeviceState::new(DeviceTypeId::from_static("hex.vst3"), 1, vec![1])
+                    .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("device")
+        };
+        let (_, editor) = crate::editor::clip_drag_ui_test::editor_window(
+            cx,
+            project.project().clone(),
+            Arc::default(),
+        );
+        editor.update(cx, |view, _| {
+            let key = view
+                .device_gesture
+                .begin_plugin(PluginParameterOrigin {
+                    context: hex_engine::AudioSourceContext {
+                        project_generation: view.project_generation,
+                        editor_revision: 0,
+                    },
+                    device,
+                    parameter: 0,
+                    page_first: 0,
+                    metadata_revision: 1,
+                    initial: PluginParameterValue::new(0.25).unwrap(),
+                })
+                .unwrap();
+            view.device_gesture.next_request().unwrap();
+            assert!(view.acknowledge_device_gesture(&GestureAck {
+                key,
+                phase: GesturePhase::Begin,
+                sequence: 0,
+                accepted: true,
+                preview_retained: false,
+                source_lost: false,
+                reason: None,
+            }));
+            let sequence = view
+                .device_gesture
+                .change_plugin(PluginParameterValue::new(0.75).unwrap())
+                .unwrap();
+            view.device_gesture.next_request().unwrap();
+            view.device_gesture.mark_submitted();
+            view.device_gesture_barriers.push_back(Request::SaveCurrent);
+            view.device_gesture_barriers
+                .push_back(Request::Edit(Command::AddTrack {
+                    name: "after lost source".into(),
+                }));
+            view.saving_project = true;
+            assert!(view.acknowledge_device_gesture(&GestureAck {
+                key,
+                phase: GesturePhase::Change,
+                sequence,
+                accepted: false,
+                preview_retained: false,
+                source_lost: true,
+                reason: Some("plugin source disappeared".into()),
+            }));
+            assert!(view.device_gesture.snapshot().is_none());
+            assert!(!view.saving_project);
+            assert!(view.device_gesture_barriers.is_empty());
+            assert_eq!(view.pending_requests.len(), 1);
+            assert!(matches!(
+                view.pending_requests.front(),
+                Some(Request::Edit(_))
+            ));
+        });
+    }
+
+    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
     fn retained_preview_refusal_keeps_edit_barrier_until_cancel(cx: &mut gpui::TestAppContext) {
         use hex_lattice_contract::ParameterValue;
         use hex_project::{Command, Created, Editor, Project};
@@ -405,6 +499,7 @@ mod tests {
                 sequence: 0,
                 accepted: true,
                 preview_retained: false,
+                source_lost: false,
                 reason: None,
             };
             assert!(view.acknowledge_device_gesture(&begin_ack));
@@ -419,6 +514,7 @@ mod tests {
                 sequence,
                 accepted: true,
                 preview_retained: false,
+                source_lost: false,
                 reason: None,
             }));
             let accepted = view.device_gesture.snapshot().unwrap();
@@ -439,6 +535,7 @@ mod tests {
                 sequence: terminal.sequence(),
                 accepted: false,
                 preview_retained: true,
+                source_lost: false,
                 reason: Some("audio publication queue full".into()),
             };
             assert!(view.acknowledge_device_gesture_with_snapshot(&refusal, Some(accepted)));
@@ -462,6 +559,7 @@ mod tests {
                 sequence: cancel.sequence(),
                 accepted: true,
                 preview_retained: false,
+                source_lost: false,
                 reason: None,
             }));
             assert!(view.device_gesture.snapshot().is_none());
@@ -611,6 +709,7 @@ mod tests {
             sequence: 1,
             accepted: true,
             preview_retained: false,
+            source_lost: false,
             reason: None,
         }
     }

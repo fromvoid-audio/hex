@@ -71,6 +71,8 @@ pub enum SessionError {
     Engine(hex_engine::Invalid),
     Allocation,
     NativeAudio(String),
+    /// Exact hosted source loss, never a retained preview or restoration ACK.
+    PluginSourceLost(String),
     NativeResource(hex_engine::native_device_resources::ResourcePreparationError),
     DeviceAssetClipUnsupported(AssetId),
 }
@@ -80,6 +82,7 @@ impl fmt::Display for SessionError {
         match self {
             Self::Invalid(message) => f.write_str(message),
             Self::NativeAudio(message) => f.write_str(message),
+            Self::PluginSourceLost(message) => f.write_str(message),
             Self::Project(error) => write!(f, "project edit failed: {error}"),
             Self::Media(error) => write!(f, "media preparation failed: {error}"),
             Self::Engine(error) => write!(f, "playback compile failed: {error}"),
@@ -104,6 +107,7 @@ impl Error for SessionError {
             Self::Engine(error) => Some(error),
             Self::Invalid(_)
             | Self::NativeAudio(_)
+            | Self::PluginSourceLost(_)
             | Self::Allocation
             | Self::NativeResource(_)
             | Self::DeviceAssetClipUnsupported(_) => None,
