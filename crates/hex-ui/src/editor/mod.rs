@@ -1914,12 +1914,12 @@ impl EditorView {
             self.error = Some("applying edit · wait for audio".into());
             return;
         }
-        if self.recovery.generation().is_some() {
-            self.error = Some("audio recovery pending · playback is not ready".into());
-            return;
-        }
         if self.opening_project || self.close_prompt_open {
             self.error = Some("project change pending · playback is paused".into());
+            return;
+        }
+        if self.recovery.generation().is_some() {
+            self.defer_play_until_audio_recovers();
             return;
         }
         let device_playing = self.audio.as_ref().is_some_and(|audio| {
@@ -1929,6 +1929,13 @@ impl EditorView {
                 .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire))
         });
         let start_frame = self.playback_start_frame();
+        if !self.desired_playing(device_playing) && self.has_degraded_vst3_output() {
+            self.recover_audio_at(start_frame);
+            if self.recovery.generation().is_some() {
+                self.defer_play_until_audio_recovers();
+            }
+            return;
+        }
         let command = match self.play_toggle_action(device_playing, start_frame) {
             arrangement_seek::ToggleAction::Pause => PlaybackCommand::Pause,
             arrangement_seek::ToggleAction::PlayFrom(frame) => PlaybackCommand::PlayFrom(frame),

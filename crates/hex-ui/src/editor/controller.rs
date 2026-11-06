@@ -4218,10 +4218,10 @@ impl EditorView {
         true
     }
 
-    /// Start a Play held behind the stopped restore once that restore
-    /// settles, whether it succeeded or failed; a replaced project drops it.
+    /// Start an explicit Play once the stopped restore or audio recovery
+    /// settles. A failed fresh recovery or replaced project drops the intent.
     pub(super) fn tick_deferred_play(&mut self) -> bool {
-        if self.stopped_playback_restore.is_some() {
+        if self.stopped_playback_restore.is_some() || self.recovery.generation().is_some() {
             return false;
         }
         let Some((action, revision, generation)) = self.deferred_play.take() else {
@@ -4589,12 +4589,15 @@ impl EditorView {
         // Stop explicitly discards voice histories. A previously refused edit
         // or restoration can now install the canonical sound without inheriting
         // an incompatible preview's history. Keep construction on the worker.
-        let restore = stop_output
+        let can_restore = stop_output
             && self.stopped_playback_restore.is_none()
             && !self.edit_pending()
             && self.device_gesture.snapshot().is_none()
             && self.tuning.client.snapshot().is_none()
-            && self.recovery.generation().is_none()
+            && self.recovery.generation().is_none();
+        let restart_degraded = can_restore && self.has_degraded_vst3_output();
+        let restore = can_restore
+            && !restart_degraded
             && self.audio.as_ref().is_some_and(|audio| {
                 self.state.as_ref().is_some_and(|state| {
                     native_restore
@@ -4629,8 +4632,16 @@ impl EditorView {
         self.pending_seek_ticket = None;
         self.pending_session_ticket = None;
         self.play_intent.priority_stop();
+        self.deferred_play = None;
         self.status = "stopped · returned to start".into();
-        if restore && !self.update_preparing() && self.enqueue(Request::RestoreStoppedPlayback) {
+        if restart_degraded && !self.update_preparing() {
+            // A revoked worker cannot be renewed on the applied graph. Start a
+            // new output from the current project, at the explicit Stop cursor.
+            self.recover_audio_at(0);
+        } else if restore
+            && !self.update_preparing()
+            && self.enqueue(Request::RestoreStoppedPlayback)
+        {
             self.stopped_playback_restore =
                 Some(super::audio_admission::StoppedPlaybackRestore::Preparing);
             self.status = "stopped · restoring current sound".into();

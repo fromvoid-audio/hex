@@ -1065,6 +1065,9 @@ impl WorkerAudioSink for NativeAudioSink {
     fn finish_resident_effect_edit(&mut self, context: AudioSourceContext, accepted: bool) {
         self.plugins.finish_edit(context, accepted);
     }
+    fn plugin_state_restore_pending(&self, context: AudioSourceContext) -> bool {
+        self.plugins.hold_reopen(context)
+    }
     fn plugin_state_restore_ready(&self) -> Option<AudioSourceContext> {
         self.plugins.reopen_ready()
     }
