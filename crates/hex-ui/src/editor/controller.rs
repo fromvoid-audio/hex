@@ -1304,7 +1304,11 @@ impl EditorView {
         visible_change |= self.poll_export(cx);
         visible_change |= self.pump_tuning_gesture();
         if !self.tuning.client.has_pending_requests() && !self.tuning.client.is_recovery_pending() {
-            while let Some(request) = self.pending_requests.pop_front() {
+            while self.pending_requests.front().is_some_and(|request| {
+                !self.holds_stopped_vst3_requests()
+                    || matches!(request, Request::RestoreStoppedPlayback)
+            }) && let Some(request) = self.pending_requests.pop_front()
+            {
                 let Err(refused) = self.submit_to_service(request) else {
                     continue;
                 };
@@ -3635,7 +3639,7 @@ impl EditorView {
             self.pending_requests.push_back(request);
             return true;
         }
-        if !self.pending_requests.is_empty() {
+        if self.holds_stopped_vst3_requests() || !self.pending_requests.is_empty() {
             if self.pending_requests.len() + self.device_gesture_barriers.len()
                 < UI_REQUEST_CAPACITY
             {
@@ -4607,6 +4611,9 @@ impl EditorView {
             && self.audio.as_ref().is_some_and(|audio| {
                 self.state.as_ref().is_some_and(|state| {
                     native_restore
+                        // Priority Stop ends the transport epochs even when
+                        // the same project revision is already audible.
+                        || self.has_resident_vst3()
                         || self.applied_project_revision != Some(state.revision)
                         || self.audible_playback.as_ref().is_none_or(|audible| {
                             audible.audio_revision
