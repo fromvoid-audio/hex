@@ -85,6 +85,7 @@ def main():
         "src/interactive.rs",
         "src/platform/mac/events.rs",
         "src/platform/mac/window.rs",
+        "src/platform/blade/blade_renderer.rs",
         "src/platform/windows/events.rs",
         "src/platform/linux/wayland/client.rs",
         "src/platform/linux/x11/client.rs",

@@ -266,6 +266,27 @@ impl Pending {
             |_| {},
         )
     }
+    /// Configure a new source in the SDK's offline mode from confirmed state.
+    /// The caller owns it independently of any live processor or output.
+    pub fn prepare_offline_restored_on_control(
+        build: &InstanceBuild,
+        source: Source,
+        preparation: Preparation,
+        state: NativeDeviceState,
+        cancellation: PreparationCancellation,
+        _trust: TrustUserCode,
+    ) -> Result<Self> {
+        Self::prepare_with_restore(
+            build,
+            source,
+            preparation,
+            Some(state),
+            cancellation,
+            |command| {
+                command.arg("--offline");
+            },
+        )
+    }
     fn prepare(
         build: &InstanceBuild,
         source: Source,
@@ -372,6 +393,7 @@ impl Pending {
             receiver: child_cancel,
         } = cancellation;
         let channel = Channel::new(data).map_err(PreparationFailure::before_native)?;
+        let mut packet = Packet::new().map_err(PreparationFailure::before_native)?;
         let mut command = Command::new(build.helper());
         command
             .arg("--supervised")
@@ -395,7 +417,6 @@ impl Pending {
             #[cfg(test)]
             reap_probe: None,
         };
-        let mut packet = Packet::new();
         let token = pending.cancellation.clone();
         let prepared = (|| {
             let until = end_after(options.limits.startup)?;
@@ -414,7 +435,7 @@ impl Pending {
                     config.binding,
                 )?));
             }
-            if packet.magic() != b"HXVIFA03" {
+            if packet.magic() != b"HXVIFA04" {
                 return Err(Error::Protocol("worker did not report preparation facts"));
             }
             let facts = Facts::decode(packet.body()?, &config)?;
@@ -484,25 +505,28 @@ impl Pending {
         self,
         presentation: Option<PresentationLatency>,
     ) -> Result<Prepared> {
+        self.complete_with_plan_on_control(presentation.into())
+    }
+    pub fn complete_with_plan_on_control(
+        self,
+        presentation: protocol::PresentationPlan,
+    ) -> Result<Prepared> {
         self.complete_retained_on_control(presentation)
             .map_err(PreparationFailure::finish_on_control)
     }
     /// Completion errors retain the same actual child for Root's independent
-    /// cleanup observation. Failure cannot create a reusable prepared source.
+    /// cleanup observation. Callers can explicitly allow unknown presentation.
     pub fn complete_retained_on_control(
         mut self,
-        presentation: Option<PresentationLatency>,
+        presentation: impl Into<protocol::PresentationPlan>,
     ) -> std::result::Result<Prepared, PreparationFailure> {
+        let presentation = presentation.into();
         let token = self.lease.cancellation.clone();
         let result = (|| {
             token.check()?;
             self.source.unchanged()?;
             self.build.unchanged().map_err(Error::Validation)?;
-            if self.facts.presentation_available && presentation.is_none() {
-                return Err(Error::Protocol(
-                    "actual presentation contributions are unavailable",
-                ));
-            }
+            let expected = presentation.expected(self.facts.presentation_available)?;
             let until = end_after(self.limits.startup)?;
             let request = protocol::presentation_request(self.config.binding, presentation)?;
             self.lease
@@ -517,7 +541,7 @@ impl Pending {
                     self.config.binding,
                 )?));
             }
-            if self.packet.magic() != b"HXVIRD04" {
+            if self.packet.magic() != b"HXVIRD05" {
                 return Err(Error::Protocol(
                     "missing final prepared instance acknowledgement",
                 ));
@@ -526,8 +550,7 @@ impl Pending {
             if ready.restored != self.facts.restored
                 || ready.algorithmic_latency_frames != self.facts.algorithmic_latency_frames
                 || ready.tail_frames != self.facts.tail_frames
-                || (ready.presentation == protocol::Presentation::Applied)
-                    != self.facts.presentation_available
+                || ready.presentation != expected
             {
                 return Err(Error::Protocol(
                     "prepared facts changed before final acknowledgement",
@@ -702,9 +725,10 @@ impl Prepared {
             self.retired = Some(retired);
             token.check()?;
             self.lease.channel.reject_queued_after_reap()?;
+            // A clean process-only stop can leave the module mapped until
+            // the OS reclaims it. Require the same terminal and reaped status.
             if terminal.failure != 0
                 || !terminal.closed
-                || !terminal.unloaded
                 || terminal.blocks != self.sequence
                 || terminal.frames != frames
                 || !status.success()

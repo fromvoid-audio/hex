@@ -52,7 +52,7 @@ fn setup_for_identity_with_profile(
 ) {
     let (mut control, mut callback) = channel(48_000).unwrap();
     control
-        .configure_physical_callback_request(&mut callback, quantum)
+        .configure_plugin_callback_quantum(&mut callback, quantum)
         .unwrap();
     let (data, errors, terminals) =
         crate::native_callback_owner::reserve_native(callback, Arc::clone(&control.status));
@@ -138,10 +138,7 @@ fn source_for_profile(
             ],
         );
     preparation.quantum = quantum;
-    assert_eq!(
-        control.requested_physical_callback_frames_on_control(),
-        Some(quantum)
-    );
+    assert_eq!(control.plugin_callback_quantum_on_control(), Some(quantum));
     let identity_bytes = source.identity();
     let executable_digest = hex_digest(identity_bytes.binary.executable_sha256);
     let info_digest = hex_digest(identity_bytes.binary.info_sha256);
@@ -161,6 +158,7 @@ fn source_for_profile(
             identity.device_id(),
             12,
             48_000,
+            crate::plugin_effects::PluginProfile::Effect,
             restore,
         )
         .unwrap();
@@ -262,6 +260,7 @@ fn actual_selected_effect_revalidation_refuses_changed_metadata_before_root_rese
                     3,
                     12,
                     48_000,
+                    crate::plugin_effects::PluginProfile::Effect,
                     None,
                 )
                 .is_err()
@@ -304,6 +303,8 @@ fn actual_selected_effect_revalidation_refuses_changed_metadata_before_root_rese
 fn actual_native_endpoint_moves_through_callback_and_returns_before_worker_disposal() {
     let _serial = serial();
     let (mut control, mut data, errors, mut retirement, binding) = setup();
+    assert!(control.has_vacant_native_source_slots_on_control(1));
+    assert!(!control.has_vacant_native_source_slots_on_control(2));
     let state = control.native_source_prepared_state(binding).unwrap();
     assert_ne!(
         control.native_source_endpoint_installed(binding),

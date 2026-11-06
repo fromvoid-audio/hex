@@ -8,7 +8,7 @@ use std::{
         Barrier,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -156,12 +156,12 @@ fn repeated_write_read_turnovers_reuse_the_same_three_capture_buffers() {
         .flatten()
         .map(|batch| batch.as_ref() as *const Batch as usize)
         .collect::<std::collections::BTreeSet<_>>();
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
     for batch_index in 0..80 {
         while input.free.iter().all(Option::is_none) {
             while input.poll().is_some() {}
             assert!(Instant::now() < deadline);
-            std::thread::yield_now();
+            crate::test_wait::pause();
         }
         let mut batch = input.reserve_batch().unwrap().unwrap();
         assert!(
@@ -268,13 +268,19 @@ fn recovery_reuses_source_preparation_without_saved_association_and_save_as_pres
     assert!(worker.join_on_control().unwrap().failure.is_none());
     let original = fs::read(&path).unwrap();
     let service = Service::with_recovery(48000, 8, 0, files.path("untitled.hex-journal")).unwrap();
-    service.events.recv_timeout(Duration::from_secs(5)).unwrap();
+    service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap();
     service
         .submit(Request::Edit(Command::AddTrack {
             name: "later journal".into(),
         }))
         .unwrap();
-    service.events.recv_timeout(Duration::from_secs(5)).unwrap();
+    service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap();
     service
         .submit(Request::OpenWith {
             source: ProjectSource::AutomationDraft {
@@ -286,7 +292,10 @@ fn recovery_reuses_source_preparation_without_saved_association_and_save_as_pres
             relinks: Default::default(),
         })
         .unwrap();
-    let recovered = service.events.recv_timeout(Duration::from_secs(5)).unwrap();
+    let recovered = service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap();
     assert!(recovered.error.is_none(), "{:?}", recovered.error);
     assert!(recovered.project_replaced);
     assert_eq!(recovered.state.project.as_ref(), &project);
@@ -294,7 +303,10 @@ fn recovery_reuses_source_preparation_without_saved_association_and_save_as_pres
     assert!(recovered.state.unsaved);
     let saved = files.path("recovered-copy.hex");
     service.submit(Request::SaveNew(saved.clone())).unwrap();
-    let saved_event = service.events.recv_timeout(Duration::from_secs(5)).unwrap();
+    let saved_event = service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap();
     assert!(saved_event.error.is_none(), "{:?}", saved_event.error);
     assert_eq!(fs::read(&path).unwrap(), original);
     assert_eq!(hex_storage::load(saved).unwrap(), project);

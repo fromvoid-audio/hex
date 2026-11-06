@@ -164,16 +164,6 @@ impl EditorView {
         in_place: bool,
         adoption: BounceAdoption,
     ) {
-        if in_place
-            && self
-                .audio
-                .as_ref()
-                .and_then(|a| a.control.status())
-                .is_some_and(|s| s.playing.load(std::sync::atomic::Ordering::Acquire))
-        {
-            self.error = Some("stop playback before bouncing in place".into());
-            return;
-        }
         if self.edit_pending()
             || self.arrangement_pan.is_some()
             || self.time_range_move_gesture.is_some()
@@ -205,7 +195,11 @@ impl EditorView {
         let Some(state) = &self.state else {
             return;
         };
-        if let Err(reason) = state.project.plan_arrangement_bounce(&target, in_place) {
+        if let Err(reason) = state
+            .project
+            .validate_bounce_adoption(&target, in_place, adoption)
+            .and_then(|()| state.project.plan_arrangement_bounce(&target, in_place))
+        {
             self.error = Some(reason.to_string().into());
             return;
         }
@@ -237,6 +231,103 @@ impl EditorView {
 mod tests {
     use crate::editor::loop_selection_ui_test::{click, fixture_with_bounce_media, pump};
     use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext};
+
+    #[gpui::test]
+    fn rendered_b_bounces_a_group_range_without_touching_the_source_rows(cx: &mut TestAppContext) {
+        check_rendered_group_range(cx, false);
+    }
+
+    #[gpui::test]
+    fn rendered_cmd_b_commits_the_group_gate_and_bounce_in_one_undo(cx: &mut TestAppContext) {
+        check_rendered_group_range(cx, true);
+    }
+
+    fn check_rendered_group_range(cx: &mut TestAppContext, mute: bool) {
+        use hex_project::{Command, TrackSelectionIds};
+        use hex_session::service::Request;
+
+        let (handle, editor, _, _, _files) = fixture_with_bounce_media(cx, true);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        editor.update(&mut visual, |v, _| {
+            let tracks: Vec<_> = v
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .tracks()
+                .iter()
+                .map(hex_project::Track::id)
+                .collect();
+            assert!(v.enqueue(Request::Edit(Command::GroupTracks {
+                tracks: TrackSelectionIds::new(&tracks).unwrap(),
+                name: "sources".into(),
+            })));
+        });
+        pump(&editor, &mut visual);
+        let (group, before) = editor.update(&mut visual, |v, cx| {
+            let project = &v.state.as_ref().unwrap().project;
+            let group = &project.tracks()[0];
+            assert!(group.is_group());
+            v.viewport = Some(crate::editor::viewport::Viewport {
+                start: 0,
+                length: 96_000,
+            });
+            v.snap_grid = crate::editor::musical_time::SnapGrid::Off;
+            cx.notify();
+            (group.id(), project.snapshot())
+        });
+        visual.run_until_parked();
+        let lane = visual
+            .debug_bounds(Box::leak(
+                format!("arrangement-lane-{}", group.value()).into_boxed_str(),
+            ))
+            .unwrap();
+        let from = gpui::point(lane.origin.x + lane.size.width * 0.4, lane.center().y);
+        let to = gpui::point(lane.origin.x + lane.size.width * 0.6, lane.center().y);
+        visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let range = editor.read_with(&visual, |v, _| v.normalized_time_selection().unwrap());
+        assert_eq!(range.tracks(), &[group]);
+        assert!(range.start() < 48_000 && range.end() > 48_000);
+        visual.simulate_keystrokes(if mute { "cmd-b" } else { "b" });
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert!(v.error.is_none(), "{:?}", v.error);
+            let p = &v.state.as_ref().unwrap().project;
+            let mut tracks = p.snapshot().tracks;
+            let bounce = p.tracks().last().unwrap();
+            assert_eq!(bounce.parent_group(), None);
+            let clip = &bounce.clips()[0];
+            assert_eq!(
+                (clip.start(), clip.duration()),
+                (range.start(), range.duration())
+            );
+            tracks.pop();
+            if mute {
+                assert_eq!(
+                    tracks[0].group_output_mutes,
+                    vec![
+                        hex_project::GroupOutputMuteRange::new(range.start(), range.end()).unwrap()
+                    ]
+                );
+                tracks[0].group_output_mutes.clear();
+            }
+            assert_eq!(tracks, before.tracks);
+        });
+        if mute {
+            visual.simulate_keystrokes("cmd-z");
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(
+                    v.state.as_ref().unwrap().project.snapshot().tracks,
+                    before.tracks
+                );
+            });
+        }
+    }
     #[gpui::test]
     fn rendered_b_bounces_and_cmd_b_also_mutes_sources_with_one_undo(cx: &mut TestAppContext) {
         let (handle, editor, audio, _, files) = fixture_with_bounce_media(cx, true);

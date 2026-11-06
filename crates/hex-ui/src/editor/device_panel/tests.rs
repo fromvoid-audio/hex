@@ -37,6 +37,7 @@ mod parameter_rows_tests;
 mod reverb_ui_tests;
 mod saturator_ui_tests;
 mod shortcut_text_tests;
+mod vst3_degraded_tests;
 
 fn receive_service_event(service: &Service) -> Event {
     let deadline = crate::test_wait::hang_deadline();
@@ -1312,7 +1313,10 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
     let card = visual.debug_bounds(card_selector).expect("instrument card");
     assert_eq!(
         card.size.width,
-        px(DEVICE_FRAME_WIDTH + device_meter::WIDTH + DEVICE_CHAIN_PADDING)
+        px(DEVICE_FRAME_WIDTH
+            + hex_widgets::DEVICE_FRAME_HEADER_WIDTH
+            + device_meter::WIDTH
+            + DEVICE_CHAIN_PADDING)
     );
     let painted_card = visual
         .debug_bounds(Box::leak(
@@ -1321,7 +1325,7 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
         .expect("painted instrument card");
     assert_eq!(
         painted_card.size.width,
-        px(DEVICE_FRAME_WIDTH + device_meter::WIDTH)
+        px(DEVICE_FRAME_WIDTH + hex_widgets::DEVICE_FRAME_HEADER_WIDTH + device_meter::WIDTH)
     );
     let down = source.center();
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
@@ -1395,7 +1399,10 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
         .expect("wide Operator card");
     assert_eq!(
         operator_card.size.width,
-        px(operator_panel::OPERATOR_FRAME_WIDTH + device_meter::WIDTH + DEVICE_CHAIN_PADDING)
+        px(operator_panel::OPERATOR_FRAME_WIDTH
+            + hex_widgets::DEVICE_FRAME_HEADER_WIDTH
+            + device_meter::WIDTH
+            + DEVICE_CHAIN_PADDING)
     );
     let right_side = point(
         operator_card.origin.x + operator_card.size.width - px(16.0),
@@ -1692,7 +1699,9 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     let frame = visual.debug_bounds(frame_selector).expect("Operator frame");
     assert_eq!(
         frame.size.width,
-        px(operator_panel::OPERATOR_FRAME_WIDTH + device_meter::WIDTH)
+        px(operator_panel::OPERATOR_FRAME_WIDTH
+            + hex_widgets::DEVICE_FRAME_HEADER_WIDTH
+            + device_meter::WIDTH)
     );
     assert_eq!(frame.size.height, px(184.0));
     // One passive stereo meter follows the device: left and right bars, no gain handles.
@@ -1703,7 +1712,12 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         let selector = Box::leak(format!("{meter_selector}-{side}").into_boxed_str());
         let bar = visual.debug_bounds(selector).expect("channel bar");
         assert_eq!(bar.size.width, px(hex_widgets::STEREO_PEAK_BAR_WIDTH));
-        assert!(bar.origin.x >= frame.origin.x + px(operator_panel::OPERATOR_FRAME_WIDTH));
+        assert!(
+            bar.origin.x
+                >= frame.origin.x
+                    + px(operator_panel::OPERATOR_FRAME_WIDTH
+                        + hex_widgets::DEVICE_FRAME_HEADER_WIDTH)
+        );
         assert!(bar.right() <= frame.right());
     }
     for side in ["input", "output"] {
@@ -5897,7 +5911,13 @@ fn clipped_device_card_bounds_cannot_claim_offscreen_pointer() {
 }
 
 #[gpui::test]
-fn sine_and_effect_share_canonical_compact_header_and_body_bounds(cx: &mut TestAppContext) {
+fn sine_and_effect_place_their_shared_header_to_the_left_of_the_body(cx: &mut TestAppContext) {
+    #[cfg(target_os = "macos")]
+    {
+        cx.use_native_text_system()
+            .expect("native bundled-font shaping");
+        cx.update(|cx| theme::load_fonts(cx).expect("bundled fonts"));
+    }
     let (service, state, track, effect, _, _) = actor_utility_fixture();
     let instrument = state
         .project
@@ -5912,21 +5932,32 @@ fn sine_and_effect_share_canonical_compact_header_and_body_bounds(cx: &mut TestA
         visual.simulate_resize(size(px(width), px(540.0)));
         visual.run_until_parked();
         for device in [instrument, effect] {
-            let title = visual
-                .debug_bounds(Box::leak(
-                    format!("device-drag-title-{}", device.value()).into_boxed_str(),
-                ))
-                .expect("title");
+            let selector =
+                Box::leak(format!("device-drag-title-{}", device.value()).into_boxed_str());
+            let title = visual.debug_bounds(selector).expect("title");
             let body = visual
                 .debug_bounds(Box::leak(
                     format!("device-body-{}", device.value()).into_boxed_str(),
                 ))
                 .expect("body");
-            assert_eq!(
-                title.size.height,
-                px(hex_widgets::DEVICE_FRAME_HEADER_HEIGHT)
-            );
-            assert_eq!(body.origin.y, title.bottom_left().y);
+            assert!(title.size.width < px(hex_widgets::DEVICE_FRAME_HEADER_WIDTH));
+            assert!(title.size.height > title.size.width);
+            #[cfg(target_os = "macos")]
+            {
+                let glyphs = visual.rendered_vertical_glyph_bounds(selector);
+                assert!(glyphs.len() >= 2, "device title must paint rotated glyphs");
+                assert!(
+                    glyphs[0].origin.y > glyphs[1].origin.y,
+                    "title reads bottom to top"
+                );
+            }
+            assert!(title.right() < body.origin.x);
+            let shell = visual
+                .debug_bounds(Box::leak(
+                    format!("device-shell-{}", device.value()).into_boxed_str(),
+                ))
+                .expect("device frame");
+            assert!(shell.origin.y <= title.origin.y && title.bottom() <= shell.bottom());
             assert_eq!(body.size.height, px(DEVICE_FRAME_BODY_HEIGHT));
         }
     }
@@ -5964,3 +5995,101 @@ fn shared_housing_placeholders_open_in_editor_without_device_commands(cx: &mut T
 }
 
 mod navigation_capture_tests;
+
+/// User report (Pulse #3273): after clipping, a one-pixel red line stayed at
+/// the top of the device meter. It is the held peak, drawn in the clipping
+/// color above unity, which never decayed and could not be cleared. A click
+/// now clears the held peaks; quiet repaints keep them cleared and a fresh
+/// overload draws the line again.
+#[gpui::test]
+fn clicking_a_device_meter_clears_its_held_overload_line(cx: &mut TestAppContext) {
+    let _output_fixture_guard = eq_ui_tests::graph_layout_tests::status_fixture_guard();
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let prepared = Arc::new(
+        hex_engine::PreparedRevision::prepare(
+            &state.project,
+            &Default::default(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .expect("prepared revision"),
+    );
+    let meter = Arc::clone(
+        prepared
+            .arrangement()
+            .device_meter(device.value())
+            .expect("device meter"),
+    );
+    let deadline = crate::test_wait::hang_deadline();
+    let (mut output, _backend) = loop {
+        match hex_audio::worker_fixture::open(48_000) {
+            Ok(output) => break output,
+            Err(error)
+                if error == "audio output is open or still shutting down"
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::yield_now()
+            }
+            Err(error) => panic!("{error}"),
+        }
+    };
+    let client = output.take_client().expect("audio client");
+    let (handle, editor) = actor_editor_window(cx, service, Arc::clone(&state), track);
+    editor.update(cx, |view, cx| {
+        view.audio = Some(crate::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "meter fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.audible_playback = Some(super::super::PlaybackCandidate {
+            worker_requires_preroll: None,
+            observation: None,
+            audio_revision: 1,
+            project_generation: view.project_generation,
+            state: Arc::clone(&state),
+            prepared_revision: Some(Arc::clone(&prepared)),
+            seek_request_id: None,
+            device_preview_identity: None,
+            tuning_preview_identity: None,
+        });
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(880.0), px(540.0)));
+    let repaint = |visual: &mut VisualTestContext| {
+        editor.update(visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+    };
+    let meter_selector =
+        Box::leak(format!("device-{}-output-meter", device.value()).into_boxed_str());
+    let left_peak = Box::leak(format!("{meter_selector}-left-peak").into_boxed_str());
+    let right_peak = Box::leak(format!("{meter_selector}-right-peak").into_boxed_str());
+    let clipping = Some(gpui::rgb(crate::theme::meter_colors().clipping).into());
+
+    meter.observe_output(&[[1.5, 0.5]]);
+    repaint(&mut visual);
+    assert_eq!(visual.rendered_background(left_peak), clipping);
+    assert!(visual.debug_bounds(right_peak).is_some());
+    for clear in 0..2 {
+        let bounds = visual.debug_bounds(meter_selector).expect("device meter");
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        repaint(&mut visual);
+        assert!(visual.debug_bounds(left_peak).is_none(), "clear {clear}");
+        assert!(visual.debug_bounds(right_peak).is_none(), "clear {clear}");
+    }
+    // Quiet telemetry repaints stay cleared; nothing relatches the old event.
+    for _ in 0..3 {
+        meter.observe_output(&[[0.0, 0.0]]);
+        repaint(&mut visual);
+        assert!(visual.debug_bounds(left_peak).is_none());
+    }
+    // A fresh non-clipping reading draws a normal peak; a fresh overload rearms.
+    meter.observe_output(&[[0.5, 0.0]]);
+    repaint(&mut visual);
+    assert_ne!(visual.rendered_background(left_peak), clipping);
+    meter.observe_output(&[[0.0, 2.0]]);
+    repaint(&mut visual);
+    assert_eq!(visual.rendered_background(right_peak), clipping);
+}

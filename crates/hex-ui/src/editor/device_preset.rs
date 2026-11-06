@@ -15,7 +15,7 @@ pub(super) fn actions(
     selected: bool,
     cx: &mut Context<EditorView>,
 ) -> Div {
-    let mut actions = div().flex().items_center().gap(px(2.0));
+    let mut actions = div().flex().flex_col().items_center().gap(px(2.0));
     for (save, icon, label) in [
         (false, "↓", "load device preset (.hex-device-preset.json)"),
         (true, "↑", "save device preset"),

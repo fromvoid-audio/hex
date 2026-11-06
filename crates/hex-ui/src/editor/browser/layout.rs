@@ -563,6 +563,7 @@ impl EditorView {
             cx,
         ));
         if self.browser.layout.settings_visible {
+            sidebar = sidebar.children([self.plugin_scan_settings(cx)]);
             sidebar = sidebar.child(picker_group_heading("sections · session", compact));
             for (index, (_, name)) in SECTIONS.into_iter().enumerate() {
                 let visible = self.browser.layout.visible[index];
@@ -742,7 +743,17 @@ impl EditorView {
                     .and_then(|name| name.to_str())
                     .unwrap_or("folder")
             };
-            let tooltip = name.to_owned();
+            let missing = self.browser_place_missing(place);
+            let label = if missing {
+                format!("{name} · missing")
+            } else {
+                name.to_owned()
+            };
+            let tooltip = if missing {
+                format!("{name} · folder missing · right-click to relocate")
+            } else {
+                name.to_owned()
+            };
             let icon = picker_icon(
                 browser_vector_icon(self.browser_place_icon_path(place))
                     .debug_selector(move || format!("browser-picker-glyph-place-{index}")),
@@ -803,7 +814,10 @@ impl EditorView {
                     )
                     .child(icon)
                     .child(
-                        picker_label(name)
+                        picker_label(label)
+                            .when(missing, |label| {
+                                label.text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                            })
                             .debug_selector(move || format!("browser-picker-label-place-{index}")),
                     ),
             );

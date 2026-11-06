@@ -503,6 +503,12 @@ impl MediaPages for ProtectedStreamPages<'_> {
         // This borrow contains already protected pages only. Actual missing
         // demand must return to readiness service, never schedule from render.
     }
+    fn prefetch_page(&mut self, key: StreamSourceKey, index: u64) {
+        // Bounded speculative lookahead only (`Endpoint::prefetch`): it never
+        // pins, never satisfies or changes readiness, and the page it may
+        // load stays evictable, so readiness keeps sole custody of demand.
+        self.pages.prefetch_page(key, index);
+    }
 }
 /// Exclusive borrowed promotion prepared against exact held protection. It
 /// owns no endpoint and grants no engine/publication authority; dropping it has

@@ -8,7 +8,9 @@
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Maximum forward work permitted by one Arrangement preroll request.
+/// Maximum forward replay work permitted by one Arrangement preroll request.
+/// Only prefix-replaying owners (linear export, private control samplers)
+/// spend it; interactive and section destinations render no prefix.
 pub const MAX_ARRANGEMENT_PREROLL_FRAMES: u64 = 8_388_608;
 /// Maximum accounted owned runtime storage for the returned candidate.
 /// Shared immutable prepared graph data and allocator bookkeeping are excluded.
@@ -165,7 +167,8 @@ impl SessionPlayback {
     /// transport loops retain the absolute destination: a destination before
     /// the loop end wraps at the end, one at/after the end continues beyond
     /// the loop. A stopped candidate keeps its destination chase for Play.
-    /// The saved loop and original work/storage budgets are unchanged.
+    /// The saved loop and storage budget are unchanged; `work_budget_frames`
+    /// applies only when private control-sampler sources force prefix replay.
     /// Run preparation on an adequately sized
     /// control thread; the production seek worker reserves an explicit 8 MiB
     /// stack because stateful multi-chain construction can exceed the Rust
@@ -231,7 +234,8 @@ impl SessionPlayback {
     }
 
     /// Prepare an ordinary source-bearing interactive seek with its exact compiler resource
-    /// set. Existing destination, storage and cancellation limits apply unchanged. This
+    /// set. Storage and cancellation limits apply; the replay work budget only binds
+    /// control-sampler owners that replay the prefix. This
     /// returns an interactive candidate for the ordinary fresh-runtime publication policy; a
     /// missing/foreign set refuses instead of substituting the private play-from-zero path.
     /// Invoke on the existing control seek worker's explicit 8 MiB stack; stateful construction
@@ -325,17 +329,28 @@ impl SessionPlayback {
         if is_cancelled() {
             return Err(ArrangementPrerollError::Cancelled);
         }
-        if destination_frame > work_budget_frames
-            || work_budget_frames > MAX_ARRANGEMENT_PREROLL_FRAMES
-        {
-            return Err(ArrangementPrerollError::WorkBudgetExceeded);
-        }
-        let blocks = destination_frame
-            .checked_add(PREROLL_BLOCK_FRAMES as u64 - 1)
-            .ok_or(ArrangementPrerollError::ArithmeticOverflow)?
-            / PREROLL_BLOCK_FRAMES as u64;
-        if blocks > MAX_ARRANGEMENT_PREROLL_FRAMES / PREROLL_BLOCK_FRAMES as u64 {
-            return Err(ArrangementPrerollError::WorkBudgetExceeded);
+        // Interactive seeks and section launches start device history empty:
+        // the interactive Play-from discontinuity resets chains, return tails
+        // and voices at the destination and chases gate-active notes on the
+        // first rendered block. Only linear export and private control-sampler
+        // owners, which refuse that discontinuity, replay the song prefix, so
+        // only they spend the replay work budget. Other destinations are
+        // bounded by Play-from's own arithmetic and tempo conversion.
+        let replay_history = matches!(policy, PrerollRuntimePolicy::LinearExport)
+            || revision.requires_control_sampler_sources();
+        if replay_history {
+            if destination_frame > work_budget_frames
+                || work_budget_frames > MAX_ARRANGEMENT_PREROLL_FRAMES
+            {
+                return Err(ArrangementPrerollError::WorkBudgetExceeded);
+            }
+            let blocks = destination_frame
+                .checked_add(PREROLL_BLOCK_FRAMES as u64 - 1)
+                .ok_or(ArrangementPrerollError::ArithmeticOverflow)?
+                / PREROLL_BLOCK_FRAMES as u64;
+            if blocks > MAX_ARRANGEMENT_PREROLL_FRAMES / PREROLL_BLOCK_FRAMES as u64 {
+                return Err(ArrangementPrerollError::WorkBudgetExceeded);
+            }
         }
         if matches!(policy, PrerollRuntimePolicy::LinearExport)
             && revision
@@ -384,13 +399,6 @@ impl SessionPlayback {
         if actual_preparation_storage > storage_budget_bytes {
             return Err(ArrangementPrerollError::StorageBudgetExceeded);
         }
-        // Interactive seeks and section launches start device history empty:
-        // the interactive Play-from discontinuity resets chains, return tails
-        // and voices at the destination and chases gate-active notes on the
-        // first rendered block. Only linear export and private control-sampler
-        // owners, which refuse that discontinuity, replay the song prefix.
-        let replay_history = matches!(policy, PrerollRuntimePolicy::LinearExport)
-            || revision.requires_control_sampler_sources();
         if !replay_history {
             if start_playing || destination_frame != 0 {
                 candidate.play_from(destination_frame)?;
@@ -481,6 +489,7 @@ impl SessionPlayback {
             return_chains: &self.return_chains,
             return_effect_tails: &self.return_effect_tails,
             mutable_instruments: &self.mutable_instruments,
+            foreign_arrangement: &self.foreign_arrangement,
             tail_groups: &self.tail_groups,
             tail_mutable_instruments: &self.tail_mutable_instruments,
             routes: self.routes.capacity(),
@@ -525,6 +534,7 @@ pub(super) struct RuntimeStorage<'a> {
     pub(super) return_chains: &'a Vec<hex_lattice::NativeRuntimeChain>,
     pub(super) return_effect_tails: &'a ReturnEffectTailBank,
     pub(super) mutable_instruments: &'a Vec<Option<MutableInstrumentTrackRuntime>>,
+    pub(super) foreign_arrangement: &'a foreign_arrangement::ForeignArrangement,
     pub(super) tail_groups: &'a Vec<Option<hex_lattice::NativeRuntimeChain>>,
     pub(super) tail_mutable_instruments: &'a Vec<Option<MutableInstrumentTail>>,
     pub(super) routes: usize,
@@ -612,6 +622,7 @@ impl RuntimeStorage<'_> {
         add_capacity::<[Frame; PREROLL_BLOCK_FRAMES]>(&mut total, self.return_scratch)?;
         add_capacity::<[Frame; PREROLL_BLOCK_FRAMES]>(&mut total, self.resident_source_scratch)?;
         add_capacity::<super::meter_capture::Cell>(&mut total, self.meter_cells)?;
+        checked_add(&mut total, self.foreign_arrangement.storage_bytes()?)?;
         add_capacity::<Option<MutableInstrumentTrackRuntime>>(
             &mut total,
             self.mutable_instruments.capacity(),
@@ -703,6 +714,10 @@ fn runtime_storage_preflight_bytes(
         )?;
     }
     checked_add(&mut total, main_bytes)?;
+    checked_add(
+        &mut total,
+        foreign_arrangement::ForeignArrangement::preflight_bytes(revision)?,
+    )?;
     if let Some(graph) = &arrangement.signal_graph {
         checked_add(
             &mut total,

@@ -8,7 +8,7 @@ mod plan;
 mod stop;
 mod synthesis;
 use super::*;
-use resample::{BANK_BYTES, Bandlimited};
+use resample::{Bandlimited, bank_bytes};
 
 #[derive(Clone, Copy)]
 struct Anchor {
@@ -56,7 +56,7 @@ pub(super) fn render(
     work.scratch(
         plan_bytes
             + onsets::scratch(request.input.sample_rate)
-            + BANK_BYTES
+            + bank_bytes(work.resampler)
             + ring * 24
             + synthesis::SEARCH_BYTES,
     )?;
@@ -88,7 +88,7 @@ pub(super) fn render(
         request.output_frames,
         ring,
         work,
-        plan_bytes + BANK_BYTES + synthesis::SEARCH_BYTES,
+        plan_bytes + bank_bytes(work.resampler) + synthesis::SEARCH_BYTES,
     )?;
     let mut output = 0;
     let mut source = anchors[0].source;

@@ -1179,9 +1179,18 @@ fn unused_lower_header_space_selects_tracks_with_modifiers_in_both_audio_modes(
         });
         if mode == hex_session::DocumentAudioMode::Resident {
             let mute = bounds(&mut visual, "track-mute", first);
-            let solo = bounds(&mut visual, "track-solo", first);
-            assert!(mute.right() < solo.left());
-            let gap = point((mute.right() + solo.left()) / 2.0, mute.center().y);
+            let sample_arm = bounds(&mut visual, "sample-arm-track", first);
+            visual.simulate_click(sample_arm.center(), Modifiers::default());
+            visual.run_until_parked();
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(
+                    view.selected_track_ids(),
+                    [second],
+                    "sample arm owns its click"
+                );
+            });
+            assert!(mute.right() < sample_arm.left());
+            let gap = point((mute.right() + sample_arm.left()) / 2.0, mute.center().y);
             visual.simulate_click(gap, Modifiers::default());
             visual.run_until_parked();
             editor.read_with(&visual, |view, _| {
@@ -1855,5 +1864,345 @@ fn console_track_activator_and_solo_use_canonical_commands(cx: &mut TestAppConte
                 .unwrap()
                 .soloed()
         )
+    });
+}
+
+#[gpui::test]
+fn selected_track_gain_drag_previews_and_commits_relative_values_together(cx: &mut TestAppContext) {
+    selected_relative_case(cx, hex_session::DocumentAudioMode::Resident);
+}
+
+#[gpui::test]
+fn verified_selected_track_gain_drag_preserves_group_preview_and_one_undo(cx: &mut TestAppContext) {
+    selected_relative_case(cx, hex_session::DocumentAudioMode::VerifiedStreaming);
+}
+
+fn selected_relative_case(cx: &mut TestAppContext, mode: hex_session::DocumentAudioMode) {
+    let (_browser, mut visual, editor, [track, other]) = actor_fixture_in_mode(
+        cx,
+        super::super::test_environment::Environment::new().unwrap(),
+        mode,
+    );
+    editor.update(cx, |view, cx| {
+        view.track_selection.replace(&[track, other]);
+        view.selected_track = Some(track);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let rail = visual
+        .debug_bounds(Box::leak(
+            format!("track-volume-{}-slider", track.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let start = point(rail.left() + px(10.0), rail.center().y);
+    let end = point(start.x, start.y - px(24.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    pump(&editor, cx, |view| {
+        view.device_gesture.snapshot().is_some() && view.worker_requests_pending == 0
+    });
+    visual.run_until_parked();
+    let (held, expected_other) = editor.read_with(cx, |view, cx| {
+        let hex_session::device_gesture::ParameterValue::Float(held) =
+            view.device_gesture.snapshot().unwrap().value
+        else {
+            panic!("gain")
+        };
+        assert!(held > 0.5);
+        let expected_other = (1.5 * held / 0.5).min(2.0);
+        assert!(
+            (view.track_gain_controls.bindings[&other]
+                .entity
+                .read(cx)
+                .value()
+                - f64::from(expected_other))
+            .abs()
+                < 1e-6,
+            "all selected faders must preview the same relative dB change"
+        );
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(other)
+                .unwrap()
+                .gain(),
+            1.5,
+            "preview is not canonical history"
+        );
+        (held, expected_other)
+    });
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    for _ in 0..3 {
+        editor.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+        editor.read_with(cx, |view, cx| {
+            for (id, gain) in [(track, held), (other, expected_other)] {
+                assert!(
+                    (view.track_gain_controls.bindings[&id]
+                        .entity
+                        .read(cx)
+                        .value()
+                        - f64::from(gain))
+                    .abs()
+                        < 1e-6,
+                    "released group must stay visible until its exact ACK"
+                );
+            }
+        });
+    }
+    pump(&editor, cx, |view| {
+        view.device_gesture.snapshot().is_none() && view.worker_requests_pending == 0
+    });
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.track(track).unwrap().gain(), held);
+        assert_eq!(project.track(other).unwrap().gain(), expected_other);
+    });
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Undo))
+    });
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .gain()
+                == 0.5
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(other)
+                .unwrap()
+                .gain(),
+            1.5,
+            "one Undo restores the whole group"
+        )
+    });
+}
+
+#[gpui::test]
+fn console_group_gain_freezes_membership_and_escape_restores_every_member(cx: &mut TestAppContext) {
+    let (_browser, mut visual, editor, [track, other]) = actor_fixture(cx);
+    editor.update(cx, |view, cx| {
+        view.track_selection.replace(&[track, other]);
+        view.selected_track = Some(track);
+        view.set_mode(super::super::EditorMode::Session);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let selector = Box::leak(format!("track-volume-{}-slider", track.value()).into_boxed_str());
+    let rail = visual.debug_bounds(selector).unwrap();
+    let start = point(rail.left() + px(10.0), rail.center().y);
+    let end = point(start.x, start.y - px(24.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    pump(&editor, cx, |view| {
+        view.device_gesture.snapshot().is_some() && view.worker_requests_pending == 0
+    });
+    let held = editor.read_with(cx, |view, _| {
+        let hex_session::device_gesture::ParameterValue::Float(gain) =
+            view.device_gesture.snapshot().unwrap().value
+        else {
+            panic!("gain")
+        };
+        gain
+    });
+    editor.update(cx, |view, cx| {
+        view.track_selection.replace(&[other]);
+        view.selected_track = Some(other);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds(selector).is_some(),
+        "Console must retain its actual gesture owner"
+    );
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_gesture
+                .preview_track_gain(view.project_generation, other),
+            Some((held * 3.0).min(2.0)),
+            "membership stays frozen after selection changes"
+        )
+    });
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    for _ in 0..3 {
+        editor.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+    }
+    pump(&editor, cx, |view| {
+        view.device_gesture.snapshot().is_none() && view.worker_requests_pending == 0
+    });
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.track(track).unwrap().gain(), 0.5);
+        assert_eq!(project.track(other).unwrap().gain(), 1.5);
+    });
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("track-volume-{}-slider", other.value()).into_boxed_str()
+            ))
+            .is_some()
+    );
+}
+
+#[gpui::test]
+fn stale_selected_gain_begin_refuses_the_whole_group_without_an_extra_undo(
+    cx: &mut TestAppContext,
+) {
+    use hex_session::service::Request;
+    let (_browser, mut visual, editor, [track, other]) = actor_fixture(cx);
+    editor.update(cx, |view, cx| {
+        view.track_selection.replace(&[track, other]);
+        view.selected_track = Some(track);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let rail = visual
+        .debug_bounds(Box::leak(
+            format!("track-volume-{}-slider", track.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    // Another actor edit precedes Begin while the rendered projection is stale.
+    editor.update(cx, |view, _| {
+        view.service
+            .submit(Request::Edit(Command::Gain {
+                track: other,
+                gain: 0.75,
+            }))
+            .unwrap();
+        view.worker_submitted();
+    });
+    let start = point(rail.left() + px(10.0), rail.center().y);
+    let end = point(start.x, start.y - px(24.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    pump(&editor, cx, |view| {
+        view.device_gesture.snapshot().is_none()
+            && view.worker_requests_pending == 0
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(other)
+                .unwrap()
+                .gain()
+                == 0.75
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .gain(),
+            0.5
+        );
+        for (id, gain) in [(track, 0.5), (other, 0.75)] {
+            assert_eq!(
+                view.track_gain_controls.bindings[&id]
+                    .entity
+                    .read(cx)
+                    .value(),
+                gain
+            );
+        }
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(other)
+                .unwrap()
+                .gain()
+                == 1.5
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .gain(),
+            0.5
+        )
+    });
+}
+
+#[gpui::test]
+fn dragging_a_silent_selected_anchor_preserves_other_selected_gains(cx: &mut TestAppContext) {
+    use hex_session::{device_gesture::GestureTarget, service::Request};
+    let (_browser, mut visual, editor, [track, other]) = actor_fixture(cx);
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::Gain { track, gain: 0.0 })))
+    });
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .gain()
+                == 0.0
+    });
+    editor.update(cx, |view, cx| {
+        view.track_selection.replace(&[track, other]);
+        view.selected_track = Some(track);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let rail = visual
+        .debug_bounds(Box::leak(
+            format!("track-volume-{}-slider", track.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let start = point(rail.left() + px(10.0), rail.center().y);
+    let end = point(start.x, start.y - px(24.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    pump(&editor, cx, |view| {
+        view.device_gesture.snapshot().is_some() && view.worker_requests_pending == 0
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_gesture.snapshot().unwrap().target,
+            GestureTarget::TrackGain { track }
+        )
+    });
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    pump(&editor, cx, |view| {
+        view.device_gesture.snapshot().is_none() && view.worker_requests_pending == 0
+    });
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert!(project.track(track).unwrap().gain() > 0.0);
+        assert_eq!(project.track(other).unwrap().gain(), 1.5);
     });
 }

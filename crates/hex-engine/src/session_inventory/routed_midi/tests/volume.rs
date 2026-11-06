@@ -12,6 +12,7 @@ fn config(project: &Project, old: &PreparedSessionMidiClip) -> PreparedTrackInst
                 .into(),
         ),
         mutable_limits: None,
+        foreign_events: false,
         device_id: Some(device.id()),
         tuning_identity: old.tuning_identity,
         state: Some(device.state().clone().without_host_gains()),

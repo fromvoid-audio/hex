@@ -147,7 +147,7 @@ impl EditorView {
         self.midi_selection.clear();
         self.midi_note_gesture = None;
         self.midi_group_gesture = None;
-        self.piano_beat_start = hex_project::BeatTime::ZERO;
+        self.piano_beat_start = 0;
         self.midi_hit_cycle = None;
         true
     }
@@ -191,6 +191,10 @@ impl EditorView {
     /// hidden but retained, and returns when the clip selection clears.
     pub(super) fn selected_clip_play_start(&self) -> Option<u64> {
         let primary = self.selected_clip?;
+        // Any newly placed cursor restores the ordinary precedence below.
+        if self.loop_start_over_clip == Some(primary) && self.edit_cursor.is_none() {
+            return None;
+        }
         if self.edit_cursor_in_selected_clip == Some(primary)
             && self
                 .edit_cursor
@@ -237,6 +241,7 @@ impl EditorView {
         // their separate range-copy contract.
         self.time_selection = None;
         self.edit_cursor_in_selected_clip = None;
+        self.loop_start_over_clip = None;
         self.time_selection_project_scope = false;
         let mut next_focus = None;
         if let Some(state) = &self.state {

@@ -19,6 +19,7 @@ pub struct PreparedForeignProcessor {
     total_latency: u32,
     binding: Option<ForeignProcessorBinding>,
     output_tail: crate::OutputTail,
+    instrument_profile: bool,
 }
 impl PreparedForeignProcessor {
     pub fn new(
@@ -39,6 +40,7 @@ impl PreparedForeignProcessor {
             total_latency,
             binding: None,
             output_tail: crate::OutputTail::Unbounded,
+            instrument_profile: false,
         })
     }
     /// Retain the exact existing source/endpoint binding in immutable graph
@@ -63,6 +65,15 @@ impl PreparedForeignProcessor {
     }
     pub fn output_tail(self) -> crate::OutputTail {
         self.output_tail
+    }
+    /// Declare the zero-audio-input configuration used for instrument
+    /// workers. The host still owns the actual source binding.
+    pub fn with_instrument_profile(mut self) -> Self {
+        self.instrument_profile = true;
+        self
+    }
+    pub fn is_instrument_profile(self) -> bool {
+        self.instrument_profile
     }
     pub fn binding(self) -> Option<ForeignProcessorBinding> {
         self.binding
@@ -95,9 +106,26 @@ pub struct ForeignProcessorNode<'a> {
     pub bypassed: bool,
     /// Cached finite host input trim. Segments contain the original untrimmed
     /// signal so the host can preserve aligned dry history. Apply this gain to
-    /// the copied wet input, including while bypassed; output trim remains in
-    /// the chain after the host returns the selected wet/dry samples.
+    /// the copied wet input, including while bypassed. Output trim is applied
+    /// by the chain unless the endpoint declares post-trim output.
     pub input_gain: f32,
+    /// Host output trim for endpoints that explicitly return post-trim PCM.
+    /// Legacy borrowed endpoints continue to return pre-trim PCM.
+    pub output_gain: f32,
+}
+
+/// One MIDI 1.0 note event at an offset within the supplied render segment.
+/// The caller owns note scheduling and sends release events through the same
+/// endpoint as the matching note-on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ForeignNote {
+    pub frame: u16,
+    pub channel: u8,
+    pub pitch: u8,
+    pub velocity: u8,
+    pub on: bool,
+    /// Graph-assigned identity shared by this occurrence's on/off pair.
+    pub note_id: Option<std::num::NonZeroU32>,
 }
 
 /// Unique borrowed view of the host's already retained foreign endpoints.
@@ -113,6 +141,13 @@ pub struct ForeignProcessorNode<'a> {
 /// still advances the same endpoint and returns aligned dry samples under its
 /// unchanged declared latency. The view cannot transfer resource custody.
 pub trait ForeignProcessors {
+    /// True only when this endpoint applies the supplied host output trim to
+    /// active wet output itself and returns post-trim PCM. The host must not
+    /// apply it a second time. Steady bypass output is untrimmed aligned dry;
+    /// an endpoint may transition between the two while keeping them aligned.
+    fn returns_post_trim(&self, _node: ForeignProcessorNode<'_>) -> bool {
+        false
+    }
     fn process_segment(
         &mut self,
         node: ForeignProcessorNode<'_>,
@@ -134,6 +169,25 @@ pub trait ForeignProcessors {
     ) -> Result<(), DeviceContractError> {
         if parameters.is_empty() {
             self.process_segment(node, frame_offset, frames, clock)
+        } else {
+            self.reject_callback();
+            frames.fill([0.0; 2]);
+            Err(DeviceContractError::ForeignProcessingUnavailable)
+        }
+    }
+    /// Stage ordered note events along with the segment. Like PCM, staged
+    /// events become visible to the worker only after host acceptance.
+    fn process_segment_with_notes(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        frame_offset: usize,
+        frames: &mut [StereoFrame],
+        parameters: &[ForeignParameterPoint],
+        notes: &[ForeignNote],
+        clock: Option<&dyn NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        if notes.is_empty() {
+            self.process_segment_with_parameters(node, frame_offset, frames, parameters, clock)
         } else {
             self.reject_callback();
             frames.fill([0.0; 2]);
