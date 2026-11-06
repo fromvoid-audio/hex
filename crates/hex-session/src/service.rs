@@ -31,6 +31,11 @@ mod audio_batch_tests;
 mod audio_sink;
 pub mod automation_draft;
 pub mod automation_take;
+mod native_automation_recording;
+pub use native_automation_recording::{
+    NativeAutomationSource, NativeAutomationTakeAction, NativeAutomationTakeCompletion,
+    NativeAutomationTakeProgress, NativeAutomationTakeScope,
+};
 #[cfg(test)]
 mod busy_reason_tests;
 mod canonical_audio_source;
@@ -277,6 +282,8 @@ pub struct Event {
     pub computer_keyboard_complete: Option<u64>,
     /// Exact terminal for a retained MIDI take commit, including refusal.
     pub midi_take_complete: Option<MidiTakeCompletion>,
+    /// A bounded native take request completed or needs the caller to retry.
+    pub native_automation_take_complete: Option<NativeAutomationTakeCompletion>,
     pub tuning_audition_complete: Option<Arc<hex_engine::tuning_audition::TuningAuditionInput>>,
     pub live_expression_complete: Option<Arc<hex_engine::live_expression::LiveExpressionInput>>,
     /// Correlates the final bounce result with its shared cancellation control.
@@ -635,6 +642,11 @@ pub enum Request {
         binding: Arc<crate::midi_recording::MidiTakeBinding>,
         notes: Arc<[crate::midi_recording::RecordedMidiNote]>,
         stop_frame: u64,
+    },
+    NativeAutomationTake {
+        request_id: u64,
+        scope: NativeAutomationTakeScope,
+        action: NativeAutomationTakeAction,
     },
     ArmNativeParameterRecording {
         project_generation: u64,
@@ -2334,6 +2346,7 @@ fn run_worker(
                 plugin_parameters: None,
                 computer_keyboard_complete: None,
                 midi_take_complete: None,
+                native_automation_take_complete: None,
                 tuning_audition_complete: None,
                 live_expression_complete: None,
                 bounce_complete: None,
@@ -2375,6 +2388,7 @@ fn run_worker(
             plugin_parameters: None,
             computer_keyboard_complete: None,
             midi_take_complete: None,
+            native_automation_take_complete: None,
             tuning_audition_complete: None,
             live_expression_complete: None,
             bounce_complete: None,
@@ -2469,6 +2483,7 @@ fn run_worker(
     let mut pending_sampler_parameter: Option<SamplerEdit> = None;
     let mut pending_plugin_effect: Option<plugin_effect::Pending> = None;
     let mut pending_stopped_restore = None;
+    let mut native_automation_take = native_automation_recording::Lane::default();
     while let Some(queued) = events.next_request_with_control_poll(
         &requests,
         &document_intent,
@@ -2736,7 +2751,76 @@ fn run_worker(
             }
             _ => None,
         };
+        let mut native_automation_take_complete = None;
+        let mut adopted_native_draft = None;
         let resolved_edit = match &request {
+            Request::NativeAutomationTake {
+                request_id,
+                scope,
+                action,
+            } => {
+                use native_automation_recording::Step;
+                let current = hex_engine::AudioSourceContext {
+                    project_generation,
+                    editor_revision: revision,
+                };
+                let document_base = media_base.as_deref();
+                let gesture_active = pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some();
+                let result = if matches!(action, NativeAutomationTakeAction::Begin) {
+                    (|| {
+                        if scope.context() != current
+                            || gesture_active
+                            || session.audio_mode() != DocumentAudioMode::Resident
+                            || !events.resident_publication_enabled()
+                        {
+                            return Err(
+                                "native automation take requires the current resident source"
+                                    .into(),
+                            );
+                        }
+                        let source = events
+                            .resident_audio()
+                            .ok_or("native automation output unavailable")?
+                            .native_automation_source(current)?
+                            .ok_or("native automation target is not armed on the playing output")?;
+                        let directory = match recovery.as_deref().and_then(Path::parent) {
+                            Some(directory) => directory.join("automation-drafts"),
+                            None => automation_draft::default_directory()?,
+                        };
+                        native_automation_take.begin(
+                            &session,
+                            document_base,
+                            *scope,
+                            source,
+                            &directory,
+                        )
+                    })()
+                } else if gesture_active && matches!(action, NativeAutomationTakeAction::Poll) {
+                    // A take must never finalize somebody else's active edit.
+                    Ok(Step::Progress(NativeAutomationTakeProgress::Pending))
+                } else {
+                    native_automation_take.receive(&session, document_base, current, *scope, action)
+                };
+                let mut completion = NativeAutomationTakeCompletion {
+                    request_id: *request_id,
+                    progress: NativeAutomationTakeProgress::Refused,
+                };
+                let resolved = match result {
+                    Ok(Step::Progress(progress)) => {
+                        completion.progress = progress;
+                        None
+                    }
+                    Ok(Step::Commit(command, path)) => {
+                        adopted_native_draft = Some(path);
+                        Some(Ok(*command))
+                    }
+                    Err(reason) => Some(Err(reason)),
+                };
+                native_automation_take_complete = Some(completion);
+                resolved
+            }
             Request::DeviceAutomation {
                 project_generation: _,
                 revision: _,
@@ -3510,6 +3594,7 @@ fn run_worker(
                     | Request::RestartRecovery(_)
                     | Request::SamplerEdit(_)
                     | Request::ContinueSamplerEdit
+                    | Request::NativeAutomationTake { .. }
                     | Request::InsertPluginEffect(_)
                     | Request::ContinuePluginEffect
                     | Request::TogglePluginEditor { .. }
@@ -6013,6 +6098,7 @@ fn run_worker(
                         }
                     }
                 }
+                Request::NativeAutomationTake { .. } => {}
                 Request::ArmNativeParameterRecording {
                     project_generation: expected_generation,
                     revision: expected_revision,
@@ -7991,6 +8077,26 @@ fn run_worker(
             }
             stopped_playback_restore_complete = true;
         }
+        native_automation_take.interrupt_if_source_changed(hex_engine::AudioSourceContext {
+            project_generation,
+            editor_revision: revision,
+        });
+        if let Some(completion) = native_automation_take_complete.as_mut() {
+            if let Some(path) = adopted_native_draft {
+                if error.is_none() && revision != revision_before_request {
+                    completion.progress = NativeAutomationTakeProgress::Committed;
+                    status = Some("device automation take committed".into());
+                } else {
+                    let reason = error
+                        .as_deref()
+                        .unwrap_or("device automation take did not change the lane");
+                    error = Some(native_automation_recording::retained_error(&path, reason));
+                    completion.progress = NativeAutomationTakeProgress::Retained(path);
+                }
+            } else if error.is_some() {
+                completion.progress = NativeAutomationTakeProgress::Refused;
+            }
+        }
         let import_truncation = import_decode.refused().cloned();
         if let (Some(message), Some(path)) = (&mut error, import_decode.recovered_path()) {
             *message = format!(
@@ -8020,6 +8126,7 @@ fn run_worker(
                 plugin_parameters,
                 computer_keyboard_complete,
                 midi_take_complete,
+                native_automation_take_complete,
                 tuning_audition_complete,
                 live_expression_complete,
                 bounce_complete,

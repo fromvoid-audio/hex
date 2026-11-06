@@ -41,6 +41,7 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
         plugin_parameters: None,
         computer_keyboard_complete: None,
         midi_take_complete: None,
+        native_automation_take_complete: None,
         tuning_audition_complete: None,
         live_expression_complete: None,
         bounce_complete: None,

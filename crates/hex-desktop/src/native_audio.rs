@@ -271,6 +271,7 @@ impl NativeAudioSink {
         self.section_edit = None;
         self.offline_section_edit = None;
         self.resident.current_submission = None;
+        self.resident.capture_target = None;
         self.resident.applied_loop = None;
         self.opening = None;
         self.open_pending = false;
@@ -1333,6 +1334,51 @@ impl WorkerAudioSink for NativeAudioSink {
         context: AudioSourceContext,
     ) -> Result<Option<hex_session::service::ResidentRuntimeLoop>, String> {
         self.current_runtime_loop(context)
+    }
+    fn native_automation_source(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<Option<hex_session::service::NativeAutomationSource>, String> {
+        let Some(applied) = self.current_runtime_loop(context)?.filter(|applied| {
+            applied.source_context == Some(context)
+                && self.resident.current_submission == Some(*applied)
+        }) else {
+            return Ok(None);
+        };
+        let Some(target) = self.resident.capture_target else {
+            return Ok(None);
+        };
+        let Some(output) = self.output.as_mut() else {
+            return Ok(None);
+        };
+        let sample_rate = output.sample_rate;
+        let Some(control) = output.publication.control() else {
+            return Ok(None);
+        };
+        let status = &control.status;
+        let transport_epoch = status.transport_epoch.load(Acquire);
+        let exact = hex_audio::prepared::AppliedAudioSource {
+            context,
+            audio_revision: applied.audio_revision,
+            output_identity: applied.output_identity,
+        };
+        if transport_epoch == 0
+            || !status.playing.load(Acquire)
+            || status.device_fault.load(Acquire)
+            || status.render_fault.load(Acquire)
+            || status.recording_source() != Some(exact)
+            || status.transport_epoch.load(Acquire) != transport_epoch
+        {
+            return Ok(None);
+        }
+        Ok(Some(hex_session::service::NativeAutomationSource {
+            target,
+            sample_rate,
+            output_identity: applied.output_identity,
+            audio_revision: applied.audio_revision,
+            transport_epoch,
+            section_loop: applied.section_loop,
+        }))
     }
     fn verified_track_gain_source(
         &mut self,

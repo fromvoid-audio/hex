@@ -547,6 +547,14 @@ pub trait WorkerAudioSink: Send {
     ) -> Result<Option<ResidentRuntimeLoop>, String> {
         Ok(None)
     }
+    /// Exact current armed and playing ordinary output. A copied observation
+    /// cannot reserve an audio input or substitute for a delivery receipt.
+    fn native_automation_source(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+    ) -> Result<Option<super::NativeAutomationSource>, String> {
+        Ok(None)
+    }
     /// Synchronously borrow actual active/retiring/unpublished owners for every precommit check.
     /// No borrow may survive this worker call; each actual root is selected once per union.
     fn resident_admission(
