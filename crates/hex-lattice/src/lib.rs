@@ -24,7 +24,7 @@ mod parameter_automation;
 mod static_processing_tests;
 mod tail_split;
 pub use foreign_processor::{
-    ForeignProcessorNode, ForeignProcessors, PreparedForeignProcessor, RefuseForeign,
+    ForeignNote, ForeignProcessorNode, ForeignProcessors, PreparedForeignProcessor, RefuseForeign,
 };
 pub use parameter_automation::{
     ExternalParameterAutomation, HostAutomationLane, NativeParameterAutomation,

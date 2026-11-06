@@ -39,36 +39,59 @@ impl<'a> ResidentEffectPreparation<'a> {
     pub fn requires_plugin_profile(&self) -> bool {
         requires_plugin_profile(self.project)
     }
-    pub fn visit_plugin_effects(
+    pub fn visit_plugin_devices(
         &self,
-        mut visit: impl FnMut(
-            hex_engine::ProcessorChainOwner,
-            u64,
-            &'a NativeDeviceState,
-        ) -> Result<(), String>,
+        mut visit: impl FnMut(PluginEffectDestination, u64, &'a NativeDeviceState) -> Result<(), String>,
     ) -> Result<(), String> {
-        let mut chain = |owner, devices: &'a [hex_project::Device]| {
-            for device in devices.iter().filter(|d| is_plugin_effect(d)) {
-                visit(owner, device.id().value(), device.state())?;
-            }
-            Ok(())
-        };
         for track in self.project.tracks() {
-            chain(
-                hex_engine::ProcessorChainOwner::Track(track.id().value()),
-                track.devices(),
-            )?;
+            if let Some(device) = track
+                .instrument()
+                .filter(|device| track.receives_source_audio() && is_plugin_effect(device))
+            {
+                visit(
+                    PluginEffectDestination::Instrument(track.id()),
+                    device.id().value(),
+                    device.state(),
+                )?;
+            }
+            for device in track
+                .devices()
+                .iter()
+                .filter(|device| is_plugin_effect(device))
+            {
+                visit(
+                    PluginEffectDestination::Track(track.id()),
+                    device.id().value(),
+                    device.state(),
+                )?;
+            }
         }
         for bus in self.project.return_tracks() {
-            chain(
-                hex_engine::ProcessorChainOwner::Return(bus.id().value()),
-                bus.devices(),
+            for device in bus
+                .devices()
+                .iter()
+                .filter(|device| is_plugin_effect(device))
+            {
+                visit(
+                    PluginEffectDestination::Return(bus.id()),
+                    device.id().value(),
+                    device.state(),
+                )?;
+            }
+        }
+        for device in self
+            .project
+            .main_devices()
+            .iter()
+            .filter(|device| is_plugin_effect(device))
+        {
+            visit(
+                PluginEffectDestination::Main,
+                device.id().value(),
+                device.state(),
             )?;
         }
-        chain(
-            hex_engine::ProcessorChainOwner::Main,
-            self.project.main_devices(),
-        )
+        Ok(())
     }
 }
 
@@ -80,7 +103,12 @@ pub(super) fn requires_plugin_profile(project: &Project) -> bool {
     project
         .tracks()
         .iter()
-        .flat_map(|track| track.devices())
+        .flat_map(|track| {
+            track
+                .devices()
+                .iter()
+                .chain(track.instrument().filter(|_| track.receives_source_audio()))
+        })
         .chain(project.return_tracks().iter().flat_map(|bus| bus.devices()))
         .chain(project.main_devices())
         .any(is_plugin_effect)
@@ -295,6 +323,16 @@ pub trait WorkerAudioSink: Send {
     }
     fn plugin_effect_ready(&self) -> bool {
         false
+    }
+    /// Send a window action to the existing hosted instance, without a project edit.
+    fn toggle_plugin_editor(&mut self, _generation: u64, _device: u64) -> Result<(), String> {
+        Err("vst3 editor unavailable for this output".into())
+    }
+    fn plugin_editor_ready(&self) -> bool {
+        false
+    }
+    fn take_plugin_editor_result(&mut self, _generation: u64) -> Option<Result<bool, String>> {
+        None
     }
     /// Match the exact request control; never cancel an unrelated later source.
     /// Exact canonical terminal. Rejected requests retire only their matching native preparation;
@@ -1116,6 +1154,16 @@ impl WorkerEvents {
             {
                 return Some(QueuedRequest::continuation(
                     Request::ContinuePluginStateRestore,
+                    document_intent,
+                ));
+            }
+            if self
+                .audio
+                .as_ref()
+                .is_some_and(|audio| audio.plugin_editor_ready())
+            {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinuePluginEditor,
                     document_intent,
                 ));
             }

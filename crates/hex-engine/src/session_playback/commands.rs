@@ -30,6 +30,17 @@ impl SessionPlayback {
         &self,
         command: &SessionPlaybackCommand,
     ) -> Result<(), SessionPlaybackError> {
+        if !self.foreign_arrangement.is_empty()
+            && !matches!(
+                command,
+                SessionPlaybackCommand::Play
+                    | SessionPlaybackCommand::Pause
+                    | SessionPlaybackCommand::Stop
+                    | SessionPlaybackCommand::Seek(_)
+            )
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
         if self.current_sampler_console
             && matches!(
                 command,
@@ -71,6 +82,7 @@ impl SessionPlayback {
                     // cut below and rendered while paused. Only sampler-only
                     // offline export lacks one, and it refuses Pause.
                     self.pause_analytic_sources()?;
+                    self.foreign_arrangement.cut();
                     // A removed receiver may already own a detached release.
                     // Only explicit discontinuities reset admitted monitoring.
                     self.monitor_source_releases |=
@@ -151,6 +163,7 @@ impl SessionPlayback {
     }
 
     fn stop_transport(&mut self) -> bool {
+        self.foreign_arrangement.cut();
         let mut changed = self.performance_frame != 0;
         self.playing = false;
         self.monitor_source_releases = false;
@@ -333,6 +346,7 @@ impl SessionPlayback {
     /// compensation epoch and mutable voices start empty. Allocation-free:
     /// existing owners are cleared or reset in place.
     pub(super) fn restart_audio_history(&mut self) {
+        self.foreign_arrangement.cut();
         for route in &mut self.routes {
             route.audio_release = None;
         }

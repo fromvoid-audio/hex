@@ -210,6 +210,15 @@ impl WorkerAudioSink for ResidentSink {
     fn plugin_effect_ready(&self) -> bool {
         self.inner.plugin_effect_ready()
     }
+    fn toggle_plugin_editor(&mut self, generation: u64, device: u64) -> Result<(), String> {
+        self.inner.toggle_plugin_editor(generation, device)
+    }
+    fn plugin_editor_ready(&self) -> bool {
+        self.inner.plugin_editor_ready()
+    }
+    fn take_plugin_editor_result(&mut self, generation: u64) -> Option<Result<bool, String>> {
+        self.inner.take_plugin_editor_result(generation)
+    }
     fn finish_plugin_effect(
         &mut self,
         control: &Arc<hex_session::service::PluginEffectControl>,
@@ -523,11 +532,19 @@ impl ResidentHarness {
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
     ) -> Self {
+        Self::with_plugins_at_rate(host, presentation, 48_000)
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn with_plugins_at_rate(
+        host: hex_audio::plugin_effects::Hosting,
+        presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
+        rate: u32,
+    ) -> Self {
         Self::with_plugin_fixture(
             8192,
             Arc::new(AtomicBool::new(true)),
             4,
-            48_000,
+            rate,
             Some((host, presentation)),
             None,
             None,

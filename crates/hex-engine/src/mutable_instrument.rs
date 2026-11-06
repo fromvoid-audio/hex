@@ -7,6 +7,7 @@
 //! The existing pair owns synthesis and transactional history; input schedulers
 //! retain their own ingress/capture acknowledgements, never another instrument.
 
+pub(crate) mod authored_gate;
 mod live;
 #[cfg(test)]
 mod steal_tests;
@@ -715,24 +716,6 @@ impl MutableInstrumentTrackRuntime {
         self.pair.steals_releasing_voices()
     }
 
-    /// Authored proofs that occupy a provider voice slot at `frame`.
-    ///
-    /// Without stealing every proof holds its slot until its quiet deadline.
-    /// A stealing provider frees a releasing slot on demand, so only proofs
-    /// still gated at `frame` count; equal-offset NoteOffs sort before NoteOns,
-    /// so a gate ending exactly at `frame` is already releasing. Released
-    /// proofs keep their deadlines for retirement only.
-    fn occupied_voices_at(&self, frame: u64) -> usize {
-        if self.steals_releasing_voices() {
-            self.scratch
-                .iter()
-                .filter(|proof| !proof.note_off_sent || proof.gate_end_frame > frame)
-                .count()
-        } else {
-            self.scratch.len()
-        }
-    }
-
     pub(crate) fn max_release_tail_frames(&self) -> u64 {
         self.pair.max_release_tail_frames()
     }
@@ -893,9 +876,6 @@ impl MutableInstrumentTrackRuntime {
     ) -> Result<(), MutableInstrumentRuntimeError> {
         let width =
             u64::try_from(frames.len()).map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?;
-        let performance_end = performance_start
-            .checked_add(width)
-            .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
         events.clear();
         let source_age = self.live.as_ref().map(|live| live.scratch_age);
         if let Some(live) = &mut self.live {
@@ -912,153 +892,25 @@ impl MutableInstrumentTrackRuntime {
         if let Some(expression) = self.expression {
             events.extend(expression.events());
         }
-        onsets.sort_canonically();
-
-        self.scratch.retain(|occurrence| {
-            !occurrence.note_off_sent
-                || match (source_age, occurrence.quiet_deadline_age) {
-                    (Some(age), Some(quiet)) => quiet > age,
-                    _ => occurrence.quiet_deadline_frame > performance_start,
-                }
-        });
-        for occurrence in &mut self.scratch {
-            if !occurrence.note_off_sent && occurrence.gate_end_frame < performance_start {
-                return Err(MutableInstrumentRuntimeError::OrphanedGate);
-            }
-            if !occurrence.note_off_sent && occurrence.gate_end_frame < performance_end {
-                let offset = usize::try_from(occurrence.gate_end_frame - performance_start)
-                    .map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?;
-                push_event(
-                    events,
-                    NativeInstrumentEvent::NoteOff {
-                        frame_offset: offset,
-                        occurrence_id: occurrence.id,
-                    },
-                )?;
-                occurrence.note_off_sent = true;
-                occurrence.quiet_deadline_age = source_age.map(|age| {
-                    age.saturating_add(offset as u64)
-                        .saturating_add(self.pair.max_release_tail_frames())
-                });
-            }
-        }
-
-        for (onset_index, onset) in onsets.iter().enumerate() {
-            if track.is_some_and(|track| onset.key.track != track)
-                || onset.source_start < source_start
-            {
-                continue;
-            }
-            let Some(onset_delta) = onset.source_start.checked_sub(source_start) else {
-                continue;
-            };
-            if onset_delta >= width {
-                continue;
-            }
-            let onset_frame = performance_start
-                .checked_add(onset_delta)
-                .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
-            let signature = MutableOccurrenceSignature::new(onset);
-            if has_mutable_suppression(suppressions, signature, onset_frame) {
-                continue;
-            }
-            self.scratch.retain(|proof| {
-                !proof.note_off_sent
-                    || match (source_age, proof.quiet_deadline_age) {
-                        (Some(age), Some(quiet)) => quiet > age.saturating_add(onset_delta),
-                        _ => proof.quiet_deadline_frame > onset_frame,
-                    }
-            });
-            if self
-                .scratch
-                .iter()
-                .any(|active| active.signature.key == onset.key)
-                || onsets.iter().take(onset_index).any(|previous| {
-                    previous.key == onset.key
-                        && !has_mutable_suppression(
-                            suppressions,
-                            MutableOccurrenceSignature::new(previous),
-                            performance_start
-                                .saturating_add(previous.source_start.saturating_sub(source_start)),
-                        )
-                })
-            {
-                return Err(MutableInstrumentRuntimeError::DuplicateOccurrence);
-            }
-            self.next_id_scratch = self
-                .next_id_scratch
-                .checked_add(1)
-                .ok_or(MutableInstrumentRuntimeError::IdentityExhausted)?;
-            let gate_delta = onset
-                .source_gate_end
-                .checked_sub(source_start)
-                .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
-            let gate_end_frame = performance_start
-                .checked_add(gate_delta)
-                .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
-            if gate_end_frame <= onset_frame {
-                return Err(MutableInstrumentRuntimeError::InvalidSourceSpan);
-            }
-            let onset_offset = usize::try_from(onset_delta)
-                .map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?;
-            let id = self.next_id_scratch;
-            push_event(
-                events,
-                NativeInstrumentEvent::NoteOn {
-                    frame_offset: onset_offset,
-                    occurrence_id: id,
-                    pitch: onset.pitch,
-                    velocity: onset.velocity,
-                },
-            )?;
-            let note_off_sent = gate_end_frame < performance_end;
-            if note_off_sent {
-                let offset = usize::try_from(gate_end_frame - performance_start)
-                    .map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?;
-                push_event(
-                    events,
-                    NativeInstrumentEvent::NoteOff {
-                        frame_offset: offset,
-                        occurrence_id: id,
-                    },
-                )?;
-            } else {
-                // Gateoffs at the exclusive block end are emitted at offset
-                // zero of the next segment, preserving half-open semantics.
-            }
-            // Voice slots and the fixed proof ledger are bounded separately:
-            // stolen releases leave the provider's slots but keep their proofs.
-            let live = self.source_live_count();
-            if self.occupied_voices_at(onset_frame) + live
-                >= self
-                    .max_active_occurrences()
-                    .min(MAX_MUTABLE_OCCURRENCE_PROOFS)
-                || self.scratch.len() + live >= MAX_MUTABLE_OCCURRENCE_PROOFS
-            {
-                return Err(MutableInstrumentRuntimeError::OccurrenceCapacity);
-            }
-            let quiet_deadline_frame = gate_end_frame
-                .checked_add(self.max_release_tail_frames())
-                .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
-            self.scratch.push(MutableOccurrence {
-                signature,
-                id,
-                onset_frame,
-                gate_end_frame,
-                quiet_deadline_frame,
-                quiet_deadline_age: if note_off_sent {
-                    source_age.map(|age| {
-                        age.saturating_add(gate_delta)
-                            .saturating_add(self.max_release_tail_frames())
-                    })
-                } else {
-                    None
-                },
-                note_off_sent,
-                gain_at_end_bits: 1.0_f64.to_bits(),
-                gain_frozen: false,
-            });
-        }
+        let context = authored_gate::AuthoredGateContext {
+            track,
+            performance_start,
+            source_start,
+            width,
+            source_age,
+            tail_frames: self.max_release_tail_frames(),
+            max_active: self.max_active_occurrences(),
+            steals_releasing: self.steals_releasing_voices(),
+            live: self.source_live_count(),
+            suppressions,
+        };
+        authored_gate::stage_authored_gates(
+            &mut self.scratch,
+            &mut self.next_id_scratch,
+            onsets,
+            context,
+            |gate| push_event(events, gate.into()),
+        )?;
 
         events.sort_unstable_by_key(|event| {
             let (offset, is_on, occurrence_id) = match *event {

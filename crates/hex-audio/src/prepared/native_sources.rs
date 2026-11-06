@@ -24,13 +24,13 @@ impl PublicationControl {
     pub fn begin_native_source_controller_query_on_control(
         &mut self,
         binding: Binding,
-        query: hex_plugin_host::protocol::ParameterPageQuery,
+        query: impl Into<hex_plugin_host::protocol::ControllerRequest>,
     ) -> Result<crate::plugin_worker::NativeWorkerControllerQuery, &'static str> {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native controller output is closing");
         }
         self.candidate_root
-            .begin_native_controller_query(binding, query)
+            .begin_native_controller_query(binding, query.into())
     }
     /// Consume only the exact source/worker query terminal. Recheck the owning
     /// document/device context before using these copied observations in UI.
@@ -72,6 +72,8 @@ impl PublicationControl {
     }
     /// Observe the exact live worker's edit receipts and uncovered latency
     /// restart. Opt in only when the consumer can restore the stopped source.
+    /// While the transport is idle, the same worker applies one pending batch
+    /// without advancing its PCM prefix.
     pub fn poll_native_source_recovery_edits_on_control(
         &mut self,
         binding: Binding,
@@ -79,7 +81,8 @@ impl PublicationControl {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native edit output is closing");
         }
-        self.candidate_root.native_source_recovery_edits(binding)
+        self.candidate_root
+            .native_source_recovery_edits(binding, !self.status.playing.load(Acquire))
     }
     /// Inspect latest processor parameter values through the actual original
     /// Root-held effect or its unique loan control. Wrong/closed/revoked sources

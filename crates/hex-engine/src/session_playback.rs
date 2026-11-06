@@ -26,6 +26,7 @@ use hex_project::{BeatTime, ClipId, MAX_TRACKS, NoteId, SceneId, TrackId};
 use std::{fmt, sync::Arc};
 
 mod candidate_storage;
+mod foreign_arrangement;
 mod midi_capture;
 mod mutable_checkpoint;
 mod render_work;
@@ -511,6 +512,7 @@ pub struct SessionPlayback {
     meter_cells: Vec<meter_capture::Cell>,
     return_effect_tails: ReturnEffectTailBank,
     mutable_instruments: Vec<Option<MutableInstrumentTrackRuntime>>,
+    foreign_arrangement: foreign_arrangement::ForeignArrangement,
     mutable_onsets: MutableOnsetBuffer,
     mutable_events: Vec<hex_lattice::NativeInstrumentEvent>,
     current_route_cut_scratch: Vec<Option<CurrentPendingCut>>,
@@ -611,6 +613,18 @@ impl SessionPlayback {
         &self,
         visit: &mut impl FnMut(Option<hex_lattice_contract::ForeignProcessorBinding>),
     ) {
+        for node in self
+            .revision
+            .arrangement()
+            .tracks()
+            .iter()
+            .filter_map(|track| track.foreign_instrument.as_ref())
+            .filter(|node| !node.bypassed)
+        {
+            if let Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) = node.definition {
+                visit(facts.binding());
+            }
+        }
         let chains = self
             .device_chains
             .iter()
@@ -910,6 +924,7 @@ impl SessionPlayback {
             meter_cells: _,
             return_effect_tails,
             mutable_instruments,
+            foreign_arrangement,
             mutable_onsets: _,
             mutable_events: _,
             current_route_cut_scratch: _,
@@ -959,6 +974,7 @@ impl SessionPlayback {
         let moved_empty_main =
             !self.candidate_admission_open && main_chain.is_empty() && !main_present;
         if (!main_matches && !moved_empty_main)
+            || !foreign_arrangement.is_empty()
             || live_expression.is_some()
             || computer_keyboard.is_some()
         {
@@ -1507,6 +1523,12 @@ impl SessionPlayback {
         transient_loop: Option<hex_project::LoopRegion>,
     ) -> Result<Self, SessionPlaybackError> {
         let linear_arrangement_export = policy != RenderConstruction::Interactive;
+        let foreign_arrangement = foreign_arrangement::ForeignArrangement::prepare(&revision)?;
+        if linear_arrangement_export && !foreign_arrangement.is_empty() {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "vst3 instruments require interactive arrangement playback",
+            ));
+        }
         if revision.device_resource_scope != resources.map(|resources| resources.id()) {
             return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
                 "device resource set differs from prepared revision",
@@ -1891,6 +1913,9 @@ impl SessionPlayback {
             .map(|graph| crate::signal_graph::SignalRuntime::new(Arc::clone(graph)))
             .transpose()
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+        if compensation.is_none() && !foreign_arrangement.is_empty() {
+            return Err(SessionPlaybackError::DeviceRuntime);
+        }
         // Resident Arrangement and eligible Session audio share this window.
         // Generic streamed providers retain their original per-frame lookups.
         let mut resident_source_scratch = Vec::new();
@@ -1949,6 +1974,7 @@ impl SessionPlayback {
                 return_chains: &return_chains,
                 return_effect_tails: &return_effect_tails,
                 mutable_instruments: &mutable_instruments,
+                foreign_arrangement: &foreign_arrangement,
                 tail_groups: &tail_groups,
                 tail_mutable_instruments: &tail_mutable_instruments,
                 routes: routes.capacity(),
@@ -2019,6 +2045,7 @@ impl SessionPlayback {
             meter_cells,
             return_effect_tails,
             mutable_instruments,
+            foreign_arrangement,
             mutable_onsets: MutableOnsetBuffer::default(),
             mutable_events,
             current_route_cut_scratch,

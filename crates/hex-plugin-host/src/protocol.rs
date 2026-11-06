@@ -10,12 +10,13 @@ mod edits;
 mod parameter_page;
 pub use edits::{
     MAX_PARAMETER_EDITS, ParameterEdit, ParameterEditKind, ParameterEdits, RecoveryEdits,
-    edit_request, parameter_edits, recovery_edit_request, recovery_edits,
+    edit_request, idle_editor_edit_request, parameter_edits, recovery_edit_request, recovery_edits,
 };
 pub use parameter_page::{
-    ControllerParameter, MAX_CONTROLLER_PARAMETERS, PARAMETER_PAGE_SIZE, ParameterConversion,
-    ParameterConversionResult, ParameterConversionStatus, ParameterPage, ParameterPageProgress,
-    ParameterPageQuery, ParameterPlainValue, ParameterText, parameter_page, parameter_page_request,
+    ControllerParameter, ControllerRequest, MAX_CONTROLLER_PARAMETERS, PARAMETER_PAGE_SIZE,
+    ParameterConversion, ParameterConversionResult, ParameterConversionStatus, ParameterPage,
+    ParameterPageProgress, ParameterPageQuery, ParameterPlainValue, ParameterText,
+    PluginEditorState, parameter_page, parameter_page_request,
 };
 mod flush;
 pub use capture::{
@@ -150,7 +151,11 @@ impl Configuration {
             || block.frames != self.quantum
             || block.sequence != sequence
             || sequence.checked_mul(u64::from(self.quantum)) != Some(block.first_frame)
-            || !block.events.as_slice().is_empty()
+            || block.events.as_slice().iter().any(|event| {
+                self.input_channels != 0
+                    || event.len != 3
+                    || !matches!(event.bytes[0] & 0xf0, 0x80 | 0x90)
+            })
             || !block.pcm[..usize::from(self.quantum)]
                 .iter()
                 .flatten()

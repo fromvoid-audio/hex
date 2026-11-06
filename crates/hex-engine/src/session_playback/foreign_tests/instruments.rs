@@ -1,0 +1,347 @@
+//! Control-side preparation of an Arrangement VST3 instrument source.
+use super::*;
+use crate::Invalid;
+use hex_project::{BeatTime, Editor, Project};
+
+const VST3: DeviceTypeId = DeviceTypeId::from_static("hex.vst3");
+
+struct InstrumentDefinition {
+    identity: ProcessorInstanceIdentity,
+    instrument_profile: bool,
+}
+
+impl NativeDeviceMetadata for InstrumentDefinition {
+    fn type_id(&self) -> DeviceTypeId {
+        VST3
+    }
+
+    fn state_version(&self) -> u32 {
+        1
+    }
+
+    fn descriptors(&self) -> &'static [ParameterDescriptor] {
+        &[]
+    }
+
+    fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
+        NativeDeviceState::new(VST3, 1, vec![19])
+    }
+
+    fn migrate_state(
+        &self,
+        state: &NativeDeviceState,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        if state != &self.default_state()? {
+            return Err(DeviceContractError::MalformedState);
+        }
+        Ok(state.clone())
+    }
+
+    fn read_parameter(
+        &self,
+        _: &NativeDeviceState,
+        _: ParameterId,
+    ) -> Result<ParameterValue, DeviceContractError> {
+        Err(DeviceContractError::UnknownParameter)
+    }
+
+    fn patch_parameter(
+        &self,
+        _: &NativeDeviceState,
+        _: ParameterId,
+        _: ParameterValue,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        Err(DeviceContractError::UnknownParameter)
+    }
+}
+
+impl NativeDeviceDefinition for InstrumentDefinition {
+    fn prepare_matrix(
+        &self,
+        state: &NativeDeviceState,
+    ) -> Result<StereoMatrix, DeviceContractError> {
+        self.migrate_state(state)?;
+        Ok(StereoMatrix::identity())
+    }
+
+    fn prepare_instance_runtime_factory(
+        &self,
+        identity: ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &DevicePreparationContext<'_>,
+    ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
+        self.migrate_state(state)?;
+        if identity != self.identity || context.sample_rate != 48_000 {
+            return Err(DeviceContractError::InvalidId);
+        }
+        let facts = PreparedForeignProcessor::new(8, 3, 16)?.with_binding(
+            hex_lattice_contract::ForeignProcessorBinding {
+                root: 1,
+                instance: identity.device_id(),
+                graph: 1,
+                epoch: 1,
+            },
+        )?;
+        let facts = if self.instrument_profile {
+            facts.with_instrument_profile()
+        } else {
+            facts
+        };
+        Ok(Some(PreparedProcessorFactory::Foreign(facts)))
+    }
+}
+
+fn fixture() -> (Editor, ProcessorInstanceIdentity) {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "synth".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: NativeDeviceState::new(VST3, 1, vec![19]).unwrap(),
+        })
+        .unwrap();
+    let device = editor.project().track(track).unwrap().instrument().unwrap();
+    let owner = ProcessorChainOwner::Track(track.value());
+    let identity = ProcessorInstanceIdentity::new(owner, device.id().value()).unwrap();
+    let beat = BeatTime::from_ratio(1, 1).unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: beat,
+        })
+        .unwrap()
+    else {
+        panic!("clip");
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: beat,
+            pitch: 60,
+            channel: 2,
+            velocity: 101,
+        })
+        .unwrap();
+    (editor, identity)
+}
+
+fn prepare(
+    editor: &Editor,
+    identity: ProcessorInstanceIdentity,
+    instrument_profile: bool,
+) -> Result<Arc<PreparedRevision>, Invalid> {
+    let definition = InstrumentDefinition {
+        identity,
+        instrument_profile,
+    };
+    let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    PreparedRevision::prepare_with_effect_registry(
+        editor.project(),
+        &std::collections::BTreeMap::new(),
+        Arc::new(SineTable::new()),
+        None,
+        &registry,
+    )
+    .map(Arc::new)
+}
+
+#[test]
+fn vst3_instrument_prepares_exact_generator_and_authored_notes() {
+    let (editor, identity) = fixture();
+    assert!(matches!(
+        prepare(&editor, identity, false),
+        Err(Invalid(
+            "vst3 instrument worker binding or processing role differs"
+        ))
+    ));
+    let revision = prepare(&editor, identity, true).unwrap();
+    let track = &revision.arrangement().tracks()[0];
+    let node = track.foreign_instrument.as_ref().unwrap();
+    assert_eq!(node.owner, identity.owner());
+    assert_eq!(node.device_id, identity.device_id());
+    assert_eq!(node.algorithmic_latency_frames(), Some(19));
+    assert_eq!(track.instrument_latency, Some(19));
+    let mut notes = Vec::new();
+    track
+        .for_each_mutable_midi_span(0, 1, |span| {
+            notes.push((
+                span.start,
+                span.gate_end,
+                span.channel,
+                span.pitch,
+                span.velocity,
+            ));
+        })
+        .unwrap();
+    assert_eq!(notes, [(0, 24_000, 2, 60, 101)]);
+    assert_eq!(revision.arrangement().main_latency_frames(), 19);
+    let playback = crate::playback::Playback::from_prepared(revision);
+    let nodes: Vec<_> = playback.foreign_nodes_on_control().collect();
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].device_id, identity.device_id());
+    let mut bindings = Vec::new();
+    playback.visit_foreign_runtime_bindings(&mut |binding| bindings.push(binding.unwrap()));
+    assert_eq!(bindings[0].instance, identity.device_id());
+}
+
+#[derive(Default)]
+struct NoteEndpoint {
+    notes: Vec<(usize, hex_lattice::ForeignNote)>,
+    next_offset: usize,
+    fail_at: Option<usize>,
+    rejected: bool,
+}
+
+impl ForeignProcessors for NoteEndpoint {
+    fn process_segment(
+        &mut self,
+        _: ForeignProcessorNode<'_>,
+        _: usize,
+        _: &mut [Frame],
+        _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        panic!("instrument must use the note endpoint");
+    }
+
+    fn process_segment_with_notes(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [Frame],
+        _: &[hex_lattice_contract::ForeignParameterPoint],
+        notes: &[hex_lattice::ForeignNote],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        assert_eq!(offset, self.next_offset);
+        assert_eq!(frames, [[0.0; 2]]);
+        assert_eq!(node.prepared.binding().unwrap().instance, node.device_id);
+        assert!(clock.unwrap().transport_is_running().is_some());
+        self.next_offset += frames.len();
+        self.notes.extend(notes.iter().map(|note| (offset, *note)));
+        if self.fail_at == Some(offset) {
+            return Err(DeviceContractError::ForeignProcessingFailed);
+        }
+        Ok(())
+    }
+
+    fn reject_callback(&mut self) {
+        self.rejected = true;
+    }
+}
+
+impl NoteEndpoint {
+    fn render(
+        &mut self,
+        playback: &mut SessionPlayback,
+        frames: &mut [Frame],
+    ) -> Result<(), SessionPlaybackError> {
+        self.next_offset = 0;
+        self.notes.clear();
+        playback.render_with_foreign_processors(frames, None, None, None, self)
+    }
+}
+
+#[test]
+fn seek_and_stop_release_original_notes_and_a_late_fault_refuses_the_block() {
+    let (editor, identity) = fixture();
+    let revision = prepare(&editor, identity, true).unwrap();
+    let mut playback = SessionPlayback::new(revision).unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    endpoint.render(&mut playback, &mut [[0.0; 2]; 2]).unwrap();
+    let [(0, initial)] = endpoint.notes.as_slice() else {
+        panic!("one onset");
+    };
+    let initial = *initial;
+    assert!(initial.on && initial.channel == 2 && initial.pitch == 60);
+    playback.apply(SessionPlaybackCommand::Seek(9)).unwrap();
+    endpoint.render(&mut playback, &mut [[0.0; 2]; 2]).unwrap();
+    let [(0, release)] = endpoint.notes.as_slice() else {
+        panic!("seek releases without chasing");
+    };
+    assert!(!release.on);
+    assert_eq!(
+        (release.note_id, release.channel, release.pitch),
+        (initial.note_id, 2, 60)
+    );
+    playback.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+    endpoint.render(&mut playback, &mut [[0.0; 2]; 1]).unwrap();
+    let restarted = endpoint.notes[0].1;
+    assert!(restarted.on && restarted.note_id != initial.note_id);
+    playback.apply(SessionPlaybackCommand::Stop).unwrap();
+    endpoint.render(&mut playback, &mut [[0.0; 2]; 2]).unwrap();
+    assert_eq!(
+        endpoint.notes,
+        [(
+            0,
+            hex_lattice::ForeignNote {
+                on: false,
+                velocity: 0,
+                ..restarted
+            }
+        )]
+    );
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    endpoint.fail_at = Some(1);
+    let mut output = [[1.0; 2]; 2];
+    assert!(endpoint.render(&mut playback, &mut output).is_err());
+    assert!(endpoint.rejected);
+    assert_eq!(output, [[0.0; 2]; 2]);
+    assert_eq!(playback.performance_frame(), 0);
+}
+
+#[test]
+fn loop_and_pause_release_notes_with_the_identity_of_the_current_pass() {
+    let (mut editor, identity) = fixture();
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 4,
+            enabled: true,
+        })
+        .unwrap();
+    let revision = prepare(&editor, identity, true).unwrap();
+    let mut playback = SessionPlayback::new(revision).unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    endpoint.render(&mut playback, &mut [[0.0; 2]; 9]).unwrap();
+    let [
+        (0, first),
+        (4, first_off),
+        (4, second),
+        (8, second_off),
+        (8, third),
+    ] = endpoint.notes.as_slice()
+    else {
+        panic!("each wrap releases and retriggers the note");
+    };
+    assert!(first.on && second.on && third.on && !first_off.on && !second_off.on);
+    assert_eq!(first_off.note_id, first.note_id);
+    assert_eq!(second_off.note_id, second.note_id);
+    assert_ne!(first.note_id, second.note_id);
+    assert_ne!(second.note_id, third.note_id);
+    let third = *third;
+    playback.apply(SessionPlaybackCommand::Pause).unwrap();
+    endpoint.render(&mut playback, &mut [[0.0; 2]; 1]).unwrap();
+    assert_eq!(
+        endpoint.notes,
+        [(
+            0,
+            hex_lattice::ForeignNote {
+                on: false,
+                velocity: 0,
+                ..third
+            }
+        )]
+    );
+}

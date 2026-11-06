@@ -34,6 +34,7 @@ class Instance final {
     bool component_initialized = false, controller_initialized = false;
     bool handler_set = false, connected_component = false, connected_controller = false;
     bool input_active = false, output_active = false, active = false;
+    int32 event_input_channels_ = 0;
     bool configured = false, configuration_started = false, opened = false, used = false;
     ProcessingConfiguration configuration_{};
     StateStream* component_stream=nullptr;
@@ -188,6 +189,17 @@ public:
         if (!audio_buses(component,kInput,input_count,request.input_channels,false) ||
             !audio_buses(component,kOutput,output_count,request.output_channels,false))
             return ConfigurationResult::UnsupportedTopology;
+        int32 event_channels=0;
+        if (!request.input_channels) {
+            const auto event_count=component->getBusCount(kEvent,kInput);
+            BusInfo event{};
+            if (event_count!=0) {
+                if (event_count!=1 || component->getBusInfo(kEvent,kInput,0,event)!=kResultOk ||
+                    event.mediaType!=kEvent || event.direction!=kInput || event.busType!=kMain ||
+                    event.channelCount<1 || event.channelCount>16) return ConfigurationResult::UnsupportedTopology;
+                event_channels=event.channelCount;
+            }
+        }
         const auto main_input=arrangement(request.input_channels);
         const auto main_output=arrangement(request.output_channels);
         SpeakerArrangement aux_input{};
@@ -221,6 +233,11 @@ public:
                 return ConfigurationResult::ActivationRefused;
             input_active = request.input_enabled;
         }
+        if (event_channels) {
+            if (component->activateBus(kEvent,kInput,0,true)!=kResultOk)
+                return ConfigurationResult::ActivationRefused;
+            event_input_channels_=event_channels;
+        }
         if (component->setActive(true) != kResultOk) return ConfigurationResult::ActivationRefused;
         configuration_=request;
         active = true; configured = true;
@@ -235,6 +252,8 @@ public:
     const ProcessingConfiguration* configuration() const {
         return configured?&configuration_:nullptr;
     }
+    // Immutable while the serialized processing lane owns the instance.
+    int32 event_input_channels() const { return event_input_channels_; }
 
     // One initial stopped capture; later project restore/capture transactions
     // must reuse the same actual instance owner, not create a competing state path.
@@ -349,6 +368,7 @@ public:
         if ([NSThread isMainThread] || !configured || !active || processing.load() || processing_fault.load() || quarantined.load()) return false;
         if (processing_thread != std::thread::id{} && processing_thread != std::this_thread::get_id()) return false;
         processing_thread = std::this_thread::get_id();
+        host->bind_processing_thread();
         if (processor->setProcessing(true) != kResultOk) { processing_fault.store(true); return false; }
         processing.store(true);
         return true;
@@ -368,7 +388,16 @@ public:
     // A parameter-only stopped flush is distinct from a positive-frame block.
     // Serialize it on the same helper worker; main/control must join before close.
     FlushResult flush_stopped(ProcessData& data) {
-        if ([NSThread isMainThread] || !configured || !active || processing.load() ||
+        return flush_parameters(data,false);
+    }
+    // An idle transport can retain an enabled SDK processor. The same SDK
+    // lane accepts an empty-buffer flush without stopping or advancing PCM.
+    FlushResult flush_idle(ProcessData& data) {
+        return flush_parameters(data,true);
+    }
+private:
+    FlushResult flush_parameters(ProcessData& data,bool enabled) {
+        if ([NSThread isMainThread] || !configured || !active || processing.load()!=enabled ||
             processing_fault.load() || quarantined.load() ||
             (processing_thread!=std::thread::id{} && processing_thread!=std::this_thread::get_id()))
             return FlushResult::InvalidState;
@@ -384,6 +413,7 @@ public:
         if (processor->process(data)!=kResultOk || !shape.unchanged(data)) { processing_fault.store(true); return FlushResult::Refused; }
         return FlushResult::Applied;
     }
+public:
     bool stop_processing() {
         if (!processing.load() || processing_thread != std::this_thread::get_id() || quarantined.load())
             return false;
@@ -396,6 +426,10 @@ public:
         if (![NSThread isMainThread]) { HostDispatch refused{}; refused.disposition=HostDisposition::WrongThread; return refused; }
         if (!opened || !host || quarantined.load()) { HostDispatch refused{}; refused.disposition=HostDisposition::Retiring; return refused; }
         return host->dispatch(controller);
+    }
+    IPlugView* create_editor_on_control() {
+        return [NSThread isMainThread] && opened && controller && !quarantined.load()
+            ? controller->createView(ViewType::kEditor) : nullptr;
     }
     const ParameterSnapshot* parameter_snapshot() const {
         return host?host->snapshot():nullptr;
@@ -443,6 +477,10 @@ public:
         if (input_active) {
             if (component->activateBus(kAudio, kInput, 0, false) != kResultOk) return refuse_cleanup();
             input_active = false;
+        }
+        if (event_input_channels_) {
+            if (component->activateBus(kEvent,kInput,0,false)!=kResultOk) return refuse_cleanup();
+            event_input_channels_=0;
         }
         if (output_active) {
             if (component->activateBus(kAudio, kOutput, 0, false) != kResultOk) return refuse_cleanup();

@@ -248,6 +248,11 @@ pub(super) fn render_return_effect(
                 cx,
             ));
     }
+    if device.state().type_id().as_str() == Ok("hex.vst3")
+        && !view.degraded_plugins.contains(id.value())
+    {
+        actions = actions.child(vst3_editor_button(id, selected, cx));
+    }
     actions = actions.child(
         action_button(
             format!("return-device-remove-{}", id.value()),

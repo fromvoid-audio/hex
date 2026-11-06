@@ -97,6 +97,11 @@ static bool host_case(CFBundleRef bundle,Steinberg::IPluginFactory* factory) {
     } else if (e.scenario==10) {
         e.processing_callback=action(4,0); e.processing_message=action(7,0);
     } else if (e.scenario==11) e.message=messages(1);
+    else if(e.scenario==14) {
+        // Independent of both the main thread and the original PCM reader.
+        std::thread background([&] {e.message=messages(2);});
+        background.join();
+    }
     else if(e.scenario==13) {
         const auto wave=[&](uint32 id) {
             bool ok=edit(1,id,0)==kResultOk;

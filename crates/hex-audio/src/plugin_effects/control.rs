@@ -15,7 +15,7 @@ pub(crate) struct NativeEffectControl {
 impl NativeEffect {
     pub(crate) fn begin_controller_query(
         &mut self,
-        query: hex_plugin_host::protocol::ParameterPageQuery,
+        query: hex_plugin_host::protocol::ControllerRequest,
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
         self.worker.begin_controller_query_on_control(query)
     }
@@ -37,8 +37,9 @@ impl NativeEffect {
     }
     pub(crate) fn poll_recovery_edits(
         &mut self,
+        flush_idle: bool,
     ) -> Result<Option<hex_plugin_host::protocol::RecoveryEdits>, &'static str> {
-        self.worker.poll_recovery_edits_on_control()
+        self.worker.poll_recovery_edits_on_control(flush_idle)
     }
     pub(crate) fn begin_state_capture(&mut self) -> Result<NativeWorkerCapture, &'static str> {
         self.worker.begin_state_capture_on_control()
@@ -74,7 +75,7 @@ impl NativeEffect {
 impl NativeEffectControl {
     pub(crate) fn begin_controller_query(
         &mut self,
-        query: hex_plugin_host::protocol::ParameterPageQuery,
+        query: hex_plugin_host::protocol::ControllerRequest,
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
         self.worker.begin_controller_query_on_control(query)
     }
@@ -96,8 +97,9 @@ impl NativeEffectControl {
     }
     pub(crate) fn poll_recovery_edits(
         &mut self,
+        flush_idle: bool,
     ) -> Result<Option<hex_plugin_host::protocol::RecoveryEdits>, &'static str> {
-        self.worker.poll_recovery_edits_on_control()
+        self.worker.poll_recovery_edits_on_control(flush_idle)
     }
     pub(crate) fn begin_state_capture(&mut self) -> Result<NativeWorkerCapture, &'static str> {
         self.worker.begin_state_capture_on_control()

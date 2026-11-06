@@ -190,6 +190,46 @@ fn actual_worker_edit_receipts_preserve_gestures_and_revoke_with_source() {
     let retired = owner.retire_on_control().unwrap();
     assert!(retired.failure.is_none() && retired.native.status.success());
 }
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_idle_editor_poll_applies_a_burst_without_advancing_audio() {
+    const NAME: &str = "plugin_worker::capture::tests::actual_idle_editor_poll_applies_a_burst_without_advancing_audio";
+    if fixture_child(116, NAME) {
+        return;
+    }
+    let (mut owner, _callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    fs::write(
+        std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+        b"emit editor burst while transport is idle",
+    )
+    .unwrap();
+    let mut edits = Vec::new();
+    let until = Instant::now() + Duration::from_secs(2);
+    while edits.len() < 14 {
+        match owner.poll_recovery_edits_on_control(true) {
+            Ok(Some(batch)) => edits.extend_from_slice(batch.edits.as_slice()),
+            Ok(None) | Err("native edit observation is busy") => {}
+            Err(error) => panic!("idle editor poll failed: {error}"),
+        }
+        assert!(Instant::now() < until, "idle editor burst must drain");
+        thread::yield_now();
+    }
+    assert_eq!(edits.len(), 14);
+    assert!(edits.iter().all(|edit| edit.first_frame == 0));
+    assert_eq!(owner.published_blocks_on_control(), 0);
+    let request = begin(&mut owner);
+    let captured = complete(&mut owner, &request);
+    assert_eq!(
+        &hex_plugin_state::decode(&captured)
+            .unwrap()
+            .component
+            .unwrap()[8..12],
+        &3.0_f32.to_le_bytes()
+    );
+    let retired = owner.retire_on_control().unwrap();
+    assert!(retired.failure.is_none() && retired.native.status.success());
+}
+
 fn wait_held() {
     let until = Instant::now() + Duration::from_secs(2);
     loop {

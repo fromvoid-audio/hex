@@ -3,6 +3,7 @@
 #include "macos_fixture.cpp"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
+#include "pluginterfaces/vst/ivstevents.h"
 #include <cmath>
 #include <algorithm>
 #include <array>
@@ -118,7 +119,7 @@ class RestoreController final : public IEditController {
         if(self->fault==86) self->handler->performEdit(id,0.75);
         else {
             self->handler->beginEdit(id);self->component_gain=3.0;
-            const int repeats=self->fault==87?9:1;
+            const int repeats=self->fault==87?65:(self->fault==116?12:1);
             for(int n=0;n<repeats;++n) self->handler->performEdit(id,0.75);
             self->handler->endEdit(id);
         }
@@ -150,7 +151,7 @@ public:
         if (!control() || !context || (value && handler)) return kResultFalse;
         if(value)value->addRef();if(handler)handler->release();handler=value;
         if(fault==104 || fault==105) latency_handler=handler;
-        if(value && ((fault>=85 && fault<=89) || fault==105)) {
+        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116)) {
             CFRunLoopTimerContext timer_context{};timer_context.info=this;
             edit_timer=CFRunLoopTimerCreate(nullptr,CFAbsoluteTimeGetCurrent(),0.001,0,0,edit_tick,&timer_context);
             if(!edit_timer) return kResultFalse;
@@ -162,7 +163,7 @@ public:
     tresult PLUGIN_API setComponentState(IBStream* stream) override {
         if (!control() || !context || !handler || !stream) return kResultFalse;
         ++restoration.controller_component;trace(17);
-        if(fault==115) { restoration.phase=2;return kNotImplemented; }
+        if(fault==117) { restoration.phase=2;return kNotImplemented; }
         if(fault==42)return kResultFalse;
         if(fault==43)throw std::runtime_error("original controller synchronization exception");
         if(fault==44)fault_crash(17);
@@ -292,11 +293,15 @@ public:
     IPlugView* PLUGIN_API createView(FIDString) override { return nullptr; }
 };
 class ProcessingProcessor final : public Processor,public IAudioPresentationLatency {
-    const int mode=next_mode,fault=next_fault;
+    const int fault=next_fault,mode=fault==115?1:next_mode;
     bool initialized=false, arranged=false, setup=false, active=false;
     std::atomic<bool> processing{false};
     bool input=false,output=false,thread_bound=false;
     bool auxiliary_disabled=false;
+    bool event_active=false;
+    float note_signal=0;
+    struct Voice { int32 id=-1; float gain=0; };
+    std::array<Voice,2> named_voices{};
     bool activation_restart_sent=false;
     bool activated_once=false;
     int32 inputs=2,outputs=2,maximum=0,precision=kSample32;
@@ -449,7 +454,9 @@ public:
         return result;
     }
     int32 PLUGIN_API getBusCount(MediaType media,BusDirection direction) override {
-        if (!control() || !initialized || media!=kAudio) return 0;
+        if (!control() || !initialized) return 0;
+        if (media==kEvent) return fault==115 && direction==kInput?1:0;
+        if (media!=kAudio) return 0;
         if (fault==5) return 2;
         if (fault==106 && direction==kInput) return 2;
         return direction==kInput && mode==1?0:1;
@@ -457,8 +464,8 @@ public:
     tresult PLUGIN_API getBusInfo(MediaType media,BusDirection direction,int32 index,BusInfo& info) override {
         const bool auxiliary=fault==106 && media==kAudio && direction==kInput && index==1;
         if (!control() || (index && !auxiliary) || !getBusCount(media,direction)) return kInvalidArgument;
-        info={};info.mediaType=kAudio;info.direction=direction;info.busType=kMain;
-        info.channelCount=direction==kInput?inputs:outputs;
+        info={};info.mediaType=media;info.direction=direction;info.busType=kMain;
+        info.channelCount=media==kEvent?4:(direction==kInput?inputs:outputs);
         if (auxiliary) { info.busType=kAux;info.channelCount=2; }
         if (fault==12 && arranged) ++info.channelCount;
         info.flags=BusInfo::kDefaultActive;
@@ -507,6 +514,7 @@ public:
             auxiliary_disabled=true;return kResultOk;
         }
         if (!control() || !setup || active || processing || index || !getBusCount(media,direction)) return kResultFalse;
+        if (media==kEvent) { event_active=enabled;return kResultOk; }
         ++observed.activations;
         if (enabled && fault==7) return kResultFalse;
         (direction==kInput?input:output)=enabled;return kResultOk;
@@ -515,6 +523,7 @@ public:
         if (!enabled && fault==25) trace(7); // sensitivity: teardown after unknown startup
         if (!control() || !setup || processing) return kResultFalse;
         if (enabled && fault==106 && !auxiliary_disabled) return kResultFalse;
+        if (enabled && fault==115 && !event_active) return kResultFalse;
         if (enabled && fault==111) {
             if (activated_once) restored_latency=7;
             activated_once=true;
@@ -561,7 +570,7 @@ public:
         if (pthread_main_np() || !same_worker() || !active || !std::isfinite(sample_rate) || data.processMode!=kRealtime ||
             data.symbolicSampleSize!=precision) { ++observed.violations;return kResultFalse; }
         if (!data.numSamples && !data.numInputs && !data.numOutputs && !data.inputs && !data.outputs) {
-            if (processing || !data.inputParameterChanges || data.inputParameterChanges->getParameterCount()!=1)
+            if ((processing && fault!=116) || !data.inputParameterChanges || data.inputParameterChanges->getParameterCount()!=1)
                 return kInvalidArgument;
             auto* queue=data.inputParameterChanges->getParameterData(0);
             int32 offset=-1;ParamValue value=-1;
@@ -583,7 +592,8 @@ public:
             }
             return kResultOk;
         }
-        if (!processing || data.numSamples<1 || data.numSamples>maximum || data.inputEvents ||
+        if (!processing || data.numSamples<1 || data.numSamples>maximum ||
+            (fault==115?(!event_active || !data.inputEvents):data.inputEvents!=nullptr) ||
             data.numInputs!=(mode==1 || (!input && data.numInputs==0)?0:1) ||
             data.numOutputs!=(!output && data.numOutputs==0?0:1)) return kInvalidArgument;
         if (data.numInputs && (!data.inputs || data.inputs[0].numChannels!=inputs ||
@@ -616,7 +626,36 @@ public:
         int32 next_point=0,left_offset=-1;double left_value=static_cast<double>(gain.load())/4.0;
         double current_gain=gain.load();
         bool silent=true;
+        const auto event_count=data.inputEvents?data.inputEvents->getEventCount():0;
+        int32 next_event=0;
+        Event event{};
+        if (event_count && data.inputEvents->getEvent(0,event)!=kResultOk) return kResultFalse;
         for (int32 frame=0;frame<data.numSamples;++frame) {
+            while (next_event<event_count && event.sampleOffset==frame) {
+                if (event.busIndex!=0) return kResultFalse;
+                const bool on=event.type==Event::kNoteOnEvent;
+                if ((!on && event.type!=Event::kNoteOffEvent) ||
+                    (on?event.noteOn.channel:event.noteOff.channel)!=2 ||
+                    (on?event.noteOn.pitch:event.noteOff.pitch)!=60) return kResultFalse;
+                const auto id=on?event.noteOn.noteId:event.noteOff.noteId;
+                if(id==-1) note_signal=on?event.noteOn.velocity:0;
+                else {
+                    const auto existing=std::find_if(named_voices.begin(),named_voices.end(),
+                        [id](const Voice& voice) {return voice.id==id;});
+                    if(on) {
+                        if(existing!=named_voices.end()) return kResultFalse;
+                        const auto free=std::find_if(named_voices.begin(),named_voices.end(),
+                            [](const Voice& voice) {return voice.id==-1;});
+                        if(free==named_voices.end()) return kResultFalse;
+                        *free={id,event.noteOn.velocity};
+                    } else {
+                        if(existing==named_voices.end()) return kResultFalse;
+                        *existing={};
+                    }
+                }
+                if (++next_event<event_count && data.inputEvents->getEvent(next_event,event)!=kResultOk)
+                    return kResultFalse;
+            }
             if(point_count) {
                 while(next_point<point_count && points[static_cast<size_t>(next_point)].first<frame) {
                     left_offset=points[static_cast<size_t>(next_point)].first;
@@ -635,8 +674,9 @@ public:
             if(fault==79 && point_count && frame==0) current_gain=1.0;
             if(fault==83 || fault==84) current_gain=2.0;
             // Read all inputs for this sample before writing any aliased output.
-            const double left=mode==1?0.25:(input?(precision==kSample32?data.inputs[0].channelBuffers32[0][frame]:data.inputs[0].channelBuffers64[0][frame]):0.0);
-            const double right=mode==1?0.25:(input && inputs==2?(precision==kSample32?data.inputs[0].channelBuffers32[1][frame]:data.inputs[0].channelBuffers64[1][frame]):left);
+            const double note_output=note_signal+named_voices[0].gain+named_voices[1].gain;
+            const double left=mode==1?(fault==115?note_output:0.25):(input?(precision==kSample32?data.inputs[0].channelBuffers32[0][frame]:data.inputs[0].channelBuffers64[0][frame]):0.0);
+            const double right=mode==1?left:(input && inputs==2?(precision==kSample32?data.inputs[0].channelBuffers32[1][frame]:data.inputs[0].channelBuffers64[1][frame]):left);
             if (output) for (int32 channel=0;channel<outputs;++channel) {
                 double value=(channel?right:left)*(fault==82?(current_gain>=2.0?1.0:scale):scale*current_gain);
 #if HEX_FIXTURE_RESIDUAL_ECHO
@@ -731,7 +771,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>115) return false;next_fault=value;
+        if (value>117) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

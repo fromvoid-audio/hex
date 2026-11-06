@@ -47,6 +47,7 @@ impl SessionPlayback {
             meter_cells,
             return_effect_tails,
             mutable_instruments,
+            foreign_arrangement,
             mutable_onsets,
             mutable_events,
             current_route_cut_scratch,
@@ -82,7 +83,8 @@ impl SessionPlayback {
             candidate_admission_open,
             live_restart: _,
         } = self;
-        if midi_admission.is_some()
+        if !foreign_arrangement.is_empty()
+            || midi_admission.is_some()
             || live_expression.is_some()
             || computer_keyboard.is_some()
             || *linear_arrangement_export

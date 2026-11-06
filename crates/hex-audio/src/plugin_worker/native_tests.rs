@@ -11,6 +11,13 @@ pub(super) fn original_instance() -> hex_plugin_host::native::Prepared {
 }
 
 pub(crate) fn original_instance_for_binding(binding: Binding) -> hex_plugin_host::native::Prepared {
+    original_instance_with_inputs(binding, 2)
+}
+
+pub(crate) fn original_instance_with_inputs(
+    binding: Binding,
+    input_channels: u8,
+) -> hex_plugin_host::native::Prepared {
     use hex_plugin_host::{native::*, protocol::PresentationLatency};
     use hex_plugin_scan::macos::build_identity::InstanceBuild;
     use hex_plugin_state::ClassId;
@@ -42,7 +49,7 @@ pub(crate) fn original_instance_for_binding(binding: Binding) -> hex_plugin_host
                 binding,
                 sample_rate: 48000.0,
                 quantum: 8,
-                input_channels: 2,
+                input_channels,
                 output_channels: 2,
                 limits: Limits {
                     startup: Duration::from_secs(3),

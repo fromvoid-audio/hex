@@ -50,6 +50,41 @@ def verify_tools(app: Path, signing: dict, instance: bool) -> None:
         delivery.verify_discovery_package(app, receipt)
 
 
+def native_source_checkout(root: Path, staging: Path) -> Path:
+    if delivery.run(["git", "status", "--porcelain", "--untracked-files=no"], root=root):
+        raise delivery.DeliveryError("prepare new vst3 tools with unmodified tracked files")
+    if not delivery.run(["git", "status", "--porcelain"], root=root):
+        return root
+    # Keep untracked files out of the compiler and preserve the existing exact
+    # clean-checkout receipt. The private clone shares only Git objects and is
+    # removed with the rest of the owned staging directory.
+    candidate = delivery.run(["git", "rev-parse", "HEAD"], root=root)
+    source = staging / "source"
+    delivery.run(["git", "clone", "--quiet", "--shared", "--no-checkout", "--", str(root), str(source)], root=root)
+    delivery.run(["git", "checkout", "--quiet", "--detach", candidate], root=source)
+    return source
+
+
+def build_native(builder, sdk: Path, instance: bool, staging: Path) -> Path:
+    source = native_source_checkout(ROOT, staging)
+    local = source / "artifacts"
+    local.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="launch-native-", dir=local) as output:
+        output = Path(output) / "native"
+        if source == ROOT:
+            receipt = builder.build(sdk, output, discovery_only=not instance, instance_only=instance)
+        else:
+            delivery.run([sys.executable, str(source / "crates/hex-plugin-scan/native/macos_bootstrap.py"),
+                          "build", "--sdk", str(sdk.resolve()), "--output", str(output),
+                          "--instance-only" if instance else "--discovery-only"], root=source)
+            receipt = output / "controlled-macos.json"
+        if builder.verify(receipt).get("source_dirty") is not False:
+            raise delivery.DeliveryError("vst3 helper build did not use a clean source checkout")
+        destination = staging / "native"
+        shutil.copytree(receipt.parent, destination)
+        return destination
+
+
 def prepare(instance: bool) -> Path:
     common = Path(delivery.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"]))
     artifacts = common.parent / "artifacts"
@@ -82,15 +117,7 @@ def prepare(instance: bool) -> Path:
             with tempfile.TemporaryDirectory(prefix="stage-", dir=cache) as staging:
                 staging = Path(staging)
                 if not native.exists():
-                    if delivery.run(["git", "status", "--porcelain"]):
-                        raise delivery.DeliveryError("prepare new vst3 tools from a clean checkout first")
-                    local = ROOT / "artifacts"
-                    local.mkdir(exist_ok=True)
-                    with tempfile.TemporaryDirectory(prefix="launch-native-", dir=local) as output:
-                        built = builder.build(sdk, Path(output) / "native",
-                                              discovery_only=not instance, instance_only=instance)
-                        shutil.copytree(built.parent, staging / "native")
-                    (staging / "native").rename(native)
+                    build_native(builder, sdk, instance, staging).rename(native)
                 receipt = native / "controlled-macos.json"
                 delivery.assert_plain_path(receipt)
                 source = json.loads(receipt.read_bytes()).get("source_commit", "")

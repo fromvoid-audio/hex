@@ -1,5 +1,29 @@
 //! Finite hostile-wire contracts; actual SDK behavior is tested separately.
 use super::*;
+
+#[test]
+fn editor_receipt_requires_exact_controller_operation_and_discriminant() {
+    let config = config();
+    let request = ControllerRequest::ToggleEditor;
+    let wire = parameter_page_request(&config, 1, 7, request, false).unwrap();
+    assert_eq!(&wire[..4], b"HXVM");
+    assert_eq!(wire[82], 6);
+    assert!(wire[83..].iter().all(|byte| *byte == 0));
+    let mut reply = Vec::new();
+    stamp(&mut reply, config.binding);
+    for value in [1_u64, u64::from(config.quantum), 7] {
+        reply.extend(value.to_le_bytes());
+    }
+    reply.extend([4, 1]);
+    assert_eq!(
+        parameter_page(&reply, &config, 1, 7, request).unwrap(),
+        ParameterPageProgress::Editor(PluginEditorState::Open)
+    );
+    assert!(parameter_page(&reply, &config, 1, 8, request).is_err());
+    assert!(parameter_page(&reply, &config, 1, 7, ParameterPageQuery::default()).is_err());
+    reply.push(0);
+    assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
+}
 #[path = "protocol_tests/conversion.rs"]
 mod conversion;
 use crate::transport::{Events, MidiEvent};
@@ -346,9 +370,29 @@ fn immutable_request_bounds_and_failed_reply_never_fabricate_pcm() {
             frame: 0,
             bytes: [0x90, 60, 100],
             len: 3,
+            note_id: None,
         })
         .unwrap();
     assert!(config.validate_block(&event, 0).is_err());
+    let mut instrument = config.clone();
+    instrument.input_channels = 0;
+    assert!(
+        instrument.validate_block(&event, 0).is_err(),
+        "instrument PCM input must be zero"
+    );
+    event.pcm.fill([0.0; 2]);
+    instrument.validate_block(&event, 0).unwrap();
+    event.events = Events::default();
+    event
+        .events
+        .push(MidiEvent {
+            frame: 0,
+            bytes: [0xb0, 64, 127],
+            len: 3,
+            note_id: None,
+        })
+        .unwrap();
+    assert!(instrument.validate_block(&event, 0).is_err());
     let mut bad = config.clone();
     bad.quantum = u16::MAX;
     assert!(bad.validate_block(&block, 0).is_err());
@@ -824,6 +868,10 @@ fn edit_receipts_bind_source_prefix_operation_order_and_gesture_without_coalesci
     assert_eq!(result.as_slice().len(), 3);
     assert_eq!(result.as_slice()[1].kind, ParameterEditKind::Perform);
     assert_eq!(result.as_slice()[1].id, 0);
+    let mut backlogged = body.clone();
+    backlogged[58..60].copy_from_slice(&72_u16.to_le_bytes());
+    let backlog = parameter_edits(&backlogged, &config, 2, 3, (0, 0)).unwrap();
+    assert_eq!(backlog.pending, 72);
     for end in 0..body.len() {
         assert!(parameter_edits(&body[..end], &config, 2, 3, (0, 0)).is_err());
     }
@@ -832,7 +880,7 @@ fn edit_receipts_bind_source_prefix_operation_order_and_gesture_without_coalesci
         (34, 1),
         (42, 15),
         (50, 2),
-        (58, 25),
+        (58, 73),
         (60, 1),
         (62, 9),
         (64, 0),

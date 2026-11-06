@@ -2,6 +2,7 @@
 // stays here. It is crash isolation for user-selected code, not a security sandbox.
 #import <Foundation/Foundation.h>
 #include "macos_bundle.hpp"
+#include "macos_editor.hpp"
 #include "macos_instance.hpp"
 #include "macos_instance_wire.hpp"
 #include <atomic>
@@ -237,7 +238,7 @@ int main(int argc,char** argv) {
     if(supervised && !guardian.start()) return Configuration;
     const int channel=isolate_channel();if(channel<0) return Configuration;
     @autoreleasepool {
-        Module module;hex_instance::Instance instance;
+        Module module;hex_instance::Instance instance;hex_instance::EditorWindow editor;
         std::optional<wire::Config> config;
         uint32_t failure=Configuration;bool accepted=false,normal_stop=false;
         uint64_t blocks=0,frames=0;
@@ -342,6 +343,7 @@ int main(int argc,char** argv) {
             std::atomic<PageStage> page_stage{PageIdle};
             hex_instance::ControllerQuery page_query{};
             hex_instance::ControllerParameterPage parameter_page{};
+            hex_instance::EditorState editor_state=hex_instance::EditorState::Closed;
             uint32_t page_failure=0;
             std::thread worker([&] {
                 bool started=false;
@@ -399,6 +401,37 @@ int main(int argc,char** argv) {
                         }
                         return true;
                     };
+                    const auto flush_idle_editor=[&] {
+                        // Leave a full receipt batch for its reader to consume.
+                        // The next poll can apply another fixed-size batch.
+                        if(completed_edit_count==completed_edits.size() || !instance.ready_parameter_edits()) return true;
+                        instance.refresh_processing_parameters(processing_parameters);
+                        if(!parameter_input.reset(0,false) || !parameter_output.reset(0,true) || !stage_edits()) return false;
+                        if(parameter_input.size()) {
+                            if(!parameter_input.begin_sdk() || !parameter_output.begin_sdk()) {
+                                error(channel,&*config,Processing);std::_Exit(Processing);
+                            }
+                            ProcessData flush{};flush.processMode=kRealtime;flush.symbolicSampleSize=kSample32;
+                            flush.inputParameterChanges=&parameter_input;flush.outputParameterChanges=&parameter_output;
+                            phase.store(2,std::memory_order_release);
+                            const auto result=instance.flush_idle(flush);
+                            const bool input_returned=parameter_input.end_sdk(),output_returned=parameter_output.end_sdk();
+                            if(!input_returned || !output_returned) {error(channel,&*config,Processing);std::_Exit(Processing);}
+                            if(result!=hex_instance::FlushResult::Applied) return false;
+                            // All offsets are zero. Mirror the processor's
+                            // returned value over the input value for each ID.
+                            for(const auto* changes : {&parameter_input,&parameter_output}) {
+                                for(size_t n=0;n<changes->size();++n) {
+                                    hex_instance::ParameterPoint point{};
+                                    if(!changes->point(n,point) || !processing_parameters.find(point.id) ||
+                                        !parameter_feedback.put(point.id,point.normalized)) return false;
+                                }
+                            }
+                            instance.publish_parameter_feedback(parameter_feedback);
+                        }
+                        for(size_t n=0;n<applying_edit_count;++n) complete_edit(applying_edits[n]);
+                        return true;
+                    };
                     uint64_t page_operation=0;
                     const auto page_reply=[&](const wire::Packet& request,bool poll) {
                         auto state=page_stage.load(std::memory_order_acquire);
@@ -416,8 +449,11 @@ int main(int argc,char** argv) {
                         const bool complete=poll && state==PageComplete;
                         wire::Bytes body;config->stamp(body);wire::number(body,blocks,8);wire::number(body,frames,8);
                         wire::number(body,page_operation,8);
-                        wire::number(body,complete?(parameter_page.changed?2:(parameter_page.conversion?3:1)):0,1);
-                        if(complete) {
+                        if(complete && hex_instance::editor_request(page_query.kind)) {
+                            wire::number(body,4,1);
+                            wire::number(body,static_cast<uint8_t>(editor_state),1);
+                        } else if(complete) {
+                            wire::number(body,parameter_page.changed?2:(parameter_page.conversion?3:1),1);
                             wire::number(body,parameter_page.revision,8);wire::number(body,parameter_page.total,2);
                             if(!parameter_page.changed && parameter_page.conversion) {
                                 const auto& value=parameter_page.converted;
@@ -451,12 +487,13 @@ int main(int argc,char** argv) {
                                     text(value.display);text(value.default_display);
                                 }
                             }
-                        }
+                        } else wire::number(body,0,1);
                         if(!wire::send(channel,"HXVIMD01",body)) return false;
                         if(complete) page_stage.store(PageIdle,std::memory_order_release);
                         return true;
                     };
                     wire::Packet packet{};
+                    hex_instance::InputNotes input_notes;
                     std::array<float,wire::max_frames> left{},right{},output_left{},output_right{};
                     float* input_pointers[]={left.data(),right.data()};float* output_pointers[]={output_left.data(),output_right.data()};
                     AudioBusBuffers input{},output{};input.numChannels=config->inputs;output.numChannels=config->outputs;
@@ -487,6 +524,7 @@ int main(int argc,char** argv) {
                             continue;
                         }
                         if(received==9) {
+                            if(packet.flush_idle_edits && !flush_idle_editor()) {worker_failure.store(Processing);break;}
                             if(!read_edit_receipts(packet)) {worker_failure.store(ProtocolFailure);break;}
                             continue;
                         }
@@ -566,7 +604,7 @@ int main(int argc,char** argv) {
                                     resumed=packet.read(channel,*config,blocks,frames);continue;
                                 }
                                 if(resumed==9) {
-                                    if(!read_edit_receipts(packet)) {worker_failure.store(ProtocolFailure);break;}
+                                    if(packet.flush_idle_edits || !read_edit_receipts(packet)) {worker_failure.store(ProtocolFailure);break;}
                                     resumed=packet.read(channel,*config,blocks,frames);continue;
                                 }
                                 if(resumed==8) {
@@ -649,6 +687,9 @@ int main(int argc,char** argv) {
                             right[n]=wire::sample(packet.bytes.data()+wire::header_size+n*8+4);
                             valid=valid && (config->inputs==2 || right[n]==0) && (config->inputs!=0 || left[n]==0);
                         }
+                        const auto event_channels=instance.event_input_channels();
+                        for (size_t n=0;n<packet.note_count;++n)
+                            valid=valid && packet.notes[n].channel<event_channels;
                         if(!valid) { worker_failure.store(ProtocolFailure);break; }
                         instance.refresh_processing_parameters(processing_parameters);
                         if(!parameter_input.reset(packet.frames,false) || !parameter_output.reset(packet.frames,true)) {
@@ -664,8 +705,12 @@ int main(int argc,char** argv) {
                         if(!parameter_input.begin_sdk() || !parameter_output.begin_sdk()) {
                             error(channel,&*config,Processing);std::_Exit(Processing);
                         }
+                        if (event_channels && !input_notes.begin(packet.notes,packet.note_count)) {
+                            error(channel,&*config,Processing);std::_Exit(Processing);
+                        }
                         data.inputParameterChanges=parameter_input.size()?&parameter_input:nullptr;
                         data.outputParameterChanges=&parameter_output;
+                        data.inputEvents=event_channels?&input_notes:nullptr;
                         data.numSamples=packet.frames;phase.store(2,std::memory_order_release);
                         const bool processed=instance.process(data);
                         // No SDK stop/unload beneath retained or malformed
@@ -673,7 +718,8 @@ int main(int argc,char** argv) {
                         // the isolated instance without claiming rollback.
                         const bool input_returned=parameter_input.end_sdk();
                         const bool output_returned=parameter_output.end_sdk();
-                        if(!input_returned || !output_returned) {
+                        const bool notes_returned=!event_channels || input_notes.end();
+                        if(!input_returned || !output_returned || !notes_returned) {
                             error(channel,&*config,Processing);std::_Exit(Processing);
                         }
                         if(!processed) { worker_failure.store(Processing);break; }
@@ -751,12 +797,25 @@ int main(int argc,char** argv) {
                     instance.dispatch_host_callbacks();
                     if(instance.host_refusals()) { control_failure(HostControl);continue; }
                     if(page_stage.load(std::memory_order_acquire)==PageRequested) {
+                        page_failure=0;
                         try {
                             // Acquire the exact prior worker publication even
                             // if it arrived after this main iteration's sync.
-                            page_failure=instance.synchronize_parameter_feedback_on_control() &&
-                                instance.parameter_page_on_control(page_query,parameter_page)?0:HostControl;
-                        } catch(...) {page_failure=Unexpected;}
+                            if(!instance.synchronize_parameter_feedback_on_control()) page_failure=HostControl;
+                            else if(hex_instance::editor_request(page_query.kind)) {
+                                @autoreleasepool {
+                                    const bool was_open=editor.is_open();
+                                    if(!editor.close()) page_failure=Teardown;
+                                    else if(was_open || page_query.kind==hex_instance::CLOSE_EDITOR)
+                                        editor_state=hex_instance::EditorState::Closed;
+                                    else if(const auto result=editor.open(instance.create_editor_on_control())) editor_state=*result;
+                                    else page_failure=Teardown;
+                                }
+                            } else if(!instance.parameter_page_on_control(page_query,parameter_page)) page_failure=HostControl;
+                        } catch(...) {
+                            if(hex_instance::editor_request(page_query.kind)) editor.quarantine();
+                            page_failure=Unexpected;
+                        }
                         page_stage.store(page_failure?PageFailed:PageComplete,std::memory_order_release);
                         if(page_failure) control_failure(page_failure);
                     }
@@ -929,6 +988,12 @@ int main(int argc,char** argv) {
                         // or unload code beneath its processing thread.
                         std::_Exit(Cancelled);
                     }
+                    try {
+                        if(!editor.pump()) control_failure(Teardown);
+                    } catch(...) {
+                        editor.quarantine();
+                        control_failure(Unexpected);
+                    }
                     CFRunLoopRunInMode(kCFRunLoopDefaultMode,0.001,true);
                 } catch(...) { control_failure(Unexpected); }
             }
@@ -944,7 +1009,7 @@ int main(int argc,char** argv) {
             error(channel,config?&*config:nullptr,failure);
         }
         bool closed=false,unloaded=false;
-        try { closed=instance.close();if(closed) unloaded=module.close(); } catch(...) {}
+        try { closed=editor.close() && instance.close();if(closed) unloaded=module.close(); } catch(...) {}
         if(!closed || !unloaded) failure=Teardown;
         if(config) {
             wire::Bytes terminal;config->stamp(terminal);wire::number(terminal,blocks,8);wire::number(terminal,frames,8);

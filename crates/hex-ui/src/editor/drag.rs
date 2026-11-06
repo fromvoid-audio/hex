@@ -116,7 +116,7 @@ pub(super) enum NativeDeviceDragSource {
         class: hex_engine::NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
     },
-    PluginEffect(std::sync::Arc<hex_plugin_catalog::EffectSelection>),
+    PluginEffect(std::sync::Arc<hex_plugin_catalog::PluginSelection>),
     Existing {
         device: hex_project::DeviceId,
         class: hex_engine::NativeDeviceClass,

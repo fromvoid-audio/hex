@@ -583,6 +583,11 @@ pub enum Request {
     InsertPluginEffect(PluginEffectInsertion),
     /// Worker-internal wakeup; never a FIFO request completion.
     ContinuePluginEffect,
+    TogglePluginEditor {
+        project_generation: u64,
+        device: hex_project::DeviceId,
+    },
+    ContinuePluginEditor,
     /// Internal fresh-output state restoration; no authored edit or revision.
     ContinuePluginStateRestore,
     /// Catalog effect insertion; defaults and target admission belong to the worker.
@@ -2583,6 +2588,7 @@ fn run_worker(
             &request,
             Request::ContinueSamplerEdit
                 | Request::ContinuePluginEffect
+                | Request::ContinuePluginEditor
                 | Request::ContinuePluginStateRestore
                 | Request::ContinueStoppedPlaybackRestore
         );
@@ -3455,6 +3461,8 @@ fn run_worker(
                     | Request::ContinueSamplerEdit
                     | Request::InsertPluginEffect(_)
                     | Request::ContinuePluginEffect
+                    | Request::TogglePluginEditor { .. }
+                    | Request::ContinuePluginEditor
                     | Request::ContinuePluginStateRestore
                     | Request::PrepareComputerKeyboard { .. }
                     | Request::AssignSampler { .. }
@@ -3913,6 +3921,39 @@ fn run_worker(
                     error = Some(
                         "instrument insertion request was not prepared; select it again".into(),
                     );
+                }
+                Request::TogglePluginEditor {
+                    project_generation: target_generation,
+                    device,
+                } => {
+                    if target_generation != project_generation
+                        || !session.project().device(device).is_some_and(|device| {
+                            device.state().type_id().as_str() == Ok("hex.vst3")
+                        })
+                    {
+                        error = Some("vst3 editor target changed".into());
+                    } else {
+                        let outcome = events
+                            .sampler_edit_audio()
+                            .ok_or_else(|| "vst3 editor unavailable for this output".to_owned())
+                            .and_then(|audio| {
+                                audio.toggle_plugin_editor(project_generation, device.value())
+                            });
+                        if let Err(reason) = outcome {
+                            error = Some(reason);
+                        }
+                    }
+                }
+                Request::ContinuePluginEditor => {
+                    match events
+                        .sampler_edit_audio()
+                        .and_then(|audio| audio.take_plugin_editor_result(project_generation))
+                    {
+                        Some(Ok(true)) => status = Some("vst3 editor opened".into()),
+                        Some(Ok(false)) => status = Some("vst3 editor closed".into()),
+                        Some(Err(reason)) => error = Some(reason),
+                        None => {}
+                    }
                 }
                 request @ (Request::InsertPluginEffect(_) | Request::ContinuePluginEffect) => {
                     if let Request::InsertPluginEffect(insertion) = request {
