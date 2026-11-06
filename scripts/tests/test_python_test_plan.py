@@ -193,7 +193,10 @@ class SelectionTests(unittest.TestCase):
             result = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(result.returncode, 1)
             for method, outcome in (("test_pass", "ok"), ("test_skip", "skipped"), ("test_fail", "FAIL")):
-                self.assertIn(f"{method} (budget_nested_fixture.test_cases.Cases) ... {outcome}", result.stderr)
+                self.assertRegex(
+                    result.stderr,
+                    rf"{method} \(budget_nested_fixture\.test_cases\.Cases(?:\.{method})?\) \.\.\. {outcome}",
+                )
             self.assertIn("FAILED (failures=1, skipped=1)", result.stderr)
             fixture.write_text("raise RuntimeError('cannot import fixture')\n")
             result = subprocess.run(command, capture_output=True, text=True)
