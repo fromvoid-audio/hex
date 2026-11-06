@@ -504,6 +504,29 @@ class NativeInstanceTests(unittest.TestCase):
         self.assertEqual(struct.unpack("<14f", pcm[64:]), tuple(v * .375 for v in inputs))
         self.terminal(restored, 0, message=restored.stop())
 
+    def test_parameter_mapping_notice_is_scoped_to_startup_state_application(self):
+        fresh = self.session(variant=123)
+        self.ready(fresh, controller=True)
+        self.terminal(fresh, 0, message=fresh.stop())
+
+        state = self.startup_state(gain=.75, latency=0, scroll=91)
+        restored = self.session(variant=123, startup_state=state)
+        magic, ready = restored.message()
+        self.assertEqual((magic, ready[80:82]), (b"HXVIRD05", b"\x01\x01"))
+        self.assertEqual(ready[-8:], b"HXCT" + struct.pack("<I", 91))
+        _, inputs, (magic, pcm) = restored.render(7)
+        self.assertEqual(magic, b"HXVB")
+        self.assertEqual(struct.unpack("<14f", pcm[64:]), tuple(v * .375 for v in inputs))
+
+        # The same notice during a later state read cannot bypass graph custody.
+        restored.socket.sendall(struct.pack("<4sHHH6x6Q", b"HXVQ", 1, 0, 0,
+                                           *BINDING, restored.sequence, restored.frames))
+        self.assertEqual(restored.message()[0], b"HXVIQF03")
+        restored.socket.sendall(struct.pack("<4sHHH6x7Q", b"HXVC", 1, 0, 0,
+                                           *BINDING, restored.sequence, restored.frames, 1))
+        self.error(restored, 6)
+        self.assertEqual(restored.process.wait(timeout=10), 6)
+
     def test_restore_parameter_echo_and_empty_restart_do_not_change_restored_pcm(self):
         for variant in (118, 119):
             with self.subTest(variant=variant):

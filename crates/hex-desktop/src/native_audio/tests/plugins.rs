@@ -40,6 +40,30 @@ fn selection() -> PluginEffectSelection {
         info_sha256: hex(info),
     }
 }
+fn installed_selection(
+    catalog: &std::path::Path,
+    bundle: &str,
+    role: hex_plugin_catalog::PluginRole,
+) -> PluginEffectSelection {
+    let catalog = hex_plugin_catalog::Catalog::load(catalog).unwrap();
+    let selected = catalog
+        .rows("")
+        .into_iter()
+        .find_map(|row| {
+            (row.module.file_name()?.to_str()? == bundle)
+                .then_some(row.selection?)
+                .filter(|selection| selection.role == role)
+        })
+        .unwrap();
+    PluginEffectSelection {
+        module: selected.module.clone(),
+        executable: selected.executable_relative_path.clone(),
+        cid: selected.cid,
+        executable_sha256: selected.executable_sha256.clone(),
+        info_sha256: selected.info_sha256.clone(),
+    }
+}
+
 fn request(
     state: &hex_session::service::ViewState,
     destination: PluginEffectDestination,
@@ -1308,6 +1332,62 @@ fn native_effect_coordinator_cancel_or_stop_before_ack_preserves_history_and_rec
             &next.control
         ));
     }
+}
+
+#[test]
+#[ignore = "requires signed SDK receipts and an explicit installed effect catalog entry"]
+fn installed_vst3_effect_inserts_and_renders_in_desktop_audio_graph() {
+    let _native = native_fixture();
+    let bundle = std::env::var("HEX_TEST_VST3_EFFECT_BUNDLE").unwrap();
+    let catalog = PathBuf::from(std::env::var_os("HEX_TEST_VST3_EFFECT_CATALOG").unwrap());
+    let files = Files::new();
+    let rate = 44_100;
+    let mut h = ResidentHarness::with_plugins_at_rate(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        rate,
+    );
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(rate, 8192)));
+    let (applied, _) = h.applied(applied);
+    let mut insertion = request(&imported.state, PluginEffectDestination::Main);
+    insertion.selection =
+        installed_selection(&catalog, &bundle, hex_plugin_catalog::PluginRole::Effect);
+    h.service
+        .submit(Request::InsertPluginEffect(insertion))
+        .unwrap();
+    let accepted = terminal(&mut h);
+    assert!(accepted.error.is_none(), "{:?}", accepted.error);
+    assert!(accepted.plugin_effect_complete[0].accepted);
+    let device = &accepted.state.project.main_devices()[0];
+    let state = hex_plugin_state::decode(device.state()).unwrap();
+    assert!(state.component.is_some());
+    h.applied(applied);
+    assert_eq!(
+        h.submitted_observation()
+            .unwrap()
+            .foreign_processor(device.id().value(), device.state().type_id()),
+        Some(true)
+    );
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let mut peak = 0.0_f32;
+    for block in 0..24 {
+        for sample in h.render_plugin_block().iter().flatten() {
+            peak = peak.max(sample.abs());
+        }
+        wait(|| h.plugin_completed.load(Acquire) > block);
+    }
+    assert!(peak > 0.001, "{bundle} returned silent PCM");
+    println!("{bundle} arrangement effect at {rate} hz peak={peak}");
 }
 
 #[test]
