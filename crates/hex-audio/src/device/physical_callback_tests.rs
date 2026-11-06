@@ -11,7 +11,8 @@ fn bridge_profile_requests_the_largest_reported_size_within_its_real_cap() {
         (1, u32::MAX, 256),
     ] {
         assert_eq!(
-            bridge_callback_request(cpal::SupportedBufferSize::Range { min, max }).unwrap(),
+            bridge_callback_request(cpal::SupportedBufferSize::Range { min, max }, 256, false)
+                .unwrap(),
             expected
         );
     }
@@ -24,7 +25,7 @@ fn bridge_profile_requests_the_largest_reported_size_within_its_real_cap() {
             max: 1024,
         },
     ] {
-        assert!(bridge_callback_request(range).is_err());
+        assert!(bridge_callback_request(range, 256, false).is_err());
     }
 }
 
@@ -32,42 +33,30 @@ fn bridge_profile_requests_the_largest_reported_size_within_its_real_cap() {
 fn physical_profile_requires_the_same_vacant_constructor_and_cannot_be_reconfigured() {
     let (mut control, mut callback) = prepared::channel(48_000).unwrap();
     let (_other, mut foreign) = prepared::channel(48_000).unwrap();
-    assert_eq!(
-        control.requested_physical_callback_frames_on_control(),
-        None
-    );
+    assert_eq!(control.plugin_callback_quantum_on_control(), None);
     for frames in [0, 257] {
         assert!(
             control
-                .configure_physical_callback_request(&mut callback, frames)
+                .configure_plugin_callback_quantum(&mut callback, frames)
                 .is_err()
         );
     }
     assert!(
         control
-            .configure_physical_callback_request(&mut foreign, 256)
+            .configure_plugin_callback_quantum(&mut foreign, 256)
             .is_err()
     );
-    assert_eq!(
-        control.requested_physical_callback_frames_on_control(),
-        None
-    );
+    assert_eq!(control.plugin_callback_quantum_on_control(), None);
     control
-        .configure_physical_callback_request(&mut callback, 256)
+        .configure_plugin_callback_quantum(&mut callback, 256)
         .unwrap();
-    assert_eq!(
-        control.requested_physical_callback_frames_on_control(),
-        Some(256)
-    );
+    assert_eq!(control.plugin_callback_quantum_on_control(), Some(256));
     assert!(
         control
-            .configure_physical_callback_request(&mut callback, 128)
+            .configure_plugin_callback_quantum(&mut callback, 128)
             .is_err()
     );
-    assert_eq!(
-        control.requested_physical_callback_frames_on_control(),
-        Some(256)
-    );
+    assert_eq!(control.plugin_callback_quantum_on_control(), Some(256));
 }
 
 #[test]
@@ -81,13 +70,10 @@ fn exposed_or_closing_outputs_cannot_gain_a_new_physical_profile() {
         }
         assert!(
             control
-                .configure_physical_callback_request(&mut callback, 256)
+                .configure_plugin_callback_quantum(&mut callback, 256)
                 .is_err()
         );
-        assert_eq!(
-            control.requested_physical_callback_frames_on_control(),
-            None
-        );
+        assert_eq!(control.plugin_callback_quantum_on_control(), None);
     }
 }
 
@@ -105,30 +91,80 @@ fn ordinary_outputs_keep_device_defaults_even_when_the_plugin_profile_is_unavail
             PreparedOutputKind::Worker(WorkerOutputProfile::DeviceDefault),
             PreparedOutputKind::WorkerReliable(WorkerOutputProfile::DeviceDefault),
         ] {
-            assert_eq!(kind.physical_callback_request(supported).unwrap(), None);
+            assert_eq!(
+                kind.bridge_stream_plan(supported, 48_000, 48_000).unwrap(),
+                None
+            );
         }
         assert!(
             PreparedOutputKind::Worker(WorkerOutputProfile::PluginBridge)
-                .physical_callback_request(supported)
+                .bridge_stream_plan(supported, 48_000, 48_000)
                 .is_err()
         );
         assert!(
             PreparedOutputKind::WorkerReliable(WorkerOutputProfile::PluginBridge)
-                .physical_callback_request(supported)
+                .bridge_stream_plan(supported, 48_000, 48_000)
                 .is_err()
         );
     }
     assert_eq!(
         PreparedOutputKind::Worker(WorkerOutputProfile::PluginBridge)
-            .physical_callback_request(cpal::SupportedBufferSize::Range { min: 64, max: 1024 })
+            .bridge_stream_plan(
+                cpal::SupportedBufferSize::Range { min: 64, max: 1024 },
+                48_000,
+                48_000
+            )
             .unwrap(),
-        Some(256)
+        Some(BridgeStreamPlan {
+            device_frames: 256,
+            project_quantum: 256,
+            converting_device_rate: None
+        })
     );
     assert_eq!(
         PreparedOutputKind::WorkerReliable(WorkerOutputProfile::PluginBridge)
-            .physical_callback_request(cpal::SupportedBufferSize::Range { min: 64, max: 1024 })
+            .bridge_stream_plan(
+                cpal::SupportedBufferSize::Range { min: 64, max: 1024 },
+                48_000,
+                48_000
+            )
             .unwrap(),
-        Some(256)
+        Some(BridgeStreamPlan {
+            device_frames: 256,
+            project_quantum: 256,
+            converting_device_rate: None
+        })
+    );
+}
+
+#[test]
+fn mixed_rate_plan_keeps_hardware_and_project_frames_independent() {
+    let kind = PreparedOutputKind::WorkerReliable(WorkerOutputProfile::PluginBridge);
+    let supported = cpal::SupportedBufferSize::Range { min: 64, max: 512 };
+    for (device, project, hardware_frames) in [(44_100, 48_000, 128), (48_000, 44_100, 256)] {
+        let plan = kind
+            .bridge_stream_plan(supported, device, project)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            plan,
+            BridgeStreamPlan {
+                device_frames: hardware_frames,
+                project_quantum: 256,
+                converting_device_rate: Some(device),
+            }
+        );
+    }
+    let cannot_reduce = cpal::SupportedBufferSize::Range { min: 256, max: 512 };
+    assert!(
+        kind.bridge_stream_plan(cannot_reduce, 44_100, 48_000)
+            .is_err()
+    );
+    assert_eq!(
+        PreparedOutputKind::Legacy
+            .bridge_stream_plan(supported, 44_100, 48_000)
+            .unwrap(),
+        None,
     );
 }
 

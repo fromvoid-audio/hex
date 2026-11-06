@@ -52,7 +52,7 @@ fn setup_for_identity_with_profile(
 ) {
     let (mut control, mut callback) = channel(48_000).unwrap();
     control
-        .configure_physical_callback_request(&mut callback, quantum)
+        .configure_plugin_callback_quantum(&mut callback, quantum)
         .unwrap();
     let (data, errors, terminals) =
         crate::native_callback_owner::reserve_native(callback, Arc::clone(&control.status));
@@ -138,10 +138,7 @@ fn source_for_profile(
             ],
         );
     preparation.quantum = quantum;
-    assert_eq!(
-        control.requested_physical_callback_frames_on_control(),
-        Some(quantum)
-    );
+    assert_eq!(control.plugin_callback_quantum_on_control(), Some(quantum));
     let identity_bytes = source.identity();
     let executable_digest = hex_digest(identity_bytes.binary.executable_sha256);
     let info_digest = hex_digest(identity_bytes.binary.info_sha256);
