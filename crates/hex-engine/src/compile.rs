@@ -631,8 +631,8 @@ fn compile_project_inner<'a>(
             .as_ref()
             .filter(|node| !node.bypassed)
             .map(|_| crate::midi_compile::MutableInstrumentLimits {
-                max_events_per_query: 64,
-                max_active_occurrences: 64,
+                max_events_per_query: crate::mutable_instrument::authored_gate::MAX_FOREIGN_NOTES,
+                max_active_occurrences: crate::mutable_instrument::authored_gate::MAX_FOREIGN_NOTES,
                 max_release_tail_frames: 0,
                 supports_clip_volume: false,
                 steals_releasing_voices: true,

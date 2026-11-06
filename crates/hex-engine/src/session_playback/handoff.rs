@@ -507,6 +507,13 @@ impl SessionPlayback {
         demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
         force_restart: bool,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if previous.foreign_arrangement.has_started()
+            || (previous.playing && !self.foreign_arrangement.is_empty())
+        {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "vst3 instrument graph handoff is unavailable",
+            ));
+        }
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
         {

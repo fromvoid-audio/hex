@@ -37,6 +37,7 @@ impl SessionPlayback {
             && self.computer_keyboard.is_none()
             && self.current_sampler_keyboards.is_empty()
             && !self.stopped_edit_tails()
+            && !self.foreign_arrangement.has_started()
     }
 
     /// Render a complete block transactionally. A refusal after any chunk
@@ -471,6 +472,7 @@ impl SessionPlayback {
         if output.is_empty()
             || self.renders_no_device_chains()
             || (!self.playing
+                && !self.foreign_arrangement.has_started()
                 && self.computer_keyboard.is_none()
                 && self.current_sampler_keyboards.is_empty()
                 && !self
@@ -567,7 +569,9 @@ impl SessionPlayback {
         for keyboard in &mut self.current_sampler_keyboards {
             keyboard.begin_block();
         }
+        self.foreign_arrangement.begin();
         let main_tails_only = !self.playing
+            && !self.foreign_arrangement.has_started()
             && stopped_edit_tails
             && !self.monitor_source_releases
             && self.computer_keyboard.is_none()
@@ -641,6 +645,7 @@ impl SessionPlayback {
                 output.fill([0.0; 2]);
                 return Err(SessionPlaybackError::DeviceRuntime);
             }
+            self.foreign_arrangement.commit();
             self.track_faders[..track_count]
                 .copy_from_slice(&self.track_fader_scratch[..track_count]);
             self.live_gain = self.live_gain_scratch;
