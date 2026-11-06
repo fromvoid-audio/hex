@@ -236,6 +236,35 @@ class NativeInstanceTests(unittest.TestCase):
             self.assertEqual(struct.unpack("<HHId", reply[128:]), (1, 0, 7, .25))
         self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (2, 16))
 
+    def test_process_context_uses_the_supplied_arrangement_origin(self):
+        session = self.session(variant=126)
+        self.ready(session, controller=True)
+        self.assertEqual(session.render(8)[2][0], b"HXVB")
+        for position, beat, tempo, flags in (
+            (48000, 5 << 31, 123_125_000, 3),
+            (0, 0, 0, 0),
+        ):
+            header = bytearray(session.packet(8))
+            struct.pack_into("<H", header, 4, 4)
+            timing = struct.pack("<qQIB3x", position, beat, tempo, flags)
+            session.socket.sendall(header + bytes(64) + timing)
+            magic, reply = session.message()
+            self.assertEqual(magic, b"HXVB")
+            self.assertEqual(struct.unpack_from("<H", reply, 4)[0], 1)
+            session.sequence += 1
+            session.frames += 8
+        self.assertEqual(session.render(8)[2][0], b"HXVB")
+        self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (4, 32))
+
+    def test_invalid_process_context_never_enters_dsp(self):
+        session = self.session(variant=126)
+        self.ready(session, controller=True)
+        header = bytearray(session.packet(8))
+        struct.pack_into("<H", header, 4, 4)
+        session.socket.sendall(header + bytes(64) + struct.pack("<qQIB3x", -1, 0, 0, 0))
+        magic, reply = session.message()
+        self.assertEqual((magic, struct.unpack_from("<I", reply, 35)[0]), (b"HXVIER01", 8))
+
     def test_retained_output_parameter_queue_still_retires_the_worker(self):
         session = self.session(variant=125)
         self.ready(session, controller=True)

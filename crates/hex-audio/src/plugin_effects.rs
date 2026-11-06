@@ -463,9 +463,9 @@ impl ForeignProcessors for NativeEffectCallback {
         node: ForeignProcessorNode<'_>,
         offset: usize,
         frames: &mut [[f32; 2]],
-        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
-        self.process_segment_with_parameters(node, offset, frames, &[], _clock)
+        self.process_segment_with_parameters(node, offset, frames, &[], clock)
     }
     fn process_segment_with_parameters(
         &mut self,
@@ -484,7 +484,7 @@ impl ForeignProcessors for NativeEffectCallback {
         frames: &mut [[f32; 2]],
         parameters: &[hex_lattice_contract::ForeignParameterPoint],
         notes: &[ForeignNote],
-        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
         if !self.matches(node)
             || (!notes.is_empty() && !self.configuration.prepared.is_instrument_profile())
@@ -535,12 +535,24 @@ impl ForeignProcessors for NativeEffectCallback {
         // Receiving that feedback here must not revoke an otherwise valid epoch.
         if self
             .transport
-            .stage_segment_with_parameters(
+            .stage_segment_with_timing(
                 offset,
                 &self.input[..frames.len()],
                 events.as_slice(),
                 parameters,
                 frames,
+                |index| {
+                    let clock = clock?;
+                    Some(hex_plugin_host::transport::ProcessTiming {
+                        arrangement_frame: i64::try_from(clock.arrangement_frame_at_offset(index)?)
+                            .ok()?,
+                        playing: clock.transport_is_running()?,
+                        arrangement_beat_raw: clock.arrangement_beat_at_offset(index),
+                        tempo_micro_bpm: clock
+                            .tempo_micro_bpm_at_offset(index)
+                            .and_then(std::num::NonZeroU32::new),
+                    })
+                },
             )
             .is_err()
         {

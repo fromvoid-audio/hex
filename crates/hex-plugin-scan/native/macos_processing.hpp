@@ -112,7 +112,8 @@ struct ProcessingShape {
             data.symbolicSampleSize!=original.symbolicSampleSize || data.numInputs!=original.numInputs ||
             data.numOutputs!=original.numOutputs || data.inputs!=original.inputs || data.outputs!=original.outputs ||
             data.inputParameterChanges!=original.inputParameterChanges || data.outputParameterChanges!=original.outputParameterChanges ||
-            data.inputEvents!=original.inputEvents || data.outputEvents!=original.outputEvents)
+            data.inputEvents!=original.inputEvents || data.outputEvents!=original.outputEvents ||
+            data.processContext!=original.processContext)
             return false;
         const auto matches=[](const AudioBusBuffers& current,const AudioBusBuffers& before,float* const* samples) {
             if (current.numChannels!=before.numChannels || current.channelBuffers32!=before.channelBuffers32) return false;

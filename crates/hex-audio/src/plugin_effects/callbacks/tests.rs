@@ -231,6 +231,71 @@ fn serve(worker: &mut Worker) {
 }
 
 #[test]
+fn worker_quanta_use_their_first_aligned_clock_even_across_split_callbacks() {
+    use hex_plugin_host::transport::ProcessTiming;
+
+    struct Clock(u64, bool);
+    impl hex_lattice::NativeInstrumentClock for Clock {
+        fn beat_at_offset(&self, _: usize) -> Option<u64> {
+            None
+        }
+        fn arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+            Some(self.0 + offset as u64)
+        }
+        fn arrangement_beat_at_offset(&self, offset: usize) -> Option<u64> {
+            Some((self.0 + offset as u64) << 32)
+        }
+        fn tempo_micro_bpm_at_offset(&self, _: usize) -> Option<u32> {
+            Some(123_125_000)
+        }
+        fn transport_is_running(&self) -> Option<bool> {
+            Some(self.1)
+        }
+    }
+    let (mut callbacks, mut endpoints) = endpoints();
+    let endpoint = &mut endpoints[0];
+    let node = endpoint.facts.node();
+    let mut callback = |frames, clock: Option<&dyn hex_lattice::NativeInstrumentClock>| {
+        let mut output = [[0.5; 2]; QUANTUM];
+        assert_eq!(
+            allocations_during(|| {
+                callbacks.begin_host_callback(frames).unwrap();
+                callbacks
+                    .process_segment(node, 0, &mut output[..frames], clock)
+                    .unwrap();
+                callbacks.finish_host_callback(true).unwrap();
+            }),
+            [0; 4]
+        );
+    };
+    callback(2, Some(&Clock(100, true)));
+    assert!(endpoint.worker.receive().unwrap().is_none());
+    callback(4, Some(&Clock(500, false)));
+    let first = endpoint.worker.receive().unwrap().unwrap();
+    assert_eq!(
+        first.timing,
+        Some(ProcessTiming {
+            arrangement_frame: 100,
+            playing: true,
+            arrangement_beat_raw: Some(100 << 32),
+            tempo_micro_bpm: std::num::NonZeroU32::new(123_125_000),
+        })
+    );
+    endpoint.worker.complete(first).unwrap();
+    callback(2, None);
+    let second = endpoint.worker.receive().unwrap().unwrap();
+    assert_eq!(
+        second.timing,
+        Some(ProcessTiming {
+            arrangement_frame: 502,
+            playing: false,
+            arrangement_beat_raw: Some(502 << 32),
+            tempo_micro_bpm: std::num::NonZeroU32::new(123_125_000),
+        })
+    );
+}
+
+#[test]
 fn live_bypass_crossfades_aligned_plugin_output_and_survives_rapid_reversal() {
     for gain in [0.001_f32, 0.5, 1.0, 2.0, 15.0] {
         let (mut callbacks, mut endpoints) = endpoints();

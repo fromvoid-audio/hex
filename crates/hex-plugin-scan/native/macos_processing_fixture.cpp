@@ -4,6 +4,7 @@
 #include "pluginterfaces/vst/ivstparameterchanges.h"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
 #include "pluginterfaces/vst/ivstevents.h"
+#include "pluginterfaces/vst/ivstprocesscontext.h"
 #include <cmath>
 #include <algorithm>
 #include <array>
@@ -630,6 +631,19 @@ public:
         if (data.numOutputs && (!data.outputs || data.outputs[0].numChannels!=outputs ||
             (precision==kSample32?!data.outputs[0].channelBuffers32:!data.outputs[0].channelBuffers64)))
             return kInvalidArgument;
+        if(fault==126) {
+            const auto* context=data.processContext;
+            if(block==1) {
+                constexpr auto expected=ProcessContext::kPlaying|ProcessContext::kProjectTimeMusicValid|
+                    ProcessContext::kTempoValid;
+                if(!context || context->state!=expected || context->sampleRate!=sample_rate ||
+                    context->projectTimeSamples!=48000 || context->projectTimeMusic!=2.5 ||
+                    context->tempo!=123.125) return kInvalidArgument;
+            } else if(block==2) {
+                if(!context || context->state || context->sampleRate!=sample_rate ||
+                    context->projectTimeSamples!=0) return kInvalidArgument;
+            } else if(context) return kInvalidArgument;
+        }
         // Independent SDK automation oracle. The previous block's final value
         // is the implicit point at -1; jumps require adjacent old/new points.
         std::array<std::pair<int32,ParamValue>,64> points{};int32 point_count=0;
@@ -808,7 +822,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>125) return false;next_fault=value;
+        if (value>126) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

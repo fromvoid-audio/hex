@@ -44,6 +44,7 @@ impl NativeEffectEntry {
     /// endpoint keeps processing. A graph/configuration mismatch still fails
     /// the whole callback. Control observes the degraded entry through its
     /// worker's transport liveness; nothing is reported from the callback.
+    #[allow(clippy::too_many_arguments)] // Borrow the existing graph segment and its clock.
     pub(crate) fn process(
         &mut self,
         extent: usize,
@@ -52,6 +53,7 @@ impl NativeEffectEntry {
         frames: &mut [[f32; 2]],
         parameters: &[hex_lattice_contract::ForeignParameterPoint],
         notes: &[ForeignNote],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
         if !self.staged {
             if self.callback.begin_host_callback(extent).is_err() {
@@ -62,7 +64,7 @@ impl NativeEffectEntry {
         }
         match self
             .callback
-            .process_segment_with_notes(node, offset, frames, parameters, notes, None)
+            .process_segment_with_notes(node, offset, frames, parameters, notes, clock)
         {
             // Staging refusal already revoked this epoch and left aligned dry.
             Err(DeviceContractError::ForeignProcessingFailed) => {
@@ -246,7 +248,7 @@ impl ForeignProcessors for NativeEffectCallbacks {
         frames: &mut [[f32; 2]],
         parameters: &[hex_lattice_contract::ForeignParameterPoint],
         notes: &[ForeignNote],
-        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
         let selected = node.prepared.binding().and_then(|binding| {
             self.entries
@@ -255,7 +257,7 @@ impl ForeignProcessors for NativeEffectCallbacks {
         });
         let result = match (self.cycle.extent(), selected) {
             (Some(extent), Some(index)) => {
-                self.entries[index].process(extent, node, offset, frames, parameters, notes)
+                self.entries[index].process(extent, node, offset, frames, parameters, notes, clock)
             }
             _ => Err(DeviceContractError::ForeignProcessingUnavailable),
         };

@@ -6,13 +6,17 @@
 //! Version2 appends sixteen-byte parameter records: offset u16, two zero bytes,
 //! raw ParamID u32 and normalized f64. Empty parameter payloads retain version1.
 //! Version3 extends each MIDI record with a u32 note ID (zero means absent).
+//! Version4 uses those extended records and appends a 24-byte input clock:
+//! Arrangement frame i64, beat Q32.32 u64, tempo micro-BPM u32 (zero absent),
+//! flags u8 (playing, beat present), then three reserved zero bytes.
 //! These records carry transport data; they do not promise SDK event admission.
 use super::*;
 use std::io::{self, Read, Write};
 
 pub const HEADER_BYTES: usize = 64;
+const TIMING_BYTES: usize = 24;
 pub const MAX_PACKET_BYTES: usize =
-    HEADER_BYTES + MAX_FRAMES * 8 + MAX_EVENTS * 12 + MAX_PARAMETER_POINTS * 16;
+    HEADER_BYTES + MAX_FRAMES * 8 + MAX_EVENTS * 12 + MAX_PARAMETER_POINTS * 16 + TIMING_BYTES;
 
 fn invalid() -> io::Error {
     io::ErrorKind::InvalidData.into()
@@ -37,7 +41,9 @@ pub fn write(writer: &mut impl Write, block: &Block) -> io::Result<()> {
     }
     let mut packet = [0_u8; MAX_PACKET_BYTES];
     packet[..4].copy_from_slice(b"HXVB");
-    let version = if block
+    let version = if block.timing.is_some() {
+        4_u16
+    } else if block
         .events
         .as_slice()
         .iter()
@@ -78,7 +84,7 @@ pub fn write(writer: &mut impl Write, block: &Block) -> io::Result<()> {
         packet[offset + 2] = event.len;
         packet[offset + 3..offset + 6].copy_from_slice(&event.bytes);
         offset += 8;
-        if version == 3 {
+        if version >= 3 {
             let id = event.note_id.map_or(0, std::num::NonZeroU32::get);
             packet[offset..offset + 4].copy_from_slice(&id.to_le_bytes());
             offset += 4;
@@ -89,6 +95,20 @@ pub fn write(writer: &mut impl Write, block: &Block) -> io::Result<()> {
         packet[offset + 4..offset + 8].copy_from_slice(&point.id.to_le_bytes());
         packet[offset + 8..offset + 16].copy_from_slice(&point.normalized.to_le_bytes());
         offset += 16;
+    }
+    if let Some(timing) = block.timing {
+        packet[offset..offset + 8].copy_from_slice(&timing.arrangement_frame.to_le_bytes());
+        packet[offset + 8..offset + 16]
+            .copy_from_slice(&timing.arrangement_beat_raw.unwrap_or(0).to_le_bytes());
+        packet[offset + 16..offset + 20].copy_from_slice(
+            &timing
+                .tempo_micro_bpm
+                .map_or(0, std::num::NonZeroU32::get)
+                .to_le_bytes(),
+        );
+        packet[offset + 20] =
+            u8::from(timing.playing) | (u8::from(timing.arrangement_beat_raw.is_some()) << 1);
+        offset += TIMING_BYTES;
     }
     writer.write_all(&packet[..offset])?;
     writer.flush()
@@ -106,7 +126,7 @@ pub fn read(reader: &mut impl Read) -> io::Result<Option<Block>> {
     reader.read_exact(&mut header[1..])?;
     let version = u16::from_le_bytes([header[4], header[5]]);
     if &header[..4] != b"HXVB"
-        || !matches!(version, 1..=3)
+        || !matches!(version, 1..=4)
         || header[if version == 1 { 10 } else { 12 }..16]
             .iter()
             .any(|b| *b != 0)
@@ -155,7 +175,7 @@ pub fn read(reader: &mut impl Read) -> io::Result<Option<Block>> {
         if bytes[6..].iter().any(|b| *b != 0) {
             return Err(invalid());
         }
-        let note_id = if version == 3 {
+        let note_id = if version >= 3 {
             let mut id = [0_u8; 4];
             reader.read_exact(&mut id)?;
             std::num::NonZeroU32::new(u32::from_le_bytes(id))
@@ -189,6 +209,23 @@ pub fn read(reader: &mut impl Read) -> io::Result<Option<Block>> {
             })
             .map_err(|_| invalid())?;
     }
+    if version == 4 {
+        let mut bytes = [0_u8; TIMING_BYTES];
+        reader.read_exact(&mut bytes)?;
+        let frame = i64::from_le_bytes(bytes[..8].try_into().map_err(|_| invalid())?);
+        let beat = u64::from_le_bytes(bytes[8..16].try_into().map_err(|_| invalid())?);
+        let tempo = u32::from_le_bytes(bytes[16..20].try_into().map_err(|_| invalid())?);
+        let flags = bytes[20];
+        if flags & !3 != 0 || bytes[21..] != [0; 3] || (flags & 2 == 0 && beat != 0) {
+            return Err(invalid());
+        }
+        block.timing = Some(ProcessTiming {
+            arrangement_frame: frame,
+            playing: flags & 1 != 0,
+            arrangement_beat_raw: (flags & 2 != 0).then_some(beat),
+            tempo_micro_bpm: std::num::NonZeroU32::new(tempo),
+        });
+    }
     block
         .valid(binding, frames, block.sequence)
         .map_err(|_| invalid())?;
@@ -198,6 +235,49 @@ pub fn read(reader: &mut impl Read) -> io::Result<Option<Block>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn timed_wire_preserves_notes_parameters_and_optional_clock_facts() {
+        let mut block = Block::empty(
+            Binding {
+                root: 1,
+                instance: 2,
+                graph: 3,
+                epoch: 4,
+            },
+            8,
+        );
+        let timing = ProcessTiming {
+            arrangement_frame: 48_000,
+            playing: true,
+            arrangement_beat_raw: Some(5 << 31),
+            tempo_micro_bpm: std::num::NonZeroU32::new(123_125_000),
+        };
+        block.timing = Some(timing);
+        let event = MidiEvent {
+            frame: 3,
+            bytes: [0x90, 60, 100],
+            len: 3,
+            note_id: std::num::NonZeroU32::new(123),
+        };
+        let point = ParameterPoint {
+            frame: 2,
+            id: 7,
+            normalized: 0.25,
+        };
+        block.events.push(event).unwrap();
+        block.parameters.push(point).unwrap();
+        let mut bytes = Vec::new();
+        write(&mut bytes, &block).unwrap();
+        assert_eq!(&bytes[4..6], &[4, 0]);
+        let decoded = read(&mut bytes.as_slice()).unwrap().unwrap();
+        assert_eq!(decoded.timing, Some(timing));
+        assert_eq!(decoded.events.as_slice(), &[event]);
+        assert_eq!(decoded.parameters.as_slice(), &[point]);
+        let flags = bytes.len() - 4;
+        bytes[flags] = 1; // Beat payload without its presence flag.
+        assert!(read(&mut bytes.as_slice()).is_err());
+    }
+
     #[test]
     fn parameter_wire_preserves_precision_offsets_and_rejects_truncation_or_bad_points() {
         let mut block = Block::empty(
