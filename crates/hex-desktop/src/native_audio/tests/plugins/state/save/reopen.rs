@@ -255,9 +255,7 @@ fn live_vst3_drag_changes_original_pcm_once_and_survives_undo_save_reopen() {
 
     let drive = |h: &mut ResidentHarness,
                  request: GestureRequest,
-                 mut render_live: Option<
-        &mut dyn FnMut(&ResidentHarness) -> [hex_engine::Frame; 256],
-    >| {
+                 render_live: &mut dyn FnMut(&ResidentHarness)| {
         h.service.submit(Request::DeviceGesture(request)).unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
@@ -272,9 +270,7 @@ fn live_vst3_drag_changes_original_pcm_once_and_survives_undo_save_reopen() {
             }
             assert!(Instant::now() < deadline, "gesture {request:?} timed out");
             std::thread::sleep(Duration::from_millis(5));
-            if let Some(render) = render_live.as_mut() {
-                render(h);
-            }
+            render_live(h);
         }
     };
     client
@@ -282,7 +278,9 @@ fn live_vst3_drag_changes_original_pcm_once_and_survives_undo_save_reopen() {
         .unwrap();
     let change = client.next_request().unwrap();
     client.mark_submitted();
-    let preview = drive(&mut h, change, Some(&mut render));
+    let preview = drive(&mut h, change, &mut |h| {
+        render(h);
+    });
     let ack = preview.gesture_ack.as_ref().unwrap();
     assert!(ack.accepted, "{ack:?}");
     assert!(client.acknowledge(ack));
@@ -295,14 +293,7 @@ fn live_vst3_drag_changes_original_pcm_once_and_survives_undo_save_reopen() {
         .unwrap();
     let request = client.next_request().unwrap();
     client.mark_submitted();
-    let committed = drive(
-        &mut h,
-        request,
-        Some(&mut |h| {
-            h.render_worker_step();
-            [[0.0; 2]; 256]
-        }),
-    );
+    let committed = drive(&mut h, request, &mut ResidentHarness::render_worker_step);
     let ack = committed.gesture_ack.as_ref().unwrap();
     assert!(ack.accepted, "{ack:?}");
     assert!(client.acknowledge(ack));
