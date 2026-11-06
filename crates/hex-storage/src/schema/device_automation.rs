@@ -232,6 +232,7 @@ pub(crate) fn decode_value(mut value: serde_json::Value) -> Result<Project, Stor
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         let lane = DeviceAutomation {
+            vst3_class: None,
             read_selection: hex_project::AutomationReadSelection::Authored,
             target: hex_lattice_contract::DeviceAutomationTarget::Parameter(parameter),
             points,

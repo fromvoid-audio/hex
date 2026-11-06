@@ -45,10 +45,14 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
     let mut snapshot = project.snapshot();
     let mut rows = Vec::new();
     for device in device_automation::devices(&mut snapshot) {
-        device.automation.retain(|lane| {
-            let DeviceAutomationTarget::Vst3 { class, parameter } = lane.target else {
-                return true;
+        for lane in std::mem::take(&mut device.automation) {
+            let DeviceAutomationTarget::Vst3 { parameter } = lane.target else {
+                device.automation.push(lane);
+                continue;
             };
+            let class = lane.vst3_class.ok_or(StorageError::Invalid(
+                "vst3 automation class stamp is missing",
+            ))?;
             rows.push(Lane {
                 device: device.id,
                 class,
@@ -56,7 +60,7 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
                 read_selection: lane.read_selection.into(),
                 points: lane
                     .points
-                    .iter()
+                    .into_iter()
                     .map(|point| device_automation::Point {
                         beat_raw: point.beat.raw(),
                         value: point.value.get(),
@@ -69,8 +73,7 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
                     })
                     .collect(),
             });
-            false
-        });
+        }
     }
     rows.sort_by_key(|row| (row.device, row.class, row.parameter));
     let core = Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))?;
@@ -150,9 +153,9 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             .push(DeviceAutomation {
                 read_selection: row.read_selection.into(),
                 target: DeviceAutomationTarget::Vst3 {
-                    class: row.class,
                     parameter: row.parameter,
                 },
+                vst3_class: Some(row.class),
                 points,
             });
     }
@@ -211,10 +214,20 @@ mod tests {
         else {
             panic!("expected a vst3 device");
         };
-        let zero = DeviceAutomationTarget::Vst3 {
-            class,
-            parameter: 0,
-        };
+        let zero = DeviceAutomationTarget::Vst3 { parameter: 0 };
+        assert!(
+            editor
+                .execute(Command::ReplaceDeviceAutomationTarget {
+                    device: native,
+                    target: zero,
+                    points: vec![AutomationPoint {
+                        beat: BeatTime::ONE,
+                        value: AutomationValue::new(0.75).unwrap(),
+                        outgoing: AutomationInterpolation::Step,
+                    }],
+                })
+                .is_err()
+        );
         for (device, target) in [
             (
                 native,
@@ -227,7 +240,6 @@ mod tests {
             (
                 vst3,
                 DeviceAutomationTarget::Vst3 {
-                    class,
                     parameter: i32::MAX as u32,
                 },
             ),

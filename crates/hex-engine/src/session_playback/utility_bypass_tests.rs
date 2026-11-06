@@ -38,6 +38,7 @@ fn utility_filter_bypass_track_return_main_matches_automated_wet_and_dry_referen
                 id,
                 automation: if automated {
                     vec![hex_project::DeviceAutomation {
+                        vst3_class: None,
                         read_selection: Default::default(),
                         target: hex_project::DeviceAutomationTarget::Parameter(p::BALANCE),
                         points: vec![

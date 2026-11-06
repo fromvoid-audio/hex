@@ -51,6 +51,8 @@ pub enum AutomationReadSelection {
 pub struct DeviceAutomation {
     pub read_selection: AutomationReadSelection,
     pub target: DeviceAutomationTarget,
+    /// Exact class for a VST3 lane. Native and host lanes carry no class.
+    pub vst3_class: Option<[u8; 16]>,
     pub points: Vec<AutomationPoint>,
 }
 impl DeviceAutomation {
@@ -97,6 +99,9 @@ pub fn validate_device_automation(lanes: &[DeviceAutomation]) -> Result<(), Inva
         lane.target
             .validate()
             .map_err(|_| Invalid("invalid automation parameter identity"))?;
+        if matches!(lane.target, DeviceAutomationTarget::Vst3 { .. }) != lane.vst3_class.is_some() {
+            return Err(Invalid("invalid vst3 automation class stamp"));
+        }
         if previous.is_some_and(|target| target >= lane.target) {
             return Err(Invalid(
                 "device automation parameters must strictly increase",
@@ -116,14 +121,22 @@ fn validate_points(points: &[AutomationPoint]) -> Result<(), Invalid> {
     }
     Ok(())
 }
-fn validate_vst3_target(
+fn automation_class(
     target: DeviceAutomationTarget,
     state: &hex_lattice_contract::NativeDeviceState,
+) -> Result<Option<[u8; 16]>, Invalid> {
+    if !matches!(target, DeviceAutomationTarget::Vst3 { .. }) {
+        return Ok(None);
+    }
+    hex_plugin_state::decode(state)
+        .map(|plugin| Some(plugin.identity.class.bytes()))
+        .map_err(|_| Invalid("vst3 automation requires a valid vst3 device state"))
+}
+fn validate_automation_class(
+    lane: &DeviceAutomation,
+    state: &hex_lattice_contract::NativeDeviceState,
 ) -> Result<(), Invalid> {
-    if let DeviceAutomationTarget::Vst3 { class, .. } = target
-        && !hex_plugin_state::decode(state)
-            .is_ok_and(|plugin| plugin.identity.class.bytes() == class)
-    {
+    if lane.vst3_class != automation_class(lane.target, state)? {
         return Err(Invalid("vst3 automation target differs from device class"));
     }
     Ok(())
@@ -144,7 +157,7 @@ impl Device {
             ));
         }
         for lane in &self.automation {
-            validate_vst3_target(lane.target, state)?;
+            validate_automation_class(lane, state)?;
         }
         Ok(())
     }
@@ -194,7 +207,7 @@ impl Project {
         for device in self.automation_devices() {
             validate_device_automation(&device.automation)?;
             for lane in &device.automation {
-                validate_vst3_target(lane.target, device.state())?;
+                validate_automation_class(lane, device.state())?;
                 total = total
                     .checked_add(lane.points.len())
                     .ok_or(Invalid("automation point count overflow"))?;
@@ -303,7 +316,7 @@ impl Project {
             validate_points(&points)?;
         }
         self.edit_device(device, move |device| {
-            validate_vst3_target(target, device.state())?;
+            let vst3_class = automation_class(target, device.state())?;
             match device
                 .automation
                 .binary_search_by_key(&target, |lane| lane.target)
@@ -321,6 +334,7 @@ impl Project {
                         DeviceAutomation {
                             read_selection: crate::AutomationReadSelection::Authored,
                             target,
+                            vst3_class,
                             points,
                         },
                     );

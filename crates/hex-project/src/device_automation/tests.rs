@@ -49,6 +49,7 @@ fn normalized_values_and_envelope_evaluation_have_explicit_boundaries() {
         AutomationValue::new(0.0).unwrap()
     );
     let mut lane = DeviceAutomation {
+        vst3_class: None,
         read_selection: crate::AutomationReadSelection::Authored,
         target: hex_lattice_contract::DeviceAutomationTarget::Parameter(ParameterId::from_static(
             1,
@@ -358,6 +359,7 @@ fn malformed_snapshot_limits_are_checked_at_the_canonical_boundary() {
     let mut snapshot = initial.clone();
     snapshot.tracks[0].devices[0].automation = (1..=257)
         .map(|id| DeviceAutomation {
+            vst3_class: None,
             read_selection: crate::AutomationReadSelection::Authored,
             target: hex_lattice_contract::DeviceAutomationTarget::Parameter(
                 ParameterId::new(id).unwrap(),
@@ -375,6 +377,7 @@ fn malformed_snapshot_limits_are_checked_at_the_canonical_boundary() {
     let mut snapshot = initial.clone();
     snapshot.tracks[0].devices[0].automation = (1..=65)
         .map(|id| DeviceAutomation {
+            vst3_class: None,
             read_selection: crate::AutomationReadSelection::Authored,
             target: hex_lattice_contract::DeviceAutomationTarget::Parameter(
                 ParameterId::new(id).unwrap(),
@@ -393,6 +396,7 @@ fn malformed_snapshot_limits_are_checked_at_the_canonical_boundary() {
     });
     let mut snapshot = initial;
     snapshot.tracks[0].devices[0].automation = vec![DeviceAutomation {
+        vst3_class: None,
         read_selection: crate::AutomationReadSelection::Authored,
         target: hex_lattice_contract::DeviceAutomationTarget::Parameter(
             ParameterId::new(1).unwrap(),
@@ -844,24 +848,19 @@ fn vst3_automation_uses_raw_ids_and_refuses_replacement_by_a_different_class() {
         panic!("expected a vst3 device");
     };
     let before = editor.project().clone();
-    let target = |class, parameter| DeviceAutomationTarget::Vst3 { class, parameter };
-    for invalid in [
-        target([0; 16], 0),
-        target([2; 16], 0),
-        target(class, u32::MAX),
-    ] {
-        assert!(
-            editor
-                .execute(Command::ReplaceDeviceAutomationTarget {
-                    device,
-                    target: invalid,
-                    points: points(),
-                })
-                .is_err()
-        );
-        assert_eq!(editor.project(), &before);
-    }
-    let zero = target(class, 0);
+    assert!(
+        editor
+            .execute(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target: DeviceAutomationTarget::Vst3 {
+                    parameter: u32::MAX
+                },
+                points: points(),
+            })
+            .is_err()
+    );
+    assert_eq!(editor.project(), &before);
+    let zero = DeviceAutomationTarget::Vst3 { parameter: 0 };
     editor
         .execute(Command::ReplaceDeviceAutomationTarget {
             device,
@@ -878,6 +877,15 @@ fn vst3_automation_uses_raw_ids_and_refuses_replacement_by_a_different_class() {
             .unwrap()
             .points,
         points()
+    );
+    assert_eq!(
+        authored
+            .device(device)
+            .unwrap()
+            .automation_target(zero)
+            .unwrap()
+            .vst3_class,
+        Some(class)
     );
     assert!(editor.undo());
     assert_eq!(editor.project(), &before);
