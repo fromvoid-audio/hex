@@ -1043,6 +1043,16 @@ class NativeInstanceTests(unittest.TestCase):
                 self.terminal(session, 7)
                 self.assertEqual(self.observation()[8:11], (1, 1, 1))
 
+    def test_compatibility_class_can_share_processor_cid_but_duplicate_processor_refuses(self):
+        session = self.session(variant=138)
+        self.ready(session, controller=True)
+        self.assertEqual(session.render(8)[2][0], b"HXVB")
+        self.terminal(session, 0, message=session.stop())
+
+        duplicate = self.session(variant=139)
+        self.error(duplicate, 3)
+        self.terminal(duplicate, 3)
+
     def test_class_and_binary_refusals_never_prepare_another_instance(self):
         for change, code in [({"cid": bytes([1])*16}, 3), ({"corrupt_hash": True}, 2)]:
             with self.subTest(change=change):
@@ -1084,6 +1094,13 @@ class NativeInstanceTests(unittest.TestCase):
                 # changed its own state. Neither authorizes setActive/terminate.
                 self.assertEqual(self.observation()[0], 15 if variant == 25 else 7)
                 self.assertEqual(self.observation()[4], 0)
+
+    def test_stopped_instance_with_retained_host_reaps_without_module_unload(self):
+        session = self.session(variant=137)
+        self.ready(session, controller=True)
+        self.assertEqual(session.render(8)[2][0], b"HXVB")
+        self.assertEqual(self.terminal(session, 0, unloaded=False, message=session.stop())[5:7], (1, 8))
+        self.assertEqual(self.observation()[0], 5)  # terminate ran and bundleExit was skipped
 
     def test_refused_module_exit_does_not_claim_unload(self):
         session = self.session(variant=20)

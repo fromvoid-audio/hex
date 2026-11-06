@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include "pluginterfaces/base/ibstream.h"
+#include "pluginterfaces/base/iplugincompatibility.h"
 #ifndef HEX_FIXTURE_RESIDUAL_ECHO
 #define HEX_FIXTURE_RESIDUAL_ECHO 0
 #endif
@@ -541,7 +542,10 @@ public:
     tresult PLUGIN_API initialize(FUnknown* host) override {
         if (!control() || initialized || !host) return kResultFalse;
         const auto result=Processor::initialize(host);
-        if (result==kResultOk) { initialized=true; ++observed.initialized; }
+        if (result==kResultOk) {
+            initialized=true; ++observed.initialized;
+            if (fault==137) host->addRef(); // simulate a process-lifetime host reference
+        }
         return result;
     }
     tresult PLUGIN_API terminate() override {
@@ -914,9 +918,17 @@ public:
         if (!out) return kInvalidArgument;
         *out=PFactoryInfo("hex original fixtures","https://invalid.example","fixture@invalid.example",0);return kResultOk;
     }
-    int32 PLUGIN_API countClasses() override { return next_fault>=37 && next_fault!=55?2:1; }
+    int32 PLUGIN_API countClasses() override {
+        if (next_fault==138 || next_fault==139) return 3;
+        return next_fault>=37 && next_fault!=55?2:1;
+    }
     tresult PLUGIN_API getClassInfo(int32 index,PClassInfo* out) override {
         if (!out || index<0 || index>=countClasses()) return kInvalidArgument;
+        if (index==2) {
+            const auto category=next_fault==138?kPluginCompatibilityClass:kVstAudioEffectClass;
+            *out=PClassInfo(processing_id,PClassInfo::kManyInstances,category,"hex original shared id");
+            return kResultOk;
+        }
         if(index==1) {*out=PClassInfo(restore_controller_id,PClassInfo::kManyInstances,"Component Controller Class","hex original restore controller");return kResultOk;}
         *out=PClassInfo(processing_id,PClassInfo::kManyInstances,"Audio Module Class","hex original processing fixture");return kResultOk;
     }
@@ -952,7 +964,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>136) return false;next_fault=value;
+        if (value>139) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);
