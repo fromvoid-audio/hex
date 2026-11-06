@@ -415,7 +415,7 @@ fn native_deliveries_seal_only_the_exact_target_values_and_restoration() {
         NativeParameterApplication, NativeTransientOperation, NativeTransientValue,
         default_native_device_state, native_parameter_input_target,
     };
-    use hex_lattice_contract::{DeviceTypeId, HostGain, ParameterValue};
+    use hex_lattice_contract::{DeviceTypeId, HostGain, ParameterKind, ParameterValue};
     use hex_project::DeviceAutomationTarget;
     use hex_storage::automation_draft::{CaptureClock, CompletedAutomationTake};
 
@@ -430,6 +430,15 @@ fn native_deliveries_seal_only_the_exact_target_values_and_restoration() {
         .unwrap()
         .descriptor
         .id;
+    let gain = view
+        .parameters
+        .iter()
+        .find(|p| p.descriptor.label == "gain")
+        .unwrap()
+        .descriptor;
+    let ParameterKind::Float { max, .. } = gain.kind else {
+        panic!("utility gain domain");
+    };
     let Created::Device(device) = session
         .command(Command::InsertMainDevice {
             before: None,
@@ -452,6 +461,14 @@ fn native_deliveries_seal_only_the_exact_target_values_and_restoration() {
                 value: ParameterValue::Bool(true),
             },
             1.0,
+        ),
+        (
+            DeviceAutomationTarget::Parameter(gain.id),
+            NativeTransientValue::Parameter {
+                id: gain.id,
+                value: ParameterValue::Float(max * 0.5),
+            },
+            0.5,
         ),
         (
             DeviceAutomationTarget::HostOutputGain,
@@ -489,13 +506,24 @@ fn native_deliveries_seal_only_the_exact_target_values_and_restoration() {
                 .append_delivered(typed, stamp, &[(1, application), (1, application)])
                 .is_err()
         );
+        let wrong_target = NativeParameterApplication {
+            operation: NativeTransientOperation::Set(NativeTransientValue::HostInputGain(
+                HostGain::ZERO,
+            )),
+            ..application
+        };
+        assert!(
+            input
+                .append_delivered(typed, stamp, &[(1, wrong_target)])
+                .is_err()
+        );
         assert_eq!(input.progress().accepted_events, 0);
         assert!(input.finish_delivered(typed, stamp, application).is_err());
         assert_eq!(
             input
                 .append_delivered(typed, stamp, &[(2, application)])
                 .unwrap(),
-            Some(2)
+            Some(3)
         );
         let restoration = NativeParameterApplication {
             operation: NativeTransientOperation::Clear(target),
