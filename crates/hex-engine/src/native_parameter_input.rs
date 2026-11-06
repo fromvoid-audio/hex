@@ -163,6 +163,86 @@ pub struct NativeParameterApplication {
     pub remaining_latency_frames: u32,
 }
 
+/// Immutable control-side normalization for one armed native target.
+/// The capture owner must fence the same project, output and transport
+/// revision before passing a delivery-confirmed application here.
+pub struct NativeParameterCapture {
+    target: crate::NativeParameterInputTarget,
+    mapping: Option<(
+        hex_lattice_contract::ParameterDescriptor,
+        hex_lattice_contract::ParameterNormalization,
+    )>,
+}
+
+impl NativeParameterCapture {
+    pub fn prepare(
+        project: &hex_project::Project,
+        target: crate::NativeParameterInputTarget,
+    ) -> Result<Self, Invalid> {
+        if crate::native_parameter_input_target(project, target.device(), target.target())?
+            != target
+        {
+            return Err(Invalid("native capture target owner or type changed"));
+        }
+        let mapping = if let Some(id) = target.target().provider_parameter() {
+            let device = project
+                .device(target.device())
+                .ok_or(Invalid("native capture target no longer exists"))?;
+            let view = crate::native_device_view(device.state())?;
+            let parameter = view
+                .parameters
+                .iter()
+                .find(|parameter| parameter.descriptor.id == id)
+                .ok_or(Invalid(
+                    "native capture parameter descriptor is unavailable",
+                ))?;
+            let normalization = parameter
+                .semantics
+                .ok_or(Invalid(
+                    "native capture parameter normalization is unavailable",
+                ))?
+                .normalization;
+            Some((parameter.descriptor, normalization))
+        } else {
+            None
+        };
+        Ok(Self { target, mapping })
+    }
+
+    /// Normalize the delivered manual target, preserving the provider's
+    /// smoothing for replay. None is the delivered restoration operation.
+    pub fn value(
+        &self,
+        application: NativeParameterApplication,
+    ) -> Result<Option<hex_project::AutomationValue>, Invalid> {
+        use hex_lattice::NativeTransientValue;
+
+        if application.identity != self.target.identity()
+            || application.operation.target() != self.target.target()
+        {
+            return Err(Invalid(
+                "native capture application targets another control",
+            ));
+        }
+        let normalized = match application.operation {
+            NativeTransientOperation::Clear(_) => return Ok(None),
+            NativeTransientOperation::Set(NativeTransientValue::Parameter { value, .. }) => {
+                let (descriptor, normalization) = self.mapping.ok_or(Invalid(
+                    "native capture parameter normalization is unavailable",
+                ))?;
+                normalization
+                    .normalize(descriptor, value)
+                    .map_err(|_| Invalid("delivered native capture value is invalid"))?
+            }
+            NativeTransientOperation::Set(
+                NativeTransientValue::HostInputGain(gain)
+                | NativeTransientValue::HostOutputGain(gain),
+            ) => gain.normalized(),
+        };
+        Ok(Some(hex_project::AutomationValue::new(normalized)?))
+    }
+}
+
 /// One inline request, borrowed by the current chains only. Frozen tails never
 /// receive this context. Discard the observation on any later render refusal.
 #[derive(Clone, Copy)]

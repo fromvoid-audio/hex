@@ -408,3 +408,133 @@ fn unexpected_worker_failure_is_visible_after_join_and_leaves_the_source_file() 
     assert_eq!(input.progress().terminal_durable, None);
     assert_eq!(reader(&path).outcome(), DraftOutcome::Interrupted);
 }
+
+#[test]
+fn native_deliveries_seal_only_the_exact_target_values_and_restoration() {
+    use hex_engine::{
+        NativeParameterApplication, NativeTransientOperation, NativeTransientValue,
+        default_native_device_state, native_parameter_input_target,
+    };
+    use hex_lattice_contract::{DeviceTypeId, HostGain, ParameterValue};
+    use hex_project::DeviceAutomationTarget;
+    use hex_storage::automation_draft::{CaptureClock, CompletedAutomationTake};
+
+    let files = Files::new();
+    let mut session = Session::new(48_000, 8, 4096).unwrap();
+    let state = default_native_device_state(DeviceTypeId::from_static("hex.utility")).unwrap();
+    let view = hex_engine::native_device_view(&state).unwrap();
+    let mute = view
+        .parameters
+        .iter()
+        .find(|p| p.descriptor.label == "mute")
+        .unwrap()
+        .descriptor
+        .id;
+    let Created::Device(device) = session
+        .command(Command::InsertMainDevice {
+            before: None,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("main effect");
+    };
+    let (_, _, stamp) = fixture();
+    let clock = CaptureClock {
+        sample_rate: 48_000,
+        loop_region: None,
+    };
+    for (index, (target, value, normalized)) in [
+        (
+            DeviceAutomationTarget::Parameter(mute),
+            NativeTransientValue::Parameter {
+                id: mute,
+                value: ParameterValue::Bool(true),
+            },
+            1.0,
+        ),
+        (
+            DeviceAutomationTarget::HostOutputGain,
+            NativeTransientValue::HostOutputGain(HostGain::from_normalized(0.25).unwrap()),
+            0.25,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let path = files.path(&format!("native-{index}.hex-automation-draft"));
+        let typed = native_parameter_input_target(session.project(), device, target).unwrap();
+        let (mut input, worker) =
+            DeviceDraftInput::start_on_control(&session, None, path.clone(), typed, stamp, clock)
+                .unwrap();
+        let application = NativeParameterApplication {
+            identity: typed.identity(),
+            operation: NativeTransientOperation::Set(value),
+            arrangement_frame: 8,
+            loop_pass: 0,
+            performance_frame: 16,
+            remaining_latency_frames: 4,
+        };
+        let stale = DraftProvenance {
+            audio_revision: stamp.audio_revision + 1,
+            ..stamp
+        };
+        assert!(
+            input
+                .append_delivered(typed, stale, &[(1, application)])
+                .is_err()
+        );
+        assert!(
+            input
+                .append_delivered(typed, stamp, &[(1, application), (1, application)])
+                .is_err()
+        );
+        assert_eq!(input.progress().accepted_events, 0);
+        assert!(input.finish_delivered(typed, stamp, application).is_err());
+        assert_eq!(
+            input
+                .append_delivered(typed, stamp, &[(2, application)])
+                .unwrap(),
+            Some(2)
+        );
+        let restoration = NativeParameterApplication {
+            operation: NativeTransientOperation::Clear(target),
+            arrangement_frame: 12,
+            performance_frame: 20,
+            ..application
+        };
+        input.finish_delivered(typed, stamp, restoration).unwrap();
+        let outcome = worker.join_on_control().unwrap();
+        assert_eq!(outcome.progress.durable_events, 1);
+        assert!(outcome.failure.is_none());
+        let take = CompletedAutomationTake::open_on_control(
+            &path,
+            DraftReadLimits {
+                max_source_bytes: 64 * 1024,
+            },
+        )
+        .unwrap();
+        assert_eq!(take.target(), DraftTarget::Device { device, target });
+        assert_eq!(
+            take.end_clock(),
+            DraftClock {
+                content_frame: 12,
+                performance_frame: 20,
+                loop_pass: 0
+            }
+        );
+        let mut file = reader(&path);
+        let mut records = [None; 2];
+        assert_eq!(file.read_events(0, &mut records).unwrap(), 1);
+        assert_eq!(
+            records[0],
+            Some(AppliedEvent {
+                sequence: 2,
+                performance_frame: 16,
+                content_frame: 8,
+                loop_pass: 0,
+                value: AutomationValue::new(normalized).unwrap(),
+            })
+        );
+    }
+}
