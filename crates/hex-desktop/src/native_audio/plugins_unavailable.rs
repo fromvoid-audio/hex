@@ -133,7 +133,7 @@ impl Plugins {
         // No native work is admitted here. Document replacement advances
         // intent when queued, so its prior-intent token must not be reused to
         // cancel ordinary compilation. Session owns those admission checks.
-        input.visit_plugin_effects(|_, _, _| Err(UNAVAILABLE.into()))?;
+        input.visit_plugin_devices(|_, _, _| Err(UNAVAILABLE.into()))?;
         Ok(None)
     }
 }

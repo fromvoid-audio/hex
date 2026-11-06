@@ -73,9 +73,9 @@ impl Plugins {
         {
             desired
                 .effect_preparation()
-                .visit_plugin_effects(|old_owner, old_device, old| {
-                    changed_state |=
-                        old_device == device && (old_owner != owner || !old.processing_eq(state));
+                .visit_plugin_devices(|old_owner, old_device, old| {
+                    changed_state |= old_device == device
+                        && (old_owner.owner() != owner || !old.processing_eq(state));
                     Ok(())
                 })?;
         }
@@ -111,13 +111,14 @@ impl Plugins {
         &mut self,
         output: &mut WorkerPreparedOutput,
         input: &ResidentEffectPreparation<'_>,
-        owner: ProcessorChainOwner,
+        destination: PluginEffectDestination,
         device: u64,
         state: &NativeDeviceState,
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&RequestCancellation>,
     ) -> Result<(), String> {
         let context = input.context();
+        let owner = destination.owner();
         let control = output.publication.control().ok_or("native output closed")?;
         if self
             .matching_edit_source(control, input, owner, device, state, desired, cancellation)?
@@ -154,7 +155,7 @@ impl Plugins {
             {
                 desired
                     .effect_preparation()
-                    .visit_plugin_effects(|_, _, old| {
+                    .visit_plugin_devices(|_, _, old| {
                         preserved |= old.processing_eq(state);
                         Ok(())
                     })?;
@@ -203,6 +204,7 @@ impl Plugins {
                     device,
                     context.editor_revision.max(1),
                     output.sample_rate,
+                    hosting_profile(destination),
                     Some(state.clone()),
                 ) {
                 Ok(binding) => break binding,

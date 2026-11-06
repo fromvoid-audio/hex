@@ -327,15 +327,14 @@ fn actual_optional_factory_types_persist_and_search_without_foreign_restart_work
         let restored = Catalog::load(&fixture.catalog()).unwrap();
         let rows = restored.rows("");
         let row = rows.iter().find(|r| r.module == module(name)).unwrap();
-        let is_effect = matches!(kind, "effect" | "instrument and effect");
-        let action = if is_effect {
+        let action = if kind != "processor · type unknown" {
             let expected = restored
-                .select_effect(&row.module, row.cid.unwrap())
+                .select_plugin(&row.module, row.cid.unwrap())
                 .unwrap();
-            assert_eq!(row.effect.as_deref(), Some(&expected));
+            assert_eq!(row.selection.as_deref(), Some(&expected));
             "drag or enter to insert"
         } else {
-            assert!(row.effect.is_none());
+            assert!(row.selection.is_none());
             "hosting unavailable"
         };
         assert_eq!(row.status, format!("vst3 {kind} · {action}"));
