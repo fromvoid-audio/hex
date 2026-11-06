@@ -925,8 +925,78 @@ fn assert_saturated_editor_drags(variant: u32, drags: usize) {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_sdk_standalone_edits_keep_the_last_value_at_queue_capacity() {
+    use crate::protocol::ParameterEditKind::{Begin, End, Perform};
+
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(86),
+    )
+    .unwrap();
+    let child = instance.child_id_on_control();
+    std::fs::write(case.release(), b"emit standalone editor values").unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    let mut edits = Vec::new();
+    loop {
+        let batch = instance.service_idle_editor_edits_on_worker().unwrap();
+        edits.extend_from_slice(batch.edits.as_slice());
+        if edits.windows(2).any(|pair| {
+            pair[0].kind == Perform && pair[0].normalized == 0.875 && pair[1].kind == End
+        }) {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "the final standalone value must drain"
+        );
+        thread::yield_now();
+    }
+
+    assert_eq!(edits.len(), 63);
+    assert!(
+        edits
+            .windows(2)
+            .all(|pair| pair[0].sequence < pair[1].sequence)
+    );
+    for gesture in edits.chunks_exact(3) {
+        assert_eq!(
+            [gesture[0].kind, gesture[1].kind, gesture[2].kind],
+            [Begin, Perform, End]
+        );
+        assert!(gesture.iter().all(|edit| {
+            edit.id == 7 && edit.gesture == gesture[0].sequence && edit.first_frame == 0
+        }));
+    }
+    assert_eq!(edits[1].normalized, 0.5, "keep the explicit gesture");
+    assert_eq!(instance.completed_blocks_on_control(), 0);
+    assert_eq!(instance.child_id_on_control(), child);
+    let input = request(instance.configuration(), 0);
+    let output = instance.exchange_on_worker(input).unwrap();
+    for (actual, input) in output.pcm[..8].iter().zip(input.pcm) {
+        assert_eq!(*actual, input.map(|value| value * 1.75));
+    }
+    assert!(
+        instance
+            .quiesce_retained_on_control()
+            .unwrap()
+            .retire_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_sdk_invalid_ui_gestures_refuse_before_dsp() {
-    for variant in [86, 88] {
+    for (variant, expected) in [
+        (88, "read-only edit parameter"),
+        (133, "invalid edit value"),
+    ] {
         let case = Case::new();
         let mut instance = Prepared::prepare(
             &build(),
@@ -953,11 +1023,6 @@ fn actual_sdk_invalid_ui_gestures_refuse_before_dsp() {
                     );
                 }
                 Err(error @ Error::Worker(code)) if crate::runtime_host_refusal(code) => {
-                    let expected = if variant == 86 {
-                        "perform without begin"
-                    } else {
-                        "read-only edit parameter"
-                    };
                     assert!(error.to_string().contains(expected), "{error:?}");
                     break;
                 }
