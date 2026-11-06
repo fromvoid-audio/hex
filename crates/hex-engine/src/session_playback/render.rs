@@ -119,12 +119,14 @@ impl SessionPlayback {
         output: &mut [Frame],
         pages: Option<&mut P>,
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
-        project: Option<&mut ProjectOutputTap<'_, '_>>,
+        mut project: Option<&mut ProjectOutputTap<'_, '_>>,
         sources: &crate::native_device_resources::current_sampler::CurrentSamplerSources,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         self.candidate_admission_open = false;
-        let capture = project.map(|p| p as &mut dyn CaptureSink);
+        let capture = project
+            .as_mut()
+            .map(|tap| &mut **tap as &mut dyn CaptureSink);
         self.render_internal_with_foreign(
             output,
             pages,
@@ -134,7 +136,11 @@ impl SessionPlayback {
                 sources,
             )),
             foreign,
-        )
+        )?;
+        if let Some(project) = project {
+            project.main(output);
+        }
+        Ok(())
     }
 
     /// Render transactionally while optionally observing stable device IDs at
