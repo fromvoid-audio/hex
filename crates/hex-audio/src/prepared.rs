@@ -1223,7 +1223,7 @@ pub struct Control {
 }
 /// The unique worker-side publication/return endpoint; never a UI command client.
 pub struct PublicationControl {
-    requested_physical_callback_frames: Option<u16>,
+    plugin_callback_quantum: Option<u16>,
     output_transport_reaper: Option<crate::plugin_worker::Reaper>,
     publications: Producer<QueuedPublication>,
     retired: Option<Consumer<ReturnedPublication>>,
@@ -1344,7 +1344,7 @@ pub struct Callback {
     action_writer: Option<action_outcomes::Writer>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     native_sources: crate::candidate_custody::NativeEndpointBank,
-    requested_physical_callback_frames: Option<u16>,
+    plugin_callback_quantum: Option<u16>,
     output_transport: Option<Box<hex_plugin_host::transport::Callback>>,
     output_transport_cancelled: bool,
     transport_setup_open: bool,
@@ -1471,7 +1471,7 @@ pub fn channel_with_spectrum(
             midi_recording,
             command_ticket: 0,
             publication: PublicationControl {
-                requested_physical_callback_frames: None,
+                plugin_callback_quantum: None,
                 output_transport_reaper: None,
                 candidate_root: candidate_root.clone(),
                 native_custody: false,
@@ -1495,7 +1495,7 @@ pub fn channel_with_spectrum(
             action_writer: None,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             native_sources: crate::candidate_custody::NativeEndpointBank::new().map_err(Invalid)?,
-            requested_physical_callback_frames: None,
+            plugin_callback_quantum: None,
             output_transport: None,
             output_transport_cancelled: false,
             transport_setup_open: true,
@@ -1583,24 +1583,24 @@ impl PublicationControl {
     pub fn output_identity(&self) -> Option<u64> {
         Some(self.candidate_root.root_id())
     }
-    /// The fixed device buffer requested by this output's actual constructor.
-    /// This is not proof of delivered callback shape or a physical deadline;
-    /// every foreign callback must still validate its real complete extent.
-    pub fn requested_physical_callback_frames_on_control(&self) -> Option<u16> {
-        self.requested_physical_callback_frames
+    /// Immutable VST3 transport quantum in project frames. Same-rate output
+    /// requests this many hardware frames; a converting backend verifies its
+    /// maximum client slice against this quantum before starting. The callback
+    /// still validates its actual extent, including after a route change.
+    pub fn plugin_callback_quantum_on_control(&self) -> Option<u16> {
+        self.plugin_callback_quantum
     }
     /// Bind only while both exact constructor endpoints remain unexposed.
-    /// Device construction requests this fixed size before backend creation;
-    /// headless constructor fixtures may use the same finite delivery profile.
-    pub(crate) fn configure_physical_callback_request(
+    /// The backend or headless fixture owns the corresponding delivery bound.
+    pub(crate) fn configure_plugin_callback_quantum(
         &mut self,
         callback: &mut Callback,
         frames: u16,
     ) -> Result<(), Invalid> {
         if frames == 0
             || usize::from(frames) > hex_plugin_host::transport::MAX_FRAMES
-            || self.requested_physical_callback_frames.is_some()
-            || callback.requested_physical_callback_frames.is_some()
+            || self.plugin_callback_quantum.is_some()
+            || callback.plugin_callback_quantum.is_some()
             || self.revision != 0
             || self.native_custody
             || self.status.client_exposed.load(Acquire)
@@ -1610,11 +1610,11 @@ impl PublicationControl {
             || !callback.matches_native_status(&self.status)
         {
             return Err(Invalid(
-                "physical callback request requires its vacant constructor",
+                "plugin callback quantum requires its vacant constructor",
             ));
         }
-        self.requested_physical_callback_frames = Some(frames);
-        callback.requested_physical_callback_frames = Some(frames);
+        self.plugin_callback_quantum = Some(frames);
+        callback.plugin_callback_quantum = Some(frames);
         Ok(())
     }
     /// Capture the current route header under its sequence lock, then acquire
