@@ -267,6 +267,25 @@ impl NoteEndpoint {
 }
 
 #[test]
+fn finite_bounce_requires_an_explicit_foreign_instrument_renderer() {
+    let (editor, identity) = fixture();
+    let revision = prepare(&editor, identity, true).unwrap();
+    assert!(
+        SessionPlayback::new_finite_arrangement_bounce(Arc::clone(&revision), None, 8).is_err()
+    );
+    assert!(revision.arrangement_bounce_requires_preroll());
+    let mut playback =
+        SessionPlayback::new_finite_arrangement_bounce_with_foreign(revision, None, 8).unwrap();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    endpoint.render(&mut playback, &mut [[0.0; 2]; 8]).unwrap();
+    let [(offset, note)] = endpoint.notes.as_slice() else {
+        panic!("expected one authored MIDI note");
+    };
+    assert_eq!((*offset, note.frame, note.pitch, note.on), (0, 0, 60, true));
+}
+
+#[test]
 fn computer_keyboard_uses_the_same_worker_while_stopped_playing_and_rearmed_after_stop() {
     use crate::{
         computer_keyboard::{ComputerKeyboardInput, KeyboardActivationClock},
