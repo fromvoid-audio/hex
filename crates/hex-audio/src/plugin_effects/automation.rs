@@ -36,6 +36,52 @@ impl AuthoredParameterProgram for TransportProgram<'_> {
     }
 }
 
+/// The saved target selection retained by control across source renewal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthoredSelection {
+    class: hex_plugin_state::ClassId,
+    ids: [u32; MAX_PARAMETER_POINTS],
+    len: usize,
+}
+impl AuthoredSelection {
+    pub fn from_targets(
+        targets: impl IntoIterator<Item = (u32, Option<[u8; 16]>)>,
+    ) -> Result<Option<Self>, &'static str> {
+        let mut targets = targets.into_iter();
+        let Some((first, class)) = targets.next() else {
+            return Ok(None);
+        };
+        let class = hex_plugin_state::ClassId::new(class.ok_or("authored vst3 class missing")?)
+            .map_err(|_| "authored vst3 class is invalid")?;
+        let mut selected = Self {
+            class,
+            ids: [0; MAX_PARAMETER_POINTS],
+            len: 0,
+        };
+        for (id, candidate) in std::iter::once((first, Some(class.bytes()))).chain(targets) {
+            if candidate != Some(class.bytes()) || id > i32::MAX as u32 {
+                return Err("authored vst3 parameter identity differs");
+            }
+            let slot = selected
+                .ids
+                .get_mut(selected.len)
+                .ok_or("authored vst3 target count exceeds its point budget")?;
+            *slot = id;
+            selected.len += 1;
+        }
+        let ids = &mut selected.ids[..selected.len];
+        ids.sort_unstable();
+        if ids.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err("duplicate authored vst3 parameter target");
+        }
+        Ok(Some(selected))
+    }
+
+    pub(crate) fn parameters(&self) -> (hex_plugin_state::ClassId, &[u32]) {
+        (self.class, &self.ids[..self.len])
+    }
+}
+
 /// The configuration is copied between existing paired owners. Fixed inline
 /// storage accounts for both copies through their enclosing owner sizes.
 #[derive(Clone)]
@@ -104,5 +150,31 @@ impl SourceCapabilities {
             quantum_frames,
             parameters: &self.parameters[..self.len],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saved_targets_form_one_bounded_class_selection_with_raw_zero() {
+        let class = Some([3; 16]);
+        let selection = AuthoredSelection::from_targets([(17, class), (0, class), (2, class)])
+            .unwrap()
+            .unwrap();
+        assert_eq!(selection.parameters().0.bytes(), [3; 16]);
+        assert_eq!(selection.parameters().1, &[0, 2, 17]);
+        assert!(AuthoredSelection::from_targets([]).unwrap().is_none());
+        assert!(AuthoredSelection::from_targets([(0, class), (0, class)]).is_err());
+        assert!(AuthoredSelection::from_targets([(0, class), (1, Some([4; 16]))]).is_err());
+        assert!(AuthoredSelection::from_targets([(0, None)]).is_err());
+        assert!(AuthoredSelection::from_targets([(u32::MAX, class)]).is_err());
+        assert!(
+            AuthoredSelection::from_targets(
+                (0..=MAX_PARAMETER_POINTS as u32).map(|id| (id, class))
+            )
+            .is_err()
+        );
     }
 }

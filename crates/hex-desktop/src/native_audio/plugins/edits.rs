@@ -65,6 +65,7 @@ impl Plugins {
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&RequestCancellation>,
     ) -> Result<Option<Binding>, String> {
+        let authored = AuthoredSelection::from_targets(input.authored_plugin_targets(device))?;
         let mut changed_state = false;
         if input.preparing_edit()
             && let Some(desired) = desired.filter(|source| {
@@ -85,6 +86,7 @@ impl Plugins {
             if source.project_generation != input.context().project_generation
                 || source.owner != owner
                 || source.device != device
+                || source.authored != authored
                 || source.retiring
                 || (input.preparing_edit()
                     && !source.accepted
@@ -125,6 +127,10 @@ impl Plugins {
             .is_some()
         {
             return Ok(());
+        }
+        let authored = AuthoredSelection::from_targets(input.authored_plugin_targets(device))?;
+        if destination.is_instrument() && authored.is_some() {
+            return Err("authored vst3 instrument automation is not prepared".into());
         }
         let identity = Hosting::saved_identity_on_control(state)?;
         // Resolve code only: provider identity is class + binary hashes, not a
@@ -219,6 +225,7 @@ impl Plugins {
             device,
             project_generation: context.project_generation,
             operation: SourceOperation::Edit(context),
+            authored,
             accepted: false,
             retiring: false,
             queued: false,

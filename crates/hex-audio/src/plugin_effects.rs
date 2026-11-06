@@ -21,6 +21,7 @@ use hex_plugin_host::{
 };
 
 mod automation;
+pub use automation::AuthoredSelection;
 mod bypass;
 mod definition;
 mod tail;

@@ -1,18 +1,20 @@
 //! Actual unsplit effect construction stays in the reserved Root Work cell.
 //! Callback loans/resource sealing remain separate from constructor success.
 use super::*;
-use crate::plugin_effects::NativeEffect;
+use crate::plugin_effects::{AuthoredSelection, NativeEffect};
 
 impl Custody {
     pub(in crate::candidate_custody) fn start_native_effect(
         &self,
         binding: Binding,
+        authored: Option<&AuthoredSelection>,
     ) -> Result<(), &'static str> {
-        self.start_native_effect_between(binding, || {})
+        self.start_native_effect_between(binding, authored, || {})
     }
     pub(super) fn start_native_effect_between(
         &self,
         binding: Binding,
+        authored: Option<&AuthoredSelection>,
         after_construction: impl FnOnce(),
     ) -> Result<(), &'static str> {
         let Ok(mut work) = self.work.try_lock() else {
@@ -43,10 +45,11 @@ impl Custody {
         cell.pending = true;
         let result = catch_unwind(AssertUnwindSafe(|| match cell.owner.take() {
             Some(Owner::Prepared(owner)) => {
-                match NativeEffect::prepare_retained_with_data_limit_on_control(
+                match NativeEffect::prepare_retained_with_authored_selection_on_control(
                     identity,
                     owner,
                     max_data_bytes,
+                    authored.map(AuthoredSelection::parameters),
                 ) {
                     Ok(owner) => cell.owner = Some(Owner::Effect(owner)),
                     Err(owner) => {
@@ -82,9 +85,18 @@ impl Custody {
 }
 
 impl CandidateRoot {
+    #[cfg(test)]
     pub(crate) fn start_native_effect(&self, binding: Binding) -> Result<(), &'static str> {
+        self.start_native_effect_with_authored_selection(binding, None)
+    }
+
+    pub(crate) fn start_native_effect_with_authored_selection(
+        &self,
+        binding: Binding,
+        authored: Option<&AuthoredSelection>,
+    ) -> Result<(), &'static str> {
         self.require_native_source_control_open()?;
-        let result = self.0.eligible.start_native_effect(binding);
+        let result = self.0.eligible.start_native_effect(binding, authored);
         crate::lifecycle::request_candidate_cleanup(self);
         result
     }

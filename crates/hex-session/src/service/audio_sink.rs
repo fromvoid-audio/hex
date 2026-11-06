@@ -79,6 +79,25 @@ impl<'a> ResidentEffectPreparation<'a> {
     pub fn requires_plugin_profile(&self) -> bool {
         requires_plugin_profile(self.project)
     }
+    /// Borrow the active authored raw targets of one canonical device. The
+    /// native source owner still validates the class and exact SDK capabilities.
+    pub fn authored_plugin_targets(
+        &self,
+        device: u64,
+    ) -> impl Iterator<Item = (u32, Option<[u8; 16]>)> + '_ {
+        self.project
+            .automation_devices()
+            .find(|candidate| candidate.id().value() == device && is_plugin_effect(candidate))
+            .into_iter()
+            .flat_map(hex_project::Device::reading_automation)
+            .filter_map(|lane| match lane.target {
+                hex_lattice_contract::DeviceAutomationTarget::Vst3 { parameter } => {
+                    Some((parameter, lane.vst3_class))
+                }
+                _ => None,
+            })
+    }
+
     pub fn visit_plugin_devices(
         &self,
         mut visit: impl FnMut(PluginEffectDestination, u64, &'a NativeDeviceState) -> Result<(), String>,
