@@ -551,6 +551,8 @@ impl ForeignProcessors for NativeEffectCallback {
                         tempo_micro_bpm: clock
                             .tempo_micro_bpm_at_offset(index)
                             .and_then(std::num::NonZeroU32::new),
+                        meter: clock.arrangement_meter_at_offset(index),
+                        cycle_beats_raw: clock.arrangement_cycle_at_offset(index),
                     })
                 },
             )

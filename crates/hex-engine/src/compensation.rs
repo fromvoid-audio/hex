@@ -133,6 +133,9 @@ pub struct TransportStamp {
     /// Loop-normalized Arrangement beat when representable in Q32.32.
     /// An unavailable beat does not invalidate the exact frame identity.
     pub arrangement_beat_raw: Option<u64>,
+    /// Meter and active cycle at the same source origin as the audio.
+    pub meter: Option<hex_project::Meter>,
+    pub cycle_beats_raw: Option<(u64, u64)>,
 }
 
 /// One fixed prepared graph. Every edge uses the plan's stable-key sorted index.

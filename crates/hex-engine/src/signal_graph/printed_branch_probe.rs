@@ -60,6 +60,8 @@ impl PrintedBranchProbe {
                     loop_pass: 0,
                     performance_beat_raw: 0,
                     arrangement_beat_raw: Some(0),
+                    meter: None,
+                    cycle_beats_raw: None,
                 })
                 .map_err(error)?;
             let mixed = self.runtime.process_track(

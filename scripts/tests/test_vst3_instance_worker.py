@@ -240,13 +240,15 @@ class NativeInstanceTests(unittest.TestCase):
         session = self.session(variant=126)
         self.ready(session, controller=True)
         self.assertEqual(session.render(8)[2][0], b"HXVB")
-        for position, beat, tempo, flags in (
-            (48000, 5 << 31, 123_125_000, 3),
-            (0, 0, 0, 0),
+        for version, timing in (
+            (4, struct.pack("<qQIB3x", 48000, 5 << 31, 123_125_000, 3)),
+            (4, struct.pack("<qQIB3x", 0, 0, 0, 0)),
+            (5, struct.pack("<qQIBBBxQQ", 30000, 0, 0, 13, 7, 8, 5 << 30, 11 << 31)),
+            (5, struct.pack("<qQIBBBxQQ", 0, 0, 0, 4, 3, 4, 0, 0)),
+            (5, struct.pack("<qQIBBBxQQ", 0, 0, 0, 8, 0, 0, 1 << 63, (1 << 63) + 1)),
         ):
             header = bytearray(session.packet(8))
-            struct.pack_into("<H", header, 4, 4)
-            timing = struct.pack("<qQIB3x", position, beat, tempo, flags)
+            struct.pack_into("<H", header, 4, version)
             session.socket.sendall(header + bytes(64) + timing)
             magic, reply = session.message()
             self.assertEqual(magic, b"HXVB")
@@ -254,16 +256,21 @@ class NativeInstanceTests(unittest.TestCase):
             session.sequence += 1
             session.frames += 8
         self.assertEqual(session.render(8)[2][0], b"HXVB")
-        self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (4, 32))
+        self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (7, 56))
 
     def test_invalid_process_context_never_enters_dsp(self):
-        session = self.session(variant=126)
-        self.ready(session, controller=True)
-        header = bytearray(session.packet(8))
-        struct.pack_into("<H", header, 4, 4)
-        session.socket.sendall(header + bytes(64) + struct.pack("<qQIB3x", -1, 0, 0, 0))
-        magic, reply = session.message()
-        self.assertEqual((magic, struct.unpack_from("<I", reply, 35)[0]), (b"HXVIER01", 8))
+        for version, timing in (
+            (4, struct.pack("<qQIB3x", -1, 0, 0, 0)),
+            (5, struct.pack("<qQIBBBxQQ", 0, 0, 0, 4, 7, 3, 0, 0)),
+            (5, struct.pack("<qQIBBBxQQ", 0, 0, 0, 8, 0, 0, 5 << 32, 1 << 32)),
+        ):
+            session = self.session(variant=126)
+            self.ready(session, controller=True)
+            header = bytearray(session.packet(8))
+            struct.pack_into("<H", header, 4, version)
+            session.socket.sendall(header + bytes(64) + timing)
+            magic, reply = session.message()
+            self.assertEqual((magic, struct.unpack_from("<I", reply, 35)[0]), (b"HXVIER01", 8))
 
     def test_retained_output_parameter_queue_still_retires_the_worker(self):
         session = self.session(variant=125)
