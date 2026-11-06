@@ -982,7 +982,7 @@ fn loop_review_retained_editor_focus_does_not_edit_during_browser_or_device_drag
                 let payload = BrowserAudioDrag {
                     project_generation: v.project_generation,
                     revision: state.revision,
-                    browser_generation: v.browser.scan_generation(),
+                    browser_generation: Some(v.browser.scan_generation()),
                     sample_rate: state.project.sample_rate(),
                     path: state
                         .project

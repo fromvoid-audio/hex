@@ -88,6 +88,96 @@ pub fn decode(
     .map_err(|error| error.to_string())
 }
 
+/// An immutable original-rate excerpt and its drop-time geometry at the
+/// destination project rate. Its file remains a valid media source after drop.
+pub struct PreparedTakeExcerpt {
+    pub path: std::path::PathBuf,
+    pub preview: super::AudioPreview,
+}
+
+pub fn prepare_excerpt(
+    take: TakeSource<'_>,
+    range: std::ops::Range<u64>,
+    project_rate: u32,
+    cancel: &AtomicBool,
+) -> Result<PreparedTakeExcerpt, String> {
+    use hex_export::ExportError;
+    use hex_media::waveform::{Peak, Waveform};
+    use std::{
+        sync::{Arc, atomic::AtomicU64},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let frames = range.end.saturating_sub(range.start);
+    if frames == 0 || range.end > take.frames {
+        return Err("select a nonempty range inside the retained take".into());
+    }
+    let mut source = open(take, READ_BLOCK)?;
+    let playback_frames =
+        hex_project::converted_frame_count(frames, take.sample_rate, project_rate)
+            .map_err(|error| error.to_string())?;
+    let count = BINS.min(frames).min(playback_frames);
+    if count == 0 {
+        return Err("the selected range is shorter than one project frame".into());
+    }
+    let size = usize::try_from(playback_frames).map_err(|error| error.to_string())?;
+    let mut bins = vec![
+        [Peak {
+            min: f32::INFINITY,
+            max: f32::NEG_INFINITY
+        }; 2];
+        count as usize
+    ];
+    let stem = take
+        .path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("take");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let serial = NEXT.fetch_add(1, Ordering::Relaxed);
+    let path = take
+        .path
+        .with_file_name(format!("{stem}-{stamp}-{serial}.wav"));
+    let mut at = range.start;
+    hex_export::write_float_wav_new(&path, take.sample_rate, frames, cancel, |output| {
+        let got = source
+            .read_frames_into(at, output)
+            .map_err(|error| ExportError::Media(error.to_string()))?;
+        if got != output.len() {
+            return Err(ExportError::Invalid("the retained take changed"));
+        }
+        for frame in output.iter() {
+            let index = ((at - range.start) * count / frames) as usize;
+            for (peak, sample) in bins[index].iter_mut().zip(frame) {
+                peak.min = peak.min.min(*sample);
+                peak.max = peak.max.max(*sample);
+            }
+            at += 1;
+        }
+        Ok(())
+    })
+    .map_err(|error| error.to_string())?;
+    let waveform = match Waveform::from_peaks(size, bins) {
+        Ok(waveform) => waveform,
+        Err(error) => {
+            let _ = std::fs::remove_file(&path);
+            return Err(error.to_string());
+        }
+    };
+    Ok(PreparedTakeExcerpt {
+        path,
+        preview: super::AudioPreview {
+            playback_frames,
+            sample_rate: project_rate,
+            waveform: Arc::new(waveform),
+        },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,5 +202,14 @@ mod tests {
         assert!(decode(source, 1..6, 48_000).is_err());
         assert!(decode(source, 3..3, 48_000).is_err());
         assert!(peaks(source, &AtomicBool::new(true)).is_err());
+        let cancel = AtomicBool::new(false);
+        let excerpt = prepare_excerpt(source, 1..4, 48_000, &cancel).unwrap();
+        let copied =
+            hex_media::decode_wav_file(&excerpt.path, hex_media::Limits::new(4096, 16)).unwrap();
+        assert_eq!(copied.audio().frames(), audio.frames());
+        assert_eq!(excerpt.preview.playback_frames, 3);
+        assert_ne!(excerpt.path, path);
+        cancel.store(true, Ordering::Relaxed);
+        assert!(prepare_excerpt(source, 1..4, 48_000, &cancel).is_err());
     }
 }
