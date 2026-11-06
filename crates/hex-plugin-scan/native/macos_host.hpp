@@ -19,7 +19,7 @@ inline constexpr size_t HOST_RESTART_COUNT=8;
 // Reserve the burst on main without changing PCM handoff or receipt sizes.
 inline constexpr size_t HOST_REQUEST_COUNT=64;
 struct ParameterSnapshot {
-    struct Parameter { ParameterInfo info{}; ParamValue value=0; };
+    struct Parameter { ParameterInfo info{}; ParamValue value=0; uint64 editor_sequence=0; };
     // Rich strings belong to the main SDK lane. Allocate only the validated
     // count, retaining the previous inventory until a full refresh succeeds.
     std::unique_ptr<Parameter[]> parameters;
@@ -43,17 +43,17 @@ struct ProcessingParameterSnapshot {
 // Latest processor observations, coalesced by stable ID. This is controller
 // synchronization, not an authored gesture or callback-delivery acknowledgement.
 struct ParameterFeedback {
-    struct Value { ParamID id=0; ParamValue normalized=0; };
+    struct Value { ParamID id=0; ParamValue normalized=0; uint64 editor_sequence=0; };
     // The per-epoch feedback obligation is independent of the inventory.
-    std::array<ParamID,HOST_FEEDBACK_COUNT> ids{};
-    std::array<ParamValue,HOST_FEEDBACK_COUNT> normalized{};
+    std::array<Value,HOST_FEEDBACK_COUNT> values{};
     uint32 count=0;
-    Value at(uint32 index) const { return {ids[index],normalized[index]}; }
-    bool put(ParamID id,ParamValue value) {
+    Value at(uint32 index) const { return values[index]; }
+    bool put(ParamID id,ParamValue value,uint64 editor_sequence=0) {
         if(id>0x7FFFFFFFu || !std::isfinite(value) || value<0 || value>1) return false;
-        for(uint32 n=0;n<count;++n) if(ids[n]==id) { normalized[n]=value;return true; }
-        if(count==ids.size()) return false;
-        ids[count]=id;normalized[count++]=value;return true;
+        const Value next{id,value,editor_sequence};
+        for(uint32 n=0;n<count;++n) if(values[n].id==id) { values[n]=next;return true; }
+        if(count==values.size()) return false;
+        values[count++]=next;return true;
     }
 };
 inline constexpr size_t HOST_EDIT_COUNT=8;
@@ -251,7 +251,7 @@ private:
         if(dispatching) {recursive=true;refuse(RecursiveRestart);return kResultFalse;}
         const bool valid_value=kind!=Perform || (std::isfinite(value) && value>=0 && value<=1);
         if(applying_saved_state && id<=0x7FFFFFFFu && valid_value) return kResultOk;
-        const ParameterSnapshot::Parameter* info=nullptr;
+        ParameterSnapshot::Parameter* info=nullptr;
         for(uint32 n=0;n<metadata.count;++n) if(metadata.parameters[n].info.id==id) info=&metadata.parameters[n];
         if(!info || (kind!=End && (info->info.flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden))) ||
             !valid_value) {
@@ -275,11 +275,13 @@ private:
         if(kind==Begin && (available<2 || vacant==active_tokens.size())) return kResultFalse;
         if(kind==Perform && !available) {
             if(!replace_queued_perform(event)) return kResultFalse;
+            info->editor_sequence=next;
             sequence=next;
             return kResultOk;
         }
         requests[(first+count)%requests.size()]=event;
         ++count;sequence=next;pending_edits.fetch_add(1,std::memory_order_release);
+        if(kind==Perform) info->editor_sequence=next;
         if(kind==Begin) {active_ids[vacant]=id;active_tokens[vacant]=gesture;++active_count;}
         if(kind==End) {active_tokens[active]=0;--active_count;}
         return kResultOk;
@@ -392,6 +394,11 @@ private:
             if (valid) {
                 parameter.value=controller->getParamNormalized(info.id);
                 valid=std::isfinite(parameter.value) && parameter.value>=0 && parameter.value<=1;
+                if(i<metadata.count && metadata.parameters[i].info.id==info.id)
+                    parameter.editor_sequence=metadata.parameters[i].editor_sequence;
+                else for(uint32 prior=0;prior<metadata.count;++prior) if(metadata.parameters[prior].info.id==info.id) {
+                    parameter.editor_sequence=metadata.parameters[prior].editor_sequence;break;
+                }
             }
         }
         if (metadata.revision && staged.count!=metadata.count) valid=false;
@@ -447,7 +454,7 @@ public:
         auto staged=phase==Ready?feedback.snapshot:ParameterFeedback{};
         for(uint32 n=0;n<pending.count;++n) {
             const auto value=pending.at(n);
-            if(!staged.put(value.id,value.normalized)) {
+            if(!staged.put(value.id,value.normalized,value.editor_sequence)) {
                 feedback.phase.store(phase,std::memory_order_release);return false;
             }
         }
@@ -465,6 +472,7 @@ public:
         if(!controller || metadata.revision==std::numeric_limits<uint64>::max()) return false;
         struct Observation { uint32 index=0; ParamValue normalized=0; };
         std::array<Observation,HOST_FEEDBACK_COUNT> observations{};
+        uint32 observed=0;
         dispatching=true;recursive=false;
         struct Leave {
             bool& dispatching;bool& feedback;
@@ -475,17 +483,24 @@ public:
             uint32 index=0;
             while(index<metadata.count && metadata.parameters[index].info.id!=value.id) ++index;
             if(index==metadata.count) return false;
-            applying_feedback=true;
-            const auto updated=controller->setParamNormalized(value.id,value.normalized);
-            applying_feedback=false;
-            if(updated!=kResultOk) return false;
-            const auto normalized=controller->getParamNormalized(value.id);
+            // An idle flush can finish long after the controller has moved
+            // on to a newer drag position. Its DSP receipt remains valid.
+            if(value.editor_sequence && metadata.parameters[index].editor_sequence>value.editor_sequence) continue;
+            auto normalized=value.editor_sequence?controller->getParamNormalized(value.id):-1.0;
+            if(normalized!=value.normalized) {
+                applying_feedback=true;
+                const auto updated=controller->setParamNormalized(value.id,value.normalized);
+                applying_feedback=false;
+                if(updated!=kResultOk) return false;
+                normalized=controller->getParamNormalized(value.id);
+            }
             if(!std::isfinite(normalized) || normalized<0 || normalized>1 || recursive) return false;
-            observations[n]={index,normalized};
+            observations[observed++]={index,normalized};
         }
-        for(uint32 n=0;n<staged.count;++n)
+        for(uint32 n=0;n<observed;++n)
             metadata.parameters[observations[n].index].value=observations[n].normalized;
-        ++metadata.revision;return true;
+        if(observed) ++metadata.revision;
+        return true;
     }
     // One serialized processing consumer; main never overwrites an unread
     // record. Full handoff defers dispatch, preserving main request FIFO.

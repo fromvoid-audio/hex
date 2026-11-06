@@ -128,6 +128,10 @@ class RestoreController final : public IEditController {
                 self->handler->performEdit(id,n==95?0.875:0.25);
                 self->handler->performEdit(drag_axis_id,n==95?0.625:0.125);
             }
+            // The editor has already painted the final position. Treat any
+            // setter replay during the drain as a regression.
+            self->component_gain=3.5;
+            self->drag_axis=0.625;
             self->handler->endEdit(id);self->handler->endEdit(drag_axis_id);
         }
         else {
@@ -300,6 +304,7 @@ public:
     tresult PLUGIN_API setParamNormalized(ParamID id,ParamValue value) override {
         if(!control() || !context || !handler || !std::isfinite(value) || value<0 || value>1)
             return kInvalidArgument;
+        if(fault==87 && edits_sent) return kResultFalse;
         if(fault==87 && id==drag_axis_id) {drag_axis=value;return kResultOk;}
         if(id!=parameter_id(fault)) return kInvalidArgument;
         if(fault==76 && observed.flushes.load()) return kResultFalse;

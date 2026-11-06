@@ -423,8 +423,15 @@ int main(int argc,char** argv) {
                             for(const auto* changes : {&parameter_input,&parameter_output}) {
                                 for(size_t n=0;n<changes->size();++n) {
                                     hex_instance::ParameterPoint point{};
-                                    if(!changes->point(n,point) || !processing_parameters.find(point.id) ||
-                                        !parameter_feedback.put(point.id,point.normalized)) return false;
+                                    if(!changes->point(n,point) || !processing_parameters.find(point.id)) return false;
+                                    uint64 editor_sequence=0;
+                                    for(size_t edit=applying_edit_count;edit>0;--edit) {
+                                        const auto& applied=applying_edits[edit-1];
+                                        if(applied.kind==hex_instance::Perform && applied.id==point.id) {
+                                            editor_sequence=applied.sequence;break;
+                                        }
+                                    }
+                                    if(!parameter_feedback.put(point.id,point.normalized,editor_sequence)) return false;
                                 }
                             }
                             instance.publish_parameter_feedback(parameter_feedback);
