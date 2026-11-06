@@ -616,6 +616,10 @@ impl Callback {
         self.native_sources
             .workers_idle_on_control(&self.candidate_root)
     }
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn native_worker_phase_for_test(&self) -> Option<usize> {
+        self.native_sources.single_worker_phase_for_test()
+    }
     pub(super) fn current_native_epoch_fence_source(&self) -> Option<AppliedAudioSource> {
         if !self.status.sampler_edit.ordinary_native_epoch_active() {
             return self.current_native_epoch_source();

@@ -190,8 +190,17 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
         );
     }
     println!("instrument keyboard rate={rate} peak={keyboard_peak}");
-    // Reach an exact copied-quantum boundary, then advance only 64 stopped
-    // frames. Play must carry its new context inside that same worker block.
+    // Stop advancing at frame 64 of the copied quantum. Play must carry its
+    // new context inside that same worker block.
+    let worker_phase = || {
+        harness
+            .callback
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .native_worker_phase_for_test()
+    };
     let wait_for_short_callback = |harness: &ResidentHarness| {
         harness.render();
         wait(|| {
@@ -205,16 +214,13 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
                 == Some(true)
         });
     };
-    let before_partial = harness.plugin_completed.load(Acquire);
     for _ in 0..4 {
-        wait_for_short_callback(&harness);
-        if harness.plugin_completed.load(Acquire) > before_partial {
+        if worker_phase() == Some(64) {
             break;
         }
+        wait_for_short_callback(&harness);
     }
-    assert_eq!(harness.plugin_completed.load(Acquire), before_partial + 1);
-    wait_for_short_callback(&harness);
-    assert_eq!(harness.plugin_completed.load(Acquire), before_partial + 1);
+    assert_eq!(worker_phase(), Some(64));
     harness
         .audio
         .as_mut()
