@@ -34,7 +34,9 @@ use std::fmt;
 pub const TYPE_ID: DeviceTypeId = hex_lattice_contract::VST3_DEVICE_TYPE_ID;
 pub const STATE_VERSION: u32 = 1;
 const HEADER_BYTES: usize = 96;
-pub const MAX_OPAQUE_BYTES: usize = MAX_NATIVE_DEVICE_STATE_BYTES - HEADER_BYTES;
+/// Maximum complete envelope the live native worker protocol admits.
+pub const MAX_ENVELOPE_BYTES: usize = MAX_NATIVE_DEVICE_STATE_BYTES;
+pub const MAX_OPAQUE_BYTES: usize = MAX_ENVELOPE_BYTES - HEADER_BYTES;
 
 /// SDK factory class identity, independent of module path and project instance ID.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,7 +143,7 @@ pub fn decode(state: &NativeDeviceState) -> Result<State<'_>, Error> {
         return Err(Error::UnsupportedVersion(state.state_version()));
     }
     let bytes = state.payload();
-    if bytes.len() > MAX_NATIVE_DEVICE_STATE_BYTES {
+    if bytes.len() > MAX_ENVELOPE_BYTES {
         return Err(Error::TooLarge);
     }
     let header = bytes.get(..HEADER_BYTES).ok_or(Error::Malformed)?;

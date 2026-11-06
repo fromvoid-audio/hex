@@ -62,7 +62,7 @@ fn helper_refusal_completes_only_its_operation_and_frees_the_mailbox() {
         slot.take_terminal(),
         Some(Err(StateCaptureRefusal::StillChanging))
     ));
-    assert!(slot.phase == Phase::Idle && slot.refusal.is_none());
+    assert!(slot.phase == Phase::Idle);
     assert!(
         slot.take_terminal().is_none(),
         "a terminal is consumed once"
@@ -70,18 +70,21 @@ fn helper_refusal_completes_only_its_operation_and_frees_the_mailbox() {
     // The freed mailbox admits the next operation and carries real bytes.
     slot.ordinal = 5;
     slot.phase = Phase::Requested;
-    let mut payload = Payload {
-        len: 2,
-        ..Payload::default()
-    };
-    payload.bytes[..2].copy_from_slice(&[7, 9]);
+    let payload = NativeDeviceState::new(
+        hex_plugin_state::TYPE_ID,
+        hex_plugin_state::STATE_VERSION,
+        vec![9; 150_545],
+    )
+    .unwrap();
+    let original = payload.clone();
     slot.complete(5, Ok(payload)).unwrap();
     let Some(Ok(captured)) = slot.take_terminal() else {
         panic!("captured bytes")
     };
-    assert_eq!(&captured.bytes[..captured.len], &[7, 9]);
-    // Completing an idle slot is a protocol fault, not a silent overwrite.
-    assert!(slot.complete(5, Ok(payload)).is_err());
+    assert_eq!(captured, original);
+    assert!(captured.shares_payload_storage_with(&original));
+    // Completing an idle slot is a protocol fault.
+    assert!(slot.complete(5, Ok(original)).is_err());
 }
 
 fn trace_path() -> PathBuf {
@@ -357,30 +360,6 @@ fn actual_worker_capture_preserves_pair_storage_and_exact_operation() {
     assert!(retired.failure.is_none() && retired.native.status.success());
     assert!(other.retire_on_control().unwrap().native.status.success());
     assert!(owner.begin_state_capture_on_control().is_err());
-}
-
-#[test]
-#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
-fn actual_worker_capture_projection_failure_releases_exact_operation() {
-    let (mut owner, mut callback) = NativeWorker::start_on_control(original_instance()).unwrap();
-    let first = begin(&mut owner);
-    let until = Instant::now() + Duration::from_secs(2);
-    loop {
-        match owner.poll_state_capture_using(&first, |_| Err("fixture allocation refusal")) {
-            Ok(NativeWorkerCaptureProgress::Pending) => {
-                assert!(Instant::now() < until);
-                thread::yield_now();
-            }
-            Err("fixture allocation refusal") => break,
-            result => panic!("unexpected capture result: {result:?}"),
-        }
-    }
-    refused(&mut owner, &first);
-    let next = begin(&mut owner);
-    complete(&mut owner, &next);
-    callback_block(&owner, &mut callback, 0);
-    let retired = owner.retire_on_control().unwrap();
-    assert!(retired.failure.is_none() && retired.native.status.success());
 }
 
 #[test]
