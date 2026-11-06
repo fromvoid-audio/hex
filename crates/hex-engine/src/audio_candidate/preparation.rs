@@ -55,6 +55,7 @@ impl<'a, 'definitions> AudioCandidateEffects<'a, 'definitions> {
         resources: &crate::native_device_resources::PreparedDeviceResources,
         scan_frames: u64,
         cancel: &std::sync::atomic::AtomicBool,
+        native_input: Option<crate::NativeParameterInputTarget>,
     ) -> Result<crate::PreparedRevision, crate::Invalid> {
         crate::PreparedRevision::prepare_with_device_resources_and_effect_registry(
             project,
@@ -66,6 +67,7 @@ impl<'a, 'definitions> AudioCandidateEffects<'a, 'definitions> {
             scan_frames,
             cancel,
             self.registry,
+            native_input,
         )
     }
     /// Same ordinary resource preparation with verified file-source metadata.
@@ -82,10 +84,11 @@ impl<'a, 'definitions> AudioCandidateEffects<'a, 'definitions> {
         resources: &crate::native_device_resources::PreparedDeviceResources,
         scan_frames: u64,
         cancel: &std::sync::atomic::AtomicBool,
+        native_input: Option<crate::NativeParameterInputTarget>,
     ) -> Result<crate::PreparedRevision, crate::Invalid> {
         crate::PreparedRevision::prepare_with_prepared_audio_sources_device_resources_and_effect_registry(
             project, sources, generation, table, previous, transforms, resources,
-            scan_frames, cancel, self.registry,
+            scan_frames, cancel, self.registry, native_input,
         )
     }
     pub fn quote(

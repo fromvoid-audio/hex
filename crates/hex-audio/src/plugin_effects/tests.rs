@@ -876,6 +876,7 @@ fn sampler_with_native_effect_on_control() {
                 .unwrap(),
             &cancel,
             &effects,
+            None,
         )
         .unwrap(),
     );
@@ -1674,6 +1675,7 @@ fn ordinary_resident_compiler_drives_signed_vst3_automation() {
                 &resources,
                 0,
                 &cancel,
+                None,
             )
             .unwrap(),
     );

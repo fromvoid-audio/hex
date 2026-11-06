@@ -22,6 +22,7 @@ pub(super) struct Snapshot {
     pub(super) file_sources: Option<ResidentFileSet>,
 }
 struct Inputs<'a> {
+    native_parameter_input: Option<hex_engine::NativeParameterInputTarget>,
     native: NativeSamplerSources<'a>,
     limits: crate::ResidentNativeReservation,
     max_frames: u64,
@@ -249,6 +250,7 @@ impl Inputs<'_> {
                         )
                     }),
                     effects,
+                    self.native_parameter_input,
                 )
             })
         };
@@ -1013,6 +1015,7 @@ pub(super) fn prepare_bounce_import(
         })
         .transpose()?;
     let inputs = Inputs {
+        native_parameter_input: None,
         plugin_effect: None,
         restoring_plugin_state: false,
         preparing_edit: false,
@@ -1345,6 +1348,7 @@ impl Session {
             destination,
             |project, media, table, transforms, waveforms, stage, _| {
                 let inputs = Inputs {
+                    native_parameter_input: None,
                     plugin_effect: None,
                     restoring_plugin_state: false,
                     preparing_edit: false,
@@ -1373,6 +1377,7 @@ impl Session {
             },
             |project, snapshot, stage| {
                 let inputs = Inputs {
+                    native_parameter_input: None,
                     plugin_effect: None,
                     restoring_plugin_state: false,
                     preparing_edit: false,
@@ -1604,6 +1609,7 @@ impl Session {
         cancelled: Option<&'a AtomicBool>,
     ) -> Result<Inputs<'a>, SessionError> {
         Ok(Inputs {
+            native_parameter_input: None,
             plugin_effect: None,
             restoring_plugin_state: false,
             preparing_edit: false,
@@ -1636,6 +1642,7 @@ impl Session {
         current: Option<&Snapshot>,
     ) -> Result<Snapshot, SessionError> {
         let inputs = Inputs {
+            native_parameter_input: None,
             plugin_effect: None,
             restoring_plugin_state: false,
             preparing_edit: false,
@@ -1697,6 +1704,7 @@ impl Session {
         current: Option<&Snapshot>,
     ) -> Result<Snapshot, SessionError> {
         let inputs = Inputs {
+            native_parameter_input: None,
             plugin_effect: None,
             restoring_plugin_state: false,
             preparing_edit: false,
@@ -1868,6 +1876,31 @@ impl Session {
         inputs.publish(&mut snapshot, self.project(), sink, context)?;
         Ok(snapshot)
     }
+    pub(super) fn prepare_resident_native_parameter_recording(
+        &self,
+        input: Option<hex_engine::NativeParameterInputTarget>,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: &Snapshot,
+    ) -> Result<Snapshot, SessionError> {
+        let inputs = Inputs {
+            native_parameter_input: input,
+            ..self.resident_seek_inputs(admission, Some(current), None)?
+        };
+        let mut snapshot = inputs.prepare(
+            self.project(),
+            sink,
+            &self.media_bank(),
+            self.sine_table(),
+            &self.audio_transforms,
+            &self.audio_clip_waveforms,
+            context,
+        )?;
+        inputs.publish(&mut snapshot, self.project(), sink, context)?;
+        Ok(snapshot)
+    }
+
     pub(super) fn bounce_history_snapshot(
         &mut self,
         redo: bool,
@@ -1936,6 +1969,7 @@ impl Session {
         let started = Instant::now();
         let mut publish_time = Duration::ZERO;
         let inputs = Inputs {
+            native_parameter_input: None,
             plugin_effect: None,
             restoring_plugin_state: false,
             preparing_edit: false,
@@ -2134,6 +2168,7 @@ impl Session {
             return Err(SessionError::Invalid("comparison command required"));
         }
         let inputs = Inputs {
+            native_parameter_input: None,
             plugin_effect: None,
             restoring_plugin_state: false,
             preparing_edit: false,
@@ -2245,6 +2280,7 @@ impl Session {
             _ => None,
         };
         let inputs = Inputs {
+            native_parameter_input: None,
             plugin_effect: plugin_control.as_deref(),
             restoring_plugin_state: false,
             preparing_edit: !matches!(&transition, Transition::PluginEffect { .. }),
@@ -2443,6 +2479,7 @@ pub(super) mod tests {
         closed: AtomicUsize,
         seek_attempts: AtomicUsize,
         publications: Mutex<Vec<(ResidentPublicationMetadata, ResidentPublicationPolicy)>>,
+        native_parameter_input: Mutex<Option<hex_engine::NativeParameterInputTarget>>,
         keyboard_peak: Mutex<f32>,
         keyboard_publications: AtomicUsize,
         effect_compilations: AtomicUsize,
@@ -2533,6 +2570,10 @@ pub(super) mod tests {
             metadata_limit: usize,
             admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
         ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+            assert_eq!(
+                playback.native_parameter_input_target(),
+                observation.native_parameter_input_target(),
+            );
             if matches!(policy, ResidentPublicationPolicy::FreshIfUnchanged(_)) {
                 self.observed.seek_attempts.fetch_add(1, Ordering::Release);
                 return Err(ResidentPublicationRefusal {
@@ -2581,6 +2622,8 @@ pub(super) mod tests {
                         .lock()
                         .unwrap()
                         .push((metadata, policy));
+                    *self.observed.native_parameter_input.lock().unwrap() =
+                        observation.native_parameter_input_target();
                     self.pending = Some((playback, resources, observation));
                     self.observed
                         .accepted
@@ -2728,6 +2771,88 @@ pub(super) mod tests {
                 assert_eq!(observed.accepted.lock().unwrap().len(), accepted + 1);
                 assert!(session.can_undo());
             }
+        }
+    }
+
+    #[test]
+    fn native_automation_arm_and_disarm_publish_without_editing_canonical_history() {
+        let observed = Arc::new(Observed::default());
+        let runtime = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES;
+        let service = Service::with_audio_sink_and_native_reservation(
+            16,
+            1024,
+            None,
+            Box::new(OfflineSink {
+                observed: Arc::clone(&observed),
+                pending: None,
+            }),
+            crate::ResidentNativeReservation {
+                storage: hex_engine::AudioStorageLedgerReservation {
+                    data_rows: 512,
+                    handle_rows: 64,
+                    root_rows: 64,
+                    max_retained_bytes: 2 * runtime,
+                    max_construction_peak_bytes: 3 * runtime,
+                },
+                max_scan_frames: 1024,
+            },
+        )
+        .unwrap();
+        let receive = || {
+            service
+                .events
+                .recv_timeout(crate::test_wait::HANG_BOUND)
+                .unwrap()
+        };
+        receive();
+        let state = hex_engine::default_native_device_state(
+            hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+        )
+        .unwrap();
+        service
+            .submit(Request::Edit(Command::InsertMainDevice {
+                before: None,
+                state,
+            }))
+            .unwrap();
+        let added = receive();
+        assert!(added.error.is_none(), "{:?}", added.error);
+        let Some(Created::Device(device)) = added.created else {
+            panic!("main effect");
+        };
+        let target = hex_lattice_contract::DeviceAutomationTarget::HostOutputGain;
+        let prepare = |revision, target| {
+            service
+                .submit(Request::ArmNativeParameterRecording {
+                    project_generation: 0,
+                    revision,
+                    target,
+                })
+                .unwrap();
+            receive()
+        };
+        let rev = added.state.revision;
+        let count = observed.publications.lock().unwrap().len();
+        assert!(prepare(rev + 1, Some((device, target))).error.is_some());
+        assert_eq!(observed.publications.lock().unwrap().len(), count);
+        let armed = prepare(rev, Some((device, target)));
+        assert!(armed.error.is_none(), "{:?}", armed.error);
+        let metadata = observed.publications.lock().unwrap().last().unwrap().0;
+        let exact = hex_engine::native_parameter_input_target(&armed.state.project, device, target)
+            .unwrap();
+        assert_eq!(
+            *observed.native_parameter_input.lock().unwrap(),
+            Some(exact)
+        );
+        assert_eq!(metadata.context.editor_revision, rev);
+        assert!(metadata.gain_recording_track.is_none());
+        let disarmed = prepare(rev, None);
+        assert!(disarmed.error.is_none(), "{:?}", disarmed.error);
+        assert!(observed.native_parameter_input.lock().unwrap().is_none());
+        for result in [armed, disarmed] {
+            assert_eq!(result.state.project, added.state.project);
+            assert_eq!(result.state.revision, rev);
+            assert_eq!(result.state.can_undo, added.state.can_undo);
         }
     }
 

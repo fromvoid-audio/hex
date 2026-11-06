@@ -1174,6 +1174,7 @@ mod tests {
                 .unwrap(),
             &cancel,
             &effects,
+            None,
         )
         .unwrap();
         let source_factor = 2.5 * source_gain * 0.25;
