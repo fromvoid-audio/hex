@@ -1506,6 +1506,16 @@ impl SessionPlayback {
         resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
         transient_loop: Option<hex_project::LoopRegion>,
     ) -> Result<Self, SessionPlaybackError> {
+        if revision
+            .arrangement()
+            .tracks()
+            .iter()
+            .any(|track| track.foreign_instrument.is_some())
+        {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "vst3 instrument render owner is unavailable",
+            ));
+        }
         let linear_arrangement_export = policy != RenderConstruction::Interactive;
         if revision.device_resource_scope != resources.map(|resources| resources.id()) {
             return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
