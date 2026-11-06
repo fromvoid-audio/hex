@@ -185,6 +185,7 @@ fn compile(f: &OrdinaryFixture, with_native: bool) -> Playback {
                     &f.resources,
                     1_000_000,
                     &AtomicBool::new(false),
+                    None,
                 )
             },
         )

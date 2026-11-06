@@ -68,9 +68,16 @@ pub struct PreparedPlaybackObservation {
     activity: PreparedMidiActivity,
     sample_rate: u32,
     main_latency: Option<OutputLatency>,
+    native_parameter_input: Option<crate::NativeParameterInputTarget>,
 }
 
 impl PreparedPlaybackObservation {
+    /// The exact native input prepared on this graph, if any. The caller must
+    /// correlate the observation with the applied output and audio revision.
+    pub fn native_parameter_input_target(&self) -> Option<crate::NativeParameterInputTarget> {
+        self.native_parameter_input
+    }
+
     /// Control-only opt-in for Track/Return render-work sampling. These are the
     /// existing scalar endpoints, not new graph/processor/resource owners.
     /// Only enable an observation correlated with the applied output/revision.
@@ -255,6 +262,7 @@ impl PreparedPlaybackObservation {
             returns,
             sample_rate: arrangement.sample_rate(),
             main_latency: graph.and_then(|graph| graph.main_output_latency()),
+            native_parameter_input: revision.native_parameter_input_target(),
             activity: PreparedMidiActivity {
                 tracks,
                 session,
