@@ -116,6 +116,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
         sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
+        sample_rate_mode: Default::default(),
         next_id,
         assets: Vec::new(),
         tracks,

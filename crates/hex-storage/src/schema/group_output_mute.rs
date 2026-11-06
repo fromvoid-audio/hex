@@ -56,7 +56,10 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
 }
 
 pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError> {
-    let mut value = super::audio_events::parse_unique(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?, version)
+}
+
+pub(crate) fn decode_value(mut value: Value, version: u32) -> Result<Project, StorageError> {
     let rows = value
         .as_object_mut()
         .and_then(|map| map.remove("group_output_mutes"))

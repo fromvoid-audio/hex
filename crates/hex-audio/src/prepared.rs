@@ -5448,6 +5448,7 @@ mod tests {
             return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,
+            sample_rate_mode: Default::default(),
             next_id: DEVICE_ID + if effect_buses { 3 } else { 2 },
             assets: vec![AssetSnapshot {
                 original_source: None,
@@ -5617,6 +5618,7 @@ mod tests {
             return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,
+            sample_rate_mode: Default::default(),
             next_id: RETURN_DEVICE_ID + 1,
             assets: vec![AssetSnapshot {
                 original_source: None,
@@ -5755,6 +5757,7 @@ mod tests {
             return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,
+            sample_rate_mode: Default::default(),
             next_id: RETURN_DEVICE_ID + 1,
             assets: vec![AssetSnapshot {
                 original_source: None,
@@ -5912,6 +5915,7 @@ mod tests {
             return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,
+            sample_rate_mode: Default::default(),
             next_id: RETURN_DEVICE_ID + 1,
             assets: vec![AssetSnapshot {
                 original_source: None,
@@ -10705,6 +10709,7 @@ mod tests {
             return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,
+            sample_rate_mode: Default::default(),
             next_id: 5,
             assets: vec![AssetSnapshot {
                 original_source: None,
@@ -11427,6 +11432,7 @@ mod tests {
             return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,
+            sample_rate_mode: Default::default(),
             next_id: track_id + 1,
             assets: Vec::new(),
             tracks: vec![TrackSnapshot {

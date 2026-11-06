@@ -78,7 +78,7 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = VST3_STATE_SIZE_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = SAMPLE_RATE_MODE_SCHEMA_VERSION;
 
 /// Schema70 stores an independent original source span for signed musical event placement.
 pub const MUSICAL_EVENT_SOURCE_SCHEMA_VERSION: u32 = 70;
@@ -93,6 +93,9 @@ pub const LEADING_AUDIO_ONCE_SCHEMA_VERSION: u32 = 73;
 pub const GROUP_OUTPUT_MUTE_SCHEMA_VERSION: u32 = 74;
 /// Schema75 preserves VST3 device envelopes beyond the historical 4 KiB bound.
 pub const VST3_STATE_SIZE_SCHEMA_VERSION: u32 = 75;
+/// Schema76 persists Follow Interface with its last applied effective rate.
+/// Fixed-rate projects keep the oldest compatible schema.
+pub const SAMPLE_RATE_MODE_SCHEMA_VERSION: u32 = 76;
 
 fn contains_larger_device_state(project: &Project) -> bool {
     schema::device_assets::authored_states(project)
@@ -130,6 +133,7 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 }
 
 /// Schema [`encode`] writes for `project`:
+/// [`SAMPLE_RATE_MODE_SCHEMA_VERSION`] when the mode is Follow Interface,
 /// [`VST3_STATE_SIZE_SCHEMA_VERSION`] when any VST3 state exceeds 4 KiB,
 /// [`GROUP_OUTPUT_MUTE_SCHEMA_VERSION`] when a group output has authored mute ranges,
 /// [`LEADING_AUDIO_ONCE_SCHEMA_VERSION`] for a finite musical placement with a silent lead,
@@ -145,7 +149,9 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// [`SINC_V2_SCHEMA_VERSION`] when it contains sinc v2 media, otherwise
 /// [`CURRENT_SCHEMA_VERSION`].
 pub fn schema_version_for(project: &Project) -> u32 {
-    if contains_larger_device_state(project) {
+    if schema::sample_rate_mode::contains(project) {
+        SAMPLE_RATE_MODE_SCHEMA_VERSION
+    } else if contains_larger_device_state(project) {
         VST3_STATE_SIZE_SCHEMA_VERSION
     } else if schema::group_output_mute::contains(project) {
         GROUP_OUTPUT_MUTE_SCHEMA_VERSION
@@ -346,7 +352,9 @@ impl From<serde_json::Error> for StorageError {
 /// There is no blanket byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    if contains_larger_device_state(project) {
+    if schema::sample_rate_mode::contains(project) {
+        encode_document(&schema::sample_rate_mode::encode(project)?)
+    } else if contains_larger_device_state(project) {
         let mut value = schema::group_output_mute::encode(project)?;
         value["version"] = VST3_STATE_SIZE_SCHEMA_VERSION.into();
         encode_document(&value)
@@ -394,6 +402,11 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    if schema::sample_rate_mode::contains(project) {
+        return Err(StorageError::Invalid(
+            "older schema cannot save the project sample rate mode",
+        ));
+    }
     if contains_larger_device_state(project) {
         return Err(StorageError::Invalid(
             "older schema cannot save a larger vst3 device state; save with the current format",
@@ -585,6 +598,7 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
+        SAMPLE_RATE_MODE_SCHEMA_VERSION => schema::sample_rate_mode::decode(bytes),
         VST3_STATE_SIZE_SCHEMA_VERSION | GROUP_OUTPUT_MUTE_SCHEMA_VERSION => {
             schema::group_output_mute::decode(bytes, header.version)
         }
@@ -642,7 +656,9 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery",
         )),
     }?;
-    if contains_larger_device_state(&project) != (header.version == VST3_STATE_SIZE_SCHEMA_VERSION)
+    if header.version != SAMPLE_RATE_MODE_SCHEMA_VERSION
+        && contains_larger_device_state(&project)
+            != (header.version == VST3_STATE_SIZE_SCHEMA_VERSION)
     {
         return Err(StorageError::Invalid(
             "project schema disagrees with vst3 device state size; original file unchanged",
