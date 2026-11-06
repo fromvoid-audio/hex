@@ -3366,17 +3366,33 @@ impl EditorView {
             });
             return false;
         }
-        if self.gain_lane.draft.is_some() && matches!(&request, Request::Edit(_)) {
+        // These imports can advance the canonical revision just like an
+        // ordinary edit. Refuse them before taking worker or receipt custody.
+        let independent_edit = matches!(
+            &request,
+            Request::Edit(_)
+                | Request::Import(_)
+                | Request::ImportAudioBatch { .. }
+                | Request::ImportToTrack { .. }
+                | Request::ImportToTrackWithOverwrite { .. }
+                | Request::ImportToNewTrack { .. }
+                | Request::ImportToNewTrackWithGain { .. }
+                | Request::ImportToSession { .. }
+                | Request::ImportDeviceAsset { .. }
+                | Request::LoadFirstSampler { .. }
+                | Request::AssignSampler { .. }
+                | Request::RelinkMedia(_)
+        );
+        if independent_edit && self.gain_lane.draft.is_some() {
             self.error = Some("finish or cancel the gain point gesture before editing".into());
             return false;
         }
-        if self.automation_view.devices.point_draft_active() && matches!(&request, Request::Edit(_))
-        {
+        if independent_edit && self.automation_view.devices.point_draft_active() {
             self.error =
                 Some("finish or cancel the automation point gesture before editing".into());
             return false;
         }
-        if matches!(&request, Request::Edit(_))
+        if independent_edit
             && (self.gain_lane.numeric_draft_active()
                 || self.sampler_parameter.numeric_draft_active())
         {

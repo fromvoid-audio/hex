@@ -92,6 +92,21 @@ fn unrelated_edit_preserves_sampler_numeric_text_and_valid_commit(cx: &mut TestA
             track,
             edit: hex_session::service::GainLaneEdit::Clear,
         }));
+        assert!(!view.enqueue(Request::ImportToTrack {
+            path: "other.wav".into(),
+            track,
+            start: 0,
+        }));
+        let asset = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .assets()
+            .next()
+            .unwrap()
+            .id();
+        assert!(!view.enqueue(Request::RelinkMedia([(asset, "other.wav".into())].into(),)));
         let control = view
             .sampler_parameter
             .controls
