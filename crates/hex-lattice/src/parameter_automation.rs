@@ -126,6 +126,15 @@ pub struct HostAutomationLane {
     pub target: DeviceAutomationTarget,
     pub points: std::ops::Range<usize>,
 }
+/// Exact half-open step range over one native parameter or host trim.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParameterAutomationTouchSpan {
+    pub target: DeviceAutomationTarget,
+    pub start_beat: u64,
+    pub end_beat: u64,
+    pub points: std::ops::Range<usize>,
+}
+
 /// Opaque, validated runtime mapping. Descriptor text is retained only for
 /// control admission; sample queries use this compiled scalar law exclusively.
 #[derive(Clone, Debug, PartialEq)]
@@ -133,6 +142,7 @@ pub struct PreparedParameterAutomationLane {
     descriptor: Option<ParameterDescriptor>,
     mapping: Mapping,
     source: PreparedLaneSource,
+    touch: std::ops::Range<usize>,
 }
 /// BaseFallback is runtime delivery metadata, not an authored empty curve.
 /// It keeps a cleared transient target in the provider's stable query inventory.
@@ -266,7 +276,9 @@ fn compile_points(
     points: &[ParameterAutomationPoint],
     compiled: &mut Vec<PreparedParameterAutomationPoint>,
 ) -> Result<Option<CanonicalValue>, Error> {
-    let first = points.first().ok_or(Error::InvalidDescriptor)?;
+    let Some(first) = points.first() else {
+        return Ok(None);
+    };
     if points
         .iter()
         .any(|point| !point.normalized.is_finite() || !(0.0..=1.0).contains(&point.normalized))
@@ -297,6 +309,7 @@ pub struct PreparedParameterAutomation {
     host_input: Option<usize>,
     host_output: Option<usize>,
     input_target: Option<DeviceAutomationTarget>,
+    touch: Vec<ParameterAutomationTouchSpan>,
 }
 impl PreparedParameterAutomation {
     pub fn new(
@@ -309,6 +322,15 @@ impl PreparedParameterAutomation {
         lanes: Vec<ParameterAutomationLane>,
         host: Vec<HostAutomationLane>,
         points: Vec<ParameterAutomationPoint>,
+    ) -> Result<Self, Error> {
+        Self::new_with_host_and_touch(lanes, host, points, Vec::new())
+    }
+
+    pub fn new_with_host_and_touch(
+        lanes: Vec<ParameterAutomationLane>,
+        host: Vec<HostAutomationLane>,
+        points: Vec<ParameterAutomationPoint>,
+        touch: Vec<ParameterAutomationTouchSpan>,
     ) -> Result<Self, Error> {
         let count = lanes
             .len()
@@ -340,7 +362,7 @@ impl PreparedParameterAutomation {
                 || matches!(lane.semantics.stepping, ParameterStepping::Unspecified)
                 || ids.last().is_some_and(|id| *id >= lane.descriptor.id)
                 || lane.points.start != end
-                || lane.points.start >= lane.points.end
+                || lane.points.start > lane.points.end
                 || lane.points.len() > MAX_AUTOMATION_POINTS_PER_LANE
             {
                 return Err(Error::InvalidDescriptor);
@@ -354,6 +376,7 @@ impl PreparedParameterAutomation {
             prepared.push(PreparedParameterAutomationLane {
                 descriptor: Some(lane.descriptor),
                 mapping,
+                touch: 0..0,
                 source: PreparedLaneSource::Curve {
                     points: lane.points.clone(),
                     constant,
@@ -368,7 +391,7 @@ impl PreparedParameterAutomation {
             if !lane.target.is_host()
                 || previous.is_some_and(|target| target >= lane.target)
                 || lane.points.start != end
-                || lane.points.is_empty()
+                || lane.points.start > lane.points.end
                 || lane.points.len() > MAX_AUTOMATION_POINTS_PER_LANE
             {
                 return Err(Error::InvalidDescriptor);
@@ -389,23 +412,91 @@ impl PreparedParameterAutomation {
             prepared.push(PreparedParameterAutomationLane {
                 descriptor: None,
                 mapping: Mapping::HostGain,
+                touch: 0..0,
                 source: PreparedLaneSource::Curve {
                     points: lane.points,
                     constant,
                 },
             });
         }
-        if end != points.len() {
-            return Err(Error::InvalidDescriptor);
-        }
-        Ok(Self {
+        let mut result = Self {
             ids,
             lanes: prepared,
             points: compiled_points,
             host_input,
             host_output,
             input_target: None,
-        })
+            touch,
+        };
+        result.compile_touch(&points, end)?;
+        Ok(result)
+    }
+
+    fn compile_touch(
+        &mut self,
+        points: &[ParameterAutomationPoint],
+        mut end: usize,
+    ) -> Result<(), Error> {
+        let mut previous: Option<&ParameterAutomationTouchSpan> = None;
+        let mut lane_count = 0;
+        for (index, span) in self.touch.iter().enumerate() {
+            if span.start_beat >= span.end_beat || span.points.start != end {
+                return Err(Error::InvalidDescriptor);
+            }
+            let lane_index = match span.target {
+                DeviceAutomationTarget::Parameter(id) => self.ids.binary_search(&id).ok(),
+                DeviceAutomationTarget::HostInputGain => self.host_input,
+                DeviceAutomationTarget::HostOutputGain => self.host_output,
+                DeviceAutomationTarget::Vst3 { .. } => None,
+            };
+            let lane = self
+                .lanes
+                .get_mut(lane_index.ok_or(Error::InvalidDescriptor)?)
+                .ok_or(Error::InvalidDescriptor)?;
+            let PreparedLaneSource::Curve { points: base, .. } = &lane.source else {
+                return Err(Error::InvalidDescriptor);
+            };
+            if previous.is_some_and(|prior| {
+                prior.target > span.target
+                    || (prior.target == span.target && prior.end_beat > span.start_beat)
+            }) {
+                return Err(Error::InvalidDescriptor);
+            }
+            if previous.is_none_or(|prior| prior.target != span.target) {
+                lane.touch = index..index;
+                lane_count = base.len();
+            }
+            lane_count = lane_count
+                .checked_add(span.points.len())
+                .ok_or(Error::RuntimeBudgetExceeded)?;
+            if lane_count > MAX_AUTOMATION_POINTS_PER_LANE || lane.touch.len() == 128 {
+                return Err(Error::RuntimeBudgetExceeded);
+            }
+            let values = points
+                .get(span.points.clone())
+                .ok_or(Error::InvalidDescriptor)?;
+            if values
+                .first()
+                .is_none_or(|first| first.beat_raw != span.start_beat)
+                || values
+                    .last()
+                    .is_some_and(|last| last.beat_raw >= span.end_beat)
+                || values.iter().any(|point| !point.step)
+            {
+                return Err(Error::InvalidDescriptor);
+            }
+            compile_points(lane.mapping, values, &mut self.points)?;
+            lane.touch.end += 1;
+            previous = Some(span);
+            end = span.points.end;
+        }
+        if end != points.len() || self.lanes.iter().any(|lane| {
+            matches!(&lane.source, PreparedLaneSource::Curve { points, .. } if points.is_empty())
+                && lane.touch.is_empty()
+        }) {
+            return Err(Error::InvalidDescriptor);
+        }
+        Ok(())
     }
     /// Exactly one control-prepared transient target; authored constructors do
     /// not arm anything. This metadata is never a saved-project envelope.
@@ -486,6 +577,7 @@ impl PreparedParameterAutomation {
                     PreparedParameterAutomationLane {
                         descriptor: Some(descriptor),
                         mapping,
+                        touch: 0..0,
                         source: PreparedLaneSource::BaseFallback,
                     },
                 );
@@ -521,6 +613,7 @@ impl PreparedParameterAutomation {
         self.lanes.push(PreparedParameterAutomationLane {
             descriptor: None,
             mapping: Mapping::HostGain,
+            touch: 0..0,
             source: PreparedLaneSource::BaseFallback,
         });
         match target {
@@ -600,6 +693,9 @@ impl PreparedParameterAutomation {
     ) {
         (&self.ids, &self.lanes, &self.points)
     }
+    pub fn touch_storage(&self) -> &Vec<ParameterAutomationTouchSpan> {
+        &self.touch
+    }
     pub fn storage_bytes(&self) -> Option<usize> {
         self.ids
             .capacity()
@@ -613,7 +709,12 @@ impl PreparedParameterAutomation {
                 self.points
                     .capacity()
                     .checked_mul(std::mem::size_of::<PreparedParameterAutomationPoint>())?,
-            )
+            )?
+            .checked_add(Self::quoted_touch_storage_bytes(self.touch.capacity())?)
+    }
+
+    pub fn quoted_touch_storage_bytes(spans: usize) -> Option<usize> {
+        spans.checked_mul(std::mem::size_of::<ParameterAutomationTouchSpan>())
     }
     pub fn quoted_storage_bytes(lanes: usize, points: usize) -> Option<usize> {
         Self::quoted_storage_bytes_with_host(lanes, 0, points)
@@ -775,6 +876,19 @@ impl ParameterAutomationBlock<'_> {
     }
     fn value_at_beat(&self, index: usize, beat: u64) -> Option<CanonicalValue> {
         let lane = self.program.lanes.get(index)?;
+        if !lane.touch.is_empty() {
+            let spans = self.program.touch.get(lane.touch.clone())?;
+            let next = spans.partition_point(|span| span.start_beat <= beat);
+            if let Some(span) = next.checked_sub(1).and_then(|index| spans.get(index))
+                && beat < span.end_beat
+            {
+                let steps = self.program.points.get(span.points.clone())?;
+                let point = steps.partition_point(|point| point.point.beat_raw <= beat);
+                return steps
+                    .get(point.checked_sub(1)?)
+                    .map(|point| point.canonical);
+            }
+        }
         let PreparedLaneSource::Curve { points, constant } = &lane.source else {
             return None;
         };

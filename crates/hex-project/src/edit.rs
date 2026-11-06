@@ -362,6 +362,11 @@ pub enum Command {
         before: Option<DeviceId>,
     },
     /// Replace one canonical Arrangement envelope; empty points clear it.
+    SpliceDeviceAutomationTouch {
+        device: DeviceId,
+        target: crate::DeviceAutomationTarget,
+        spans: Vec<crate::DeviceAutomationTouchSpan>,
+    },
     ReplaceDeviceAutomationTarget {
         device: DeviceId,
         target: hex_lattice_contract::DeviceAutomationTarget,
@@ -2113,6 +2118,11 @@ impl Project {
                 selection,
             } => self.set_device_automation_read_selection(device, target, selection),
             Command::ReenableDeviceAutomation => self.reenable_device_automation(),
+            Command::SpliceDeviceAutomationTouch {
+                device,
+                target,
+                spans,
+            } => self.splice_device_automation_touch(device, target, spans),
             Command::ReplaceDeviceAutomationTarget {
                 device,
                 target,

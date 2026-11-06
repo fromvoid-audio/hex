@@ -1439,7 +1439,10 @@ fn hybrid_arrangement_audio_and_midi_callback_is_allocation_free_and_exact()
 #[test]
 fn reverb_automation_publication_and_render_are_allocation_free() -> Result<(), Box<dyn Error>> {
     use hex_devices::reverb::{REVERB_TYPE_ID, parameter};
-    use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue};
+    use hex_project::{
+        AutomationInterpolation, AutomationPoint, AutomationValue, DeviceAutomationTarget,
+        DeviceAutomationTouchSpan, DeviceAutomationTouchStep,
+    };
     let mut editor = Editor::new(Project::new(RATE)?, 8)?;
     let Created::Imported { track, asset, .. } =
         editor.execute(Command::ImportPreparedAudioTrack {
@@ -1496,6 +1499,21 @@ fn reverb_automation_publication_and_render_are_allocation_free() -> Result<(), 
     compare_output(&actual, &[dry; BLOCK]);
 
     editor.execute(lane(0.75)?)?;
+    let map = editor.project().tempo_map();
+    let start = map.frame_to_beat((BLOCK + 5) as u64)?;
+    let end = map.frame_to_beat((BLOCK + 19) as u64)?;
+    editor.execute(Command::SpliceDeviceAutomationTouch {
+        device,
+        target: DeviceAutomationTarget::Parameter(parameter::DRY_WET),
+        spans: vec![DeviceAutomationTouchSpan {
+            start,
+            end,
+            steps: vec![DeviceAutomationTouchStep {
+                beat: start,
+                value: AutomationValue::new(0.25)?,
+            }],
+        }],
+    })?;
     let path =
         std::env::temp_dir().join(format!("hex-reverb-automation-{}.hex", std::process::id()));
     hex_storage::save_new(&path, editor.project())?;

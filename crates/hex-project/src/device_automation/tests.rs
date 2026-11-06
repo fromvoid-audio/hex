@@ -49,6 +49,7 @@ fn normalized_values_and_envelope_evaluation_have_explicit_boundaries() {
         AutomationValue::new(0.0).unwrap()
     );
     let mut lane = DeviceAutomation {
+        touch: Vec::new(),
         vst3_class: None,
         read_selection: crate::AutomationReadSelection::Authored,
         target: hex_lattice_contract::DeviceAutomationTarget::Parameter(ParameterId::from_static(
@@ -359,6 +360,7 @@ fn malformed_snapshot_limits_are_checked_at_the_canonical_boundary() {
     let mut snapshot = initial.clone();
     snapshot.tracks[0].devices[0].automation = (1..=257)
         .map(|id| DeviceAutomation {
+            touch: Vec::new(),
             vst3_class: None,
             read_selection: crate::AutomationReadSelection::Authored,
             target: hex_lattice_contract::DeviceAutomationTarget::Parameter(
@@ -377,6 +379,7 @@ fn malformed_snapshot_limits_are_checked_at_the_canonical_boundary() {
     let mut snapshot = initial.clone();
     snapshot.tracks[0].devices[0].automation = (1..=65)
         .map(|id| DeviceAutomation {
+            touch: Vec::new(),
             vst3_class: None,
             read_selection: crate::AutomationReadSelection::Authored,
             target: hex_lattice_contract::DeviceAutomationTarget::Parameter(
@@ -396,6 +399,7 @@ fn malformed_snapshot_limits_are_checked_at_the_canonical_boundary() {
     });
     let mut snapshot = initial;
     snapshot.tracks[0].devices[0].automation = vec![DeviceAutomation {
+        touch: Vec::new(),
         vst3_class: None,
         read_selection: crate::AutomationReadSelection::Authored,
         target: hex_lattice_contract::DeviceAutomationTarget::Parameter(
@@ -914,4 +918,75 @@ fn vst3_automation_uses_raw_ids_and_refuses_replacement_by_a_different_class() {
             .automation_target(zero)
             .is_some()
     );
+}
+
+#[test]
+fn native_touch_splice_keeps_original_linear_base_and_untouched_recorded_fragments() {
+    let (mut editor, _, device) = fixture();
+    let target = DeviceAutomationTarget::Parameter(ParameterId::from_static(1));
+    let beat = |n| BeatTime::from_quarters(n).unwrap();
+    editor
+        .execute(Command::ReplaceDeviceAutomationTarget {
+            device,
+            target,
+            points: points(),
+        })
+        .unwrap();
+    let value = |n| AutomationValue::new(n).unwrap();
+    let span = |start, end, v| DeviceAutomationTouchSpan {
+        start: beat(start),
+        end: beat(end),
+        steps: vec![DeviceAutomationTouchStep {
+            beat: beat(start),
+            value: value(v),
+        }],
+    };
+    editor
+        .execute(Command::SpliceDeviceAutomationTouch {
+            device,
+            target,
+            spans: vec![span(2, 6, 0.125)],
+        })
+        .unwrap();
+    let original = editor.project().clone();
+    editor
+        .execute(Command::SpliceDeviceAutomationTouch {
+            device,
+            target,
+            spans: vec![span(3, 4, 1.0), span(5, 7, 0.0)],
+        })
+        .unwrap();
+    let lane = editor
+        .project()
+        .device(device)
+        .unwrap()
+        .automation_target(target)
+        .unwrap();
+    assert_eq!(lane.points, points());
+    for (at, v) in [
+        (1, 0.25),
+        (2, 0.125),
+        (3, 1.0),
+        (4, 0.125),
+        (5, 0.0),
+        (6, 0.0),
+        (7, 0.75),
+    ] {
+        assert_eq!(lane.value_at(beat(at)), Some(value(v)));
+    }
+    let result = editor.project().clone();
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &original);
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &result);
+    assert!(
+        editor
+            .execute(Command::SpliceDeviceAutomationTouch {
+                device,
+                target,
+                spans: vec![span(3, 6, 1.0), span(5, 7, 0.0)]
+            })
+            .is_err()
+    );
+    assert_eq!(editor.project(), &result);
 }
