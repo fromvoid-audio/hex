@@ -1,10 +1,10 @@
 //! Control-side project clock replacement. The existing document media and
 //! output admission paths prepare the successor. The saved file handle stays
 //! with the caller, and the original Editor keeps every canonical history edge.
-use super::{WorkerEvents, resident_audio, sampler_export};
+use super::{RequestCancellation, WorkerEvents, resident_audio, sampler_export};
 use crate::{DocumentAudioMode, Session};
 use hex_engine::AudioSourceContext;
-use hex_project::{Editor, Project, SampleRateMode};
+use hex_project::{Editor, Project, SampleRateHistoryAction, SampleRateMode};
 use std::path::Path;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,6 +58,7 @@ pub(super) fn replace(
     history_capacity: usize,
     media_base: Option<&Path>,
     context: AudioSourceContext,
+    cancellation: &RequestCancellation,
     events: &mut WorkerEvents,
     current: Option<&resident_audio::Snapshot>,
     admission: sampler_export::Admission<'_>,
@@ -85,6 +86,15 @@ pub(super) fn replace(
     {
         return Err("sample rate changes require an ordinary project output; reopen the project in ordinary mode".into());
     }
+    let outgoing = capture_outgoing(session.project(), context, cancellation, events)?;
+    let action = match (transition, selected) {
+        (_, Some((rate, mode))) => SampleRateHistoryAction::Apply { rate, mode },
+        (Transition::History { redo: true }, _) => SampleRateHistoryAction::Redo,
+        (Transition::History { redo: false }, _) => SampleRateHistoryAction::Undo,
+        (Transition::Apply(_), None) => {
+            return Err("sample rate choice could not be resolved".into());
+        }
+    };
     // Preparation borrows the old Session for admission and source limits.
     // Give it the same current project while the original history owner runs
     // its prepare-before-commit transaction. Only this worker sees the swap.
@@ -111,19 +121,15 @@ pub(super) fn replace(
                 )
             },
         )?;
+        if cancellation.is_cancelled() {
+            return Err("sample rate change cancelled".to_owned().into());
+        }
         let prepared = resident_audio::prepare_document_replacement(
             &candidate, session, context, events, current, admission,
         )?;
         Ok((candidate, prepared))
     };
-    let result = match (transition, selected) {
-        (_, Some((rate, mode))) => editor.change_sample_rate_prepared(rate, mode, prepare),
-        (Transition::History { redo: true }, _) => editor.redo_prepared(prepare),
-        (Transition::History { redo: false }, _) => editor.undo_prepared(prepare),
-        (Transition::Apply(_), None) => {
-            Err("sample rate choice could not be resolved".to_owned().into())
-        }
-    };
+    let result = editor.change_sample_rate_prepared(action, outgoing, prepare);
     session.editor = editor;
     match result {
         Ok(Some((mut candidate, prepared))) => {
@@ -134,6 +140,35 @@ pub(super) fn replace(
         Ok(None) => Ok(None),
         Err(error) => Err(error.0),
     }
+}
+
+fn capture_outgoing(
+    project: &Project,
+    context: AudioSourceContext,
+    cancellation: &RequestCancellation,
+    events: &mut WorkerEvents,
+) -> Result<Option<Project>, String> {
+    if !super::audio_sink::requires_plugin_profile(project) {
+        return Ok(None);
+    }
+    let Some(audio) = events.sampler_edit_audio() else {
+        return Ok(None);
+    };
+    let captures = audio.capture_plugin_states_for_save(super::PluginStateSaveInput {
+        project,
+        context,
+        cancellation,
+    })?;
+    if cancellation.is_cancelled() {
+        return Err("sample rate change cancelled".into());
+    }
+    if captures.is_empty() {
+        return Ok(None);
+    }
+    let projected = super::plugin_state_save::project_with_captures(project.clone(), captures)?
+        .with_offline_assets(project.offline_assets())
+        .map_err(|error| error.to_string())?;
+    Ok(Some(projected))
 }
 
 struct PreparationError(String);

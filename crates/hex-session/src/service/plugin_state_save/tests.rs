@@ -288,3 +288,36 @@ fn save_capture_refusal_preserves_existing_file_dirty_state_and_new_destination(
     drop(service);
     std::fs::remove_dir_all(folder).unwrap();
 }
+
+#[test]
+fn rate_history_retains_the_exact_captured_vst3_state_on_both_clocks() {
+    use hex_project::{Editor, SampleRateHistoryAction, SampleRateMode};
+
+    let project = fixture();
+    let captured = project_with_captures(project.clone(), captures(&project)).unwrap();
+    assert_ne!(captured, project);
+    let mut editor = Editor::new(project.clone(), 8).unwrap();
+    let change = || SampleRateHistoryAction::Apply {
+        rate: 96_000,
+        mode: SampleRateMode::Fixed,
+    };
+
+    let refused = editor.change_sample_rate_prepared(change(), Some(captured.clone()), |_| {
+        Err::<(), _>(hex_project::Invalid("fixture output refused"))
+    });
+    assert!(refused.is_err());
+    assert_eq!(editor.project(), &project);
+    assert!(!editor.can_undo());
+
+    let applied = editor
+        .change_sample_rate_prepared(change(), Some(captured.clone()), |project| {
+            Ok::<_, hex_project::Invalid>(project.clone())
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(applied, captured.at_sample_rate(96_000).unwrap());
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &captured);
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &applied);
+}

@@ -3633,6 +3633,11 @@ fn run_worker(
                         resident_preview.as_ref(),
                     );
                     if let Some(transition) = rate_transition {
+                        let cancellation = RequestCancellation::new(
+                            Arc::clone(&session.shutdown),
+                            Arc::clone(&document_intent),
+                            document_intent.load(Ordering::Acquire),
+                        );
                         match project_rate::replace(
                             &mut session,
                             transition,
@@ -3642,6 +3647,7 @@ fn run_worker(
                                 project_generation,
                                 editor_revision: revision,
                             },
+                            &cancellation,
                             &mut events,
                             resident_snapshot.as_ref(),
                             admission,
