@@ -37,6 +37,7 @@ impl RenderOnce for Housing {
         let style = self.style.controls;
         let mut controls = div()
             .flex()
+            .flex_col()
             .items_center()
             .gap(px(crate::DEVICE_FRAME_HEADER_GAP))
             .child(self.leading);

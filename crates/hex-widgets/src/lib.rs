@@ -91,6 +91,7 @@ pub use frame::{
     DeviceLayout, DeviceSectionSurface, device_body, device_compact_row, device_compact_section,
     device_dense_section, device_display, device_frame, device_grouped_row, device_header,
     device_layout, device_rail, device_section, device_split, device_windowed_body,
+    vertical_device_name,
 };
 pub use numeric::{NumericError, NumericScale, NumericSpec};
 pub use numeric_control::{

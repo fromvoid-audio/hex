@@ -267,6 +267,11 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             )
             and suffix.startswith('insertion_gap(')
         )
+        # The rotated title paints the already themed label in the inherited font.
+        device_insertion_component = device_insertion_component or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel.rs'
+            and suffix.startswith('hex_widgets::vertical_device_name(title)')
+        )
         # The log viewer displays source bytes and native filenames verbatim;
         # query/list are typed GPUI components; log_scrollbar is text-free.
         log_viewer_source = (

@@ -27,7 +27,7 @@ impl Gallery {
             }
         }));
         hex_widgets::device_frame(
-            theme::text(format!("{} · fixture", self.entry.label())),
+            hex_widgets::vertical_device_name(theme::text(self.entry.label())),
             theme::device_frame_style(self.selected),
             actions,
             div(),

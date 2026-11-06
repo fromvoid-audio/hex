@@ -424,3 +424,10 @@ The noninteractive `native_quit_probe` exercises the actual GPUI/AppKit path
 for acceptance and cancellation followed by acceptance; run it with
 `crates/hex-ui/tests/native_quit_test.py` after building the example. This uses the
 existing native dependency boundary and adds no unsafe Hex workspace code.
+
+6 November rotated device titles: the existing monochrome glyph raster cache
+and sprite transform support a bottom-to-top quarter turn at a shaped glyph's
+baseline. Scene admission and cached replay use the transformed sprite bounds
+for clipping and paint order. The app supplies the name and title hitbox, so
+normal text layout and pointer handling remain with their existing owners.
+Test support exposes the resulting rotated glyph bounds without GPU readback.

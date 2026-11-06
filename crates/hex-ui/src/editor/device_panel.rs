@@ -1696,6 +1696,7 @@ fn device_drag_title(
         return_destination: std::rc::Rc::new(std::cell::Cell::new(None)),
     };
     let entity = cx.entity();
+    let help = theme::text(format!("{title} · drag to reorder device"));
     div()
         .id(("device-drag-title", id.value()))
         .debug_selector(move || format!("device-drag-title-{}", id.value()))
@@ -1705,14 +1706,15 @@ fn device_drag_title(
         .items_center()
         .truncate()
         .cursor(gpui::CursorStyle::OpenHand)
-        .tooltip(|_, cx| {
+        .tooltip(move |_, cx| {
+            let help = help.clone();
             cx.new(|_| super::transport::MiniTooltip {
                 kind: crate::tooltips::Kind::Help,
-                description: "drag to reorder device".into(),
+                description: help,
             })
             .into()
         })
-        .child(theme::text(title))
+        .child(hex_widgets::vertical_device_name(title))
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |view, _, window, cx| {
@@ -2828,7 +2830,7 @@ fn instrument_actions(
     cx: &mut Context<EditorView>,
 ) -> Div {
     let id = device.id();
-    let actions = div().flex().items_center().gap(px(2.0));
+    let actions = div().flex().flex_col().items_center().gap(px(2.0));
     let actions = if device.state().type_id().as_str() == Ok("hex.vst3")
         && !view.degraded_plugins.contains(id.value())
     {
@@ -3027,7 +3029,7 @@ fn device_actions(
     cx: &mut Context<EditorView>,
 ) -> Div {
     let id = device.id();
-    let mut actions = div().flex().items_center().gap(px(2.0));
+    let mut actions = div().flex().flex_col().items_center().gap(px(2.0));
     if device.state().type_id().as_str() == Ok("hex.vst3")
         && !view.degraded_plugins.contains(id.value())
     {
