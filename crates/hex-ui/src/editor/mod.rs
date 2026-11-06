@@ -72,6 +72,7 @@ mod group_selection;
 mod midi_pending_drag;
 mod pending_clip_move;
 mod pending_edit;
+mod pending_sample_drop;
 #[cfg(test)]
 mod test_environment;
 
@@ -1001,6 +1002,7 @@ pub(super) struct EditorView {
     midi_tile_images: Rc<std::cell::RefCell<midi_loop_notes::TileImages>>,
     active_clip_drag: Option<drag::ClipDrag>,
     active_browser_audio_drag: Option<drag::BrowserAudioDrag>,
+    pending_sample_drop: Option<pending_sample_drop::PendingSampleDrop>,
     arrangement_device_preview: Option<arrangement_device_drop::ArrangementDevicePreview>,
     active_native_device_drag: Option<drag::NativeDeviceDrag>,
     active_trim_drag: Option<trim::TrimDrag>,
@@ -1769,6 +1771,7 @@ impl EditorView {
             midi_tile_images: Default::default(),
             active_clip_drag: None,
             active_browser_audio_drag: None,
+            pending_sample_drop: None,
             active_native_device_drag: None,
             arrangement_device_preview: None,
             active_trim_drag: None,

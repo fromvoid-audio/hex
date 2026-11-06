@@ -1442,11 +1442,11 @@ impl super::EditorView {
                 start,
             },
         };
-        if self.enqueue(request) {
+        if self.enqueue_sample_drop(request, drag, destination) {
             self.stop_browser_preview_for_drop();
+            self.status = "importing sample to arrangement".into();
         }
-        self.status = "importing sample to arrangement".into();
-        self.active_browser_audio_drag = None;
+        self.clear_browser_audio_drag(drag);
         cx.notify();
     }
 
