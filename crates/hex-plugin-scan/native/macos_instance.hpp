@@ -1,5 +1,5 @@
 // Native-helper-only component/controller ownership. Original Hex implementation.
-// The admitted module outlives this owner and may unload only after close() succeeds.
+// The admitted module outlives this owner and may unload only after full closure.
 // UI methods require the helper's main thread. Processing methods require one
 // serialized worker; its joining control owner must join before close(). No ABI
 // pointer crosses into Rust. This is not installed-module or audio-bridge admission.
@@ -534,7 +534,28 @@ public:
     uint64 latency_restart() const { return host?host->latency_restart():0; }
     void cover_latency_restart(uint64 covered) { if(host) host->cover_latency_restart(covered); }
 
+    enum class CloseResult { Closed, RetainedHost, Refused };
+
     bool close() {
+        const auto result=close_for_retirement();
+        if (result==CloseResult::RetainedHost) return refuse_cleanup();
+        return result==CloseResult::Closed;
+    }
+
+    // RetainedHost means all component/controller teardown and stream disposal
+    // succeeded. The isolated worker may then retire by process exit while
+    // keeping the stopped Host and module alive.
+    CloseResult close_for_retirement() {
+        if (!close_objects()) return CloseResult::Refused;
+        if (host) {
+            if (host->reference_count()!=1) return CloseResult::RetainedHost;
+            host->release(); host=nullptr;
+        }
+        return CloseResult::Closed;
+    }
+
+private:
+    bool close_objects() {
         if (![NSThread isMainThread] || processing.load() || quarantined.load()) return false;
         if (host) host->stop_accepting();
         // Stop/join is the caller's prerequisite. Never release/unload past a
@@ -600,12 +621,6 @@ public:
             restore_controller_stream=nullptr;
         }
         if (factory) { factory->release(); factory = nullptr; }
-        if (host) {
-            // Keep the control lease when a message/context is still retained.
-            // Its last release on another thread cannot finally free this pool.
-            if (host->reference_count()!=1) return refuse_cleanup();
-            host->release(); host=nullptr;
-        }
         return true;
     }
 };
