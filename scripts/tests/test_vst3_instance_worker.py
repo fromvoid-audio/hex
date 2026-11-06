@@ -263,18 +263,32 @@ class NativeInstanceTests(unittest.TestCase):
         return reply
 
     def test_instrument_note_offsets_gate_pcm_across_blocks(self):
-        session = self.session(variant=115, channels=(0, 2))
+        for variant in (115, 120):
+            with self.subTest(variant=variant):
+                session = self.session(variant=variant, channels=(0, 2))
+                self.assertEqual(session.message()[0], b"HXVIRD04")
+                for notes, expected in [
+                    ([(3, 0x92, 60, 127)], [0.] * 3 + [.5] * 5),
+                    ([(4, 0x92, 60, 0)], [.625] * 4 + [0.] * 4),
+                    ([], [0.] * 8),
+                ]:
+                    magic, reply = self.instrument_block(session, notes)
+                    self.assertEqual(magic, b"HXVB")
+                    self.assertEqual(reply[8:10], bytes(2))
+                    self.assertEqual(struct.unpack("<16f", reply[64:]), tuple(x for v in expected for x in (v, v)))
+                self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (3, 24))
+
+    def test_silent_input_instrument_refuses_routed_pcm_and_requires_a_midi_bus(self):
+        audio_only = self.session(variant=0, channels=(0, 2))
+        self.error(audio_only, 20)
+        self.terminal(audio_only, 20)
+
+        session = self.session(variant=120, channels=(0, 2))
         self.assertEqual(session.message()[0], b"HXVIRD04")
-        for notes, expected in [
-            ([(3, 0x92, 60, 127)], [0.] * 3 + [.5] * 5),
-            ([(4, 0x92, 60, 0)], [.625] * 4 + [0.] * 4),
-            ([], [0.] * 8),
-        ]:
-            magic, reply = self.instrument_block(session, notes)
-            self.assertEqual(magic, b"HXVB")
-            self.assertEqual(reply[8:10], bytes(2))
-            self.assertEqual(struct.unpack("<16f", reply[64:]), tuple(x for v in expected for x in (v, v)))
-        self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (3, 24))
+        session.socket.sendall(session.packet(8) + struct.pack("<16f", 1., *([0.] * 15)))
+        self.error(session, 8)
+        self.terminal(session, 8)
+        self.assertEqual(self.observation()[10], 0)
 
     def test_out_of_range_note_identity_refuses_before_dsp(self):
         session = self.session(variant=115, channels=(0, 2))
