@@ -85,9 +85,15 @@ fn audio_event_lower_body_paints_and_repaints_while_upper_rail_moves_range(
     drag(&mut visual, at(0.5, 0.1), at(0.6, 0.1));
     editor.read_with(cx, |view, _| {
         assert!(
-            matches!(view.last_enqueued_edit, Some(Command::EditAudioEvents {
-            clip: id, operation: hex_project::AudioEventEdit::MoveRange { start, end, destination },
-        }) if id == clip && start < end && destination > start)
+            matches!(
+                view.last_enqueued_edit,
+                Some(Command::EditAudioEvents {
+                    clip: id,
+                    operation: hex_project::AudioEventEdit::PlaceRange { start, end, destination },
+                }) if id == clip && start < end && i128::from(destination) > i128::from(start)
+            ),
+            "the upper rail must move the selected range right, got {:?}",
+            view.last_enqueued_edit
         );
         assert_eq!(view.snap_grid, super::musical_time::SnapGrid::Adaptive);
     });

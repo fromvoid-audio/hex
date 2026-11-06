@@ -511,6 +511,7 @@ where
     let delivery = callback.finish_native_effect_callback(valid);
     let valid = finish_transport_copy(delivery, valid, rendered.is_ok(), output, source, channels);
     let _ = callback.finish_spectrum_block(capture_start, valid);
+    callback.finish_sample_recording(valid);
     callback.finish_midi_recording_quantum(valid);
     if !valid {
         output.fill(T::from_sample(0.0));

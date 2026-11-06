@@ -3,6 +3,9 @@
 use super::*;
 use std::num::NonZeroU64;
 pub const MAX_PARAMETER_EDITS: usize = 8;
+// Native main-thread FIFO plus the eight worker handoff slots. Completed
+// receipts are tracked separately and do not count toward pending callbacks.
+const MAX_PENDING_PARAMETER_EDITS: u16 = 72;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ParameterEditKind {
     #[default]
@@ -59,6 +62,17 @@ pub fn recovery_edit_request(
     request[4..6].copy_from_slice(&2_u16.to_le_bytes());
     Ok(request)
 }
+/// Request one parameter-only exchange while the transport is idle. The
+/// active helper keeps its PCM prefix and returns the usual recovery receipts.
+pub fn idle_editor_edit_request(
+    config: &Configuration,
+    sequence: u64,
+    operation: u64,
+) -> Result<[u8; 72]> {
+    let mut request = edit_request(config, sequence, operation)?;
+    request[4..6].copy_from_slice(&3_u16.to_le_bytes());
+    Ok(request)
+}
 pub fn recovery_edits(
     body: &[u8],
     config: &Configuration,
@@ -97,7 +111,11 @@ pub fn parameter_edits(
     let pending = u16::from_le_bytes(reader.array()?);
     let ready = u16::from_le_bytes(reader.array()?);
     let len = usize::from(u16::from_le_bytes(reader.array()?));
-    if pending > 24 || ready > 8 || ready > pending || len > MAX_PARAMETER_EDITS {
+    if pending > MAX_PENDING_PARAMETER_EDITS
+        || usize::from(ready) > MAX_PARAMETER_EDITS
+        || ready > pending
+        || len > MAX_PARAMETER_EDITS
+    {
         return Err(Error::Protocol("parameter edit capacity differs"));
     }
     let mut result = ParameterEdits {

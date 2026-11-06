@@ -27,6 +27,7 @@ pub mod plugin_effects;
 pub mod plugin_worker;
 mod render_fault;
 pub mod sample_preview;
+pub mod sample_recording;
 pub use device::{PreparedOutput, WorkerOutputProfile, WorkerPreparedOutput};
 pub use lifecycle::{
     AudioLifecycleFailure, RecoveryOpen, RecoveryOpenError, WorkerRecoveryOpen,

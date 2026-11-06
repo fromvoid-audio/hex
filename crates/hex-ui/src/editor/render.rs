@@ -177,7 +177,15 @@ impl EditorView {
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .text_xs();
-        if let Some(error) = &self.error {
+        let scan_status = self.plugin_scan_status();
+        let plugin_status = self
+            .pending_plugin_effect
+            .as_ref()
+            .map(|pending| pending.status.as_str())
+            .or(scan_status.as_deref());
+        if let Some(error) = &self.error
+            && plugin_status.is_none()
+        {
             bar = bar.child(
                 div()
                     .id("editor-status-message")
@@ -196,6 +204,7 @@ impl EditorView {
                     .child(error.display_text()),
             );
         } else {
+            let status = plugin_status.unwrap_or(&self.status);
             bar = bar.child(
                 div()
                     .id("editor-status-message")
@@ -204,7 +213,7 @@ impl EditorView {
                     .min_w(px(50.0))
                     .truncate()
                     .tooltip({
-                        let message = self.status.clone();
+                        let message = status.to_owned();
                         move |_, cx| {
                             cx.new(|_| super::transport::MiniTooltip {
                                 kind: crate::tooltips::Kind::Identification,
@@ -214,7 +223,7 @@ impl EditorView {
                         }
                     })
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(theme::text(&self.status)),
+                    .child(theme::text(status)),
             );
         }
         let offline = self

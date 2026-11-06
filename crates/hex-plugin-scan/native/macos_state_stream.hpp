@@ -9,6 +9,7 @@
 #include <cstring>
 #include <cstdint>
 #include <limits>
+#include <vector>
 
 namespace hex_instance {
 class StateStream final : public Steinberg::IBStream,public Steinberg::ISizeableStream {
@@ -22,7 +23,8 @@ class StateStream final : public Steinberg::IBStream,public Steinberg::ISizeable
     Steinberg::tresult invalid() { refused.store(true);return Steinberg::kInvalidArgument; }
     ~StateStream() = default;
 public:
-    static constexpr size_t capacity=4000;
+    static constexpr size_t envelope_capacity=512*1024;
+    static constexpr size_t capacity=envelope_capacity-96;
     std::array<unsigned char,capacity> bytes{};
     explicit StateStream(size_t maximum):limit(std::min(maximum,capacity)) {}
     // Restore owns a fixed copied extent. Foreign code may read/seek it but
@@ -120,7 +122,7 @@ public:
     }
 };
 struct CapturedState {
-    std::array<unsigned char,StateStream::capacity> bytes{};
+    std::vector<unsigned char> bytes;
     uint32_t component_bytes=0,controller_bytes=0;
     bool component=false,controller=false;
 };

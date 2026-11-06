@@ -75,12 +75,12 @@ impl ClipDrag {
     }
 }
 
-/// In-window drag payload for a WAV file from the library browser.
+/// In-window drag payload for a WAV from the library or retained take.
 #[derive(Clone)]
 pub(super) struct BrowserAudioDrag {
     pub(super) project_generation: u64,
     pub(super) revision: u64,
-    pub(super) browser_generation: u64,
+    pub(super) browser_generation: Option<u64>,
     pub(super) sample_rate: u32,
     pub(super) path: std::path::PathBuf,
     pub(super) label: String,
@@ -116,7 +116,7 @@ pub(super) enum NativeDeviceDragSource {
         class: hex_engine::NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
     },
-    PluginEffect(std::sync::Arc<hex_plugin_catalog::EffectSelection>),
+    PluginEffect(std::sync::Arc<hex_plugin_catalog::PluginSelection>),
     Existing {
         device: hex_project::DeviceId,
         class: hex_engine::NativeDeviceClass,
@@ -1012,6 +1012,39 @@ impl super::EditorView {
         cx.notify();
     }
 
+    pub(super) fn audio_file_drag_payload(
+        &self,
+        path: std::path::PathBuf,
+        label: String,
+        browser_generation: Option<u64>,
+        metadata: Rc<RefCell<Option<Rc<AudioPreview>>>>,
+        metadata_error: Rc<RefCell<Option<String>>>,
+    ) -> Option<BrowserAudioDrag> {
+        let state = self.state.as_ref()?;
+        let viewport = self.visible_viewport(state.timeline_frames);
+        Some(BrowserAudioDrag {
+            project_generation: self.project_generation,
+            revision: state.revision,
+            browser_generation,
+            sample_rate: state.project.sample_rate(),
+            path,
+            label,
+            viewport_start: viewport.start,
+            viewport_length: viewport.length,
+            scroll: Default::default(),
+            snap_grid: self.snap_grid,
+            snap_modifier: Rc::new(Cell::new(false)),
+            copy_modifier: Rc::new(Cell::new(false)),
+            metadata,
+            metadata_error,
+            preview: Rc::new(Cell::new(None)),
+            destination: Rc::new(Cell::new(None)),
+            insertion_line_y: Rc::new(Cell::new(None)),
+            lane_hovered: Rc::new(Cell::new(false)),
+            last_pointer: Rc::new(Cell::new(None)),
+        })
+    }
+
     pub(super) fn begin_browser_audio_drag(&mut self, drag: &BrowserAudioDrag) {
         self.retire_active_clip_drag();
         self.active_native_device_drag = None;
@@ -1121,7 +1154,9 @@ impl super::EditorView {
             || self.close_prompt_open
             || self.worker_requests_pending != 0
             || !self.pending_requests.is_empty()
-            || self.browser.scan_generation() != drag.browser_generation
+            || drag
+                .browser_generation
+                .is_some_and(|generation| self.browser.scan_generation() != generation)
         {
             return false;
         }
@@ -1407,11 +1442,11 @@ impl super::EditorView {
                 start,
             },
         };
-        if self.enqueue(request) {
+        if self.enqueue_sample_drop(request, drag, destination) {
             self.stop_browser_preview_for_drop();
+            self.status = "importing sample to arrangement".into();
         }
-        self.status = "importing sample to arrangement".into();
-        self.active_browser_audio_drag = None;
+        self.clear_browser_audio_drag(drag);
         cx.notify();
     }
 

@@ -19,6 +19,7 @@ pub(super) struct Plugins {
     pub(super) pool_held: bool,
 }
 impl Plugins {
+    pub fn set_diagnostics(&mut self, _: Option<hex_diagnostics::DiagnosticsHandle>) {}
     pub fn initialize(&mut self) {}
     pub fn wants_profile(&self) -> bool {
         false
@@ -39,10 +40,19 @@ impl Plugins {
     pub fn idle(&self) -> bool {
         true
     }
+    pub(super) fn can_retain_output_for_document(
+        &self,
+        _: &PublicationControl,
+        _: u64,
+        incoming: ResidentEffectPreparation<'_>,
+    ) -> bool {
+        !incoming.requires_plugin_profile()
+    }
+    pub(super) fn retire_document_sources(&mut self, _generation: u64) {}
     pub fn ready(&self) -> bool {
         true
     }
-    pub fn take_degraded_change(&mut self) -> Option<(u64, Vec<u64>)> {
+    pub fn take_degraded_change(&mut self) -> Option<(u64, u64, Vec<u64>)> {
         None
     }
     pub fn prepare(
@@ -124,7 +134,7 @@ impl Plugins {
         // No native work is admitted here. Document replacement advances
         // intent when queued, so its prior-intent token must not be reused to
         // cancel ordinary compilation. Session owns those admission checks.
-        input.visit_plugin_effects(|_, _, _| Err(UNAVAILABLE.into()))?;
+        input.visit_plugin_devices(|_, _, _| Err(UNAVAILABLE.into()))?;
         Ok(None)
     }
 }

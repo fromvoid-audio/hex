@@ -1313,7 +1313,10 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
     let card = visual.debug_bounds(card_selector).expect("instrument card");
     assert_eq!(
         card.size.width,
-        px(DEVICE_FRAME_WIDTH + device_meter::WIDTH + DEVICE_CHAIN_PADDING)
+        px(DEVICE_FRAME_WIDTH
+            + hex_widgets::DEVICE_FRAME_HEADER_WIDTH
+            + device_meter::WIDTH
+            + DEVICE_CHAIN_PADDING)
     );
     let painted_card = visual
         .debug_bounds(Box::leak(
@@ -1322,7 +1325,7 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
         .expect("painted instrument card");
     assert_eq!(
         painted_card.size.width,
-        px(DEVICE_FRAME_WIDTH + device_meter::WIDTH)
+        px(DEVICE_FRAME_WIDTH + hex_widgets::DEVICE_FRAME_HEADER_WIDTH + device_meter::WIDTH)
     );
     let down = source.center();
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
@@ -1396,7 +1399,10 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
         .expect("wide Operator card");
     assert_eq!(
         operator_card.size.width,
-        px(operator_panel::OPERATOR_FRAME_WIDTH + device_meter::WIDTH + DEVICE_CHAIN_PADDING)
+        px(operator_panel::OPERATOR_FRAME_WIDTH
+            + hex_widgets::DEVICE_FRAME_HEADER_WIDTH
+            + device_meter::WIDTH
+            + DEVICE_CHAIN_PADDING)
     );
     let right_side = point(
         operator_card.origin.x + operator_card.size.width - px(16.0),
@@ -1693,7 +1699,9 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     let frame = visual.debug_bounds(frame_selector).expect("Operator frame");
     assert_eq!(
         frame.size.width,
-        px(operator_panel::OPERATOR_FRAME_WIDTH + device_meter::WIDTH)
+        px(operator_panel::OPERATOR_FRAME_WIDTH
+            + hex_widgets::DEVICE_FRAME_HEADER_WIDTH
+            + device_meter::WIDTH)
     );
     assert_eq!(frame.size.height, px(184.0));
     // One passive stereo meter follows the device: left and right bars, no gain handles.
@@ -1704,7 +1712,12 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         let selector = Box::leak(format!("{meter_selector}-{side}").into_boxed_str());
         let bar = visual.debug_bounds(selector).expect("channel bar");
         assert_eq!(bar.size.width, px(hex_widgets::STEREO_PEAK_BAR_WIDTH));
-        assert!(bar.origin.x >= frame.origin.x + px(operator_panel::OPERATOR_FRAME_WIDTH));
+        assert!(
+            bar.origin.x
+                >= frame.origin.x
+                    + px(operator_panel::OPERATOR_FRAME_WIDTH
+                        + hex_widgets::DEVICE_FRAME_HEADER_WIDTH)
+        );
         assert!(bar.right() <= frame.right());
     }
     for side in ["input", "output"] {
@@ -5898,7 +5911,7 @@ fn clipped_device_card_bounds_cannot_claim_offscreen_pointer() {
 }
 
 #[gpui::test]
-fn sine_and_effect_share_canonical_compact_header_and_body_bounds(cx: &mut TestAppContext) {
+fn sine_and_effect_place_their_shared_header_to_the_left_of_the_body(cx: &mut TestAppContext) {
     let (service, state, track, effect, _, _) = actor_utility_fixture();
     let instrument = state
         .project
@@ -5927,7 +5940,8 @@ fn sine_and_effect_share_canonical_compact_header_and_body_bounds(cx: &mut TestA
                 title.size.height,
                 px(hex_widgets::DEVICE_FRAME_HEADER_HEIGHT)
             );
-            assert_eq!(body.origin.y, title.bottom_left().y);
+            assert!(title.right() < body.origin.x);
+            assert!(body.origin.y <= title.origin.y && title.bottom() <= body.bottom());
             assert_eq!(body.size.height, px(DEVICE_FRAME_BODY_HEIGHT));
         }
     }

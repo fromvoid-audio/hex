@@ -943,6 +943,7 @@ pub struct Track {
     sends: Vec<CompiledSend>,
     instrument_id: Option<hex_project::DeviceId>,
     instrument_state: Option<hex_lattice_contract::NativeDeviceState>,
+    foreign_instrument: Option<hex_lattice::PreparedRuntimeInstance>,
     tuning_identity: shared_analytic::TuningIdentity,
     instrument_bypassed: bool,
     instrument_input_gain: f32,
@@ -1191,6 +1192,7 @@ impl Track {
             sends: Vec::new(),
             instrument_id: None,
             instrument_state: None,
+            foreign_instrument: None,
             tuning_identity: Default::default(),
             instrument_bypassed: false,
             instrument_input_gain: 1.0,
@@ -1249,6 +1251,7 @@ impl Track {
             sends: Vec::new(),
             instrument_id: None,
             instrument_state: None,
+            foreign_instrument: None,
             tuning_identity: Default::default(),
             instrument_bypassed: false,
             instrument_input_gain: 1.0,
@@ -1578,7 +1581,7 @@ impl Track {
     }
 
     pub(crate) fn has_instrument_source(&self) -> bool {
-        self.instrument.is_some()
+        self.instrument.is_some() || self.foreign_instrument.is_some()
     }
 
     pub(crate) fn with_midi_source_index(mut self, source: Option<usize>) -> Self {
@@ -1588,6 +1591,14 @@ impl Track {
             // MIDI bus at the destination instrument and applies its fader once.
             self.source_mix = PreparedTrackMix::identity();
         }
+        self
+    }
+
+    pub(crate) fn with_foreign_instrument(
+        mut self,
+        node: Option<hex_lattice::PreparedRuntimeInstance>,
+    ) -> Self {
+        self.foreign_instrument = node;
         self
     }
 
@@ -1604,6 +1615,9 @@ impl Track {
     /// `start_frame` anchors output[0]; transport is not changed. The range end is
     /// checked before any samples are added, so overflow leaves output untouched.
     pub fn render_additive(&self, start_frame: u64, output: &mut [Frame]) -> Result<(), Invalid> {
+        if self.foreign_instrument.is_some() {
+            return Err(Invalid("vst3 instrument render owner is unavailable"));
+        }
         self.require_volume_timing(None)?;
         if self.has_gain_automation() {
             return Err(Invalid("automated track requires project rendering"));
@@ -3281,6 +3295,13 @@ impl RendererRuntime {
         if let Some(message) = self.runtime_error {
             return Err(Invalid(message));
         }
+        if project
+            .tracks
+            .iter()
+            .any(|track| track.foreign_instrument.is_some())
+        {
+            return Err(Invalid("vst3 instrument render owner is unavailable"));
+        }
         if project.tracks.iter().any(|track| track.mutable_instrument) {
             return Err(Invalid(
                 "mutable instrument requires shared Session playback",
@@ -4033,6 +4054,7 @@ pub mod midi_template;
 mod mutable_instrument;
 mod prepared_revision;
 mod prepared_tempo;
+pub use prepared_tempo::CaptureTempo;
 mod session_inventory;
 pub mod session_playback;
 mod shared_analytic;
@@ -4050,6 +4072,7 @@ pub use scalar_streamed::{
     read_scalar_values,
 };
 mod project_output;
+pub use hex_project::{MAX_RETURN_TRACKS, ReturnId};
 pub use midi_preview::{
     MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP, MidiArrangementPreview, MidiClipPreview, MidiPreviewSample,
     midi_clip_preview,

@@ -20,6 +20,13 @@ impl OriginWindow<'_> {
 }
 
 impl NativeInstrumentClock for OriginWindow<'_> {
+    fn arrangement_meter_at_offset(&self, offset: usize) -> Option<(u8, u8)> {
+        let meter = self.stamp(offset)?.meter?;
+        Some((meter.numerator(), meter.denominator()))
+    }
+    fn arrangement_cycle_at_offset(&self, offset: usize) -> Option<(u64, u64)> {
+        self.stamp(offset)?.cycle_beats_raw
+    }
     fn beat_at_offset(&self, offset: usize) -> Option<u64> {
         self.stamp(offset).map(|stamp| stamp.performance_beat_raw)
     }

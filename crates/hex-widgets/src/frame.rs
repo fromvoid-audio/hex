@@ -2,6 +2,8 @@ use crate::{ControlStyle, DEVICE_CORNER_RADIUS, DeviceFrameStyle};
 use gpui::{Div, IntoElement, div, prelude::*, px, rgb};
 
 /// Canonical compact shell geometry, in logical pixels, for every device.
+pub const DEVICE_FRAME_HEADER_WIDTH: f32 = 92.0;
+/// Height of the title row within the left header.
 pub const DEVICE_FRAME_HEADER_HEIGHT: f32 = 14.0;
 pub const DEVICE_FRAME_HEADER_PADDING: f32 = 3.0;
 pub const DEVICE_FRAME_HEADER_GAP: f32 = 2.0;
@@ -190,11 +192,11 @@ pub fn device_display(style: ControlStyle) -> Div {
 /// Canonical housing for all production and sandbox devices; bodies supply slots
 /// instead of recreating the housing. Title/actions retain caller input handlers. The idle
 /// header and surround use the same surface, without an intervening border.
-/// `leading_control` precedes the flexible title; trailing actions follow it.
+/// The left header stacks the leading controls, title and trailing actions.
 /// The caller owns device commands and supplies a stable parent element identity.
 /// Shared housing toggles own only transient macro/modulator placeholder visibility;
 /// they never alter device state. Open panels share a scroll region with the body.
-/// Use `device_body` for rounded lower-surface/content containment.
+/// Use `device_body` for rounded body/content containment.
 pub fn device_frame(
     title: impl IntoElement,
     style: impl Into<DeviceFrameStyle>,
@@ -223,7 +225,7 @@ pub fn device_frame(
         })
 }
 
-/// Canonical header composition, also available to custom surrounds. Insets clip
+/// Canonical left header composition, also available to custom surrounds. Insets clip
 /// oversized caller actions/title content to the safe rounded interior.
 pub fn device_header(
     title: impl IntoElement,
@@ -235,22 +237,25 @@ pub fn device_header(
     div()
         .debug_selector(|| "device-frame-header".into())
         .flex()
+        .flex_col()
         .flex_shrink_0()
-        .h(px(DEVICE_FRAME_HEADER_HEIGHT))
+        .w(px(DEVICE_FRAME_HEADER_WIDTH))
         .border_l(px(DEVICE_FRAME_HEADER_PADDING))
         .border_r(px(DEVICE_FRAME_HEADER_PADDING))
+        .py(px(DEVICE_FRAME_HEADER_PADDING))
         .border_color(rgb(style.header_background))
         .overflow_hidden()
         .gap(px(DEVICE_FRAME_HEADER_GAP))
-        .items_center()
+        .items_start()
         .bg(rgb(style.header_background))
         .rounded_tl(px(DEVICE_CORNER_RADIUS - DEVICE_FRAME_BORDER_WIDTH))
-        .rounded_tr(px(DEVICE_CORNER_RADIUS - DEVICE_FRAME_BORDER_WIDTH))
+        .rounded_bl(px(DEVICE_CORNER_RADIUS - DEVICE_FRAME_BORDER_WIDTH))
         .child(div().flex_shrink_0().child(leading_control))
         .child(
             div()
-                .flex_1()
-                .h_full()
+                .w_full()
+                .h(px(DEVICE_FRAME_HEADER_HEIGHT))
+                .flex_shrink_0()
                 .flex()
                 .items_center()
                 .min_w_0()

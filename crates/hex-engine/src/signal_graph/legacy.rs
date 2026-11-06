@@ -53,6 +53,8 @@ impl RendererRuntime {
                         loop_pass: 0,
                         performance_beat_raw: beat.raw(),
                         arrangement_beat_raw: Some(beat.raw()),
+                        meter: None,
+                        cycle_beats_raw: None,
                     })
                     .map_err(error)?;
                 for scratch in &mut self.return_scratch {

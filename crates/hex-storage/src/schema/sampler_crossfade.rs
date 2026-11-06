@@ -28,25 +28,7 @@ fn newer_than_schema66(state: &NativeDeviceState) -> bool {
 }
 
 pub(crate) fn contains_newer_states(project: &Project) -> bool {
-    project
-        .tracks()
-        .iter()
-        .flat_map(|track| track.devices().iter().chain(track.instrument()))
-        .chain(
-            project
-                .return_tracks()
-                .iter()
-                .flat_map(|track| track.devices()),
-        )
-        .chain(project.main_devices())
-        .chain(
-            project
-                .native_sources()
-                .iter()
-                .flat_map(|source| source.devices().chain([source.instrument()])),
-        )
-        .flat_map(hex_project::Device::authored_states)
-        .any(newer_than_schema66)
+    super::device_assets::authored_states(project).any(newer_than_schema66)
 }
 
 pub(crate) fn require_older_states(project: &Project) -> Result<(), StorageError> {

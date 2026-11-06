@@ -25,6 +25,14 @@ enum NodeId {
     ReturnOutput(u64),
     Main,
 }
+impl NodeId {
+    fn belongs_to_track(self, track: TrackId) -> bool {
+        matches!(self,
+            Self::Audio(id) | Self::TrackInput(id) | Self::Generator(id)
+            | Self::Merge(id) | Self::PrintedMerge(id) | Self::Fader(id)
+            if id == track.value())
+    }
+}
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Send {
     pub target: usize,
@@ -1117,7 +1125,12 @@ impl SignalGraph {
     /// bounded merge walk. An edge present on only one side must carry no
     /// delay, so it holds no in-flight PCM; a paired edge must keep its delay.
     /// Returns false on any other mismatch.
-    fn pair_pre_main_edges(&self, other: &Self, mut visit: impl FnMut(usize, usize)) -> bool {
+    fn pair_retained_pre_main_edges(
+        &self,
+        other: &Self,
+        fresh: Option<TrackId>,
+        mut visit: impl FnMut(usize, usize),
+    ) -> bool {
         let key = |graph: &Self, position: usize| {
             graph
                 .pre_main_endpoints(position)
@@ -1126,6 +1139,14 @@ impl SignalGraph {
         let delay = |graph: &Self, index: usize| graph.plan.edges()[index].delay_frames;
         let (mut a, mut b) = (0, 0);
         loop {
+            if fresh.is_some_and(|track| self.pre_main_edge_touches_track(a, track)) {
+                a += 1;
+                continue;
+            }
+            if fresh.is_some_and(|track| other.pre_main_edge_touches_track(b, track)) {
+                b += 1;
+                continue;
+            }
             match (key(self, a), key(other, b)) {
                 (None, None) => {
                     return a == self.pre_main_edges.len() && b == other.pre_main_edges.len();
@@ -1154,18 +1175,69 @@ impl SignalGraph {
             }
         }
     }
+    fn pre_main_edge_touches_track(&self, position: usize, track: TrackId) -> bool {
+        self.pre_main_endpoints(position)
+            .is_some_and(|(from, to)| from.belongs_to_track(track) || to.belongs_to_track(track))
+    }
+
+    /// Only local source/fader edges and this track's direct contribution to
+    /// Main can start with empty history. A group, sidechain or feed would
+    /// also change another owner's input and needs the ordinary proof.
+    fn is_isolated_main_track(&self, id: TrackId) -> bool {
+        if let Some(track) = self.tracks.iter().find(|track| track.id == Some(id))
+            && (!track.devices.is_empty() || !matches!(track.output, TrackOutput::Main { .. }))
+        {
+            return false;
+        }
+        self.pre_main_edges.iter().enumerate().all(|(index, _)| {
+            let Some((from, to)) = self.pre_main_endpoints(index) else {
+                return false;
+            };
+            match (from.belongs_to_track(id), to.belongs_to_track(id)) {
+                (true, false) => from == NodeId::Fader(id.value()) && to == NodeId::Main,
+                (false, true) => false,
+                _ => true,
+            }
+        })
+    }
     /// Relaxed `pre_main_compatible` for copying delay history into a fresh
     /// graph (Pulse #4188). Owners, routing targets and every routed edge's
     /// typed endpoints are unchanged, and nodes on both sides keep their actual
     /// latency and arrivals. Edge positions may shift: a zero-latency node with
     /// only zero-delay edges (for example an unbound source's generator) may
     /// appear or disappear. History must be copied through
-    /// `pair_pre_main_edges`, never by position.
+    /// `pair_retained_pre_main_edges`, never by position.
     fn pre_main_history_maps_from(&self, other: &Self) -> bool {
+        self.retained_pre_main_history_maps_from(other, None)
+    }
+    fn retained_pre_main_history_maps_from(&self, other: &Self, fresh: Option<TrackId>) -> bool {
+        let owner_key = |graph: &Self, owner| match owner {
+            Owner::Track(index) => graph.tracks[index].id.map(|id| (false, id.value())),
+            Owner::Return(index) => Some((true, graph.returns[index].id.value())),
+        };
+        let retained_order = |graph: &Self, owner| {
+            let key = owner_key(graph, owner);
+            fresh
+                .is_none_or(|track| key != Some((false, track.value())))
+                .then_some(key)
+        };
         if self.key_stages != other.key_stages
-            || self.tracks.len() != other.tracks.len()
             || self.returns.len() != other.returns.len()
-            || self.owner_order != other.owner_order
+            || if let Some(track) = fresh {
+                self.main_latency() != other.main_latency()
+                    || !self.is_isolated_main_track(track)
+                    || !other.is_isolated_main_track(track)
+                    || !self
+                        .owner_order
+                        .iter()
+                        .filter_map(|&owner| retained_order(self, owner))
+                        .eq(other
+                            .owner_order
+                            .iter()
+                            .filter_map(|&owner| retained_order(other, owner)))
+            } else {
+                self.tracks.len() != other.tracks.len() || self.owner_order != other.owner_order
+            }
         {
             return false;
         }
@@ -1193,17 +1265,25 @@ impl SignalGraph {
             ) => ta == tb && same_edge(a, b),
             _ => false,
         };
-        if !self.tracks.iter().zip(&other.tracks).all(|(a, b)| {
-            a.id == b.id
-                && same_output(a.output, b.output)
-                && same_sends(&a.sends, &b.sends)
-                && same_sends(&a.audio_feeds, &b.audio_feeds)
-        }) || !self.returns.iter().zip(&other.returns).all(|(a, b)| {
-            a.id == b.id
-                && same_edge(a.main, b.main)
-                && same_sends(&a.feeds, &b.feeds)
-                && same_sends(&a.audio_feeds, &b.audio_feeds)
-        }) {
+        let retained = |track: &&TrackPlan| fresh.is_none_or(|id| track.id != Some(id));
+        if !self
+            .tracks
+            .iter()
+            .filter(retained)
+            .zip(other.tracks.iter().filter(retained))
+            .all(|(a, b)| {
+                a.id == b.id
+                    && same_output(a.output, b.output)
+                    && same_sends(&a.sends, &b.sends)
+                    && same_sends(&a.audio_feeds, &b.audio_feeds)
+            })
+            || !self.returns.iter().zip(&other.returns).all(|(a, b)| {
+                a.id == b.id
+                    && same_edge(a.main, b.main)
+                    && same_sends(&a.feeds, &b.feeds)
+                    && same_sends(&a.audio_feeds, &b.audio_feeds)
+            })
+        {
             return false;
         }
         // Non-Main nodes, merged by sorted typed identity.
@@ -1213,11 +1293,17 @@ impl SignalGraph {
         };
         let (mut i, mut j) = (0, 0);
         while i < self.typed.len() || j < other.typed.len() {
-            if i < self.typed.len() && self.main_devices.contains(&i) {
+            if i < self.typed.len()
+                && (self.main_devices.contains(&i)
+                    || fresh.is_some_and(|id| self.typed[i].belongs_to_track(id)))
+            {
                 i += 1;
                 continue;
             }
-            if j < other.typed.len() && other.main_devices.contains(&j) {
+            if j < other.typed.len()
+                && (other.main_devices.contains(&j)
+                    || fresh.is_some_and(|id| other.typed[j].belongs_to_track(id)))
+            {
                 j += 1;
                 continue;
             }
@@ -1252,7 +1338,7 @@ impl SignalGraph {
                 (Some(_), None) | (None, None) => return false,
             }
         }
-        self.pair_pre_main_edges(other, |_, _| {})
+        self.pair_retained_pre_main_edges(other, fresh, |_, _| {})
     }
     pub(crate) fn compatible(&self, other: &Self) -> bool {
         self.plan == other.plan
@@ -1519,29 +1605,60 @@ impl SignalRuntime {
     pub(crate) fn horizon(&self) -> u32 {
         self.delays.history_horizon()
     }
-    pub(crate) fn can_copy_from(&self, other: &Self) -> bool {
-        self.can_continue_pre_main(other)
+    pub(crate) fn can_copy_from(&self, other: &Self, fresh: Option<TrackId>) -> bool {
+        let compatible = if let Some(id) = fresh {
+            let silent_track =
+                |runtime: &Self| {
+                    runtime.delay_graph.pre_main_edges.iter().enumerate().all(
+                        |(position, &edge)| {
+                            !runtime
+                                .delay_graph
+                                .pre_main_edge_touches_track(position, id)
+                                || runtime.delays.edge_history_is_silent(edge)
+                        },
+                    )
+                };
+            self.graph
+                .retained_pre_main_history_maps_from(&other.graph, Some(id))
+                && self.delays.is_closed()
+                && other.delays.is_closed()
+                && self.delay_graph.history_compatible(&self.graph)
+                && other.delay_graph.history_compatible(&other.graph)
+                && silent_track(self)
+                && silent_track(other)
+        } else {
+            self.can_continue_pre_main(other)
+        };
+        compatible
             && self.horizon() >= other.horizon()
-            && (self.delay_graph.clock_only_compatible(&other.delay_graph) || {
-                let mut copyable = true;
-                self.delay_graph
-                    .pair_pre_main_edges(&other.delay_graph, |to, from| {
-                        copyable &= self
-                            .delays
-                            .can_copy_edge_history_from(to, &other.delays, from);
-                    })
-                    && copyable
-            })
+            && ((fresh.is_none() && self.delay_graph.clock_only_compatible(&other.delay_graph))
+                || {
+                    let mut copyable = true;
+                    let mapped = self.delay_graph.pair_retained_pre_main_edges(
+                        &other.delay_graph,
+                        fresh,
+                        |to, from| {
+                            copyable &=
+                                self.delays
+                                    .can_copy_edge_history_from(to, &other.delays, from);
+                        },
+                    );
+                    mapped && copyable
+                })
     }
-    pub(crate) fn copy_from(&mut self, other: &Self) -> Result<(), Invalid> {
-        if !self.can_copy_from(other) {
+    pub(crate) fn copy_from(
+        &mut self,
+        other: &Self,
+        fresh: Option<TrackId>,
+    ) -> Result<(), Invalid> {
+        if !self.can_copy_from(other, fresh) {
             return Err(Invalid("signal history mapping is incompatible"));
         }
-        if !self.delay_graph.clock_only_compatible(&other.delay_graph) {
-            // Paired by typed endpoints; `can_copy_from` proved every pair.
+        if fresh.is_some() || !self.delay_graph.clock_only_compatible(&other.delay_graph) {
+            // Paired by typed endpoints; can_copy_from proved every pair.
             let (delay_graph, delays) = (&self.delay_graph, &mut self.delays);
             let mut result = Ok(());
-            delay_graph.pair_pre_main_edges(&other.delay_graph, |to, from| {
+            delay_graph.pair_retained_pre_main_edges(&other.delay_graph, fresh, |to, from| {
                 if result.is_ok() {
                     result = delays.copy_edge_history_from(to, &other.delays, from);
                 }
@@ -1914,6 +2031,19 @@ impl SignalRuntime {
 
 pub(crate) struct OriginClock(pub(crate) Option<TransportStamp>);
 impl hex_lattice::NativeInstrumentClock for OriginClock {
+    fn arrangement_meter_at_offset(&self, offset: usize) -> Option<(u8, u8)> {
+        if offset != 0 {
+            return None;
+        }
+        let meter = self.0?.meter?;
+        Some((meter.numerator(), meter.denominator()))
+    }
+    fn arrangement_cycle_at_offset(&self, offset: usize) -> Option<(u64, u64)> {
+        if offset != 0 {
+            return None;
+        }
+        self.0?.cycle_beats_raw
+    }
     fn tempo_micro_bpm_at_offset(&self, offset: usize) -> Option<u32> {
         if offset != 0 {
             return None;

@@ -9,7 +9,7 @@ pub struct Client {
     pub(super) retired_receipts: Option<Arc<retired_scalar_receipts::Mailbox>>,
     action_outcomes: Option<ActionOutcomeReader>,
     worker_owned_publication: bool,
-    project_generation: Option<NonZeroU64>,
+    project_generation: Option<u64>,
 }
 pub struct WorkerControl {
     endpoint: Guard<PublicationControl>,
@@ -19,6 +19,7 @@ pub(crate) struct ClientEndpoints {
     action_admission: Option<action_outcomes::Admission>,
     pub(super) output_identity: u64,
     pub(super) sample_preview: crate::sample_preview::Control,
+    sample_recording: crate::sample_recording::Control,
     pub(super) resident_forwarding: Arc<resident_forwarding::ResidentForwarding>,
     spectrum_reader: Option<crate::spectrum_worker::SpectrumReader>,
     commands: Producer<QueuedCommand>,
@@ -48,6 +49,7 @@ impl Control {
             diagnostics,
             action_admission,
             sample_preview,
+            sample_recording,
             commands,
             spectrum_target,
             processor_audition,
@@ -75,6 +77,7 @@ impl Control {
             action_admission,
             output_identity,
             sample_preview,
+            sample_recording,
             resident_forwarding,
             spectrum_reader,
             commands,
@@ -177,7 +180,7 @@ impl Client {
     /// desktop binds a delivered worker-owned Client. A retained Client may
     /// change its binding after its successor graph is observed. Priority
     /// Stop remains an output-wide operation with its own cutoff.
-    pub fn bind_resident_transport(&mut self, generation: NonZeroU64) {
+    pub fn bind_resident_transport(&mut self, generation: u64) {
         self.project_generation = Some(generation);
     }
     pub(crate) fn guard(&self) -> &Guard<ClientEndpoints> {
@@ -235,6 +238,7 @@ impl Client {
     pub fn close(&mut self) {
         if let Some(endpoints) = self.endpoints.owner_ref() {
             endpoints.midi_recording.cancel();
+            endpoints.sample_recording.stop();
             endpoints.status.closing.store(true, Release);
             endpoints.stop();
         }
@@ -352,6 +356,20 @@ impl Client {
             .sample_preview
             .publish_from(generation, audio, frame)
     }
+    pub fn preview_publish_loop(
+        &mut self,
+        generation: u64,
+        audio: hex_engine::Audio,
+    ) -> Result<(), crate::sample_preview::PublishRefusal> {
+        let Some(endpoints) = self.endpoints.owner_mut() else {
+            return Err(crate::sample_preview::PublishRefusal {
+                reason: Invalid("audio client is closed"),
+                audio,
+            });
+        };
+        endpoints.sample_preview.publish_loop(generation, audio)
+    }
+
     pub fn preview_cancel(&mut self) {
         if let Some(e) = self.endpoints.owner_mut() {
             e.sample_preview.cancel();
@@ -369,6 +387,40 @@ impl Client {
             e.sample_preview.reclaim();
         }
     }
+    pub fn start_sample_recording(
+        &mut self,
+        project_generation: u64,
+        outputs: &[crate::sample_recording::OutputCaptureId],
+        main: bool,
+    ) -> Result<crate::sample_recording::Reader, Invalid> {
+        let endpoints = self
+            .endpoints
+            .owner_mut()
+            .ok_or(Invalid("audio client is closed"))?;
+        if endpoints.status.closing.load(Acquire) || endpoints.status.device_fault.load(Acquire) {
+            return Err(Invalid("sample recording output is unavailable"));
+        }
+        endpoints
+            .sample_recording
+            .start(project_generation, outputs, main)
+    }
+
+    pub fn sample_recording_phase(&self) -> Option<crate::sample_recording::Phase> {
+        self.endpoints.owner_ref()?.sample_recording.phase()
+    }
+
+    pub fn stop_sample_recording(&self) {
+        if let Some(endpoints) = self.endpoints.owner_ref() {
+            endpoints.sample_recording.stop();
+        }
+    }
+
+    pub fn reclaim_sample_recording(&mut self) {
+        if let Some(endpoints) = self.endpoints.owner_mut() {
+            endpoints.sample_recording.reclaim();
+        }
+    }
+
     pub fn midi_target(&self) -> Option<crate::midi_recording::Target> {
         self.endpoints
             .owner_ref()
@@ -730,7 +782,7 @@ impl ClientEndpoints {
 }
 struct CommandSource {
     revision: u64,
-    project_generation: Option<NonZeroU64>,
+    project_generation: Option<u64>,
 }
 
 fn enqueue_action(
@@ -755,7 +807,7 @@ fn enqueue_action(
         || source.project_generation.is_some_and(|generation| {
             status
                 .recording_source()
-                .is_some_and(|active| active.context.project_generation != generation.get())
+                .is_some_and(|active| active.context.project_generation != generation)
         })
     {
         return Err(action);

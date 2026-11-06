@@ -166,15 +166,28 @@ pub(in crate::service) fn bounce_arrangement(
                 .map_err(|e| e.to_string())?;
             let waveforms =
                 std::cell::RefCell::new(session.audio_clip_waveforms().map_err(|e| e.to_string())?);
+            let offline_input = ResidentEffectPreparation {
+                project,
+                context,
+                restoring_plugin_state: false,
+                preparing_edit: false,
+            };
+            if in_place && offline_input.requires_plugin_profile() {
+                return Err("vst3 instrument bounce requires new tracks".into());
+            }
+            let offline = sink.prepare_offline_bounce(offline_input)?;
             let mut isolated = inputs
-                .prepare(
+                .prepare_with_gain(
                     project,
                     &mut **sink,
                     &session.media_bank(),
                     session.sine_table(),
                     &session.audio_transforms,
                     &waveforms,
+                    None,
+                    None,
                     context,
+                    offline.as_deref(),
                 )
                 .map_err(|e| e.to_string())?;
             isolated.inputs = RuntimeInputs::default();
@@ -185,6 +198,13 @@ pub(in crate::service) fn bounce_arrangement(
                         hex_export::control_storage_allowance(None).map_err(|e| e.to_string())?,
                     )
                     .and_then(|n| n.checked_add(sink.native_sampler_hold().construction_bytes))
+                    .and_then(|n| {
+                        n.checked_add(
+                            offline
+                                .as_ref()
+                                .map_or(0, |owner| owner.retained_data_bytes()),
+                        )
+                    })
                     .ok_or("bounce runtime allowance overflows")?;
             let construction = usize::try_from(allowance_frames)
                 .ok()
@@ -204,9 +224,32 @@ pub(in crate::service) fn bounce_arrangement(
                 &session.verified_sources,
             )
             .files;
-            Ok((isolated, files))
+            Ok((isolated, files, offline))
         },
-        |path, (isolated, files), item, tails, control| {
+        |path, (isolated, files, offline), item, tails, control| {
+            if let Some(mut offline) = offline {
+                if isolated
+                    .prepared
+                    .arrangement_stream_sources()
+                    .next()
+                    .is_some()
+                {
+                    return Err("vst3 bounce with streamed audio sources is unavailable".into());
+                }
+                return hex_export::render_arrangement_bounce_with_foreign(
+                    path,
+                    isolated.prepared,
+                    Some(&isolated.resources),
+                    item.start,
+                    item.end - item.start,
+                    tails,
+                    control,
+                    None,
+                    offline.as_mut(),
+                )
+                .map(|report| report.frames)
+                .map_err(|e| e.to_string());
+            }
             crate::arrangement_bounce::streamed::render(
                 path,
                 crate::arrangement_bounce::streamed::BounceRevision {

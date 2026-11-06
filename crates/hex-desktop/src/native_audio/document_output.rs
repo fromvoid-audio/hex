@@ -5,8 +5,10 @@ use super::*;
 use hex_session::service::RequestCancellation;
 use std::time::{Duration, Instant};
 
+mod rebind;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod tests;
+pub(super) use rebind::Rebind;
 
 pub(super) struct ReplacementOutput {
     pub(super) context: AudioSourceContext,

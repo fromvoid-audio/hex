@@ -30,7 +30,6 @@ use hex_engine::{
     playback::Playback,
 };
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
-use std::num::NonZeroU64;
 use std::sync::{
     Arc,
     atomic::{
@@ -242,7 +241,7 @@ impl AtomicRouteSlot {
 struct QueuedCommand {
     ticket: u64,
     action: PlaybackAction,
-    project_generation: Option<NonZeroU64>,
+    project_generation: Option<u64>,
     sampler_edit_gate: u64,
     transport_epoch: u64,
 }
@@ -274,6 +273,14 @@ fn action_invalidates_processor_audition(action: PlaybackAction) -> bool {
         | PlaybackAction::LaunchAndPlay(_)
         | PlaybackAction::SetMetronome(_) => false,
     }
+}
+
+fn is_pause_action(action: PlaybackAction) -> bool {
+    matches!(
+        action,
+        PlaybackAction::Transport(PlaybackCommand::Pause)
+            | PlaybackAction::Session(hex_engine::SessionPlaybackCommand::Pause)
+    )
 }
 
 fn starts_playback(action: PlaybackAction) -> bool {
@@ -1204,6 +1211,7 @@ pub struct Control {
     diagnostics: audio_diagnostics::TraceReader,
     action_admission: Option<action_outcomes::Admission>,
     pub sample_preview: crate::sample_preview::Control,
+    pub sample_recording: crate::sample_recording::Control,
     commands: Producer<QueuedCommand>,
     pub spectrum_target: spectrum_target::SpectrumTargetControl,
     pub processor_audition: processor_audition::ProcessorAuditionTargetControl,
@@ -1341,6 +1349,7 @@ pub struct Callback {
     output_transport_cancelled: bool,
     transport_setup_open: bool,
     sample_preview: crate::sample_preview::Callback,
+    sample_recording: crate::sample_recording::Callback,
     publications: Consumer<QueuedPublication>,
     retired: Producer<ReturnedPublication>,
     candidate_root: crate::candidate_custody::CandidateRoot,
@@ -1424,6 +1433,7 @@ pub fn channel_with_spectrum(
         return Err(Invalid("unsupported playback sample rate"));
     }
     let (mut sample_preview, callback_preview) = crate::sample_preview::channel(rate);
+    let (sample_recording, callback_recording) = crate::sample_recording::channel(rate);
     let (publications, incoming) = RingBuffer::new(1);
     let (returning, retired) = RingBuffer::new(RETIRED);
     let (commands, events) = RingBuffer::new(COMMANDS);
@@ -1452,6 +1462,7 @@ pub fn channel_with_spectrum(
             diagnostics: trace_reader,
             action_admission: None,
             sample_preview,
+            sample_recording,
             commands,
             spectrum_target,
             processor_audition,
@@ -1489,6 +1500,7 @@ pub fn channel_with_spectrum(
             output_transport_cancelled: false,
             transport_setup_open: true,
             sample_preview: callback_preview,
+            sample_recording: callback_recording,
             candidate_root,
             publications: incoming,
             retired: returning,
@@ -2431,6 +2443,10 @@ impl Callback {
 
     pub(crate) fn revoke_output_transport(&mut self) {
         self.revoke_native_effects();
+        self.revoke_forwarded_output_transport();
+    }
+
+    fn revoke_forwarded_output_transport(&mut self) {
         if let Some(transport) = self.output_transport.as_mut() {
             transport.revoke();
             self.output_transport_cancelled = true;
@@ -2549,6 +2565,9 @@ impl Callback {
         };
         self.sample_preview
             .constructor_channel_storage()?
+            .plus(crate::sample_recording::Control::callback_storage(
+                &self.sample_recording,
+            )?)?
             .plus(self.gain_recording.constructor_channel_storage()?)?
             .plus(self.native_parameter_input.constructor_channel_storage()?)?
             .plus(self.midi_recording.constructor_channel_storage()?)?
@@ -3913,7 +3932,7 @@ impl Callback {
                 && cut.stop_through.is_none_or(|stop| queued.ticket > stop)
                 && queued.project_generation.is_some_and(|generation| {
                     self.recording_source()
-                        .is_none_or(|source| source.context.project_generation != generation.get())
+                        .is_none_or(|source| source.context.project_generation != generation)
                 })
             {
                 let reason = PlaybackActionRejection::ProjectChanged;
@@ -4028,7 +4047,7 @@ impl Callback {
                 if fading {
                     // The output transport, epoch and sampler keyboard stay
                     // live until the fade's audible end.
-                    self.begin_transport_fade(queued.ticket, stop, false);
+                    self.begin_transport_fade(queued.ticket, queued.action, false);
                 } else if stop {
                     self.revoke_current_sampler_keyboard();
                 }
@@ -4047,9 +4066,7 @@ impl Callback {
                             crate::gain_recording::AbortReason::TransportChanged,
                         );
                     } else {
-                        self.invalidate_gain_recording(
-                            crate::gain_recording::AbortReason::TransportChanged,
-                        );
+                        self.invalidate_for_transport_change(queued.action);
                     }
                 }
                 if invalidate_audition {
@@ -4097,6 +4114,8 @@ impl Callback {
         }
         self.recovery_seek_pending = None;
         self.sample_preview.invalidate_on_fault();
+        self.sample_recording
+            .end(crate::sample_recording::End::OutputFailed);
         self.invalidate_midi_recording(crate::midi_recording::AbortReason::OutputFailed);
         self.revoke_output_transport();
         self.status.sampler_keyboard.revoke_on_callback();
@@ -4132,6 +4151,8 @@ impl Callback {
             self.stop_after_fault();
         } else {
             // A begin that raced the error still receives its reserved terminal.
+            self.sample_recording
+                .end(crate::sample_recording::End::OutputFailed);
             self.invalidate_midi_recording(crate::midi_recording::AbortReason::OutputFailed);
             self.gain_recording
                 .abort(crate::gain_recording::AbortReason::OutputFailed);
@@ -4173,6 +4194,16 @@ impl Callback {
         let block = self.scheduled_transport();
         let result = self.render_inner(output);
         if self.transport_fade.is_some() && !self.transport_fade_pending() {
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            if result.is_ok()
+                && self.transport_fade_is_pause()
+                && let Some((_, before, true)) = block
+                && let Some((_, after, false)) = self.scheduled_transport()
+                && let Ok(frame) = usize::try_from(after.saturating_sub(before))
+                && frame < output.len()
+            {
+                self.native_sources.end_staging_at_pause(frame);
+            }
             self.settle_transport_fade();
         }
         if let Some((position, performance, true)) = block
@@ -4263,6 +4294,8 @@ impl Callback {
         // Take and live-input quanta still run so a racing take or gesture
         // receives its `OutputFailed` terminal instead of waiting on silence.
         if self.status.render_fault.load(Acquire) {
+            self.sample_recording
+                .end(crate::sample_recording::End::OutputFailed);
             if !output.is_empty() {
                 self.prepare_gain_recording_quantum();
                 self.prepare_native_parameter_quantum();
@@ -4270,8 +4303,14 @@ impl Callback {
             output.fill([0.0; 2]);
             return Ok(());
         }
+        if self.output_transport.is_some() {
+            self.sample_recording
+                .end(crate::sample_recording::End::UnsupportedOutput);
+        } else {
+            self.sample_recording.begin(output.len());
+        }
         if self.status.closing.load(Acquire) || !self.render_section_launch(output)? {
-            self.render_project(output)?;
+            self.render_project(output, 0)?;
         }
         self.report_sampler_keyboard_rejection();
         if !self.status.closing.load(Acquire) {
@@ -4280,7 +4319,11 @@ impl Callback {
         Ok(())
     }
 
-    fn render_project(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+    fn render_project(
+        &mut self,
+        output: &mut [Frame],
+        capture_offset: usize,
+    ) -> Result<(), Invalid> {
         if self.native_effects_revoked() {
             output.fill([0.0; 2]);
             return if self.status.playing.load(Relaxed) {
@@ -4338,7 +4381,19 @@ impl Callback {
             .as_ref()
             .and_then(|c| c.project.as_ref())
             .is_some_and(|p| p.observing());
-        if !node_observed && !project_observed {
+        if self.sample_recording.selection().is_some_and(|layout| {
+            self.status.closing.load(Acquire)
+                || active.as_ref().is_none_or(|active| {
+                    active.control_context_generation != layout.generation
+                        || active.playback.sample_rate() != self.rate
+                        || !active.playback.project_sample_sources_supported(layout)
+                })
+        }) {
+            self.sample_recording
+                .end(crate::sample_recording::End::SourceChanged);
+        }
+        let recording = self.sample_recording.observation();
+        if !node_observed && !project_observed && recording.is_none() {
             return self.render_unobserved(output);
         }
         if self.status.closing.load(Acquire) {
@@ -4354,17 +4409,60 @@ impl Callback {
             .spectrum_capture
             .as_mut()
             .and_then(|c| c.project.as_mut());
-        let selection = project_capture.as_ref().and_then(|p| p.selection());
+        let selection = project_capture
+            .as_ref()
+            .and_then(|p| p.selection())
+            .filter(|_| project_observed);
+        let (record_tracks, returns) = recording
+            .as_ref()
+            .map_or((&[][..], &[][..]), |(layout, _)| {
+                (layout.tracks.as_ref(), layout.returns.as_ref())
+            });
+        let spectrum_tracks = selection.as_ref().map_or(&[][..], |s| s.tracks());
+        let mut joined = [0; crate::sample_recording::TRACKS];
+        let tracks =
+            crate::sample_recording::merge_tracks(spectrum_tracks, record_tracks, &mut joined);
+        let recording_observed = recording.is_some();
+        let recording = std::cell::RefCell::new(recording);
         let mut observe_project = |signal, offset, frames: &[Frame]| {
-            if let Some(project) = project_capture.as_mut() {
+            if let Some(project) = project_capture.as_mut()
+                && match signal {
+                    hex_engine::ProjectSignal::Track(id) => {
+                        spectrum_tracks.binary_search(&id).is_ok()
+                    }
+                    hex_engine::ProjectSignal::Return(_) => false,
+                    _ => true,
+                }
+            {
                 project.observe(signal, offset, frames);
             }
+            if recording_observed
+                && let Ok(mut recording) = recording.try_borrow_mut()
+                && let Some((layout, stage)) = recording.as_mut()
+            {
+                stage.observe(layout, signal, capture_offset + offset, frames);
+            }
         };
-        let mut project = selection
-            .as_ref()
-            .filter(|_| project_observed)
-            .and_then(|selection| {
-                hex_engine::ProjectOutputTap::new(selection.tracks(), &mut observe_project)
+        let mut observe_timing = |offset, start, frames, map: &hex_engine::PreparedTempoMap| {
+            if let Ok(mut recording) = recording.try_borrow_mut()
+                && let Some((_, stage)) = recording.as_mut()
+            {
+                stage.observe_timing(capture_offset + offset, start, frames, map);
+            }
+        };
+        let mut project = tracks
+            .filter(|_| project_observed || recording_observed)
+            .and_then(|tracks| {
+                let tap = hex_engine::ProjectOutputTap::with_returns(
+                    tracks,
+                    returns,
+                    &mut observe_project,
+                )?;
+                Some(if recording_observed {
+                    tap.with_timing(&mut observe_timing)
+                } else {
+                    tap
+                })
             });
         let node: Option<&mut hex_engine::NodeSignalObserver<'_>> = if node_observed {
             Some(&mut observe)
@@ -4648,6 +4746,27 @@ impl Callback {
     ) -> Option<crate::spectrum_worker::CaptureOutcome> {
         self.finish_analysis_block(captured_start, output_valid).0
     }
+
+    pub(crate) fn finish_sample_recording(&mut self, output_valid: bool) {
+        if output_valid
+            && self.sample_recording.selection().is_some_and(|layout| {
+                self.status.closing.load(Acquire)
+                    || self
+                        .active
+                        .as_ref()
+                        .and_then(ActivePublication::current)
+                        .is_none_or(|active| {
+                            active.control_context_generation != layout.generation
+                                || !active.playback.project_sample_sources_supported(layout)
+                        })
+            })
+        {
+            self.sample_recording
+                .end(crate::sample_recording::End::SourceChanged);
+            return;
+        }
+        self.sample_recording.finish(output_valid);
+    }
     fn finish_eq_spectrum(
         &mut self,
         captured_start: Instant,
@@ -4710,9 +4829,25 @@ impl Callback {
     }
 
     fn invalidate_gain_recording(&mut self, reason: crate::gain_recording::AbortReason) {
+        self.revoke_native_effects();
+        self.invalidate_transport_recording(reason);
+    }
+
+    fn invalidate_for_transport_change(&mut self, action: PlaybackAction) {
+        let reason = crate::gain_recording::AbortReason::TransportChanged;
+        if is_pause_action(action) {
+            // Pause retains the active graph for monitoring, release tails
+            // and resume. The native endpoints belong to that same graph.
+            self.invalidate_transport_recording(reason);
+        } else {
+            self.invalidate_gain_recording(reason);
+        }
+    }
+
+    fn invalidate_transport_recording(&mut self, reason: crate::gain_recording::AbortReason) {
         // Reuse the existing transport-discontinuity owner/epoch; asynchronous
         // output must not expose pre-seek/pause/stop buffers in a new context.
-        self.revoke_output_transport();
+        self.revoke_forwarded_output_transport();
         self.abort_transport_inputs(reason);
         let prior_epoch = self
             .status
@@ -5068,6 +5203,7 @@ pub(crate) fn worker_boundary_storage_quote() -> Option<usize> {
         .checked_add(action_outcomes::storage_bytes())?
         .checked_add(SESSION_ROUTE_CAPACITY.checked_mul(std::mem::size_of::<AtomicRouteSlot>())?)?
         .checked_add(crate::sample_preview::constructor_storage_quote()?)?
+        .checked_add(crate::sample_recording::storage_quote()?)?
         .checked_add(crate::gain_recording::constructor_storage_quote()?)?
         .checked_add(crate::native_parameter_input::constructor_storage_quote()?)?
         .checked_add(crate::midi_recording::constructor_storage_quote()?)?
@@ -8847,7 +8983,7 @@ mod tests {
         let (mut control, mut callback) = channel(48_000).unwrap();
         let mut reader = wire_action_outcomes(&mut control, &mut callback);
         let old = AudioSourceContext {
-            project_generation: 1,
+            project_generation: 0,
             editor_revision: 4,
         };
         let (old_graph, _, clip, _) = session_audio_graph();
@@ -8855,7 +8991,7 @@ mod tests {
             .publish_unaccounted_pcm_obligation(
                 old_graph,
                 PublicationPolicy::InstallFreshRuntime,
-                1,
+                old.project_generation,
                 true,
                 false,
                 Some(old),
@@ -8867,7 +9003,7 @@ mod tests {
             reserve_native_worker(control, callback, None);
         let mut retirement = NativeRetirement::new(terminals, root);
         client.activate();
-        client.bind_resident_transport(NonZeroU64::new(1).unwrap());
+        client.bind_resident_transport(old.project_generation);
 
         let control = publication.control().unwrap();
         let fence = control.capture_fresh_runtime_fence().unwrap();
@@ -8941,7 +9077,7 @@ mod tests {
         assert!(!status.playing.load(Acquire));
         assert!(client.command_with_ticket(PlaybackCommand::Play).is_err());
 
-        client.bind_resident_transport(NonZeroU64::new(2).unwrap());
+        client.bind_resident_transport(new.project_generation);
         let control = publication.control().unwrap();
         assert_eq!(control.reclaim(), 1);
         let edited = AudioSourceContext {

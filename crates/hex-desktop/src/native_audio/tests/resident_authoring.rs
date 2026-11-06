@@ -997,9 +997,7 @@ fn copied_frame_groups_share_audio_under_tight_admission_and_survive_history_reo
         .unwrap();
     let opened = reopened.run(Request::Open(path));
     assert_eq!(opened.state.project, saved.state.project);
-    reopened.release_relinquished_output();
-    reopened.wait_fresh_output(old_output);
-    reopened.applied(0);
+    super::resident_lifecycle::finish_replacement(&mut reopened, &opened, old_output);
     reopened
         .audio
         .as_mut()

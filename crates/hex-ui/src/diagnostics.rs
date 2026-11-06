@@ -206,6 +206,49 @@ pub(crate) fn record_group_selection(cx: &App, route: &str) {
     }
 }
 
+/// Correlates the catalog class with its insertion terminal using the original
+/// request context. Includes bounded plug-in metadata, never its path or state.
+pub(crate) struct PluginLoad {
+    handle: DiagnosticsHandle,
+    details: String,
+}
+
+impl PluginLoad {
+    pub(crate) fn new(
+        cx: &App,
+        name: &str,
+        context: hex_engine::AudioSourceContext,
+        destination: hex_session::service::PluginEffectDestination,
+        rate: u32,
+    ) -> Option<Self> {
+        let config = cx.try_global::<SessionDiagnostics>()?;
+        config.action_observer.as_ref()?;
+        let handle = config.handle.as_ref().ok()?.clone();
+        let name: String = name.chars().take(128).collect();
+        let details = format!(
+            "class={name:?} generation={} revision={} rate_hz={rate} destination={destination:?}",
+            context.project_generation, context.editor_revision,
+        );
+        Some(Self { handle, details })
+    }
+
+    pub(crate) fn submitted(&self) {
+        self.record("submitted");
+    }
+
+    pub(crate) fn complete(&self, accepted: bool) {
+        self.record(if accepted { "accepted" } else { "refused" });
+    }
+
+    fn record(&self, stage: &'static str) {
+        let _ = self.handle.record_typed(
+            Level::Debug,
+            Category::Ui,
+            &format!("vst3_load v=1 stage={stage} {}", self.details),
+        );
+    }
+}
+
 /// One bounded control-side record per refused loop action; labels are static
 /// and contain no project names, paths, or user-entered text.
 pub(crate) fn record_loop_refusal(
@@ -471,9 +514,12 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
             format!("stage=native_latency_restart source={source:?}")
         }
         E::DegradedPlugins {
+            project_generation,
             output_identity,
             devices,
-        } => format!("stage=degraded_plugins output={output_identity} devices={devices:?}"),
+        } => format!(
+            "stage=degraded_plugins generation={project_generation} output={output_identity} devices={devices:?}"
+        ),
         E::Publication {
             context,
             output_identity,

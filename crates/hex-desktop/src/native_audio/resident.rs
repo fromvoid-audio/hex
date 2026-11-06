@@ -30,6 +30,11 @@ pub(super) struct Resident {
     observations: [Option<Arc<hex_engine::PreparedPlaybackObservation>>; RUNTIME_CELLS],
 }
 impl Resident {
+    pub(super) fn has_pending_document(&self, context: AudioSourceContext) -> bool {
+        self.pending
+            .as_ref()
+            .is_some_and(|pending| pending.metadata.context == context)
+    }
     /// Stopped cursor and section loop of the retained offline publication.
     pub(super) fn pending_cursor(&self) -> Option<hex_session::service::ArrangementEditPosition> {
         self.pending
@@ -491,6 +496,15 @@ impl NativeAudioSink {
                     });
                 }
             };
+            let rebind_policy = self
+                .document_rebind
+                .as_ref()
+                .filter(|rebind| rebind.context == metadata.context)
+                .map(|rebind| {
+                    hex_audio::prepared::PublicationPolicy::InstallUnderStoppedArrangement(
+                        rebind.fence,
+                    )
+                });
             let policy = match policy {
                 ResidentPublicationPolicy::ArrangementEdit => {
                     let Some(policy) = section_policy else {
@@ -506,21 +520,26 @@ impl NativeAudioSink {
                     hex_audio::prepared::PublicationPolicy::InheritRuntime
                 }
                 ResidentPublicationPolicy::InstallFreshRuntime => {
-                    match self.plugins.restore_policy(metadata.context) {
-                        Ok(Some(policy)) if metadata.stopped_restore => policy,
-                        Ok(None) => hex_audio::prepared::PublicationPolicy::InstallFreshRuntime,
-                        Ok(Some(_)) => {
-                            return Err(ResidentPublicationRefusal {
-                                playback,
-                                error: "stopped vst3 restore owns publication".into(),
-                            });
+                    if let Some(policy) = rebind_policy {
+                        policy
+                    } else {
+                        match self.plugins.restore_policy(metadata.context) {
+                            Ok(Some(policy)) if metadata.stopped_restore => policy,
+                            Ok(None) => hex_audio::prepared::PublicationPolicy::InstallFreshRuntime,
+                            Ok(Some(_)) => {
+                                return Err(ResidentPublicationRefusal {
+                                    playback,
+                                    error: "stopped vst3 restore owns publication".into(),
+                                });
+                            }
+                            Err(error) => {
+                                return Err(ResidentPublicationRefusal { playback, error });
+                            }
                         }
-                        Err(error) => return Err(ResidentPublicationRefusal { playback, error }),
                     }
                 }
-                ResidentPublicationPolicy::RestorePluginState => {
-                    hex_audio::prepared::PublicationPolicy::InstallFreshRuntime
-                }
+                ResidentPublicationPolicy::RestorePluginState => rebind_policy
+                    .unwrap_or(hex_audio::prepared::PublicationPolicy::InstallFreshRuntime),
                 ResidentPublicationPolicy::ReplaceDocument { .. } => {
                     hex_audio::prepared::PublicationPolicy::InstallFreshRuntime
                 }
@@ -740,6 +759,9 @@ impl NativeAudioSink {
         if self.output.is_none() {
             return;
         }
+        if !self.document_rebind_ready_to_submit() {
+            return;
+        }
         if self
             .resident
             .pending
@@ -765,6 +787,7 @@ impl NativeAudioSink {
                         EditorPublicationState::Refused(error),
                     );
                     self.resident.pending = Some(pending);
+                    self.fallback_document_rebind();
                     return;
                 }
             }
@@ -806,6 +829,10 @@ impl NativeAudioSink {
                 metadata,
                 policy,
             });
+            if self.document_rebind.is_some() {
+                self.fallback_document_rebind();
+                return;
+            }
             // Keep the actual owner through both transient backpressure and hard scope/budget
             // refusal, but expose the reason. Waiting never masquerades as Submitted/Applied.
             self.output_identity = self
