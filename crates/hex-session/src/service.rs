@@ -24,6 +24,7 @@ pub use hex_storage::text;
 use hex_tuning::ProjectTuning;
 mod arrangement_sections;
 mod browser_preview;
+pub mod take_audio;
 pub use browser_preview::{AudioPreview, PreviewFailure, PreviewSources};
 #[cfg(test)]
 mod audio_batch_tests;

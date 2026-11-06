@@ -356,6 +356,20 @@ impl Client {
             .sample_preview
             .publish_from(generation, audio, frame)
     }
+    pub fn preview_publish_loop(
+        &mut self,
+        generation: u64,
+        audio: hex_engine::Audio,
+    ) -> Result<(), crate::sample_preview::PublishRefusal> {
+        let Some(endpoints) = self.endpoints.owner_mut() else {
+            return Err(crate::sample_preview::PublishRefusal {
+                reason: Invalid("audio client is closed"),
+                audio,
+            });
+        };
+        endpoints.sample_preview.publish_loop(generation, audio)
+    }
+
     pub fn preview_cancel(&mut self) {
         if let Some(e) = self.endpoints.owner_mut() {
             e.sample_preview.cancel();
