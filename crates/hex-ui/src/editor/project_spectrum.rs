@@ -144,7 +144,9 @@ impl EditorView {
             self.audio_admission
                 .published_audio_revision(generation, state.revision)
         });
-        let expanded = self.project_spectrum.expanded && !self.opening_project;
+        let expanded = self.project_spectrum.expanded
+            && !self.opening_project
+            && !self.sample_recorder.visible;
         let mut result = None;
         let mut output_identity = None;
         if let Some(audio) = self.audio.as_mut() {
@@ -397,6 +399,9 @@ impl EditorView {
         }
         let expanded = self.project_spectrum.expanded;
         let height = self.project_spectrum_height(window);
+        if self.sample_recorder.visible {
+            return self.sample_recorder_panel(f32::from(height), cx);
+        }
         let style = theme::device_style(theme::DeviceStyleRole::Display);
         let available = self
             .audio
@@ -441,6 +446,7 @@ impl EditorView {
                     .on_click(cx.listener(|view, _, _, cx| view.toggle_project_spectrum(cx))),
             )
             .child(theme::text("spectrum"))
+            .child(self.sample_recorder_mode_button(cx))
             .child(
                 div()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))

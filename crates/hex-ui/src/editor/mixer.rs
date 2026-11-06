@@ -198,6 +198,7 @@ impl EditorView {
                         }))
                         .child(theme::text("main")),
                 )
+                .child(self.sample_arm_button(super::sample_recorder::Arm::Main, cx))
                 .children([self.main_track_controls(cx)]);
         }
         strip

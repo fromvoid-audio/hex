@@ -391,6 +391,10 @@ impl Client {
             .start(project_generation, outputs, main)
     }
 
+    pub fn sample_recording_phase(&self) -> Option<crate::sample_recording::Phase> {
+        self.endpoints.owner_ref()?.sample_recording.phase()
+    }
+
     pub fn stop_sample_recording(&self) {
         if let Some(endpoints) = self.endpoints.owner_ref() {
             endpoints.sample_recording.stop();

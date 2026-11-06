@@ -1887,6 +1887,12 @@ impl EditorView {
                 .items_center()
                 .gap(px(2.0))
                 .children([header_content.flex_1().min_w_0()])
+                .child(self.sample_arm_button(
+                    super::sample_recorder::Arm::Output(hex_engine::OutputCaptureId::Track(
+                        track_id,
+                    )),
+                    cx,
+                ))
                 .children(
                     self.track_performance_indicator(hex_engine::OutputCaptureId::Track(track_id)),
                 )

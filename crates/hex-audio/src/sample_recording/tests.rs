@@ -126,13 +126,16 @@ fn overflow_preserves_a_full_prefix_and_stop_stays_available_before_first_chunk(
     let (mut control, mut callback) = channel(48_000);
     let mut reader = control.start(1, &[], true).unwrap();
     assert!(reader.ready());
+    assert_eq!(control.phase(), Some(Phase::Preparing));
     for _ in 0..PACKETS {
         callback.begin(1);
         let (layout, stage) = callback.observation().unwrap();
         stage.observe(layout, ProjectSignal::Master, 0, &[[0.5; 2]]);
         callback.finish(true);
     }
+    assert_eq!(control.phase(), Some(Phase::Capturing));
     callback.begin(1);
+    assert_eq!(control.phase(), Some(Phase::Finishing));
     let mut confirmed = 0;
     assert_eq!(
         reader.drain(|frames, _, pcm| {

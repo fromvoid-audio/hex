@@ -189,6 +189,7 @@ mod refresh;
 mod render;
 mod return_tracks;
 mod routing_controls;
+mod sample_recorder;
 mod sampler_load;
 mod sampler_parameter;
 mod save;
@@ -877,6 +878,7 @@ pub(super) struct EditorView {
     effect_bus_barrier: device_gesture::EffectBusBarrierState,
     device_panel: device_panel::DevicePanelState,
     project_spectrum: project_spectrum::ProjectSpectrumState,
+    sample_recorder: sample_recorder::Recorder,
     worker_requests_pending: usize,
     sampler_load: sampler_load::State,
     sampler_parameter: sampler_parameter::State,
@@ -1645,6 +1647,7 @@ impl EditorView {
             effect_bus_barrier: Default::default(),
             device_panel: device_panel::DevicePanelState::default(),
             project_spectrum: Default::default(),
+            sample_recorder: Default::default(),
             worker_requests_pending: 0,
             sampler_load: Default::default(),
             sampler_parameter: Default::default(),
