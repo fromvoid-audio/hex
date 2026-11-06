@@ -69,6 +69,8 @@ impl EditorView {
         }
         self.update_flow.ready.take();
         self.update_flow.phase = Phase::Idle;
+        // An OS termination waiting on this preparation does not quit.
+        super::close::quit_refused(cx);
     }
 
     pub(super) fn cancel_requested_update(&mut self, cx: &mut Context<Self>) {
@@ -212,7 +214,7 @@ impl EditorView {
         };
         match self.service.submit_correlated_save(request, correlation) {
             Ok(()) => {
-                self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
+                self.worker_submitted();
                 self.update_flow.phase = Phase::Saving {
                     id,
                     correlation: Some(correlation),
@@ -417,7 +419,7 @@ impl EditorView {
             match ready.approval.approve() {
                 Ok(()) => {
                     window.remove_window();
-                    cx.quit();
+                    super::close::quit_confirmed(cx);
                 }
                 Err(error) => {
                     view.cancel_update(id, cx);

@@ -4,9 +4,6 @@ use std::{hint::black_box, time::Instant};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     const RATE: u32 = 48_000;
-    const BLOCK: usize = 128;
-    const TRIALS: usize = 2_000;
-    const WARMUP: usize = 100;
     let pcm: Vec<_> = (0..RATE)
         .map(|frame| {
             let left =
@@ -23,6 +20,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     };
     settings.detune_cents = 7.0;
+    // Notes 48.. around root 60, all detuned +7 cents. Transpose -24 keeps
+    // every voice below unity (the linear path, a same-run reference); 0
+    // mixes linear voices (notes < 60) with slightly pitched-up ones (notes
+    // >= 60 run at rate > 1 because of the detune); +24 pitches every voice
+    // up (rate about 2-12), the band-limited path.
+    for transpose in [-24.0, 0.0, 24.0] {
+        settings.transpose_semitones = transpose;
+        profile(sample, settings, transpose)?;
+    }
+    Ok(())
+}
+
+fn profile(
+    sample: Sample<'_>,
+    settings: Settings<'_>,
+    transpose: f64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    const RATE: u32 = 48_000;
+    const BLOCK: usize = 128;
+    const TRIALS: usize = 2_000;
+    const WARMUP: usize = 100;
     let sampler = PreparedSampler::new(sample, RATE, settings)?;
     for voice_count in [1, 16, 32] {
         let voices: Vec<_> = (0..voice_count)
@@ -55,7 +73,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         durations.sort_unstable();
         println!(
-            "voices={voice_count} rate={RATE} block={BLOCK} warmup={WARMUP} trials={TRIALS} p50_ns={} p95_ns={} p99_ns={} max_ns={} checksum={checksum:.9}",
+            "transpose={transpose} voices={voice_count} rate={RATE} block={BLOCK} warmup={WARMUP} trials={TRIALS} min_ns={} p50_ns={} p95_ns={} p99_ns={} max_ns={} checksum={checksum:.9}",
+            durations[0],
             durations[TRIALS / 2],
             durations[TRIALS * 95 / 100],
             durations[TRIALS * 99 / 100],

@@ -16,6 +16,9 @@ use hex_project::Command;
 use hex_session::service::Request as SessionRequest;
 use std::sync::atomic::Ordering::Relaxed;
 
+/// Status-bar disk-overload slot; fits the four-character `disk` label.
+pub(super) const DISK_OVERLOAD_WIDTH: f32 = 32.0;
+
 impl EditorView {
     pub(super) fn history_action(&mut self, request: SessionRequest, cx: &mut Context<Self>) {
         if !self.cancel_sampler_drafts(cx)
@@ -174,7 +177,15 @@ impl EditorView {
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .text_xs();
-        if let Some(error) = &self.error {
+        let scan_status = self.plugin_scan_status();
+        let plugin_status = self
+            .pending_plugin_effect
+            .as_ref()
+            .map(|pending| pending.status.as_str())
+            .or(scan_status.as_deref());
+        if let Some(error) = &self.error
+            && plugin_status.is_none()
+        {
             bar = bar.child(
                 div()
                     .id("editor-status-message")
@@ -193,6 +204,7 @@ impl EditorView {
                     .child(error.display_text()),
             );
         } else {
+            let status = plugin_status.unwrap_or(&self.status);
             bar = bar.child(
                 div()
                     .id("editor-status-message")
@@ -201,7 +213,7 @@ impl EditorView {
                     .min_w(px(50.0))
                     .truncate()
                     .tooltip({
-                        let message = self.status.clone();
+                        let message = status.to_owned();
                         move |_, cx| {
                             cx.new(|_| super::transport::MiniTooltip {
                                 kind: crate::tooltips::Kind::Identification,
@@ -211,7 +223,7 @@ impl EditorView {
                         }
                     })
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(theme::text(&self.status)),
+                    .child(theme::text(status)),
             );
         }
         let offline = self
@@ -385,6 +397,7 @@ impl EditorView {
                 .into()
             }),
         );
+        bar = bar.child(disk_overload_slot(&self.disk_overload));
         if let Some(status) = self.audio_status() {
             let applied_audio = status.applied_revision.load(Relaxed);
             let misses = status.deadline_misses.load(Relaxed);
@@ -443,6 +456,36 @@ impl EditorView {
     }
 }
 
+/// Fixed-width disk-overload slot, so lighting it never shifts the bar. Its
+/// label and tooltip are lowercase app text through `theme::text`.
+fn disk_overload_slot(state: &super::disk_overload::DiskOverload) -> gpui::Stateful<gpui::Div> {
+    let slot = div()
+        .id("editor-disk-overload")
+        .debug_selector(|| "editor-disk-overload".into())
+        .w(px(DISK_OVERLOAD_WIDTH))
+        .h_full()
+        .flex_none()
+        .truncate()
+        .text_center();
+    if !state.shown() {
+        return slot;
+    }
+    let description = super::disk_overload::description(state.count());
+    slot.tooltip(move |_, cx| {
+        cx.new(|_| super::transport::MiniTooltip {
+            kind: crate::tooltips::Kind::Identification,
+            description: description.clone().into(),
+        })
+        .into()
+    })
+    .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+    .child(
+        div()
+            .debug_selector(|| "editor-disk-overload-lit".into())
+            .child(theme::text("disk")),
+    )
+}
+
 fn status_slot(
     id: &'static str,
     width: f32,
@@ -475,6 +518,7 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.wake_poll_if_busy();
         self.reconcile_update_ready(window, cx);
         #[cfg(all(test, feature = "ui-test-support"))]
         let _navigation_timer =
@@ -485,6 +529,7 @@ impl Render for EditorView {
         self.reconcile_project_open(window, cx);
         self.reconcile_format_upgrade_prompt(window, cx);
         self.reconcile_leftover_recovery(window, cx);
+        self.reconcile_truncated_import_offer(window, cx);
         self.reconcile_track_resize(window, cx);
         self.reconcile_track_reorder(window);
         super::browser_input::restyle(&self.browser.search, cx);
@@ -567,6 +612,8 @@ impl Render for EditorView {
         let trim_pointer_entity = cx.entity();
         let midi_trim_pointer_entity = cx.entity();
         div()
+            // Pointer presses leave the idle poll cadence before any handler runs.
+            .capture_any_mouse_down(cx.listener(|view, _, _, _| view.wake_poll()))
             .when(crate::diagnostics::actions_enabled(cx), |root| {
                 root.capture_any_mouse_down(|event, _, cx| {
                     crate::diagnostics::record_pointer(
@@ -893,6 +940,14 @@ impl Render for EditorView {
                     view.finish_clip_name(false, window, cx);
                 }
             }))
+            .on_action(cx.trace(|view, _: &super::ToggleTrackPerformance, _, cx| {
+                view.toggle_track_performance();
+                cx.notify();
+            }))
+            .on_action(cx.trace(|view, _: &super::ToggleTrackLatency, _, cx| {
+                view.show_track_latency = !view.show_track_latency;
+                cx.notify();
+            }))
             .on_action(cx.trace(|view, _: &super::ToggleBrowser, window, cx| {
                 view.toggle_browser(window, cx);
             }))
@@ -927,6 +982,11 @@ impl Render for EditorView {
             .on_action(cx.trace(|view, _: &super::BrowserNext, window, cx| {
                 view.browser_next(window, cx);
             }))
+            .on_action(
+                cx.trace(|view, _: &super::BrowserRandomSample, window, cx| {
+                    view.browser_random_sample(window, cx);
+                }),
+            )
             .on_action(
                 cx.trace(|view, _: &super::BrowserPreviewSelected, window, cx| {
                     view.browser_preview_selected(window, cx);
@@ -1220,15 +1280,15 @@ impl Render for EditorView {
                 view.cancel_duplicate_chain();
                 if view.midi_focus.is_focused(window) {
                     if view.midi_selection.len() == 1 {
-                        if let Some(note) = view.midi_selection.primary() {
-                            if let Some(state) = view.state.as_ref() {
-                                view.update_note_field(
-                                    note,
-                                    state.revision,
-                                    view.project_generation,
-                                    super::midi::NoteField::Duration(-1),
-                                );
-                            }
+                        if let Some(note) = view.midi_selection.primary()
+                            && let Some(state) = view.state.as_ref()
+                        {
+                            view.update_note_field(
+                                note,
+                                state.revision,
+                                view.project_generation,
+                                super::midi::NoteField::Duration(-1),
+                            );
                         }
                     } else if view.midi_selection.len() > 1 {
                         view.adjust_selected_group_current(
@@ -1249,15 +1309,15 @@ impl Render for EditorView {
                 view.cancel_duplicate_chain();
                 if view.midi_focus.is_focused(window) {
                     if view.midi_selection.len() == 1 {
-                        if let Some(note) = view.midi_selection.primary() {
-                            if let Some(state) = view.state.as_ref() {
-                                view.update_note_field(
-                                    note,
-                                    state.revision,
-                                    view.project_generation,
-                                    super::midi::NoteField::Duration(1),
-                                );
-                            }
+                        if let Some(note) = view.midi_selection.primary()
+                            && let Some(state) = view.state.as_ref()
+                        {
+                            view.update_note_field(
+                                note,
+                                state.revision,
+                                view.project_generation,
+                                super::midi::NoteField::Duration(1),
+                            );
                         }
                     } else if view.midi_selection.len() > 1 {
                         view.adjust_selected_group_current(
@@ -1321,6 +1381,26 @@ impl Render for EditorView {
                     if !view.merge_sections(window) {
                         cx.propagate();
                     }
+                } else if matches!(
+                    view.focused_header_target(window),
+                    Some(super::track_name::Target::Track(_))
+                ) && !view.computer_keyboard.accepts_key("g")
+                {
+                    if view.selected_track_ids().len() >= 2
+                        && let Some(tracks) = view.track_membership(None)
+                        && let Some(revision) = view.state.as_ref().map(|state| state.revision)
+                    {
+                        view.perform_track_group(
+                            view.project_generation,
+                            revision,
+                            Command::GroupTracks {
+                                tracks,
+                                name: "group".into(),
+                            },
+                            window,
+                            cx,
+                        );
+                    }
                 } else if view.mode == super::EditorMode::Arrangement
                     && view.focus.is_focused(window)
                 {
@@ -1331,6 +1411,9 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &DeleteClip, window, cx| {
+                if view.selection_delete_blocked() {
+                    return;
+                }
                 if view.delete_automation_point(window, cx) {
                     return;
                 }
@@ -1475,7 +1558,7 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &ToggleLoop, window, cx| {
-                view.toggle_active_loop_shortcut(window);
+                view.toggle_active_loop_shortcut(window, cx);
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &ZoomIn, _, cx| {

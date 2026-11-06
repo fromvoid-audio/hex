@@ -37,6 +37,7 @@ pub(super) fn exercise(
         LoopEnabled,
         SamplerParameter::LoopStartFrame,
         SamplerParameter::LoopEndFrame,
+        SamplerParameter::LoopCrossfadeMs,
         AttackMs,
         DecayMs,
         SustainPercent,
@@ -257,7 +258,7 @@ pub(super) fn exercise(
                 .and_then(|s| s.rendered_current(h))
                 .is_some_and(|a| {
                     a.context.project_generation == before.context.project_generation + 2
-                        && a.output_identity != before.output_identity
+                        && a.context.editor_revision > before.context.editor_revision
                 })
             {
                 break;
@@ -340,13 +341,31 @@ pub(super) fn exercise(
         });
         visual.run_until_parked();
         render(h.backend.lock().unwrap().as_mut().unwrap(), &mut output);
-        if release {
-            // Direct keyup tail before toggle cancellation or Stop. Two-frame
-            // release at sustain .5, gain .5, source phase0 then phase.5.
-            assert_eq!(&output[..2], &[[0.03125, -0.0625], [0.0390625, -0.015625]]);
-            assert_eq!(&output[2..], &[[0.0; 2]; 62]);
-        } else {
-            assert_eq!(output, [[0.0; 2]; 64]);
+        // Direct keyup tail before toggle cancellation or Stop: the release
+        // (authored two frames once ReleaseMs is set, else zero) is raised to
+        // the prepared floor, from the held level (gain .5, sustain .5 once
+        // set) over the looping source from phase 0.
+        let raw = [
+            [0.125, -0.25],
+            [0.3125, -0.125],
+            [0.5, 0.0],
+            [0.1875, 0.125],
+            [-0.125, 0.25],
+            [-0.0625, 0.125],
+            [0.0, 0.0],
+            [0.0625, -0.125],
+        ];
+        let held = if sustain { 0.25 } else { 0.5 };
+        let authored = if release { 2 } else { 0 };
+        for (i, sample) in output.iter().enumerate() {
+            let level = held * super::floored_release_level(i, authored);
+            let expected = [raw[i % 8][0] * level, raw[i % 8][1] * level];
+            for c in 0..2 {
+                assert!(
+                    (sample[c] - expected[c]).abs() < 1e-6,
+                    "keyup tail {parameter:?} {i}: {sample:?} != {expected:?}"
+                );
+            }
         }
         visual.simulate_keystrokes("m");
         for _ in 0..4 {

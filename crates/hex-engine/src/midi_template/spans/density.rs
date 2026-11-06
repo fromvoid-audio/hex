@@ -59,6 +59,48 @@ pub(super) fn admit_transport_loop_density(
     admit_density(intro, repeats, first_pass, Some(period), release_raw)
 }
 
+/// Held-only density of the same sources: every voice ends at its gate.
+/// Instruments that steal releasing voices admit slots by this count, while
+/// `admit_voice_density` (releases included) still sizes span buffers.
+pub(super) fn admit_held_voice_density(
+    intro: &[VoiceSpan],
+    repeats: &[VoiceSpan],
+    first_pass: u64,
+    period: Option<u64>,
+) -> Result<usize, MidiTemplateError> {
+    admit_held_density(intro, repeats, first_pass, period)
+}
+
+/// Transport-loop counterpart of `admit_held_voice_density`.
+pub(super) fn admit_held_transport_loop_density(
+    intro: &[DensitySpan],
+    repeats: &[DensitySpan],
+    first_pass: u64,
+    period: u64,
+) -> Result<usize, MidiTemplateError> {
+    admit_held_density(intro, repeats, first_pass, Some(period))
+}
+
+fn admit_held_density<S: DensityView>(
+    intro: &[S],
+    repeats: &[S],
+    first_pass: u64,
+    period: Option<u64>,
+) -> Result<usize, MidiTemplateError> {
+    let held = |spans: &[S]| -> Result<Vec<DensitySpan>, MidiTemplateError> {
+        let mut held = Vec::new();
+        held.try_reserve_exact(spans.len())
+            .map_err(|_| MidiTemplateError::Allocation)?;
+        held.extend(spans.iter().map(|span| DensitySpan {
+            start: span.start(),
+            gate_end: span.gate_end(),
+            raw_end: u128::from(span.gate_end()),
+        }));
+        Ok(held)
+    };
+    admit_density(&held(intro)?, &held(repeats)?, first_pass, period, 0)
+}
+
 fn admit_density<S: DensityView>(
     intro: &[S],
     repeats: &[S],

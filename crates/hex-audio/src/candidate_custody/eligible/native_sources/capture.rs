@@ -98,6 +98,17 @@ impl Custody {
             _ => Err("native edit owner differs"),
         })
     }
+    pub(in crate::candidate_custody) fn native_recovery_edits(
+        &self,
+        binding: Binding,
+        flush_idle: bool,
+    ) -> Result<Option<hex_plugin_host::protocol::RecoveryEdits>, &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.poll_recovery_edits(flush_idle),
+            Owner::Loaned(owner) => owner.poll_recovery_edits(flush_idle),
+            _ => Err("native edit owner differs"),
+        })
+    }
     pub(in crate::candidate_custody) fn native_parameter_values(
         &self,
         binding: Binding,
@@ -111,16 +122,17 @@ impl Custody {
     pub(in crate::candidate_custody) fn begin_native_controller_query(
         &self,
         binding: Binding,
-        query: hex_plugin_host::protocol::ParameterPageQuery,
+        query: impl Into<hex_plugin_host::protocol::ControllerRequest>,
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
         self.controller_query_admission(binding, query, || {})
     }
     fn controller_query_admission(
         &self,
         binding: Binding,
-        query: hex_plugin_host::protocol::ParameterPageQuery,
+        query: impl Into<hex_plugin_host::protocol::ControllerRequest>,
         after_admission: impl FnOnce(),
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
+        let query = query.into();
         let mut admitted = None;
         let result = self.with_live_capture(binding, |owner| {
             admitted = Some(match owner {
@@ -187,7 +199,27 @@ impl Custody {
             owner.flush_parameters_retained_while_on_control(parameters, is_cancelled)
         })
     }
-    // Capture and parameter flush use the same original quiescent-owner
+    pub(in crate::candidate_custody) fn reactivate_native_source(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<hex_plugin_host::protocol::Facts>, &'static str> {
+        self.with_quiescent_native_source(binding, |owner| {
+            let owner = owner.reactivate_retained_on_control()?;
+            let facts = owner.facts();
+            Ok((owner, facts))
+        })
+    }
+    pub(in crate::candidate_custody) fn settle_native_latency(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<hex_plugin_host::protocol::Facts>, &'static str> {
+        self.with_quiescent_native_source(binding, |owner| {
+            let owner = owner.settle_latency_retained_on_control()?;
+            let facts = owner.facts();
+            Ok((owner, facts))
+        })
+    }
+    // Capture, parameter flush and reactivation use the same quiescent-owner
     // admission/terminal path. Only Work spans SDK I/O; close keeps its existing
     // exact cancellation token, and neither operation grants resume/publication.
     fn with_quiescent_native_source<T>(
@@ -275,7 +307,11 @@ impl Custody {
         let slot = &mut bank.sources.slots[index];
         slot.starting = false;
         slot.retiring |= closing || captured.is_none();
-        if captured.is_none() {
+        if let Some(Owner::Quiescent(owner)) = cell.owner.as_ref() {
+            // Reactivation can change facts. Install them with the retained
+            // owner before completion is allowed to resume this reservation.
+            slot.facts = Some(owner.facts());
+        } else {
             slot.phase = Phase::Cleaning;
         }
         drop(bank);
@@ -287,12 +323,43 @@ impl Custody {
 }
 
 impl CandidateRoot {
+    pub(crate) fn reactivate_native_source(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<hex_plugin_host::protocol::Facts>, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self.0.eligible.reactivate_native_source(binding);
+        crate::lifecycle::request_candidate_cleanup(self);
+        self.require_native_source_control_open()?;
+        result
+    }
+
+    pub(crate) fn settle_native_latency(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<hex_plugin_host::protocol::Facts>, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self.0.eligible.settle_native_latency(binding);
+        crate::lifecycle::request_candidate_cleanup(self);
+        self.require_native_source_control_open()?;
+        result
+    }
     pub(crate) fn native_source_parameter_edits(
         &self,
         binding: Binding,
     ) -> Result<Option<hex_plugin_host::protocol::ParameterEdits>, &'static str> {
         self.require_native_source_control_open()?;
         let result = self.0.eligible.native_parameter_edits(binding)?;
+        self.require_native_source_control_open()?;
+        Ok(result)
+    }
+    pub(crate) fn native_source_recovery_edits(
+        &self,
+        binding: Binding,
+        flush_idle: bool,
+    ) -> Result<Option<hex_plugin_host::protocol::RecoveryEdits>, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self.0.eligible.native_recovery_edits(binding, flush_idle)?;
         self.require_native_source_control_open()?;
         Ok(result)
     }
@@ -308,7 +375,7 @@ impl CandidateRoot {
     pub(crate) fn begin_native_controller_query(
         &self,
         binding: Binding,
-        query: hex_plugin_host::protocol::ParameterPageQuery,
+        query: impl Into<hex_plugin_host::protocol::ControllerRequest>,
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
         self.require_native_source_control_open()?;
         self.0

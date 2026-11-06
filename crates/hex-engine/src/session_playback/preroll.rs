@@ -489,6 +489,7 @@ impl SessionPlayback {
             return_chains: &self.return_chains,
             return_effect_tails: &self.return_effect_tails,
             mutable_instruments: &self.mutable_instruments,
+            foreign_arrangement: &self.foreign_arrangement,
             tail_groups: &self.tail_groups,
             tail_mutable_instruments: &self.tail_mutable_instruments,
             routes: self.routes.capacity(),
@@ -533,6 +534,7 @@ pub(super) struct RuntimeStorage<'a> {
     pub(super) return_chains: &'a Vec<hex_lattice::NativeRuntimeChain>,
     pub(super) return_effect_tails: &'a ReturnEffectTailBank,
     pub(super) mutable_instruments: &'a Vec<Option<MutableInstrumentTrackRuntime>>,
+    pub(super) foreign_arrangement: &'a foreign_arrangement::ForeignArrangement,
     pub(super) tail_groups: &'a Vec<Option<hex_lattice::NativeRuntimeChain>>,
     pub(super) tail_mutable_instruments: &'a Vec<Option<MutableInstrumentTail>>,
     pub(super) routes: usize,
@@ -620,6 +622,7 @@ impl RuntimeStorage<'_> {
         add_capacity::<[Frame; PREROLL_BLOCK_FRAMES]>(&mut total, self.return_scratch)?;
         add_capacity::<[Frame; PREROLL_BLOCK_FRAMES]>(&mut total, self.resident_source_scratch)?;
         add_capacity::<super::meter_capture::Cell>(&mut total, self.meter_cells)?;
+        checked_add(&mut total, self.foreign_arrangement.storage_bytes()?)?;
         add_capacity::<Option<MutableInstrumentTrackRuntime>>(
             &mut total,
             self.mutable_instruments.capacity(),
@@ -711,6 +714,10 @@ fn runtime_storage_preflight_bytes(
         )?;
     }
     checked_add(&mut total, main_bytes)?;
+    checked_add(
+        &mut total,
+        foreign_arrangement::ForeignArrangement::preflight_bytes(revision)?,
+    )?;
     if let Some(graph) = &arrangement.signal_graph {
         checked_add(
             &mut total,

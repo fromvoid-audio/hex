@@ -116,7 +116,7 @@ fn actual_queue_rejection_and_return_pressure_recover_original_owners_without_in
         .ok()
         .unwrap();
     assert_eq!(control.revision, 1);
-    assert!(control.status.publication_pending.load(Acquire));
+    assert!(control.status.publication_in_flight());
     assert_eq!(control.status.applied_revision.load(Acquire), 0);
     let second = candidate().unwrap();
     let second_id = second.identity();
@@ -144,7 +144,7 @@ fn actual_queue_rejection_and_return_pressure_recover_original_owners_without_in
     data.owner_mut()
         .unwrap()
         .run(|callback, _| callback.begin_block());
-    assert!(!control.status.publication_pending.load(Acquire));
+    assert!(!control.status.publication_in_flight());
     let second_ticket = control
         .stage_eligible_audio_candidate(
             refused.owner,

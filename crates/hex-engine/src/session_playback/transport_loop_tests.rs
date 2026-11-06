@@ -508,6 +508,7 @@ fn shared_source_transport_loop_admits_one_aggregate_voice_and_release_envelope(
                 factory.max_release_tail_frames(),
                 factory.max_events_per_block(),
                 factory.max_active_occurrences(),
+                false,
             ),
             Ok(44),
             "each contributor stays below the 64 voice limit"
@@ -1018,12 +1019,42 @@ fn mutable_transport_admission_respects_lower_device_event_and_voice_limits() {
         .expect("fixture transport loop");
 
     assert_eq!(
-        super::transport_loop_admission::admit_track(track, region, 16, 1, 64),
+        super::transport_loop_admission::admit_track(track, region, 16, 1, 64, false),
         Err(SessionPlaybackError::MutableInstrumentLoopDensity)
     );
     assert_eq!(
-        super::transport_loop_admission::admit_track(track, region, 16, 256, 1),
+        super::transport_loop_admission::admit_track(track, region, 16, 256, 1, false),
         Err(SessionPlaybackError::MutableInstrumentLoopDensity)
+    );
+    assert_eq!(
+        super::transport_loop_admission::admit_track(track, region, 16, 256, 1, true),
+        Err(SessionPlaybackError::MutableInstrumentLoopDensity),
+        "two held voices exceed one stealing voice too"
+    );
+}
+
+#[test]
+fn stealing_transport_loop_admission_bounds_held_voices_not_seam_releases() {
+    // The single chased loop note releases for longer than its silent gap,
+    // so each wrap's fresh chase overlaps the previous release.
+    let revision = prepare_mutable(&transport_loop_project(false));
+    let track = &revision.arrangement().tracks()[0];
+    let region = revision
+        .arrangement()
+        .loop_region()
+        .expect("fixture transport loop");
+    let admit = |voices, steals| {
+        super::transport_loop_admission::admit_track(track, region, 30_000, 256, voices, steals)
+    };
+    assert_eq!(admit(64, false), Ok(2), "releases cross the seam");
+    assert_eq!(
+        admit(1, false),
+        Err(SessionPlaybackError::MutableInstrumentLoopDensity)
+    );
+    assert_eq!(
+        admit(1, true),
+        Ok(2),
+        "only one voice is ever held; the envelope keeps the release"
     );
 }
 
@@ -1469,21 +1500,40 @@ fn mutable_transport_wrap_pass_and_live_gate_survive_revision_handoff() {
     let changed_tempo = legacy_project_from_snapshot(changed_tempo).expect("valid tempo edit");
     let mut tempo_candidate = SessionPlayback::new(prepare_mutable(&changed_tempo))
         .expect("tempo-edited loop density admitted");
-    assert_eq!(
-        tempo_candidate.try_inherit_state_from(&mut tempo_active),
-        Err(SessionPlaybackError::MutableInstrumentActive),
-        "tempo edit must refuse while a chased loop gate is active"
+    // Pulse #4117: the tempo edit no longer refuses. The chased loop gate is
+    // released at the cut, keeping the same occurrence, and the remapped
+    // pre-cut onset is suppressed rather than chased again.
+    let chased = tempo_active.mutable_instruments[0]
+        .as_ref()
+        .expect("mutable runtime")
+        .proofs()
+        .find(|proof| proof.signature.key().loop_pass == 1 && !proof.note_off_sent)
+        .expect("chased loop gate")
+        .id;
+    tempo_candidate
+        .try_inherit_state_from(&mut tempo_active)
+        .expect("tempo edit keeps the chased loop gate's beat");
+    let proofs = |playback: &SessionPlayback| {
+        playback.mutable_instruments[0]
+            .as_ref()
+            .expect("carried mutable runtime")
+            .proofs()
+            .collect::<Vec<_>>()
+    };
+    let cut = tempo_candidate.performance_frame();
+    assert!(
+        proofs(&tempo_candidate)
+            .iter()
+            .any(|proof| proof.id == chased && proof.gate_end_frame == cut)
     );
-    assert_eq!(tempo_active.arrangement_loop_pass, 1);
-    let mut after_refusal = [[0.0; 2]; 128];
-    let mut uninterrupted = [[0.0; 2]; 128];
-    tempo_active
-        .render(&mut after_refusal)
-        .expect("old loop continues after tempo refusal");
-    tempo_reference
-        .render(&mut uninterrupted)
-        .expect("uninterrupted loop reference");
-    assert_eq!(after_refusal, uninterrupted);
+    tempo_candidate
+        .render(&mut [[0.0; 2]; 128])
+        .expect("render after the tempo edit");
+    assert!(
+        proofs(&tempo_candidate)
+            .iter()
+            .all(|proof| proof.id == chased && proof.note_off_sent)
+    );
     let mut successor = SessionPlayback::new(prepare_mutable(&project)).expect("same loop");
     successor
         .try_inherit_state_from(&mut active)
@@ -1565,5 +1615,182 @@ fn live_loop_edit_during_a_held_arrangement_note_restarts_at_the_cursor() {
                 .any(|sample| *sample != 0.0),
             "the held note is chased; {context}"
         );
+    }
+}
+
+#[test]
+fn live_loop_edit_away_from_wrap_keeps_held_note_output_continuous() {
+    let project = transport_loop_project(false);
+    let mut editor = hex_project::Editor::new(project.clone(), 8).expect("editor");
+    editor
+        .execute(hex_project::Command::SetLoopRegion {
+            start: 24_000,
+            end: 120_000,
+            enabled: true,
+        })
+        .expect("canonical loop edit");
+    let changed = editor.project();
+    let mut active = SessionPlayback::new(prepare_mutable(&project)).expect("old loop");
+    let mut reference = SessionPlayback::new(prepare_mutable(&project)).expect("reference loop");
+    for playback in [&mut active, &mut reference] {
+        playback.apply(SessionPlaybackCommand::Play).expect("play");
+    }
+    let mut prefix = vec![[0.0; 2]; 30_000];
+    let mut reference_prefix = prefix.clone();
+    active.render(&mut prefix).expect("render to edit");
+    reference
+        .render(&mut reference_prefix)
+        .expect("render reference");
+    assert_eq!(prefix, reference_prefix);
+    assert!(
+        active.mutable_instruments[0]
+            .as_ref()
+            .expect("mutable runtime")
+            .proofs()
+            .any(|proof| !proof.note_off_sent)
+    );
+
+    let proofs = active.mutable_instruments[0]
+        .as_ref()
+        .unwrap()
+        .proofs()
+        .collect::<Vec<_>>();
+    let mut successor = SessionPlayback::new(prepare_mutable(changed)).expect("new loop");
+    successor
+        .try_inherit_state_from(&mut active)
+        .expect("strict handoff proves continuity");
+    assert_eq!(
+        successor.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .proofs()
+            .collect::<Vec<_>>(),
+        proofs
+    );
+    let mut actual = [[0.0; 2]; 256];
+    let mut expected = actual;
+    successor.render(&mut actual).expect("render successor");
+    reference
+        .render(&mut expected)
+        .expect("render uninterrupted");
+    let max_difference = actual
+        .iter()
+        .flatten()
+        .zip(expected.iter().flatten())
+        .map(|(actual, expected)| (actual - expected).abs())
+        .fold(0.0_f32, f32::max);
+    assert_eq!(max_difference, 0.0, "loop edit changed held-note output");
+
+    // Compare through NoteOff and tail expiry, before either transport wraps.
+    let mut actual = vec![[0.0; 2]; 72_017 - 30_256];
+    let mut expected = actual.clone();
+    for (actual, expected) in actual.chunks_mut(17).zip(expected.chunks_mut(17)) {
+        successor.render(actual).unwrap();
+        reference.render(expected).unwrap();
+    }
+    assert_eq!(actual, expected);
+    assert!(
+        successor.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .proofs()
+            .next()
+            .is_none()
+    );
+
+    // After expiry, the next wrap must follow the new loop, including a new
+    // occurrence, rather than retaining the predecessor's transport program.
+    let mut new_reference = SessionPlayback::new(prepare_mutable(changed)).unwrap();
+    new_reference.apply(SessionPlaybackCommand::Play).unwrap();
+    new_reference.render(&mut vec![[0.0; 2]; 72_017]).unwrap();
+    let mut actual = vec![[0.0; 2]; 145_000 - 72_017];
+    let mut expected = actual.clone();
+    for (actual, expected) in actual.chunks_mut(127).zip(expected.chunks_mut(127)) {
+        successor.render(actual).unwrap();
+        new_reference.render(expected).unwrap();
+    }
+    assert_eq!(actual, expected);
+    assert_eq!(successor.arrangement_loop_pass, 1);
+}
+
+#[test]
+fn canonical_loop_edit_rejects_gate_tail_boundary_and_anchor_without_consuming_donor() {
+    for (end, anchored) in [
+        (71_999, false),
+        (72_000, false),
+        (72_016, false),
+        (120_000, true),
+    ] {
+        let project = transport_loop_project(false);
+        let mut editor = hex_project::Editor::new(project.clone(), 8).unwrap();
+        editor
+            .execute(hex_project::Command::SetLoopRegion {
+                start: 24_000,
+                end,
+                enabled: true,
+            })
+            .unwrap();
+        let mut active = SessionPlayback::new(prepare_mutable(&project)).unwrap();
+        let mut reference = SessionPlayback::new(prepare_mutable(&project)).unwrap();
+        for playback in [&mut active, &mut reference] {
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            playback.render(&mut vec![[0.0; 2]; 30_000]).unwrap();
+        }
+        if anchored {
+            let beat = active.timing_view().frame_to_beat(30_000).unwrap();
+            active.anchor = Some(crate::prepared_tempo::SessionClockAnchor {
+                cut_frame: 30_000,
+                old_beat: beat,
+                new_beat: beat,
+            });
+        }
+        let mut candidate = SessionPlayback::new(prepare_mutable(editor.project())).unwrap();
+        assert_eq!(
+            candidate.try_inherit_state_from(&mut active),
+            Err(SessionPlaybackError::MutableInstrumentLoopBoundsActive)
+        );
+        let mut actual = [[0.0; 2]; 256];
+        let mut expected = actual;
+        active.render(&mut actual).unwrap();
+        reference.render(&mut expected).unwrap();
+        assert_eq!(
+            actual, expected,
+            "refusal preserves donor for end={end}, anchor={anchored}"
+        );
+    }
+}
+
+#[test]
+fn canonical_loop_enable_disable_preserves_held_gate() {
+    for enabled in [false, true] {
+        let mut editor = hex_project::Editor::new(transport_loop_project(false), 8).unwrap();
+        editor
+            .execute(hex_project::Command::SetLoopRegion {
+                start: 48_000,
+                end: 96_000,
+                enabled: !enabled,
+            })
+            .unwrap();
+        let old = editor.project().clone();
+        editor
+            .execute(hex_project::Command::SetLoopRegion {
+                start: 24_000,
+                end: 120_000,
+                enabled,
+            })
+            .unwrap();
+        let mut active = SessionPlayback::new(prepare_mutable(&old)).unwrap();
+        let mut reference = SessionPlayback::new(prepare_mutable(&old)).unwrap();
+        for playback in [&mut active, &mut reference] {
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            playback.render(&mut vec![[0.0; 2]; 30_000]).unwrap();
+        }
+        let mut candidate = SessionPlayback::new(prepare_mutable(editor.project())).unwrap();
+        candidate.try_inherit_state_live_from(&mut active).unwrap();
+        let mut actual = [[0.0; 2]; 256];
+        let mut expected = actual;
+        candidate.render(&mut actual).unwrap();
+        reference.render(&mut expected).unwrap();
+        assert_eq!(actual, expected);
     }
 }

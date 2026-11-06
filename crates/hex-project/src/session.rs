@@ -357,12 +357,14 @@ pub(crate) fn apply(
             source,
             before_track,
             scene,
-        } => copy_to_new_session_track(project, source, before_track, scene, false),
+            initial_gain,
+        } => copy_to_new_session_track(project, source, before_track, scene, false, initial_gain),
         Command::CopyArrangementMidiToNewSessionTrack {
             source,
             before_track,
             scene,
-        } => copy_to_new_session_track(project, source, before_track, scene, true),
+            initial_gain,
+        } => copy_to_new_session_track(project, source, before_track, scene, true, initial_gain),
         Command::MoveSessionCell {
             from_track,
             from_scene,
@@ -1042,6 +1044,7 @@ fn copy_to_new_session_track(
     before_track: Option<TrackId>,
     scene: SessionSceneTarget,
     midi: bool,
+    initial_gain: Option<f32>,
 ) -> Result<Created, Invalid> {
     // Refuse before allocating a track, scene or fresh source identities.
     if midi {
@@ -1054,7 +1057,8 @@ fn copy_to_new_session_track(
         project.clip(source).map(|clip| clip.name().to_owned())
     }
     .ok_or(Invalid("arrangement source no longer exists"))?;
-    let track = crate::edit::insert_track_before(project, name, before_track)?;
+    let track =
+        crate::edit::insert_track_before_with_gain(project, name, before_track, initial_gain)?;
     let scene = match scene {
         SessionSceneTarget::Existing(scene) => scene,
         SessionSceneTarget::Insert { before } => {

@@ -19,6 +19,8 @@ use std::sync::Arc;
 
 const TRACK_COLUMN_WIDTH: f32 = 148.0;
 const SCENE_ROW_HEIGHT: f32 = 34.0;
+// Eight nested ancestors fit while preserving a usable header label.
+const GROUP_BAND_HEIGHT: f32 = 1.0;
 const SCENE_HEADER_WIDTH: f32 = 150.0;
 
 fn session_scenes_header() -> Div {
@@ -454,6 +456,28 @@ impl EditorView {
                         let track_id = track.id();
                         let selected = self.track_selection.contains(track_id);
                         let hierarchy_indent = self.track_hierarchy_indent.pixels(track_id);
+                        let ancestors = self.track_hierarchy_indent.ancestors(track_id);
+                        let band_height = ancestors.len() as f32 * GROUP_BAND_HEIGHT;
+                        let group_bands = ancestors
+                            .iter()
+                            .enumerate()
+                            .map(|(depth, &(ancestor, color))| {
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .right_0()
+                                    .top(px(depth as f32 * GROUP_BAND_HEIGHT))
+                                    .h(px(GROUP_BAND_HEIGHT))
+                                    .debug_selector(move || {
+                                        format!(
+                                            "session-group-band-{}-{}",
+                                            track_id.value(),
+                                            ancestor.value()
+                                        )
+                                    })
+                                    .bg(rgb(theme::element_colors(color).accent))
+                            })
+                            .collect::<Vec<_>>();
                         let header_focus = self.track_header_focus(track_id, cx);
                         let click_focus = header_focus.clone();
                         let header = div()
@@ -500,12 +524,13 @@ impl EditorView {
                                         format!("selected-console-track-{}", track_id.value())
                                     })
                             }))
+                            .children(group_bands)
                             .child(
                                 div()
                                     .absolute()
                                     .left_0()
                                     .right_0()
-                                    .top_0()
+                                    .top(px(band_height))
                                     .h(px(4.0))
                                     .debug_selector(move || {
                                         format!("session-track-color-strip-{}", track_id.value())
@@ -527,6 +552,11 @@ impl EditorView {
                                 ),
                             )
                             .w(px(TRACK_COLUMN_WIDTH))
+                            .pt(px(if band_height > 0.0 {
+                                band_height + 4.0
+                            } else {
+                                0.0
+                            }))
                             .flex_shrink_0()
                             .px_2()
                             .flex()
@@ -548,6 +578,9 @@ impl EditorView {
                                     .truncate()
                                     .flex()
                                     .items_center()
+                                    .debug_selector(move || {
+                                        format!("session-track-label-{}", track_id.value())
+                                    })
                                     .children((hierarchy_indent > 0.0).then(|| {
                                         div()
                                             .w(px(hierarchy_indent))
@@ -614,7 +647,26 @@ impl EditorView {
                                             })
                                             .child(theme::text("group · "))
                                     }))
-                                    .child(theme::text(track.name().to_lowercase())),
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .child(theme::text(track.name().to_lowercase())),
+                                    )
+                                    .children(self.track_performance_indicator(
+                                        hex_engine::OutputCaptureId::Track(track_id),
+                                    ))
+                                    .children(self.track_latency_indicator(
+                                        super::track_latency::Owner::Track(track_id),
+                                    ))
+                                    .children(self.track_tags_header(track, cx))
+                                    .child(self.sample_arm_button(
+                                        super::sample_recorder::Arm::Output(
+                                            hex_engine::OutputCaptureId::Track(track_id),
+                                        ),
+                                        cx,
+                                    )),
                             )
                             .children(self.route_marker_for_track(
                                 track.id().value(),
@@ -1775,7 +1827,7 @@ impl EditorView {
         self.cancel_midi_stroke();
         self.midi_group_gesture = None;
         self.midi_hit_cycle = None;
-        self.piano_beat_start = BeatTime::ZERO;
+        self.piano_beat_start = 0;
         self.reveal_session_position(Some(track), Some(scene));
     }
 

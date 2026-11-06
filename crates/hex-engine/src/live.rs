@@ -166,11 +166,11 @@ impl LiveEngine {
         if !self.playing {
             return [0.0; 2];
         }
-        if let Some((scene, boundary)) = self.pending_scene {
-            if self.beat >= boundary {
-                self.scene = scene;
-                self.pending_scene = None;
-            }
+        if let Some((scene, boundary)) = self.pending_scene
+            && self.beat >= boundary
+        {
+            self.scene = scene;
+            self.pending_scene = None;
         }
         let scene = if self.mode == Mode::Arrangement {
             (self.beat / 4.0).floor() as usize % 2

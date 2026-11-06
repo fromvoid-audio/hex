@@ -13,6 +13,7 @@ fn open_saved(fixture: &SavedEffectFixture) -> ResidentHarness {
     assert!(h.next().error.is_none());
     h.applied(0);
     let old = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    play_outgoing_before_open(&mut h);
     let opened = h.run(Request::Open(fixture.path.clone()));
     assert!(opened.project_replaced && opened.open_complete);
     h.release_relinquished_output();

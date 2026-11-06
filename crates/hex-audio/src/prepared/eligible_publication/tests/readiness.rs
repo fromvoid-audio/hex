@@ -625,7 +625,12 @@ fn two_source_small_pool_refusal_after_commit_preserves_pcm_clock_and_applied_pr
         std::thread::yield_now();
     }
     assert_eq!(control.status.position.load(Acquire), 512);
-    assert_eq!(&output[..256], &[[0.25; 2]; 256]);
+    // A ready streamed Play from the paused frame ramps in over 128 frames,
+    // like the resident path (#4140).
+    for (i, frame) in output[..256].iter().enumerate() {
+        let gain = (i + 1).min(128) as f32 / 128.0;
+        assert_eq!(*frame, [0.25 * gain; 2], "frame {i}");
+    }
     let mut backend = Some(());
     let mut pending = false;
     let mut disposed = false;
@@ -851,7 +856,8 @@ fn ready_candidate_group_retry_releases_speculation_for_old_page_and_remains_can
         pause
     );
     assert_eq!(control.status.consumed_command.load(Acquire), pause);
-    assert_eq!(control.status.position.load(Acquire), position);
+    // The Pause applies at the end of its 128-frame fade (#4151).
+    assert_eq!(control.status.position.load(Acquire), position + 128);
     assert!(!control.status.playing.load(Acquire));
     assert_eq!(control.status.applied_revision.load(Acquire), 1);
     assert!(control.status.publication_pending.load(Acquire));

@@ -79,7 +79,9 @@ fn held_controller_query_keeps_pcm_running_and_cancels_without_sdk_teardown() {
                     }
                     ParameterPageProgress::Pending => {}
                     ParameterPageProgress::Changed { .. } => panic!("unversioned first query"),
-                    ParameterPageProgress::Conversion(_) => panic!("expected metadata page"),
+                    ParameterPageProgress::Conversion(_) | ParameterPageProgress::Editor(_) => {
+                        panic!("expected metadata page")
+                    }
                 }
                 assert!(Instant::now() < until);
                 thread::sleep(Duration::from_millis(1));
@@ -305,10 +307,100 @@ fn page(instance: &mut Prepared, query: ParameterPageQuery) -> Box<ParameterPage
             ParameterPageProgress::Page(page) => return page,
             ParameterPageProgress::Pending => {}
             ParameterPageProgress::Changed { .. } => panic!("unchanged fixture metadata"),
-            ParameterPageProgress::Conversion(_) => panic!("expected metadata page"),
+            ParameterPageProgress::Conversion(_) | ParameterPageProgress::Editor(_) => {
+                panic!("expected metadata page")
+            }
         }
         assert!(Instant::now() < until);
         thread::yield_now();
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn large_controller_inventory_pages_pcm_and_saved_state_remain_bounded() {
+    const INVENTORY: u16 = 2_593;
+    let start = |case: &Case, inventory: &'static str, state| {
+        let setup = case.setup_restore(37);
+        Pending::prepare_with_restore(
+            &build(),
+            source(),
+            options().preparation,
+            state,
+            PreparationCancellation::new_on_control().unwrap(),
+            move |command| {
+                setup(command);
+                command.env("HEX_ORIGINAL_PARAMETER_INVENTORY", inventory);
+            },
+        )
+        .and_then(|pending| pending.complete_on_control(Some(options().presentation)))
+    };
+    let case = Case::new();
+    let mut instance = start(&case, "2593", None).unwrap();
+    let first = page(&mut instance, ParameterPageQuery::default());
+    assert_eq!((first.total, first.as_slice()[0].id), (INVENTORY, 1001));
+    let last_page = |instance: &mut Prepared, revision| {
+        page(
+            instance,
+            ParameterPageQuery {
+                first: INVENTORY - 4,
+                revision,
+                conversion: None,
+            },
+        )
+    };
+    let last = last_page(&mut instance, first.revision);
+    assert_eq!(
+        last.as_slice()
+            .iter()
+            .map(|parameter| parameter.id)
+            .collect::<Vec<_>>(),
+        [3590, 3591, 3592, 7]
+    );
+    let mut input = request(instance.configuration(), 0);
+    input
+        .parameters
+        .push(crate::transport::ParameterPoint {
+            frame: 0,
+            id: 7,
+            normalized: 0.5,
+        })
+        .unwrap();
+    let output = instance.exchange_on_worker(input).unwrap();
+    assert_eq!(&output.pcm[..8], &input.pcm[..8]);
+    let updated = page(&mut instance, ParameterPageQuery::default());
+    let updated_gain = last_page(&mut instance, updated.revision);
+    assert_eq!(
+        (updated.total, updated_gain.as_slice()[3].normalized),
+        (INVENTORY, 0.5)
+    );
+    let stopped = instance.quiesce_retained_on_control().unwrap();
+    let (stopped, captured) = stopped.capture_state_retained_on_control().unwrap();
+    assert!(stopped.retire_on_control().unwrap().status.success());
+    let independent = Case::new();
+    let mut restored = start(&independent, "2593", Some(captured)).unwrap();
+    let values = page(&mut restored, ParameterPageQuery::default());
+    let restored_gain = last_page(&mut restored, values.revision);
+    assert_eq!(
+        (values.total, restored_gain.as_slice()[3].normalized),
+        (INVENTORY, 0.5)
+    );
+    assert!(
+        restored
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+    for (malformed, diagnostic) in [
+        ("2625", "inventory exceeds the host capacity"),
+        ("duplicate", "invalid controller parameter inventory"),
+    ] {
+        let case = Case::new();
+        let error = start(&case, malformed, None)
+            .err()
+            .expect("inventory must refuse");
+        assert!(error.to_string().contains(diagnostic), "{error}");
     }
 }
 
@@ -401,7 +493,9 @@ fn actual_controller_pages_use_sdk_conversions_without_processing_or_replacing_s
                     assert_eq!((revision, total), (current.revision, 1));
                     break;
                 }
-                ParameterPageProgress::Page(_) | ParameterPageProgress::Conversion(_) => {
+                ParameterPageProgress::Page(_)
+                | ParameterPageProgress::Conversion(_)
+                | ParameterPageProgress::Editor(_) => {
                     panic!("stale metadata must invalidate enumeration")
                 }
             }
@@ -416,7 +510,9 @@ fn actual_controller_pages_use_sdk_conversions_without_processing_or_replacing_s
                 ParameterPageProgress::Page(page) => break page,
                 ParameterPageProgress::Pending => {}
                 ParameterPageProgress::Changed { .. } => panic!("same stopped metadata"),
-                ParameterPageProgress::Conversion(_) => panic!("expected stopped metadata page"),
+                ParameterPageProgress::Conversion(_) | ParameterPageProgress::Editor(_) => {
+                    panic!("expected stopped metadata page")
+                }
             }
             assert!(Instant::now() < until);
             thread::yield_now();

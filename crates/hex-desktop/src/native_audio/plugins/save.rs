@@ -2,8 +2,34 @@
 //! or extra queue/reader move here. Every admitted token is drained, including
 //! failed/cancelled saves, before its caller-owned metadata is released.
 use super::*;
-use hex_audio::plugin_worker::{NativeWorkerCapture, NativeWorkerCaptureProgress};
+use hex_audio::plugin_worker::{
+    NativeWorkerCapture, NativeWorkerCaptureProgress, StateCaptureRefusal,
+};
 use hex_session::service::{PluginStateCapture, PluginStateSaveInput};
+
+/// Whole-capture attempts per device while the helper reports that the plugin
+/// is still changing. Each refused attempt already spent the helper's settle
+/// bound (about one second), so Save gives up after a few seconds.
+const STILL_CHANGING_ATTEMPTS: u8 = 3;
+const STILL_CHANGING: &str =
+    "vst3 state kept changing during save · stop editing the plugin, then save again";
+
+/// Save's disposition of one helper capture refusal: `Ok` retries the whole
+/// capture for that device, `Err` is the specific failure. The plugin keeps
+/// running either way; nothing partial is saved.
+fn refused_capture(attempts: &mut u8, refusal: StateCaptureRefusal) -> Result<(), String> {
+    match refusal {
+        StateCaptureRefusal::StillChanging => {
+            *attempts = attempts.saturating_add(1);
+            if *attempts < STILL_CHANGING_ATTEMPTS {
+                Ok(())
+            } else {
+                Err(STILL_CHANGING.to_owned())
+            }
+        }
+        StateCaptureRefusal::ExceedsLimit { .. } => Err(format!("vst3 save refused: {refusal}")),
+    }
+}
 
 struct Entry {
     binding: Binding,
@@ -12,6 +38,8 @@ struct Entry {
     expected: NativeDeviceState,
     request: Option<NativeWorkerCapture>,
     captured: Option<NativeDeviceState>,
+    /// Refused-as-still-changing attempts so far.
+    refused: u8,
     done: bool,
 }
 
@@ -78,6 +106,7 @@ impl Plugins {
                     expected: state.clone(),
                     request: None,
                     captured: None,
+                    refused: 0,
                     done: false,
                 });
             }
@@ -141,6 +170,14 @@ impl Plugins {
                         entry.done = true;
                         entry.request = None;
                     }
+                    Ok(NativeWorkerCaptureProgress::Refused(refusal)) => {
+                        // The mailbox is free; a retry begins a fresh capture.
+                        entry.request = None;
+                        if let Err(reason) = refused_capture(&mut entry.refused, refusal) {
+                            failure.get_or_insert(reason);
+                            entry.done = true;
+                        }
+                    }
                     Err(reason) => {
                         failure.get_or_insert_with(|| reason.to_owned());
                         entry.done = true;
@@ -174,5 +211,40 @@ impl Plugins {
             });
         }
         Ok(captures)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn still_changing_retries_a_bounded_number_of_times_then_fails_specifically() {
+        let mut attempts = 0;
+        for _ in 1..STILL_CHANGING_ATTEMPTS {
+            assert_eq!(
+                refused_capture(&mut attempts, StateCaptureRefusal::StillChanging),
+                Ok(())
+            );
+        }
+        let failure = refused_capture(&mut attempts, StateCaptureRefusal::StillChanging)
+            .expect_err("bounded retries");
+        assert_eq!(failure, STILL_CHANGING);
+        assert_eq!(failure, failure.to_lowercase());
+        assert_eq!(attempts, STILL_CHANGING_ATTEMPTS);
+    }
+
+    #[test]
+    fn oversized_state_fails_without_retry() {
+        let mut attempts = 0;
+        let failure = refused_capture(
+            &mut attempts,
+            StateCaptureRefusal::ExceedsLimit {
+                observed_bytes: 6000,
+            },
+        )
+        .expect_err("no retry for oversized state");
+        assert!(failure.starts_with("vst3 save refused: plugin state exceeds"));
+        assert_eq!(attempts, 0);
     }
 }

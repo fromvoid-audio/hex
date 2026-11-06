@@ -96,6 +96,7 @@ mod tests {
                 frames: Some(48_000 * 60 * 60),
                 signal: ExportSignal::Main,
                 control: control.clone(),
+                format: hex_export::ExportFormat::Pcm16,
                 overwrite: false,
             })
             .unwrap();
@@ -129,7 +130,7 @@ mod tests {
             let entered = Arc::clone(&entered);
             let release = Arc::clone(&release);
             // Only its duration matters; the terminal is never observed.
-            Arc::new(move |_, _, _, _, _, _, _| {
+            Arc::new(move |_, _, _, _, _, _, _, _| {
                 entered.wait();
                 release.wait();
                 Err("held export released".into())

@@ -5,7 +5,8 @@
 //! ownership. Main shares the row-height and rollback map;
 //! its top resize edge preserves the pinned bottom. Stable track IDs survive topology changes;
 //! project replacement clears both layouts. Plain H belongs to this workspace
-//! only while the computer MIDI keyboard is disabled. Held sizing uses the shared
+//! only while the computer MIDI keyboard is disabled. Command-H resets track
+//! heights and exits overview without changing the pinned main row. Held sizing uses the shared
 //! Window pointer lease; its local snapshot owns complete cancellation rollback.
 use super::{
     EditorView,
@@ -165,23 +166,37 @@ fn single_row_move(old: &[TrackId], new: &[TrackId]) -> Option<(usize, usize)> {
 }
 
 impl EditorView {
-    /// Arrangement-only A/H/Q after child input; modifiers, text and capture retain ownership.
+    /// Arrangement-only A/H/Q after child input; text and capture retain ownership.
     pub(super) fn arrangement_view_key(
         &mut self,
         event: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if !matches!(event.keystroke.key.as_str(), "a" | "h" | "q")
-            || event.keystroke.modifiers != Modifiers::default()
+        let reset = event.keystroke.key == "h"
+            && event.keystroke.modifiers
+                == (Modifiers {
+                    platform: true,
+                    ..Modifiers::default()
+                });
+        if (!reset
+            && (!matches!(event.keystroke.key.as_str(), "a" | "h" | "q")
+                || event.keystroke.modifiers != Modifiers::default()
+                || self.computer_keyboard.enabled))
             || event.is_held
-            || self.computer_keyboard.enabled
             || !(self.focus.is_focused(window)
                 || self.track_header_focused(window)
                 || self.section_focus_toggle_focused(window, cx))
             || !self.arrangement_view_change_available(cx)
         {
             return false;
+        }
+        if reset {
+            self.track_layout.heights.retain(|row, _| *row == Row::Main);
+            self.track_layout.overview = None;
+            self.track_scroll.remeasure();
+            cx.notify();
+            return true;
         }
         if event.keystroke.key == "a" {
             return self.toggle_automation_view(cx);
@@ -436,8 +451,42 @@ impl EditorView {
         }
         self.track_layout.active_heights_mut().insert(row, height);
         self.invalidate_track_size(track);
+        if let Some(track) = track {
+            self.center_resized_track(track);
+        }
         cx.notify();
     }
+
+    // Express the desired viewport top as a logical list position. Walking
+    // backwards only across rows that fit above the target avoids maintaining a
+    // second content-height inventory; GPUI clamps the final position at the end.
+    fn center_resized_track(&self, track: TrackId) {
+        let Some(mut index) = self.track_layout.tracks.iter().position(|id| *id == track) else {
+            return;
+        };
+        let viewport_height = f32::from(self.track_scroll.list.viewport_bounds().size.height);
+        let height = self.track_height(track);
+        if !viewport_height.is_finite() || viewport_height <= 0.0 || !height.is_finite() {
+            return;
+        }
+        let mut offset = (height - viewport_height) / 2.0;
+        while offset < 0.0 && index > 0 {
+            index -= 1;
+            let previous = self.track_height(self.track_layout.tracks[index]);
+            if !previous.is_finite() || previous <= 0.0 {
+                return;
+            }
+            offset += previous;
+        }
+        if !offset.is_finite() {
+            return;
+        }
+        self.track_scroll.list.scroll_to(gpui::ListOffset {
+            item_ix: index,
+            offset_in_item: px(offset.max(0.0)),
+        });
+    }
+
     fn row_resize_geometry(&self, row: Row) -> (f32, f32) {
         let original = if row == Row::Main {
             // Flex may reduce Main after window resizing; its painted lane
@@ -566,10 +615,10 @@ impl EditorView {
         }
     }
     fn invalidate_track_size(&self, track: Option<TrackId>) {
-        if let Some(id) = track {
-            if let Some(index) = self.track_layout.tracks.iter().position(|t| *t == id) {
-                self.track_scroll.invalidate(index..index + 1, 1);
-            }
+        if let Some(id) = track
+            && let Some(index) = self.track_layout.tracks.iter().position(|t| *t == id)
+        {
+            self.track_scroll.invalidate(index..index + 1, 1);
         }
     }
     fn capture_track_resize(
@@ -902,6 +951,72 @@ mod tests {
     };
     use gpui::{Modifiers, MouseButton, TestAppContext, px, size};
     use hex_lattice_contract::DeviceAutomationTarget;
+
+    #[gpui::test]
+    fn held_gain_point_prevents_new_sampler_text_draft(cx: &mut TestAppContext) {
+        let source = TestWave::new();
+        let (mut visual, editor, _, track, _) =
+            window_with_gain(cx, "hex.utility", Slot::Track, false, Some(&source.0));
+        let sampler = editor.read_with(&visual, |view, _| {
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .id()
+        });
+        visual.simulate_resize(size(px(1600.0), px(800.0)));
+        visual.run_until_parked();
+        let toggle = visual
+            .debug_bounds("automation-view-toggle")
+            .unwrap()
+            .center();
+        visual.simulate_click(toggle, gpui::Modifiers::default());
+        editor.update(&mut visual, |view, cx| {
+            view.gain_lane.track = Some(track);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let sampler_selector =
+            Box::leak(format!("sampler-attack-{}-value", sampler.value()).into_boxed_str());
+        let sampler_at = visual.debug_bounds(sampler_selector).unwrap().center();
+        let plot_selector =
+            Box::leak(format!("arrangement-automation-plot-{}", track.value()).into_boxed_str());
+        let plot = visual.debug_bounds(plot_selector).unwrap();
+        let at = gpui::point(plot.center().x, plot.top() + plot.size.height * 0.25);
+        visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+        editor.read_with(&visual, |view, _| assert!(view.gain_lane.draft.is_some()));
+        visual.simulate_click(sampler_at, Modifiers::default());
+        editor.read_with(&visual, |view, _| assert!(view.gain_lane.pending.is_some()));
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("invalid");
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                !view.sampler_parameter.numeric_draft_active(),
+                "sampler draft began while gain point was held"
+            );
+        });
+        visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+        pump(&mut visual, &editor);
+        editor.read_with(&visual, |view, _| {
+            assert!(view.gain_lane.pending.is_none());
+            assert!(view.error.as_ref().is_some_and(|error| {
+                error
+                    .to_string()
+                    .contains("sampler supports private offline export")
+            }));
+        });
+        visual.run_until_parked();
+        visual.simulate_click(sampler_at, Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("invalid");
+        editor.read_with(&visual, |view, _| {
+            assert!(view.sampler_parameter.numeric_draft_active())
+        });
+    }
 
     #[gpui::test]
     fn invalid_sampler_text_blocks_starting_an_automation_gesture(cx: &mut TestAppContext) {

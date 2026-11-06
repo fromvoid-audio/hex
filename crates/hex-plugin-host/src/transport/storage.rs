@@ -23,7 +23,7 @@ pub fn channel_storage_bound() -> Option<ConstructorStorage> {
     Some(ConstructorStorage {
         data_bytes: ring
             .checked_mul(2)?
-            .checked_add(std::mem::size_of::<AtomicBool>())?,
+            .checked_add(std::mem::size_of::<Revocation>())?,
         shared_groups: 3,
         shared_handle_bound: 7,
     })

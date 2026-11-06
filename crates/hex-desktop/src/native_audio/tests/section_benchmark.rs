@@ -9,14 +9,19 @@
 //! sleeps, so fence waits approximate, but are not, a physical device cadence.
 //! UI install, paint and present are not measured here.
 //!
-//! ```text
-//! HEX_SECTION_BENCH_PROJECT=/path/to/project.hex [HEX_SECTION_BENCH_REPS=5] \
-//!   [HEX_SECTION_BENCH_MEDIA_REMAP=/old/media/root=/new/media/root] \
-//!   cargo test --release -p hex-desktop --features allocation-probe --bin hex-desktop \
-//!   section_edit_benchmark -- --ignored --nocapture
+//! Run the generated reference workload in a fresh directory.
+//!
+//! ```sh
+//! fixture_dir="$(mktemp -d)/section-fixture"
+//! cargo run --release --locked -p hex-session --example create_section_benchmark -- "$fixture_dir"
+//! HEX_SECTION_BENCH_PROJECT="$fixture_dir/project.hex" HEX_SECTION_BENCH_REPS=7 \
+//!   cargo test --release --locked -p hex-desktop --features allocation-probe --bin hex-desktop \
+//!   -- native_audio::tests::section_benchmark::section_edit_benchmark \
+//!   --ignored --exact --nocapture --test-threads=1
 //! ```
 //!
-//! The project needs at least two song sections; the original is only read.
+//! A supplied saved project needs at least two song sections. The benchmark
+//! reads the original and applies edits to its temporary copy.
 //! `HEX_SECTION_BENCH_MEDIA_REMAP` rewrites one absolute media-path prefix in
 //! the temporary copy when the project's library has moved.
 use super::resident_preview::ResidentHarness;
@@ -29,22 +34,23 @@ use hex_session::service::{
     diagnostics::{DiagnosticObserver, DiagnosticStage},
 };
 
-const PHASES: [&str; 6] = [
+const PHASES: [&str; 7] = [
     "worker_us",
     "section_fence_us",
     "section_edit_us",
     "section_prepare_us",
     "section_publish_us",
     "section_finish_us",
+    "section_view_us",
 ];
 
 /// One completed request: client-observed total and worker phase fields.
 struct Sample {
     total: Duration,
-    phases: [Option<u64>; 6],
+    phases: [Option<u64>; 7],
 }
 
-fn parse_phases(details: &str) -> [Option<u64>; 6] {
+fn parse_phases(details: &str) -> [Option<u64>; 7] {
     PHASES.map(|name| {
         details.split_whitespace().find_map(|field| {
             field
@@ -53,6 +59,14 @@ fn parse_phases(details: &str) -> [Option<u64>; 6] {
                 .and_then(|value| value.parse().ok())
         })
     })
+}
+
+#[test]
+fn section_benchmark_parses_view_phase() {
+    let phases = parse_phases("worker_us=20 section_view_us=7");
+    assert_eq!(phases[0], Some(20));
+    assert_eq!(phases[6], Some(7));
+    assert_eq!(phases[1], None);
 }
 
 fn open_copy(h: &mut ResidentHarness, path: PathBuf) -> Event {
@@ -249,11 +263,7 @@ fn section_edit_benchmark() {
     let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
     let loaded = Instant::now();
     let mut event = open_copy(&mut h, copy.clone());
-    // Opening replaces the document's output: release the old callback, then
-    // wait for the fresh output to apply the opened project.
-    h.release_relinquished_output();
-    h.wait_fresh_output(old_output);
-    wait_applied(&mut h, 0);
+    super::resident_lifecycle::finish_replacement(&mut h, &event, old_output);
     let song = sections(&event);
     assert!(song.len() >= 2, "benchmark needs at least two sections");
     let tempo = event.state.project.tempo_map().clone();

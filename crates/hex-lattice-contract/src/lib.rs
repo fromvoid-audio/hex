@@ -31,7 +31,11 @@ mod snapshot_tests;
 pub use parameter_semantics::*;
 use std::{fmt, sync::Arc};
 
+/// Maximum opaque state for providers without a dedicated bound.
 pub const MAX_NATIVE_DEVICE_STATE_BYTES: usize = 4_096;
+/// Maximum complete opaque state envelope for the VST3 provider.
+pub const MAX_VST3_DEVICE_STATE_BYTES: usize = 512 * 1024;
+pub const VST3_DEVICE_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.vst3");
 pub const MAX_DEVICE_TYPE_ID_BYTES: usize = 128;
 /// Device-owned IDs exclude zero and the two host gain identifiers.
 /// Devices deriving IDs from stable object identities must use checked
@@ -317,7 +321,12 @@ impl NativeDeviceState {
         if state_version == 0 {
             return Err(DeviceContractError::InvalidStateVersion);
         }
-        if payload.len() > MAX_NATIVE_DEVICE_STATE_BYTES {
+        let max_bytes = if type_id == VST3_DEVICE_TYPE_ID {
+            MAX_VST3_DEVICE_STATE_BYTES
+        } else {
+            MAX_NATIVE_DEVICE_STATE_BYTES
+        };
+        if payload.len() > max_bytes {
             return Err(DeviceContractError::StateTooLarge);
         }
         Ok(Self {
@@ -419,9 +428,19 @@ impl NativeDeviceState {
     pub fn processing_eq(&self, other: &Self) -> bool {
         self.type_id == other.type_id
             && self.state_version == other.state_version
-            && self.payload == other.payload
+            && (self.shares_payload_storage_with(other) || self.payload == other.payload)
             && self.asset_references == other.asset_references
     }
+    /// Match shared immutable payloads on the callback. Independently
+    /// allocated larger payloads require a fresh runtime handoff so callback
+    /// comparison work remains bounded by the ordinary device state limit.
+    pub fn processing_eq_on_callback(&self, other: &Self) -> bool {
+        (self.shares_payload_storage_with(other)
+            || (self.payload.len() <= MAX_NATIVE_DEVICE_STATE_BYTES
+                && other.payload.len() <= MAX_NATIVE_DEVICE_STATE_BYTES))
+            && self.processing_eq(other)
+    }
+
     pub fn input_gain_linear(&self) -> f32 {
         HostGain(self.input_gain_millidb).linear()
     }
@@ -570,9 +589,22 @@ pub fn validated_state_descriptors<D: NativeDeviceMetadata + ?Sized>(
     Ok(descriptors)
 }
 
+/// Per-definition optional auxiliary input; routing and buffer custody remain
+/// host-owned. An undeclared input is never inferred from device type or state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AuxiliaryInput {
+    #[default]
+    None,
+    Stereo,
+}
+
 /// Device metadata/state operations; implementations own their codec.
 pub trait NativeDeviceMetadata: Sync {
     fn type_id(&self) -> DeviceTypeId;
+    /// One optional stereo key input, or none for existing single-bus devices.
+    fn auxiliary_input(&self) -> AuxiliaryInput {
+        AuxiliaryInput::None
+    }
     /// Optional lowercase presentation name. The type identifier remains the
     /// stable storage/registry identity; unnamed definitions display that ID.
     fn display_name(&self) -> Option<&'static str> {
@@ -938,6 +970,29 @@ mod tests {
         let state = NativeDeviceState::new(id, 1, vec![1, 2]).unwrap();
         let clone = state.clone();
         assert!(Arc::ptr_eq(&state.payload, &clone.payload));
+    }
+
+    #[test]
+    fn callback_compares_large_vst3_state_only_when_it_shares_payload() {
+        let make_state =
+            |len| NativeDeviceState::new(VST3_DEVICE_TYPE_ID, 1, vec![42; len]).unwrap();
+        let large = make_state(150_545);
+        let independent = make_state(150_545);
+        assert!(large.processing_eq(&independent));
+        assert!(large.processing_eq_on_callback(&large.clone()));
+        assert!(!large.processing_eq_on_callback(&independent));
+        assert!(make_state(64).processing_eq_on_callback(&make_state(64)));
+    }
+
+    #[test]
+    fn vst3_envelopes_have_a_separate_bounded_size() {
+        let max = MAX_VST3_DEVICE_STATE_BYTES;
+        let state = NativeDeviceState::new(VST3_DEVICE_TYPE_ID, 1, vec![255; max]).unwrap();
+        assert_eq!(state.payload().len(), max);
+        assert_eq!(
+            NativeDeviceState::new(VST3_DEVICE_TYPE_ID, 1, vec![0; max + 1]),
+            Err(DeviceContractError::StateTooLarge),
+        );
     }
 
     #[test]

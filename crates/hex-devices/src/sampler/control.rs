@@ -26,6 +26,8 @@ pub enum SamplerParameter {
     LoopEnabled,
     LoopStartFrame,
     LoopEndFrame,
+    /// Classic loop seam crossfade in source milliseconds; zero is off.
+    LoopCrossfadeMs,
     AttackMs,
     DecayMs,
     SustainPercent,
@@ -57,6 +59,7 @@ impl SamplerParameter {
         match self {
             Self::LoopStartFrame => "loop-start",
             Self::LoopEndFrame => "loop-end",
+            Self::LoopCrossfadeMs => "loop-crossfade",
             _ => self.label(),
         }
     }
@@ -69,6 +72,7 @@ impl SamplerParameter {
             Self::LoopEnabled => "loop",
             Self::LoopStartFrame => "loop start",
             Self::LoopEndFrame => "loop end",
+            Self::LoopCrossfadeMs => "crossfade",
             Self::AttackMs => "attack",
             Self::DecayMs => "decay",
             Self::SustainPercent => "sustain",
@@ -79,6 +83,7 @@ impl SamplerParameter {
         match self {
             Self::AttackMs | Self::DecayMs | Self::ReleaseMs => (0.0, 60_000.0),
             Self::SustainPercent => (0.0, 100.0),
+            Self::LoopCrossfadeMs => (0.0, super::MAX_LOOP_CROSSFADE_MS),
             Self::Gain => (0.0, 4.0),
             Self::Transpose => (-48.0, 48.0),
             Self::LoopEnabled => (0.0, 1.0),
@@ -88,7 +93,7 @@ impl SamplerParameter {
     }
     pub const fn default_value(self) -> f64 {
         match self {
-            Self::AttackMs | Self::DecayMs | Self::ReleaseMs => 0.0,
+            Self::AttackMs | Self::DecayMs | Self::ReleaseMs | Self::LoopCrossfadeMs => 0.0,
             Self::SustainPercent => 100.0,
             Self::Gain => 1.0,
             Self::Transpose => 0.0,
@@ -98,7 +103,7 @@ impl SamplerParameter {
     }
     pub const fn unit(self) -> Option<&'static str> {
         match self {
-            Self::AttackMs | Self::DecayMs | Self::ReleaseMs => Some("ms"),
+            Self::AttackMs | Self::DecayMs | Self::ReleaseMs | Self::LoopCrossfadeMs => Some("ms"),
             Self::SustainPercent => Some("%"),
             Self::Gain | Self::LoopEnabled => None,
             Self::Transpose => Some("st"),
@@ -133,7 +138,8 @@ pub fn sampler_parameter_value_on_control(
         }
         (LoopStartFrame, Classic { loop_region, .. }) => loop_region.start as f64,
         (LoopEndFrame, Classic { loop_region, .. }) => loop_region.end as f64,
-        (LoopEnabled | LoopStartFrame | LoopEndFrame, _) => {
+        (LoopCrossfadeMs, Classic { .. }) => authored.loop_crossfade_ms,
+        (LoopEnabled | LoopStartFrame | LoopEndFrame | LoopCrossfadeMs, _) => {
             return Err(ControlError::RequiresClassic);
         }
     })
@@ -149,7 +155,10 @@ pub fn sampler_parameter_active_on_control(
     Ok(match parameter {
         SamplerParameter::LoopEnabled
         | SamplerParameter::LoopStartFrame
-        | SamplerParameter::LoopEndFrame => matches!(authored.mode, AuthoredMode::Classic { .. }),
+        | SamplerParameter::LoopEndFrame
+        | SamplerParameter::LoopCrossfadeMs => {
+            matches!(authored.mode, AuthoredMode::Classic { .. })
+        }
         SamplerParameter::ReleaseMs => !matches!(
             authored.mode,
             AuthoredMode::OneShot {
@@ -191,7 +200,8 @@ pub fn patch_sampler_parameter_on_control(
         (LoopEnabled, Classic { loop_enabled, .. }) => *loop_enabled = value == 1.0,
         (LoopStartFrame, Classic { loop_region, .. }) => loop_region.start = value as usize,
         (LoopEndFrame, Classic { loop_region, .. }) => loop_region.end = value as usize,
-        (LoopEnabled | LoopStartFrame | LoopEndFrame, _) => {
+        (LoopCrossfadeMs, Classic { .. }) => authored.loop_crossfade_ms = value,
+        (LoopEnabled | LoopStartFrame | LoopEndFrame | LoopCrossfadeMs, _) => {
             return Err(ControlError::RequiresClassic);
         }
     }
