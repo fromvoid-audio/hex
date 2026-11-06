@@ -914,10 +914,7 @@ pub(super) fn open_document(
     current: Option<&Snapshot>,
     admission: sampler_export::Admission<'_>,
 ) -> Result<recovery::OpenCandidate, String> {
-    let open = |admission: sampler_export::Admission<'_>| {
-        let allowance = admission
-            .replacement_frame_allowance(old)
-            .map_err(|e| e.to_string())?;
+    prepare_document_media(old, events, current, admission, |allowance, admission| {
         recovery::open_source_with_limits(
             old,
             history_capacity,
@@ -929,6 +926,21 @@ pub(super) fn open_document(
             allowance,
             admission,
         )
+    })
+}
+
+pub(super) fn prepare_document_media<T>(
+    old: &Session,
+    events: &mut WorkerEvents,
+    current: Option<&Snapshot>,
+    admission: sampler_export::Admission<'_>,
+    prepare: impl FnOnce(u64, sampler_export::Admission<'_>) -> Result<T, String>,
+) -> Result<T, String> {
+    let open = |admission: sampler_export::Admission<'_>| {
+        let allowance = admission
+            .replacement_frame_allowance(old)
+            .map_err(|e| e.to_string())?;
+        prepare(allowance, admission)
     };
     let Some(sink) = events.resident_audio() else {
         return open(admission);

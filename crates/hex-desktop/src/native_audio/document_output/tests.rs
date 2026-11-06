@@ -424,3 +424,76 @@ fn refused_output_open_or_install_keeps_unsaved_document_and_can_retry() {
     assert_eq!(*opened.state.project, expected);
     h.await_playback(&opened, 44_100);
 }
+
+#[test]
+fn live_follow_interface_preflights_output_and_keeps_the_rate_history() {
+    use hex_project::SampleRateMode;
+    use hex_session::service::ProjectSampleRate;
+
+    let _native = native_fixture();
+    let mut h = Harness::new();
+    let initial = h.wait(|h| h.service.try_event().ok());
+    assert_eq!(
+        initial.state.project.sample_rate_mode(),
+        SampleRateMode::FollowInterface
+    );
+    h.await_playback(&initial, 48_000);
+    let files = Files::new();
+    let (path, media, _) = saved_fixture(&files, 48_000);
+    let original = std::fs::read(&media).unwrap();
+    let opened = h.submit(Request::Open(path.clone()));
+    h.await_playback(&opened, 48_000);
+    let edited = h.submit(Request::Edit(Command::AddTrack {
+        name: "before rate".into(),
+    }));
+    h.await_playback(&edited, 48_000);
+    let generation = edited
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .context()
+        .project_generation;
+    let apply = |choice| Request::ChangeProjectSampleRate {
+        project_generation: generation,
+        revision: edited.state.revision,
+        choice,
+    };
+    h.fail.store(1, Release);
+    let refused = h.submit(apply(ProjectSampleRate::Fixed(44_100)));
+    assert!(!refused.project_replaced && refused.error.is_some());
+    assert_eq!(refused.state.revision, edited.state.revision);
+    assert_eq!(refused.state.project, edited.state.project);
+    assert_eq!(refused.state.document_path, edited.state.document_path);
+    assert_eq!(refused.state.can_undo, edited.state.can_undo);
+
+    h.fail.store(0, Release);
+    h.nominal_device_rate.store(44_100, Release);
+    let changed = h.submit(apply(ProjectSampleRate::FollowInterface));
+    assert!(changed.error.is_none(), "{:?}", changed.error);
+    assert_eq!(
+        changed.state.project.sample_rate_mode(),
+        SampleRateMode::FollowInterface
+    );
+    assert_eq!(changed.state.project.sample_rate(), 44_100);
+    assert_eq!(changed.state.document_path.as_deref(), Some(path.as_path()));
+    h.await_playback(&changed, 44_100);
+    let undone = h.submit(Request::Undo);
+    assert!(undone.error.is_none(), "{:?}", undone.error);
+    assert_eq!(undone.state.project, edited.state.project);
+    h.await_playback(&undone, 48_000);
+    let redone = h.submit(Request::Redo);
+    assert!(redone.error.is_none(), "{:?}", redone.error);
+    assert_eq!(redone.state.project, changed.state.project);
+    h.await_playback(&redone, 44_100);
+
+    let copy = files.0.join("follow.hex");
+    let saved = h.submit(Request::SaveNew(copy.clone()));
+    assert!(saved.error.is_none(), "{:?}", saved.error);
+    h.nominal_device_rate.store(48_000, Release);
+    let reopened = h.submit(Request::Open(copy));
+    assert!(reopened.error.is_none(), "{:?}", reopened.error);
+    assert_eq!(reopened.state.project, redone.state.project);
+    h.await_playback(&reopened, 44_100);
+    assert_eq!(std::fs::read(media).unwrap(), original);
+}
