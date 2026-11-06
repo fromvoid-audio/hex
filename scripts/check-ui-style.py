@@ -113,6 +113,8 @@ widgets = (
     # Device preset header actions reuse themed compact action buttons.
     'super::device_preset::actions(', 'super::device_panel::action_button(', 'super::device_panel::segment_button(',
     'super::super::device_preset::actions(',
+    # The VST3 editor toggle uses the same themed device action.
+    'vst3_editor_button(',
     # Shared A/B actions compose themed compact buttons, never raw text.
     'super::device_comparison::actions(', 'super::super::device_comparison::actions(',
     'device_drag_title(', 'render_return_drop_target(', 'uniform_list(',
