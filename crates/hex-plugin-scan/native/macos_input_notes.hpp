@@ -1,6 +1,7 @@
 // A borrowed read-only SDK event list on the isolated processing lane.
 #pragma once
 #include "pluginterfaces/vst/ivstevents.h"
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstring>
@@ -19,6 +20,43 @@ struct InputNote {
     uint8 velocity=0;
     bool on=false;
     int32 note_id=-1;
+};
+
+// Owned by the serialized processing lane. The host's authored and live
+// voices fit within this fixed table. Legacy events match by channel/pitch.
+class HeldInputNotes {
+    std::array<InputNote,INPUT_NOTE_COUNT> held{};
+    size_t count=0;
+public:
+    bool stage(const std::array<InputNote,INPUT_NOTE_COUNT>& notes,size_t length) {
+        if(length>notes.size()) return false;
+        for(size_t index=0;index<length;++index) {
+            const auto note=notes[index];
+            const auto end=held.begin()+count;
+            const auto match=std::find_if(held.begin(),end,[&](const InputNote& active) {
+                return active.note_id==note.note_id && active.channel==note.channel && active.pitch==note.pitch;
+            });
+            if(note.on) {
+                if(note.note_id>=0 && match!=end) continue;
+                if(count==held.size()) return false;
+                held[count++]=note;
+            } else if(match!=end) {
+                std::move(match+1,end,match);
+                --count;
+            }
+        }
+        return true;
+    }
+    size_t release_into(std::array<InputNote,INPUT_NOTE_COUNT>& notes) {
+        for(size_t index=0;index<count;++index) {
+            auto note=held[index];
+            note.offset=0;note.velocity=0;note.on=false;
+            notes[index]=note;
+        }
+        const auto released=count;
+        count=0;
+        return released;
+    }
 };
 
 class InputNotes final : public IEventList {

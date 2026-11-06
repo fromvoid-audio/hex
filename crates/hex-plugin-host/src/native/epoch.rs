@@ -44,8 +44,21 @@ impl Prepared {
     /// Failed discontinuity keeps the exact cancelled lease in existing failure
     /// custody. The caller must observe disposal independently before destroying
     /// that owner; neither the error nor Drop acknowledges Root/callback return.
-    pub fn quiesce_retained_on_control(
+    pub fn quiesce_retained_on_control(self) -> std::result::Result<Quiescent, PreparationFailure> {
+        self.quiesce_retained(protocol::quiesce)
+    }
+
+    /// The graph and callback have returned for stopped renewal. Only the
+    /// isolated instrument's accepted gates need release before it quiesces.
+    pub fn quiesce_for_stopped_restore_on_control(
+        self,
+    ) -> std::result::Result<Quiescent, PreparationFailure> {
+        self.quiesce_retained(protocol::quiesce_for_stopped_restore)
+    }
+
+    fn quiesce_retained(
         mut self,
+        encode: impl FnOnce(&Configuration, u64) -> Result<[u8; 64]>,
     ) -> std::result::Result<Quiescent, PreparationFailure> {
         let result = (|| {
             self.require_live_epoch()?;
@@ -57,7 +70,7 @@ impl Prepared {
             }
             let until = end_after(self.limits.startup)?;
             let token = self.lease.cancellation.clone();
-            let request = protocol::quiesce(&self.config, self.sequence)?;
+            let request = encode(&self.config, self.sequence)?;
             self.lease
                 .channel
                 .send(&request, until, &mut || token.check())?;

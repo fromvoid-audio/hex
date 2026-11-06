@@ -504,6 +504,19 @@ pub fn quiesce(config: &Configuration, sequence: u64) -> Result<[u8; 64]> {
     Ok(out)
 }
 
+/// Stopped restoration discards the old graph's instrument gates. The helper
+/// releases its accepted notes without extending the acknowledged PCM prefix.
+pub(crate) fn quiesce_for_stopped_restore(
+    config: &Configuration,
+    sequence: u64,
+) -> Result<[u8; 64]> {
+    let mut out = quiesce(config, sequence)?;
+    if config.input_channels == 0 {
+        out[4..6].copy_from_slice(&2_u16.to_le_bytes());
+    }
+    Ok(out)
+}
+
 /// Explicit stopped component reactivation, distinct from ordinary quiescence.
 pub fn reactivate(config: &Configuration, sequence: u64, operation: u64) -> Result<[u8; 72]> {
     if operation == 0 {
