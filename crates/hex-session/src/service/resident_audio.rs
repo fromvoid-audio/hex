@@ -2450,6 +2450,7 @@ pub(super) mod tests {
     mod export_tests;
     mod fence_tests;
     mod import_reuse_tests;
+    mod native_automation_recording;
     mod plugin_effect_tests;
     mod source_binding_tests;
     use super::*;
@@ -2480,6 +2481,7 @@ pub(super) mod tests {
         seek_attempts: AtomicUsize,
         publications: Mutex<Vec<(ResidentPublicationMetadata, ResidentPublicationPolicy)>>,
         native_parameter_input: Mutex<Option<hex_engine::NativeParameterInputTarget>>,
+        native_capture_playing: AtomicBool,
         keyboard_peak: Mutex<f32>,
         keyboard_publications: AtomicUsize,
         effect_compilations: AtomicUsize,
@@ -2634,6 +2636,32 @@ pub(super) mod tests {
                 }
                 Err(error) => Err(ResidentPublicationRefusal { playback, error }),
             }
+        }
+        fn native_automation_source(
+            &mut self,
+            context: hex_engine::AudioSourceContext,
+        ) -> Result<Option<NativeAutomationSource>, String> {
+            let publications = self.observed.publications.lock().unwrap();
+            if !self.observed.native_capture_playing.load(Ordering::Acquire)
+                || publications
+                    .last()
+                    .is_none_or(|(metadata, _)| metadata.context != context)
+            {
+                return Ok(None);
+            }
+            Ok(self
+                .observed
+                .native_parameter_input
+                .lock()
+                .unwrap()
+                .map(|target| NativeAutomationSource {
+                    target,
+                    sample_rate: 48_000,
+                    output_identity: 7,
+                    audio_revision: publications.len() as u64,
+                    transport_epoch: 3,
+                    section_loop: None,
+                }))
         }
         fn native_sampler_hold(&self) -> NativeSamplerReservationHold {
             let bytes = self

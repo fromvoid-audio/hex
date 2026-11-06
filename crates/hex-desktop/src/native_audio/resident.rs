@@ -25,6 +25,7 @@ pub(super) struct Pending {
 pub(super) struct Resident {
     pub(super) pending: Option<Pending>,
     pub(super) current_submission: Option<ResidentRuntimeLoop>,
+    pub(super) capture_target: Option<hex_engine::NativeParameterInputTarget>,
     pub(super) applied_loop: Option<ResidentRuntimeLoop>,
     pub(super) retired: Option<DeviceResourcePublication>,
     observations: [Option<Arc<hex_engine::PreparedPlaybackObservation>>; RUNTIME_CELLS],
@@ -668,6 +669,7 @@ impl NativeAudioSink {
                         source_context: Some(metadata.context),
                         section_loop,
                     });
+                    self.resident.capture_target = observation.native_parameter_input_target();
                     self.output_identity = Some(output_identity);
                     self.resident.observations[observation_slot] = Some(Arc::clone(&observation));
                     self.observe(
