@@ -42,6 +42,7 @@ pub(super) struct PendingKinds {
     device_automation: bool,
     time_copy: bool,
     sample_drop: bool,
+    project_rate: bool,
 }
 
 /// One request's classification, captured before submission moves it.
@@ -97,6 +98,7 @@ impl EditorView {
                 device_automation: self.pending_device_automation_matches(request),
                 time_copy: self.pending_time_copy_matches(request),
                 sample_drop: self.pending_sample_drop_matches(request),
+                project_rate: self.project_rate_settings.matches(request),
             },
             import_intent: ImportIntent::capture(request),
         }
@@ -126,6 +128,10 @@ impl EditorView {
             import_intent,
         } = submission;
         self.worker_submitted();
+        if kinds.project_rate {
+            self.project_rate_settings
+                .submitted(self.worker_requests_pending);
+        }
         if kinds.sample_drop {
             self.sample_drop_submitted();
         }
@@ -295,6 +301,10 @@ impl EditorView {
             Refusal::Closed => "project worker stopped",
             Refusal::QueueFull => "request queue full · edit was not applied",
         };
+        if kinds.project_rate {
+            self.project_rate_settings.refused(message.into());
+            visible = true;
+        }
         visible |= replace_error(&mut self.error, message);
         visible
     }

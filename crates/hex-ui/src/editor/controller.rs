@@ -2341,6 +2341,8 @@ impl EditorView {
         self.truncated_import
             .observe(self.project_generation, &event);
         self.section_request_complete(&event);
+        self.project_rate_settings
+            .observe(self.project_generation, &event);
         self.track_reorder_complete(&event);
         self.sample_drop_complete(&event);
         self.midi_drag_request_complete(&event);
@@ -3400,6 +3402,7 @@ impl EditorView {
         let independent_edit = matches!(
             &request,
             Request::Edit(_)
+                | Request::ChangeProjectSampleRate { .. }
                 | Request::Import(_)
                 | Request::ImportAudioBatch { .. }
                 | Request::ImportToTrack { .. }
@@ -3658,6 +3661,7 @@ impl EditorView {
                 | Request::GroupTimeRange { .. }
                 | Request::GroupAudioEvents { .. }
                 | Request::Edit(_)
+                | Request::ChangeProjectSampleRate { .. }
                 | Request::BounceArrangement { .. }
                 | Request::ConvertClip { .. }
                 | Request::Undo
