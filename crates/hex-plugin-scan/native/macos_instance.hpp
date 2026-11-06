@@ -189,21 +189,24 @@ public:
             return ConfigurationResult::UnsupportedPrecision;
         const auto input_count=component->getBusCount(kAudio,kInput);
         const auto output_count=component->getBusCount(kAudio,kOutput);
-        // A MIDI generator may advertise one main audio input. The helper
-        // preserves its native layout and supplies silence; Hex routes no
-        // audio to it. The wire and graph still see a zero-input instrument.
+        // An instrument may advertise one main or auxiliary audio input. Keep
+        // its native layout and provide silence in that SDK slot; the wire and
+        // graph still see a zero-input instrument.
         auto sdk=request;
         const bool silent_input=!request.input_channels && input_count==1;
+        BusType first_input_type=kMain;
         if (silent_input) {
             BusInfo info{};
-            if (!audio_bus_info(component,kInput,0,kMain,info) || info.channelCount>2)
+            if (!audio_bus_info(component,kInput,0,info) || info.channelCount>2 ||
+                (info.busType!=kMain && info.busType!=kAux))
                 return ConfigurationResult::UnsupportedTopology;
+            first_input_type=info.busType;
             sdk.input_channels=info.channelCount;
             sdk.input_enabled=true;
         }
         const bool multiple_outputs=!request.input_channels && output_count>1;
         BusInfo first_output{};
-        if (!audio_buses(component,kInput,input_count,sdk.input_channels,false) ||
+        if (!audio_buses(component,kInput,input_count,sdk.input_channels,false,first_input_type) ||
             (multiple_outputs
                 ? output_count>max_instrument_outputs || !request.output_enabled ||
                     !audio_bus_info(component,kOutput,0,kMain,first_output)
@@ -253,7 +256,7 @@ public:
             return ConfigurationResult::ArrangementRefused;
         if (component->getBusCount(kAudio,kInput)!=input_count ||
             component->getBusCount(kAudio,kOutput)!=output_count ||
-            !audio_buses(component,kInput,input_count,sdk.input_channels,true) ||
+            !audio_buses(component,kInput,input_count,sdk.input_channels,true,first_input_type) ||
             !audio_bus_info(component,kOutput,0,kMain,first_output) ||
             first_output.channelCount!=request.output_channels ||
             processor->getBusArrangement(kOutput,0,observed)!=kResultOk || observed!=main_output ||
