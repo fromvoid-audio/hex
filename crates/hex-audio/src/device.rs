@@ -243,10 +243,8 @@ pub(crate) fn open_prepared(
                 )),
             )
         };
-    let channel_result = match capture {
-        Some(capture) => prepared::channel_with_spectrum(config.sample_rate, Some(capture)),
-        None => prepared::channel(config.sample_rate),
-    };
+    let channel_result =
+        prepared::channel_with_interface(config.sample_rate, capture, Some(device_rate));
     let (mut control, mut callback) = match channel_result {
         Ok(channel) => channel,
         Err(error) => {

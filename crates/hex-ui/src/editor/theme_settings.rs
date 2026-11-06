@@ -969,6 +969,28 @@ impl EditorView {
                     )
                     .child(controls),
             );
+        let project_rate = self.state.as_ref().map(|state| state.project.sample_rate());
+        let interface_rate = self.audio.as_ref().and_then(|audio| {
+            audio
+                .status()
+                .and_then(|status| status.interface_sample_rate())
+        });
+        let rate_label = |rate: Option<u32>| {
+            rate.map_or_else(|| "unavailable".into(), |rate| format!("{rate} hz"))
+        };
+        let audio_rates = div()
+            .debug_selector(|| "settings sample rates".into())
+            .flex()
+            .gap(px(16.0))
+            .text_xs()
+            .child(theme::text(format!(
+                "project rate · {}",
+                rate_label(project_rate)
+            )))
+            .child(theme::text(format!(
+                "interface rate · {}",
+                rate_label(interface_rate)
+            )));
         let settings = self.audio_import_settings_row(cx);
         let track_defaults = self.track_defaults_row(cx);
         let mut card = div()
@@ -988,6 +1010,7 @@ impl EditorView {
             .font_family(theme::FONT_FAMILY)
             .text_color(rgb(style.text))
             .shadow_lg()
+            .child(audio_rates)
             .child(settings)
             .children([track_defaults])
             .child(self.controller_input_settings(cx))
@@ -1214,6 +1237,7 @@ mod tests {
         visual.simulate_keystrokes("cmd-,");
         visual.run_until_parked();
         assert!(visual.debug_bounds("theme settings panel").is_some());
+        assert!(visual.debug_bounds("settings sample rates").is_some());
 
         let slider = visual
             .debug_bounds("theme-primary-r-slider")
