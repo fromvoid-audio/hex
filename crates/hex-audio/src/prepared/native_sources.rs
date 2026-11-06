@@ -156,6 +156,15 @@ impl PublicationControl {
         }
         self.candidate_root.native_source_endpoint_status(binding)
     }
+    /// Read the exact accepted endpoint's terminal diagnostic once, without
+    /// joining its worker or exposing any callback state. Contention can defer it.
+    pub fn take_native_source_failure_diagnostic(&self, binding: Binding) -> Option<String> {
+        if self.status.closing.load(Acquire) {
+            return None;
+        }
+        self.candidate_root
+            .take_native_source_failure_diagnostic(binding)
+    }
     /// Nonblocking observation of this original endpoint's actual callback
     /// installation, independent of queue admission. None includes a stale,
     /// retiring/closed source or control contention. True grants neither graph

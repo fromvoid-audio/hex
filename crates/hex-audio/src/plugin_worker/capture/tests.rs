@@ -466,6 +466,10 @@ fn actual_worker_capture_failure_retains_original_error_and_native_reap() {
     }
     let retired = owner.retire_on_control().unwrap();
     assert!(matches!(retired.failure, Some(Error::Worker(6))));
+    let diagnostic = owner.take_failure_diagnostic_on_control().unwrap();
+    assert!(diagnostic.contains("exchange=control bundle=\"processing.vst3\""));
+    assert!(diagnostic.contains("worker code 6"));
+    assert!(owner.take_failure_diagnostic_on_control().is_none());
     assert!(!retired.native.status.success() && retired.native.terminal.is_none());
     assert!(owner.owns_callback(&callback));
 }
