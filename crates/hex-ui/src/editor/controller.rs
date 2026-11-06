@@ -4037,6 +4037,11 @@ impl EditorView {
             );
             return;
         }
+        if let PlaybackAction::Transport(PlaybackCommand::PlayFrom(frame)) = action
+            && self.recover_degraded_play_at(frame)
+        {
+            return;
+        }
         if !matches!(action, PlaybackAction::SetMetronome(_)) {
             self.invalidate_prepared_seek();
         }
