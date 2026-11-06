@@ -70,6 +70,18 @@ fn actual_foreign_instrument_notes_follow_accepted_callback_segments() {
         on: false,
         ..second_on
     };
+    struct Clock(u64, bool);
+    impl hex_lattice::NativeInstrumentClock for Clock {
+        fn beat_at_offset(&self, _: usize) -> Option<u64> {
+            None
+        }
+        fn arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+            self.0.checked_add(offset as u64)
+        }
+        fn transport_is_running(&self) -> Option<bool> {
+            Some(self.1)
+        }
+    }
     // Fill the expanded input budget without exceeding the fixture's two
     // simultaneous voices. The final two onsets must retain their original PCM.
     let mut dense = Vec::new();
@@ -87,16 +99,19 @@ fn actual_foreign_instrument_notes_follow_accepted_callback_segments() {
     }
     dense.extend([on, second_on]);
     assert_eq!(dense.len(), 128);
-    let mut render = |notes: &[ForeignNote], accept| {
+    let mut render = |index: usize, notes: &[ForeignNote], accept| {
         let mut output = [[1.0; 2]; 8];
+        let origin = (index as u64 * 8).saturating_sub(3);
+        let first_clock = Clock(origin, index != 0);
+        let last_clock = Clock(if index == 0 { 0 } else { origin + 3 }, true);
         let mut callback = || {
             endpoints.begin_host_callback(8).unwrap();
             let (first, last) = output.split_at_mut(3);
             endpoints
-                .process_segment_with_notes(facts.node(), 0, first, &[], &[], None)
+                .process_segment_with_notes(facts.node(), 0, first, &[], &[], Some(&first_clock))
                 .unwrap();
             endpoints
-                .process_segment_with_notes(facts.node(), 3, last, &[], notes, None)
+                .process_segment_with_notes(facts.node(), 3, last, &[], notes, Some(&last_clock))
                 .unwrap();
             assert_eq!(endpoints.finish_host_callback(accept).is_ok(), accept);
         };
@@ -110,10 +125,10 @@ fn actual_foreign_instrument_notes_follow_accepted_callback_segments() {
         .into_iter()
         .enumerate()
     {
-        let output = render(notes, true);
+        let output = render(index, notes, true);
         let expected = match index {
-            2 => [0., 0., 0., 0., 0.5, 0.5, 1., 1.],
-            3 => [1.25, 1.25, 1.25, 1.25, 0.625, 0., 0., 0.],
+            2 => [0., 0., 0., 0., 0.625, 0.625, 1.25, 1.25],
+            3 => [1.5, 1.5, 1.5, 1.5, 0.75, 0., 0., 0.],
             _ => [0.; 8],
         };
         assert_eq!(output, expected.map(|sample| [sample; 2]));
@@ -123,7 +138,7 @@ fn actual_foreign_instrument_notes_follow_accepted_callback_segments() {
             std::thread::yield_now();
         }
     }
-    assert_eq!(render(&[on], false), [[0.; 2]; 8]);
+    assert_eq!(render(4, &[on], false), [[0.; 2]; 8]);
     let retirement = worker.retire_on_control().unwrap();
     assert!(retirement.failure.is_none() && retirement.native.status.success());
     assert_eq!(retirement.native.terminal.unwrap().blocks, 4);

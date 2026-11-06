@@ -339,6 +339,7 @@ mod tests {
             events: Events::default(),
             parameters: Parameters::default(),
             timing: None,
+            timing_changes: Default::default(),
         };
         block
             .parameters

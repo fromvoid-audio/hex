@@ -591,6 +591,134 @@ fn segmenting_does_not_multiply_the_physical_callback_event_budget() {
 }
 
 #[test]
+fn stopped_partial_quantum_dispatches_play_context_before_the_coincident_note() {
+    let stopped = ProcessTiming {
+        arrangement_frame: 0,
+        playing: false,
+        arrangement_beat_raw: Some(0),
+        tempo_micro_bpm: None,
+        meter: Some((7, 8)),
+        cycle_beats_raw: None,
+    };
+    let playing = ProcessTiming {
+        playing: true,
+        ..stopped
+    };
+    let note = MidiEvent {
+        frame: 0,
+        bytes: [0x90, 60, 100],
+        len: 3,
+        note_id: std::num::NonZeroU32::new(42),
+    };
+    // Keep the pair's control lease alive across both callback transactions.
+    let (_control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
+    let paused = ProcessTiming {
+        arrangement_frame: 2,
+        ..stopped
+    };
+    let mut stage = || {
+        callback.begin_physical_callback(3).unwrap();
+        callback
+            .stage_segment_with_timing(
+                0,
+                &[[0.0; 2]; 3],
+                &[],
+                &[],
+                &mut [[0.0; 2]; 3],
+                SegmentTiming {
+                    playing: Some(false),
+                    at: |_| Some(stopped),
+                },
+            )
+            .unwrap();
+        callback.finish(true).unwrap();
+        assert!(worker.requests.is_empty());
+        callback.begin_physical_callback(5).unwrap();
+        callback
+            .stage_segment_with_timing(
+                0,
+                &[[0.0; 2]; 2],
+                &[note],
+                &[],
+                &mut [[0.0; 2]; 2],
+                SegmentTiming {
+                    playing: Some(true),
+                    at: |_| Some(playing),
+                },
+            )
+            .unwrap();
+        callback
+            .stage_segment_with_timing(
+                2,
+                &[[0.0; 2]; 3],
+                &[],
+                &[],
+                &mut [[0.0; 2]; 3],
+                SegmentTiming {
+                    playing: Some(false),
+                    at: |_| Some(paused),
+                },
+            )
+            .unwrap();
+        assert!(worker.requests.is_empty());
+        callback.finish(true).unwrap();
+    };
+    #[cfg(feature = "allocation-probe")]
+    {
+        let measured = allocation_counter::measure(&mut stage);
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    #[cfg(not(feature = "allocation-probe"))]
+    stage();
+    let request = worker.receive().unwrap().unwrap();
+    assert_eq!(request.timing, Some(stopped));
+    assert_eq!(request.events.as_slice(), &[MidiEvent { frame: 3, ..note }]);
+    assert_eq!(
+        request.timing_changes.as_slice(),
+        &[
+            TimingChange {
+                frame: 3,
+                timing: playing
+            },
+            TimingChange {
+                frame: 5,
+                timing: paused
+            }
+        ]
+    );
+    let mut packet = Vec::new();
+    wire::write(&mut packet, &request).unwrap();
+    assert_eq!(&packet[4..6], &6_u16.to_le_bytes());
+    assert_eq!(packet[12], 2);
+    let decoded = wire::read(&mut packet.as_slice()).unwrap().unwrap();
+    assert_eq!(
+        decoded.timing_changes.as_slice(),
+        request.timing_changes.as_slice()
+    );
+    let first_change = wire::HEADER_BYTES + 8 * 8 + 12 + 40;
+    for (offset, value) in [
+        (12, 8),
+        (first_change, 0),
+        (first_change + 2, 1),
+        (first_change + 28, 2),
+    ] {
+        let mut malformed = packet.clone();
+        malformed[offset] = value;
+        assert!(
+            matches!(wire::read(&mut malformed.as_slice()), Err(error) if error.kind() == std::io::ErrorKind::InvalidData)
+        );
+    }
+}
+
+#[test]
 fn dense_identified_notes_cross_callback_and_wire_without_expanding_replies() {
     let (control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
     let events: [MidiEvent; 128] = std::array::from_fn(|index| MidiEvent {

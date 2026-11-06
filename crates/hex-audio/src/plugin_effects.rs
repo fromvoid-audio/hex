@@ -15,7 +15,9 @@ use hex_lattice_contract::{
 use hex_plugin_host::{
     Error,
     native::Prepared,
-    transport::{Callback, Fault, InputEvents, MAX_FRAMES, MidiEvent},
+    transport::{
+        Callback, Fault, InputEvents, MAX_FRAMES, MidiEvent, ProcessTiming, SegmentTiming,
+    },
 };
 
 mod bypass;
@@ -533,6 +535,11 @@ impl ForeignProcessors for NativeEffectCallback {
         // The original joining worker retains processor parameter observations
         // for control queries; the native helper mirrors them to its controller.
         // Receiving that feedback here must not revoke an otherwise valid epoch.
+        let playing = if node.prepared.is_instrument_profile() {
+            clock.and_then(|clock| clock.transport_is_running())
+        } else {
+            None
+        };
         if self
             .transport
             .stage_segment_with_timing(
@@ -541,19 +548,24 @@ impl ForeignProcessors for NativeEffectCallback {
                 events.as_slice(),
                 parameters,
                 frames,
-                |index| {
-                    let clock = clock?;
-                    Some(hex_plugin_host::transport::ProcessTiming {
-                        arrangement_frame: i64::try_from(clock.arrangement_frame_at_offset(index)?)
+                SegmentTiming {
+                    playing,
+                    at: |index| {
+                        let clock = clock?;
+                        Some(ProcessTiming {
+                            arrangement_frame: i64::try_from(
+                                clock.arrangement_frame_at_offset(index)?,
+                            )
                             .ok()?,
-                        playing: clock.transport_is_running()?,
-                        arrangement_beat_raw: clock.arrangement_beat_at_offset(index),
-                        tempo_micro_bpm: clock
-                            .tempo_micro_bpm_at_offset(index)
-                            .and_then(std::num::NonZeroU32::new),
-                        meter: clock.arrangement_meter_at_offset(index),
-                        cycle_beats_raw: clock.arrangement_cycle_at_offset(index),
-                    })
+                            playing: playing.or_else(|| clock.transport_is_running())?,
+                            arrangement_beat_raw: clock.arrangement_beat_at_offset(index),
+                            tempo_micro_bpm: clock
+                                .tempo_micro_bpm_at_offset(index)
+                                .and_then(std::num::NonZeroU32::new),
+                            meter: clock.arrangement_meter_at_offset(index),
+                            cycle_beats_raw: clock.arrangement_cycle_at_offset(index),
+                        })
+                    },
                 },
             )
             .is_err()
