@@ -98,7 +98,7 @@ class Host final : public IHostApplication, public IComponentHandler {
     uint64 sequence=0;
     std::atomic<bool> accepting{true};
     std::atomic<pthread_t> processing_thread{nullptr};
-    bool dispatching=false, recursive=false, applying_feedback=false;
+    bool dispatching=false, recursive=false, applying_feedback=false, applying_saved_state=false;
     ParameterSnapshot metadata{};
     // Two fixed copies, one main producer and one serialized processing reader.
     // Main may coalesce an unread Ready snapshot, never a Reading one. A raced
@@ -154,6 +154,18 @@ public:
     uint32 reference_count() const { return references.load(); }
     uint32 refusal_flags() const { return refusals.load(); }
     void bind_processing_thread() { processing_thread.store(pthread_self(),std::memory_order_release); }
+    // A synchronous SDK state setter may echo parameter edits. The saved
+    // bytes already define the processor state and the controller inventory
+    // is refreshed after the setters. Do not stage these echoes as live edits.
+    template <typename Setter>
+    tresult apply_saved_state(Setter set) {
+        struct StateApplication {
+            bool& active;
+            explicit StateApplication(bool& flag):active(flag) { active=true; }
+            ~StateApplication() { active=false; }
+        } scope(applying_saved_state);
+        return set();
+    }
     void observe_latency_restarts() {
         observes_latency_restarts.store(true,std::memory_order_release);
     }
@@ -220,10 +232,12 @@ private:
         if(![NSThread isMainThread]) {refuse(WrongThread);return kResultFalse;}
         if(!accepting) {refuse(Retiring);return kResultFalse;}
         if(dispatching) {recursive=true;refuse(RecursiveRestart);return kResultFalse;}
+        const bool valid_value=kind!=Perform || (std::isfinite(value) && value>=0 && value<=1);
+        if(applying_saved_state && id<=0x7FFFFFFFu && valid_value) return kResultOk;
         const ParameterSnapshot::Parameter* info=nullptr;
         for(uint32 n=0;n<metadata.count;++n) if(metadata.parameters[n].info.id==id) info=&metadata.parameters[n];
         if(!info || (kind!=End && (info->info.flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden))) ||
-            (kind==Perform && (!std::isfinite(value) || value<0 || value>1))) {
+            !valid_value) {
             refuse(InvalidEdit);return kInvalidArgument;
         }
         size_t active=active_tokens.size(),vacant=active_tokens.size();
@@ -254,8 +268,9 @@ public:
         if (dispatching && !(applying_feedback && latency_enabled && (flags & kLatencyChanged))) {
             recursive=true; refuse(RecursiveRestart); return kResultFalse;
         }
+        if (!flags) return kResultOk;
         const uint32 bits=static_cast<uint32>(flags);
-        if (!bits || (bits & ~uint32{0xFFF})) { refuse(UnknownRestart); return kInvalidArgument; }
+        if (bits & ~uint32{0xFFF}) { refuse(UnknownRestart); return kInvalidArgument; }
         const auto supported=supported_restarts |
             (latency_enabled?kLatencyChanged:0);
         if (flags & ~supported) {
