@@ -167,3 +167,12 @@ fn mixed_rate_plan_keeps_hardware_and_project_frames_independent() {
         None,
     );
 }
+
+#[test]
+fn native_interface_rate_is_independent_of_the_playback_rate() {
+    let (control, _) = prepared::channel_with_interface(48_000, None, Some(44_100)).unwrap();
+    assert_eq!(control.status.interface_sample_rate(), Some(44_100));
+
+    let (headless, _) = prepared::channel(48_000).unwrap();
+    assert_eq!(headless.status.interface_sample_rate(), None);
+}

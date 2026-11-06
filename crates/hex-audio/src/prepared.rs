@@ -551,6 +551,7 @@ impl FreshRuntimeFence {
 }
 
 pub struct Status {
+    interface_sample_rate: Option<u32>,
     diagnostics_flags: AtomicU32,
     diagnostics_dropped: AtomicU64,
     sampler_edit: sampler_edit::Fence,
@@ -665,6 +666,12 @@ impl Default for Status {
 }
 
 impl Status {
+    /// Nominal rate of this native output's interface, captured at open.
+    /// Headless endpoints do not have an interface.
+    pub fn interface_sample_rate(&self) -> Option<u32> {
+        self.interface_sample_rate
+    }
+
     /// Snapshot of the publication reservation, not a guarantee that admission will succeed:
     /// other actors may own admission, and the state can change immediately after this read.
     pub fn publication_in_flight(&self) -> bool {
@@ -804,6 +811,7 @@ impl Status {
             device_fault: AtomicBool::new(false),
             render_fault: AtomicBool::new(false),
             render_fault_record: crate::render_fault::RenderFaultRecord::default(),
+            interface_sample_rate: None,
             diagnostics_flags: AtomicU32::new(0),
             diagnostics_dropped: AtomicU64::new(0),
             cpu_meter: crate::cpu_meter::CpuMeter::default(),
@@ -1429,6 +1437,14 @@ pub fn channel_with_spectrum(
     rate: u32,
     capture: Option<SpectrumCapture>,
 ) -> Result<(Control, Callback), Invalid> {
+    channel_with_interface(rate, capture, None)
+}
+
+pub(crate) fn channel_with_interface(
+    rate: u32,
+    capture: Option<SpectrumCapture>,
+    interface_sample_rate: Option<u32>,
+) -> Result<(Control, Callback), Invalid> {
     if !(8_000..=192_000).contains(&rate) {
         return Err(Invalid("unsupported playback sample rate"));
     }
@@ -1438,7 +1454,9 @@ pub fn channel_with_spectrum(
     let (returning, retired) = RingBuffer::new(RETIRED);
     let (commands, events) = RingBuffer::new(COMMANDS);
     let (trace_writer, trace_reader) = audio_diagnostics::channel();
-    let status = Arc::new(Status::try_new()?);
+    let mut status = Status::try_new()?;
+    status.interface_sample_rate = interface_sample_rate;
+    let status = Arc::new(status);
     let (spectrum_target, callback_target) = spectrum_target::channel();
     let (processor_audition, callback_audition) = processor_audition::channel();
     let (mut gain_recording, callback_gain_recording) = crate::gain_recording::channel();
