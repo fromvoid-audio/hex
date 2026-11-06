@@ -104,7 +104,9 @@ mod limiter_tests;
 mod long_source_tests;
 pub mod missing_media;
 pub mod preset;
+mod project_rate;
 mod recovery;
+pub use project_rate::ProjectSampleRate;
 #[cfg(test)]
 mod verified_source_tests;
 pub use canonical_audio_source::CanonicalAudioSourceSnapshot;
@@ -767,6 +769,12 @@ pub enum Request {
         track: hex_project::TrackId,
         scene: hex_project::SceneId,
     },
+    /// Change the current project clock through a prepared history edge.
+    ChangeProjectSampleRate {
+        project_generation: u64,
+        revision: u64,
+        choice: ProjectSampleRate,
+    },
     /// Select a fresh document mode before any media preparation.
     NewWithAudioMode {
         mode: DocumentAudioMode,
@@ -928,6 +936,7 @@ impl Request {
         matches!(
             self,
             Request::CommitMidiTake { .. }
+                | Request::ChangeProjectSampleRate { .. }
                 | Request::Undo
                 | Request::ReorderTracks { .. }
                 | Request::ReparentTracks { .. }
@@ -1468,6 +1477,17 @@ impl Service {
                                 }
                             },
                             None => session,
+                        };
+                        let session = match project_rate::new_following_interface(
+                            session,
+                            history_capacity,
+                        ) {
+                            Ok(session) => session,
+                            Err(error) => {
+                                let _ = worker_startup_failure
+                                    .set(format!("project session could not start: {error}"));
+                                return;
+                            }
                         };
                         session.with_shutdown(worker_shutdown)
                     }
@@ -2558,8 +2578,9 @@ fn run_worker(
                 }
                 Request::Undo | Request::Redo => {
                     let redo = matches!(&queued.request, Request::Redo);
-                    session.editor.next_history_requires_stopped_bounce(redo)
-                        || session.section_history_requires_publication(redo)
+                    !project_rate::history_needs_replacement(&session, redo)
+                        && (session.editor.next_history_requires_stopped_bounce(redo)
+                            || session.section_history_requires_publication(redo))
                 }
                 _ => false,
             };
@@ -2636,6 +2657,17 @@ fn run_worker(
         };
         let mut audio_batch_complete = None;
         let mut audio_batch_failure = None;
+        let rate_transition = match &request {
+            Request::ChangeProjectSampleRate { choice, .. } => {
+                Some(project_rate::Transition::Apply(*choice))
+            }
+            Request::Undo | Request::Redo => {
+                let redo = matches!(&request, Request::Redo);
+                project_rate::history_needs_replacement(&session, redo)
+                    .then_some(project_rate::Transition::History { redo })
+            }
+            _ => None,
+        };
         let mut open_complete = false;
         let mut save_complete = false;
         let mut save_confirmation_required = false;
@@ -3580,6 +3612,61 @@ fn run_worker(
             error = Some(reason);
         } else {
             match request {
+                Request::ChangeProjectSampleRate {
+                    project_generation: captured,
+                    revision: captured_revision,
+                    ..
+                } if captured != project_generation || captured_revision != revision => {
+                    error = Some("project changed · sample rate request cancelled".into());
+                }
+                Request::ChangeProjectSampleRate { .. } | Request::Undo | Request::Redo
+                    if rate_transition.is_some() =>
+                {
+                    let admission = export_lane.admission_with_resident_owners(
+                        compiled.as_ref().map(|(_, p)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(p.as_ref()),
+                            }
+                        }),
+                        resident_seek.as_ref(),
+                        resident_preview.as_ref(),
+                    );
+                    if let Some(transition) = rate_transition {
+                        match project_rate::replace(
+                            &mut session,
+                            transition,
+                            history_capacity,
+                            media_base.as_deref(),
+                            hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision,
+                            },
+                            &mut events,
+                            resident_snapshot.as_ref(),
+                            admission,
+                        ) {
+                            Ok(Some(prepared)) => {
+                                resident_audio::adopt_document_snapshot(
+                                    &mut resident_snapshot,
+                                    prepared.resident,
+                                );
+                                unsaved = true;
+                                project_replaced = true;
+                                replacement_revision = Some(prepared.prepared);
+                                replacement_sources = Some(prepared.sources);
+                                status = Some("project sample rate updated".into());
+                            }
+                            Ok(None) => {
+                                status = Some("project sample rate already selected".into())
+                            }
+                            Err(reason) => error = Some(reason),
+                        }
+                    }
+                }
+                Request::ChangeProjectSampleRate { .. } => {
+                    error = Some("project sample rate choice could not be resolved".into());
+                }
                 // `truncated_import::admit` unwraps every recovery at receipt.
                 Request::RecoverTruncatedImport(_) => {
                     error = Some("truncated import recovery was not admitted".into());
@@ -5128,6 +5215,9 @@ fn run_worker(
                     .and_then(|candidate| match session.native_reservation {
                         Some(limits) => candidate.with_native_reservation(limits),
                         None => Ok(candidate),
+                    })
+                    .and_then(|candidate| {
+                        project_rate::new_following_interface(candidate, history_capacity)
                     })
                     .map(|candidate| candidate.with_shutdown(Arc::clone(&session.shutdown)))
                     .map_err(|reason| reason.to_string());

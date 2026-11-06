@@ -632,3 +632,73 @@ fn reversing_a_musical_clip_in_a_schema64_file_requires_overwrite_consent() {
     let again = request(&service, Request::SaveCurrent);
     assert!(again.error.is_none() && !again.save_confirmation_required);
 }
+
+#[test]
+fn sample_rate_apply_preserves_document_history_and_refuses_failed_media_preparation() {
+    use hex_project::SampleRateMode;
+
+    let files = Files::new();
+    let path = sinc_v2_project(&files);
+    let media = files.0.join("ramp.wav");
+    let original_project = fs::read(&path).unwrap();
+    let original_media = fs::read(&media).unwrap();
+    let service = Service::new(48_000, 16, 8_000_000).unwrap();
+    next(&service);
+    let opened = request(&service, Request::Open(path.clone()));
+    assert!(opened.error.is_none(), "{:?}", opened.error);
+    let edited = request(
+        &service,
+        Request::Edit(Command::AddMidiTrack {
+            name: "extra".into(),
+        }),
+    );
+    let apply = |event: &Event| Request::ChangeProjectSampleRate {
+        project_generation: event
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .context()
+            .project_generation,
+        revision: event.state.revision,
+        choice: ProjectSampleRate::Fixed(96_000),
+    };
+    let stale = request(&service, apply(&opened));
+    assert!(stale.error.is_some());
+    assert_eq!(stale.state.project, edited.state.project);
+
+    fs::remove_file(&media).unwrap();
+    let refused = request(&service, apply(&edited));
+    assert!(refused.error.is_some());
+    assert_eq!(refused.state.revision, edited.state.revision);
+    assert_eq!(refused.state.project, edited.state.project);
+    assert_eq!(refused.state.can_undo, edited.state.can_undo);
+    fs::write(&media, &original_media).unwrap();
+
+    let applied = request(&service, apply(&edited));
+    assert!(applied.error.is_none(), "{:?}", applied.error);
+    assert_eq!(applied.state.project.sample_rate(), 96_000);
+    assert_eq!(
+        applied.state.project.sample_rate_mode(),
+        SampleRateMode::Fixed
+    );
+    assert_eq!(applied.state.document_path, edited.state.document_path);
+    assert_eq!(fs::read(&path).unwrap(), original_project);
+
+    let undone = request(&service, Request::Undo);
+    assert!(undone.error.is_none(), "{:?}", undone.error);
+    assert_eq!(undone.state.project, edited.state.project);
+    let prior = request(&service, Request::Undo);
+    assert!(prior.error.is_none(), "{:?}", prior.error);
+    assert_eq!(prior.state.project.tracks().len(), 1);
+    let _ = request(&service, Request::Redo);
+    let redone = request(&service, Request::Redo);
+    assert!(redone.error.is_none(), "{:?}", redone.error);
+    assert_eq!(redone.state.project, applied.state.project);
+    let saved = request(&service, Request::SaveCurrent);
+    assert!(saved.error.is_none(), "{:?}", saved.error);
+    let reopened = request(&service, Request::Open(path));
+    assert!(reopened.error.is_none(), "{:?}", reopened.error);
+    assert_eq!(reopened.state.project, applied.state.project);
+    assert_eq!(fs::read(media).unwrap(), original_media);
+}

@@ -1632,6 +1632,17 @@ pub(super) fn request(value: &Request) -> Description {
         Request::ImportToSession { path, track, scene } => {
             describe!("import_to_session"; ["path_redacted_bytes" => path.as_os_str().len(), "track" => track.value(), "scene" => scene.value()]; omitted="")
         }
+        Request::ChangeProjectSampleRate {
+            project_generation,
+            revision,
+            choice,
+        } => {
+            let fixed = match choice {
+                super::super::ProjectSampleRate::Fixed(rate) => Some(rate),
+                super::super::ProjectSampleRate::FollowInterface => None,
+            };
+            describe!("change_project_sample_rate"; ["project_generation" => project_generation, "revision" => revision, "fixed_rate" => fixed]; omitted="")
+        }
         Request::NewWithAudioMode { reservation, .. } => {
             describe!("new_with_audio_mode"; ["reservation_present" => reservation.is_some()]; omitted="mode")
         }
