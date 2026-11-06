@@ -58,6 +58,21 @@ static bool module_event(char event) {
     const bool written=std::fputc(event,output)!=EOF;
     return std::fclose(output)==0 && written;
 }
+static bool controller_release_observed=false;
+static bool defer_module_event(const char& event) {
+    CFRunLoopObserverContext context{};
+    context.info=const_cast<char*>(&event);
+    context.release=[](const void* info) {
+        const auto event=*static_cast<const char*>(info);
+        if(event=='C') controller_release_observed=true;
+        module_event(event);
+    };
+    auto observer=CFRunLoopObserverCreate(kCFAllocatorDefault,kCFRunLoopBeforeWaiting,false,0,
+        [](CFRunLoopObserverRef,CFRunLoopActivity,void*) {},&context);
+    if(!observer) return false;
+    CFAutorelease(observer);
+    return true;
+}
 static void trace(int stage,int factory_refs=-1) {
     // Opt-in original fixture control observations, atomically published so a
     // guardian exit cannot truncate the last completed phase. Normal DSP does
@@ -116,6 +131,11 @@ class RestoreController final : public IEditController {
         const auto* release=std::getenv("HEX_ORIGINAL_INSTANCE_RELEASE");
         if(!self || self->edits_sent || !release || std::strlen(release)>4096 || ::access(release,F_OK)!=0) return;
         self->edits_sent=true;CFRunLoopTimerInvalidate(self->edit_timer);
+        if(self->fault==134) {
+            static constexpr char released='R';
+            if(!defer_module_event(released)) ++observed.violations;
+            return;
+        }
         if(self->fault==105) {
             self->handler->restartComponent(kLatencyChanged);
             return;
@@ -179,13 +199,17 @@ public:
     }
     tresult PLUGIN_API terminate() override {
         if (!control() || !context || handler) return kResultFalse;
+        if(fault==134) {
+            static constexpr char released='C';
+            if(!defer_module_event(released)) return kResultFalse;
+        }
         context->release();context=nullptr;++restoration.controller_terminated;return kResultOk;
     }
     tresult PLUGIN_API setComponentHandler(IComponentHandler* value) override {
         if (!control() || !context || (value && handler)) return kResultFalse;
         if(value)value->addRef();if(handler)handler->release();handler=value;
         if(fault==104 || fault==105 || fault==118 || fault==119) latency_handler=handler;
-        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || (fault>=131 && fault<=133))) {
+        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || (fault>=131 && fault<=134))) {
             CFRunLoopTimerContext timer_context{};timer_context.info=this;
             edit_timer=CFRunLoopTimerCreate(nullptr,CFAbsoluteTimeGetCurrent(),0.001,0,0,edit_tick,&timer_context);
             if(!edit_timer) return kResultFalse;
@@ -916,7 +940,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>133) return false;next_fault=value;
+        if (value>134) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);
@@ -931,6 +955,11 @@ extern "C" __attribute__((visibility("default"))) bool bundleExit() {
     trace(6,static_cast<int>(processing_factory.count()));
     if (next_fault==29) fault_hang(10);
     if (next_fault==32) fault_crash(10);
+    if (next_fault==134) {
+        if(!controller_release_observed) return false;
+        static constexpr char released='T';
+        if(!defer_module_event(released)) return false;
+    }
     return next_fault!=20 && objects.load()==0 && processing_factory.count()==0;
 }
 extern "C" __attribute__((visibility("default"))) IPluginFactory* GetPluginFactory() {
