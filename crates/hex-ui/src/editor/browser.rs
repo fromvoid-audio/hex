@@ -383,7 +383,7 @@ impl BrowserState {
     }
 }
 
-struct BrowserAudioDragGhost;
+pub(super) struct BrowserAudioDragGhost;
 
 impl gpui::Render for BrowserAudioDragGhost {
     fn render(&mut self, _: &mut Window, _: &mut Context<'_, Self>) -> impl gpui::IntoElement {
@@ -2384,61 +2384,20 @@ impl EditorView {
         };
         let path = entry.path.clone();
         let name = entry.name.clone();
-        let drag_context = self.state.as_ref().map(|state| {
-            (
-                state.project.sample_rate(),
-                state.revision,
-                state.timeline_frames,
-                self.project_generation,
-                self.browser.scans.generation,
-                self.snap_grid,
-            )
-        });
         let drag_payload = if entry.kind == EntryKind::WaveAudio {
-            drag_context.map(
-                |(
-                    sample_rate,
-                    revision,
-                    timeline_frames,
-                    project_generation,
-                    browser_generation,
-                    snap_grid,
-                )| {
-                    // Rendering a row must not fill/evict the metadata cache.
-                    // Hover/drag admission owns preparation, not composition.
-                    let slot = self
-                        .browser
-                        .preview_cache
-                        .get(&PreviewKey {
-                            path: path.clone(),
-                            sample_rate,
-                        })
-                        .cloned()
-                        .unwrap_or_default();
-                    let viewport = self.visible_viewport(timeline_frames);
-                    drag::BrowserAudioDrag {
-                        project_generation,
-                        revision,
-                        browser_generation,
-                        sample_rate,
+            self.state.as_ref().and_then(|state| {
+                // Rendering a row reads only the existing metadata cache.
+                let slot = self
+                    .browser
+                    .preview_cache
+                    .get(&PreviewKey {
                         path: path.clone(),
-                        label: name.clone(),
-                        viewport_start: viewport.start,
-                        viewport_length: viewport.length,
-                        scroll: Default::default(),
-                        snap_grid,
-                        snap_modifier: Rc::new(Cell::new(false)),
-                        copy_modifier: Rc::new(Cell::new(false)),
-                        metadata: slot.metadata,
-                        metadata_error: slot.error,
-                        preview: Rc::new(Cell::new(None)),
-                        destination: Rc::new(Cell::new(None)),
-                        insertion_line_y: Rc::new(Cell::new(None)),
-                        lane_hovered: Rc::new(Cell::new(false)),
-                        last_pointer: Rc::new(Cell::new(None)),
-                    }
-                },
-            )
+                        sample_rate: state.project.sample_rate(),
+                    })
+                    .cloned()
+                    .unwrap_or_default();
+                self.audio_file_drag_payload(path.clone(), name.clone(), slot.metadata, slot.error)
+            })
         } else {
             None
         };

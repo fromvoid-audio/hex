@@ -22,7 +22,7 @@ use std::{
 
 pub(super) struct Waveform {
     pub(super) take: Take,
-    name: String,
+    pub(super) name: String,
     peaks: Option<Rc<[f32]>>,
     cancel: Arc<AtomicBool>,
     bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
@@ -30,6 +30,7 @@ pub(super) struct Waveform {
     pub(super) range: Range,
     view: Range,
     gesture: Option<Gesture>,
+    pub(super) excerpt: super::excerpt::ExcerptState,
     snap: bool,
     repeat: bool,
     preview: Option<(u64, u64)>,
@@ -75,6 +76,7 @@ impl EditorView {
             range,
             view: range,
             gesture: None,
+            excerpt: Default::default(),
             snap: false,
             repeat: true,
             preview: None,
@@ -103,7 +105,7 @@ impl EditorView {
         cx.notify();
     }
 
-    fn stop_take_preview(&mut self) {
+    pub(super) fn stop_take_preview(&mut self) {
         let preview = self
             .sample_recorder
             .waveform
@@ -324,11 +326,28 @@ impl EditorView {
         };
     }
 
-    fn take_drag_finish(&mut self, position: Point<Pixels>, modifiers: Modifiers) {
+    fn take_drag_finish(
+        &mut self,
+        position: Point<Pixels>,
+        modifiers: Modifiers,
+        cx: &mut Context<Self>,
+    ) {
         self.take_drag_move(position, modifiers);
-        if let Some(wave) = self.sample_recorder.waveform.as_mut() {
-            wave.gesture = None;
+        if self
+            .sample_recorder
+            .waveform
+            .as_mut()
+            .is_some_and(|wave| wave.gesture.take().is_some())
+        {
+            self.prepare_take_excerpt(cx);
         }
+    }
+
+    pub(super) fn selecting(&self) -> bool {
+        self.sample_recorder
+            .waveform
+            .as_ref()
+            .is_some_and(|wave| wave.gesture.is_some())
     }
 
     pub(super) fn take_waveform_panel(&self, cx: &mut Context<Self>) -> Option<Div> {
@@ -409,6 +428,7 @@ impl EditorView {
                     cx.notify();
                 }))
             }));
+        let controls = controls.children(self.take_excerpt_grip(cx));
         let body = div()
             .id("take-waveform")
             .debug_selector(|| "take-waveform".into())
@@ -440,7 +460,7 @@ impl EditorView {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|view, event: &gpui::MouseUpEvent, _, cx| {
-                    view.take_drag_finish(event.position, event.modifiers);
+                    view.take_drag_finish(event.position, event.modifiers, cx);
                     cx.notify();
                 }),
             )
@@ -453,7 +473,7 @@ impl EditorView {
                         .as_ref()
                         .is_some_and(|wave| wave.gesture.is_some())
                     {
-                        view.take_drag_finish(event.position, event.modifiers);
+                        view.take_drag_finish(event.position, event.modifiers, cx);
                         cx.notify();
                     }
                 }),
@@ -509,7 +529,7 @@ impl EditorView {
     }
 }
 
-fn take_source(take: &Take) -> TakeSource<'_> {
+pub(super) fn take_source(take: &Take) -> TakeSource<'_> {
     TakeSource {
         path: &take.path,
         frames: take.frames,
@@ -631,6 +651,7 @@ mod tests {
                 range: full,
                 view: full,
                 gesture: None,
+                excerpt: Default::default(),
                 snap: false,
                 repeat: true,
                 preview: None,

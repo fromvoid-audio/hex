@@ -75,7 +75,7 @@ impl ClipDrag {
     }
 }
 
-/// In-window drag payload for a WAV file from the library browser.
+/// In-window drag payload for a WAV from the library or retained take.
 #[derive(Clone)]
 pub(super) struct BrowserAudioDrag {
     pub(super) project_generation: u64,
@@ -1010,6 +1010,38 @@ impl super::EditorView {
             }
         }
         cx.notify();
+    }
+
+    pub(super) fn audio_file_drag_payload(
+        &self,
+        path: std::path::PathBuf,
+        label: String,
+        metadata: Rc<RefCell<Option<Rc<AudioPreview>>>>,
+        metadata_error: Rc<RefCell<Option<String>>>,
+    ) -> Option<BrowserAudioDrag> {
+        let state = self.state.as_ref()?;
+        let viewport = self.visible_viewport(state.timeline_frames);
+        Some(BrowserAudioDrag {
+            project_generation: self.project_generation,
+            revision: state.revision,
+            browser_generation: self.browser.scan_generation(),
+            sample_rate: state.project.sample_rate(),
+            path,
+            label,
+            viewport_start: viewport.start,
+            viewport_length: viewport.length,
+            scroll: Default::default(),
+            snap_grid: self.snap_grid,
+            snap_modifier: Rc::new(Cell::new(false)),
+            copy_modifier: Rc::new(Cell::new(false)),
+            metadata,
+            metadata_error,
+            preview: Rc::new(Cell::new(None)),
+            destination: Rc::new(Cell::new(None)),
+            insertion_line_y: Rc::new(Cell::new(None)),
+            lane_hovered: Rc::new(Cell::new(false)),
+            last_pointer: Rc::new(Cell::new(None)),
+        })
     }
 
     pub(super) fn begin_browser_audio_drag(&mut self, drag: &BrowserAudioDrag) {
