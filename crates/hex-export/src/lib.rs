@@ -31,7 +31,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -50,9 +50,9 @@ mod controlled;
 mod dither;
 mod format;
 pub use bounce::{
-    MAX_ARRANGEMENT_BOUNCE_TAIL_SECONDS, render_arrangement_bounce_new,
-    render_arrangement_bounce_with_pages, render_bounce_new,
-    render_bounce_new_with_device_resources,
+    ForeignBounceRenderer, MAX_ARRANGEMENT_BOUNCE_TAIL_SECONDS, render_arrangement_bounce_new,
+    render_arrangement_bounce_with_foreign, render_arrangement_bounce_with_pages,
+    render_bounce_new, render_bounce_new_with_device_resources,
 };
 pub use format::ExportFormat;
 mod pages;
@@ -307,6 +307,46 @@ fn discard_latency(renderer: &mut impl BlockRenderer, latency: u32) -> Result<()
 trait BlockRenderer {
     fn render_block(&mut self, frames: &mut [hex_engine::Frame]) -> Result<(), ExportError>;
     fn before_publication(&mut self) -> Result<(), ExportError> {
+        Ok(())
+    }
+}
+
+/// Publish an original-rate float WAV from a bounded control-side frame reader.
+/// Uses the same create-new custody and cancellation frontier as other exports.
+pub fn write_float_wav_new(
+    path: &Path,
+    sample_rate: u32,
+    frames: u64,
+    cancel: &AtomicBool,
+    read: impl FnMut(&mut [hex_engine::Frame]) -> Result<(), ExportError>,
+) -> Result<ExportReport, ExportError> {
+    publish_encoded(
+        path,
+        sample_rate,
+        0,
+        frames,
+        &Publication::CreateNew,
+        ExportFormat::Float32,
+        || Ok(CopiedPcm { cancel, read }),
+    )
+}
+
+struct CopiedPcm<'a, F> {
+    cancel: &'a AtomicBool,
+    read: F,
+}
+impl<F> BlockRenderer for CopiedPcm<'_, F>
+where
+    F: FnMut(&mut [hex_engine::Frame]) -> Result<(), ExportError>,
+{
+    fn render_block(&mut self, frames: &mut [hex_engine::Frame]) -> Result<(), ExportError> {
+        self.before_publication()?;
+        (self.read)(frames)
+    }
+    fn before_publication(&mut self) -> Result<(), ExportError> {
+        if self.cancel.load(Ordering::Relaxed) {
+            return Err(ExportError::Cancelled);
+        }
         Ok(())
     }
 }
