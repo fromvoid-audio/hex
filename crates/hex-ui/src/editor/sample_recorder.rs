@@ -15,6 +15,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+mod excerpt;
+mod selection;
+mod waveform;
+
 // A single take from every supported source must remain reachable.
 const RECENT_LIMIT: usize = hex_engine::MAX_OUTPUT_CAPTURES + 1;
 
@@ -49,6 +53,8 @@ pub(super) struct Recorder {
     job: Option<Job>,
     phase: Option<Phase>,
     recent: Vec<Row>,
+    waveform: Option<waveform::Waveform>,
+    audition_job: bool,
     error: Option<String>,
 }
 
@@ -58,6 +64,7 @@ struct Job {
     output: u64,
 }
 
+#[derive(Clone)]
 struct Row {
     name: String,
     take: Take,
@@ -244,8 +251,9 @@ impl EditorView {
 
     pub(super) fn tick_sample_recorder(&mut self) -> bool {
         let arms_changed = self.sync_sample_arm_context();
+        let preview_changed = self.tick_take_preview();
         let Some(job) = &self.sample_recorder.job else {
-            return arms_changed;
+            return arms_changed || preview_changed;
         };
         let phase = self
             .audio
@@ -257,7 +265,7 @@ impl EditorView {
         let result = match job.result.try_recv() {
             Ok(result) => result.map_err(|error| error.to_string()),
             Err(TryRecvError::Disconnected) => Err("sample take writer exited".into()),
-            Err(TryRecvError::Empty) => return arms_changed || phase_changed,
+            Err(TryRecvError::Empty) => return arms_changed || phase_changed || preview_changed,
         };
         if let Some(audio) = self.audio.as_mut() {
             audio.control.reclaim_sample_recording();
@@ -298,6 +306,8 @@ impl EditorView {
         height: f32,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
+        let waveform = self.take_waveform_panel(cx);
+        let waveform_open = waveform.is_some();
         let phase = self.sample_recorder.phase;
         let label = match phase {
             Some(Phase::Preparing) => "preparing",
@@ -346,25 +356,58 @@ impl EditorView {
             )
             .child(
                 div()
-                    .id("sample-take-list")
+                    .flex()
+                    .gap_2()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .px_1()
-                    .children(
-                        self.sample_recorder
-                            .error
-                            .as_ref()
-                            .map(|error| div().child(theme::text(error))),
-                    )
-                    .children(self.sample_recorder.recent.iter().map(|row| {
-                        let seconds = row.take.frames as f64 / f64::from(row.take.sample_rate);
-                        div().child(theme::text(format!(
-                            "{} · {seconds:.2} s",
-                            hex_session::service::text::verbatim(&row.name)
-                        )))
-                    })),
+                    .children(waveform)
+                    .child(
+                        div()
+                            .id("sample-take-list")
+                            .when(waveform_open, |list| list.w(px(168.0)).flex_shrink_0())
+                            .when(!waveform_open, |list| list.flex_1())
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .px_1()
+                            .children(
+                                self.sample_recorder
+                                    .error
+                                    .as_ref()
+                                    .map(|error| div().child(theme::text(error))),
+                            )
+                            .children(self.sample_recorder.recent.iter().enumerate().map(
+                                |(index, row)| {
+                                    let seconds =
+                                        row.take.frames as f64 / f64::from(row.take.sample_rate);
+                                    let open = row.clone();
+                                    div()
+                                        .id(gpui::SharedString::from(
+                                            row.take.path.to_string_lossy().into_owned(),
+                                        ))
+                                        .debug_selector(move || format!("recorded-take-{index}"))
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |view, _, _, cx| {
+                                            view.open_recorded_take(open.clone(), cx)
+                                        }))
+                                        .child(theme::text(format!(
+                                            "{} · {seconds:.2} s",
+                                            hex_session::service::text::verbatim(&row.name)
+                                        )))
+                                },
+                            )),
+                    ),
             )
+    }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+impl EditorView {
+    pub(super) fn show_take_fixture(&mut self, take: Take) {
+        self.sample_recorder.visible = true;
+        self.sample_recorder.recent.push(Row {
+            name: "captured audio".into(),
+            take,
+        });
     }
 }
 

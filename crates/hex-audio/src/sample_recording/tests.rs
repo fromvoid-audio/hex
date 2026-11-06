@@ -97,6 +97,11 @@ fn confirmed_pcm_writes_each_armed_source_as_a_separate_take() {
         .unwrap();
     control.command(PlaybackCommand::Play).unwrap();
     let reader = control.sample_recording.start(7, &outputs, false).unwrap();
+    let audition = control.sample_preview.request().unwrap();
+    control
+        .sample_preview
+        .publish_loop(audition, Audio::new(48_000, vec![[0.125; 2]; 3]).unwrap())
+        .unwrap();
     let state = reader.state.clone();
     let worker_path = path.0.clone();
     let worker = std::thread::spawn(move || write_takes(reader, &worker_path).unwrap());
@@ -106,6 +111,10 @@ fn confirmed_pcm_writes_each_armed_source_as_a_separate_take() {
         std::thread::sleep(Duration::from_millis(1));
     }
     assert!(deliver(&mut callback, 2));
+    assert_eq!(
+        control.sample_preview.snapshot().phase,
+        crate::sample_preview::Phase::Playing
+    );
     assert!(deliver(&mut callback, 2));
     assert!(!deliver(&mut callback, 0));
     let batch = worker.join().unwrap();
