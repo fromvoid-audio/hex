@@ -47,6 +47,7 @@ mod live_notes;
 mod live_runtime;
 pub(crate) mod ordered_keys;
 mod source_input;
+pub(crate) use live_notes::LiveNoteBatch;
 pub use live_notes::{LiveNoteActivation, LiveNoteEvent, LiveNoteInput, LiveNotePublishError};
 pub use ordered_keys::MidiKeyActivation;
 /// Full exact-velocity hardware banks are prepared only for opted-in roots.

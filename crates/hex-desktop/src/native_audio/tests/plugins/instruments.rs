@@ -145,6 +145,8 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
             .unwrap()
             .control
             .new_computer_keyboard_input_on_control()
+            .unwrap()
+            .with_live_notes()
             .unwrap(),
     );
     let context = harness.submitted.unwrap().1.context;
@@ -203,6 +205,41 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
         );
     }
     println!("instrument keyboard rate={rate} peak={keyboard_peak}");
+    if controlled_fixture {
+        use hex_engine::computer_keyboard::LiveNoteEvent;
+        let activation = keys.begin_live_notes_activation_on_control().unwrap();
+        let queue = keys.live_notes().unwrap();
+        queue
+            .publish(
+                activation,
+                LiveNoteEvent::NoteOn {
+                    channel: 0,
+                    pitch,
+                    velocity: 100,
+                },
+            )
+            .unwrap();
+        queue
+            .publish(
+                activation,
+                LiveNoteEvent::NoteOff {
+                    channel: 0,
+                    pitch,
+                    velocity: 41,
+                },
+            )
+            .unwrap();
+        let audible_frames = (0..6)
+            .flat_map(|_| render_completed_block(&harness))
+            .filter(|frame| frame.iter().any(|sample| sample.abs() > 0.001))
+            .count();
+        assert_eq!(
+            audible_frames, 1,
+            "ordered hardware tap must last one frame"
+        );
+        assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
+        println!("instrument hardware tap rate={rate} frames={audible_frames}");
+    }
     // Stop advancing at frame 64 of the copied quantum. Play must carry its
     // new context inside that same worker block.
     let worker_phase = || {

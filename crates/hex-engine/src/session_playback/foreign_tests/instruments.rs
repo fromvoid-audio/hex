@@ -343,6 +343,123 @@ fn computer_keyboard_uses_the_same_worker_while_stopped_playing_and_rearmed_afte
 }
 
 #[test]
+fn hardware_midi_keeps_ordered_taps_exact_release_and_activation_scope() {
+    use crate::{
+        computer_keyboard::{ComputerKeyboardInput, KeyboardActivationClock, LiveNoteEvent},
+        playback::{Playback, PlaybackCommand},
+    };
+    let (editor, identity) = fixture();
+    let project = editor.project();
+    let track = project.tracks()[0].id();
+    let revision = prepare(&editor, identity, true).unwrap();
+    let clock = Arc::new(KeyboardActivationClock::default());
+    let keys = Arc::new(
+        ComputerKeyboardInput::with_output_activation(Arc::clone(&clock))
+            .unwrap()
+            .with_live_notes()
+            .unwrap(),
+    );
+    let mut playback = Playback::from_prepared(revision);
+    playback
+        .prepare_computer_keyboard(project, track, Arc::clone(&keys))
+        .unwrap();
+    let queue = keys.live_notes().unwrap();
+    let mut activation = keys.begin_live_notes_activation_on_control().unwrap();
+    let on = LiveNoteEvent::NoteOn {
+        channel: 2,
+        pitch: 60,
+        velocity: 93,
+    };
+    let off = LiveNoteEvent::NoteOff {
+        channel: 2,
+        pitch: 60,
+        velocity: 41,
+    };
+    let mut endpoint = NoteEndpoint::default();
+    let mut render = |playback: &mut Playback, fail_at| {
+        endpoint.next_offset = 0;
+        endpoint.notes.clear();
+        endpoint.fail_at = fail_at;
+        let result = playback.render_with_foreign_processors(
+            &mut [[0.; 2]; 8],
+            None,
+            None,
+            None,
+            &mut endpoint,
+        );
+        (result, endpoint.notes.clone())
+    };
+
+    keys.set_key(0, Some((60, 100, 1))).unwrap();
+    queue.publish(activation, on).unwrap();
+    queue.publish(activation, off).unwrap();
+    let (result, notes) = render(&mut playback, None);
+    result.unwrap();
+    let [(0, key), (0, onset), (1, release)] = notes.as_slice() else {
+        panic!("expected the computer key and an ordered hardware tap");
+    };
+    assert!(key.on && key.channel == 0 && key.note_id != onset.note_id);
+    assert!(onset.on && onset.channel == 2 && onset.pitch == 60 && onset.velocity == 93);
+    assert!(!release.on && release.note_id == onset.note_id && release.velocity == 41);
+    assert!(queue.snapshot().unwrap().is_empty());
+
+    queue.publish(activation, on).unwrap();
+    let (result, notes) = render(&mut playback, None);
+    result.unwrap();
+    let [(0, held)] = notes.as_slice() else {
+        panic!("expected held hardware note")
+    };
+    queue.cancel_activation(activation).unwrap();
+    activation = keys.begin_live_notes_activation_on_control().unwrap();
+    queue.publish(activation, on).unwrap();
+    let (result, notes) = render(&mut playback, None);
+    result.unwrap();
+    let [(0, old), (0, fresh)] = notes.as_slice() else {
+        panic!("expected scoped reconnect")
+    };
+    assert!(!old.on && old.note_id == held.note_id);
+    assert!(fresh.on && fresh.note_id != held.note_id);
+
+    playback.apply(PlaybackCommand::Play);
+    let (result, notes) = render(&mut playback, None);
+    result.unwrap();
+    let [(0, authored)] = notes.as_slice() else {
+        panic!("expected one authored note alongside the held inputs");
+    };
+    assert!(authored.on && authored.note_id != fresh.note_id && authored.note_id != key.note_id);
+    clock.revoke_reserved_prefix();
+    playback.apply_priority_stop(&clock);
+    let (result, notes) = render(&mut playback, None);
+    result.unwrap();
+    assert_eq!(notes.len(), 3);
+    assert!(
+        notes
+            .iter()
+            .any(|(_, note)| !note.on && note.note_id == key.note_id)
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|(_, note)| !note.on && note.note_id == fresh.note_id)
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|(_, note)| !note.on && note.note_id == authored.note_id)
+    );
+    keys.ensure_output_activation_on_control().unwrap();
+    queue.publish(activation, on).unwrap(); // The old input epoch stays fenced.
+    let (result, notes) = render(&mut playback, None);
+    result.unwrap();
+    assert!(notes.is_empty());
+
+    let fresh_activation = keys.begin_live_notes_activation_on_control().unwrap();
+    queue.publish(fresh_activation, on).unwrap();
+    assert!(render(&mut playback, Some(1)).0.is_err());
+    assert_eq!(queue.snapshot().unwrap().events(), &[on]);
+}
+
+#[test]
 fn console_clip_replaces_arrangement_gates_and_stop_releases_its_note() {
     use crate::LaunchQuantization::Immediate;
     let (mut editor, identity) = fixture();
