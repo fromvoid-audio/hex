@@ -12,6 +12,7 @@ pub(super) struct ProjectRevision {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum StoppedPlaybackRestore {
+    WaitingForEdits { generation: u64, output: u64 },
     Preparing,
     Ready,
     Published(u64),

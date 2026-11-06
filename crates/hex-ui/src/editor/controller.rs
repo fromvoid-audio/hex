@@ -673,6 +673,9 @@ impl EditorView {
                         .is_some_and(|restore| match restore {
                             super::audio_admission::StoppedPlaybackRestore::Preparing
                             | super::audio_admission::StoppedPlaybackRestore::Ready => true,
+                            super::audio_admission::StoppedPlaybackRestore::WaitingForEdits {
+                                ..
+                            } => false,
                             super::audio_admission::StoppedPlaybackRestore::Published(previous) => {
                                 audio_revision >= previous
                             }
@@ -1340,6 +1343,7 @@ impl EditorView {
             }
         }
         visible_change |= self.pump_device_gesture();
+        visible_change |= self.tick_stopped_vst3_restore();
         visible_change |= self.retire_abandoned_bypass();
         visible_change |= self.retire_abandoned_duplicate();
         visible_change |= self.retire_abandoned_track_clipboard();
@@ -4681,6 +4685,47 @@ impl EditorView {
         self.stop_transport(true);
     }
 
+    fn tick_stopped_vst3_restore(&mut self) -> bool {
+        use super::audio_admission::StoppedPlaybackRestore;
+        let Some(StoppedPlaybackRestore::WaitingForEdits { generation, output }) =
+            self.stopped_playback_restore
+        else {
+            return false;
+        };
+        if generation != self.project_generation
+            || self
+                .audio
+                .as_ref()
+                .and_then(|audio| audio.control.output_identity())
+                != Some(output)
+            || !self.has_resident_vst3()
+        {
+            self.stopped_playback_restore = None;
+            return true;
+        }
+        if self.edit_pending() || self.tuning.client.snapshot().is_some() || self.update_preparing()
+        {
+            return false;
+        }
+        self.stopped_playback_restore = None;
+        if self.has_degraded_vst3_output() {
+            self.recover_audio_at(0);
+        } else {
+            self.queue_stopped_playback_restore();
+        }
+        true
+    }
+
+    fn queue_stopped_playback_restore(&mut self) {
+        if self.enqueue(Request::RestoreStoppedPlayback) {
+            self.stopped_playback_restore =
+                Some(super::audio_admission::StoppedPlaybackRestore::Preparing);
+            super::device_panel::vst3_parameters::refresh(self);
+            self.status = "stopped · restoring current sound".into();
+            self.error = None;
+        }
+    }
+
     fn stop_transport(&mut self, stop_output: bool) {
         use super::audio_admission::LatencyRebuild;
         let native_restore = matches!(
@@ -4754,15 +4799,25 @@ impl EditorView {
             // A revoked worker cannot be renewed on the applied graph. Start a
             // new output from the current project, at the explicit Stop cursor.
             self.recover_audio_at(0);
-        } else if restore
-            && !self.update_preparing()
-            && self.enqueue(Request::RestoreStoppedPlayback)
+        } else if restore && !self.update_preparing() {
+            self.queue_stopped_playback_restore();
+        } else if stop_output
+            && self.stopped_playback_restore.is_none()
+            && self.recovery.generation().is_none()
+            && self.has_resident_vst3()
+            && let Some(output) = self
+                .audio
+                .as_ref()
+                .and_then(|audio| audio.control.output_identity())
         {
-            self.stopped_playback_restore =
-                Some(super::audio_admission::StoppedPlaybackRestore::Preparing);
-            super::device_panel::vst3_parameters::refresh(self);
-            self.status = "stopped · restoring current sound".into();
-            self.error = None;
+            // Read-only inventory and in-flight edit terminals can overlap Stop.
+            // Let them drain before renewing the exact stopped document/output.
+            self.stopped_playback_restore = Some(
+                super::audio_admission::StoppedPlaybackRestore::WaitingForEdits {
+                    generation: self.project_generation,
+                    output,
+                },
+            );
         }
     }
 }

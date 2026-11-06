@@ -19,7 +19,12 @@ impl EditorView {
     }
 
     pub(super) fn holds_stopped_vst3_requests(&self) -> bool {
-        self.stopped_playback_restore.is_some() && self.has_resident_vst3()
+        self.stopped_playback_restore.is_some_and(|restore| {
+            !matches!(
+                restore,
+                super::audio_admission::StoppedPlaybackRestore::WaitingForEdits { .. }
+            )
+        }) && self.has_resident_vst3()
     }
 
     pub(super) fn has_degraded_vst3_output(&self) -> bool {
