@@ -103,6 +103,18 @@ pub struct ForeignProcessorNode<'a> {
     pub output_gain: f32,
 }
 
+/// One MIDI 1.0 note event at an offset within the supplied render segment.
+/// The caller owns note scheduling and sends release events through the same
+/// endpoint as the matching note-on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ForeignNote {
+    pub frame: u16,
+    pub channel: u8,
+    pub pitch: u8,
+    pub velocity: u8,
+    pub on: bool,
+}
+
 /// Unique borrowed view of the host's already retained foreign endpoints.
 /// Each call stages the next contiguous graph segment of one actual physical
 /// callback. It must be bounded and free of allocation, I/O, waiting, waking,
@@ -144,6 +156,25 @@ pub trait ForeignProcessors {
     ) -> Result<(), DeviceContractError> {
         if parameters.is_empty() {
             self.process_segment(node, frame_offset, frames, clock)
+        } else {
+            self.reject_callback();
+            frames.fill([0.0; 2]);
+            Err(DeviceContractError::ForeignProcessingUnavailable)
+        }
+    }
+    /// Stage ordered note events along with the segment. Like PCM, staged
+    /// events become visible to the worker only after host acceptance.
+    fn process_segment_with_notes(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        frame_offset: usize,
+        frames: &mut [StereoFrame],
+        parameters: &[ForeignParameterPoint],
+        notes: &[ForeignNote],
+        clock: Option<&dyn NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        if notes.is_empty() {
+            self.process_segment_with_parameters(node, frame_offset, frames, parameters, clock)
         } else {
             self.reject_callback();
             frames.fill([0.0; 2]);
