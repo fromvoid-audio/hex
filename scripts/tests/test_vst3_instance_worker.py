@@ -661,6 +661,16 @@ class NativeInstanceTests(unittest.TestCase):
         magic, ready = session.message()
         self.assertEqual((magic, ready[70:72]), (b"HXVIRD05", b"\x02\0"))
         self.assertEqual(ready[-8:], bytes(8))  # SDK captured both unknown sentinels
+        self.assert_same_effect_resumes(session)
+
+    def test_unimplemented_processing_transition_keeps_pcm_and_same_child_epoch(self):
+        session = self.session(variant=122)
+        self.ready(session, controller=True)
+        self.assert_same_effect_resumes(session)
+        self.assertEqual(self.observation()[8:11], (2, 2, 2))
+        self.assertEqual(self.observation()[1], 0)
+
+    def assert_same_effect_resumes(self, session):
         _, _, (magic, _) = session.render(7)
         self.assertEqual(magic, b"HXVB")
         session.socket.sendall(struct.pack("<4sHHH6x6Q", b"HXVQ", 1, 0, 0,

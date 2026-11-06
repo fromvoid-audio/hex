@@ -1337,6 +1337,7 @@ fn actual_public_startup_restore_retains_saved_envelope_and_restores_real_pcm() 
         storage.data_bytes,
         instance.config.bundle.capacity()
             + instance.config.executable.capacity()
+            + crate::protocol::PACKET_LIMIT
             + instance.ready.initial_state.payload().len()
             + saved.payload().len()
             + std::mem::size_of::<UnixStream>()
