@@ -183,6 +183,9 @@ impl WorkerAudioSink for ResidentSink {
     fn finish_resident_effect_edit(&mut self, context: AudioSourceContext, accepted: bool) {
         self.inner.finish_resident_effect_edit(context, accepted);
     }
+    fn plugin_state_restore_pending(&self, context: AudioSourceContext) -> bool {
+        self.inner.plugin_state_restore_pending(context)
+    }
     fn plugin_state_restore_ready(&self) -> Option<AudioSourceContext> {
         self.inner.plugin_state_restore_ready()
     }
@@ -210,6 +213,15 @@ impl WorkerAudioSink for ResidentSink {
     fn plugin_effect_ready(&self) -> bool {
         self.inner.plugin_effect_ready()
     }
+    fn toggle_plugin_editor(&mut self, generation: u64, device: u64) -> Result<(), String> {
+        self.inner.toggle_plugin_editor(generation, device)
+    }
+    fn plugin_editor_ready(&self) -> bool {
+        self.inner.plugin_editor_ready()
+    }
+    fn take_plugin_editor_result(&mut self, generation: u64) -> Option<Result<bool, String>> {
+        self.inner.take_plugin_editor_result(generation)
+    }
     fn finish_plugin_effect(
         &mut self,
         control: &Arc<hex_session::service::PluginEffectControl>,
@@ -226,6 +238,12 @@ impl WorkerAudioSink for ResidentSink {
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<Option<hex_engine::PreparedRevision>, String> {
         self.inner.prepare_resident_effects(input, prepare)
+    }
+    fn prepare_offline_bounce(
+        &mut self,
+        input: hex_session::service::ResidentEffectPreparation<'_>,
+    ) -> Result<Option<Box<dyn hex_session::service::OfflineBounceSource>>, String> {
+        self.inner.prepare_offline_bounce(input)
     }
     fn ordinary_source_reservation(&self) -> Option<hex_session::SourcePlanReservation> {
         self.inner.ordinary_source_reservation()
@@ -523,11 +541,19 @@ impl ResidentHarness {
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
     ) -> Self {
+        Self::with_plugins_at_rate(host, presentation, 48_000)
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn with_plugins_at_rate(
+        host: hex_audio::plugin_effects::Hosting,
+        presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
+        rate: u32,
+    ) -> Self {
         Self::with_plugin_fixture(
             8192,
             Arc::new(AtomicBool::new(true)),
             4,
-            48_000,
+            rate,
             Some((host, presentation)),
             None,
             None,
@@ -557,11 +583,21 @@ impl ResidentHarness {
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
         catalog: PathBuf,
     ) -> Self {
+        Self::with_plugins_at_rate_and_catalog(host, presentation, 48_000, catalog, 8192)
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn with_plugins_at_rate_and_catalog(
+        host: hex_audio::plugin_effects::Hosting,
+        presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
+        rate: u32,
+        catalog: PathBuf,
+        frame_limit: u64,
+    ) -> Self {
         Self::with_plugin_fixture(
-            8192,
+            frame_limit,
             Arc::new(AtomicBool::new(true)),
             4,
-            48_000,
+            rate,
             Some((host, presentation)),
             None,
             Some(catalog),
@@ -908,7 +944,7 @@ impl ResidentHarness {
     /// Advance the simulated callback, then observe each exact original
     /// endpoint's committed requests on control. The Session worker may be
     /// waiting for page/callback progress and is not the DSP completion clock.
-    fn render_worker_step(&self) {
+    pub(super) fn render_worker_step(&self) {
         self.render();
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if self.native_plugins

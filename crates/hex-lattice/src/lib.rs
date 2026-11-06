@@ -24,7 +24,7 @@ mod parameter_automation;
 mod static_processing_tests;
 mod tail_split;
 pub use foreign_processor::{
-    ForeignProcessorNode, ForeignProcessors, PreparedForeignProcessor, RefuseForeign,
+    ForeignNote, ForeignProcessorNode, ForeignProcessors, PreparedForeignProcessor, RefuseForeign,
 };
 pub use parameter_automation::{
     ExternalParameterAutomation, HostAutomationLane, NativeParameterAutomation,
@@ -725,6 +725,16 @@ struct OffsetClock<'a> {
 }
 
 impl NativeInstrumentClock for OffsetClock<'_> {
+    fn arrangement_meter_at_offset(&self, offset: usize) -> Option<(u8, u8)> {
+        self.clock
+            .arrangement_meter_at_offset(self.offset.checked_add(offset)?)
+    }
+
+    fn arrangement_cycle_at_offset(&self, offset: usize) -> Option<(u64, u64)> {
+        self.clock
+            .arrangement_cycle_at_offset(self.offset.checked_add(offset)?)
+    }
+
     fn tempo_micro_bpm_at_offset(&self, offset: usize) -> Option<u32> {
         self.clock
             .tempo_micro_bpm_at_offset(self.offset.checked_add(offset)?)
@@ -1415,7 +1425,7 @@ impl NativeRuntimeChain {
     /// their separate aligned-bypass identity contract.
     /// Revision handoff can call this on the audio callback; it can inspect up to
     /// `range.len() * MAX_NATIVE_DEVICE_STATE_BYTES` payload bytes in the
-    /// worst case; the shared payload allocations themselves are not copied.
+    /// worst case. Larger VST3 state must share its immutable payload allocation.
     pub fn configuration_matches_range(&self, other: &Self, range: std::ops::Range<usize>) -> bool {
         if range.start > range.end
             || range.end > self.entries.len()
@@ -1450,7 +1460,7 @@ impl NativeRuntimeChain {
                     && left.matrix == right.matrix
                     && match (&left.configuration, &right.configuration) {
                         (Some(left), Some(right)) => {
-                            std::sync::Arc::ptr_eq(left, right) || left.processing_eq(right)
+                            std::sync::Arc::ptr_eq(left, right) || left.processing_eq_on_callback(right)
                         }
                         _ => false,
                     }
@@ -1525,7 +1535,8 @@ impl NativeRuntimeChain {
                 }
                 let configuration_matches = match (&candidate.configuration, &old.configuration) {
                     (Some(candidate), Some(old)) => {
-                        std::sync::Arc::ptr_eq(candidate, old) || candidate.processing_eq(old)
+                        std::sync::Arc::ptr_eq(candidate, old)
+                            || candidate.processing_eq_on_callback(old)
                     }
                     _ => false,
                 };
@@ -1762,7 +1773,7 @@ impl NativeRuntimeChain {
             && new.matrix == old.matrix
             && new.automation == old.automation
             && match (&new.configuration, &old.configuration) {
-                (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b) || a.processing_eq(b),
+                (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b) || a.processing_eq_on_callback(b),
                 _ => false,
             }
             && new
@@ -1922,7 +1933,7 @@ impl NativeRuntimeChain {
                         && match (&entry.configuration, &old.configuration) {
                             (Some(a), Some(b)) => {
                                 std::sync::Arc::ptr_eq(a, b)
-                                    || a.processing_eq(b)
+                                    || a.processing_eq_on_callback(b)
                                     || (entry.runtime.can_inherit_from(&old.runtime)
                                         && entry.runtime.can_retarget_from(&old.runtime))
                             }

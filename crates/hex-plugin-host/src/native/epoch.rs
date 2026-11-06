@@ -44,8 +44,21 @@ impl Prepared {
     /// Failed discontinuity keeps the exact cancelled lease in existing failure
     /// custody. The caller must observe disposal independently before destroying
     /// that owner; neither the error nor Drop acknowledges Root/callback return.
-    pub fn quiesce_retained_on_control(
+    pub fn quiesce_retained_on_control(self) -> std::result::Result<Quiescent, PreparationFailure> {
+        self.quiesce_retained(protocol::quiesce)
+    }
+
+    /// The graph and callback have returned for stopped renewal. Only the
+    /// isolated instrument's accepted gates need release before it quiesces.
+    pub fn quiesce_for_stopped_restore_on_control(
+        self,
+    ) -> std::result::Result<Quiescent, PreparationFailure> {
+        self.quiesce_retained(protocol::quiesce_for_stopped_restore)
+    }
+
+    fn quiesce_retained(
         mut self,
+        encode: impl FnOnce(&Configuration, u64) -> Result<[u8; 64]>,
     ) -> std::result::Result<Quiescent, PreparationFailure> {
         let result = (|| {
             self.require_live_epoch()?;
@@ -57,7 +70,7 @@ impl Prepared {
             }
             let until = end_after(self.limits.startup)?;
             let token = self.lease.cancellation.clone();
-            let request = protocol::quiesce(&self.config, self.sequence)?;
+            let request = encode(&self.config, self.sequence)?;
             self.lease
                 .channel
                 .send(&request, until, &mut || token.check())?;
@@ -70,7 +83,7 @@ impl Prepared {
                     self.config.binding,
                 )?));
             }
-            if self.packet.magic() != b"HXVIQF02" {
+            if self.packet.magic() != b"HXVIQF03" {
                 return Err(Error::Protocol("missing actual quiescent acknowledgement"));
             }
             let facts =
@@ -144,7 +157,7 @@ impl Quiescent {
                     self.instance.config.binding,
                 )?));
             }
-            if self.instance.packet.magic() != b"HXVIAR01" {
+            if self.instance.packet.magic() != b"HXVIAR02" {
                 return Err(Error::Protocol(
                     "missing component reactivation acknowledgement",
                 ));
@@ -253,7 +266,7 @@ impl Quiescent {
                     self.instance.sequence,
                     operation,
                 )?)
-            } else if self.instance.packet.magic() == b"HXVICS01" {
+            } else if self.instance.packet.magic() == b"HXVICS02" {
                 Ok(protocol::captured_state(
                     self.instance.packet.body()?,
                     &self.instance.config,
@@ -398,18 +411,15 @@ impl Quiescent {
     pub fn resume_retained_on_control(
         mut self,
         next: Binding,
-        presentation: Option<PresentationLatency>,
+        presentation: impl Into<protocol::PresentationPlan>,
     ) -> std::result::Result<Prepared, PreparationFailure> {
+        let presentation = presentation.into();
         let result = (|| {
             self.instance.require_live_epoch()?;
             if self.instance.parameter_page.is_some() {
                 return Err(Error::Protocol("controller page is still pending"));
             }
-            if self.facts.presentation_available && presentation.is_none() {
-                return Err(Error::Protocol(
-                    "actual presentation contributions are unavailable",
-                ));
-            }
+            presentation.expected(self.facts.presentation_available)?;
             let request = protocol::resume_request(&self.instance.config, next, presentation)?;
             let mut config = self.instance.config.clone();
             config.binding = next;
@@ -431,7 +441,7 @@ impl Quiescent {
                     .or_else(|_| protocol::error(body, self.instance.config.binding))?;
                 return Err(Error::Worker(code));
             }
-            if self.instance.packet.magic() != b"HXVIRR02" {
+            if self.instance.packet.magic() != b"HXVIRR03" {
                 return Err(Error::Protocol("missing actual resumed acknowledgement"));
             }
             let applied = protocol::resumed(

@@ -1,7 +1,7 @@
 //! Final source ACK stays in the same reserved Root cell. Neither preparation
 //! completion nor this read-only state copy seals endpoints for publication.
 use super::*;
-use hex_plugin_host::protocol::PresentationLatency;
+use hex_plugin_host::protocol::PresentationPlan;
 
 impl Custody {
     pub(in crate::candidate_custody) fn native_source_metadata(
@@ -37,7 +37,7 @@ impl Custody {
     pub(in crate::candidate_custody) fn complete_native_source(
         &self,
         binding: Binding,
-        presentation: Option<PresentationLatency>,
+        presentation: impl Into<PresentationPlan>,
     ) -> Result<(), &'static str> {
         self.complete_native_source_between(binding, presentation, || {}, || {})
     }
@@ -45,10 +45,11 @@ impl Custody {
     pub(super) fn complete_native_source_between(
         &self,
         binding: Binding,
-        presentation: Option<PresentationLatency>,
+        presentation: impl Into<PresentationPlan>,
         after_reservation: impl FnOnce(),
         after_completion: impl FnOnce(),
     ) -> Result<(), &'static str> {
+        let presentation = presentation.into();
         let Ok(mut work) = self.work.try_lock() else {
             return Err("native preparation is busy");
         };
@@ -165,7 +166,7 @@ impl CandidateRoot {
     pub(crate) fn complete_native_source_preparation(
         &self,
         binding: Binding,
-        presentation: Option<PresentationLatency>,
+        presentation: impl Into<PresentationPlan>,
     ) -> Result<(), &'static str> {
         self.require_native_source_control_open()?;
         let result = self

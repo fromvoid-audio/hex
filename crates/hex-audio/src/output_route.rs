@@ -48,11 +48,13 @@ pub struct OutputRoute {
     pub nominal_hz: u32,
 }
 
-/// Current default output route, or `None` when no default device answers.
-/// Blocking device queries: call only on a control thread.
-pub(crate) fn probe_default_route() -> Option<OutputRoute> {
-    let device = cpal::default_host().default_output_device()?;
-    route_of(&device)
+impl OutputRoute {
+    /// Observe the current default output without opening a stream or changing
+    /// the device. The backend query may block and belongs on control.
+    pub fn probe_default_on_control() -> Option<Self> {
+        let device = cpal::default_host().default_output_device()?;
+        route_of(&device)
+    }
 }
 
 /// Route of an already selected device, read on the open lane.
@@ -108,7 +110,7 @@ pub struct OutputRouteWatch {
 impl OutputRouteWatch {
     /// Starts sampling the actual default output route.
     pub fn spawn() -> Result<Self, String> {
-        Self::spawn_with(ROUTE_SAMPLE_INTERVAL, probe_default_route)
+        Self::spawn_with(ROUTE_SAMPLE_INTERVAL, OutputRoute::probe_default_on_control)
     }
 
     pub(crate) fn spawn_with(

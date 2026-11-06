@@ -29,6 +29,14 @@ pub trait NativeInstrumentClock {
     fn loop_pass_at_offset(&self, _offset: usize) -> Option<u64> {
         None
     }
+    /// Canonical time signature at the aligned Arrangement position.
+    fn arrangement_meter_at_offset(&self, _offset: usize) -> Option<(u8, u8)> {
+        None
+    }
+    /// Active Arrangement cycle bounds in Q32.32 quarter-note beats.
+    fn arrangement_cycle_at_offset(&self, _offset: usize) -> Option<(u64, u64)> {
+        None
+    }
     /// Optional exact host performance-frame origin, independent of arrangement
     /// loop wraps. Unknown during warmup or stopped monitoring is explicit None.
     fn performance_frame_at_offset(&self, _offset: usize) -> Option<u64> {

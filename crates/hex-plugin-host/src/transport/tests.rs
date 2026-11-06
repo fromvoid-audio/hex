@@ -27,7 +27,7 @@ fn constructor_storage_requires_the_original_pair_and_survives_exchange_and_reti
         storage.data_bytes,
         2 * (QUEUE_CAPACITY * std::mem::size_of::<Block>()
             + std::mem::size_of::<RingBuffer<Block>>())
-            + std::mem::size_of::<AtomicBool>()
+            + std::mem::size_of::<Revocation>()
     );
     assert_eq!((storage.shared_groups, storage.shared_handle_bound), (3, 7));
     for _ in 0..4 {
@@ -51,6 +51,7 @@ fn constructor_storage_requires_the_original_pair_and_survives_exchange_and_reti
         callback.fault().is_none(),
         "revocation is separate from a visited fault"
     );
+    assert_eq!(control.take_callback_fault(), None);
     drop(worker);
     assert_eq!(
         callback.constructor_storage_on_control(&control),
@@ -122,6 +123,7 @@ fn sample_timeline_latency_and_midi_survive_physical_callback_partitions() {
                     frame: offset as u16,
                     bytes: [0x90, 60, 100],
                     len: 3,
+                    note_id: None,
                 })
                 .collect();
             let mut output = vec![[99.0; 2]; size];
@@ -186,6 +188,94 @@ fn missed_deadline_silences_and_revokes_without_replaying_last_output() {
     assert!(control.is_revoked());
     assert_eq!(worker.complete(late), Err(Fault::Revoked));
     assert!(callback.replies.is_empty());
+    callback.reject(Fault::Protocol);
+    assert_eq!(control.take_callback_fault(), Some(Fault::MissingOutput));
+    assert_eq!(
+        control.deadline_miss(),
+        Some(DeadlineMiss {
+            reply_sequence: 0,
+            worker_phase: DeadlineWorkerPhase::Processing,
+        })
+    );
+    assert_eq!(control.take_callback_fault(), None);
+    assert_eq!(callback.fault(), Some(Fault::MissingOutput));
+}
+
+#[test]
+fn deadline_observation_distinguishes_a_worker_that_has_not_picked_up_the_request() {
+    let (control, mut callback, _worker) = channel_from_completed_prefix(BINDING, 8, 37).unwrap();
+    let mut output = [[0.0; 2]; 8];
+    for _ in 0..2 {
+        callback.stage(&[[1.0; 2]; 8], &[], &mut output).unwrap();
+        callback.finish(true).unwrap();
+    }
+    assert_eq!(
+        callback.stage(&[[1.0; 2]; 8], &[], &mut output).err(),
+        Some(Fault::MissingOutput)
+    );
+    assert_eq!(
+        control.deadline_miss(),
+        Some(DeadlineMiss {
+            reply_sequence: 37,
+            worker_phase: DeadlineWorkerPhase::AwaitingPickup,
+        })
+    );
+}
+
+#[test]
+fn native_instrument_keeps_ordered_input_and_recovers_from_one_late_reply() {
+    let (control, mut callback, mut worker) =
+        instrument_channel_from_completed_prefix(BINDING, 8, 37).unwrap();
+    let mut output = [[0.0; 2]; 8];
+    let counts = allocation_counter::measure(|| {
+        for value in [1.0, 2.0, 3.0] {
+            callback.stage(&[[value; 2]; 8], &[], &mut output).unwrap();
+            callback.finish(true).unwrap();
+            assert_eq!(output, [[0.0; 2]; 8]);
+        }
+        assert!(!control.is_revoked());
+        for (sequence, value) in [(37, 1.0), (38, 2.0), (39, 3.0)] {
+            let reply = worker.receive().unwrap().unwrap();
+            assert_eq!(reply.sequence, sequence);
+            assert_eq!(reply.pcm[0], [value; 2]);
+            worker.complete(reply).unwrap();
+        }
+        for value in [2.0, 3.0] {
+            callback.stage(&[[0.0; 2]; 8], &[], &mut output).unwrap();
+            callback.finish(true).unwrap();
+            assert_eq!(output, [[value; 2]; 8]);
+        }
+        assert!(!control.is_revoked());
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+}
+
+#[test]
+fn native_instrument_revokes_after_two_consecutive_missed_replies() {
+    let (control, mut callback, mut worker) =
+        instrument_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+    let mut output = [[0.0; 2]; 8];
+    for _ in 0..3 {
+        callback.stage(&[[0.0; 2]; 8], &[], &mut output).unwrap();
+        callback.finish(true).unwrap();
+    }
+    // The stale reply does not turn a second missed deadline into a success.
+    let late = worker.receive().unwrap().unwrap();
+    worker.complete(late).unwrap();
+    assert_eq!(
+        callback.stage(&[[0.0; 2]; 8], &[], &mut output).err(),
+        Some(Fault::MissingOutput)
+    );
+    assert!(control.is_revoked());
+    assert_eq!(control.deadline_miss().unwrap().reply_sequence, 1);
 }
 
 #[test]
@@ -213,6 +303,7 @@ fn consumer_rejects_each_identity_field_and_nonfinite_or_invalid_events() {
                     frame: 8,
                     bytes: [0x90, 60, 1],
                     len: 3,
+                    note_id: None,
                 })
                 .unwrap(),
             9 => reply
@@ -221,6 +312,7 @@ fn consumer_rejects_each_identity_field_and_nonfinite_or_invalid_events() {
                     frame: 0,
                     bytes: [0xf0, 0, 0],
                     len: 3,
+                    note_id: None,
                 })
                 .unwrap(),
             _ => unreachable!(),
@@ -309,6 +401,7 @@ fn bounded_input_validation_and_queue_independent_stop() {
                         frame: 0,
                         bytes: [0x90, 200, 0],
                         len: 3,
+                        note_id: None,
                     }],
                     &mut output,
                 )
@@ -344,6 +437,10 @@ fn bounded_input_validation_and_queue_independent_stop() {
         );
         assert!(control.is_revoked());
         assert_eq!(output, [[0.0; 2]; 8]);
+        assert_eq!(
+            control.take_callback_fault(),
+            fault.filter(|&reason| reason != Fault::Revoked)
+        );
     }
     for q in [0, 257, u16::MAX] {
         assert!(matches!(channel(BINDING, q), Err(Fault::Configuration)));
@@ -445,6 +542,7 @@ fn graph_segments_preserve_physical_pcm_event_timeline_and_one_final_dispatch() 
             frame: (size - 1) as u16,
             bytes: [0x90, 61, 127],
             len: 3,
+            note_id: None,
         };
         let mut expected = vec![[9.0; 2]; size];
         let whole_events = whole.stage(&input, &[event], &mut expected).unwrap();
@@ -532,12 +630,39 @@ fn incomplete_overlapping_gapped_or_refused_graph_callbacks_never_dispatch() {
 }
 
 #[test]
+fn pause_accepts_only_the_exact_staged_prefix_and_keeps_partial_input() {
+    for pause_cut in [3, 4] {
+        let (control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
+        callback.begin_physical_callback(8).unwrap();
+        callback
+            .stage_segment(0, &[[0.25; 2]; 4], &[], &mut [[0.0; 2]; 4])
+            .unwrap();
+        callback.end_staging_at_pause(pause_cut);
+        if pause_cut != 4 {
+            assert_eq!(callback.finish(true), Err(Fault::Protocol));
+            assert!(control.is_revoked());
+            continue;
+        }
+        callback.finish(true).unwrap();
+        assert!(worker.receive().unwrap().is_none());
+        callback
+            .stage(&[[0.5; 2]; 4], &[], &mut [[0.0; 2]; 4])
+            .unwrap();
+        callback.finish(true).unwrap();
+        let input = worker.receive().unwrap().unwrap();
+        assert_eq!(input.pcm[..4], [[0.25; 2]; 4]);
+        assert_eq!(input.pcm[4..8], [[0.5; 2]; 4]);
+    }
+}
+
+#[test]
 fn segmenting_does_not_multiply_the_physical_callback_event_budget() {
     let (control, mut callback, worker) = channel(BINDING, 8).unwrap();
     let event = MidiEvent {
         frame: 0,
         bytes: [0x90, 60, 127],
         len: 3,
+        note_id: None,
     };
     callback.begin_physical_callback(8).unwrap();
     callback
@@ -582,6 +707,211 @@ fn segmenting_does_not_multiply_the_physical_callback_event_budget() {
         Err(Fault::InvalidEvents)
     ));
     assert!(worker.requests.is_empty());
+}
+
+#[test]
+fn stopped_partial_quantum_dispatches_play_context_before_the_coincident_note() {
+    let stopped = ProcessTiming {
+        arrangement_frame: 0,
+        playing: false,
+        arrangement_beat_raw: Some(0),
+        tempo_micro_bpm: None,
+        meter: Some((7, 8)),
+        cycle_beats_raw: None,
+    };
+    let playing = ProcessTiming {
+        playing: true,
+        ..stopped
+    };
+    let note = MidiEvent {
+        frame: 0,
+        bytes: [0x90, 60, 100],
+        len: 3,
+        note_id: std::num::NonZeroU32::new(42),
+    };
+    // Keep the pair's control lease alive across both callback transactions.
+    let (_control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
+    let paused = ProcessTiming {
+        arrangement_frame: 2,
+        ..stopped
+    };
+    let mut stage = || {
+        callback.begin_physical_callback(3).unwrap();
+        callback
+            .stage_segment_with_timing(
+                0,
+                &[[0.0; 2]; 3],
+                &[],
+                &[],
+                &mut [[0.0; 2]; 3],
+                SegmentTiming {
+                    playing: Some(false),
+                    at: |_| Some(stopped),
+                },
+            )
+            .unwrap();
+        callback.finish(true).unwrap();
+        assert!(worker.requests.is_empty());
+        callback.begin_physical_callback(5).unwrap();
+        callback
+            .stage_segment_with_timing(
+                0,
+                &[[0.0; 2]; 2],
+                &[note],
+                &[],
+                &mut [[0.0; 2]; 2],
+                SegmentTiming {
+                    playing: Some(true),
+                    at: |_| Some(playing),
+                },
+            )
+            .unwrap();
+        callback
+            .stage_segment_with_timing(
+                2,
+                &[[0.0; 2]; 3],
+                &[],
+                &[],
+                &mut [[0.0; 2]; 3],
+                SegmentTiming {
+                    playing: Some(false),
+                    at: |_| Some(paused),
+                },
+            )
+            .unwrap();
+        assert!(worker.requests.is_empty());
+        callback.finish(true).unwrap();
+    };
+    #[cfg(feature = "allocation-probe")]
+    {
+        let measured = allocation_counter::measure(&mut stage);
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    #[cfg(not(feature = "allocation-probe"))]
+    stage();
+    let request = worker.receive().unwrap().unwrap();
+    assert_eq!(request.timing, Some(stopped));
+    assert_eq!(request.events.as_slice(), &[MidiEvent { frame: 3, ..note }]);
+    assert_eq!(
+        request.timing_changes.as_slice(),
+        &[
+            TimingChange {
+                frame: 3,
+                timing: playing
+            },
+            TimingChange {
+                frame: 5,
+                timing: paused
+            }
+        ]
+    );
+    let mut packet = Vec::new();
+    wire::write(&mut packet, &request).unwrap();
+    assert_eq!(&packet[4..6], &6_u16.to_le_bytes());
+    assert_eq!(packet[12], 2);
+    let decoded = wire::read(&mut packet.as_slice()).unwrap().unwrap();
+    assert_eq!(
+        decoded.timing_changes.as_slice(),
+        request.timing_changes.as_slice()
+    );
+    let first_change = wire::HEADER_BYTES + 8 * 8 + 12 + 40;
+    for (offset, value) in [
+        (12, 8),
+        (first_change, 0),
+        (first_change + 2, 1),
+        (first_change + 28, 2),
+    ] {
+        let mut malformed = packet.clone();
+        malformed[offset] = value;
+        assert!(
+            matches!(wire::read(&mut malformed.as_slice()), Err(error) if error.kind() == std::io::ErrorKind::InvalidData)
+        );
+    }
+}
+
+#[test]
+fn dense_identified_notes_cross_callback_and_wire_without_expanding_replies() {
+    let (control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
+    let events: [MidiEvent; 160] = std::array::from_fn(|index| MidiEvent {
+        frame: 1,
+        bytes: [0x92, 60, 127],
+        len: 3,
+        note_id: std::num::NonZeroU32::new(index as u32 + 1),
+    });
+    let mut stage = || {
+        callback.begin_physical_callback(8).unwrap();
+        for (index, events) in events.chunks_exact(events.len() / 2).enumerate() {
+            callback
+                .stage_segment(index * 4, &[[0.0; 2]; 4], events, &mut [[0.0; 2]; 4])
+                .unwrap();
+        }
+        callback.finish(true).unwrap();
+    };
+    #[cfg(feature = "allocation-probe")]
+    {
+        let measured = allocation_counter::measure(&mut stage);
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    #[cfg(not(feature = "allocation-probe"))]
+    stage();
+    let request = worker.receive().unwrap().unwrap();
+    assert_eq!(request.events.as_slice().len(), events.len());
+    for (index, event) in request.events.as_slice().iter().enumerate() {
+        assert_eq!(event.frame, if index < events.len() / 2 { 1 } else { 5 });
+        assert_eq!(event.note_id, events[index].note_id);
+    }
+    let mut packet = Vec::new();
+    wire::write(&mut packet, &request).unwrap();
+    let decoded = wire::read(&mut packet.as_slice()).unwrap().unwrap();
+    assert_eq!(decoded.events.as_slice(), request.events.as_slice());
+    let first_note_id = wire::HEADER_BYTES + 8 * 8 + 8;
+    packet[first_note_id..first_note_id + 4].fill(0);
+    assert!(
+        matches!(wire::read(&mut packet.as_slice()), Err(error) if error.kind() == std::io::ErrorKind::InvalidData)
+    );
+    assert_eq!(worker.complete(decoded), Err(Fault::InvalidEvents));
+    assert!(control.is_revoked());
+
+    // Even across accepted physical callbacks, one assembled quantum has a
+    // finite note budget and cannot switch to legacy events above its cap.
+    for (first, extra) in [
+        (&events[..], events[0]),
+        (
+            &events[..64],
+            MidiEvent {
+                note_id: None,
+                ..events[0]
+            },
+        ),
+    ] {
+        let (control, mut callback, worker) = channel(BINDING, 8).unwrap();
+        callback
+            .stage(&[[0.0; 2]; 4], first, &mut [[0.0; 2]; 4])
+            .unwrap();
+        callback.finish(true).unwrap();
+        assert!(matches!(
+            callback.stage(&[[0.0; 2]; 4], &[extra], &mut [[0.0; 2]; 4]),
+            Err(Fault::InvalidEvents)
+        ));
+        assert!(control.is_revoked());
+        assert!(worker.requests.is_empty());
+    }
 }
 
 #[cfg(feature = "allocation-probe")]

@@ -8,6 +8,142 @@ const QUANTUM: usize = 4;
 /// Both endpoints declare only the copied 2Q bridge latency.
 const LATENCY_CALLBACKS: usize = 2;
 
+#[test]
+#[ignore = "requires explicit source-bound original SDK receipts"]
+fn actual_foreign_instrument_notes_follow_accepted_callback_segments() {
+    const NAME: &str = "plugin_effects::callbacks::tests::actual_foreign_instrument_notes_follow_accepted_callback_segments";
+    const CHILD: &str = "HEX_FOREIGN_INSTRUMENT_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--ignored"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "115")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success() && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+
+    let binding = Binding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    };
+    let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 2).unwrap();
+    let source = crate::plugin_worker::native_tests::original_instance_with_inputs(binding, 0);
+    let effect = NativeEffect::prepare_on_control(identity, source).unwrap();
+    let facts = Facts {
+        identity,
+        state: effect.configuration().clone(),
+        prepared: effect.prepared(),
+    };
+    let (mut workers, mut endpoints) =
+        NativeEffectCallbacks::from_effects_on_control(vec![effect]).unwrap();
+    let worker = &mut workers[0];
+    let on = ForeignNote {
+        frame: 1,
+        channel: 2,
+        pitch: 60,
+        velocity: 127,
+        on: true,
+        note_id: std::num::NonZeroU32::new(70_001),
+    };
+    let second_on = ForeignNote {
+        frame: 3,
+        note_id: std::num::NonZeroU32::new(70_002),
+        ..on
+    };
+    let first_off = ForeignNote {
+        velocity: 0,
+        on: false,
+        ..on
+    };
+    let second_off = ForeignNote {
+        frame: 2,
+        velocity: 0,
+        on: false,
+        ..second_on
+    };
+    struct Clock(u64, bool);
+    impl hex_lattice::NativeInstrumentClock for Clock {
+        fn beat_at_offset(&self, _: usize) -> Option<u64> {
+            None
+        }
+        fn arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+            self.0.checked_add(offset as u64)
+        }
+        fn transport_is_running(&self) -> Option<bool> {
+            Some(self.1)
+        }
+    }
+    // Fill the expanded input budget without exceeding the fixture's two
+    // simultaneous voices. The final two onsets must retain their original PCM.
+    let mut dense = Vec::new();
+    for identity in 1..64 {
+        let note = ForeignNote {
+            note_id: std::num::NonZeroU32::new(identity),
+            ..on
+        };
+        dense.push(note);
+        dense.push(ForeignNote {
+            on: false,
+            velocity: 0,
+            ..note
+        });
+    }
+    dense.extend([on, second_on]);
+    assert_eq!(dense.len(), 128);
+    let mut render = |index: usize, notes: &[ForeignNote], accept| {
+        let mut output = [[1.0; 2]; 8];
+        let origin = (index as u64 * 8).saturating_sub(3);
+        let first_clock = Clock(origin, index != 0);
+        let last_clock = Clock(if index == 0 { 0 } else { origin + 3 }, true);
+        let mut callback = || {
+            endpoints.begin_host_callback(8).unwrap();
+            let (first, last) = output.split_at_mut(3);
+            endpoints
+                .process_segment_with_notes(facts.node(), 0, first, &[], &[], Some(&first_clock))
+                .unwrap();
+            endpoints
+                .process_segment_with_notes(facts.node(), 3, last, &[], notes, Some(&last_clock))
+                .unwrap();
+            assert_eq!(endpoints.finish_host_callback(accept).is_ok(), accept);
+        };
+        #[cfg(feature = "allocation-probe")]
+        assert_eq!(allocations_during(&mut callback), [0; 4]);
+        #[cfg(not(feature = "allocation-probe"))]
+        callback();
+        output
+    };
+    for (index, notes) in [dense.as_slice(), &[first_off, second_off], &[], &[]]
+        .into_iter()
+        .enumerate()
+    {
+        let output = render(index, notes, true);
+        let expected = match index {
+            2 => [0., 0., 0., 0., 0.625, 0.625, 1.25, 1.25],
+            3 => [1.5, 1.5, 1.5, 1.5, 0.75, 0., 0., 0.],
+            _ => [0.; 8],
+        };
+        assert_eq!(output, expected.map(|sample| [sample; 2]));
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while worker.published_blocks_on_control() <= index as u64 {
+            assert!(std::time::Instant::now() < until, "native PCM completion");
+            std::thread::yield_now();
+        }
+    }
+    assert_eq!(render(4, &[on], false), [[0.; 2]; 8]);
+    let retirement = worker.retire_on_control().unwrap();
+    assert!(retirement.failure.is_none() && retirement.native.status.success());
+    assert_eq!(retirement.native.terminal.unwrap().blocks, 4);
+}
+
 /// Copied graph facts for one endpoint, so a node can be built while the
 /// callback carrier is mutably borrowed.
 struct Facts {
@@ -124,6 +260,81 @@ fn serve(worker: &mut Worker) {
     while let Some(block) = worker.receive().expect("healthy worker") {
         worker.complete(block).expect("reply published");
     }
+}
+
+#[test]
+fn worker_quanta_use_their_first_aligned_clock_even_across_split_callbacks() {
+    use hex_plugin_host::transport::ProcessTiming;
+
+    struct Clock(u64, bool);
+    impl hex_lattice::NativeInstrumentClock for Clock {
+        fn beat_at_offset(&self, _: usize) -> Option<u64> {
+            None
+        }
+        fn arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+            Some(self.0 + offset as u64)
+        }
+        fn arrangement_beat_at_offset(&self, offset: usize) -> Option<u64> {
+            Some((self.0 + offset as u64) << 32)
+        }
+        fn tempo_micro_bpm_at_offset(&self, _: usize) -> Option<u32> {
+            Some(123_125_000)
+        }
+        fn transport_is_running(&self) -> Option<bool> {
+            Some(self.1)
+        }
+        fn arrangement_meter_at_offset(&self, offset: usize) -> Option<(u8, u8)> {
+            Some(if offset == 0 { (7, 8) } else { (3, 4) })
+        }
+        fn arrangement_cycle_at_offset(&self, offset: usize) -> Option<(u64, u64)> {
+            (offset == 0).then_some((0, 4 << 32))
+        }
+    }
+    let (mut callbacks, mut endpoints) = endpoints();
+    let endpoint = &mut endpoints[0];
+    let node = endpoint.facts.node();
+    let mut callback = |frames, clock: Option<&dyn hex_lattice::NativeInstrumentClock>| {
+        let mut output = [[0.5; 2]; QUANTUM];
+        assert_eq!(
+            allocations_during(|| {
+                callbacks.begin_host_callback(frames).unwrap();
+                callbacks
+                    .process_segment(node, 0, &mut output[..frames], clock)
+                    .unwrap();
+                callbacks.finish_host_callback(true).unwrap();
+            }),
+            [0; 4]
+        );
+    };
+    callback(2, Some(&Clock(100, true)));
+    assert!(endpoint.worker.receive().unwrap().is_none());
+    callback(4, Some(&Clock(500, false)));
+    let first = endpoint.worker.receive().unwrap().unwrap();
+    assert_eq!(
+        first.timing,
+        Some(ProcessTiming {
+            arrangement_frame: 100,
+            playing: true,
+            arrangement_beat_raw: Some(100 << 32),
+            tempo_micro_bpm: std::num::NonZeroU32::new(123_125_000),
+            meter: Some((7, 8)),
+            cycle_beats_raw: Some((0, 4 << 32)),
+        })
+    );
+    endpoint.worker.complete(first).unwrap();
+    callback(2, None);
+    let second = endpoint.worker.receive().unwrap().unwrap();
+    assert_eq!(
+        second.timing,
+        Some(ProcessTiming {
+            arrangement_frame: 502,
+            playing: false,
+            arrangement_beat_raw: Some(502 << 32),
+            tempo_micro_bpm: std::num::NonZeroU32::new(123_125_000),
+            meter: Some((3, 4)),
+            cycle_beats_raw: None,
+        })
+    );
 }
 
 #[test]
@@ -475,6 +686,12 @@ fn one_endpoint_missing_its_reply_degrades_alone_while_the_other_keeps_processin
     );
     // Control sees the degraded entry through its own worker lease only.
     assert_eq!(endpoints[1].worker.receive().err(), Some(Fault::Revoked));
+    assert_eq!(endpoints[0]._control.take_callback_fault(), None);
+    assert_eq!(
+        endpoints[1]._control.take_callback_fault(),
+        Some(Fault::MissingOutput)
+    );
+    assert_eq!(endpoints[1]._control.take_callback_fault(), None);
     assert_eq!(
         endpoints[0].worker.completed_blocks(),
         CALLBACKS as u64,

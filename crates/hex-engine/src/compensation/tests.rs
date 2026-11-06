@@ -264,6 +264,8 @@ fn stamp(index: usize) -> TransportStamp {
         loop_pass: (index / 4) as u64,
         performance_beat_raw: (index as u64) << 30,
         arrangement_beat_raw: Some(((index % 4) as u64) << 30),
+        meter: None,
+        cycle_beats_raw: None,
     }
 }
 
@@ -502,6 +504,8 @@ fn bounded_history_copy_keeps_wrapped_full_origins_and_transaction_rollback() {
                 loop_pass: frame / 3,
                 performance_beat_raw: (frame << 30) + 27,
                 arrangement_beat_raw: (frame % 2 == 0).then_some(frame << 28),
+                meter: Some(hex_project::Meter::COMMON_TIME),
+                cycle_beats_raw: Some((0, 4 << 32)),
             }));
         }
         source.commit();
@@ -516,6 +520,8 @@ fn bounded_history_copy_keeps_wrapped_full_origins_and_transaction_rollback() {
                 loop_pass: 0,
                 performance_beat_raw: 0,
                 arrangement_beat_raw: None,
+                meter: None,
+                cycle_beats_raw: None,
             }));
         }
         target.commit();

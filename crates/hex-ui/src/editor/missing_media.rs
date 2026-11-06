@@ -555,8 +555,8 @@ impl EditorView {
                 .is_none_or(|state| state.revision != panel.revision)
         {
             self.error = Some("project changed · relink cancelled".into());
-        } else {
-            self.enqueue(Request::RelinkMedia(panel.resolved()));
+        } else if !self.enqueue(Request::RelinkMedia(panel.resolved())) {
+            self.missing_media = Some(panel);
         }
         cx.notify();
     }

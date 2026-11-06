@@ -977,42 +977,34 @@ fn failed_open_keeps_active_project_and_graph_revision() {
     let revision = edited.state.revision;
     assert!(edited.playback.is_some());
 
-    // Missing ordinary media opens offline instead (see missing_media tests).
-    for (name, source_name, frames, sample_rate, create_source) in [
-        ("mismatch.hex", "short.wav", 3_u64, 48_000_u32, true),
-        ("rate.hex", "Unused.wav", 2_u64, 44_100_u32, false),
-    ] {
-        if create_source {
-            fs::write(
-                directory.path().join(source_name),
-                wav_mono_pcm16(&[100, 200]),
-            )
-            .expect("write mismatched source");
-        }
-        let project_path = directory.path().join(name);
-        let mut editor =
-            Editor::new(Project::new(sample_rate).expect("project"), 8).expect("editor");
-        editor
-            .execute(Command::ImportAudioTrack {
-                name: "incoming".into(),
-                path: source_name.into(),
-                sample_rate,
-                frames,
-            })
-            .expect("create import metadata");
-        hex_storage::save_new(&project_path, editor.project()).expect("save fixture project");
-        active
-            .submit(Request::Open(project_path))
-            .expect("submit open");
-        let rejected = next_event(&active);
-        assert!(rejected.error.is_some());
-        assert!(rejected.open_complete);
-        assert!(!rejected.project_replaced);
-        assert!(rejected.playback.is_none());
-        assert_eq!(rejected.state.revision, revision);
-        assert_eq!(rejected.state.project.tracks().len(), 1);
-        assert_eq!(rejected.state.project.tracks()[0].name(), "keep me");
-    }
+    // Wrong source extent is an error. Missing media can open offline.
+    fs::write(
+        directory.path().join("short.wav"),
+        wav_mono_pcm16(&[100, 200]),
+    )
+    .expect("write mismatched source");
+    let project_path = directory.path().join("mismatch.hex");
+    let mut editor = Editor::new(Project::new(48_000).expect("project"), 8).expect("editor");
+    editor
+        .execute(Command::ImportAudioTrack {
+            name: "incoming".into(),
+            path: "short.wav".into(),
+            sample_rate: 48_000,
+            frames: 3,
+        })
+        .expect("create import metadata");
+    hex_storage::save_new(&project_path, editor.project()).expect("save fixture project");
+    active
+        .submit(Request::Open(project_path))
+        .expect("submit open");
+    let rejected = next_event(&active);
+    assert!(rejected.error.is_some());
+    assert!(rejected.open_complete);
+    assert!(!rejected.project_replaced);
+    assert!(rejected.playback.is_none());
+    assert_eq!(rejected.state.revision, revision);
+    assert_eq!(rejected.state.project.tracks().len(), 1);
+    assert_eq!(rejected.state.project.tracks()[0].name(), "keep me");
 
     let mut project = Editor::new(Project::new(48_000).expect("project"), 8).expect("editor");
     project
@@ -1034,6 +1026,28 @@ fn failed_open_keeps_active_project_and_graph_revision() {
     let asset = opened.state.project.assets().next().expect("asset kept");
     assert_eq!(asset.path(), std::path::Path::new("Missing-Unused.wav"));
     assert!(opened.state.project.asset_offline(asset.id()));
+}
+
+#[test]
+fn open_prepares_the_saved_rate_and_preserves_the_project_file() {
+    let directory = TempDir::new();
+    let service = Service::new(48_000, 16, 32).expect("service");
+    let initial = next_event(&service);
+    assert_eq!(initial.state.project.sample_rate(), 48_000);
+
+    let saved = Project::new(44_100).expect("project");
+    let path = directory.path().join("saved-rate.hex");
+    hex_storage::save_new(&path, &saved).expect("save fixture project");
+    let original = fs::read(&path).expect("original project bytes");
+    service
+        .submit(Request::Open(path.clone()))
+        .expect("submit open");
+    let opened = next_event(&service);
+    assert!(opened.error.is_none(), "{:?}", opened.error);
+    assert!(opened.open_complete && opened.project_replaced);
+    assert_eq!(opened.state.project.as_ref(), &saved);
+    assert_eq!(prepared(&opened).arrangement().sample_rate(), 44_100);
+    assert_eq!(fs::read(path).expect("project bytes after open"), original);
 }
 
 #[test]

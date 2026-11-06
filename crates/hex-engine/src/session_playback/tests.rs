@@ -2334,9 +2334,22 @@ fn removing_track_keeps_its_unquiescent_arrangement_effect_suffix() {
 }
 
 #[test]
-fn utility_mute_handoff_silences_warmed_filter_without_retaining_an_audible_tail() {
+fn utility_mute_handoff_ramps_warmed_filter_and_keeps_its_history() {
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    // The existing Utility transition lasts five milliseconds at 48 kHz.
+    const RAMP_FRAMES: usize = 240;
+    let check_ramp =
+        |actual: &[[f32; 2]; RAMP_FRAMES], reference: &[[f32; 2]; RAMP_FRAMES], unmuting: bool| {
+            for (index, (actual, reference)) in actual.iter().zip(reference).enumerate() {
+                let position = (index + 1) as f32 / RAMP_FRAMES as f32;
+                let gain = if unmuting { position } else { 1.0 - position };
+                for (actual, reference) in actual.iter().zip(reference) {
+                    assert!((actual - reference * gain).abs() < 1.0e-7, "frame {index}");
+                }
+            }
+        };
 
     for (on_return, dc, bass, audition) in [
         (false, true, false, false),
@@ -2429,6 +2442,12 @@ fn utility_mute_handoff_silences_warmed_filter_without_retaining_an_audible_tail
         let muted_project = legacy_project_from_snapshot(muted_snapshot).unwrap();
         let mut muted = SessionPlayback::new(prepare(&muted_project)).unwrap();
         muted.try_inherit_state_from(&mut previous).unwrap();
+        let mut transition = [[0.0; 2]; RAMP_FRAMES];
+        let mut oracle = [[0.0; 2]; RAMP_FRAMES];
+        muted.render(&mut transition).unwrap();
+        reference.render(&mut oracle).unwrap();
+        assert!(oracle.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
+        check_ramp(&transition, &oracle, false);
         let mut output = [[1.0; 2]; 16];
         muted.render(&mut output).unwrap();
         assert_eq!(
@@ -2441,6 +2460,9 @@ fn utility_mute_handoff_silences_warmed_filter_without_retaining_an_audible_tail
         reference.render(&mut [[0.0; 2]; 16]).unwrap();
         let mut unmuted = SessionPlayback::new(prepare(&project)).unwrap();
         unmuted.try_inherit_state_from(&mut muted).unwrap();
+        unmuted.render(&mut transition).unwrap();
+        reference.render(&mut oracle).unwrap();
+        check_ramp(&transition, &oracle, true);
         let mut expected = [[0.0; 2]; 16];
         reference.render(&mut expected).unwrap();
         unmuted.render(&mut output).unwrap();

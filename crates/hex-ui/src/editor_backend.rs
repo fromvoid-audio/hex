@@ -79,10 +79,11 @@ pub enum EditorAudioEvent {
     NativeLatencyRestart {
         source: hex_audio::prepared::AppliedAudioSource,
     },
-    /// The complete set of vst3 device ids on this output whose endpoint
+    /// The complete set of vst3 device ids for this document on this output whose endpoint
     /// faulted and now passes audio through (#3977). Sent when the set
     /// changes; an empty set clears every degraded marker.
     DegradedPlugins {
+        project_generation: u64,
         output_identity: u64,
         devices: Vec<u64>,
     },
@@ -96,6 +97,9 @@ impl DegradedDevices {
         devices.sort_unstable();
         devices.dedup();
         Self(devices)
+    }
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
     pub(crate) fn contains(&self, device: u64) -> bool {
         self.0.binary_search(&device).is_ok()

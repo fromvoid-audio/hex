@@ -2,6 +2,28 @@ use crate::{decode, encode, load, load_with_token, save_new};
 use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot};
 use hex_project::{Command, Created, Editor, Project, default_instrument_state};
 
+#[test]
+fn larger_unbound_vst3_instrument_round_trips_without_group_mutes() {
+    let state = hex_lattice_contract::NativeDeviceState::new(
+        hex_lattice_contract::VST3_DEVICE_TYPE_ID,
+        1,
+        vec![42; 9_357],
+    )
+    .unwrap();
+    let mut editor = Editor::new(Project::new(44_100).unwrap(), 8).unwrap();
+    editor
+        .execute(Command::CreateNativeSource {
+            name: "unbound instrument".into(),
+            devices: vec![state],
+            instrument_index: 0,
+        })
+        .unwrap();
+    let project = editor.project();
+    let saved = encode(project).unwrap();
+    assert_eq!(crate::schema_version_for(project), 75);
+    assert_eq!(decode(&saved).unwrap().snapshot(), project.snapshot());
+}
+
 /// Historical schemas could describe only identity and sinc v1 conversion, so
 /// a document derived from the current fixture records its v2 rows as v1.
 fn historical_conversions(document: &mut serde_json::Value) {

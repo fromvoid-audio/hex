@@ -39,6 +39,10 @@ widgets = (
     'hex_widgets::action(',
     # The shared splitter handle paints caller-resolved geometry/color only.
     'self.project_spectrum_splitter_input(cx)',
+    # Recorder controls route captions through the shared themed button factory.
+    'self.sample_arm_button(', 'self.sample_recorder_mode_button(',
+    # The take waveform canvas paints geometry only.
+    'wave_canvas(',
     'harmonic_range_control)', 'harmonic_repeat_control)', 'harmonic_tools)',
     'view.device_panel.operator_harmonics[&key].entity.clone())',
     'operator_row(', 'operator_label(', 'page_tab(', 'shell)', 'page_tabs)', 'detail)',
@@ -113,6 +117,8 @@ widgets = (
     # Device preset header actions reuse themed compact action buttons.
     'super::device_preset::actions(', 'super::device_panel::action_button(', 'super::device_panel::segment_button(',
     'super::super::device_preset::actions(',
+    # The VST3 editor toggle uses the same themed device action.
+    'vst3_editor_button(',
     # Shared A/B actions compose themed compact buttons, never raw text.
     'super::device_comparison::actions(', 'super::super::device_comparison::actions(',
     'device_drag_title(', 'render_return_drop_target(', 'uniform_list(',

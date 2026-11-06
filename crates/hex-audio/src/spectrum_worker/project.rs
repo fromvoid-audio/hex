@@ -297,7 +297,7 @@ impl ProjectCapture {
         let layer = match signal {
             ProjectSignal::Master => 0,
             ProjectSignal::Track(id) => packet.selection.tracks().binary_search(&id).ok()? + 1,
-            ProjectSignal::Unavailable => return None,
+            ProjectSignal::Return(_) | ProjectSignal::Unavailable => return None,
         };
         Some(
             &packet.samples[layer * MAX_CAPTURE_FRAMES..layer * MAX_CAPTURE_FRAMES + self.expected],
@@ -380,6 +380,7 @@ impl ProjectCapture {
                 self.valid = false;
                 return;
             }
+            ProjectSignal::Return(_) => return,
         };
         let destination = &mut packet.samples
             [layer * MAX_CAPTURE_FRAMES + offset..layer * MAX_CAPTURE_FRAMES + end];

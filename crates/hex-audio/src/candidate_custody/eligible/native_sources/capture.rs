@@ -101,10 +101,11 @@ impl Custody {
     pub(in crate::candidate_custody) fn native_recovery_edits(
         &self,
         binding: Binding,
+        flush_idle: bool,
     ) -> Result<Option<hex_plugin_host::protocol::RecoveryEdits>, &'static str> {
         self.with_live_capture(binding, |owner| match owner {
-            Owner::Effect(owner) => owner.poll_recovery_edits(),
-            Owner::Loaned(owner) => owner.poll_recovery_edits(),
+            Owner::Effect(owner) => owner.poll_recovery_edits(flush_idle),
+            Owner::Loaned(owner) => owner.poll_recovery_edits(flush_idle),
             _ => Err("native edit owner differs"),
         })
     }
@@ -121,16 +122,17 @@ impl Custody {
     pub(in crate::candidate_custody) fn begin_native_controller_query(
         &self,
         binding: Binding,
-        query: hex_plugin_host::protocol::ParameterPageQuery,
+        query: impl Into<hex_plugin_host::protocol::ControllerRequest>,
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
         self.controller_query_admission(binding, query, || {})
     }
     fn controller_query_admission(
         &self,
         binding: Binding,
-        query: hex_plugin_host::protocol::ParameterPageQuery,
+        query: impl Into<hex_plugin_host::protocol::ControllerRequest>,
         after_admission: impl FnOnce(),
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
+        let query = query.into();
         let mut admitted = None;
         let result = self.with_live_capture(binding, |owner| {
             admitted = Some(match owner {
@@ -354,9 +356,10 @@ impl CandidateRoot {
     pub(crate) fn native_source_recovery_edits(
         &self,
         binding: Binding,
+        flush_idle: bool,
     ) -> Result<Option<hex_plugin_host::protocol::RecoveryEdits>, &'static str> {
         self.require_native_source_control_open()?;
-        let result = self.0.eligible.native_recovery_edits(binding)?;
+        let result = self.0.eligible.native_recovery_edits(binding, flush_idle)?;
         self.require_native_source_control_open()?;
         Ok(result)
     }
@@ -372,7 +375,7 @@ impl CandidateRoot {
     pub(crate) fn begin_native_controller_query(
         &self,
         binding: Binding,
-        query: hex_plugin_host::protocol::ParameterPageQuery,
+        query: impl Into<hex_plugin_host::protocol::ControllerRequest>,
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
         self.require_native_source_control_open()?;
         self.0

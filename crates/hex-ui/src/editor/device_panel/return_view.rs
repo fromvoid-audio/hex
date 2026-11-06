@@ -248,6 +248,11 @@ pub(super) fn render_return_effect(
                 cx,
             ));
     }
+    if device.state().type_id().as_str() == Ok("hex.vst3")
+        && !view.degraded_plugins.contains(id.value())
+    {
+        actions = actions.child(vst3_editor_button(id, selected, cx));
+    }
     actions = actions.child(
         action_button(
             format!("return-device-remove-{}", id.value()),
@@ -281,8 +286,6 @@ pub(super) fn render_return_effect(
                 actions,
                 body,
             )
-            .debug_selector(move || format!("device-shell-{}", id.value()))
-            .into_any_element()
         }
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
@@ -355,8 +358,6 @@ pub(super) fn render_return_effect(
                 actions,
                 body,
             )
-            .debug_selector(move || format!("device-shell-{}", id.value()))
-            .into_any_element()
         }
         Err(error) => {
             let title = theme::text(
@@ -380,8 +381,6 @@ pub(super) fn render_return_effect(
                 actions,
                 body,
             )
-            .debug_selector(move || format!("device-shell-{}", id.value()))
-            .into_any_element()
         }
     };
     view.device_panel.views.insert(
@@ -392,26 +391,20 @@ pub(super) fn render_return_effect(
             device_view,
         ),
     );
-    let frame_width = match device.state().type_id().as_str() {
-        Ok("hex.utility") => UTILITY_FRAME_WIDTH,
-        Ok("hex.eq8" | "hex.eq") => super::eq8_panel::FRAME_WIDTH,
-        Ok("hex.saturator") => super::saturator_panel::FRAME_WIDTH,
-        Ok("hex.limiter") => super::limiter_panel::FRAME_WIDTH,
-        Ok("hex.compressor") => super::compressor_panel::FRAME_WIDTH,
-        Ok("hex.gate") => super::gate_panel::FRAME_WIDTH,
-        Ok("hex.reverb") => super::reverb_panel::FRAME_WIDTH,
-        Ok("hex.delay") => super::delay_panel::FRAME_WIDTH,
-        Ok("hex.auto-pan") => super::auto_pan_panel::FRAME_WIDTH,
-        Ok("hex.overdrive") => super::overdrive_panel::FRAME_WIDTH,
-        _ => DEVICE_FRAME_WIDTH,
-    };
-    let rendered = div().w(px(frame_width)).flex_shrink_0().child(rendered);
+    let card_width = device_card_width(NativeDeviceClass::Effect, device.state().type_id());
+    let rendered = rendered
+        .h_full()
+        .debug_selector(move || format!("device-shell-{}", id.value()));
+    let rendered = div()
+        .w(px(card_width - super::device_meter::WIDTH))
+        .flex_shrink_0()
+        .child(rendered);
     div()
         .id(ElementId::Name(
             format!("effect-device-{}", id.value()).into(),
         ))
         .debug_selector(move || format!("effect-device-{}", id.value()))
-        .w(px(frame_width + super::device_meter::WIDTH))
+        .w(px(card_width))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex()
         .flex_shrink_0()

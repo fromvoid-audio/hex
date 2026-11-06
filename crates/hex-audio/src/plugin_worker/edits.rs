@@ -27,11 +27,14 @@ impl State {
                 return Err(Error::Protocol("native edit request changed"));
             }
             let recovery = slot.recovery_edits;
+            let flush_idle = slot.flush_idle_edits;
             drop(slot);
             let Some(Processor::Native(instance)) = self.processor.as_mut() else {
                 return Err(Error::Protocol("native edit source missing"));
             };
-            self.edits.result = Some(if recovery {
+            self.edits.result = Some(if flush_idle {
+                instance.service_idle_editor_edits_on_worker()?
+            } else if recovery {
                 instance.poll_recovery_edits_on_worker()?
             } else {
                 RecoveryEdits {
@@ -65,18 +68,20 @@ impl NativeWorker {
         &mut self,
     ) -> Result<Option<ParameterEdits>, &'static str> {
         Ok(self
-            .poll_edits_on_control(false)?
+            .poll_edits_on_control(false, false)?
             .map(|result| result.edits))
     }
     pub(crate) fn poll_recovery_edits_on_control(
         &mut self,
+        flush_idle: bool,
     ) -> Result<Option<RecoveryEdits>, &'static str> {
-        self.poll_edits_on_control(true)
+        self.poll_edits_on_control(true, flush_idle)
     }
 
     fn poll_edits_on_control(
         &mut self,
         recovery: bool,
+        flush_idle: bool,
     ) -> Result<Option<RecoveryEdits>, &'static str> {
         if !self.transport_is_live_on_control() || !self.retains_original_source_on_control() {
             return Err("native edit source is not live");
@@ -96,6 +101,7 @@ impl NativeWorker {
         if !slot.edits_pending {
             slot.edits_pending = true;
             slot.recovery_edits = recovery;
+            slot.flush_idle_edits = flush_idle;
             self.reaper.completed.edits_requested.store(true, Release);
         }
         Ok(None)

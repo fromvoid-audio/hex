@@ -24,6 +24,7 @@ pub use hex_storage::text;
 use hex_tuning::ProjectTuning;
 mod arrangement_sections;
 mod browser_preview;
+pub mod take_audio;
 pub use browser_preview::{AudioPreview, PreviewFailure, PreviewSources};
 #[cfg(test)]
 mod audio_batch_tests;
@@ -58,11 +59,11 @@ mod sampler_parameter;
 use audio_sink::WorkerEvents;
 pub use audio_sink::{
     ArrangementEditPosition, NativeSamplerInput, NativeSamplerReservationHold,
-    NativeSamplerRetryFacts, ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata,
-    ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
-    ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationMetadata,
-    ResidentPublicationPolicy, ResidentPublicationReadiness, ResidentPublicationRefusal,
-    ResidentRuntimeLoop, WorkerAudioSink,
+    NativeSamplerRetryFacts, OfflineBounceSource, ResidentEffectPreparation, ResidentFileInput,
+    ResidentFileMetadata, ResidentFilePublication, ResidentFileSeekPreparer,
+    ResidentFileSeekRequest, ResidentFileSet, ResidentFreshRuntimeFence,
+    ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
+    ResidentPublicationReadiness, ResidentPublicationRefusal, ResidentRuntimeLoop, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -583,6 +584,11 @@ pub enum Request {
     InsertPluginEffect(PluginEffectInsertion),
     /// Worker-internal wakeup; never a FIFO request completion.
     ContinuePluginEffect,
+    TogglePluginEditor {
+        project_generation: u64,
+        device: hex_project::DeviceId,
+    },
+    ContinuePluginEditor,
     /// Internal fresh-output state restoration; no authored edit or revision.
     ContinuePluginStateRestore,
     /// Catalog effect insertion; defaults and target admission belong to the worker.
@@ -2583,6 +2589,7 @@ fn run_worker(
             &request,
             Request::ContinueSamplerEdit
                 | Request::ContinuePluginEffect
+                | Request::ContinuePluginEditor
                 | Request::ContinuePluginStateRestore
                 | Request::ContinueStoppedPlaybackRestore
         );
@@ -3455,6 +3462,8 @@ fn run_worker(
                     | Request::ContinueSamplerEdit
                     | Request::InsertPluginEffect(_)
                     | Request::ContinuePluginEffect
+                    | Request::TogglePluginEditor { .. }
+                    | Request::ContinuePluginEditor
                     | Request::ContinuePluginStateRestore
                     | Request::PrepareComputerKeyboard { .. }
                     | Request::AssignSampler { .. }
@@ -3604,18 +3613,20 @@ fn run_worker(
                         match events.restart_audio(project_generation, request_id) {
                             Ok(()) => {
                                 status = Some("restarting audio".into());
+                                let context = hex_engine::AudioSourceContext {
+                                    project_generation,
+                                    editor_revision: revision,
+                                };
                                 if session.audio_mode() == DocumentAudioMode::Resident
                                     && let Some(sink) = events.resident_audio()
+                                    && !sink.plugin_state_restore_pending(context)
                                 {
                                     let admission = export_lane.admission_with_resident_owners(
                                         compiled.as_ref().map(|(_, prepared)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(prepared) }),
                                         resident_seek.as_ref(), None,
                                     );
                                     let metadata = ResidentPublicationMetadata {
-                                        context: hex_engine::AudioSourceContext {
-                                            project_generation,
-                                            editor_revision: revision,
-                                        },
+                                        context,
                                         device_preview: None,
                                         tuning_preview: None,
                                         seek_request: None,
@@ -3913,6 +3924,39 @@ fn run_worker(
                     error = Some(
                         "instrument insertion request was not prepared; select it again".into(),
                     );
+                }
+                Request::TogglePluginEditor {
+                    project_generation: target_generation,
+                    device,
+                } => {
+                    if target_generation != project_generation
+                        || !session.project().device(device).is_some_and(|device| {
+                            device.state().type_id().as_str() == Ok("hex.vst3")
+                        })
+                    {
+                        error = Some("vst3 editor target changed".into());
+                    } else {
+                        let outcome = events
+                            .sampler_edit_audio()
+                            .ok_or_else(|| "vst3 editor unavailable for this output".to_owned())
+                            .and_then(|audio| {
+                                audio.toggle_plugin_editor(project_generation, device.value())
+                            });
+                        if let Err(reason) = outcome {
+                            error = Some(reason);
+                        }
+                    }
+                }
+                Request::ContinuePluginEditor => {
+                    match events
+                        .sampler_edit_audio()
+                        .and_then(|audio| audio.take_plugin_editor_result(project_generation))
+                    {
+                        Some(Ok(true)) => status = Some("vst3 editor opened".into()),
+                        Some(Ok(false)) => status = Some("vst3 editor closed".into()),
+                        Some(Err(reason)) => error = Some(reason),
+                        None => {}
+                    }
                 }
                 request @ (Request::InsertPluginEffect(_) | Request::ContinuePluginEffect) => {
                     if let Request::InsertPluginEffect(insertion) = request {
@@ -5029,7 +5073,9 @@ fn run_worker(
                 Request::NewWithAudioMode { mode, reservation } => {
                     open_complete = true;
                     let candidate = Session::new_with_audio_mode_in_overview_domain(
-                        session.project().sample_rate(),
+                        events
+                            .default_project_sample_rate()
+                            .unwrap_or_else(|| session.project().sample_rate()),
                         history_capacity,
                         session.max_resident_frames(),
                         mode,
@@ -7163,7 +7209,19 @@ fn run_worker(
                         restore_complete = Some(*generation);
                     }
                     let republish = matches!(&request, Request::RepublishPausedPlayback);
-                    if events.resident_publication_enabled()
+                    let context = hex_engine::AudioSourceContext {
+                        project_generation,
+                        editor_revision: revision,
+                    };
+                    if !republish
+                        && events
+                            .resident_audio()
+                            .is_some_and(|sink| sink.plugin_state_restore_pending(context))
+                    {
+                        // The exact fresh graph ACK gates the editor's cursor
+                        // restore and any held Play. Keep the existing owner.
+                        status = Some("restoring vst3 playback".into());
+                    } else if events.resident_publication_enabled()
                         && session.audio_mode() == DocumentAudioMode::Resident
                     {
                         let result = (|| {
@@ -7172,10 +7230,7 @@ fn run_worker(
                             )?;
                             let selected = snapshot.inputs.clone();
                             let metadata = ResidentPublicationMetadata {
-                                context: hex_engine::AudioSourceContext {
-                                    project_generation,
-                                    editor_revision: revision,
-                                },
+                                context,
                                 device_preview: None,
                                 tuning_preview: None,
                                 seek_request: None,

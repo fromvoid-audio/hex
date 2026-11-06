@@ -24,13 +24,13 @@ impl PublicationControl {
     pub fn begin_native_source_controller_query_on_control(
         &mut self,
         binding: Binding,
-        query: hex_plugin_host::protocol::ParameterPageQuery,
+        query: impl Into<hex_plugin_host::protocol::ControllerRequest>,
     ) -> Result<crate::plugin_worker::NativeWorkerControllerQuery, &'static str> {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native controller output is closing");
         }
         self.candidate_root
-            .begin_native_controller_query(binding, query)
+            .begin_native_controller_query(binding, query.into())
     }
     /// Consume only the exact source/worker query terminal. Recheck the owning
     /// document/device context before using these copied observations in UI.
@@ -72,6 +72,8 @@ impl PublicationControl {
     }
     /// Observe the exact live worker's edit receipts and uncovered latency
     /// restart. Opt in only when the consumer can restore the stopped source.
+    /// While the transport is idle, the same worker applies one pending batch
+    /// without advancing its PCM prefix.
     pub fn poll_native_source_recovery_edits_on_control(
         &mut self,
         binding: Binding,
@@ -79,7 +81,8 @@ impl PublicationControl {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native edit output is closing");
         }
-        self.candidate_root.native_source_recovery_edits(binding)
+        self.candidate_root
+            .native_source_recovery_edits(binding, !self.status.playing.load(Acquire))
     }
     /// Inspect latest processor parameter values through the actual original
     /// Root-held effect or its unique loan control. Wrong/closed/revoked sources
@@ -152,6 +155,15 @@ impl PublicationControl {
             return None;
         }
         self.candidate_root.native_source_endpoint_status(binding)
+    }
+    /// Read the exact accepted endpoint's terminal diagnostic once, without
+    /// joining its worker or exposing any callback state. Contention can defer it.
+    pub fn take_native_source_failure_diagnostic(&self, binding: Binding) -> Option<String> {
+        if self.status.closing.load(Acquire) {
+            return None;
+        }
+        self.candidate_root
+            .take_native_source_failure_diagnostic(binding)
     }
     /// Nonblocking observation of this original endpoint's actual callback
     /// installation, independent of queue admission. None includes a stale,
@@ -430,6 +442,14 @@ impl PublicationControl {
         self.candidate_root
             .configure_native_source_preparation(capacity, limits)
     }
+    /// Check the existing native source reservation on control before staging
+    /// a bounded cohort. Unavailable or contended custody refuses this check.
+    /// Subsequent preparation must still pass each original admission.
+    pub fn has_vacant_native_source_slots_on_control(&self, needed: usize) -> bool {
+        self.native_custody
+            && !self.status.closing.load(Acquire)
+            && self.candidate_root.has_vacant_native_source_slots(needed)
+    }
     /// Run source preparation on the existing control worker, never UI/audio.
     /// Success parks the actual owner in Root even after refusal/close. The
     /// initial binding and cancellation pair are created by Root before spawn.
@@ -462,14 +482,13 @@ impl PublicationControl {
             trust,
         )
     }
-    /// Supply actual graph/device presentation contributions, or None when
-    /// unavailable. The exact Pending becomes a Root-held Prepared or retained
+    /// Supply the presentation plan. The exact Pending becomes a Root-held Prepared or retained
     /// refusal. Ok acknowledges custody only; inspect progress/error separately.
     /// Run on the existing control worker. This does not publish a graph.
     pub fn complete_native_source_preparation(
         &mut self,
         binding: Binding,
-        presentation: Option<hex_plugin_host::protocol::PresentationLatency>,
+        presentation: impl Into<hex_plugin_host::protocol::PresentationPlan>,
     ) -> Result<(), &'static str> {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native preparation output is closing");
@@ -605,6 +624,10 @@ impl Callback {
     pub(crate) fn native_workers_idle_on_control(&self) -> Option<bool> {
         self.native_sources
             .workers_idle_on_control(&self.candidate_root)
+    }
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn native_worker_phase_for_test(&self) -> Option<usize> {
+        self.native_sources.single_worker_phase_for_test()
     }
     pub(super) fn current_native_epoch_fence_source(&self) -> Option<AppliedAudioSource> {
         if !self.status.sampler_edit.ordinary_native_epoch_active() {
