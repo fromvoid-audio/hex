@@ -76,7 +76,15 @@ inline Reader configuration(int fd) {
     return result;
 }
 inline bool send(int fd,const char* magic,const Bytes& body) {
-    if(body.size()>8192) return false;
+    size_t limit=8192;
+    if(!std::memcmp(magic,"HXVIQF03",8)) limit=156+hex_instance::StateStream::envelope_capacity;
+    if(!std::memcmp(magic,"HXVIAR02",8)) limit=164+hex_instance::StateStream::envelope_capacity;
+    if(!std::memcmp(magic,"HXVIRR03",8)) limit=166+hex_instance::StateStream::envelope_capacity;
+    if(!std::memcmp(magic,"HXVIFA04",8)) limit=140+hex_instance::StateStream::envelope_capacity;
+    if(!std::memcmp(magic,"HXVIRD05",8)) limit=86+hex_instance::StateStream::envelope_capacity;
+    if(!std::memcmp(magic,"HXVICS02",8)) limit=62+hex_instance::StateStream::envelope_capacity;
+    if(!std::memcmp(magic,"HXVLCA02",8)) limit=63+hex_instance::StateStream::envelope_capacity;
+    if(body.size()>limit) return false;
     std::array<uint8_t,12> header{};std::memcpy(header.data(),magic,8);
     for(size_t i=0;i<4;++i) header[8+i]=static_cast<uint8_t>(body.size()>>(i*8));
     return write_exact(fd,header.data(),header.size()) && write_exact(fd,body.data(),body.size());
@@ -115,22 +123,22 @@ struct Startup {
     hex_instance::CapturedState state{};
     bool restored() const { return !payload.empty(); }
     void acknowledge(Bytes& out) const {
-        number(out,restored()?1:0,1);number(out,payload.size(),2);
+        number(out,restored()?1:0,1);number(out,payload.size(),4);
         out.insert(out.end(),payload.begin(),payload.end());
     }
 };
 inline Startup startup(int fd,const Config& config) {
     std::array<uint8_t,12> header{};
-    if(read_exact(fd,header.data(),header.size())!=1 || std::memcmp(header.data(),"HXVIST01",8))
+    if(read_exact(fd,header.data(),header.size())!=1 || std::memcmp(header.data(),"HXVIST02",8))
         throw std::runtime_error("startup state frame refused");
     const auto size=number(header.data()+8,4);
-    if(size<37 || size>37+4096) throw std::runtime_error("startup state frame bound");
+    if(size<39 || size>39+hex_instance::StateStream::envelope_capacity) throw std::runtime_error("startup state frame bound");
     Reader in{Bytes(static_cast<size_t>(size)),0};
     if(read_exact(fd,in.bytes.data(),in.bytes.size())!=1 || in.number(2)!=1)
         throw std::runtime_error("truncated startup state frame");
     for(auto id:config.binding) if(in.number(8)!=id) throw std::runtime_error("startup state binding mismatch");
-    const auto known=in.number(1),count=in.number(2);
-    if(known>1 || count>4096 || count!=in.bytes.size()-in.at || (!known && count) || (known && count<96))
+    const auto known=in.number(1),count=in.number(4);
+    if(known>1 || count>hex_instance::StateStream::envelope_capacity || count!=in.bytes.size()-in.at || (!known && count) || (known && count<96))
         throw std::runtime_error("startup state extent refused");
     Startup result{};
     if(!known) return result;
@@ -140,12 +148,12 @@ inline Startup startup(int fd,const Config& config) {
         std::memcmp(p+8,config.cid.data(),16) || std::memcmp(p+24,config.executable_hash.data(),32) ||
         std::memcmp(p+56,config.info_hash.data(),32)) throw std::runtime_error("startup state source envelope refused");
     const auto component=number(p+88,4),controller=number(p+92,4);
-    if(component>4000 || controller>4000-component || (!(p[5]&2) && controller) || count!=96+component+controller)
+    if(component>hex_instance::StateStream::capacity || controller>hex_instance::StateStream::capacity-component || (!(p[5]&2) && controller) || count!=96+component+controller)
         throw std::runtime_error("startup state chunks refused");
     result.state.component=true;result.state.controller=(p[5]&2)!=0;
     result.state.component_bytes=static_cast<uint32_t>(component);
     result.state.controller_bytes=static_cast<uint32_t>(controller);
-    std::copy_n(p+96,static_cast<size_t>(component+controller),result.state.bytes.begin());
+    result.state.bytes.assign(p+96,p+count);
     return result;
 }
 struct Presentation {

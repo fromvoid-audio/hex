@@ -78,10 +78,10 @@ fn live_capture_poll_binds_current_exchange_and_rejects_partial_or_stale_state()
     for value in [9_u64, 72, 2] {
         body.extend(value.to_le_bytes());
     }
-    body.extend([0, 0, 0]);
+    body.extend([0; 5]);
     assert_eq!(live_captured_state(&body, &config, 9, 2).unwrap(), None);
     body[58] = 1;
-    body[59..61].copy_from_slice(&(state.payload().len() as u16).to_le_bytes());
+    body[59..63].copy_from_slice(&(state.payload().len() as u32).to_le_bytes());
     body.extend(state.payload());
     assert_eq!(
         live_captured_state(&body, &config, 9, 2).unwrap(),
@@ -92,7 +92,7 @@ fn live_capture_poll_binds_current_exchange_and_rejects_partial_or_stale_state()
     for end in 0..body.len() {
         assert!(live_captured_state(&body[..end], &config, 9, 2).is_err());
     }
-    for offset in [2, 10, 18, 26, 34, 42, 50, 58, 59, 65, 69, 85, 117] {
+    for offset in [2, 10, 18, 26, 34, 42, 50, 58, 59, 63, 67, 87, 119] {
         let mut invalid = body.clone();
         invalid[offset] ^= 128;
         assert!(
@@ -128,7 +128,7 @@ fn quiescent_capture_binds_source_pcm_prefix_and_operation_before_copying_state(
     for word in [3_u64, 24, 2] {
         body.extend(word.to_le_bytes());
     }
-    body.extend((state.payload().len() as u16).to_le_bytes());
+    body.extend((state.payload().len() as u32).to_le_bytes());
     body.extend(state.payload());
     assert_eq!(captured_state(&body, &config, 3, 2).unwrap(), state);
     assert!(captured_state(&body, &config, 3, 1).is_err());
@@ -151,7 +151,7 @@ fn quiescent_capture_binds_source_pcm_prefix_and_operation_before_copying_state(
     })
     .unwrap();
     body.truncate(58);
-    body.extend((absent.payload().len() as u16).to_le_bytes());
+    body.extend((absent.payload().len() as u32).to_le_bytes());
     body.extend(absent.payload());
     assert!(
         captured_state(&body, &config, 3, 2).is_err(),
@@ -212,7 +212,7 @@ fn ready_body_with_state(config: &Configuration, state: &NativeDeviceState) -> V
     out.extend(91_u32.to_le_bytes());
     out.push(u8::from(config.restore.is_some()));
     out.push(1); // component state exists
-    out.extend((state.payload().len() as u16).to_le_bytes());
+    out.extend((state.payload().len() as u32).to_le_bytes());
     out.extend(state.payload());
     out
 }
@@ -230,10 +230,7 @@ fn protocol_frames_allocate_once_with_exact_bounded_capacity_and_capture_fits() 
         controller: None,
     })
     .unwrap();
-    assert_eq!(
-        state.payload().len(),
-        hex_lattice_contract::MAX_NATIVE_DEVICE_STATE_BYTES
-    );
+    assert_eq!(state.payload().len(), hex_plugin_state::MAX_ENVELOPE_BYTES);
     config.restore = Some(state.clone());
     let body = vec![0; CONTROL_LIMIT];
     for presentation in [None, known()] {
@@ -282,7 +279,7 @@ fn protocol_frames_allocate_once_with_exact_bounded_capacity_and_capture_fits() 
         i64::try_from(measured.bytes_total).unwrap() - measured.bytes_current,
         state.payload().len() as i64
     );
-    assert!(PACKET_LIMIT + 2 * state.payload().len() <= MAX_WORKING_DATA_BYTES);
+    assert!(CONFIG_LIMIT + 2 * state.payload().len() <= MAX_WORKING_DATA_BYTES);
 }
 
 #[cfg(feature = "allocation-probe")]
@@ -422,7 +419,7 @@ fn facts_require_exact_source_format_and_interface_presence_and_do_not_acknowled
     body.extend(u32::MAX.to_le_bytes());
     body.extend(0_u32.to_le_bytes());
     body.push(1);
-    body.extend([0, 0, 0]);
+    body.extend([0; 5]);
     assert_eq!(
         Facts::decode(&body, &config).unwrap(),
         Facts {
@@ -472,18 +469,19 @@ fn facts_require_exact_source_format_and_interface_presence_and_do_not_acknowled
 #[test]
 fn startup_restore_requires_current_source_and_exact_facts_and_final_acknowledgement() {
     let mut config = config();
+    let component = vec![42; 65_536];
     let state = hex_plugin_state::encode(State {
         identity: config.identity,
-        component: Some(&[]),
+        component: Some(&component),
         controller: Some(&[7, 8]),
     })
     .unwrap();
     let original = state.clone();
     config.restore = Some(state);
     let request = config.startup_request().unwrap();
-    assert_eq!(&request[..8], b"HXVIST01");
-    assert_eq!(&request[46..49], &[1, 98, 0]); // presence + full source envelope size
-    assert_eq!(&request[49..], original.payload());
+    assert_eq!(&request[..8], b"HXVIST02");
+    assert_eq!(&request[46..51], &[1, 98, 0, 1, 0]); // presence + full source envelope size
+    assert_eq!(&request[51..], original.payload());
     let mut facts = Vec::new();
     stamp(&mut facts, config.binding);
     facts.extend(config.identity.class.bytes());
@@ -497,6 +495,10 @@ fn startup_restore_requires_current_source_and_exact_facts_and_final_acknowledge
     facts.push(1); // real optional presentation interface
     facts.extend(&request[46..]);
     assert!(Facts::decode(&facts, &config).unwrap().restored);
+    let mut epoch = facts.clone();
+    epoch.extend(3_u64.to_le_bytes());
+    epoch.extend(24_u64.to_le_bytes());
+    assert!(quiescent_facts(&epoch, &config, 3).unwrap().restored);
     let last = facts.len() - 1;
     facts[last] ^= 1;
     assert!(
@@ -1114,7 +1116,7 @@ fn capture_refusal_binds_exact_operation_and_reports_lowercase_limit() {
     let message = crate::Error::CaptureRefused(refusal).to_string();
     assert_eq!(
         message,
-        "plugin state exceeds the 4000-byte limit · not saved · plugin keeps running"
+        "plugin state exceeds the 524192-byte limit · not saved · plugin keeps running"
     );
     // Stale operation, PCM prefix, epoch and identity mismatches are malformed.
     assert!(capture_refusal(&body, &config, 3, 1).is_err());
@@ -1189,9 +1191,9 @@ fn live_capture_reply_separates_refusal_from_terminal_frames() {
     for word in [9_u64, 72, 2] {
         pending.extend(word.to_le_bytes());
     }
-    pending.extend([0, 0, 0]);
+    pending.extend([0; 5]);
     assert!(matches!(
-        live_capture_reply(b"HXVLCA01", &pending, &config, 9, 2),
+        live_capture_reply(b"HXVLCA02", &pending, &config, 9, 2),
         Ok(None)
     ));
 }
@@ -1203,7 +1205,7 @@ fn refusal_frame_reads_through_the_channel_and_keeps_its_successor() {
     use std::os::unix::net::UnixStream;
     let config = config();
     let (stream, mut peer) = UnixStream::pair().unwrap();
-    let refusal = refusal_body(&config, 9, 2, 6000);
+    let refusal = refusal_body(&config, 9, 2, 524288);
     peer.write_all(&control(CAPTURE_REFUSAL_MAGIC, &refusal).unwrap())
         .unwrap();
     let mut pending = Vec::new();
@@ -1211,23 +1213,23 @@ fn refusal_frame_reads_through_the_channel_and_keeps_its_successor() {
     for word in [9_u64, 72, 3] {
         pending.extend(word.to_le_bytes());
     }
-    pending.extend([0, 0, 0]);
-    peer.write_all(&control(*b"HXVLCA01", &pending).unwrap())
+    pending.extend([0; 5]);
+    peer.write_all(&control(*b"HXVLCA02", &pending).unwrap())
         .unwrap();
     drop(peer);
     let mut channel = Channel::new(stream).unwrap();
-    let mut packet = Packet::new();
+    let mut packet = Packet::new().unwrap();
     let until = end_after(std::time::Duration::from_secs(2)).unwrap();
     channel.read(&mut packet, until, &mut || Ok(())).unwrap();
     assert_eq!(packet.magic(), CAPTURE_REFUSAL_MAGIC);
     assert_eq!(
         capture_refusal(packet.body().unwrap(), &config, 9, 2).unwrap(),
         StateCaptureRefusal::ExceedsLimit {
-            observed_bytes: 6000
+            observed_bytes: 524288
         }
     );
     channel.read(&mut packet, until, &mut || Ok(())).unwrap();
-    assert_eq!(packet.magic(), b"HXVLCA01");
+    assert_eq!(packet.magic(), b"HXVLCA02");
     assert_eq!(
         live_captured_state(packet.body().unwrap(), &config, 9, 3).unwrap(),
         None,

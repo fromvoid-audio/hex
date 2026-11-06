@@ -428,9 +428,19 @@ impl NativeDeviceState {
     pub fn processing_eq(&self, other: &Self) -> bool {
         self.type_id == other.type_id
             && self.state_version == other.state_version
-            && self.payload == other.payload
+            && (self.shares_payload_storage_with(other) || self.payload == other.payload)
             && self.asset_references == other.asset_references
     }
+    /// Match shared immutable payloads on the callback. Independently
+    /// allocated larger payloads require a fresh runtime handoff so callback
+    /// comparison work remains bounded by the ordinary device state limit.
+    pub fn processing_eq_on_callback(&self, other: &Self) -> bool {
+        (self.shares_payload_storage_with(other)
+            || (self.payload.len() <= MAX_NATIVE_DEVICE_STATE_BYTES
+                && other.payload.len() <= MAX_NATIVE_DEVICE_STATE_BYTES))
+            && self.processing_eq(other)
+    }
+
     pub fn input_gain_linear(&self) -> f32 {
         HostGain(self.input_gain_millidb).linear()
     }
@@ -960,6 +970,18 @@ mod tests {
         let state = NativeDeviceState::new(id, 1, vec![1, 2]).unwrap();
         let clone = state.clone();
         assert!(Arc::ptr_eq(&state.payload, &clone.payload));
+    }
+
+    #[test]
+    fn callback_compares_large_vst3_state_only_when_it_shares_payload() {
+        let make_state =
+            |len| NativeDeviceState::new(VST3_DEVICE_TYPE_ID, 1, vec![42; len]).unwrap();
+        let large = make_state(150_545);
+        let independent = make_state(150_545);
+        assert!(large.processing_eq(&independent));
+        assert!(large.processing_eq_on_callback(&large.clone()));
+        assert!(!large.processing_eq_on_callback(&independent));
+        assert!(make_state(64).processing_eq_on_callback(&make_state(64)));
     }
 
     #[test]
