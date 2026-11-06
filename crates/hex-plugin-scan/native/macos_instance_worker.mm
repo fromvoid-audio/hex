@@ -265,7 +265,8 @@ int main(int argc,char** argv) {
     const int channel=isolate_channel();if(channel<0) return Configuration;
     const auto* message_diagnostics=std::getenv("HEX_VST3_MESSAGE_DIAGNOSTICS");
     const bool trace_messages=message_diagnostics && !std::strcmp(message_diagnostics,"1");
-    Module module;hex_instance::Instance instance;hex_instance::EditorWindow editor;
+    Module module;hex_instance::Instance instance;
+    hex_instance::EditorWindow editor(supervised?::getppid():0);
     std::optional<wire::Config> config;
     uint32_t failure=Configuration;bool accepted=false,normal_stop=false;
     uint64_t blocks=0,frames=0;
