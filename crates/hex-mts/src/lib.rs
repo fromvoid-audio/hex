@@ -224,7 +224,7 @@ impl Handle {
     pub fn retry(&self, owner: Owner) -> Result<(), ControlError> {
         self.request_attempt(owner, false)
     }
-    /// Request a single shared-state recovery after explicit user confirmation.
+    /// Request a single shared-state reset after an explicit user action.
     /// Only the current owner of an IPC-blocked registration can request it.
     pub fn recover(&self, owner: Owner) -> Result<(), ControlError> {
         self.request_attempt(owner, true)
