@@ -315,6 +315,7 @@ fn mixed_tail(tracks: usize, block: usize, profile: CompanionProfile) -> Result<
     // The instrument path is unchanged and keeps its full level.
     let ramp_frames = RATE.div_ceil(200) as usize;
     let mut ramp_peak = 0.0_f32;
+    let mut first_stale_delta = None;
     for (offset, (mixed, wet)) in expected[32..]
         .iter_mut()
         .zip(&audio_reference[32..])
@@ -322,12 +323,22 @@ fn mixed_tail(tracks: usize, block: usize, profile: CompanionProfile) -> Result<
     {
         let dry_mix = (offset + 1).min(ramp_frames) as f32 / ramp_frames as f32;
         for lane in 0..2 {
+            let stale = mixed[lane];
             mixed[lane] -= wet[lane] * dry_mix;
+            let delta = (stale - mixed[lane]).abs();
+            if first_stale_delta.is_none() && delta > 2.0e-6 {
+                first_stale_delta = Some((offset / block, 32 + offset, lane, delta));
+            }
             ramp_peak = ramp_peak.max((wet[lane] * (1.0 - dry_mix)).abs());
         }
     }
     if ramp_peak <= 2.0e-5 {
         return Err(format!("mixed-tail bypass reference too quiet: {ramp_peak:e}").into());
+    }
+    if let Some((block, frame, lane, delta)) = first_stale_delta {
+        println!(
+            "unfaded_reference profile={profile:?} block={block} frame={frame} channel={lane} delta={delta:e}"
+        );
     }
     let mut instrument_only = old.snapshot();
     instrument_only
@@ -733,9 +744,21 @@ mod tests {
 
     #[test]
     fn mixed_tail_keeps_audio_residual_and_sustained_instrument() -> Result<()> {
-        mixed_tail(2, 128, CompanionProfile::Default)?;
-        mixed_tail(2, 128, CompanionProfile::Uniform)?;
-        mixed_tail(2, 128, CompanionProfile::Asymmetric)?;
+        mixed_tail(2, 128, CompanionProfile::Default)
+    }
+
+    #[test]
+    fn mixed_tail_keeps_audio_residual_and_sustained_instrument_uniform() -> Result<()> {
+        mixed_tail(2, 128, CompanionProfile::Uniform)
+    }
+
+    #[test]
+    fn mixed_tail_keeps_audio_residual_and_sustained_instrument_asymmetric() -> Result<()> {
+        mixed_tail(2, 128, CompanionProfile::Asymmetric)
+    }
+
+    #[test]
+    fn mixed_tail_keeps_audio_residual_and_sustained_instrument_distinct() -> Result<()> {
         mixed_tail(2, 128, CompanionProfile::Distinct)
     }
 
