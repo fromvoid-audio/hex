@@ -665,7 +665,7 @@ impl Render for HousingFixture {
             )
             .id(id)
             .debug_selector(move || id.into())
-            .w(px(142.0))
+            .w(px(142.0 + DEVICE_FRAME_HEADER_WIDTH))
             .h(px(150.0))
             .flex_shrink_0()
         }))
@@ -679,7 +679,7 @@ fn shared_housing_panels_toggle_independently_and_follow_device_identity(cx: &mu
     });
     let view = handle.root(cx).unwrap();
     let mut visual = VisualTestContext::from_window(*handle, cx);
-    visual.simulate_resize(size(px(400.0), px(200.0)));
+    visual.simulate_resize(size(px(520.0), px(200.0)));
     visual.run_until_parked();
     assert!(visual.debug_bounds("device-macro-panel").is_none());
     assert!(visual.debug_bounds("device-modulator-panel").is_none());

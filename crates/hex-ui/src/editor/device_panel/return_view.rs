@@ -286,8 +286,6 @@ pub(super) fn render_return_effect(
                 actions,
                 body,
             )
-            .debug_selector(move || format!("device-shell-{}", id.value()))
-            .into_any_element()
         }
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
@@ -360,8 +358,6 @@ pub(super) fn render_return_effect(
                 actions,
                 body,
             )
-            .debug_selector(move || format!("device-shell-{}", id.value()))
-            .into_any_element()
         }
         Err(error) => {
             let title = theme::text(
@@ -385,8 +381,6 @@ pub(super) fn render_return_effect(
                 actions,
                 body,
             )
-            .debug_selector(move || format!("device-shell-{}", id.value()))
-            .into_any_element()
         }
     };
     view.device_panel.views.insert(
@@ -398,10 +392,13 @@ pub(super) fn render_return_effect(
         ),
     );
     let card_width = device_card_width(NativeDeviceClass::Effect, device.state().type_id());
+    let rendered = rendered
+        .h_full()
+        .debug_selector(move || format!("device-shell-{}", id.value()));
     let rendered = div()
         .w(px(card_width - super::device_meter::WIDTH))
         .flex_shrink_0()
-        .child(rendered.h_full());
+        .child(rendered);
     div()
         .id(ElementId::Name(
             format!("effect-device-{}", id.value()).into(),
