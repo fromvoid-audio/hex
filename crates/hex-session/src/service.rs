@@ -59,8 +59,9 @@ mod sampler_parameter;
 use audio_sink::WorkerEvents;
 pub use audio_sink::{
     ArrangementEditPosition, NativeSamplerInput, NativeSamplerReservationHold,
-    NativeSamplerRetryFacts, OfflineBounceSource, PluginParameterGestureError, PluginParameterGestureInput, PluginParameterGestureResult, ResidentEffectPreparation, ResidentFileInput,
-    ResidentFileMetadata, ResidentFilePublication, ResidentFileSeekPreparer,
+    NativeSamplerRetryFacts, OfflineBounceSource, PluginParameterGestureError,
+    PluginParameterGestureInput, PluginParameterGestureResult, ResidentEffectPreparation,
+    ResidentFileInput, ResidentFileMetadata, ResidentFilePublication, ResidentFileSeekPreparer,
     ResidentFileSeekRequest, ResidentFileSet, ResidentFreshRuntimeFence,
     ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
     ResidentPublicationReadiness, ResidentPublicationRefusal, ResidentRuntimeLoop, WorkerAudioSink,
@@ -3564,6 +3565,7 @@ fn run_worker(
                 gesture_request = true;
                 gesture_protocol_ack = true;
                 gesture_ack = Some(GestureAck {
+                    source_lost: false,
                     key: gesture.key(),
                     phase: gesture.phase(),
                     sequence: gesture.sequence(),

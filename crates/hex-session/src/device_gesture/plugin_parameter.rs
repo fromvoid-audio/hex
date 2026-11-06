@@ -128,6 +128,9 @@ fn plugin_snapshot(key: GestureKey, origin: PluginParameterOrigin) -> GestureSna
         secondary_value: None,
         parameters: None,
         creation: None,
+        manual_edit: false,
+        touched_parameters: Default::default(),
+        track_gains: None,
         plugin_value: Some(origin.initial),
     }
 }
@@ -175,6 +178,8 @@ impl GestureMachine {
                     snapshot,
                     kind: ActiveKind::Plugin,
                     state_origin: Some(state),
+                    creation_origin: None,
+                    origin_parameters: None,
                     plugin_initial: Some(origin.initial),
                 });
                 self.last_key = Some(key);

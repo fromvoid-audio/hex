@@ -1474,10 +1474,13 @@ impl GestureMachine {
                         parameters: None,
                         creation: None,
                         track_gains: Some(group),
+                        plugin_value: None,
                     },
                     kind: ActiveKind::TrackGains,
                     creation_origin: None,
                     origin_parameters: None,
+                    state_origin: None,
+                    plugin_initial: None,
                 });
                 self.last_key = Some(key);
             }
@@ -1928,7 +1931,7 @@ impl GestureMachine {
             .ok_or(SessionError::Invalid("device gesture is no longer active"))?;
         match (snapshot.target, active.kind) {
             (GestureTarget::EqNodeCreation { device }, ActiveKind::Device { class, .. }) => {
-                self.validate_state_origin(session, snapshot, device)?;
+                self.validate_creation_origin(session, snapshot, device)?;
                 if session.native_device_class(device)? != class {
                     return Err(SessionError::Invalid(
                         "eq creation target changed native class",

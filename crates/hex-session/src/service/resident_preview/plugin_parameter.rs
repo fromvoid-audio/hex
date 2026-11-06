@@ -67,11 +67,13 @@ pub(super) fn operation(
         match (operation, result) {
             (
                 PluginGesturePreparation::Commit(_),
-                PluginParameterGestureResult::Captured(state),
+                PluginParameterGestureResult::Captured(captured),
             ) => {
-                if state.type_id() != DeviceTypeId::from_static("hex.vst3") {
-                    return Err(SessionError::Invalid("plugin capture changed provider"));
-                }
+                super::super::plugin_state_save::validate_capture(state, &captured)
+                    .map_err(SessionError::Invalid)?;
+                let state = captured
+                    .with_host_metadata_from(state)
+                    .map_err(|_| SessionError::Invalid("plugin capture changed provider"))?;
                 commit_preview(
                     session,
                     Command::ReplaceDeviceState { device, state },
@@ -183,6 +185,9 @@ mod tests {
             secondary_value: None,
             parameters: None,
             creation: None,
+            manual_edit: false,
+            touched_parameters: Default::default(),
+            track_gains: None,
             plugin_value: Some(PluginParameterValue::new(0.75).unwrap()),
         };
         let mut sink = MissingOutput::default();

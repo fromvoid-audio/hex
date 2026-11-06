@@ -8,7 +8,18 @@ fn value(value: f64) -> PluginParameterValue {
     PluginParameterValue::new(value).unwrap()
 }
 fn state(byte: u8) -> NativeDeviceState {
-    NativeDeviceState::new(DeviceTypeId::from_static("hex.vst3"), 1, vec![byte]).unwrap()
+    hex_plugin_state::encode(hex_plugin_state::State {
+        identity: hex_plugin_state::Identity {
+            class: hex_plugin_state::ClassId::new([1; 16]).unwrap(),
+            binary: hex_plugin_state::BinaryIdentity {
+                executable_sha256: [2; 32],
+                info_sha256: [3; 32],
+            },
+        },
+        component: Some(&[byte]),
+        controller: Some(&[byte]),
+    })
+    .unwrap()
 }
 fn fixture() -> (Session, PluginParameterOrigin, Arc<PreparedRevision>) {
     let mut session = Session::new(48_000, 32, 0).unwrap();
@@ -321,6 +332,10 @@ fn plugin_preview_then_captured_commit_is_one_model_history_edge() {
     assert!(session.editor.redo());
     assert_eq!(session.project(), &committed);
     assert!(!session.editor.redo());
+    let saved = hex_storage::encode(&committed).unwrap();
+    let reopened = hex_storage::decode(&saved).unwrap();
+    assert_eq!(reopened, committed);
+    assert_eq!(reopened.device(origin.device).unwrap().state(), &state(2));
 }
 
 #[test]
