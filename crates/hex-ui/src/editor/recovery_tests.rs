@@ -160,15 +160,24 @@ fn restart_from_fault(cx: &mut gpui::TestAppContext, stop: bool) {
 }
 #[gpui::test]
 fn stop_restarts_audio_from_zero_when_a_vst3_worker_is_degraded(cx: &mut gpui::TestAppContext) {
-    degraded_worker_recovers(cx, true);
+    degraded_worker_recovers(cx, true, None);
 }
 
 #[gpui::test]
 fn play_restarts_audio_if_stop_has_already_degraded_the_worker(cx: &mut gpui::TestAppContext) {
-    degraded_worker_recovers(cx, false);
+    degraded_worker_recovers(cx, false, None);
 }
 
-fn degraded_worker_recovers(cx: &mut gpui::TestAppContext, stop_first: bool) {
+#[gpui::test]
+fn explicit_play_from_recovers_degraded_vst3_at_the_requested_frame(cx: &mut gpui::TestAppContext) {
+    degraded_worker_recovers(cx, false, Some(18_000));
+}
+
+fn degraded_worker_recovers(
+    cx: &mut gpui::TestAppContext,
+    stop_first: bool,
+    explicit_frame: Option<u64>,
+) {
     let _output_serial = hex_audio::worker_fixture::serial_output();
     let (mut output, mut backend) =
         hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
@@ -206,7 +215,11 @@ fn degraded_worker_recovers(cx: &mut gpui::TestAppContext, stop_first: bool) {
             view.stop();
             assert!(view.deferred_play.is_none());
         }
-        view.toggle_play();
+        if let Some(frame) = explicit_frame {
+            view.queue_audio_command(PlaybackCommand::PlayFrom(frame));
+        } else {
+            view.toggle_play();
+        }
         assert_eq!(
             view.deferred_play,
             Some((
@@ -219,7 +232,9 @@ fn degraded_worker_recovers(cx: &mut gpui::TestAppContext, stop_first: bool) {
         assert!(view.audio.is_none());
         assert!(view.pending_restart_request.is_some());
         assert!(view.stopped_playback_restore.is_none());
-        assert_eq!(view.recovery.position(), Some(0));
+        assert_eq!(view.recovery.position(), Some(explicit_frame.unwrap_or(0)));
+        view.stop();
+        assert!(view.deferred_play.is_none());
     });
     drop(backend);
     output.publication.close();
