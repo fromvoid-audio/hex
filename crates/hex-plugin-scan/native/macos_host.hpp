@@ -603,7 +603,9 @@ public:
         active_tokens.fill(0);pending_edits.store(0,std::memory_order_release);
     }
 };
-static_assert(sizeof(Host)+HOST_MESSAGE_COUNT*sizeof(HostMessage)+
-    2*HOST_PARAMETER_COUNT*sizeof(ParameterSnapshot::Parameter)<5*1024*1024,
-    "native host and both controller inventories stay below the declared five MiB bound");
+// Include retained large attributes plus one replacement allocation in each
+// concurrently leased message. The small message pool is inline in Host.
+static_assert(sizeof(Host)+2*HOST_MESSAGE_COUNT*HOST_BINARY_BYTES+
+    2*HOST_PARAMETER_COUNT*sizeof(ParameterSnapshot::Parameter)<6*1024*1024,
+    "native host, binary attributes and both inventories stay below six MiB");
 } // namespace hex_instance

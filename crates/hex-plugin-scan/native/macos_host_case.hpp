@@ -137,8 +137,8 @@ static bool host_case(CFBundleRef bundle,Steinberg::IPluginFactory* factory) {
     // Scenario zero exercises accepted, oversized, missing and off-lane
     // binary calls while PCM is active. Scenario 14 uses the disabled path.
     const bool diagnostics=e.scenario==0?
-        trace && trace->messages==18 && trace->binary_attempts==3 && trace->binary_writes==2 &&
-        trace->max_binary_bytes==1025 && trace->binary_oversize==1 && trace->binary_reads==2 &&
+        trace && trace->messages==18 && trace->binary_attempts==5 && trace->binary_writes==3 &&
+        trace->max_binary_bytes==32769 && trace->binary_oversize==1 && trace->binary_reads==3 &&
         trace->binary_misses==1 && trace->wrong_thread_reads==3:
         trace && trace->messages==0 && trace->binary_attempts==0 && trace->binary_reads==0;
     e.closed=instance.close(); lifecycle_evidence.closed=e.closed;
