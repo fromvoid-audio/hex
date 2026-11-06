@@ -299,12 +299,14 @@ public:
 };
 class ProcessingProcessor final : public Processor,public IAudioPresentationLatency {
     const int fault=next_fault;
-    const bool midi_instrument=fault==115 || fault==120 || fault==127;
+    const bool multiple_outputs=fault>=128 && fault<=130;
+    const bool midi_instrument=fault==115 || fault==120 || fault==127 || multiple_outputs;
     const int mode=midi_instrument?1:next_mode;
     bool initialized=false, arranged=false, setup=false, active=false;
     std::atomic<bool> processing{false};
     bool input=false,output=false,thread_bound=false;
     bool auxiliary_disabled=false;
+    unsigned inactive_outputs=0;
     bool event_active=false;
     float note_signal=0;
     struct Voice { int32 id=-1; float gain=0; };
@@ -482,14 +484,21 @@ public:
         if (media!=kAudio) return 0;
         if (fault==5) return 2;
         if (fault==106 && direction==kInput) return 2;
+        if (multiple_outputs && direction==kOutput) return 3;
         return direction==kInput && mode==1 && fault!=120?0:1;
     }
     tresult PLUGIN_API getBusInfo(MediaType media,BusDirection direction,int32 index,BusInfo& info) override {
         const bool auxiliary=fault==106 && media==kAudio && direction==kInput && index==1;
-        if (!control() || (index && !auxiliary) || !getBusCount(media,direction)) return kInvalidArgument;
+        const bool extra_output=multiple_outputs && media==kAudio && direction==kOutput && index>0 && index<3;
+        if (!control() || (index && !auxiliary && !extra_output) || !getBusCount(media,direction))
+            return kInvalidArgument;
         info={};info.mediaType=media;info.direction=direction;info.busType=kMain;
         info.channelCount=media==kEvent?4:(direction==kInput?inputs:outputs);
         if (auxiliary) { info.busType=kAux;info.channelCount=2; }
+        if (extra_output) {
+            info.busType=index==1?kAux:kMain;
+            info.channelCount=index==1 && fault!=130?1:2;
+        }
         if (fault==12 && arranged) ++info.channelCount;
         info.flags=BusInfo::kDefaultActive;
         const char16_t name[]=u"main";std::memcpy(info.name,name,sizeof(name));
@@ -498,6 +507,9 @@ public:
     tresult PLUGIN_API getBusArrangement(BusDirection direction,int32 index,SpeakerArrangement& value) override {
         if (control() && fault==106 && direction==kInput && index==1) {
             value=SpeakerArr::kStereo;return kResultOk;
+        }
+        if (control() && multiple_outputs && direction==kOutput && index>0 && index<3) {
+            value=index==1?SpeakerArr::kMono:SpeakerArr::kStereo;return kResultOk;
         }
         if (!control() || index || !getBusCount(kAudio,direction)) return kInvalidArgument;
         value=(direction==kInput?inputs:outputs)==1?SpeakerArr::kMono:SpeakerArr::kStereo;
@@ -523,7 +535,7 @@ public:
         return fault==1?kResultFalse:kResultOk; // real refusal can mutate arrangement
     }
     tresult PLUGIN_API setupProcessing(ProcessSetup& request) override {
-        if (!control() || (!arranged && fault!=120) || active || processing || request.processMode!=kRealtime ||
+        if (!control() || (!arranged && fault!=120 && !multiple_outputs) || active || processing || request.processMode!=kRealtime ||
             (request.symbolicSampleSize!=kSample32 && !(mode==2 && request.symbolicSampleSize==kSample64)) ||
             request.maxSamplesPerBlock<1 || request.maxSamplesPerBlock>256 ||
             (request.sampleRate!=44100 && request.sampleRate!=48000 && request.sampleRate!=96000)) return kResultFalse;
@@ -537,6 +549,12 @@ public:
             if (enabled) return kResultFalse;
             auxiliary_disabled=true;return kResultOk;
         }
+        if (control() && setup && !active && !processing && multiple_outputs &&
+            media==kAudio && direction==kOutput && index>0 && index<3) {
+            if (enabled) return kResultFalse;
+            inactive_outputs|=1u<<index;
+            return kResultOk;
+        }
         if (!control() || !setup || active || processing || index || !getBusCount(media,direction)) return kResultFalse;
         if (media==kEvent) { event_active=enabled;return kResultOk; }
         ++observed.activations;
@@ -547,6 +565,7 @@ public:
         if (!enabled && fault==25) trace(7); // sensitivity: teardown after unknown startup
         if (!control() || !setup || processing) return kResultFalse;
         if (enabled && fault==106 && !auxiliary_disabled) return kResultFalse;
+        if (enabled && multiple_outputs && inactive_outputs!=6) return kResultFalse;
         if (enabled && midi_instrument && !event_active) return kResultFalse;
         if (enabled && fault==111) {
             if (activated_once) restored_latency=7;
@@ -619,7 +638,7 @@ public:
         if (!processing || data.numSamples<1 || data.numSamples>maximum ||
             (midi_instrument?(!event_active || !data.inputEvents):data.inputEvents!=nullptr) ||
             data.numInputs!=((mode==1 && fault!=120) || (!input && data.numInputs==0)?0:1) ||
-            data.numOutputs!=(!output && data.numOutputs==0?0:1)) return kInvalidArgument;
+            data.numOutputs!=(!output && data.numOutputs==0?0:(multiple_outputs?3:1))) return kInvalidArgument;
         if (data.numInputs && (!data.inputs || data.inputs[0].numChannels!=inputs ||
             (precision==kSample32?!data.inputs[0].channelBuffers32:!data.inputs[0].channelBuffers64)))
             return kInvalidArgument;
@@ -631,6 +650,15 @@ public:
         if (data.numOutputs && (!data.outputs || data.outputs[0].numChannels!=outputs ||
             (precision==kSample32?!data.outputs[0].channelBuffers32:!data.outputs[0].channelBuffers64)))
             return kInvalidArgument;
+        if (multiple_outputs) {
+            const auto& mono=data.outputs[1];
+            const auto& stereo=data.outputs[2];
+            if (mono.numChannels!=1 || stereo.numChannels!=2 ||
+                !mono.channelBuffers32 || !stereo.channelBuffers32 ||
+                mono.channelBuffers32[0] || stereo.channelBuffers32[0] || stereo.channelBuffers32[1])
+                return kInvalidArgument;
+            if (fault==129) stereo.channelBuffers32[1]=data.outputs[0].channelBuffers32[0];
+        }
         if(fault==126) {
             const auto* context=data.processContext;
             if(block==1) {
@@ -836,7 +864,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>127) return false;next_fault=value;
+        if (value>130) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);
