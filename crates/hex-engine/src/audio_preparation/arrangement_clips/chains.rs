@@ -779,6 +779,7 @@ mod tests {
                     .push(hex_project::DeviceSnapshot {
                         automation: if automated {
                             vec![hex_project::DeviceAutomation {
+                                vst3_class: None,
                                 read_selection: hex_project::AutomationReadSelection::Authored,
                                 target: hex_lattice_contract::DeviceAutomationTarget::Parameter(
                                     if auto_pan {
@@ -823,6 +824,7 @@ mod tests {
                         hex_lattice_contract::DeviceAutomationTarget::HostOutputGain,
                     ] {
                         device.automation.push(hex_project::DeviceAutomation {
+                            vst3_class: None,
                             read_selection: hex_project::AutomationReadSelection::Authored,
                             target,
                             points: vec![

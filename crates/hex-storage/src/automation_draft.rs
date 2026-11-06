@@ -887,6 +887,11 @@ fn metadata(
                 DeviceAutomationTarget::Parameter(p) => (1, device.value(), p.value()),
                 DeviceAutomationTarget::HostInputGain => (2, device.value(), 0),
                 DeviceAutomationTarget::HostOutputGain => (3, device.value(), 0),
+                DeviceAutomationTarget::Vst3 { .. } => {
+                    return Err(StorageError::Invalid(
+                        "vst3 automation recording is unavailable",
+                    ));
+                }
             }
         }
         _ => {
