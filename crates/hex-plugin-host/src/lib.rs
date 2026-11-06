@@ -110,6 +110,7 @@ impl std::fmt::Display for Error {
             Self::Validation(error) => write!(out, "instance source refused: {error}"),
             Self::Cancelled => out.write_str("instance cancelled"),
             Self::Timeout => out.write_str("instance supervision timed out"),
+            Self::Worker(n) if runtime_host_refusal(*n) => format_runtime_host_refusal(*n, out),
             Self::Worker(n) => match worker_refusal(*n) {
                 Some(reason) => write!(out, "vst3 {reason} (worker code {n})"),
                 None => write!(out, "instance worker refused operation: {n}"),
@@ -120,6 +121,54 @@ impl std::fmt::Display for Error {
         }
     }
 }
+
+// Extended detail in the existing worker error field. Keep the low byte
+// equal to the helper's process exit code (see macos_instance_worker.mm).
+fn runtime_host_refusal(code: u32) -> bool {
+    code & 0x8000_00ff == 0x8000_000b
+}
+
+fn format_runtime_host_refusal(code: u32, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let phase = if code & 0x4000_0000 == 0 {
+        "callback dispatch"
+    } else {
+        "controller feedback"
+    };
+    let flags = (code >> 8) & 0x003f_ffff;
+    write!(
+        out,
+        "vst3 host refused {phase} (worker code 11, flags 0x{flags:x}"
+    )?;
+    for (bit, reason) in [
+        (0, "wrong thread"),
+        (1, "unknown restart"),
+        (2, "restart requires graph changes"),
+        (3, "queue full"),
+        (4, "recursive controller callback"),
+        (5, "invalid metadata"),
+        (6, "source retiring"),
+        (7, "unsupported capability"),
+        (8, "unsupported edit"),
+        (9, "message pool full"),
+        (10, "metadata capacity"),
+        (11, "invalid edit"),
+        (12, "unknown edit parameter"),
+        (13, "read-only edit parameter"),
+        (14, "invalid edit value"),
+        (15, "duplicate begin"),
+        (16, "perform without begin"),
+        (17, "end without begin"),
+        (18, "unknown feedback parameter"),
+        (19, "controller rejected setParamNormalized"),
+        (20, "invalid controller feedback value"),
+    ] {
+        if flags & (1 << bit) != 0 {
+            write!(out, ", {reason}")?;
+        }
+    }
+    out.write_str(")")
+}
+
 // Wire refusal codes from macos_instance_worker.mm. Keep the legacy setup
 // stage readable when a desktop is using an older helper.
 fn worker_refusal(code: u32) -> Option<&'static str> {
@@ -168,6 +217,23 @@ fn worker_refusal_explains_topology_and_retains_numeric_code() {
     assert_eq!(
         Error::Worker(255).to_string(),
         "instance worker refused operation: 255"
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn runtime_refusal_logs_callback_and_feedback_details() {
+    assert_eq!(
+        Error::Worker(0x8108_000b).to_string(),
+        "vst3 host refused callback dispatch (worker code 11, flags 0x10800, invalid edit, perform without begin)"
+    );
+    assert_eq!(
+        Error::Worker(0xc800_000b).to_string(),
+        "vst3 host refused controller feedback (worker code 11, flags 0x80000, controller rejected setParamNormalized)"
+    );
+    assert_eq!(
+        Error::Worker(11).to_string(),
+        "vst3 host callback refused (worker code 11)"
     );
 }
 

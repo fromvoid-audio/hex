@@ -141,7 +141,8 @@ class RestoreController final : public IEditController {
             self->drag_axis=0.625;
         }
         else {
-            self->handler->beginEdit(id);self->component_gain=3.0;
+            self->handler->beginEdit(id);
+            if(self->fault!=132) self->component_gain=3.0;
             const int repeats=self->fault==116?12:1;
             for(int n=0;n<repeats;++n) self->handler->performEdit(id,0.75);
             self->handler->endEdit(id);
@@ -174,7 +175,7 @@ public:
         if (!control() || !context || (value && handler)) return kResultFalse;
         if(value)value->addRef();if(handler)handler->release();handler=value;
         if(fault==104 || fault==105 || fault==118 || fault==119) latency_handler=handler;
-        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || fault==131)) {
+        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || fault==131 || fault==132)) {
             CFRunLoopTimerContext timer_context{};timer_context.info=this;
             edit_timer=CFRunLoopTimerCreate(nullptr,CFAbsoluteTimeGetCurrent(),0.001,0,0,edit_tick,&timer_context);
             if(!edit_timer) return kResultFalse;
@@ -310,7 +311,7 @@ public:
     tresult PLUGIN_API setParamNormalized(ParamID id,ParamValue value) override {
         if(!control() || !context || !handler || !std::isfinite(value) || value<0 || value>1)
             return kInvalidArgument;
-        if(saturated_editor_drag(fault) && edits_sent) return kResultFalse;
+        if((saturated_editor_drag(fault) || fault==132) && edits_sent) return kResultFalse;
         if(saturated_editor_drag(fault) && id==drag_axis_id) {drag_axis=value;return kResultOk;}
         if(id!=parameter_id(fault)) return kInvalidArgument;
         if(fault==76 && observed.flushes.load()) return kResultFalse;
@@ -653,7 +654,7 @@ public:
                 ++observed.flushes;
                 return kResultOk;
             }
-            if ((processing && fault!=116) || !data.inputParameterChanges || data.inputParameterChanges->getParameterCount()!=1)
+            if ((processing && fault!=116 && fault!=132) || !data.inputParameterChanges || data.inputParameterChanges->getParameterCount()!=1)
                 return kInvalidArgument;
             auto* queue=data.inputParameterChanges->getParameterData(0);
             int32 offset=-1;ParamValue value=-1;
@@ -904,7 +905,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>131) return false;next_fault=value;
+        if (value>132) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);
