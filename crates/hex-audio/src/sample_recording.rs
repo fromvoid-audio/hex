@@ -25,19 +25,29 @@ pub(crate) const FRAMES: usize = 256;
 const PACKETS: usize = 32;
 const PENDING: u8 = 0;
 const RUNNING: u8 = 1;
-const STOP: u8 = 2;
+const CAPTURING: u8 = 2;
+const STOP: u8 = 3;
 pub(crate) const TRACKS: usize = hex_engine::MAX_SESSION_ROUTE_TRACKS;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum End {
-    Stopped = 3,
+    Stopped = 4,
     OutputFailed,
     SourceChanged,
     Backpressure,
     InvalidBlock,
     UnsupportedOutput,
     StorageFailed,
+}
+
+/// Scalar acknowledgement for the control surface. Preparing lasts until the
+/// callback publishes its first accepted PCM block.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Phase {
+    Preparing,
+    Capturing,
+    Finishing,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -212,6 +222,14 @@ impl Control {
         })
     }
 
+    pub fn phase(&self) -> Option<Phase> {
+        self.active.as_ref().map(|state| match state.load(Acquire) {
+            PENDING | RUNNING => Phase::Preparing,
+            CAPTURING => Phase::Capturing,
+            _ => Phase::Finishing,
+        })
+    }
+
     pub fn stop(&self) {
         if let Some(state) = &self.active {
             request_stop(state);
@@ -291,7 +309,7 @@ impl Reader {
 
 fn request_stop(state: &AtomicU8) {
     let _ = state.fetch_update(Release, Acquire, |current| {
-        (current <= RUNNING).then_some(STOP)
+        (current <= CAPTURING).then_some(STOP)
     });
 }
 
@@ -373,12 +391,15 @@ impl Callback {
             self.end(End::InvalidBlock);
             return;
         }
-        if let Some(packet) = active.stage.packet.take()
-            && let Err(PushError::Full(packet)) = active.full.push(packet)
-        {
-            active.stage.packet = Some(packet);
-            self.end(End::Backpressure);
-            return;
+        if let Some(packet) = active.stage.packet.take() {
+            if let Err(PushError::Full(packet)) = active.full.push(packet) {
+                active.stage.packet = Some(packet);
+                self.end(End::Backpressure);
+                return;
+            }
+            let _ = active
+                .state
+                .compare_exchange(RUNNING, CAPTURING, Release, Acquire);
         }
         if active.state.load(Acquire) == STOP {
             self.end(End::Stopped);
