@@ -23,16 +23,21 @@ use super::*;
 pub(super) struct PendingFade {
     ticket: u64,
     revision: u64,
-    stop: bool,
+    action: PlaybackAction,
     stream: bool,
 }
 
 impl Callback {
-    pub(super) fn begin_transport_fade(&mut self, ticket: u64, stop: bool, stream: bool) {
+    pub(super) fn begin_transport_fade(
+        &mut self,
+        ticket: u64,
+        action: PlaybackAction,
+        stream: bool,
+    ) {
         self.transport_fade = Some(PendingFade {
             ticket,
             revision: self.status.applied_revision.load(Relaxed),
-            stop,
+            action,
             stream,
         });
     }
@@ -42,6 +47,13 @@ impl Callback {
             .as_mut()
             .and_then(ActivePublication::current_mut)
             .is_some_and(|active| active.playback.pending_transport_fade().is_some())
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn transport_fade_is_pause(&self) -> bool {
+        self.transport_fade
+            .as_ref()
+            .is_some_and(|fade| is_pause_action(fade.action))
     }
 
     /// Complete a pending fade now, then apply its deferred effects. A refusal
@@ -65,13 +77,20 @@ impl Callback {
         if let Some(reason) = failure {
             self.status.publish_rejected_action(fade.ticket, reason);
         }
-        if fade.stop {
+        if matches!(
+            fade.action,
+            PlaybackAction::Transport(PlaybackCommand::Stop)
+        ) {
             self.revoke_current_sampler_keyboard();
         }
         if fade.stream {
             self.clear_active_stream_roles();
         }
-        self.invalidate_gain_recording(crate::gain_recording::AbortReason::TransportChanged);
+        if failure.is_some() {
+            self.invalidate_gain_recording(crate::gain_recording::AbortReason::TransportChanged);
+        } else {
+            self.invalidate_for_transport_change(fade.action);
+        }
     }
 }
 

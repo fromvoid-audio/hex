@@ -239,17 +239,21 @@ fn publish(control: &mut Control, playback: Playback, policy: PublicationPolicy)
     }
 }
 fn block(f: &mut OrdinaryFixture) -> [Frame; 8] {
-    let mut output = [[0.0; 2]; 8];
-    let mut host = [0.0_f32; 16];
+    physical_block::<8>(f)
+}
+
+fn physical_block<const FRAMES: usize>(f: &mut OrdinaryFixture) -> [Frame; FRAMES] {
+    let mut output = [[0.0; 2]; FRAMES];
+    let mut host = [0.0_f32; 512];
     allocation_free(|| {
         f.data.owner_mut().unwrap().run(|callback, _| {
             callback.begin_block();
-            callback.begin_native_effect_callback(8).unwrap();
+            callback.begin_native_effect_callback(FRAMES).unwrap();
             let rendered = callback.render(&mut output);
             assert!(rendered.is_ok());
             assert!(crate::device::finish_host_chunk(
                 callback,
-                &mut host,
+                &mut host[..FRAMES * 2],
                 &mut output,
                 2,
                 &rendered,
@@ -259,6 +263,59 @@ fn block(f: &mut OrdinaryFixture) -> [Frame; 8] {
         })
     });
     output
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_ordinary_pause_keeps_the_vst3_source_available_for_play_from() {
+    let _serial = serial();
+    // The 128-frame Pause fade ends inside this physical callback.
+    const QUANTUM: usize = 256;
+    let mut f = fixture_with_quantum("processing", 0, QUANTUM as u16);
+    let playback = compile(&f, true);
+    publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+    let root = f.control.native_candidate_root();
+    let render = |f: &mut OrdinaryFixture| {
+        let output = physical_block::<QUANTUM>(f);
+        let mut committed = None;
+        f.data.owner_mut().unwrap().run(|callback, _| {
+            committed = callback.native_sources.test_committed_frames(f.binding);
+        });
+        replacement::wait_for_blocks(&root, f.binding, committed.unwrap() / QUANTUM as u64);
+        output
+    };
+    f.control.command(PlaybackCommand::Play).unwrap();
+    render(&mut f);
+    let source = f.control.status.native_effect_source().unwrap();
+
+    f.control.command(PlaybackCommand::Pause).unwrap();
+    render(&mut f);
+    assert!(!f.control.status.playing.load(Acquire));
+    assert_eq!(
+        f.control.native_source_endpoint_status(f.binding),
+        Some((true, true))
+    );
+
+    f.control.command(PlaybackCommand::PlayFrom(0)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        f.control.poll_resident_publication();
+        render(&mut f);
+        if f.control.status.playing.load(Acquire) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "PlayFrom did not resume");
+        std::thread::yield_now();
+    }
+    assert_eq!(f.control.status.native_effect_source(), Some(source));
+    // The copied endpoint returns the restarted input two quanta later.
+    render(&mut f);
+    let restarted = render(&mut f);
+    assert!(restarted.iter().flatten().any(|&sample| sample != 0.0));
+    let returned = dispose(f);
+    assert!(
+        matches!(returned.disposal, native::PreparationDisposal::Reaped(retired) if retired.status.success())
+    );
 }
 fn dispose(f: OrdinaryFixture) -> crate::NativeSourcePreparationReturn {
     let OrdinaryFixture {

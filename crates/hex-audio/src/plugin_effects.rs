@@ -358,6 +358,9 @@ impl NativeEffectCallback {
         self.tail.commit();
         Ok(())
     }
+    pub(crate) fn end_staging_at_pause(&mut self, frame: usize) {
+        self.transport.end_staging_at_pause(frame);
+    }
     /// This original live epoch has accepted enough consecutive zero input to
     /// drain its source-reported tail and fixed processor/bridge latency. New
     /// staged input invalidates the view; speculative zeros cannot establish it.

@@ -546,6 +546,32 @@ fn incomplete_overlapping_gapped_or_refused_graph_callbacks_never_dispatch() {
 }
 
 #[test]
+fn pause_accepts_only_the_exact_staged_prefix_and_keeps_partial_input() {
+    for pause_cut in [3, 4] {
+        let (control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
+        callback.begin_physical_callback(8).unwrap();
+        callback
+            .stage_segment(0, &[[0.25; 2]; 4], &[], &mut [[0.0; 2]; 4])
+            .unwrap();
+        callback.end_staging_at_pause(pause_cut);
+        if pause_cut != 4 {
+            assert_eq!(callback.finish(true), Err(Fault::Protocol));
+            assert!(control.is_revoked());
+            continue;
+        }
+        callback.finish(true).unwrap();
+        assert!(worker.receive().unwrap().is_none());
+        callback
+            .stage(&[[0.5; 2]; 4], &[], &mut [[0.0; 2]; 4])
+            .unwrap();
+        callback.finish(true).unwrap();
+        let input = worker.receive().unwrap().unwrap();
+        assert_eq!(input.pcm[..4], [[0.25; 2]; 4]);
+        assert_eq!(input.pcm[4..8], [[0.5; 2]; 4]);
+    }
+}
+
+#[test]
 fn segmenting_does_not_multiply_the_physical_callback_event_budget() {
     let (control, mut callback, worker) = channel(BINDING, 8).unwrap();
     let event = MidiEvent {

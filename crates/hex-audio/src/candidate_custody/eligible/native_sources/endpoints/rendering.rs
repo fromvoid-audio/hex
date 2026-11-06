@@ -82,6 +82,16 @@ impl NativeEndpointBank {
         }
         Ok(())
     }
+    pub(crate) fn end_staging_at_pause(&mut self, frame: usize) {
+        for index in 0..self.routing_len {
+            if let Some(entry) = self.entries[self.routing[index]]
+                .as_mut()
+                .and_then(|entry| entry.0.callback.as_mut())
+            {
+                entry.end_staging_at_pause(frame);
+            }
+        }
+    }
     pub(crate) fn reject_rendering(&mut self) {
         self.cycle.reject();
         for index in 0..self.routing_len {
