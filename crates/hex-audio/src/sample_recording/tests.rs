@@ -239,7 +239,11 @@ fn confirmed_timing_splits_at_tempo_changes_loop_wraps_and_stops() {
         assert!(deliver(&mut callback, 2));
     }
     control.command(PlaybackCommand::Stop).unwrap();
-    assert!(deliver(&mut callback, 2));
+    // The transport still runs for the existing 128-frame declick, then
+    // delivers a stopped callback without a clock.
+    for _ in 0..3 {
+        assert!(deliver(&mut callback, 2));
+    }
     let mut cursor = 0;
     let mut timing = Vec::new();
     reader.drain_with_timing(|frames, _, _, packet| {
@@ -256,13 +260,19 @@ fn confirmed_timing_splits_at_tempo_changes_loop_wraps_and_stops() {
         }
         cursor += frames as u64;
     });
-    assert_eq!(cursor, 320);
+    assert_eq!(cursor, 448);
     assert_eq!(
         timing
             .iter()
             .map(|span| (span.take_start, span.take_end, span.timeline_start))
             .collect::<Vec<_>>(),
-        [(64, 158, 0), (158, 224, 94), (224, 256, 32)]
+        [
+            (64, 158, 0),
+            (158, 224, 94),
+            (224, 286, 32),
+            (286, 352, 94),
+            (352, 384, 32)
+        ]
     );
     assert_eq!(timing[0].frame_at_beat(0), Some(64));
     assert_eq!(timing[1].frame_at_beat(1 << 24), Some(158));
