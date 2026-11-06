@@ -436,44 +436,54 @@ fn sinc_v2_project_opens_resident_and_streamed_and_saves_without_consent() {
     assert!(!saved.save_confirmation_required);
     assert_eq!(fs::read(&path).unwrap(), original);
 
-    let streamed = request(
-        &service,
-        Request::OpenWithAudioMode {
-            source: ProjectSource::Saved(path.clone()),
-            relinks: BTreeMap::new(),
-            mode: DocumentAudioMode::VerifiedStreaming,
-            reservation: Some(SourcePlanReservation {
-                reader: hex_media::VerifiedWavReaderLimits {
-                    reader: hex_media::WavReaderLimits {
-                        max_file_bytes: 64 * 1024 * 1024,
-                        max_source_frames: 8_000_000,
-                        max_header_count: 32,
-                        max_window_frames: 4096,
+    let media = files.0.join("ramp.wav");
+    let source_bytes = fs::read(&media).unwrap();
+    let converted = opened.state.project.at_sample_rate(96_000).unwrap();
+    let converted_path = files.0.join("converted.hex");
+    fs::write(&converted_path, hex_storage::encode(&converted).unwrap()).unwrap();
+    for (stream_path, project_rate) in [(path.clone(), 48_000), (converted_path, 96_000)] {
+        let streamed = request(
+            &service,
+            Request::OpenWithAudioMode {
+                source: ProjectSource::Saved(stream_path),
+                relinks: BTreeMap::new(),
+                mode: DocumentAudioMode::VerifiedStreaming,
+                reservation: Some(SourcePlanReservation {
+                    reader: hex_media::VerifiedWavReaderLimits {
+                        reader: hex_media::WavReaderLimits {
+                            max_file_bytes: 64 * 1024 * 1024,
+                            max_source_frames: 8_000_000,
+                            max_header_count: 32,
+                            max_window_frames: 4096,
+                        },
+                        max_manifest_bytes: 1024 * 1024,
                     },
-                    max_manifest_bytes: 1024 * 1024,
-                },
-                max_retained_sources: 4,
-                max_path_bytes: 1024 * 1024,
-                max_manifest_bytes: 4 * 1024 * 1024,
-            }),
-        },
-    );
-    // Verified pages select the kernel by the saved version, so v2 streams.
-    assert!(streamed.error.is_none(), "{:?}", streamed.error);
-    let crate::AudioSourceBinding::VerifiedFile(source) = streamed
-        .state
-        .canonical_audio_source
-        .as_ref()
-        .unwrap()
-        .sources()
-        .values()
-        .next()
-        .unwrap()
-    else {
-        panic!("verified binding expected")
-    };
-    assert_eq!(source.conversion_version(), hex_project::SINC_CONVERSION_V2);
+                    max_retained_sources: 4,
+                    max_path_bytes: 1024 * 1024,
+                    max_manifest_bytes: 4 * 1024 * 1024,
+                }),
+            },
+        );
+        // Verified pages select the kernel by the saved version, so v2 streams.
+        assert!(streamed.error.is_none(), "{:?}", streamed.error);
+        let crate::AudioSourceBinding::VerifiedFile(source) = streamed
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .sources()
+            .values()
+            .next()
+            .unwrap()
+        else {
+            panic!("verified binding expected")
+        };
+        assert_eq!(source.conversion_version(), hex_project::SINC_CONVERSION_V2);
+        assert_eq!(source.project_rate(), project_rate);
+        assert_eq!(source.playback_frames(), u64::from(project_rate) / 10);
+    }
     assert_eq!(fs::read(&path).unwrap(), original);
+    assert_eq!(fs::read(&media).unwrap(), source_bytes);
 }
 
 #[test]

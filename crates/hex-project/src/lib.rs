@@ -42,6 +42,7 @@ pub use arrangement_sections::{
 mod audio_event_fade;
 mod audio_events;
 pub use audio_event_fade::AudioEventFade;
+mod project_rate;
 mod project_tempo;
 mod track_gain_group;
 pub use track_gain_group::RelativeTrackGains;
