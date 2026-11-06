@@ -698,9 +698,10 @@ impl Prepared {
             self.retired = Some(retired);
             token.check()?;
             self.lease.channel.reject_queued_after_reap()?;
+            // A clean process-only stop can leave the module mapped until
+            // the OS reclaims it. Require the same terminal and reaped status.
             if terminal.failure != 0
                 || !terminal.closed
-                || !terminal.unloaded
                 || terminal.blocks != self.sequence
                 || terminal.frames != frames
                 || !status.success()

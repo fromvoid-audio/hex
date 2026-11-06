@@ -1085,6 +1085,13 @@ class NativeInstanceTests(unittest.TestCase):
                 self.assertEqual(self.observation()[0], 15 if variant == 25 else 7)
                 self.assertEqual(self.observation()[4], 0)
 
+    def test_stopped_instance_with_retained_host_reaps_without_module_unload(self):
+        session = self.session(variant=137)
+        self.ready(session, controller=True)
+        self.assertEqual(session.render(8)[2][0], b"HXVB")
+        self.assertEqual(self.terminal(session, 0, unloaded=False, message=session.stop())[5:7], (1, 8))
+        self.assertEqual(self.observation()[0], 5)  # terminate ran and bundleExit was skipped
+
     def test_refused_module_exit_does_not_claim_unload(self):
         session = self.session(variant=20)
         self.ready(session)
