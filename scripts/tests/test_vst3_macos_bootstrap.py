@@ -27,7 +27,7 @@ finally:
     "explicit macOS VST3 SDK required for the hidden AppKit fixture",
 )
 class EditorFrameTests(unittest.TestCase):
-    def test_refused_resize_restores_the_last_accepted_window_frame(self):
+    def test_editor_frame_negotiates_plugin_and_window_resizes(self):
         sdk = Path(os.environ["HEX_VST3_MACOS_SDK"])
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "editor-resize"
