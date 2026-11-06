@@ -123,11 +123,25 @@ impl Broadcast {
             self.error = Some("mts publisher unavailable".into());
         }
     }
+    fn force_claim_owner(&self) -> Option<Owner> {
+        match self.snapshot {
+            Some(Snapshot {
+                owner,
+                state:
+                    State::Blocked {
+                        recovery_available: true,
+                    },
+                ..
+            }) if owner == self.owner => owner,
+            _ => None,
+        }
+    }
     fn force_claim(&mut self, owner: Owner) {
-        if self.owner == Some(owner)
+        if self.force_claim_owner() == Some(owner)
             && let Some(handle) = &self.handle
         {
             self.error = handle.recover(owner).err().map(|error| error.to_string());
+            self.snapshot = handle.snapshot().ok();
         }
     }
     fn status(&self) -> String {
@@ -174,17 +188,7 @@ impl Drop for Broadcast {
 impl EditorView {
     pub(super) fn tuning_mts_controls(&self, cx: &mut Context<Self>) -> Div {
         let broadcast = &self.tuning.broadcast;
-        let force_owner = broadcast.owner.filter(|owner| {
-            broadcast.snapshot.is_some_and(|snapshot| {
-                snapshot.owner == Some(*owner)
-                    && matches!(
-                        snapshot.state,
-                        State::Blocked {
-                            recovery_available: true
-                        }
-                    )
-            })
-        });
+        let force_owner = broadcast.force_claim_owner();
         let (label, selector, active) = if force_owner.is_some() {
             ("force claim mts", "tuning-mts-force-claim", false)
         } else {
@@ -267,6 +271,7 @@ fn blocked_mts_replaces_broadcast_with_one_direct_force_claim(cx: &mut gpui::Tes
             view.tuning.broadcast.error,
             Some(hex_mts::ControlError::Stale.to_string())
         );
+        assert_eq!(view.tuning.broadcast.force_claim_owner(), None);
     });
 }
 
