@@ -4,7 +4,15 @@ use super::*;
 use crate::plugin_effects::{AuthoredSelection, NativeEffect};
 
 impl Custody {
+    #[cfg(test)]
     pub(in crate::candidate_custody) fn start_native_effect(
+        &self,
+        binding: Binding,
+    ) -> Result<(), &'static str> {
+        self.start_native_effect_with_selection(binding, None)
+    }
+
+    pub(in crate::candidate_custody) fn start_native_effect_with_selection(
         &self,
         binding: Binding,
         authored: Option<&AuthoredSelection>,
@@ -96,7 +104,10 @@ impl CandidateRoot {
         authored: Option<&AuthoredSelection>,
     ) -> Result<(), &'static str> {
         self.require_native_source_control_open()?;
-        let result = self.0.eligible.start_native_effect(binding, authored);
+        let result = self
+            .0
+            .eligible
+            .start_native_effect_with_selection(binding, authored);
         crate::lifecycle::request_candidate_cleanup(self);
         result
     }
