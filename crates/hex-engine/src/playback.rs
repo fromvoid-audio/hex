@@ -1119,7 +1119,14 @@ impl Playback {
         self.project
             .tracks
             .iter()
-            .flat_map(|track| track.device_chain.iter())
+            .flat_map(|track| {
+                track.device_chain.iter().chain(
+                    track
+                        .foreign_instrument
+                        .iter()
+                        .filter(|node| !node.bypassed),
+                )
+            })
             .chain(
                 self.project
                     .return_buses

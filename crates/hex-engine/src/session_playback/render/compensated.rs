@@ -840,6 +840,29 @@ impl SessionPlayback {
                         .compensation
                         .as_mut()
                         .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                    if track.foreign_instrument.is_some() {
+                        let clock =
+                            crate::signal_graph::OriginClock(compensation.delays.stamp_at_delay(0));
+                        let mut wet = [[0.0; 2]];
+                        self.foreign_arrangement.render_frame(
+                            index,
+                            track,
+                            foreign_arrangement::FrameContext {
+                                performance: performance_frame,
+                                arrangement: arrangement_frame,
+                                loop_pass,
+                                playing: self.playing,
+                                chase: self.interactive_start_frame == Some(performance_frame),
+                            },
+                            &mut wet,
+                            &mut self.mutable_onsets,
+                            frame_offset,
+                            foreign,
+                            &clock,
+                        )?;
+                        generator[0][0] += wet[0][0];
+                        generator[0][1] += wet[0][1];
+                    }
                     let processed = compensation
                         .process_track_with_foreign(
                             index,

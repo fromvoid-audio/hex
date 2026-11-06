@@ -3,6 +3,9 @@
 //! and acceptance of foreign worker input at the physical callback boundary.
 use super::*;
 
+/// The copied worker input reserves 64 combined events per quantum.
+pub(crate) const MAX_FOREIGN_NOTES: usize = 64;
+
 #[derive(Clone, Copy)]
 pub(crate) struct AuthoredGate {
     frame_offset: usize,
@@ -11,6 +14,20 @@ pub(crate) struct AuthoredGate {
     channel: u8,
     velocity: u8,
     on: bool,
+}
+
+impl AuthoredGate {
+    pub(crate) fn release_now(note: MutableOccurrence) -> Self {
+        let (_, _, pitch, channel, _) = note.signature.details();
+        Self {
+            frame_offset: 0,
+            occurrence_id: note.id,
+            pitch,
+            channel,
+            velocity: 0,
+            on: false,
+        }
+    }
 }
 
 impl From<AuthoredGate> for NativeInstrumentEvent {
