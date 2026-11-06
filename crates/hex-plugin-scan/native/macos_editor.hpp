@@ -16,10 +16,17 @@ class EditorFrame final : public IPlugFrame {
     std::atomic<uint32> references{1};
     NSWindow* window;
     IPlugView* view;
+    NSSize accepted_size;
     bool resizing=false;
 public:
-    EditorFrame(NSWindow* parent,IPlugView* editor):window(parent),view(editor) {}
+    EditorFrame(NSWindow* parent,IPlugView* editor):window(parent),view(editor),
+        accepted_size([[parent contentView] bounds].size) {}
     void invalidate() { window=nil;view=nullptr; }
+    static NSWindowStyleMask window_style(IPlugView& editor) {
+        auto style=NSWindowStyleMaskTitled|NSWindowStyleMaskClosable;
+        if(editor.canResize()==kResultOk) style|=NSWindowStyleMaskResizable;
+        return style;
+    }
     static bool extent(const ViewRect& rect,NSSize& size) {
         const auto width=int64(rect.right)-rect.left;
         const auto height=int64(rect.bottom)-rect.top;
@@ -48,20 +55,82 @@ public:
         const auto accepted_frame=[window frame];
         resizing=true;
         [window setContentSize:size];
-        const auto result=view->onSize(rect);
-        // Keep AppKit and the view at the last accepted size after a refusal.
-        if(result!=kResultOk) [window setFrame:accepted_frame display:NO];
+        const auto result=notify_size(*rect,accepted_frame);
         resizing=false;
         return result;
     }
+    NSSize constrain_window_resize(NSSize proposed) {
+        if(resizing) return proposed;
+        const auto previous=[window frame].size;
+        const auto content=[window contentRectForFrameRect:NSMakeRect(0,0,proposed.width,proposed.height)];
+        ViewRect rect{};
+        if(!view || !content_rectangle(content.size,rect)) return previous;
+        resizing=true;
+        const auto result=view->checkSizeConstraint(&rect);
+        resizing=false;
+        NSSize size{};
+        if(result!=kResultOk || !extent(rect,size)) return previous;
+        return [window frameRectForContentRect:NSMakeRect(0,0,size.width,size.height)].size;
+    }
+    void window_did_resize() {
+        if(!view || resizing) return;
+        const auto size=[[window contentView] bounds].size;
+        if(NSEqualSizes(size,accepted_size)) return;
+        const auto current=[window frame];
+        auto rollback=[window frameRectForContentRect:NSMakeRect(0,0,accepted_size.width,accepted_size.height)];
+        rollback.origin=NSMakePoint(NSMinX(current),NSMaxY(current)-NSHeight(rollback));
+        ViewRect rect{};
+        resizing=true;
+        if(content_rectangle(size,rect)) notify_size(rect,rollback);
+        else [window setFrame:rollback display:NO];
+        resizing=false;
+    }
+private:
+    static bool content_rectangle(NSSize size,ViewRect& rect) {
+        if(!(size.width>=1 && size.width<=4096 && size.height>=1 && size.height<=4096))
+            return false;
+        rect=ViewRect(0,0,static_cast<int32>(size.width+0.5),static_cast<int32>(size.height+0.5));
+        return true;
+    }
+    tresult notify_size(ViewRect& rect,NSRect rollback) {
+        const auto result=view->onSize(&rect);
+        if(result==kResultOk) accepted_size=[[window contentView] bounds].size;
+        else [window setFrame:rollback display:NO];
+        return result;
+    }
 };
+} // namespace hex_instance
 
+// AppKit's delegate is non-owning. EditorWindow detaches it before releasing
+// the frame or view. The frame guards programmatic and nested resize callbacks.
+@interface HexVSTEditorResizeDelegate : NSObject <NSWindowDelegate> {
+    hex_instance::EditorFrame* editor_frame;
+}
+- (instancetype)initWithEditorFrame:(hex_instance::EditorFrame*)frame;
+@end
+
+@implementation HexVSTEditorResizeDelegate
+- (instancetype)initWithEditorFrame:(hex_instance::EditorFrame*)frame {
+    self=[super init];
+    if(self) editor_frame=frame;
+    return self;
+}
+- (NSSize)windowWillResize:(NSWindow*)sender toSize:(NSSize)size {
+    return editor_frame->constrain_window_resize(size);
+}
+- (void)windowDidResize:(NSNotification*)notification {
+    editor_frame->window_did_resize();
+}
+@end
+
+namespace hex_instance {
 // Owns the window and one SDK reference. Explicit teardown precedes controller
 // release. On a refused detach the isolated process retains foreign resources.
 class EditorWindow {
     NSWindow* window=nil;
     IPlugView* view=nullptr;
     EditorFrame* frame=nullptr;
+    HexVSTEditorResizeDelegate* resize_delegate=nil;
     bool attached=false,frame_set=false,quarantined=false,app_initialized=false;
 public:
     void quarantine() { quarantined=true; }
@@ -69,6 +138,10 @@ public:
         if(quarantined) return false;
         if(!view) return true;
         const bool was_visible=is_open();
+        if(resize_delegate) {
+            [window setDelegate:nil];
+            [resize_delegate release];resize_delegate=nil;
+        }
         if(window) [window orderOut:nil];
         if(frame) frame->invalidate();
         if(attached && view->removed()!=kResultOk) { quarantine();return false; }
@@ -99,8 +172,9 @@ public:
             [NSApp finishLaunching];
             app_initialized=true;
         }
+        const auto style=EditorFrame::window_style(*view);
         window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,size.width,size.height)
-            styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable
+            styleMask:style
             backing:NSBackingStoreBuffered defer:NO];
         if(!window) return unavailable();
         [window setReleasedWhenClosed:NO];
@@ -113,6 +187,11 @@ public:
         if(!frame_set && frame_result!=kNotImplemented) return unavailable();
         if(view->attached([window contentView],kPlatformTypeNSView)!=kResultOk) return unavailable();
         attached=true;
+        if(style&NSWindowStyleMaskResizable) {
+            resize_delegate=[[HexVSTEditorResizeDelegate alloc] initWithEditorFrame:frame];
+            if(!resize_delegate) return unavailable();
+            [window setDelegate:resize_delegate];
+        }
         [window makeKeyAndOrderFront:nil];
         [NSApp activateIgnoringOtherApps:YES];
         return is_open()?std::optional<EditorState>(EditorState::Open):unavailable();
