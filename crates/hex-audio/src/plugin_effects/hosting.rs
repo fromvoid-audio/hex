@@ -222,7 +222,7 @@ impl Hosting {
         restore: Option<NativeDeviceState>,
     ) -> Result<Binding, String> {
         let quantum = output
-            .requested_physical_callback_frames_on_control()
+            .plugin_callback_quantum_on_control()
             .ok_or("vst3 hosting requires the plugin output profile")?;
         let root = output
             .output_identity()

@@ -1,4 +1,4 @@
-# cpal 0.17.3 Core Audio route-probe repair
+# cpal 0.17.3 Core Audio route probe and bounded output
 
 Baseline: the published crates.io `cpal` 0.17.3 archive, SHA-256
 `d8942da362c0f0d895d7cac616263f2f9424edc5687364dfd1d25ef7eba506d7`,
@@ -10,8 +10,15 @@ The macOS default-output-configuration query now reads the device buffer-frame r
 directly from the Core Audio device property instead of constructing a temporary
 Audio Unit. Device UID, default stream format, sample rate, range and error
 reporting remain part of the same CPAL contract. Unsupported or malformed
-property results still return an error. Stream creation, supported-configuration
-enumeration, input configuration, input and output callbacks, and non-macOS backends are unchanged.
+property results still return an error.
+
+The macOS-only bounded output entry point pins the negotiated device to an
+AUHAL stream, sets the hardware buffer and asks the initialized Audio Unit
+for its client-frame maximum. It refuses before stream start if the configured
+rate or buffer no longer matches, or the maximum exceeds the caller's ceiling.
+The reported hardware-buffer duration uses the device's rate. Failed startup
+attempts restore the prior buffer if it still equals the requested value.
+The generic output and input entry points keep their existing setup.
 The direct device-property approach also appears in upstream CPAL 0.18.0,
 archive SHA-256 `d9dd2b2151ebb4d5866c804d89fe28244bfb6b74481b9b4d406e4ec4d7f88ce5`,
 VCS revision `45fe976149d5ea0c01b30546e26b3c867285c539`.
