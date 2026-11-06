@@ -686,6 +686,26 @@ impl EditorView {
             cx.notify();
         }
     }
+    pub(in crate::editor) fn vst3_device_title(
+        &self,
+        device: &hex_project::Device,
+    ) -> gpui::SharedString {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if let Ok(identity) =
+            hex_audio::plugin_effects::Hosting::saved_identity_on_control(device.state())
+            && let Some(name) = self.browser.plugins.catalog.saved_class_name(
+                identity.class.bytes(),
+                identity.binary.executable_sha256,
+                identity.binary.info_sha256,
+            )
+        {
+            return theme::text(name);
+        }
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let _ = device;
+        theme::text("vst3")
+    }
+
     pub(super) fn browser_plugin_row(
         &mut self,
         index: usize,
@@ -746,7 +766,6 @@ impl EditorView {
                     cx.notify();
                 }),
             )
-            .child(div().text_xs().child(theme::text("vst3")))
             .child(
                 div()
                     .flex_1()
