@@ -1720,9 +1720,9 @@ impl EditorView {
                                 .flex()
                                 .gap(px(2.0))
                                 .child(activator)
+                                .child(self.sample_arm_button(sample_source, cx))
                                 .child(solo)
-                                .child(arm)
-                                .child(self.sample_arm_button(sample_source, cx)),
+                                .child(arm),
                         )
                         .child(
                             div()

@@ -15,7 +15,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const RECENT_LIMIT: usize = 128;
+// A single take from every supported source must remain reachable.
+const RECENT_LIMIT: usize = hex_engine::MAX_OUTPUT_CAPTURES + 1;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Arm {
