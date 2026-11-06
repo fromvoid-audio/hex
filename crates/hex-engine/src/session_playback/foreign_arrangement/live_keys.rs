@@ -56,12 +56,7 @@ impl Gates {
         }
         for (held, word) in self.keys.iter_mut().zip(words) {
             if held.is_none() && word != 0 {
-                let id = next_id
-                    .checked_add(1)
-                    .and_then(|id| i32::try_from(id).ok())
-                    .and_then(|id| NonZeroU32::new(id as u32))
-                    .ok_or(MutableInstrumentRuntimeError::IdentityExhausted)?;
-                *next_id = u64::from(id.get());
+                let id = super::next_note_id(next_id)?;
                 let key = Key { word, id };
                 events.push(key.event(true));
                 *held = Some(key);

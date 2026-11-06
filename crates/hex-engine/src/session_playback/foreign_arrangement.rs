@@ -18,11 +18,23 @@ use hex_lattice::{
     PreparedForeignProcessor, PreparedProcessorFactory,
 };
 use hex_project::TrackId;
-use std::{mem::size_of, sync::Arc};
+use std::{mem::size_of, num::NonZeroU32, sync::Arc};
 
+mod hardware;
 mod live_keys;
+use live_keys::Input;
 
-const MAX_RENDER_EVENTS: usize = MAX_FOREIGN_NOTES + 2 * COMPUTER_KEY_COUNT;
+const MAX_RENDER_EVENTS: usize = MAX_FOREIGN_NOTES + 2 * COMPUTER_KEY_COUNT + hardware::NOTE_BUDGET;
+
+fn next_note_id(next: &mut u64) -> Result<NonZeroU32, MutableInstrumentRuntimeError> {
+    let id = next
+        .checked_add(1)
+        .and_then(|id| i32::try_from(id).ok())
+        .and_then(|id| NonZeroU32::new(id as u32))
+        .ok_or(MutableInstrumentRuntimeError::IdentityExhausted)?;
+    *next = u64::from(id.get());
+    Ok(id)
+}
 
 #[derive(Default)]
 struct Ledger {
@@ -32,6 +44,7 @@ struct Ledger {
     route: Option<RouteOwner>,
     cut: bool,
     live: live_keys::Gates,
+    hardware: hardware::Gates,
     quantum_offset: u16,
 }
 
@@ -41,7 +54,7 @@ impl Ledger {
     }
 
     fn has_any_held_notes(&self) -> bool {
-        self.has_held_notes() || self.live.held()
+        self.has_held_notes() || self.live.held() || self.hardware.held()
     }
 }
 
@@ -100,6 +113,7 @@ pub(super) struct ForeignArrangement {
     generators: Vec<Option<Generator>>,
     events: Vec<ForeignNote>,
     keyboard: Option<live_keys::Input>,
+    hardware_batch: hardware::Batch,
 }
 
 fn has_generator(track: &Track) -> bool {
@@ -140,6 +154,7 @@ impl ForeignArrangement {
             generators,
             events,
             keyboard: None,
+            hardware_batch: hardware::Batch::default(),
         })
     }
 
@@ -220,9 +235,9 @@ impl ForeignArrangement {
                 "vst3 computer keyboard target is unavailable",
             ));
         }
-        if root.live_notes().is_some() || root.is_note_audition() || root.ordered_keys.is_some() {
+        if root.is_note_audition() || root.ordered_keys.is_some() {
             return Err(crate::Invalid(
-                "vst3 monitoring supports physical keyboard keys only",
+                "vst3 monitoring does not support recording or note audition",
             ));
         }
         self.keyboard = Some(live_keys::Input {
@@ -342,18 +357,24 @@ impl ForeignArrangement {
                     std::mem::swap(&mut candidate.committed, &mut donor.committed);
                     if !same_keyboard {
                         candidate.committed.live.disconnect();
+                        candidate.committed.hardware.disconnect();
                     }
                 } else {
                     // A stopped reset has no held gates, but the retained
                     // worker still needs monotonically increasing note IDs.
                     candidate.committed.next_id = donor.committed.next_id;
                     candidate.committed.quantum_offset = donor.committed.quantum_offset;
+                    candidate
+                        .committed
+                        .hardware
+                        .inherit_budget(&donor.committed.hardware);
                 }
             }
         }
     }
 
     pub(super) fn begin(&mut self) {
+        self.hardware_batch.begin(self.keyboard.as_ref());
         for generator in self.generators.iter_mut().flatten() {
             let Generator {
                 committed, scratch, ..
@@ -365,11 +386,13 @@ impl ForeignArrangement {
             scratch.route = committed.route;
             scratch.cut = committed.cut;
             scratch.live = committed.live;
+            scratch.hardware = committed.hardware;
             scratch.quantum_offset = committed.quantum_offset;
         }
     }
 
     pub(super) fn commit(&mut self) {
+        self.hardware_batch.commit(self.keyboard.as_ref());
         for generator in self.generators.iter_mut().flatten() {
             std::mem::swap(&mut generator.committed, &mut generator.scratch);
         }
@@ -525,9 +548,21 @@ impl ForeignArrangement {
                 .stage(keyboard, &mut ledger.next_id, events)
                 .map_err(|error| error.render_error())?;
         }
+        if (self.hardware_batch.has_events() && keyboard.is_some()) || ledger.hardware.held() {
+            ledger
+                .hardware
+                .stage(
+                    keyboard,
+                    &mut self.hardware_batch,
+                    &mut ledger.next_id,
+                    events,
+                )
+                .map_err(|error| error.render_error())?;
+        }
         ledger.quantum_offset += 1;
         if ledger.quantum_offset == prepared.quantum_frames() {
             ledger.quantum_offset = 0;
+            ledger.hardware.reset_budget();
         }
         ledger.loop_pass = Some(context.loop_pass);
         ledger.route = Some(session.route.owner);
