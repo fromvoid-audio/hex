@@ -717,6 +717,7 @@ int main(int argc,char** argv) {
                         data.inputParameterChanges=parameter_input.size()?&parameter_input:nullptr;
                         data.outputParameterChanges=&parameter_output;
                         data.inputEvents=event_channels?&input_notes:nullptr;
+                        data.processContext=packet.context?&*packet.context:nullptr;
                         data.numSamples=packet.frames;phase.store(2,std::memory_order_release);
                         const bool processed=instance.process(data);
                         // No SDK stop/unload beneath retained or malformed

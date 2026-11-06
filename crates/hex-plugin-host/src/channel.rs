@@ -338,6 +338,7 @@ mod tests {
             pcm: [[0.5; 2]; crate::transport::MAX_FRAMES],
             events: Events::default(),
             parameters: Parameters::default(),
+            timing: None,
         };
         block
             .parameters

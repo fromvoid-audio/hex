@@ -128,6 +128,16 @@ impl Events {
     }
 }
 
+/// Exact Arrangement origin for the first sample of a worker quantum.
+/// Optional musical facts come from the same aligned input origin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcessTiming {
+    pub arrangement_frame: i64,
+    pub playing: bool,
+    pub arrangement_beat_raw: Option<u64>,
+    pub tempo_micro_bpm: Option<std::num::NonZeroU32>,
+}
+
 /// Inline wire payload; dropping it never reclaims a resource.
 #[derive(Clone, Copy)]
 pub struct Block {
@@ -138,6 +148,7 @@ pub struct Block {
     pub pcm: [Frame; MAX_FRAMES],
     pub events: Events,
     pub parameters: Parameters,
+    pub timing: Option<ProcessTiming>,
 }
 impl Block {
     fn empty(binding: Binding, quantum: u16) -> Self {
@@ -149,6 +160,7 @@ impl Block {
             pcm: [[0.0; 2]; MAX_FRAMES],
             events: Events::default(),
             parameters: Parameters::default(),
+            timing: None,
         }
     }
     fn valid(&self, binding: Binding, quantum: u16, sequence: u64) -> Result<(), Fault> {
@@ -171,6 +183,12 @@ impl Block {
         }
         if !self.parameters.valid(usize::from(quantum)) {
             return Err(Fault::InvalidParameters);
+        }
+        if self
+            .timing
+            .is_some_and(|timing| timing.arrangement_frame < 0)
+        {
+            return Err(Fault::Protocol);
         }
         Ok(())
     }
@@ -428,8 +446,23 @@ impl Callback {
         parameters: &[ParameterPoint],
         output: &mut [Frame],
     ) -> Result<SegmentReply, Fault> {
+        self.stage_segment_with_timing(frame_offset, input, events, parameters, output, |_| None)
+    }
+
+    /// Read clock facts only at a quantum's first input frame. In particular,
+    /// a partial quantum keeps its first segment's timing across callbacks.
+    pub fn stage_segment_with_timing(
+        &mut self,
+        frame_offset: usize,
+        input: &[Frame],
+        events: &[MidiEvent],
+        parameters: &[ParameterPoint],
+        output: &mut [Frame],
+        timing_at: impl FnMut(usize) -> Option<ProcessTiming>,
+    ) -> Result<SegmentReply, Fault> {
         output.fill([0.0; 2]);
-        let result = self.stage_segment_inner(frame_offset, input, events, parameters, output);
+        let result =
+            self.stage_segment_inner(frame_offset, input, events, parameters, output, timing_at);
         if let Err(fault) = result {
             output.fill([0.0; 2]);
             return self.fail(fault);
@@ -443,6 +476,7 @@ impl Callback {
         events: &[MidiEvent],
         parameters: &[ParameterPoint],
         output: &mut [Frame],
+        mut timing_at: impl FnMut(usize) -> Option<ProcessTiming>,
     ) -> Result<SegmentReply, Fault> {
         if self.revoked.load(Acquire) {
             return Err(Fault::Revoked);
@@ -492,6 +526,15 @@ impl Callback {
                 stage.state.input = Block::empty(self.binding, self.quantum);
                 stage.state.input.sequence = sequence;
                 stage.state.input.first_frame = position;
+                stage.state.input.timing = timing_at(index);
+                if stage
+                    .state
+                    .input
+                    .timing
+                    .is_some_and(|timing| timing.arrangement_frame < 0)
+                {
+                    return Err(Fault::Protocol);
+                }
                 if sequence >= self.first_reply_sequence {
                     let reply = self.replies.pop().map_err(|_| Fault::MissingOutput)?;
                     reply.valid(self.binding, self.quantum, sequence - 2)?;

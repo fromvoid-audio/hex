@@ -348,6 +348,7 @@ fn immutable_request_bounds_and_failed_reply_never_fabricate_pcm() {
         pcm: [[0.5; 2]; 256],
         events: Events::default(),
         parameters: crate::transport::Parameters::default(),
+        timing: None,
     };
     config.validate_block(&block, 0).unwrap();
     let mut bytes = Vec::new();
