@@ -34,7 +34,9 @@ class UiBuildIdentityTests(unittest.TestCase):
             (root / "assets/fonts").mkdir(parents=True)
             font = root / "assets/fonts/fixture-font.data"
             font.write_text("old-font")
-            (root / "Cargo.toml").write_text('[workspace]\nmembers=["crates/ui"]\nresolver="2"\n')
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nmembers=["crates/ui"]\nresolver="2"\n'
+                '[profile.dev]\ndebug=0\n')
             (root / ".gitignore").write_text('/target/\n/release-target/\n/artifacts/\n')
             (package / "Cargo.toml").write_text('[package]\nname="identity-fixture"\nversion="0.1.0"\nedition="2024"\n')
             script = (ROOT / "crates/hex-ui/build.rs").read_text()
