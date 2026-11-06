@@ -302,6 +302,8 @@ impl Block {
     }
 
     fn add_timing_change(&mut self, frame: u16, timing: ProcessTiming) -> Result<(), Fault> {
+        // A playing cut can resume compensated history. A stopped cut must
+        // end a playing run, so redundant stopped contexts stay malformed.
         let previous_frame = self
             .timing_changes
             .as_slice()
@@ -310,7 +312,7 @@ impl Block {
         if frame <= previous_frame
             || frame >= self.frames
             || !timing.is_valid()
-            || (self.latest_timing().is_none() && !timing.playing)
+            || (!timing.playing && !self.latest_timing().is_some_and(|prior| prior.playing))
         {
             return Err(Fault::Protocol);
         }
@@ -351,7 +353,8 @@ impl Block {
             if change.frame == 0
                 || change.frame >= quantum
                 || !change.timing.is_valid()
-                || previous.map_or(!change.timing.playing, |prior| prior.frame >= change.frame)
+                || previous.is_some_and(|prior| prior.frame >= change.frame)
+                || (!change.timing.playing && !previous.is_some_and(|prior| prior.timing.playing))
             {
                 return Err(Fault::Protocol);
             }

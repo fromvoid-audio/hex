@@ -318,6 +318,8 @@ struct Packet {
         const auto* clock=points+parameter_count*point_bytes;
         if(!no_initial_context &&
             !parse_timing(clock,config.rate,extended_timing,version==5,context.emplace())) return -1;
+        constexpr auto playing=Steinberg::Vst::ProcessContext::kPlaying;
+        bool prior_playing=context && (context->state&playing);
         for(size_t index=0;index<timing_change_count;++index) {
             const auto* record=clock+clock_bytes+index*timing_change_bytes;
             const auto offset=number(record,2);
@@ -325,9 +327,9 @@ struct Packet {
             if(!offset || offset>=frames || number(record+2,6) ||
                 (index && offset<=timing_changes[index-1].offset) ||
                 !parse_timing(record+8,config.rate,true,false,change.context) ||
-                (no_initial_context && index==0 &&
-                    !(change.context.state&Steinberg::Vst::ProcessContext::kPlaying))) return -1;
+                (!prior_playing && !(change.context.state&playing))) return -1;
             change.offset=static_cast<uint16_t>(offset);
+            prior_playing=(change.context.state&playing)!=0;
         }
         return 1;
     }
