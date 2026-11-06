@@ -4071,6 +4071,7 @@ pub use scalar_streamed::{
     read_scalar_values,
 };
 mod project_output;
+pub use hex_project::{MAX_RETURN_TRACKS, ReturnId};
 pub use midi_preview::{
     MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP, MidiArrangementPreview, MidiClipPreview, MidiPreviewSample,
     midi_clip_preview,
