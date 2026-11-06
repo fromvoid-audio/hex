@@ -3,6 +3,8 @@ use super::*;
 use crate::plugin_worker::{NativeWorkerParameterChange, NativeWorkerParameterProgress};
 use hex_plugin_host::transport::ParameterPoint;
 
+const HELD_PROCESS_FIXTURE: u32 = 140;
+
 fn begin_change(owner: &mut NativeWorker, id: u32, value: f64) -> NativeWorkerParameterChange {
     let until = Instant::now() + Duration::from_secs(3);
     loop {
@@ -98,7 +100,7 @@ fn actual_host_parameter_input_changes_same_sdk_source_and_captures_real_state()
 fn actual_inflight_host_parameter_input_cannot_be_withdrawn_as_unprocessed() {
     live_change(
         "plugin_worker::capture::tests::parameter_change::actual_inflight_host_parameter_input_cannot_be_withdrawn_as_unprocessed",
-        95,
+        HELD_PROCESS_FIXTURE,
     );
 }
 fn live_change(name: &str, variant: u32) {
@@ -147,7 +149,7 @@ fn live_change(name: &str, variant: u32) {
         "admission/withdrawal never manufactures DSP"
     );
     let request = begin_change(&mut owner, id, 0.75);
-    if variant == 95 {
+    if variant == HELD_PROCESS_FIXTURE {
         let mut output = [[0.0; 2]; 8];
         endpoint
             .stage(&[[0.5, -0.25]; 8], &[], &mut output)
@@ -320,7 +322,7 @@ fn stopped_parameter_drain_distinguishes_queued_and_processed_on_original_source
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn stopped_parameter_drain_observes_the_actual_held_sdk_reply() {
     const NAME: &str = "plugin_worker::capture::tests::parameter_change::stopped_parameter_drain_observes_the_actual_held_sdk_reply";
-    if fixture_child(95, NAME) {
+    if fixture_child(HELD_PROCESS_FIXTURE, NAME) {
         return;
     }
     let (mut owner, mut endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
