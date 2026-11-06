@@ -24,7 +24,7 @@ mod tail;
 pub use definition::{NativeEffectDefinition, UnavailableEffect};
 mod hosting;
 pub use hex_lattice_contract::ForeignProcessorBinding as EffectBinding;
-pub use hosting::{EffectPresentation, EffectSelection, Hosting};
+pub use hosting::{EffectPresentation, EffectSelection, Hosting, PluginProfile};
 mod control;
 pub(crate) use control::{NativeEffectControl, NativeEffectReference};
 mod source_metadata;

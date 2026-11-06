@@ -83,7 +83,7 @@ impl EditorView {
 
     pub(super) fn insert_browser_plugin_effect(
         &mut self,
-        selection: hex_plugin_catalog::EffectSelection,
+        selection: hex_plugin_catalog::PluginSelection,
         cx: &App,
     ) {
         let Some(state) = self.state.as_ref() else {
@@ -104,13 +104,23 @@ impl EditorView {
 
     pub(super) fn insert_plugin_effect(
         &mut self,
-        selection: &hex_plugin_catalog::EffectSelection,
+        selection: &hex_plugin_catalog::PluginSelection,
         destination: PluginEffectDestination,
         before: Option<hex_project::DeviceId>,
         cx: &App,
     ) {
+        let (destination, before) = match (selection.role, destination) {
+            (hex_plugin_catalog::PluginRole::Instrument, PluginEffectDestination::Track(track)) => {
+                (PluginEffectDestination::Instrument(track), None)
+            }
+            (hex_plugin_catalog::PluginRole::Instrument, _) => {
+                self.error = Some("select a track for the vst3 instrument".into());
+                return;
+            }
+            _ => (destination, before),
+        };
         if self.pending_plugin_effect.is_some() {
-            self.error = Some("wait for the pending vst3 effect insertion".into());
+            self.error = Some("wait for the pending vst3 insertion".into());
             return;
         }
         let Some(state) = self.state.as_ref() else {
@@ -145,7 +155,12 @@ impl EditorView {
                 trace.submitted();
             }
             self.pending_plugin_effect = Some(PendingPluginEffect { control, trace });
-            self.status = "loading vst3 effect".into();
+            self.status = if destination.is_instrument() {
+                "loading vst3 instrument"
+            } else {
+                "loading vst3 effect"
+            }
+            .into();
             self.error = None;
         }
     }

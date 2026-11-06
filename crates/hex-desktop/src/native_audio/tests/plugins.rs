@@ -1,4 +1,5 @@
 //! Actual Session/desktop/native Root workflow; no device or app execution.
+mod instruments;
 mod performance_profile;
 mod state;
 mod ui;

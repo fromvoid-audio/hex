@@ -31,7 +31,7 @@ impl Plugins {
             observed.restore_refused = false;
         }
         let mut has_effects = false;
-        let visited = input.visit_plugin_effects(|_, _, _| {
+        let visited = input.visit_plugin_devices(|_, _, _| {
             has_effects = true;
             Ok(())
         });
@@ -149,7 +149,7 @@ impl Plugins {
         let input = snapshot.effect_preparation();
         let mut next = None;
         let mut index = 0;
-        let visited = input.visit_plugin_effects(|owner, device, state| {
+        let visited = input.visit_plugin_devices(|owner, device, state| {
             if index == restore.next {
                 next = Some((owner, device, state));
             }
@@ -161,7 +161,7 @@ impl Plugins {
             self.reopen = Some(restore);
             return;
         }
-        let Some((owner, device, state)) = next else {
+        let Some((destination, device, state)) = next else {
             // Refused sources must reach their actual return before the
             // admitted unavailable graph can be installed instead.
             if self
@@ -180,6 +180,7 @@ impl Plugins {
             }
             return;
         };
+        let owner = destination.owner();
         if let Some(binding) = restore.current {
             let Some(source) = self
                 .sources
@@ -239,10 +240,15 @@ impl Plugins {
             let catalog = hex_plugin_catalog::Catalog::load(
                 self.catalog.as_deref().ok_or("vst3 catalog unavailable")?,
             )?;
-            catalog.resolve_effect(
+            catalog.resolve_plugin(
                 identity.class.bytes(),
                 identity.binary.executable_sha256,
                 identity.binary.info_sha256,
+                if destination.is_instrument() {
+                    hex_plugin_catalog::PluginRole::Instrument
+                } else {
+                    hex_plugin_catalog::PluginRole::Effect
+                },
             )
         })();
         let binding = selected.and_then(|selected| {
@@ -262,6 +268,7 @@ impl Plugins {
                     device,
                     restore.context.editor_revision.max(1),
                     output.sample_rate,
+                    hosting_profile(destination),
                     Some(state.clone()),
                 )
         });

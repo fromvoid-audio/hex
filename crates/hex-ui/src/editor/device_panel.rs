@@ -1857,7 +1857,7 @@ fn vst3_status_body(view: &EditorView, device: &hex_project::Device) -> Stateful
         });
     let (message, status) = match foreign {
         Some(true) => (
-            theme::text("vst3 effect · parameter controls unavailable"),
+            theme::text("vst3 · parameter controls unavailable"),
             "active",
         ),
         Some(false) => (
@@ -2561,7 +2561,21 @@ fn render_instrument(
     let is_sampler = device.state().type_id().as_str() == Ok("hex.instrument.sampler");
     let leading = bypass_action(view, device, NativeDeviceClass::Instrument, cx);
     let header_actions = instrument_actions(view, track, device, selected, device_view.is_ok(), cx);
-    let rendered = if hex_engine::is_empty_sampler_state_on_control(device.state()) {
+    let rendered = if device.state().type_id().as_str() == Ok("hex.vst3") {
+        device_frame(
+            device_drag_title(
+                view,
+                cx,
+                device,
+                NativeDeviceClass::Instrument,
+                theme::text("vst3"),
+            ),
+            theme::device_frame_style(selected),
+            leading,
+            header_actions,
+            vst3_status_body(view, device),
+        )
+    } else if hex_engine::is_empty_sampler_state_on_control(device.state()) {
         device_frame(
             device_drag_title(
                 view,
@@ -2811,6 +2825,13 @@ fn instrument_actions(
 ) -> Div {
     let id = device.id();
     let actions = div().flex().items_center().gap(px(2.0));
+    let actions = if device.state().type_id().as_str() == Ok("hex.vst3")
+        && !view.degraded_plugins.contains(id.value())
+    {
+        actions.child(vst3_editor_button(id, selected, cx))
+    } else {
+        actions
+    };
     let actions = actions.child(
         action_button(
             format!("instrument-replace-{}", id.value()),
