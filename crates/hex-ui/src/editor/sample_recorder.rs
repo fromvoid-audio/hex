@@ -15,6 +15,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+mod excerpt;
 mod selection;
 mod waveform;
 
@@ -374,25 +375,39 @@ impl EditorView {
                                     .as_ref()
                                     .map(|error| div().child(theme::text(error))),
                             )
-                            .children(self.sample_recorder.recent.iter().map(|row| {
-                                let seconds =
-                                    row.take.frames as f64 / f64::from(row.take.sample_rate);
-                                let open = row.clone();
-                                div()
-                                    .id(gpui::SharedString::from(
-                                        row.take.path.to_string_lossy().into_owned(),
-                                    ))
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(move |view, _, _, cx| {
-                                        view.open_recorded_take(open.clone(), cx)
-                                    }))
-                                    .child(theme::text(format!(
-                                        "{} · {seconds:.2} s",
-                                        hex_session::service::text::verbatim(&row.name)
-                                    )))
-                            })),
+                            .children(self.sample_recorder.recent.iter().enumerate().map(
+                                |(index, row)| {
+                                    let seconds =
+                                        row.take.frames as f64 / f64::from(row.take.sample_rate);
+                                    let open = row.clone();
+                                    div()
+                                        .id(gpui::SharedString::from(
+                                            row.take.path.to_string_lossy().into_owned(),
+                                        ))
+                                        .debug_selector(move || format!("recorded-take-{index}"))
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |view, _, _, cx| {
+                                            view.open_recorded_take(open.clone(), cx)
+                                        }))
+                                        .child(theme::text(format!(
+                                            "{} · {seconds:.2} s",
+                                            hex_session::service::text::verbatim(&row.name)
+                                        )))
+                                },
+                            )),
                     ),
             )
+    }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+impl EditorView {
+    pub(super) fn show_take_fixture(&mut self, take: Take) {
+        self.sample_recorder.visible = true;
+        self.sample_recorder.recent.push(Row {
+            name: "captured audio".into(),
+            take,
+        });
     }
 }
 
