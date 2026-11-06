@@ -75,7 +75,10 @@ struct HostDispatch {
 };
 enum HostRefusal : uint32 { WrongThread=1, UnknownRestart=2, GraphControlRequired=4,
     QueueFull=8, RecursiveRestart=16, InvalidMetadata=32, Retiring=64,
-    UnsupportedCapability=128, UnsupportedEdit=256, MessagePoolFull=512, MetadataCapacity=1024, InvalidEdit=2048 };
+    UnsupportedCapability=128, UnsupportedEdit=256, MessagePoolFull=512, MetadataCapacity=1024, InvalidEdit=2048,
+    UnknownEditParameter=1u<<12, ReadOnlyEditParameter=1u<<13, InvalidEditValue=1u<<14,
+    DuplicateEditBegin=1u<<15, MissingPerformBegin=1u<<16, MissingEndBegin=1u<<17,
+    FeedbackParameterMissing=1u<<18, FeedbackSetterRefused=1u<<19, FeedbackValueInvalid=1u<<20 };
 
 // One instance's control owner. Title/value refresh and ordered parameter edits
 // are admitted here. IO,
@@ -278,17 +281,19 @@ private:
         if(applying_saved_state && id<=0x7FFFFFFFu && valid_value) return kResultOk;
         ParameterSnapshot::Parameter* info=nullptr;
         for(uint32 n=0;n<metadata.count;++n) if(metadata.parameters[n].info.id==id) info=&metadata.parameters[n];
-        if(!info || (kind!=End && (info->info.flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden))) ||
-            !valid_value) {
-            refuse(InvalidEdit);return kInvalidArgument;
+        if(!info) {refuse(InvalidEdit|UnknownEditParameter);return kInvalidArgument;}
+        if(kind!=End && (info->info.flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden))) {
+            refuse(InvalidEdit|ReadOnlyEditParameter);return kInvalidArgument;
         }
+        if(!valid_value) {refuse(InvalidEdit|InvalidEditValue);return kInvalidArgument;}
         size_t active=active_tokens.size(),vacant=active_tokens.size();
         for(size_t n=0;n<active_tokens.size();++n) {
             if(active_tokens[n] && active_ids[n]==id) active=n;
             if(!active_tokens[n]) vacant=n;
         }
-        if((kind==Begin && active!=active_tokens.size()) || (kind!=Begin && active==active_tokens.size())) {
-            refuse(InvalidEdit);return kResultFalse;
+        if(kind==Begin && active!=active_tokens.size()) {refuse(InvalidEdit|DuplicateEditBegin);return kResultFalse;}
+        if(kind!=Begin && active==active_tokens.size()) {
+            refuse(InvalidEdit|(kind==Perform?MissingPerformBegin:MissingEndBegin));return kResultFalse;
         }
         if(sequence==std::numeric_limits<uint64>::max()) {refuse(QueueFull);return kResultFalse;}
         const auto next=sequence+1;
@@ -509,7 +514,7 @@ public:
             const auto value=staged.at(n);
             uint32 index=0;
             while(index<metadata.count && metadata.parameters[index].info.id!=value.id) ++index;
-            if(index==metadata.count) return false;
+            if(index==metadata.count) {refuse(FeedbackParameterMissing);return false;}
             // An idle flush can finish long after the controller has moved
             // on to a newer drag position. Its DSP receipt remains valid.
             if(value.editor_sequence && metadata.parameters[index].editor_sequence>value.editor_sequence) continue;
@@ -518,10 +523,13 @@ public:
                 applying_feedback=true;
                 const auto updated=controller->setParamNormalized(value.id,value.normalized);
                 applying_feedback=false;
-                if(updated!=kResultOk) return false;
+                if(updated!=kResultOk) {refuse(FeedbackSetterRefused);return false;}
                 normalized=controller->getParamNormalized(value.id);
             }
-            if(!std::isfinite(normalized) || normalized<0 || normalized>1 || recursive) return false;
+            if(!std::isfinite(normalized) || normalized<0 || normalized>1) {
+                refuse(FeedbackValueInvalid);return false;
+            }
+            if(recursive) return false;
             observations[observed++]={index,normalized};
         }
         for(uint32 n=0;n<observed;++n)

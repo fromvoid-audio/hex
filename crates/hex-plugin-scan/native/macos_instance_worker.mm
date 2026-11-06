@@ -23,6 +23,11 @@ enum Failure : uint32_t { Configuration=1,Admission=2,ClassFailure=3,Setup=4,Pre
     SetupTopology=20,SetupArrangementRefused=21,SetupArrangementMismatch=22,
     SetupProcessing=23,SetupActivation=24,ControllerInventoryCapacity=25,
     ControllerInventoryInvalid=26 };
+// Keep the worker exit code in the low byte. The error frame also carries
+// the main-lane phase and refusal flags for the exact failed exchange.
+constexpr uint32_t runtime_host_failure(uint32_t flags,bool feedback) {
+    return 0x80000000u | (feedback?0x40000000u:0u) | ((flags&0x003FFFFFu)<<8) | HostControl;
+}
 // Keep existing frame shape and old stage codes. New setup reasons remain
 // ordinary refusal codes for an older supervisor.
 Failure setup_failure(hex_instance::ConfigurationResult result) {
@@ -821,7 +826,7 @@ int main(int argc,char** argv) {
                     // Never stop/deactivate/unload beneath a main-lane capture,
                     // even on malformed PCM, EOF or a foreign processing fault.
                     if(live_stage.load(std::memory_order_acquire)!=LiveIdle || page_stage.load(std::memory_order_acquire)!=PageIdle)
-                        std::_Exit(worker_failure.load()?worker_failure.load():Cancelled);
+                        std::_Exit(worker_failure.load()?(worker_failure.load()&0xFF):Cancelled);
                     phase.store(3,std::memory_order_release); // foreign stopping may also refuse/hang
                     if(started && !instance.stop_processing()) worker_failure.store(Teardown);
                 } catch(...) {
@@ -860,9 +865,13 @@ int main(int argc,char** argv) {
                     // main-lane failure lets it finish any current response
                     // before sending the terminal error; a direct main write
                     // could interleave an error header/body with PCM/receipts.
-                    if(!instance.synchronize_parameter_feedback_on_control()) { control_failure(HostControl);continue; }
+                    if(!instance.synchronize_parameter_feedback_on_control()) {
+                        control_failure(runtime_host_failure(instance.host_refusals(),true));continue;
+                    }
                     instance.dispatch_host_callbacks();
-                    if(instance.host_refusals()) { control_failure(HostControl);continue; }
+                    if(const auto flags=instance.host_refusals()) {
+                        control_failure(runtime_host_failure(flags,false));continue;
+                    }
                     if(page_stage.load(std::memory_order_acquire)==PageRequested) {
                         page_failure=0;
                         try {
@@ -1064,7 +1073,7 @@ int main(int argc,char** argv) {
                     CFRunLoopRunInMode(kCFRunLoopDefaultMode,0.001,true);
                 } catch(...) { control_failure(Unexpected); }
             }
-            worker.join();failure=worker_failure.load();
+            worker.join();failure=worker_failure.load()&0xFF;
             if(!failure && (!instance.publish_parameter_feedback(parameter_feedback) ||
                 !instance.synchronize_parameter_feedback_on_control() || instance.host_refusals())) failure=HostControl;
         } catch(const Refusal&) {

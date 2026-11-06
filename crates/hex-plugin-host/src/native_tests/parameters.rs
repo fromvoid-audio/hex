@@ -132,7 +132,13 @@ fn actual_latency_restart_requires_opt_in_and_rejects_mixed_io() {
             );
             result = instance.poll_parameter_edits_on_worker().map(|_| ());
         }
-        assert!(matches!(result, Err(Error::Worker(11))), "{result:?}");
+        let error = result.unwrap_err();
+        let expected = if opted_in {
+            "restart requires graph changes"
+        } else {
+            "recursive controller callback"
+        };
+        assert!(error.to_string().contains(expected), "{error:?}");
     }
 }
 
@@ -946,7 +952,15 @@ fn actual_sdk_invalid_ui_gestures_refuse_before_dsp() {
                             .all(|event| event.kind != protocol::ParameterEditKind::Perform)
                     );
                 }
-                Err(Error::Worker(11)) => break,
+                Err(error @ Error::Worker(code)) if crate::runtime_host_refusal(code) => {
+                    let expected = if variant == 86 {
+                        "perform without begin"
+                    } else {
+                        "read-only edit parameter"
+                    };
+                    assert!(error.to_string().contains(expected), "{error:?}");
+                    break;
+                }
                 Err(error) => {
                     panic!("variant {variant}: expected actual HostControl refusal, got {error:?}")
                 }
@@ -969,6 +983,46 @@ fn actual_sdk_invalid_ui_gestures_refuse_before_dsp() {
             "invalid callbacks must not enter DSP"
         );
     }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_sdk_idle_feedback_refusal_identifies_controller_setter() {
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(132),
+    )
+    .unwrap();
+    std::fs::write(case.release(), b"emit editor value that the setter rejects").unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    let error = loop {
+        if let Err(error) = instance.service_idle_editor_edits_on_worker() {
+            break error;
+        }
+        assert!(Instant::now() < until, "controller refusal did not arrive");
+        thread::yield_now();
+    };
+    let message = error.to_string();
+    assert!(
+        message.contains("host refused controller feedback"),
+        "{message}"
+    );
+    assert!(
+        message.contains("controller rejected setParamNormalized"),
+        "{message}"
+    );
+    assert_eq!(instance.completed_blocks_on_control(), 0);
+    assert!(
+        !instance
+            .cancel_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
 }
 
 #[test]
