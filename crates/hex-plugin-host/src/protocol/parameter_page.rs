@@ -9,7 +9,7 @@ pub use conversion::{ParameterConversion, ParameterConversionResult, ParameterCo
 pub const PARAMETER_PAGE_SIZE: usize = 4;
 /// Inventory bound shared with the isolated native controller host. A single
 /// page and the processing edit/feedback queues keep their own fixed limits.
-pub const MAX_CONTROLLER_PARAMETERS: u16 = 2_304;
+pub const MAX_CONTROLLER_PARAMETERS: u16 = 2_624;
 const TEXT_UNITS: usize = 128;
 const PARAMETER_FLAGS: u32 = 0x0001_801f;
 

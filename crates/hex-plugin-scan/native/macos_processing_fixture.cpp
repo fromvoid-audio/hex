@@ -88,8 +88,8 @@ static ParamID parameter_id(int variant) { return variant==80 || variant==89 || 
 static int32 parameter_inventory_size() {
     const auto* shape=std::getenv("HEX_ORIGINAL_PARAMETER_INVENTORY");
     if(!shape) return 1;
-    if(!std::strcmp(shape,"2304") || !std::strcmp(shape,"duplicate")) return 2304;
-    if(!std::strcmp(shape,"2305")) return 2305;
+    if(!std::strcmp(shape,"2593") || !std::strcmp(shape,"duplicate")) return 2593;
+    if(!std::strcmp(shape,"2625")) return 2625;
     return 1;
 }
 static double parameter_value(int variant,double value) {
