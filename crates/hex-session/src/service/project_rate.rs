@@ -40,13 +40,13 @@ pub(super) fn history_needs_replacement(session: &Session, redo: bool) -> bool {
                 || source.sample_rate_mode() != target.sample_rate_mode()
                 || target.assets().any(|asset| {
                     let id = asset.id();
+                    // An admitted original can be held before its verified
+                    // reconstruction facts have been projected for saving.
                     !target.asset_offline(id)
-                        && if asset.original_source().is_some() {
-                            !session.native_assets.contains(id)
-                        } else {
-                            !session.media.contains_key(&id)
-                                && !session.verified_sources.contains_key(&id)
-                        }
+                        && (asset.original_source().is_some()
+                            || (!session.media.contains_key(&id)
+                                && !session.verified_sources.contains_key(&id)))
+                        && !session.native_assets.contains(id)
                 })
         })
         .unwrap_or(false)
