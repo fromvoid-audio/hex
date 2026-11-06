@@ -1417,8 +1417,7 @@ impl Playback {
             .map(crate::StreamResourceMetadata::Audio)
             .chain(
                 revision
-                    .scalar_automation
-                    .iter()
+                    .scalar_automation_bindings()
                     .map(|binding| crate::StreamResourceMetadata::Scalar(binding.source.clone())),
             ))
     }

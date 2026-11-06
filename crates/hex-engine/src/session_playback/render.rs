@@ -734,7 +734,7 @@ impl SessionPlayback {
         capture: &mut Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
-        mut scalar: Option<&mut crate::scalar_automation::State>,
+        mut scalar: Option<&mut crate::scalar_automation::StateSet>,
     ) -> Result<(), SessionPlaybackError> {
         let width =
             u64::try_from(output.len()).map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
@@ -924,64 +924,45 @@ impl SessionPlayback {
                 .checked_add(chunk_frames)
                 .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
             if let Some(scalar) = scalar.as_deref_mut() {
-                let binding = self
+                let bindings = self
                     .revision
                     .scalar_automation
-                    .as_ref()
+                    .as_deref()
                     .ok_or(SessionPlaybackError::DeviceRuntime)?;
                 let endpoint = pages
                     .as_deref_mut()
                     .ok_or(SessionPlaybackError::MediaPagesUnavailable)?;
-                if let Some(compensation) = self.compensation.as_ref() {
-                    let delay = scalar.arrival_frames();
-                    if delay == 0 {
-                        scalar.fill(
-                            endpoint,
-                            &binding.source,
-                            arrangement_frame,
-                            chunk_frames,
-                            output_offset,
-                        )
-                    } else {
-                        arrangement_frame
-                            .checked_add(chunk_frames as u64)
-                            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-                        scalar.fill_with_origins(
-                            endpoint,
-                            &binding.source,
-                            chunk_frames,
-                            output_offset,
-                            |index| {
-                                crate::compensation::CompensationRuntime::preview_stage_frame(
-                                    Some(&compensation.delays),
-                                    delay,
-                                    index as u64,
-                                    |source_offset| {
-                                        arrangement_frame
-                                            .checked_add(source_offset)
-                                            .map(Some)
-                                            .ok_or(crate::Invalid(
-                                                "scalar automation origin overflow",
-                                            ))
-                                    },
-                                )
-                            },
-                        )
-                    }
-                } else {
-                    scalar.fill(
+                let history = self.compensation.as_ref().map(|runtime| &runtime.delays);
+                let origin = |source_offset| {
+                    arrangement_frame
+                        .checked_add(source_offset)
+                        .map(Some)
+                        .ok_or(crate::Invalid("scalar automation origin overflow"))
+                };
+                scalar
+                    .fill(
+                        bindings,
                         endpoint,
-                        &binding.source,
-                        arrangement_frame,
                         chunk_frames,
                         output_offset,
+                        |delay, index| {
+                            if delay == 0 {
+                                origin(index as u64)
+                            } else {
+                                crate::compensation::CompensationRuntime::preview_stage_frame(
+                                    history,
+                                    delay,
+                                    index as u64,
+                                    origin,
+                                )
+                            }
+                        },
                     )
-                }
-                .map_err(|_| SessionPlaybackError::MediaPagesUnavailable)?;
+                    .map_err(|_| SessionPlaybackError::MediaPagesUnavailable)?;
             }
             let external = scalar
                 .as_deref()
-                .map(crate::scalar_automation::State::window);
+                .map(|state| state as &dyn hex_lattice::NativeExternalAutomationSet);
             if upstream_frame_routing {
                 self.render_compensated_route_frame(
                     performance_frame,
@@ -1353,7 +1334,7 @@ impl SessionPlayback {
         capture: &mut Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
-        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
+        external: Option<&dyn hex_lattice::NativeExternalAutomationSet>,
     ) -> Result<(), SessionPlaybackError> {
         let region = self.active_loop_region();
         let loop_fade = region.and_then(|region| {
@@ -1939,7 +1920,7 @@ impl SessionPlayback {
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut dyn CaptureSink>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
-        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
+        external: Option<&dyn hex_lattice::NativeExternalAutomationSet>,
     ) -> Result<(), SessionPlaybackError> {
         let arrangement = self.revision.arrangement();
         if !arrangement.return_feed_plan.is_empty() {

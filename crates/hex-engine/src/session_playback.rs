@@ -1965,29 +1965,19 @@ impl SessionPlayback {
                 .map_err(|_| SessionPlaybackError::Allocation)?;
             resident_source_scratch.resize(arrangement_tracks.len(), [[0.0; 2]; 256]);
         }
-        let scalar_automation = match revision.scalar_automation.as_ref() {
-            Some(_) => {
-                let input = revision
-                    .native_parameter_input_target()
-                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
-                let arrival = revision
-                    .arrangement()
-                    .signal_graph
-                    .as_ref()
-                    .ok_or(SessionPlaybackError::DeviceRuntime)?
-                    .parameter_arrival(input)
-                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-                Some(Box::new(
-                    crate::scalar_automation::State::new(input, arrival)
-                        .map_err(|_| SessionPlaybackError::Allocation)?,
-                ))
-            }
-            None => None,
-        };
+        let scalar_automation = revision
+            .scalar_automation
+            .as_deref()
+            .map(crate::scalar_automation::StateSet::new)
+            .transpose()
+            .map_err(|_| SessionPlaybackError::Allocation)?
+            .map(Box::new);
         let analytic_import = analytic_import::ImportPlan::new()?;
         let current_sampler_keyboards = Vec::new();
         let current_route_cut_scratch = Vec::new();
-        let native_parameter_state = revision.native_parameter_input_target().map(|_| {
+        let native_parameter_state = (revision.native_parameter_input_target().is_some()
+            || scalar_automation.is_some())
+        .then(|| {
             Box::new(native_parameter_input::State {
                 scalar: scalar_automation,
                 ..Default::default()

@@ -1809,7 +1809,7 @@ impl SignalRuntime {
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         mut input: Option<&mut crate::native_parameter_input::Processing>,
-        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
+        external: Option<&dyn hex_lattice::NativeExternalAutomationSet>,
     ) -> Result<(), Invalid> {
         if frames.len() != 1 || chain.len() != self.graph.main_devices.len() {
             return Err(Invalid("main content-origin plan does not match runtime"));
@@ -1869,7 +1869,7 @@ impl SignalRuntime {
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         mut input: Option<&mut crate::native_parameter_input::Processing>,
-        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
+        external: Option<&dyn hex_lattice::NativeExternalAutomationSet>,
     ) -> Result<Frame, Invalid> {
         let printed = if self.graph.tracks[index].printed_merge.is_some() {
             std::mem::replace(&mut audio, [0.0; 2])
@@ -1962,7 +1962,7 @@ impl SignalRuntime {
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         mut input: Option<&mut crate::native_parameter_input::Processing>,
-        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
+        external: Option<&dyn hex_lattice::NativeExternalAutomationSet>,
     ) -> Result<(), Invalid> {
         for index in stages {
             let node = match owner {
@@ -1995,7 +1995,7 @@ impl SignalRuntime {
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         input: Option<&mut crate::native_parameter_input::Processing>,
-        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
+        external: Option<&dyn hex_lattice::NativeExternalAutomationSet>,
     ) -> Result<(), Invalid> {
         let key = if let Some(stage) = self.graph.key_stages.get(node).copied().flatten() {
             *frame = self.edge(stage.main_edge, *frame)?;
