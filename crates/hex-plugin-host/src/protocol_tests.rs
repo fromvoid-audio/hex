@@ -995,6 +995,7 @@ fn controller_pages_preserve_sdk_ids_text_and_explicit_conversion_states() {
     let value = page.as_slice()[0];
     assert_eq!(value.id, 0);
     assert!(value.is_editable());
+    assert!(value.supports_authored_automation());
     assert_eq!(value.plain, ParameterPlainValue::NegativeInfinity);
     assert_eq!(value.default_plain, ParameterPlainValue::Finite(1.0));
     assert_eq!(
@@ -1250,4 +1251,28 @@ fn refusal_frame_reads_through_the_channel_and_keeps_its_successor() {
         None,
         "the next capture operation still exchanges on the same channel"
     );
+}
+
+#[test]
+fn authored_parameter_permission_is_stricter_than_edit_permission() {
+    for (flags, editable, automatable) in [
+        (0, true, false),
+        (1, true, true),
+        (2, false, false),
+        (2 | 16, false, false),
+        (1 | 1 << 15, true, false),
+        (1 | 1 << 16, true, true),
+        (1 | 1 << 29, false, false),
+    ] {
+        let parameter = ControllerParameter {
+            flags,
+            ..ControllerParameter::default()
+        };
+        assert_eq!(parameter.is_editable(), editable, "flags {flags:#x}");
+        assert_eq!(
+            parameter.supports_authored_automation(),
+            automatable,
+            "flags {flags:#x}"
+        );
+    }
 }

@@ -256,10 +256,18 @@ impl Prepared {
             Some(&self.ready.initial_state),
             &self.lease.cancellation,
         )?;
+        let (authored_data, authored_handle) =
+            if let Some(authored) = &self.authored_parameter_metadata {
+                (authored.backing_data_bytes()?, 1)
+            } else {
+                (0, 0)
+            };
         Some(PreparedStorage {
-            data_bytes: data_bytes.checked_add(self.packet.storage_bytes())?,
+            data_bytes: data_bytes
+                .checked_add(self.packet.storage_bytes())?
+                .checked_add(authored_data)?,
             shared_groups: shared,
-            shared_handle_bound: shared,
+            shared_handle_bound: shared.checked_add(authored_handle)?,
             ipc_handle_bound: 2,
             native_child_lifetime_bound: 1,
         })

@@ -24,7 +24,9 @@ mod parameter_automation;
 mod static_processing_tests;
 mod tail_split;
 pub use foreign_processor::{
-    ForeignNote, ForeignProcessorNode, ForeignProcessors, PreparedForeignProcessor, RefuseForeign,
+    ForeignAutomation, ForeignAutomationProgram, ForeignAutomationSource, ForeignNote,
+    ForeignParameterCapability, ForeignProcessorNode, ForeignProcessors, PreparedForeignAutomation,
+    PreparedForeignProcessor, RefuseForeign,
 };
 pub use parameter_automation::{
     ExternalParameterAutomation, HostAutomationLane, NativeParameterAutomation,
@@ -126,6 +128,17 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
         context: &crate::DevicePreparationContext<'_>,
     ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
         self.prepare_runtime_factory(state, context)
+    }
+
+    /// Borrow the authored capabilities armed on the exact instance-bound
+    /// source. This performs no SDK exchange or resource transfer.
+    fn foreign_automation_source(
+        &self,
+        _identity: ProcessorInstanceIdentity,
+        _state: &NativeDeviceState,
+        _context: &DevicePreparationContext<'_>,
+    ) -> Result<Option<ForeignAutomationSource<'_>>, DeviceContractError> {
+        Ok(None)
     }
 
     /// Prepare an optional stateful processor using the active sample rate.
@@ -767,6 +780,11 @@ impl NativeInstrumentClock for OffsetClock<'_> {
             .arrangement_frame_at_offset(self.offset.checked_add(offset)?)
     }
 
+    fn authored_arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+        self.clock
+            .authored_arrangement_frame_at_offset(self.offset.checked_add(offset)?)
+    }
+
     fn loop_pass_at_offset(&self, offset: usize) -> Option<u64> {
         self.clock
             .loop_pass_at_offset(self.offset.checked_add(offset)?)
@@ -1048,6 +1066,16 @@ impl NativeRuntimeChain {
                 .as_ref()
                 .is_none_or(|state| state.as_ref().type_id() != instance.device_type)
                 || !instance.matrix.is_identity())
+            {
+                return Err(DeviceContractError::ForeignProcessingUnavailable);
+            }
+            if let Some(automation) = instance.automation.foreign()
+                && !matches!(
+                    instance.definition,
+                    Some(PreparedProcessorFactory::Foreign(processor))
+                        if !processor.is_instrument_profile()
+                            && processor.binding() == Some(automation.borrow().binding)
+                )
             {
                 return Err(DeviceContractError::ForeignProcessingUnavailable);
             }
@@ -2956,6 +2984,10 @@ impl NativeRuntimeChain {
                 sample_rate: entry.sample_rate,
                 configuration,
                 prepared: runtime.prepared,
+                automation: entry
+                    .automation
+                    .foreign()
+                    .map(PreparedForeignAutomation::borrow),
                 bypassed: entry.bypassed,
                 input_gain: entry.input_gain,
                 output_gain: if entry.automation_frozen {
@@ -2968,6 +3000,13 @@ impl NativeRuntimeChain {
             // A failed stage supplies no new observation. Invalidate scratch
             // first so an earlier quiet state cannot mask renewed input.
             runtime.scratch_drained = false;
+            // A detached tail retains its old program key while finishing any
+            // partial PCM quantum. Its new input has no authored origin.
+            let clock = if entry.automation_frozen && node.automation.is_some() {
+                None
+            } else {
+                clock
+            };
             foreign.process_segment(node, frame_offset, frames, clock)?;
             runtime.scratch_drained =
                 matches!(runtime.prepared.output_tail(), OutputTail::Finite { .. })

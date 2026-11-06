@@ -29,7 +29,18 @@ struct ParameterSnapshot {
 // Copied DSP-facing facts contain no controller pointers or strings. Main owns
 // the rich snapshot; its one processing reader uses these published copies.
 struct ProcessingParameterSnapshot {
-    struct Parameter { ParamID id=0; int32 flags=0; };
+    struct Parameter {
+        ParamID id=0;
+        int32 flags=0;
+        int32 steps=0;
+        bool accepts_authored(uint32 expected_steps) const {
+            constexpr uint32 supported=ParameterInfo::kCanAutomate|ParameterInfo::kIsWrapAround|
+                ParameterInfo::kIsList|ParameterInfo::kIsBypass;
+            const auto bits=static_cast<uint32>(flags);
+            return (bits&ParameterInfo::kCanAutomate) && !(bits&~supported) &&
+                static_cast<uint32>(steps)==expected_steps;
+        }
+    };
     std::array<Parameter,HOST_PARAMETER_COUNT> parameters{};
     uint32 count=0;
     uint64 revision=0;
@@ -126,7 +137,7 @@ class Host final : public IHostApplication, public IComponentHandler {
         ProcessingParameterSnapshot result{};result.count=source.count;result.revision=source.revision;
         for(uint32 n=0;n<source.count;++n) {
             const auto& parameter=source.parameters[n];
-            result.parameters[n]={parameter.info.id,parameter.info.flags};
+            result.parameters[n]={parameter.info.id,parameter.info.flags,parameter.info.stepCount};
         }
         std::sort(result.parameters.begin(),result.parameters.begin()+result.count,
             [](const auto& left,const auto& right) { return left.id<right.id; });

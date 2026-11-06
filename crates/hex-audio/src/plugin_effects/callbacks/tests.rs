@@ -160,6 +160,7 @@ impl Facts {
             sample_rate: 48_000,
             configuration: &self.state,
             prepared: self.prepared,
+            automation: None,
             bypassed: false,
             input_gain: 1.0,
             output_gain: 1.0,
