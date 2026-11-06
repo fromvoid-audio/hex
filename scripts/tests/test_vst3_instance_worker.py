@@ -225,6 +225,24 @@ class NativeInstanceTests(unittest.TestCase):
         self.assertEqual(struct.unpack_from("<26f", reply, 64), tuple(value * 4 for value in inputs))
         self.terminal(session, 0, message=session.stop())
 
+    def test_invalid_output_parameter_values_leave_valid_feedback_and_pcm_intact(self):
+        session = self.session(variant=124)
+        self.ready(session, controller=True)
+        for gain in (.5, .625):
+            _, inputs, (magic, reply) = session.render(8)
+            self.assertEqual(magic, b"HXVB")
+            self.assertEqual(struct.unpack_from("<HHHH", reply, 4), (2, 8, 0, 1))
+            self.assertEqual(struct.unpack_from("<16f", reply, 64), tuple(value * gain for value in inputs))
+            self.assertEqual(struct.unpack("<HHId", reply[128:]), (1, 0, 7, .25))
+        self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (2, 16))
+
+    def test_retained_output_parameter_queue_still_retires_the_worker(self):
+        session = self.session(variant=125)
+        self.ready(session, controller=True)
+        _, _, (magic, reply) = session.render(8)
+        self.assertEqual((magic, struct.unpack_from("<I", reply, 35)[0]), (b"HXVIER01", 7))
+        self.assertEqual(session.process.wait(timeout=10), 7)
+
     def test_editor_unavailable_completes_without_stopping_original_pcm(self):
         session = self.session(variant=37)
         self.ready(session, controller=True)

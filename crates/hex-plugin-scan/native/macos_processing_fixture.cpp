@@ -731,6 +731,15 @@ public:
             residual_cursor=(residual_cursor+1)%residual.size();
 #endif
         }
+        if((fault==124 || fault==125) && data.outputParameterChanges) {
+            int32 index=-1;
+            auto* queue=data.outputParameterChanges->addParameterData(parameter_id(fault),index);
+            if(!queue || queue->addPoint(0,-0.444444417953,index)!=kResultFalse ||
+                queue->addPoint(1,0.25,index)!=kResultOk ||
+                queue->addPoint(1,std::numeric_limits<double>::quiet_NaN(),index)!=kResultFalse)
+                return kResultFalse;
+            if(fault==125) queue->addRef();
+        }
         if(point_count || fault==83 || fault==84) {
             gain.store(static_cast<float>(current_gain));
             if(data.outputParameterChanges && fault!=78) {
@@ -799,7 +808,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>123) return false;next_fault=value;
+        if (value>125) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);
