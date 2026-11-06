@@ -14,6 +14,16 @@ struct HistoryEntry {
     stopped_bounce: bool,
 }
 
+/// A rate-changing edge uses the exact same bounded history stacks as edits.
+pub enum SampleRateHistoryAction {
+    Apply {
+        rate: u32,
+        mode: crate::SampleRateMode,
+    },
+    Undo,
+    Redo,
+}
+
 pub struct Editor {
     project: Project,
     undo: VecDeque<HistoryEntry>,
@@ -98,10 +108,41 @@ impl Editor {
         .is_some_and(|entry| entry.section_publication)
     }
 
-    /// Apply a resolved clock choice as one history step, after the caller
-    /// has prepared the exact successor media and output. Undo and Redo can
-    /// inspect and prepare the original clocks through the usual history API.
+    /// Prepare a rate edge with the optional live-state projection validated
+    /// by the Session owner. The projection describes the outgoing project
+    /// with its freshly captured device state. Failure and no-op restore the
+    /// exact original model and leave both history stacks unchanged.
     pub fn change_sample_rate_prepared<T, E: From<Invalid>>(
+        &mut self,
+        action: SampleRateHistoryAction,
+        outgoing: Option<Project>,
+        prepare: impl FnOnce(&Project) -> Result<T, E>,
+    ) -> Result<Option<T>, E> {
+        if outgoing.as_ref().is_some_and(|project| {
+            project.sample_rate() != self.project.sample_rate()
+                || project.sample_rate_mode() != self.project.sample_rate_mode()
+        }) {
+            return Err(E::from(Invalid(
+                "captured project clock differs from the current rate",
+            )));
+        }
+        let original = outgoing.map(|project| std::mem::replace(&mut self.project, project));
+        let result = match action {
+            SampleRateHistoryAction::Apply { rate, mode } => {
+                self.apply_sample_rate(rate, mode, prepare)
+            }
+            SampleRateHistoryAction::Undo => self.undo_prepared(prepare),
+            SampleRateHistoryAction::Redo => self.redo_prepared(prepare),
+        };
+        if !matches!(result, Ok(Some(_)))
+            && let Some(original) = original
+        {
+            self.project = original;
+        }
+        result
+    }
+
+    fn apply_sample_rate<T, E: From<Invalid>>(
         &mut self,
         rate: u32,
         mode: crate::SampleRateMode,
