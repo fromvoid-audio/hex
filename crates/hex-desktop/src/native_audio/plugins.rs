@@ -48,6 +48,7 @@ struct Source {
     queued: bool,
     observes_latency: bool,
     editor_open: bool,
+    edit_backlog: bool,
     #[cfg(all(test, feature = "allocation-probe"))]
     observed_latency_receipt: bool,
     #[cfg(all(test, feature = "allocation-probe"))]
@@ -221,6 +222,9 @@ impl Plugins {
     }
     pub fn output_closed(&mut self) {
         self.configured = false;
+        for source in &mut self.sources {
+            source.edit_backlog = false;
+        }
         self.editor_checked = None;
         if let Some(editor::EditorOperation::Pending {
             generation,
@@ -291,8 +295,8 @@ impl Plugins {
         Ok(())
     }
     /// No insertion, restore, reopen, edit, queued source or retirement is
-    /// waiting for a worker poll (#4574). Accepted sources stay warm; their
-    /// degraded-endpoint observation tolerates the idle poll interval.
+    /// waiting for a worker poll (#4574). Accepted sources stay warm, but
+    /// queued editor receipts need the busy cadence even with transport stopped.
     pub fn idle(&self) -> bool {
         self.pending.is_none()
             && self.editor.is_none()
@@ -300,10 +304,9 @@ impl Plugins {
             && self.reopen.is_none()
             && self.edit.is_none()
             && self.degraded_changed.is_none()
-            && !self
-                .sources
-                .iter()
-                .any(|source| source.retiring || (source.queued && !source.accepted))
+            && !self.sources.iter().any(|source| {
+                source.retiring || source.edit_backlog || (source.queued && !source.accepted)
+            })
     }
     pub(super) fn can_retain_output_for_document(
         &self,
@@ -439,6 +442,7 @@ impl Plugins {
                 queued: false,
                 observes_latency: false,
                 editor_open: false,
+                edit_backlog: false,
                 #[cfg(all(test, feature = "allocation-probe"))]
                 observed_latency_receipt: false,
                 #[cfg(all(test, feature = "allocation-probe"))]
@@ -503,13 +507,14 @@ impl Plugins {
             return None;
         }
         let control = output.publication.control()?;
-        if control.status.applied_audio_source().is_some() {
+        let active = control.status.native_effect_source();
+        if active.is_none() || control.status.applied_audio_source().is_some() {
+            for source in &mut self.sources {
+                source.edit_backlog = false;
+            }
             return None;
         }
-        let active = control
-            .status
-            .native_effect_source()
-            .filter(|source| source.context == context)?;
+        let active = active.filter(|source| source.context == context)?;
         self.latency_poll_at = now.checked_add(std::time::Duration::from_millis(10));
         let len = self.sources.len();
         for _ in 0..len {
@@ -526,6 +531,9 @@ impl Plugins {
             let batch = control
                 .poll_native_source_recovery_edits_on_control(source.binding)
                 .ok()?;
+            if let Some(batch) = batch {
+                source.edit_backlog = batch.edits.pending != 0;
+            }
             if let Some(log) = &self.diagnostics
                 && let Some(batch) = batch
                 && let [first, ..] = batch.edits.as_slice()
@@ -582,10 +590,13 @@ impl Plugins {
             let generation = context.project_generation;
             let endpoints = self
                 .sources
-                .iter()
+                .iter_mut()
                 .filter(|source| source.project_generation == generation)
                 .map(|source| {
                     let status = control.native_source_endpoint_status(source.binding);
+                    if status == Some((true, false)) {
+                        source.edit_backlog = false;
+                    }
                     if status == Some((true, false))
                         && let Some(log) = &self.diagnostics
                         && let Some(diagnostic) =
@@ -923,4 +934,44 @@ fn advance_source(
         Some(Progress::Preparing) | None => {}
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod idle_tests {
+    use super::*;
+
+    #[test]
+    fn stopped_editor_backlog_keeps_polling_busy_until_drained_or_output_closes() {
+        let mut plugins = Plugins::default();
+        plugins.sources.push(Source {
+            binding: Binding {
+                root: 1,
+                instance: 2,
+                graph: 3,
+                epoch: 4,
+            },
+            owner: ProcessorChainOwner::Main,
+            device: 2,
+            project_generation: 1,
+            operation: SourceOperation::Reopen,
+            accepted: true,
+            retiring: false,
+            queued: true,
+            observes_latency: true,
+            editor_open: true,
+            edit_backlog: false,
+            #[cfg(feature = "allocation-probe")]
+            observed_latency_receipt: false,
+            #[cfg(feature = "allocation-probe")]
+            attempts: 0,
+        });
+        assert!(plugins.idle());
+        plugins.sources[0].edit_backlog = true;
+        assert!(!plugins.idle());
+        plugins.sources[0].edit_backlog = false;
+        assert!(plugins.idle());
+        plugins.sources[0].edit_backlog = true;
+        plugins.output_closed();
+        assert!(plugins.idle());
+    }
 }
