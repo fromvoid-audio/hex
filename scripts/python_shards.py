@@ -1,13 +1,12 @@
-"""Run selected Python self-tests as concurrent single-test processes.
+"""Run selected Python self-tests in isolated concurrent processes.
 
 Usage: python3 scripts/python_shards.py [--workers N] [--discover | -- SELECTOR ...]
 
 Selectors are unittest names (modules, classes or test IDs) under scripts/tests.
-Each test runs once in its own `unittest` process, pulled from one work queue,
-so long cases (real Cargo fixtures) spread across workers instead of one serial
-chain. Every process prints its own `Ran N tests` / `OK` lines, which the local
-runner counts. A test needing state shared across cases in one process cannot
-rely on it here; per-class fixtures are rebuilt in each process.
+Owner selections run one case per process. Complete discovery batches small
+sets of ordinary cases to keep process startup from dominating. Every case runs
+once and every process reports a unittest result. Tests cannot rely on sharing
+state with other cases in the same process.
 
 Methods marked `__hex_shard_bounded__ = True` run after ordinary tests with at
 most two workers. This keeps subprocess-heavy isolated fixtures from competing
@@ -63,6 +62,14 @@ def run_cases(cases, workers, run):
             yield from pool.map(run, selected)
 
 
+def batches(cases: list[tuple[str, bool]], size: int) -> list[tuple[tuple[str, ...], bool]]:
+    """Keep bounded fixtures isolated and distribute ordinary cases across batches."""
+    ordinary = [name for name, bounded in cases if not bounded]
+    count = (len(ordinary) + size - 1) // size
+    return ([(tuple(ordinary[index::count]), False) for index in range(count)]
+            + [((name,), True) for name, bounded in cases if bounded])
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--discover", action="store_true", help="discover every test_*.py suite")
@@ -82,13 +89,16 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     root = TESTS.parent.parent
 
-    def run(test: str) -> tuple[str, int, str]:
-        result = subprocess.run([sys.executable, "-c", BOOTSTRAP, test], cwd=root,
+    def run(tests: tuple[str, ...]) -> tuple[str, int, str]:
+        flags = ["-v"] if arguments.discover else []
+        result = subprocess.run([sys.executable, "-c", BOOTSTRAP, *flags, *tests], cwd=root,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        return test, result.returncode, result.stdout
+        label = tests[0] if len(tests) == 1 else f"{tests[0]} and {len(tests) - 1} more"
+        return label, result.returncode, result.stdout
 
     failed = False
-    for test, code, output in run_cases(cases, arguments.workers, run):
+    jobs = batches(cases, size=8 if arguments.discover else 1)
+    for test, code, output in run_cases(jobs, arguments.workers, run):
         # unittest reports on stderr; keep that stream for callers and logs.
         print(f"===== {test} (exit {code}) =====\n{output}", file=sys.stderr, flush=True)
         failed |= code != 0

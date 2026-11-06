@@ -161,6 +161,15 @@ class SelectionTests(unittest.TestCase):
         health = selection(["scripts/unknown-helper.py"], profile="health", modules=modules)
         self.assertEqual(impact.argv(health), impact.COMPREHENSIVE_ARGV)
 
+    def test_discovery_batches_preserve_exact_cases_and_fixture_isolation(self):
+        cases = [(f"test_{index}", index in {2, 7}) for index in range(15)]
+        groups = shards.batches(cases, size=4)
+        self.assertEqual(sorted(name for batch, _ in groups for name in batch), sorted(name for name, _ in cases))
+        self.assertEqual([batch for batch, bounded in groups if bounded], [("test_2",), ("test_7",)])
+        self.assertTrue(all(1 <= len(batch) <= 4 for batch, _ in groups))
+        self.assertEqual(shards.batches(cases, size=1),
+                         [((name,), marked) for marked in (False, True) for name, bounded in cases if marked == bounded])
+
     def test_shard_discovery_runs_nested_cases_and_refuses_import_errors(self):
         with tempfile.TemporaryDirectory() as directory:
             tests = Path(directory) / "scripts" / "tests"
@@ -183,10 +192,9 @@ class SelectionTests(unittest.TestCase):
             command = [sys.executable, str(script), "--discover"]
             result = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(result.returncode, 1)
-            self.assertIn("budget_nested_fixture.test_cases.Cases.test_pass (exit 0)", result.stderr)
-            self.assertIn("budget_nested_fixture.test_cases.Cases.test_skip (exit 0)", result.stderr)
-            self.assertIn("OK (skipped=1)", result.stderr)
-            self.assertIn("budget_nested_fixture.test_cases.Cases.test_fail (exit 1)", result.stderr)
+            for method, outcome in (("test_pass", "ok"), ("test_skip", "skipped"), ("test_fail", "FAIL")):
+                self.assertIn(f"{method} (budget_nested_fixture.test_cases.Cases) ... {outcome}", result.stderr)
+            self.assertIn("FAILED (failures=1, skipped=1)", result.stderr)
             fixture.write_text("raise RuntimeError('cannot import fixture')\n")
             result = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(result.returncode, 1)

@@ -151,9 +151,9 @@ Python tooling follows the same rule. A changed `scripts/NAME.py` (or
 `scripts/tests/test_X.py` runs itself. Both add the shared planner invariants.
 Scripts without their own test module, config files and unknown inputs keep
 comprehensive discovery. Merge checks without explicit native acceptance inputs
-run that inventory through `scripts/python_shards.py --discover`. Full, release
-and health audits retain serial comprehensive discovery. Owner selections also
-run through `scripts/python_shards.py`:
+run that inventory through `scripts/python_shards.py --discover` in batches
+of up to eight ordinary cases. Comprehensive full, release and health runs
+remain serial. Owner selections run through `scripts/python_shards.py`:
 one process per test from a shared work queue (up to 12 workers), which brings
 `test_local_ci` + `test_ci_plan` from 124 s serial to about 40 s.
 Subprocess-heavy test methods explicitly marked `__hex_shard_bounded__ = True`
