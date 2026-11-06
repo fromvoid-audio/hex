@@ -16,8 +16,8 @@ AppKit access stays inside GPUI's existing native boundary.
 This is an excluded external dependency, not a Hex workspace crate. Hex crates
 retain unsafe_code=forbid. Do not edit the machine's registry cache, add app FFI,
 or grow this patch beyond the documented input, cursor, titlebar, test-support,
-explicit grid-literal, bounded accessibility and text decoration storage decisions.
-view-cache epoch, scene replay and explicit grid-literal decisions.
+explicit grid-literal, bounded accessibility, text decoration storage,
+view-cache epoch, scene replay and macOS Blade layer ownership decisions.
 See scripts/check-gpui-patch.py and run python3 scripts/check-gpui-patch.py from the Hex
 workspace.
 
@@ -431,3 +431,10 @@ baseline. Scene admission and cached replay use the transformed sprite bounds
 for clipping and paint order. The app supplies the name and title hitbox, so
 normal text layout and pointer handling remain with their existing owners.
 Test support exposes the resulting rotated glyph bounds without GPU readback.
+
+6 November macOS Blade layer ownership: the backing-properties callback borrows
+the Metal layer retained by the Blade surface. Its accessor returns a
+`MetalLayerRef` tied to the renderer borrow. The previous owning wrapper released
+a reference on every scale update despite receiving only a borrowed pointer.
+The change stays in the existing external renderer and leaves surface custody,
+display-link behavior, and Hex's workspace unsafe prohibition intact.

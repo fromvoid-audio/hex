@@ -218,7 +218,8 @@
     "src/app.rs": "a1ff1ed9c58337e2c2c8162c07b6f512852b8eafc4bca7333664536cb232de8f",
     "src/element.rs": "93dbbe830b6cc8fc961e50d2119a3ebf5680024b8e293ea54c3c7e16f1b7c365",
     "src/text_system.rs": "8ab7faae0a1cade0aefc92e824a7ff025c62c9bd7ac29da123de8b8655cf14eb",
-    "src/text_system/line.rs": "794653fb72e4d9abf3412b151033c5c65ff1fc3466ed16caccdef3ff76595b19"
+    "src/text_system/line.rs": "794653fb72e4d9abf3412b151033c5c65ff1fc3466ed16caccdef3ff76595b19",
+    "src/platform/blade/blade_renderer.rs": "e2d244852d9ea6faae7cb4663aee9c1896e5964e044cf5b6f69042672bdf4271"
   },
   "added_files": {
     "src/accessibility.rs": "8396d22a2be0c369d1b2e6fac782b67afa8d924e1c1deac76ba8dd78abeef416",
