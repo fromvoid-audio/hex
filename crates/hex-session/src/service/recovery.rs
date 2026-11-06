@@ -233,6 +233,52 @@ pub(super) fn open_source_with_limits(
     admission: sampler_export::Admission<'_>,
 ) -> Result<OpenCandidate, String> {
     let (mut project, project_dir, document) = read_source(source)?;
+    let dirty = document.is_none() || !relinks.is_empty();
+    if !relinks.is_empty() {
+        if relinks.keys().any(|id| project.asset(*id).is_none()) {
+            return Err("relink refers to an unknown asset".into());
+        }
+        let paths: BTreeMap<_, _> = relinks
+            .iter()
+            .map(|(id, path)| (id.value(), path))
+            .collect();
+        let mut snapshot = project.snapshot();
+        for asset in &mut snapshot.assets {
+            if let Some(path) = paths.get(&asset.id) {
+                asset.path = absolute_document_path(path)?;
+            }
+        }
+        project = Project::from_snapshot(snapshot).map_err(|e| e.to_string())?;
+    }
+    project = with_missing_media_offline(project, &project_dir)?;
+    let session = prepare_project(
+        current,
+        history_capacity,
+        project,
+        &project_dir,
+        mode,
+        reservation,
+        native,
+        frame_allowance,
+        admission,
+    )?;
+    Ok((session, project_dir, document, dirty))
+}
+
+/// Rebuild a validated project from its original sources under the same
+/// reservations as opening. The caller retains ownership of document identity.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn prepare_project(
+    current: &Session,
+    history_capacity: usize,
+    project: Project,
+    project_dir: &Path,
+    mode: DocumentAudioMode,
+    reservation: Option<SourcePlanReservation>,
+    native: Option<crate::ResidentNativeReservation>,
+    frame_allowance: u64,
+    admission: sampler_export::Admission<'_>,
+) -> Result<Session, String> {
     let private_sampler =
         hex_engine::native_device_resources::requires_private_sampler_sources(&project);
     if private_sampler
@@ -259,24 +305,7 @@ pub(super) fn open_source_with_limits(
     if current.shutdown.load(Ordering::Acquire) {
         return Err("project open cancelled".into());
     }
-    let dirty = document.is_none() || !relinks.is_empty();
-    if !relinks.is_empty() {
-        if relinks.keys().any(|id| project.asset(*id).is_none()) {
-            return Err("relink refers to an unknown asset".into());
-        }
-        let paths: BTreeMap<_, _> = relinks
-            .iter()
-            .map(|(id, path)| (id.value(), path))
-            .collect();
-        let mut snapshot = project.snapshot();
-        for asset in &mut snapshot.assets {
-            if let Some(path) = paths.get(&asset.id) {
-                asset.path = absolute_document_path(path)?;
-            }
-        }
-        project = Project::from_snapshot(snapshot).map_err(|e| e.to_string())?;
-    }
-    project = with_missing_media_offline(project, &project_dir)?;
+
     let reservation = match mode {
         DocumentAudioMode::Resident => reservation.or(current.source_plan_reservation()),
         DocumentAudioMode::VerifiedStreaming => reservation,
@@ -304,7 +333,7 @@ pub(super) fn open_source_with_limits(
         asset.original_source().is_none()
             && !asset_requires_resident_processing(&project, asset.id())
             && crate::verified_import::exceeds_resident_decode(
-                &asset_media_path(&project_dir, asset),
+                &asset_media_path(project_dir, asset),
                 asset.source_frames(),
             )
             .unwrap_or(false)
@@ -333,7 +362,7 @@ pub(super) fn open_source_with_limits(
         .with_shutdown(Arc::clone(&current.shutdown));
         // Verify every retained asset, including unused records, without decoding PCM.
         for asset in online_assets(&project) {
-            let path = asset_media_path(&project_dir, asset);
+            let path = asset_media_path(project_dir, asset);
             let source = candidate
                 .verify_asset(path, asset)
                 .map_err(|e| e.to_string())?;
@@ -345,7 +374,7 @@ pub(super) fn open_source_with_limits(
         candidate.editor =
             hex_project::Editor::new(project, history_capacity).map_err(|e| e.to_string())?;
         candidate.sine_table = current.sine_table();
-        return Ok((candidate, project_dir, document, dirty));
+        return Ok(candidate);
     }
     let mut file_candidate = if ordinary_file_backed {
         Some(
@@ -372,7 +401,7 @@ pub(super) fn open_source_with_limits(
     // Load unreferenced assets too: the editor can place them later. Missing
     // media is either offline (recorded on the project) or rejects the candidate.
     for asset in online_assets(&project) {
-        let media_path = asset_media_path(&project_dir, asset);
+        let media_path = asset_media_path(project_dir, asset);
         if current.shutdown.load(Ordering::Acquire) {
             return Err("project open cancelled".into());
         }
@@ -600,12 +629,7 @@ pub(super) fn open_source_with_limits(
         session.semantic_source_epoch =
             crate::audio_sources::fresh_source_epoch().map_err(|e| e.to_string())?;
     }
-    Ok((
-        session.with_shutdown(Arc::clone(&current.shutdown)),
-        project_dir,
-        document,
-        dirty,
-    ))
+    Ok(session.with_shutdown(Arc::clone(&current.shutdown)))
 }
 
 fn asset_media_path(project_dir: &Path, asset: &hex_project::Asset) -> PathBuf {
