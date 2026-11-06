@@ -38,6 +38,7 @@ class Instance final {
     int32 event_input_channels_ = 0;
     bool configured = false, configuration_started = false, opened = false, used = false;
     ProcessingConfiguration configuration_{};
+    InactiveInstrumentOutputs inactive_outputs_;
     StateStream* component_stream=nullptr;
     StateStream* controller_stream=nullptr;
     StateStream* restore_component_stream=nullptr;
@@ -200,8 +201,13 @@ public:
             sdk.input_channels=info.channelCount;
             sdk.input_enabled=true;
         }
+        const bool multiple_outputs=!request.input_channels && output_count>1;
+        BusInfo first_output{};
         if (!audio_buses(component,kInput,input_count,sdk.input_channels,false) ||
-            !audio_buses(component,kOutput,output_count,request.output_channels,false))
+            (multiple_outputs
+                ? output_count>max_instrument_outputs || !request.output_enabled ||
+                    !audio_bus_info(component,kOutput,0,kMain,first_output)
+                : !audio_buses(component,kOutput,output_count,request.output_channels,false)))
             return ConfigurationResult::UnsupportedTopology;
         int32 event_channels=0;
         if (!request.input_channels) {
@@ -225,23 +231,38 @@ public:
         if (input_count==2 &&
             (processor->getBusArrangement(kInput,1,aux_input)!=kResultOk || !aux_input))
             return ConfigurationResult::ArrangementMismatch;
-        SpeakerArrangement inputs[]{main_input,aux_input},output=main_output;
+        SpeakerArrangement inputs[]{main_input,aux_input};
+        InstrumentOutputLayout outputs{};
+        outputs[0]=main_output;
+        const auto additional_output_matches=[&](int32 index,SpeakerArrangement& actual) {
+            BusInfo info{};
+            return audio_bus_info(component,kOutput,index,info) &&
+                (info.busType==kMain || info.busType==kAux) &&
+                processor->getBusArrangement(kOutput,index,actual)==kResultOk &&
+                SpeakerArr::getChannelCount(actual)==info.channelCount;
+        };
+        for (int32 i=1;i<output_count;++i)
+            if (!additional_output_matches(i,outputs[i])) return ConfigurationResult::ArrangementMismatch;
         SpeakerArrangement observed{};
-        // Reuse a matching default for silent-input instruments. Some
-        // processors refuse a redundant setBusArrangements call.
-        const bool reuse_layout=silent_input &&
+        // Some instruments refuse a redundant setBusArrangements call.
+        const bool reuse_layout=(silent_input || multiple_outputs) &&
             processor->getBusArrangement(kOutput,0,observed)==kResultOk && observed==main_output;
+        auto requested_outputs=outputs;
         if (!reuse_layout &&
-            processor->setBusArrangements(input_count?inputs:nullptr,input_count,&output,output_count)!=kResultOk)
+            processor->setBusArrangements(input_count?inputs:nullptr,input_count,requested_outputs.data(),output_count)!=kResultOk)
             return ConfigurationResult::ArrangementRefused;
         if (component->getBusCount(kAudio,kInput)!=input_count ||
             component->getBusCount(kAudio,kOutput)!=output_count ||
             !audio_buses(component,kInput,input_count,sdk.input_channels,true) ||
-            !audio_buses(component,kOutput,output_count,request.output_channels,true) ||
+            !audio_bus_info(component,kOutput,0,kMain,first_output) ||
+            first_output.channelCount!=request.output_channels ||
             processor->getBusArrangement(kOutput,0,observed)!=kResultOk || observed!=main_output ||
             (input_count && (processor->getBusArrangement(kInput,0,observed)!=kResultOk || observed!=main_input)) ||
             (input_count==2 && (processor->getBusArrangement(kInput,1,observed)!=kResultOk || observed!=aux_input)))
             return ConfigurationResult::ArrangementMismatch;
+        for (int32 i=1;i<output_count;++i)
+            if (!additional_output_matches(i,observed) || observed!=outputs[i])
+                return ConfigurationResult::ArrangementMismatch;
         ProcessSetup setup{};
         setup.processMode = kRealtime; setup.symbolicSampleSize = kSample32;
         setup.maxSamplesPerBlock = request.maximum_frames; setup.sampleRate = request.sample_rate;
@@ -249,6 +270,9 @@ public:
         // An inactive trailing bus needs no PCM buffer, even if default active.
         if (input_count==2 && component->activateBus(kAudio,kInput,1,false)!=kResultOk)
             return ConfigurationResult::ActivationRefused;
+        for (int32 i=1;i<output_count;++i)
+            if (component->activateBus(kAudio,kOutput,i,false)!=kResultOk)
+                return ConfigurationResult::ActivationRefused;
         if (component->activateBus(kAudio,kOutput,0,request.output_enabled)!=kResultOk)
             return ConfigurationResult::ActivationRefused;
         output_active = request.output_enabled;
@@ -264,6 +288,7 @@ public:
         }
         if (component->setActive(true) != kResultOk) return ConfigurationResult::ActivationRefused;
         configuration_=sdk;
+        inactive_outputs_.prepare(output_count,outputs);
         silent_input_=silent_input;
         active = true; configured = true;
         return ConfigurationResult::Prepared;
@@ -407,11 +432,17 @@ public:
     bool process(ProcessData& data) {
         if (!processing.load() || processing_thread != std::this_thread::get_id() ||
             quarantined.load() || processing_fault.load() || !processing_data(configuration_,data)) return false;
-        const ProcessingShape shape(data);
-        clear_disjoint_outputs(configuration_,data);
+        auto sdk=data;
+        inactive_outputs_.attach(sdk);
+        const ProcessingShape shape(sdk);
+        clear_disjoint_outputs(configuration_,sdk);
         // Foreign DSP is not rollbackable. A failed call invalidates this owner;
         // only stop/close remain, never another process or restart as a retry.
-        if (processor->process(data) != kResultOk || !shape.unchanged(data) || !finite_outputs(configuration_,data)) {
+        if (processor->process(sdk)!=kResultOk || !shape.unchanged(sdk) || !inactive_outputs_.unchanged()) {
+            processing_fault.store(true); return false;
+        }
+        if (data.numOutputs) data.outputs[0].silenceFlags=sdk.outputs[0].silenceFlags;
+        if (!finite_outputs(configuration_,data)) {
             processing_fault.store(true); return false;
         }
         return true;

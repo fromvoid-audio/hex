@@ -383,7 +383,7 @@ class NativeInstanceTests(unittest.TestCase):
         return reply
 
     def test_instrument_note_offsets_gate_pcm_across_blocks(self):
-        for variant in (115, 120):
+        for variant in (115, 120, 128):
             with self.subTest(variant=variant):
                 session = self.session(variant=variant, channels=(0, 2))
                 self.assertEqual(session.message()[0], b"HXVIRD05")
@@ -398,8 +398,19 @@ class NativeInstanceTests(unittest.TestCase):
                     self.assertEqual(struct.unpack("<16f", reply[64:]), tuple(x for v in expected for x in (v, v)))
                 self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (3, 24))
 
+    def test_instrument_rejects_invalid_extra_output_layout_and_mutated_pointers(self):
+        malformed = self.session(variant=130, channels=(0, 2))
+        self.error(malformed, 22)
+        self.terminal(malformed, 22)
+
+        mutated = self.session(variant=129, channels=(0, 2))
+        self.assertEqual(mutated.message()[0], b"HXVIRD05")
+        magic, error = self.instrument_block(mutated, [(3, 0x92, 60, 127)])
+        self.assertEqual((magic, struct.unpack_from("<I", error, 35)[0]), (b"HXVIER01", 7))
+        self.assertEqual(self.terminal(mutated, 7)[5:7], (0, 0))
+
     def test_instrument_stopped_epoch_releases_original_note_before_resume(self):
-        session = self.session(variant=115, channels=(0, 2))
+        session = self.session(variant=128, channels=(0, 2))
         self.assertEqual(session.message()[0], b"HXVIRD05")
 
         def render(binding, notes):
