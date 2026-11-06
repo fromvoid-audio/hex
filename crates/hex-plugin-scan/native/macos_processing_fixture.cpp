@@ -85,6 +85,7 @@ const TUID restore_controller_id={0x48,0x45,0x58,0x43,1,2,3,4,5,6,7,8,9,10,11,12
 // Original one-parameter SDK fixtures preserve the same opaque state shape.
 // Distinct variants exercise actual metadata and processing, not host guesses.
 static ParamID parameter_id(int variant) { return variant==80 || variant==89 || variant==92?0u:7u; }
+constexpr ParamID drag_axis_id=11;
 static int32 parameter_inventory_size() {
     const auto* shape=std::getenv("HEX_ORIGINAL_PARAMETER_INVENTORY");
     if(!shape) return 1;
@@ -103,10 +104,11 @@ IComponentHandler* latency_handler=nullptr;
 class RestoreController final : public IEditController {
     std::atomic<uint32> refs{1};
     const int fault=next_fault;
-    const int32 inventory_size=parameter_inventory_size();
+    const int32 inventory_size=fault==87?2:parameter_inventory_size();
     FUnknown* context=nullptr;
     IComponentHandler* handler=nullptr;
     float component_gain=0;uint32 scroll=7;
+    ParamValue drag_axis=0.25;
     CFRunLoopTimerRef edit_timer=nullptr;bool edits_sent=false;
     static void edit_tick(CFRunLoopTimerRef,void* context) {
         auto* self=static_cast<RestoreController*>(context);
@@ -119,9 +121,18 @@ class RestoreController final : public IEditController {
         }
         const auto id=parameter_id(self->fault);
         if(self->fault==86) self->handler->performEdit(id,0.75);
+        else if(self->fault==87) {
+            // One synchronous mouse-tracking burst before main can dispatch.
+            self->handler->beginEdit(id);self->handler->beginEdit(drag_axis_id);
+            for(int n=0;n<96;++n) {
+                self->handler->performEdit(id,n==95?0.875:0.25);
+                self->handler->performEdit(drag_axis_id,n==95?0.625:0.125);
+            }
+            self->handler->endEdit(id);self->handler->endEdit(drag_axis_id);
+        }
         else {
             self->handler->beginEdit(id);self->component_gain=3.0;
-            const int repeats=self->fault==87?65:(self->fault==116?12:1);
+            const int repeats=self->fault==116?12:1;
             for(int n=0;n<repeats;++n) self->handler->performEdit(id,0.75);
             self->handler->endEdit(id);
         }
@@ -220,6 +231,7 @@ public:
         // Keep the low gain ID last to exercise SDK page order separately
         // from the host's sorted processing lookup.
         if(inventory_size>1 && index<inventory_size-1) {
+            if(fault==87) {info.id=drag_axis_id;return kResultOk;}
             const auto* shape=std::getenv("HEX_ORIGINAL_PARAMETER_INVENTORY");
             if(index!=inventory_size-2 || !shape || std::strcmp(shape,"duplicate"))
                 info.id=static_cast<ParamID>(1001+index);
@@ -237,6 +249,7 @@ public:
         const char16_t name[]=u"gain";std::memcpy(info.title,name,sizeof(name));std::memcpy(info.shortTitle,name,sizeof(name));return kResultOk;
     }
     ParamValue PLUGIN_API getParamNormalized(ParamID id) override {
+        if(control() && context && fault==87 && id==drag_axis_id) return drag_axis;
         if(control() && context && id>1000 && id<static_cast<ParamID>(1000+inventory_size)) return 0.25;
         if (!control() || !context || id!=parameter_id(fault)) {++observed.violations;return 0;}
         ++restoration.value_reads;trace(19);
@@ -285,8 +298,10 @@ public:
         return value/4.0;
     }
     tresult PLUGIN_API setParamNormalized(ParamID id,ParamValue value) override {
-        if(!control() || !context || !handler || id!=parameter_id(fault) || !std::isfinite(value) || value<0 || value>1)
+        if(!control() || !context || !handler || !std::isfinite(value) || value<0 || value>1)
             return kInvalidArgument;
+        if(fault==87 && id==drag_axis_id) {drag_axis=value;return kResultOk;}
+        if(id!=parameter_id(fault)) return kInvalidArgument;
         if(fault==76 && observed.flushes.load()) return kResultFalse;
         component_gain=static_cast<float>(parameter_value(fault,value)*4.0);
         if(fault==104 && observed.blocks) {
@@ -613,6 +628,20 @@ public:
         if (pthread_main_np() || !same_worker() || !active || !std::isfinite(sample_rate) || data.processMode!=kRealtime ||
             data.symbolicSampleSize!=precision) { ++observed.violations;return kResultFalse; }
         if (!data.numSamples && !data.numInputs && !data.numOutputs && !data.inputs && !data.outputs) {
+            if(fault==87 && data.inputParameterChanges) {
+                const auto count=data.inputParameterChanges->getParameterCount();
+                if(count<1 || count>2) return kInvalidArgument;
+                for(int32 n=0;n<count;++n) {
+                    auto* queue=data.inputParameterChanges->getParameterData(n);
+                    int32 offset=-1;ParamValue value=-1;
+                    if(!queue || queue->getPointCount()!=1 || queue->getPoint(0,offset,value)!=kResultOk ||
+                        offset || !std::isfinite(value) || value<0 || value>1) return kInvalidArgument;
+                    if(queue->getParameterId()==parameter_id(fault)) gain=static_cast<float>(value*4.0);
+                    else if(queue->getParameterId()!=drag_axis_id) return kInvalidArgument;
+                }
+                ++observed.flushes;
+                return kResultOk;
+            }
             if ((processing && fault!=116) || !data.inputParameterChanges || data.inputParameterChanges->getParameterCount()!=1)
                 return kInvalidArgument;
             auto* queue=data.inputParameterChanges->getParameterData(0);

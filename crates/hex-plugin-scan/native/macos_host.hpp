@@ -81,8 +81,9 @@ enum HostRefusal : uint32 { WrongThread=1, UnknownRestart=2, GraphControlRequire
 // are admitted here. IO,
 // latency/reload/routing require actual graph preparation and remain explicitly
 // unavailable until the product's owning runtime/bridge/PDC contracts exist.
-// Each accepted callback queues one ordered request, never recursively calls the
-// controller or graph, and acknowledges queuing rather than DSP application.
+// Callbacks acknowledge queuing rather than DSP application. When a native
+// drag saturates the main FIFO, replace a superseded, undispatched value for
+// that gesture. Begin, End and restart records are never replaced.
 class Host final : public IHostApplication, public IComponentHandler {
     std::atomic<uint32> references{1}, refusals{0};
     std::array<HostMessage,HOST_MESSAGE_COUNT> messages{};
@@ -96,7 +97,7 @@ class Host final : public IHostApplication, public IComponentHandler {
     std::atomic<uint64> pending_latency_restart{0};
     std::array<ParamID,HOST_EDIT_COUNT> active_ids{};
     std::array<uint64,HOST_EDIT_COUNT> active_tokens{};
-    size_t first=0, count=0, restart_count=0;
+    size_t first=0, count=0, restart_count=0, active_count=0;
     uint64 sequence=0;
     std::atomic<bool> accepting{true};
     std::atomic<pthread_t> processing_thread{nullptr};
@@ -230,6 +231,20 @@ public:
     tresult PLUGIN_API performEdit(ParamID id,ParamValue value) override { return admit_edit(id,Perform,value); }
     tresult PLUGIN_API endEdit(ParamID id) override { return admit_edit(id,End,0); }
 private:
+    bool replace_queued_perform(const EditEvent& next) {
+        // Main owns this FIFO even while the worker drains its separate
+        // handoff. Append at the tail to retain increasing receipt sequences.
+        for(size_t n=count;n>0;--n) {
+            const auto& previous=requests[(first+n-1)%requests.size()];
+            if(previous.kind==Restart) break;
+            if(previous.kind!=Perform || previous.gesture!=next.gesture) continue;
+            for(size_t index=n;index<count;++index)
+                requests[(first+index-1)%requests.size()]=requests[(first+index)%requests.size()];
+            requests[(first+count-1)%requests.size()]=next;
+            return true;
+        }
+        return false;
+    }
     tresult admit_edit(ParamID id,uint32 kind,ParamValue value) {
         if(![NSThread isMainThread]) {refuse(WrongThread);return kResultFalse;}
         if(!accepting) {refuse(Retiring);return kResultFalse;}
@@ -250,14 +265,23 @@ private:
         if((kind==Begin && active!=active_tokens.size()) || (kind!=Begin && active==active_tokens.size())) {
             refuse(InvalidEdit);return kResultFalse;
         }
-        if(count==requests.size() || sequence==std::numeric_limits<uint64>::max() ||
-            (kind==Begin && vacant==active_tokens.size())) {refuse(QueueFull);return kResultFalse;}
+        if(sequence==std::numeric_limits<uint64>::max()) {refuse(QueueFull);return kResultFalse;}
         const auto next=sequence+1;
         const auto gesture=kind==Begin?next:active_tokens[active];
-        requests[(first+count)%requests.size()]={next,gesture,value,id,kind};
+        const EditEvent event{next,gesture,value,id,kind};
+        // Reserve one slot for each admitted gesture's End. A new Begin
+        // consumes a record and adds a reservation. End spends its own.
+        const auto available=requests.size()-count-active_count;
+        if(kind==Begin && (available<2 || vacant==active_tokens.size())) return kResultFalse;
+        if(kind==Perform && !available) {
+            if(!replace_queued_perform(event)) return kResultFalse;
+            sequence=next;
+            return kResultOk;
+        }
+        requests[(first+count)%requests.size()]=event;
         ++count;sequence=next;pending_edits.fetch_add(1,std::memory_order_release);
-        if(kind==Begin) {active_ids[vacant]=id;active_tokens[vacant]=gesture;}
-        if(kind==End) active_tokens[active]=0;
+        if(kind==Begin) {active_ids[vacant]=id;active_tokens[vacant]=gesture;++active_count;}
+        if(kind==End) {active_tokens[active]=0;--active_count;}
         return kResultOk;
     }
 public:
@@ -286,7 +310,7 @@ public:
             return kNotImplemented;
         }
         const auto refresh=flags & supported_restarts;
-        if ((refresh && (count==requests.size() || restart_count==HOST_RESTART_COUNT)) ||
+        if ((refresh && (count+active_count==requests.size() || restart_count==HOST_RESTART_COUNT)) ||
             sequence==std::numeric_limits<uint64>::max()) {
             refuse(QueueFull); return kResultFalse;
         }
@@ -485,7 +509,7 @@ public:
     void complete_parameter_edit() { pending_edits.fetch_sub(1,std::memory_order_acq_rel); }
     void stop_accepting() {
         if (![NSThread isMainThread]) { refuse(WrongThread); return; }
-        accepting=false;first=0;count=0;restart_count=0;
+        accepting=false;first=0;count=0;restart_count=0;active_count=0;
         active_tokens.fill(0);pending_edits.store(0,std::memory_order_release);
     }
 };

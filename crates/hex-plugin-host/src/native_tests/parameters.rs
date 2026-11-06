@@ -837,8 +837,69 @@ fn editor_burst_drains(idle: bool) {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
-fn actual_sdk_invalid_or_overflowing_ui_gestures_refuse_before_dsp() {
-    for variant in [86, 87, 88] {
+fn actual_sdk_saturated_drag_keeps_final_values_and_gesture_boundaries() {
+    use crate::protocol::ParameterEditKind::{Begin, End, Perform};
+
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(87),
+    )
+    .unwrap();
+    let child = instance.child_id_on_control();
+    std::fs::write(case.release(), b"emit a two-axis drag").unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    let mut edits: Vec<protocol::ParameterEdit> = Vec::new();
+    while edits.iter().filter(|edit| edit.kind == End).count() < 2 {
+        let batch = instance.service_idle_editor_edits_on_worker().unwrap();
+        edits.extend_from_slice(batch.edits.as_slice());
+        assert!(Instant::now() < until, "the entire drag must drain");
+        thread::yield_now();
+    }
+
+    assert_eq!(edits.len(), 64);
+    assert!(
+        edits
+            .windows(2)
+            .all(|pair| pair[0].sequence < pair[1].sequence)
+    );
+    assert!(edits.iter().all(|edit| edit.first_frame == 0));
+    for (id, final_value) in [(7, 0.875), (11, 0.625)] {
+        let mut gesture = edits.iter().filter(|edit| edit.id == id);
+        let begin = gesture.next().unwrap();
+        let end = gesture.next_back().unwrap();
+        assert_eq!((begin.kind, end.kind), (Begin, End));
+        assert_eq!(begin.sequence, end.gesture);
+        let last = gesture.next_back().unwrap();
+        assert_eq!((last.kind, last.normalized), (Perform, final_value));
+        assert_eq!(last.gesture, begin.sequence);
+        assert!(gesture.all(|edit| edit.kind == Perform && edit.gesture == begin.sequence));
+    }
+    assert_eq!(instance.completed_blocks_on_control(), 0);
+    assert_eq!(instance.child_id_on_control(), child);
+    let input = request(instance.configuration(), 0);
+    let output = instance.exchange_on_worker(input).unwrap();
+    for (actual, input) in output.pcm[..8].iter().zip(input.pcm) {
+        assert_eq!(*actual, input.map(|value| value * 1.75));
+    }
+    assert!(
+        instance
+            .quiesce_retained_on_control()
+            .unwrap()
+            .retire_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_sdk_invalid_ui_gestures_refuse_before_dsp() {
+    for variant in [86, 88] {
         let case = Case::new();
         let mut instance = Prepared::prepare(
             &build(),

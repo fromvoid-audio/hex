@@ -4,8 +4,10 @@ use super::*;
 impl Prepared {
     /// Consume at most eight ordered receipts. Perform means actual successful
     /// SDK processing/flush; Begin/End need no invented audio samples. Pending
-    /// callbacks remain native-owned under backpressure. Source cancellation or
-    /// refusal terminates queued operations; no receipt grants canonical edits.
+    /// callbacks remain native-owned under backpressure. Receipt sequences
+    /// can skip values superseded in a saturated editor queue. Gesture
+    /// boundaries remain ordered. Source cancellation or terminal refusal
+    /// ends queued operations; no receipt grants canonical edits.
     pub fn poll_parameter_edits_on_worker(&mut self) -> Result<protocol::ParameterEdits> {
         Ok(self.poll_edits_on_worker(false, false)?.edits)
     }
