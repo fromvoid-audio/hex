@@ -25,8 +25,9 @@ fn constructor_storage_requires_the_original_pair_and_survives_exchange_and_reti
     // Both queue allocations retain all slots, even when no blocks are queued.
     assert_eq!(
         storage.data_bytes,
-        2 * (QUEUE_CAPACITY * std::mem::size_of::<Block>()
-            + std::mem::size_of::<RingBuffer<Block>>())
+        QUEUE_CAPACITY * (std::mem::size_of::<InputRequest>() + std::mem::size_of::<Block>())
+            + std::mem::size_of::<RingBuffer<InputRequest>>()
+            + std::mem::size_of::<RingBuffer<Block>>()
             + std::mem::size_of::<Revocation>()
     );
     assert_eq!((storage.shared_groups, storage.shared_handle_bound), (3, 7));
@@ -408,14 +409,26 @@ fn bounded_input_validation_and_queue_independent_stop() {
                 .err(),
             3 => {
                 for _ in 0..QUEUE_CAPACITY {
-                    callback.requests.push(Block::empty(BINDING, 8)).unwrap();
+                    callback
+                        .requests
+                        .push(InputRequest {
+                            block: Block::empty(BINDING, 8),
+                            parameter_capacity: MAX_PARAMETER_POINTS,
+                        })
+                        .unwrap();
                 }
                 callback.stage(&[[1.0; 2]; 8], &[], &mut output).unwrap();
                 callback.finish(true).err()
             }
             4 => {
                 for _ in 0..QUEUE_CAPACITY {
-                    callback.requests.push(Block::empty(BINDING, 8)).unwrap();
+                    callback
+                        .requests
+                        .push(InputRequest {
+                            block: Block::empty(BINDING, 8),
+                            parameter_capacity: MAX_PARAMETER_POINTS,
+                        })
+                        .unwrap();
                 }
                 control.revoke();
                 assert!(matches!(worker.receive(), Err(Fault::Revoked)));
