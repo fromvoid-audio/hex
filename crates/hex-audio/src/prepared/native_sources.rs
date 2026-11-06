@@ -468,7 +468,7 @@ impl PublicationControl {
         if !self.native_custody
             || self.status.closing.load(Acquire)
             || preparation.sample_rate != f64::from(self.rate)
-            || self.requested_physical_callback_frames != Some(preparation.quantum)
+            || self.plugin_callback_quantum != Some(preparation.quantum)
         {
             return Err("native preparation output profile differs or is closing");
         }
