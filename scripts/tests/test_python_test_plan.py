@@ -151,6 +151,52 @@ class SelectionTests(unittest.TestCase):
             self.assertIn("shard_fixture.Cases.test_bounded (exit 1)", output.getvalue())
             sys.modules.pop("shard_fixture", None)
 
+    def test_comprehensive_merge_shards_discovery_without_narrowing(self):
+        modules = sorted(impact.REVIEWED_MODULES | {"nested.test_added"})
+        chosen = selection(["scripts/unknown-helper.py"], modules=modules)
+        self.assertEqual(chosen["mode"], "comprehensive")
+        self.assertEqual(chosen["test_selectors"], modules)
+        self.assertEqual(chosen["excluded_groups"], [])
+        self.assertEqual(impact.argv(chosen), impact.SHARDED_DISCOVERY_ARGV)
+        health = selection(["scripts/unknown-helper.py"], profile="health", modules=modules)
+        self.assertEqual(impact.argv(health), impact.COMPREHENSIVE_ARGV)
+
+    def test_shard_discovery_runs_nested_cases_and_refuses_import_errors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tests = Path(directory) / "scripts" / "tests"
+            nested = tests / "budget_nested_fixture"
+            nested.mkdir(parents=True)
+            (nested / "__init__.py").touch()
+            fixture = nested / "test_cases.py"
+            fixture.write_text(
+                "import unittest\n"
+                "class Cases(unittest.TestCase):\n"
+                "    def test_pass(self): pass\n"
+                "    @unittest.skip('optional fixture')\n"
+                "    def test_skip(self): self.fail()\n"
+                "    def test_fail(self): self.fail('expected failure')\n"
+            )
+            runner = ROOT / "scripts/python_shards.py"
+            # The runner resolves its own repository, so copy it into the fixture.
+            script = tests.parent / "python_shards.py"
+            script.write_bytes(runner.read_bytes())
+            command = [sys.executable, str(script), "--discover"]
+            result = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("budget_nested_fixture.test_cases.Cases.test_pass (exit 0)", result.stderr)
+            self.assertIn("budget_nested_fixture.test_cases.Cases.test_skip (exit 0)", result.stderr)
+            self.assertIn("OK (skipped=1)", result.stderr)
+            self.assertIn("budget_nested_fixture.test_cases.Cases.test_fail (exit 1)", result.stderr)
+            fixture.write_text("raise RuntimeError('cannot import fixture')\n")
+            result = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("cannot import fixture", result.stderr)
+            self.assertNotIn("(exit 0)", result.stderr)
+            fixture.unlink()
+            result = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("no tests matched", result.stderr)
+
     def test_ui_and_core_app_edits_have_the_same_reviewed_shared_checks(self):
         ui = selection(["crates/hex-ui/src/editor.rs"])
         core = selection(["crates/hex-engine/src/lib.rs"])
@@ -278,7 +324,7 @@ assert unittest.defaultTestLoader.loadTestsFromTestCase(instance.NativeInstanceT
             with self.subTest(path=path):
                 result = selection([path])
                 self.assertEqual(result["mode"], "comprehensive")
-                self.assertEqual(impact.argv(result), next(s for s in existing.ci.FULL_STEPS if s.step_id == "runner-tests").argv)
+                self.assertEqual(impact.argv(result), impact.SHARDED_DISCOVERY_ARGV)
                 self.assertEqual(result["excluded_groups"], [])
 
     def test_mixed_inputs_and_unregistered_rename_endpoint_cannot_take_fast_path(self):

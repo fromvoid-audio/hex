@@ -1,6 +1,6 @@
 """Run selected Python self-tests as concurrent single-test processes.
 
-Usage: python3 scripts/python_shards.py [--workers N] -- SELECTOR [SELECTOR ...]
+Usage: python3 scripts/python_shards.py [--workers N] [--discover | -- SELECTOR ...]
 
 Selectors are unittest names (modules, classes or test IDs) under scripts/tests.
 Each test runs once in its own `unittest` process, pulled from one work queue,
@@ -28,7 +28,7 @@ BOOTSTRAP = ("import sys, unittest; sys.path.insert(0, 'scripts/tests'); "
              "unittest.main(module=None)")
 
 
-def test_cases(selectors: list[str]) -> list[tuple[str, bool]]:
+def test_cases(selectors: list[str] | None) -> list[tuple[str, bool]]:
     """Expand selectors to unique test IDs and their bounded-fixture marker."""
     sys.path.insert(0, str(TESTS))
     found: dict[str, bool] = {}
@@ -42,7 +42,14 @@ def test_cases(selectors: list[str]) -> list[tuple[str, bool]]:
                 bounded = getattr(method, "__hex_shard_bounded__", False) is True
                 found[item.id()] = found.get(item.id(), False) or bounded
 
-    walk(unittest.defaultTestLoader.loadTestsFromNames(selectors))
+    if selectors is None:
+        loader = unittest.TestLoader()
+        suite = loader.discover(str(TESTS), pattern="test_*.py")
+        if loader.errors:
+            raise ValueError("\n".join(loader.errors))
+    else:
+        suite = unittest.defaultTestLoader.loadTestsFromNames(selectors)
+    walk(suite)
     return sorted(found.items())
 
 
@@ -58,13 +65,18 @@ def run_cases(cases, workers, run):
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--discover", action="store_true", help="discover every test_*.py suite")
     parser.add_argument("--workers", type=int, default=min(12, os.cpu_count() or 1))
     parser.add_argument("selectors", nargs=argparse.REMAINDER)
     arguments = parser.parse_args(argv)
     selectors = arguments.selectors[1:] if arguments.selectors[:1] == ["--"] else arguments.selectors
-    if not selectors or not 1 <= arguments.workers <= 64:
-        parser.error("expected --workers 1..64 -- SELECTOR [SELECTOR ...]")
-    cases = test_cases(selectors)
+    if arguments.discover == bool(selectors) or not 1 <= arguments.workers <= 64:
+        parser.error("expected --workers 1..64 and exactly one of --discover or -- SELECTOR ...")
+    try:
+        cases = test_cases(None if arguments.discover else selectors)
+    except ValueError as error:
+        print(f"test discovery failed: {error}", file=sys.stderr)
+        return 1
     if not cases:
         print("no tests matched the selectors", file=sys.stderr)
         return 1
