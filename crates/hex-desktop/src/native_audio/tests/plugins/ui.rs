@@ -1316,7 +1316,7 @@ fn live_vst3_pointer_drag_reaches_native_device_during_playback(cx: &mut gpui::T
         cx.update(|app| hex_ui::plugin_effect_test_view(window, app))
             .unwrap()
     };
-    let render = || {
+    let render_pcm = || {
         let mut pcm = [[0.0; 2]; 256];
         callback
             .lock()
@@ -1325,6 +1325,10 @@ fn live_vst3_pointer_drag_reaches_native_device_during_playback(cx: &mut gpui::T
             .unwrap()
             .render_native_direct(&mut pcm, &mut [0.0; 512])
             .unwrap();
+        pcm
+    };
+    let render = || {
+        let pcm = render_pcm();
         wait(|| {
             callback
                 .lock()
@@ -1378,6 +1382,51 @@ fn live_vst3_pointer_drag_reaches_native_device_during_playback(cx: &mut gpui::T
             state.revision == revision + 1
                 && state.project.device(device).unwrap().state()
                     != initial.device(device).unwrap().state()
+        })
+    });
+
+    let before_stop = view(cx).applied.unwrap().audio_revision;
+    let before_edit = view(cx).state.unwrap().project.clone();
+    click(&mut visual, "stop · escape");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    until("stopped restore refreshes the open controller list", || {
+        assert!(render_pcm().iter().all(|sample| *sample == [0.0; 2]));
+        repaint(cx, &mut visual);
+        let view = view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        let ready = view
+            .applied
+            .is_some_and(|source| source.audio_revision > before_stop)
+            && visual.debug_bounds(knob).is_some();
+        assert!(
+            ready || Instant::now() < deadline,
+            "restore status: {:?}; applied: {:?}; before: {before_stop}; knob: {:?}; restoring: {}; retry: {}; pending: {}; queued: {}",
+            view.status,
+            view.applied,
+            visual.debug_bounds(knob),
+            visual.debug_bounds("vst3-controls-restoring").is_some(),
+            visual.debug_bounds("vst3-controls-retry").is_some(),
+            view.pending,
+            view.queued_requests
+        );
+        ready
+    });
+    let start = visual.debug_bounds(knob).unwrap().center();
+    let end = gpui::point(start.x, start.y + gpui::px(20.0));
+    visual.simulate_mouse_down(start, gpui::MouseButton::Left, mods);
+    repaint(cx, &mut visual);
+    visual.simulate_mouse_move(end, gpui::MouseButton::Left, mods);
+    repaint(cx, &mut visual);
+    visual.simulate_mouse_up(end, gpui::MouseButton::Left, mods);
+    until("stopped pointer release commits a second VST3 edit", || {
+        assert!(render_pcm().iter().all(|sample| *sample == [0.0; 2]));
+        repaint(cx, &mut visual);
+        let view = view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        view.state.is_some_and(|state| {
+            state.revision == revision + 2
+                && state.project.device(device).unwrap().state()
+                    != before_edit.device(device).unwrap().state()
         })
     });
 }

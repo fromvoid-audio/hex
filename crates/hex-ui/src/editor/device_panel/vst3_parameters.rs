@@ -57,6 +57,9 @@ fn current_context(view: &EditorView) -> Option<AudioSourceContext> {
 }
 
 fn open(view: &mut EditorView, device: DeviceId, cx: &mut Context<EditorView>) {
+    if view.stopped_playback_restore.is_some() {
+        return;
+    }
     let Some(context) = current_context(view) else {
         return;
     };
@@ -178,6 +181,11 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
         .w(px(crate::device_composition::GENERIC_FRAME_WIDTH))
         .flex_col()
         .min_w_0();
+    if view.stopped_playback_restore.is_some() {
+        return body
+            .debug_selector(|| "vst3-controls-restoring".to_string())
+            .child(theme::text("restoring vst3…"));
+    }
     let Some(panel) = panel else {
         return body.child(
             div()
@@ -198,6 +206,7 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
         Some(Err(error)) => body.child(theme::text(error)).child(
             div()
                 .id(("retry-vst3-parameters", device.value()))
+                .debug_selector(|| "vst3-controls-retry".to_string())
                 .cursor_pointer()
                 .child(theme::text("retry"))
                 .on_click(cx.listener(move |view, _, _, cx| {

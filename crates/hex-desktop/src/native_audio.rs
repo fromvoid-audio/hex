@@ -1227,8 +1227,12 @@ impl WorkerAudioSink for NativeAudioSink {
         &mut self,
         query: hex_session::service::PluginParameterQuery,
     ) -> Result<(), String> {
-        self.output.as_ref().ok_or("native output unavailable")?;
-        self.plugins.query_parameters(query)
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .ok_or("native output unavailable")?;
+        self.plugins.query_parameters(control, query)
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn plugin_parameters_ready(&self) -> bool {

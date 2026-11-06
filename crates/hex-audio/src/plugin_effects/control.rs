@@ -17,9 +17,9 @@ impl NativeEffect {
         &mut self,
         id: u32,
         normalized: f64,
+        idle: bool,
     ) -> Result<crate::plugin_worker::NativeWorkerParameterChange, &'static str> {
-        self.worker
-            .begin_parameter_change_on_control(id, normalized)
+        self.worker.begin_parameter_change(id, normalized, idle)
     }
     pub(crate) fn withdraw_parameter_change(
         &mut self,
@@ -107,9 +107,9 @@ impl NativeEffectControl {
         &mut self,
         id: u32,
         normalized: f64,
+        idle: bool,
     ) -> Result<crate::plugin_worker::NativeWorkerParameterChange, &'static str> {
-        self.worker
-            .begin_parameter_change_on_control(id, normalized)
+        self.worker.begin_parameter_change(id, normalized, idle)
     }
     pub(crate) fn withdraw_parameter_change(
         &mut self,

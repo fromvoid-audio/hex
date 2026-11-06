@@ -206,7 +206,7 @@ struct Packet {
     hex_instance::ControllerQuery parameter_query{};
     PresentationPlan resumed_presentation;
     // 0 EOF/cancellation, 1 PCM, 2 terminal, 3 quiesce, 4 resume,
-    // 5 quiescent capture, 6 live capture start, 7 live capture poll, 8 stopped flush,
+    // 5 quiescent capture, 6 live capture start, 7 live capture poll, 8 parameter-only flush,
     // 9 edit receipts, 10 controller page start, 11 controller page poll,
     // 12 explicit stopped component reactivation, -1 malformed.
     // Only the serialized processing lane reads these requests. Resume changes
