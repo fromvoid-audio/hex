@@ -5754,3 +5754,13 @@ index 85a3133..5b9520b 100644
 @@ -429 +429 @@ impl WindowTextSystem {
 -            let mut decoration_runs = SmallVec::<[DecorationRun; 32]>::new();
 +            let mut decoration_runs = SmallVec::<[DecorationRun; 4]>::new();
+diff --git a/src/platform/blade/blade_renderer.rs b/src/platform/blade/blade_renderer.rs
+--- a/src/platform/blade/blade_renderer.rs
++++ b/src/platform/blade/blade_renderer.rs
+@@ -554,2 +554,4 @@
+-    pub fn layer(&self) -> metal::MetalLayer {
+-        unsafe { foreign_types::ForeignType::from_ptr(self.layer_ptr()) }
++    pub fn layer(&self) -> &metal::MetalLayerRef {
++        // SAFETY: Surface retains this CAMetalLayer for the lifetime of self.
++        // The pointer does not transfer ownership to the caller.
++        unsafe { foreign_types::ForeignTypeRef::from_ptr(self.layer_ptr()) }
