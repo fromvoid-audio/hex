@@ -181,6 +181,7 @@ mod overview_waveform;
 mod play_intent;
 mod poll_cadence;
 mod project_directory;
+mod project_rate_settings;
 mod project_recovery;
 mod project_spectrum;
 mod recent_projects;
@@ -1062,6 +1063,7 @@ pub(super) struct EditorView {
     changelog: changelog::State,
     missing_media: Option<missing_media::Panel>,
     theme_settings: theme_settings::ThemeSettingsState,
+    project_rate_settings: project_rate_settings::State,
     audio_import_settings: audio_import_settings::State,
     track_defaults: track_defaults::State,
     tuning: tuning::TuningState,
@@ -1821,6 +1823,7 @@ impl EditorView {
             changelog: changelog::State::new(cx),
             missing_media: None,
             theme_settings,
+            project_rate_settings: project_rate_settings::State::default(),
             audio_import_settings,
             track_defaults,
             tuning: tuning::TuningState::new(cx),

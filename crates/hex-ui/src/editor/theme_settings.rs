@@ -334,6 +334,7 @@ impl EditorView {
             self.close_controller_input_menu(window, cx);
         }
         self.prepare_controller_settings(cx);
+        self.project_rate_settings.clear_draft();
         self.theme_settings.open = true;
         if self.theme_settings.loading {
             self.theme_settings.error = Some("loading theme settings…".into());
@@ -695,6 +696,9 @@ impl EditorView {
     }
 
     pub(super) fn save_theme_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.project_rate_settings.applying() {
+            return;
+        }
         if self.theme_settings.loading
             || self.theme_settings.saving
             || !self.theme_settings.writable
@@ -818,6 +822,10 @@ impl EditorView {
     }
 
     pub(super) fn cancel_theme_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.project_rate_settings.applying() {
+            return;
+        }
+        self.project_rate_settings.clear_draft();
         if self.theme_settings.saving {
             self.theme_settings.error = Some("theme save in progress".into());
             cx.notify();
@@ -840,6 +848,9 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.project_rate_settings.applying() {
+            return false;
+        }
         if self.theme_settings.saving {
             self.theme_settings.error = Some("theme save in progress".into());
             cx.notify();
@@ -969,28 +980,7 @@ impl EditorView {
                     )
                     .child(controls),
             );
-        let project_rate = self.state.as_ref().map(|state| state.project.sample_rate());
-        let interface_rate = self.audio.as_ref().and_then(|audio| {
-            audio
-                .status()
-                .and_then(|status| status.interface_sample_rate())
-        });
-        let rate_label = |rate: Option<u32>| {
-            rate.map_or_else(|| "unavailable".into(), |rate| format!("{rate} hz"))
-        };
-        let audio_rates = div()
-            .debug_selector(|| "settings sample rates".into())
-            .flex()
-            .gap(px(16.0))
-            .text_xs()
-            .child(theme::text(format!(
-                "project rate · {}",
-                rate_label(project_rate)
-            )))
-            .child(theme::text(format!(
-                "interface rate · {}",
-                rate_label(interface_rate)
-            )));
+        let audio_rates = self.project_rate_settings_row(cx);
         let settings = self.audio_import_settings_row(cx);
         let track_defaults = self.track_defaults_row(cx);
         let mut card = div()
@@ -1222,6 +1212,56 @@ mod tests {
         );
         visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
+    }
+
+    #[gpui::test]
+    fn sample_rate_selector_cancel_and_apply_use_the_current_project(cx: &mut TestAppContext) {
+        let _restore = RestoreTheme(theme::preferences());
+        let directory = TestDirectory::new();
+        let (handle, editor) = editor_fixture(cx, &directory);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+
+        visual.simulate_keystrokes("cmd-,");
+        visual.run_until_parked();
+        click_bounds(&mut visual, "project rate 96000");
+        click_bounds(&mut visual, "cancel theme changes");
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project.sample_rate(), 48_000);
+            assert_eq!(view.worker_requests_pending, 0);
+        });
+
+        visual.simulate_keystrokes("cmd-,");
+        visual.run_until_parked();
+        click_bounds(&mut visual, "apply project rate");
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.worker_requests_pending, 0,
+                "cancelled draft was discarded"
+            );
+        });
+        click_bounds(&mut visual, "project rate 96000");
+        click_bounds(&mut visual, "apply project rate");
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            let done = editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                view.state.as_ref().unwrap().project.sample_rate() == 96_000
+            });
+            if done {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "sample rate did not apply"
+            );
+            std::thread::yield_now();
+        }
+        editor.read_with(&visual, |view, _| {
+            let state = view.state.as_ref().unwrap();
+            assert!(state.can_undo);
+            assert!(!view.project_rate_settings.applying());
+        });
     }
 
     #[gpui::test]
