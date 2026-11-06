@@ -8,6 +8,96 @@ const QUANTUM: usize = 4;
 /// Both endpoints declare only the copied 2Q bridge latency.
 const LATENCY_CALLBACKS: usize = 2;
 
+#[test]
+#[ignore = "requires explicit source-bound original SDK receipts"]
+fn actual_foreign_instrument_notes_follow_accepted_callback_segments() {
+    const NAME: &str = "plugin_effects::callbacks::tests::actual_foreign_instrument_notes_follow_accepted_callback_segments";
+    const CHILD: &str = "HEX_FOREIGN_INSTRUMENT_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--ignored"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "115")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success() && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+
+    let binding = Binding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    };
+    let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 2).unwrap();
+    let source = crate::plugin_worker::native_tests::original_instance_with_inputs(binding, 0);
+    let effect = NativeEffect::prepare_on_control(identity, source).unwrap();
+    let facts = Facts {
+        identity,
+        state: effect.configuration().clone(),
+        prepared: effect.prepared(),
+    };
+    let (mut workers, mut endpoints) =
+        NativeEffectCallbacks::from_effects_on_control(vec![effect]).unwrap();
+    let worker = &mut workers[0];
+    let on = ForeignNote {
+        frame: 1,
+        channel: 2,
+        pitch: 60,
+        velocity: 127,
+        on: true,
+    };
+    let off = ForeignNote {
+        frame: 2,
+        velocity: 0,
+        on: false,
+        ..on
+    };
+    let mut render = |notes: &[ForeignNote], accept| {
+        let mut output = [[1.0; 2]; 8];
+        let mut callback = || {
+            endpoints.begin_host_callback(8).unwrap();
+            let (first, last) = output.split_at_mut(3);
+            endpoints
+                .process_segment_with_notes(facts.node(), 0, first, &[], &[], None)
+                .unwrap();
+            endpoints
+                .process_segment_with_notes(facts.node(), 3, last, &[], notes, None)
+                .unwrap();
+            assert_eq!(endpoints.finish_host_callback(accept).is_ok(), accept);
+        };
+        #[cfg(feature = "allocation-probe")]
+        assert_eq!(allocations_during(&mut callback), [0; 4]);
+        #[cfg(not(feature = "allocation-probe"))]
+        callback();
+        output
+    };
+    for (index, notes) in [&[on][..], &[off], &[], &[]].into_iter().enumerate() {
+        let output = render(notes, true);
+        let expected = match index {
+            2 => [0., 0., 0., 0., 0.5, 0.5, 0.5, 0.5],
+            3 => [0.625, 0.625, 0.625, 0.625, 0.625, 0., 0., 0.],
+            _ => [0.; 8],
+        };
+        assert_eq!(output, expected.map(|sample| [sample; 2]));
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while worker.published_blocks_on_control() <= index as u64 {
+            assert!(std::time::Instant::now() < until, "native PCM completion");
+            std::thread::yield_now();
+        }
+    }
+    assert_eq!(render(&[on], false), [[0.; 2]; 8]);
+    let retirement = worker.retire_on_control().unwrap();
+    assert!(retirement.failure.is_none() && retirement.native.status.success());
+    assert_eq!(retirement.native.terminal.unwrap().blocks, 4);
+}
+
 /// Copied graph facts for one endpoint, so a node can be built while the
 /// callback carrier is mutably borrowed.
 struct Facts {

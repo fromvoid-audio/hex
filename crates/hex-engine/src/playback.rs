@@ -2774,11 +2774,23 @@ impl hex_lattice::ForeignProcessors for ShiftedForeign<'_> {
         parameters: &[hex_lattice_contract::ForeignParameterPoint],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), hex_lattice_contract::DeviceContractError> {
-        self.inner.process_segment_with_parameters(
+        self.process_segment_with_notes(node, frame_offset, frames, parameters, &[], clock)
+    }
+    fn process_segment_with_notes(
+        &mut self,
+        node: hex_lattice::ForeignProcessorNode<'_>,
+        frame_offset: usize,
+        frames: &mut [Frame],
+        parameters: &[hex_lattice_contract::ForeignParameterPoint],
+        notes: &[hex_lattice::ForeignNote],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), hex_lattice_contract::DeviceContractError> {
+        self.inner.process_segment_with_notes(
             node,
             self.offset.saturating_add(frame_offset),
             frames,
             parameters,
+            notes,
             clock,
         )
     }

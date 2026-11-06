@@ -51,7 +51,7 @@ impl NativeEffectEntry {
         offset: usize,
         frames: &mut [[f32; 2]],
         parameters: &[hex_lattice_contract::ForeignParameterPoint],
-        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        notes: &[ForeignNote],
     ) -> Result<(), DeviceContractError> {
         if !self.staged {
             if self.callback.begin_host_callback(extent).is_err() {
@@ -62,7 +62,7 @@ impl NativeEffectEntry {
         }
         match self
             .callback
-            .process_segment_with_parameters(node, offset, frames, parameters, clock)
+            .process_segment_with_notes(node, offset, frames, parameters, notes, None)
         {
             // Staging refusal already revoked this epoch and left aligned dry.
             Err(DeviceContractError::ForeignProcessingFailed) => {
@@ -237,6 +237,17 @@ impl ForeignProcessors for NativeEffectCallbacks {
         parameters: &[hex_lattice_contract::ForeignParameterPoint],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
+        self.process_segment_with_notes(node, offset, frames, parameters, &[], clock)
+    }
+    fn process_segment_with_notes(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        parameters: &[hex_lattice_contract::ForeignParameterPoint],
+        notes: &[ForeignNote],
+        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
         let selected = node.prepared.binding().and_then(|binding| {
             self.entries
                 .binary_search_by_key(&binding, NativeEffectEntry::binding)
@@ -244,7 +255,7 @@ impl ForeignProcessors for NativeEffectCallbacks {
         });
         let result = match (self.cycle.extent(), selected) {
             (Some(extent), Some(index)) => {
-                self.entries[index].process(extent, node, offset, frames, parameters, clock)
+                self.entries[index].process(extent, node, offset, frames, parameters, notes)
             }
             _ => Err(DeviceContractError::ForeignProcessingUnavailable),
         };
