@@ -10,7 +10,9 @@
 #include <utility>
 
 namespace hex_instance {
-inline constexpr size_t HOST_PARAMETER_COUNT=576;
+// Rich metadata lives in the helper. This bound admits controllers exposing
+// full per-channel MIDI mappings alongside their ordinary parameter inventory.
+inline constexpr size_t HOST_PARAMETER_COUNT=2304;
 inline constexpr size_t HOST_FEEDBACK_COUNT=128;
 inline constexpr size_t HOST_RESTART_COUNT=8;
 // A single native editor event can synchronously report a group of gestures.
@@ -359,15 +361,9 @@ private:
             valid=valid && !((info.flags&ParameterInfo::kIsReadOnly) && (info.flags&ParameterInfo::kCanAutomate)) &&
                 (!(info.flags&ParameterInfo::kIsHidden) || (info.flags&ParameterInfo::kIsReadOnly));
             if(info.flags&ParameterInfo::kIsBypass) valid=valid && ++bypasses==1;
-            for (uint32 n=0;n<i;++n) if (staged.parameters[n].info.id==info.id) valid=false;
             if (valid) {
                 parameter.value=controller->getParamNormalized(info.id);
                 valid=std::isfinite(parameter.value) && parameter.value>=0 && parameter.value<=1;
-            }
-            if (valid && metadata.revision) {
-                bool known=false;
-                for (uint32 n=0;n<metadata.count;++n) if (metadata.parameters[n].info.id==info.id) known=true;
-                valid=known;
             }
         }
         if (metadata.revision && staged.count!=metadata.count) valid=false;
@@ -377,7 +373,18 @@ private:
             refuse(MetadataCapacity); result.disposition=HostDisposition::Capacity; return result;
         }
         staged.revision=metadata.revision+1;
-        if(!publish_processing_snapshot(compact(staged))) {
+        const auto next=compact(staged);
+        const auto same_id=[](const auto& left,const auto& right) { return left.id==right.id; };
+        const auto end=next.parameters.begin()+next.count;
+        bool valid_ids=std::adjacent_find(next.parameters.begin(),end,same_id)==end;
+        if (valid_ids && metadata.revision) {
+            const auto prior=compact(metadata);
+            valid_ids=std::equal(next.parameters.begin(),end,prior.parameters.begin(),same_id);
+        }
+        if (!valid_ids) {
+            refuse(InvalidMetadata); result.disposition=HostDisposition::InvalidMetadata; return result;
+        }
+        if(!publish_processing_snapshot(next)) {
             result.disposition=HostDisposition::Pending;return result;
         }
         metadata=std::move(staged);
@@ -479,6 +486,6 @@ public:
     }
 };
 static_assert(sizeof(Host)+HOST_MESSAGE_COUNT*sizeof(HostMessage)+
-    2*HOST_PARAMETER_COUNT*sizeof(ParameterSnapshot::Parameter)<2*1024*1024,
-    "native host and both controller inventories stay below the declared two MiB bound");
+    2*HOST_PARAMETER_COUNT*sizeof(ParameterSnapshot::Parameter)<5*1024*1024,
+    "native host and both controller inventories stay below the declared five MiB bound");
 } // namespace hex_instance
