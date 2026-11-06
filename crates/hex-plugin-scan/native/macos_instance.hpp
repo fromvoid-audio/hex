@@ -66,7 +66,7 @@ class Instance final {
     }
     bool sync_controller_component_state(StateStream* stream) {
         if (!stream->rewind_read_only_on_control()) return false;
-        const auto result=controller->setComponentState(stream);
+        const auto result=host->apply_saved_state([&] { return controller->setComponentState(stream); });
         // A controller can decline this synchronization method while the
         // processor and controller still own their separate state chunks.
         return (result==kResultOk || result==kNotImplemented) && stream->valid() && stream->exclusive();
@@ -152,7 +152,7 @@ public:
         restoration_started=true;
         restore_component_stream=new(std::nothrow) StateStream(state.bytes.data(),state.component_bytes);
         if (!restore_component_stream || !restore_component_stream->valid() ||
-            component->setState(restore_component_stream)!=kResultOk ||
+            host->apply_saved_state([&] { return component->setState(restore_component_stream); })!=kResultOk ||
             !restore_component_stream->valid() || !restore_component_stream->exclusive()) return false;
         if (controller) {
             if (!sync_controller_component_state(restore_component_stream)) return false;
@@ -160,7 +160,7 @@ public:
                 restore_controller_stream=new(std::nothrow) StateStream(
                     state.bytes.data()+state.component_bytes,state.controller_bytes);
                 if (!restore_controller_stream || !restore_controller_stream->valid() ||
-                    controller->setState(restore_controller_stream)!=kResultOk ||
+                    host->apply_saved_state([&] { return controller->setState(restore_controller_stream); })!=kResultOk ||
                     !restore_controller_stream->valid() || !restore_controller_stream->exclusive()) return false;
             }
             if (host->refresh_on_control(controller).disposition!=HostDisposition::Refreshed ||

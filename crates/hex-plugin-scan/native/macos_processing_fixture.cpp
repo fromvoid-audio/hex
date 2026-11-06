@@ -150,7 +150,7 @@ public:
     tresult PLUGIN_API setComponentHandler(IComponentHandler* value) override {
         if (!control() || !context || (value && handler)) return kResultFalse;
         if(value)value->addRef();if(handler)handler->release();handler=value;
-        if(fault==104 || fault==105) latency_handler=handler;
+        if(fault==104 || fault==105 || fault==118 || fault==119) latency_handler=handler;
         if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116)) {
             CFRunLoopTimerContext timer_context{};timer_context.info=this;
             edit_timer=CFRunLoopTimerCreate(nullptr,CFAbsoluteTimeGetCurrent(),0.001,0,0,edit_tick,&timer_context);
@@ -387,6 +387,10 @@ public:
         float restored_gain=0;std::memcpy(&restored_gain,data.data()+8,4);std::memcpy(&restored_latency,data.data()+4,4);
         if(!std::isfinite(restored_gain) || restored_gain<0 || restored_gain>4 || restored_latency>32 || (fault<37 && restored_latency))return kResultFalse;
         gain.store(restored_gain);
+        if(fault==118 && (!latency_handler ||
+            latency_handler->beginEdit(51)!=kResultOk ||
+            latency_handler->performEdit(51,0.5)!=kResultOk ||
+            latency_handler->endEdit(51)!=kResultOk)) return kResultFalse;
         if(fault==50)stream->write(data.data(),1,nullptr);
         if(fault==51 || fault==52) {stream->addRef();retained_stream=stream;}
         restoration.component_gain=bits(restored_gain);restoration.latency=static_cast<int>(restored_latency);restoration.phase=1;
@@ -395,6 +399,8 @@ public:
     tresult PLUGIN_API getState(IBStream* stream) override {
         if (!control() || !active || !stream) return kResultFalse;
         ++restoration.component_get;
+        if(fault==119 && restoration.component_set &&
+            (!latency_handler || latency_handler->restartComponent(0)!=kResultOk)) return kResultFalse;
         // Original current-state capture fault controls leave startup valid.
         if(restoration.component_get>1) {
             if(fault==95 && restoration.component_get==2) {
@@ -771,7 +777,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>117) return false;next_fault=value;
+        if (value>119) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);
