@@ -334,6 +334,7 @@ class NativeInstanceTests(unittest.TestCase):
             (stopped, []),
             (stopped, [(0, playing)]),
             (stopped, [(8, playing)]),
+            (stopped, [(2, stopped)]),
             (None, [(2, stopped)]),
             (stopped, [(3, playing), (3, stopped)]),
             (stopped, [(n, playing) for n in range(8)]),
