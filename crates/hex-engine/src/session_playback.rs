@@ -1555,19 +1555,28 @@ impl SessionPlayback {
         transient_loop: Option<hex_project::LoopRegion>,
     ) -> Result<Self, SessionPlaybackError> {
         let arrangement = revision.arrangement();
-        if transient_loop.is_some_and(|region| Some(region) != arrangement.loop_region())
-            && arrangement
-                .tracks
-                .iter()
-                .flat_map(|track| track.device_chain.iter())
-                .chain(
-                    arrangement
-                        .return_buses
-                        .iter()
-                        .flat_map(|bus| bus.device_chain.iter()),
-                )
-                .chain(arrangement.main_device_chain.iter())
-                .any(|device| device.automation.foreign().is_some())
+        let linear_arrangement_export = policy != RenderConstruction::Interactive;
+        let chain_has_foreign_automation = arrangement
+            .tracks
+            .iter()
+            .flat_map(|track| track.device_chain.iter())
+            .chain(
+                arrangement
+                    .return_buses
+                    .iter()
+                    .flat_map(|bus| bus.device_chain.iter()),
+            )
+            .chain(arrangement.main_device_chain.iter())
+            .any(|device| device.automation.foreign().is_some());
+        if linear_arrangement_export
+            && (chain_has_foreign_automation || !revision.foreign_automation.is_empty())
+        {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "vst3 automation requires interactive arrangement playback",
+            ));
+        }
+        if chain_has_foreign_automation
+            && transient_loop.is_some_and(|region| Some(region) != arrangement.loop_region())
         {
             return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
                 "vst3 automation requires the prepared arrangement loop",
@@ -1578,7 +1587,6 @@ impl SessionPlayback {
                 "audition loop exceeds the prepared vst3 automation capacity",
             ));
         }
-        let linear_arrangement_export = policy != RenderConstruction::Interactive;
         let foreign_arrangement = foreign_arrangement::ForeignArrangement::prepare(&revision)?;
         if linear_arrangement_export
             && policy != RenderConstruction::FiniteForeignBounce

@@ -250,11 +250,12 @@ pub(crate) fn validate_project_with_registry(
         return Err(Invalid(DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED));
     }
     for device in effect_devices(project) {
-        if device
-            .automation()
-            .iter()
-            .any(|lane| !target_supported(registry, device.state(), lane.target))
-        {
+        if device.automation().iter().any(|lane| {
+            // Exact foreign capabilities belong to the Arrangement effect
+            // compiler, not the shared Session instrument inventory.
+            !matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
+                && !target_supported(registry, device.state(), lane.target)
+        }) {
             return Err(Invalid(DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED));
         }
     }
