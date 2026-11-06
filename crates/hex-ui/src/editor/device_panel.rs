@@ -58,6 +58,7 @@ mod numeric_display;
 pub(super) use navigation::{bottom_bar, capture_pointer_down as capture_navigation_pointer_down};
 mod operator_panel;
 mod parameter_rows;
+pub(super) mod vst3_parameters;
 pub(super) use operator_panel::bind_keys as bind_operator_keys;
 mod return_drag;
 mod sampler_overview;
@@ -117,6 +118,7 @@ pub(super) struct DevicePanelState {
     pub(super) main_selected: Option<u64>,
     chain_window: chain_window::ChainWindow,
     parameter_rows: HashMap<DeviceId, parameter_rows::RowWindow>,
+    vst3_parameters: vst3_parameters::State,
     pub(super) navigation: navigation::Navigation,
     generation: u64,
     pub(super) selected_device: Option<DeviceId>,
@@ -1835,7 +1837,11 @@ fn device_selection_listener(
     })
 }
 
-fn vst3_status_body(view: &EditorView, device: &hex_project::Device) -> Stateful<Div> {
+fn vst3_status_body(
+    view: &mut EditorView,
+    device: &hex_project::Device,
+    cx: &mut Context<EditorView>,
+) -> Stateful<Div> {
     let device_id = device.id();
     if view.degraded_plugins.contains(device_id.value()) {
         return vst3_degraded_body(device_id);
@@ -1856,10 +1862,16 @@ fn vst3_status_body(view: &EditorView, device: &hex_project::Device) -> Stateful
             observation.foreign_processor(device_id.value(), device.state().type_id())
         });
     let (message, status) = match foreign {
-        Some(true) => (
-            theme::text("vst3 · parameter controls unavailable"),
-            "active",
-        ),
+        Some(true) => {
+            let body = vst3_parameters::body(view, device_id, cx);
+            let body = div()
+                .debug_selector(move || format!("device-vst3-active-{}", device_id.value()))
+                .child(body);
+            return div()
+                .id(("device-body", device_id.value()))
+                .debug_selector(move || format!("device-body-{}", device_id.value()))
+                .child(body);
+        }
         Some(false) => (
             theme::text("vst3 unavailable · saved state preserved"),
             "unavailable",
@@ -1930,7 +1942,7 @@ fn render_effect(
     let header_actions = device_actions(view, device, selected, device_view.is_ok(), cx);
     let rendered = match &device_view {
         _ if device.state().type_id().as_str() == Ok("hex.vst3") => {
-            let body = vst3_status_body(view, device);
+            let body = vst3_status_body(view, device, cx);
             device_frame(
                 device_drag_title(
                     view,
@@ -2566,7 +2578,7 @@ fn render_instrument(
             theme::device_frame_style(selected),
             leading,
             header_actions,
-            vst3_status_body(view, device),
+            vst3_status_body(view, device, cx),
         )
     } else if hex_engine::is_empty_sampler_state_on_control(device.state()) {
         device_frame(

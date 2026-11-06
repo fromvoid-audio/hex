@@ -272,7 +272,7 @@ pub(super) fn render_return_effect(
     );
     let rendered = match &device_view {
         _ if device.state().type_id().as_str() == Ok("hex.vst3") => {
-            let body = vst3_status_body(view, device);
+            let body = vst3_status_body(view, device, cx);
             device_frame(
                 device_drag_title(
                     view,

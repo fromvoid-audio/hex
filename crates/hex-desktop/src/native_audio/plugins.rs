@@ -14,6 +14,7 @@ use hex_session::service::{
 };
 mod degraded;
 mod editor;
+mod parameters;
 mod restore;
 use restore::Restore;
 mod edits;
@@ -136,6 +137,7 @@ pub(super) struct Plugins {
     sources: Vec<Source>,
     pending: Option<Pending>,
     editor: Option<editor::EditorOperation>,
+    parameters: Option<parameters::Inventory>,
     editor_checked: Option<AudioSourceContext>,
     restore: Option<Restore>,
     reopen: Option<Reopen>,
@@ -222,6 +224,9 @@ impl Plugins {
         self.degraded_changed.take()
     }
     pub fn output_closed(&mut self) {
+        if let Some(parameters) = &mut self.parameters {
+            parameters.output_closed();
+        }
         self.configured = false;
         for source in &mut self.sources {
             source.edit_backlog = false;
@@ -301,6 +306,7 @@ impl Plugins {
     pub fn idle(&self) -> bool {
         self.pending.is_none()
             && self.editor.is_none()
+            && self.parameters.is_none()
             && self.restore.is_none()
             && self.reopen.is_none()
             && self.edit.is_none()
@@ -584,6 +590,7 @@ impl Plugins {
             return;
         };
         self.poll_editor(control, context);
+        self.poll_parameters(control, context);
         self.poll_restore(control, context);
         if let Some(output) = control.output_identity()
             && let Some(context) = context
