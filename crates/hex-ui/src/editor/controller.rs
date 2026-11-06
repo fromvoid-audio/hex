@@ -13,7 +13,10 @@ use gpui::{App, Context};
 use hex_audio::prepared::PublicationPolicy;
 use hex_engine::playback::{PlaybackAction, PlaybackCommand};
 use hex_session::device_gesture::GestureKey;
-use hex_session::service::{DevicePreviewIdentity, Event, Request, SubmitError, ViewState};
+use hex_session::service::{
+    DeviceClipboardAction, DevicePreviewIdentity, Event, Request, SubmitError,
+    TrackClipboardAction, ViewState,
+};
 use std::{
     collections::VecDeque,
     sync::Arc,
@@ -3366,6 +3369,24 @@ impl EditorView {
             });
             return false;
         }
+        // Copy only reads the project. Cut, paste, insert and duplicate can
+        // change it and invalidate both local drafts and prepared seeks.
+        let clipboard_edit = matches!(
+            &request,
+            Request::DeviceClipboard {
+                action: DeviceClipboardAction::Cut { .. }
+                    | DeviceClipboardAction::Paste { .. }
+                    | DeviceClipboardAction::Duplicate { .. },
+                ..
+            } | Request::TrackClipboard {
+                action: TrackClipboardAction::Cut(_)
+                    | TrackClipboardAction::Duplicate { .. }
+                    | TrackClipboardAction::Paste { .. },
+                ..
+            } | Request::CutTimeRange(_)
+                | Request::PasteTimeRange { .. }
+                | Request::InsertTimeRange { .. }
+        );
         // Independent edits can advance the canonical revision even when they
         // carry source stamps. Refuse them before taking worker custody.
         // Duplicate repeats submit a new edit after the prior terminal.
@@ -3392,7 +3413,7 @@ impl EditorView {
                 | Request::GroupTimeRange { .. }
                 | Request::GroupAudioEvents { .. }
                 | Request::CopyArrangementClipToConsoleTrack { .. }
-        );
+        ) || clipboard_edit;
         if independent_edit && self.gain_lane.draft.is_some() {
             self.error = Some("finish or cancel the gain point gesture before editing".into());
             return false;
@@ -3620,18 +3641,6 @@ impl EditorView {
                 | Request::DeviceAutomation { .. }
                 | Request::DeviceAutomationControl { .. }
                 | Request::EditArrangementSection { .. }
-                | Request::DeviceClipboard {
-                    action: hex_session::service::DeviceClipboardAction::Cut { .. }
-                        | hex_session::service::DeviceClipboardAction::Paste { .. }
-                        | hex_session::service::DeviceClipboardAction::Duplicate { .. },
-                    ..
-                }
-                | Request::TrackClipboard {
-                    action: hex_session::service::TrackClipboardAction::Cut(_)
-                        | hex_session::service::TrackClipboardAction::Duplicate { .. }
-                        | hex_session::service::TrackClipboardAction::Paste { .. },
-                    ..
-                }
                 | Request::ReorderTracks { .. }
                 | Request::ReparentTracks { .. }
                 | Request::MoveExistingClips { .. }
@@ -3644,16 +3653,14 @@ impl EditorView {
                 | Request::Edit(_)
                 | Request::BounceArrangement { .. }
                 | Request::ConvertClip { .. }
-                | Request::CutTimeRange(_)
-                | Request::PasteTimeRange { .. }
-                | Request::InsertTimeRange { .. }
                 | Request::Undo
                 | Request::SamplerEdit(hex_session::service::SamplerEdit::History(_))
                 | Request::SamplerEdit(hex_session::service::SamplerEdit::Midi(_))
                 | Request::Redo
                 | Request::RestorePlayback { .. }
                 | Request::RestoreStoppedPlayback
-        ) {
+        ) || clipboard_edit
+        {
             self.invalidate_prepared_seek();
         }
         if request.finalizes_parameter_gesture() && self.device_gesture.snapshot().is_some() {

@@ -149,6 +149,45 @@ fn unrelated_edit_preserves_sampler_numeric_text_and_valid_commit(cx: &mut TestA
 }
 
 #[gpui::test]
+fn clipboard_edits_refuse_while_copy_and_sampler_text_remain_available(cx: &mut TestAppContext) {
+    let (mut visual, editor, track, device) = numeric_sampler_fixture(cx);
+    let selector = Box::leak(format!("sampler-attack-{}-value", device.value()).into_boxed_str());
+    let position = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_click(position, gpui::Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("invalid");
+    editor.update(&mut visual, |view, cx| {
+        let generation = view.project_generation;
+        let revision = view.state.as_ref().unwrap().revision;
+        let range = hex_project::TimeRange::new(vec![track], 0, 1_024).unwrap();
+        for request in [
+            Request::CutTimeRange(range.clone()),
+            Request::TrackClipboard {
+                project_generation: generation,
+                revision,
+                action: hex_session::service::TrackClipboardAction::Cut(
+                    hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                ),
+            },
+            Request::DeviceClipboard {
+                project_generation: generation,
+                revision,
+                action: hex_session::service::DeviceClipboardAction::Cut {
+                    owner: hex_project::DeviceChainOwner::Track(track),
+                    selected: hex_project::DeviceSelectionIds::new(&[device]).unwrap(),
+                },
+            },
+        ] {
+            assert!(!view.enqueue(request));
+        }
+        assert_eq!(view.worker_requests_pending, 0);
+        assert!(view.enqueue(Request::CopyTimeRange(range)));
+        assert_eq!(view.worker_requests_pending, 1);
+        assert_eq!(sampler_text(view, cx), "invalid");
+    });
+}
+
+#[gpui::test]
 fn unrelated_edit_refuses_during_sampler_drag_and_release_commits(cx: &mut TestAppContext) {
     let (mut visual, editor, track, device) = numeric_sampler_fixture(cx);
     let selector = Box::leak(format!("sampler-attack-{}-value", device.value()).into_boxed_str());
