@@ -658,26 +658,19 @@ impl ActiveView<'_> {
                 };
                 let observer: Option<&mut hex_engine::NodeSignalObserver<'_>> =
                     if observed { Some(&mut observe) } else { None };
-                let mut project_ids = [0; hex_engine::MAX_SESSION_ROUTE_TRACKS];
-                let project_count = project.as_ref().map_or(0, |tap| {
-                    let count = tap.tracks().len();
-                    project_ids[..count].copy_from_slice(tap.tracks());
-                    count
-                });
-                let project_observed = project.is_some();
+                let project_selection = project.as_ref().map(|tap| (tap.tracks(), tap.returns()));
                 let mut observe_project = |signal, offset, frames: &[hex_engine::Frame]| {
                     if let Some(project) = project.as_mut() {
                         project.observe(signal, committed + offset, frames);
                     }
                 };
-                let mut project_tap = if project_observed {
-                    hex_engine::ProjectOutputTap::new(
-                        &project_ids[..project_count],
+                let mut project_tap = project_selection.and_then(|(tracks, returns)| {
+                    hex_engine::ProjectOutputTap::with_returns(
+                        tracks,
+                        returns,
                         &mut observe_project,
                     )
-                } else {
-                    None
-                };
+                });
                 let rendered = self
                     .state
                     .runtime
