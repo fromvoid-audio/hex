@@ -30,7 +30,8 @@ pub use parameter_automation::{
     ExternalParameterAutomation, HostAutomationLane, NativeParameterAutomation,
     NativeTransientOperation, NativeTransientValue, NormalizedAutomationValue,
     ParameterAutomationBlock, ParameterAutomationLane, ParameterAutomationPoint,
-    PreparedParameterAutomation, PreparedParameterAutomationLane, PreparedParameterAutomationPoint,
+    ParameterAutomationTouchSpan, PreparedParameterAutomation, PreparedParameterAutomationLane,
+    PreparedParameterAutomationPoint,
 };
 pub use tail_split::{TailSplit, TailSplitObserver};
 mod resources;

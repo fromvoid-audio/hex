@@ -507,6 +507,13 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("move_track_device"; ["device" => device.value(), "track" => track.value(), "before" => before.map(|id| id.value())]; omitted="")
         }
+        Command::SpliceDeviceAutomationTouch {
+            device,
+            target,
+            spans,
+        } => {
+            describe!("splice_device_automation_touch"; ["device" => device.value(), "target" => target, "span_count" => spans.len()]; omitted="")
+        }
         Command::ReplaceDeviceAutomationTarget {
             device,
             target,

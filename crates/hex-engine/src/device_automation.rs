@@ -278,6 +278,13 @@ pub(crate) fn quote_with_inputs_and_external(
 ) -> Result<usize, crate::AudioStorageError> {
     let (provider, host, points, _) = counts_with_external(device, input, external)?;
     hex_lattice::PreparedParameterAutomation::quoted_storage_bytes_with_host(provider, host, points)
+        .and_then(|bytes| {
+            bytes.checked_add(
+                hex_lattice::PreparedParameterAutomation::quoted_touch_storage_bytes(
+                    reading_touch_count(device),
+                )?,
+            )
+        })
         .ok_or(crate::AudioStorageError::Overflow)
 }
 /// Additional temporary old-vector backing during insertion of a provider
@@ -376,12 +383,19 @@ fn input_needs_provider_fallback(
             .reading_automation()
             .any(|lane| lane.target == input.target))
 }
+fn reading_touch_count(device: &hex_project::Device) -> usize {
+    device
+        .reading_automation()
+        .map(|lane| lane.touch.len())
+        .sum()
+}
+
 fn reading_counts(
     device: &hex_project::Device,
 ) -> Result<(usize, usize, usize), crate::AudioStorageError> {
     let points = device
         .reading_automation()
-        .try_fold(0usize, |sum, lane| sum.checked_add(lane.points.len()))
+        .try_fold(0usize, |sum, lane| sum.checked_add(lane.point_count()))
         .ok_or(crate::AudioStorageError::Overflow)?;
     let provider = device
         .reading_automation()
@@ -527,7 +541,7 @@ fn prepare_envelopes_with_registry(
         .ok_or(Invalid(DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED))?;
     let count = device
         .reading_automation()
-        .try_fold(0usize, |sum, lane| sum.checked_add(lane.points.len()))
+        .try_fold(0usize, |sum, lane| sum.checked_add(lane.point_count()))
         .ok_or(Invalid("device automation point count overflow"))?;
     let mut lanes = Vec::new();
     lanes
@@ -591,7 +605,31 @@ fn prepare_envelopes_with_registry(
             });
         }
     }
-    hex_lattice::PreparedParameterAutomation::new_with_host(lanes, host, points)
+    let mut touch = Vec::new();
+    touch
+        .try_reserve_exact(reading_touch_count(device))
+        .map_err(|_| Invalid("could not reserve device automation touch spans"))?;
+    for lane in device.reading_automation() {
+        for span in &lane.touch {
+            let start = points.len();
+            points.extend(
+                span.steps
+                    .iter()
+                    .map(|step| hex_lattice::ParameterAutomationPoint {
+                        beat_raw: step.beat.raw(),
+                        normalized: step.value.get(),
+                        step: true,
+                    }),
+            );
+            touch.push(hex_lattice::ParameterAutomationTouchSpan {
+                target: lane.target,
+                start_beat: span.start.raw(),
+                end_beat: span.end.raw(),
+                points: start..points.len(),
+            });
+        }
+    }
+    hex_lattice::PreparedParameterAutomation::new_with_host_and_touch(lanes, host, points, touch)
         .map_err(|_| Invalid("device automation program is invalid or exceeds its budget"))
 }
 

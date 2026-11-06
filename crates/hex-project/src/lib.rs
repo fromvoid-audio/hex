@@ -120,8 +120,9 @@ mod device;
 mod device_automation;
 pub use device_automation::{
     AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
-    DeviceAutomation, DeviceAutomationTarget, MAX_DEVICE_AUTOMATION_LANES,
-    MAX_DEVICE_AUTOMATION_POINTS, MAX_DEVICE_AUTOMATION_POINTS_PER_LANE,
+    DeviceAutomation, DeviceAutomationTarget, DeviceAutomationTouchSpan, DeviceAutomationTouchStep,
+    MAX_DEVICE_AUTOMATION_LANES, MAX_DEVICE_AUTOMATION_POINTS,
+    MAX_DEVICE_AUTOMATION_POINTS_PER_LANE, MAX_DEVICE_AUTOMATION_TOUCH_SPANS,
     validate_device_automation,
 };
 mod device_clipboard;

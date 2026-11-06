@@ -157,6 +157,7 @@ pub(crate) fn decode_value(mut value: serde_json::Value) -> Result<Project, Stor
             .entry(row.device)
             .or_default()
             .push(DeviceAutomation {
+                touch: Vec::new(),
                 vst3_class: None,
                 read_selection: hex_project::AutomationReadSelection::Authored,
                 target: match row.target {
