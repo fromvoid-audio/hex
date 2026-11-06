@@ -226,7 +226,9 @@ struct Packet {
         if((!stop && !quiesce && !resume && !capture && !live_start && !live_poll && !pcm && !flush && !edit_query && !page_start && !page_poll && !reactivate) ||
             ((pcm || flush || edit_query)?(version!=1 && version!=2 && !flush_idle_edits && !identified_notes):version!=1)) return -1;
         note_count=static_cast<size_t>(number(p+8,2));
-        if (note_count>notes.size() || (note_count && (!pcm || config.inputs)) || (version==3 && pcm && !note_count)) return -1;
+        const bool dense_notes=note_count>hex_instance::LEGACY_INPUT_NOTE_COUNT;
+        if (note_count>notes.size() || (dense_notes && !identified_notes) ||
+            (note_count && (!pcm || config.inputs)) || (version==3 && pcm && !note_count)) return -1;
         const bool has_parameter_field=((pcm || flush) && version==2) || identified_notes;
         parameter_count=has_parameter_field?static_cast<size_t>(number(p+10,2)):0;
         if(parameter_count>parameters.size()) return -1;
@@ -281,6 +283,7 @@ struct Packet {
             const auto note_id=identified_notes?number(raw+8,4):0;
             if (offset>=frames || raw[2]!=3 || (status!=0x80 && status!=0x90) ||
                 raw[4]>=128 || raw[5]>=128 || raw[6] || raw[7] ||
+                (dense_notes && !note_id) ||
                 note_id>static_cast<uint64_t>(std::numeric_limits<int32_t>::max()) ||
                 (n && notes[n-1].offset>static_cast<int32_t>(offset))) return -1;
             notes[n]={static_cast<int32_t>(offset),static_cast<int16_t>(raw[3]&0x0f),

@@ -11,6 +11,8 @@
 //! flags u8 (playing, beat present), then three reserved zero bytes.
 //! Version5 adds meter/cycle presence flags, two meter bytes, one reserved
 //! zero byte, and two u64 Q32.32 cycle endpoints. Absent fields are zero.
+//! Versions 3–5 carry up to 128 input events only when every event has a note
+//! ID. The generic event and worker reply contracts remain capped at 64.
 //! These records carry transport data; they do not promise SDK event admission.
 use super::*;
 use std::io::{self, Read, Write};
@@ -20,7 +22,7 @@ const TIMING_BYTES: usize = 24;
 const EXTENDED_TIMING_BYTES: usize = 40;
 pub const MAX_PACKET_BYTES: usize = HEADER_BYTES
     + MAX_FRAMES * 8
-    + MAX_EVENTS * 12
+    + MAX_IDENTIFIED_INPUT_NOTES * 12
     + MAX_PARAMETER_POINTS * 16
     + EXTENDED_TIMING_BYTES;
 
@@ -163,7 +165,12 @@ pub fn read(reader: &mut impl Read) -> io::Result<Option<Block>> {
     let parameters = usize::from(u16::from_le_bytes([header[10], header[11]]));
     if frames == 0
         || usize::from(frames) > MAX_FRAMES
-        || count > MAX_EVENTS
+        || count
+            > if version >= 3 {
+                MAX_IDENTIFIED_INPUT_NOTES
+            } else {
+                MAX_EVENTS
+            }
         || (version == 3 && count == 0)
         || parameters > MAX_PARAMETER_POINTS
     {

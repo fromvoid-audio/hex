@@ -70,6 +70,23 @@ fn actual_foreign_instrument_notes_follow_accepted_callback_segments() {
         on: false,
         ..second_on
     };
+    // Fill the expanded input budget without exceeding the fixture's two
+    // simultaneous voices. The final two onsets must retain their original PCM.
+    let mut dense = Vec::new();
+    for identity in 1..64 {
+        let note = ForeignNote {
+            note_id: std::num::NonZeroU32::new(identity),
+            ..on
+        };
+        dense.push(note);
+        dense.push(ForeignNote {
+            on: false,
+            velocity: 0,
+            ..note
+        });
+    }
+    dense.extend([on, second_on]);
+    assert_eq!(dense.len(), 128);
     let mut render = |notes: &[ForeignNote], accept| {
         let mut output = [[1.0; 2]; 8];
         let mut callback = || {
@@ -89,7 +106,7 @@ fn actual_foreign_instrument_notes_follow_accepted_callback_segments() {
         callback();
         output
     };
-    for (index, notes) in [&[on, second_on][..], &[first_off, second_off], &[], &[]]
+    for (index, notes) in [dense.as_slice(), &[first_off, second_off], &[], &[]]
         .into_iter()
         .enumerate()
     {

@@ -32,6 +32,9 @@ pub use storage::{ConstructorStorage, channel_storage_bound};
 
 pub const MAX_FRAMES: usize = 256;
 pub const MAX_EVENTS: usize = 64;
+/// Identified notes can share an instrument input quantum with live releases.
+/// Byte-only messages and all replies keep the smaller generic event bound.
+pub const MAX_IDENTIFIED_INPUT_NOTES: usize = 128;
 pub const QUEUE_CAPACITY: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,24 +97,30 @@ impl MidiEvent {
 }
 
 #[derive(Clone, Copy)]
-pub struct Events {
-    values: [MidiEvent; MAX_EVENTS],
+pub struct Events<const CAPACITY: usize = MAX_EVENTS> {
+    values: [MidiEvent; CAPACITY],
     len: usize,
 }
-impl Default for Events {
+pub type InputEvents = Events<MAX_IDENTIFIED_INPUT_NOTES>;
+
+impl<const CAPACITY: usize> Default for Events<CAPACITY> {
     fn default() -> Self {
         Self {
-            values: [MidiEvent::default(); MAX_EVENTS],
+            values: [MidiEvent::default(); CAPACITY],
             len: 0,
         }
     }
 }
-impl Events {
+impl<const CAPACITY: usize> Events<CAPACITY> {
     pub fn as_slice(&self) -> &[MidiEvent] {
         &self.values[..self.len]
     }
     pub fn push(&mut self, event: MidiEvent) -> Result<(), Fault> {
-        if self.len == MAX_EVENTS
+        if self.len == CAPACITY
+            || (self.len >= MAX_EVENTS
+                && (event.note_id.is_none()
+                    || (self.len == MAX_EVENTS
+                        && self.as_slice().iter().any(|prior| prior.note_id.is_none()))))
             || self
                 .as_slice()
                 .last()
@@ -158,7 +167,7 @@ pub struct Block {
     pub first_frame: u64,
     pub frames: u16,
     pub pcm: [Frame; MAX_FRAMES],
-    pub events: Events,
+    pub events: InputEvents,
     pub parameters: Parameters,
     pub timing: Option<ProcessTiming>,
 }
@@ -201,6 +210,13 @@ impl Block {
         }
         Ok(())
     }
+
+    fn valid_reply(&self, binding: Binding, quantum: u16, sequence: u64) -> Result<(), Fault> {
+        if self.events.len > MAX_EVENTS {
+            return Err(Fault::InvalidEvents);
+        }
+        self.valid(binding, quantum, sequence)
+    }
 }
 
 /// Queue-independent revocation. Retain this control lease through worker join
@@ -235,6 +251,7 @@ struct Stage {
     expected_frames: usize,
     staged_frames: usize,
     input_events: usize,
+    legacy_input_events: bool,
     output_events: usize,
     input_parameters: usize,
     output_parameters: usize,
@@ -403,6 +420,7 @@ impl Callback {
             expected_frames: frames,
             staged_frames: 0,
             input_events: 0,
+            legacy_input_events: false,
             output_events: 0,
             input_parameters: 0,
             output_parameters: 0,
@@ -504,7 +522,14 @@ impl Callback {
         if !input.iter().flatten().all(|x| x.is_finite()) {
             return Err(Fault::InvalidSamples);
         }
-        if events.len() > MAX_EVENTS - stage.input_events
+        let input_event_count = stage
+            .input_events
+            .checked_add(events.len())
+            .filter(|count| *count <= MAX_IDENTIFIED_INPUT_NOTES)
+            .ok_or(Fault::InvalidEvents)?;
+        let legacy_input_events =
+            stage.legacy_input_events || events.iter().any(|event| event.note_id.is_none());
+        if (input_event_count > MAX_EVENTS && legacy_input_events)
             || !events.iter().all(|e| e.valid(input.len()))
             || events.windows(2).any(|w| w[0].frame > w[1].frame)
         {
@@ -546,7 +571,7 @@ impl Callback {
                 }
                 if sequence >= self.first_reply_sequence {
                     let reply = self.replies.pop().map_err(|_| Fault::MissingOutput)?;
-                    reply.valid(self.binding, self.quantum, sequence - 2)?;
+                    reply.valid_reply(self.binding, self.quantum, sequence - 2)?;
                     stage.state.output = reply;
                 }
             }
@@ -609,7 +634,8 @@ impl Callback {
         if result.parameters.as_slice().len() > MAX_PARAMETER_POINTS - stage.output_parameters {
             return Err(Fault::InvalidParameters);
         }
-        stage.input_events += events.len();
+        stage.input_events = input_event_count;
+        stage.legacy_input_events = legacy_input_events;
         stage.output_events += result.events.as_slice().len();
         stage.input_parameters += parameters.len();
         stage.output_parameters += result.parameters.as_slice().len();
@@ -685,7 +711,7 @@ impl Worker {
         if !self.in_flight {
             return self.fail(Fault::Protocol);
         }
-        if let Err(fault) = reply.valid(self.binding, self.quantum, self.sequence) {
+        if let Err(fault) = reply.valid_reply(self.binding, self.quantum, self.sequence) {
             return self.fail(fault);
         }
         let Some(next) = self.sequence.checked_add(1) else {
