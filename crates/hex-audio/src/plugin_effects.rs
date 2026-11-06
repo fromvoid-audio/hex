@@ -15,7 +15,7 @@ use hex_lattice_contract::{
 use hex_plugin_host::{
     Error,
     native::Prepared,
-    transport::{Callback, Events, Fault, MAX_FRAMES, MidiEvent},
+    transport::{Callback, Fault, InputEvents, MAX_FRAMES, MidiEvent},
 };
 
 mod bypass;
@@ -497,7 +497,7 @@ impl ForeignProcessors for NativeEffectCallback {
             self.reject_callback();
             return Err(DeviceContractError::ForeignProcessingUnavailable);
         }
-        let mut events = Events::default();
+        let mut events = InputEvents::default();
         for note in notes {
             let status = if note.on { 0x90 } else { 0x80 };
             if note.channel >= 16

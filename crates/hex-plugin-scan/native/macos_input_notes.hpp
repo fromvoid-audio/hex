@@ -11,7 +11,8 @@ namespace hex_instance {
 using namespace Steinberg;
 using namespace Steinberg::Vst;
 
-inline constexpr size_t INPUT_NOTE_COUNT=64;
+inline constexpr size_t LEGACY_INPUT_NOTE_COUNT=64;
+inline constexpr size_t INPUT_NOTE_COUNT=128;
 struct InputNote {
     int32 offset=0;
     int16 channel=0,pitch=0;

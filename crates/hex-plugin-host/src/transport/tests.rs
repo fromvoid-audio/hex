@@ -590,6 +590,83 @@ fn segmenting_does_not_multiply_the_physical_callback_event_budget() {
     assert!(worker.requests.is_empty());
 }
 
+#[test]
+fn dense_identified_notes_cross_callback_and_wire_without_expanding_replies() {
+    let (control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
+    let events: [MidiEvent; 128] = std::array::from_fn(|index| MidiEvent {
+        frame: 1,
+        bytes: [0x92, 60, 127],
+        len: 3,
+        note_id: std::num::NonZeroU32::new(index as u32 + 1),
+    });
+    let mut stage = || {
+        callback.begin_physical_callback(8).unwrap();
+        for (index, events) in events.chunks_exact(64).enumerate() {
+            callback
+                .stage_segment(index * 4, &[[0.0; 2]; 4], events, &mut [[0.0; 2]; 4])
+                .unwrap();
+        }
+        callback.finish(true).unwrap();
+    };
+    #[cfg(feature = "allocation-probe")]
+    {
+        let measured = allocation_counter::measure(&mut stage);
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    #[cfg(not(feature = "allocation-probe"))]
+    stage();
+    let request = worker.receive().unwrap().unwrap();
+    assert_eq!(request.events.as_slice().len(), 128);
+    for (index, event) in request.events.as_slice().iter().enumerate() {
+        assert_eq!(event.frame, if index < 64 { 1 } else { 5 });
+        assert_eq!(event.note_id, events[index].note_id);
+    }
+    let mut packet = Vec::new();
+    wire::write(&mut packet, &request).unwrap();
+    let decoded = wire::read(&mut packet.as_slice()).unwrap().unwrap();
+    assert_eq!(decoded.events.as_slice(), request.events.as_slice());
+    let first_note_id = wire::HEADER_BYTES + 8 * 8 + 8;
+    packet[first_note_id..first_note_id + 4].fill(0);
+    assert!(
+        matches!(wire::read(&mut packet.as_slice()), Err(error) if error.kind() == std::io::ErrorKind::InvalidData)
+    );
+    assert_eq!(worker.complete(decoded), Err(Fault::InvalidEvents));
+    assert!(control.is_revoked());
+
+    // Even across accepted physical callbacks, one assembled quantum has a
+    // finite note budget and cannot switch to legacy events above its cap.
+    for (first, extra) in [
+        (&events[..], events[0]),
+        (
+            &events[..64],
+            MidiEvent {
+                note_id: None,
+                ..events[0]
+            },
+        ),
+    ] {
+        let (control, mut callback, worker) = channel(BINDING, 8).unwrap();
+        callback
+            .stage(&[[0.0; 2]; 4], first, &mut [[0.0; 2]; 4])
+            .unwrap();
+        callback.finish(true).unwrap();
+        assert!(matches!(
+            callback.stage(&[[0.0; 2]; 4], &[extra], &mut [[0.0; 2]; 4]),
+            Err(Fault::InvalidEvents)
+        ));
+        assert!(control.is_revoked());
+        assert!(worker.requests.is_empty());
+    }
+}
+
 #[cfg(feature = "allocation-probe")]
 #[test]
 fn graph_fragment_staging_final_acceptance_and_refusal_allocate_and_free_nothing() {
