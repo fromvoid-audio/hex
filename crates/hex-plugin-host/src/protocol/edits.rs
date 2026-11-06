@@ -62,6 +62,17 @@ pub fn recovery_edit_request(
     request[4..6].copy_from_slice(&2_u16.to_le_bytes());
     Ok(request)
 }
+/// Request one parameter-only exchange while the transport is idle. The
+/// active helper keeps its PCM prefix and returns the usual recovery receipts.
+pub fn idle_editor_edit_request(
+    config: &Configuration,
+    sequence: u64,
+    operation: u64,
+) -> Result<[u8; 72]> {
+    let mut request = edit_request(config, sequence, operation)?;
+    request[4..6].copy_from_slice(&3_u16.to_le_bytes());
+    Ok(request)
+}
 pub fn recovery_edits(
     body: &[u8],
     config: &Configuration,

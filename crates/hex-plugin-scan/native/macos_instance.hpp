@@ -385,7 +385,16 @@ public:
     // A parameter-only stopped flush is distinct from a positive-frame block.
     // Serialize it on the same helper worker; main/control must join before close.
     FlushResult flush_stopped(ProcessData& data) {
-        if ([NSThread isMainThread] || !configured || !active || processing.load() ||
+        return flush_parameters(data,false);
+    }
+    // An idle transport can retain an enabled SDK processor. The same SDK
+    // lane accepts an empty-buffer flush without stopping or advancing PCM.
+    FlushResult flush_idle(ProcessData& data) {
+        return flush_parameters(data,true);
+    }
+private:
+    FlushResult flush_parameters(ProcessData& data,bool enabled) {
+        if ([NSThread isMainThread] || !configured || !active || processing.load()!=enabled ||
             processing_fault.load() || quarantined.load() ||
             (processing_thread!=std::thread::id{} && processing_thread!=std::this_thread::get_id()))
             return FlushResult::InvalidState;
@@ -401,6 +410,7 @@ public:
         if (processor->process(data)!=kResultOk || !shape.unchanged(data)) { processing_fault.store(true); return FlushResult::Refused; }
         return FlushResult::Applied;
     }
+public:
     bool stop_processing() {
         if (!processing.load() || processing_thread != std::this_thread::get_id() || quarantined.load())
             return false;

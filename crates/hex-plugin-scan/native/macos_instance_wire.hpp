@@ -184,7 +184,7 @@ struct Packet {
     std::array<hex_instance::InputNote,hex_instance::INPUT_NOTE_COUNT> notes{};
     size_t note_count=0;
     size_t parameter_count=0;
-    uint16_t frames=0;bool stop=false,observe_latency=false;
+    uint16_t frames=0;bool stop=false,observe_latency=false,flush_idle_edits=false;
     uint64_t next_graph=0,next_epoch=0;
     uint64_t capture_operation=0;
     hex_instance::ControllerQuery parameter_query{};
@@ -206,9 +206,10 @@ struct Packet {
         const bool live_start=!std::memcmp(p,"HXVL",4),live_poll=!std::memcmp(p,"HXVP",4);
         const bool pcm=!std::memcmp(p,"HXVB",4),flush=!std::memcmp(p,"HXVF",4);
         const auto version=number(p+4,2);
-        observe_latency=edit_query && version==2;
+        observe_latency=edit_query && (version==2 || version==3);
+        flush_idle_edits=edit_query && version==3;
         if((!stop && !quiesce && !resume && !capture && !live_start && !live_poll && !pcm && !flush && !edit_query && !page_start && !page_poll && !reactivate) ||
-            ((pcm || flush || edit_query)?(version!=1 && version!=2):version!=1)) return -1;
+            ((pcm || flush || edit_query)?(version!=1 && version!=2 && !flush_idle_edits):version!=1)) return -1;
         note_count=static_cast<size_t>(number(p+8,2));
         if (note_count>notes.size() || (note_count && (!pcm || config.inputs))) return -1;
         parameter_count=(pcm || flush) && version==2?static_cast<size_t>(number(p+10,2)):0;

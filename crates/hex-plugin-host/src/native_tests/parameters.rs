@@ -763,6 +763,12 @@ fn actual_sdk_ui_gestures_apply_on_original_worker_live_and_stopped_with_ordered
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_sdk_editor_burst_drains_in_order_on_the_original_worker() {
+    for idle in [false, true] {
+        editor_burst_drains(idle);
+    }
+}
+
+fn editor_burst_drains(idle: bool) {
     use crate::protocol::ParameterEditKind;
 
     let case = Case::new();
@@ -780,9 +786,16 @@ fn actual_sdk_editor_burst_drains_in_order_on_the_original_worker() {
     let mut edits = Vec::new();
     let mut next_block = 0;
     while edits.len() < 14 {
-        let batch = instance.poll_parameter_edits_on_worker().unwrap();
+        let batch = if idle {
+            instance
+                .service_idle_editor_edits_on_worker()
+                .unwrap()
+                .edits
+        } else {
+            instance.poll_parameter_edits_on_worker().unwrap()
+        };
         edits.extend_from_slice(batch.as_slice());
-        if batch.ready > 0 {
+        if !idle && batch.ready > 0 {
             let input = request(instance.configuration(), next_block);
             instance.exchange_on_worker(input).unwrap();
             next_block += 1;
@@ -804,6 +817,15 @@ fn actual_sdk_editor_burst_drains_in_order_on_the_original_worker() {
         assert_eq!((edit.kind, edit.normalized), expected);
     }
     assert_eq!(instance.child_id_on_control(), child);
+    if idle {
+        assert!(edits.iter().all(|edit| edit.first_frame == 0));
+        assert_eq!(instance.completed_blocks_on_control(), 0);
+        let input = request(instance.configuration(), 0);
+        let output = instance.exchange_on_worker(input).unwrap();
+        for (actual, input) in output.pcm[..8].iter().zip(input.pcm) {
+            assert_eq!(*actual, input.map(|value| value * 1.5));
+        }
+    }
     let paused = instance.quiesce_retained_on_control().unwrap();
     let (paused, captured) = paused.capture_state_retained_on_control().unwrap();
     assert_eq!(

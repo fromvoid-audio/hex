@@ -10,7 +10,7 @@ mod edits;
 mod parameter_page;
 pub use edits::{
     MAX_PARAMETER_EDITS, ParameterEdit, ParameterEditKind, ParameterEdits, RecoveryEdits,
-    edit_request, parameter_edits, recovery_edit_request, recovery_edits,
+    edit_request, idle_editor_edit_request, parameter_edits, recovery_edit_request, recovery_edits,
 };
 pub use parameter_page::{
     ControllerParameter, ControllerRequest, MAX_CONTROLLER_PARAMETERS, PARAMETER_PAGE_SIZE,
