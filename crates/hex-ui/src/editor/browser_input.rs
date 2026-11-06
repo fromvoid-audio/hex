@@ -28,6 +28,13 @@ fn config(kind: TextInputKind) -> TextInputConfig {
 pub(super) fn search(cx: &mut Context<TextInput>) -> TextInput {
     TextInput::new(cx, config(TextInputKind::Search))
 }
+pub(super) fn plugin_parameter_search(cx: &mut Context<TextInput>) -> TextInput {
+    let mut settings = config(TextInputKind::Search);
+    settings.id = "vst3-parameter-search".into();
+    settings.placeholder = theme::text("search parameters");
+    settings.max_bytes = 256;
+    TextInput::new(cx, settings)
+}
 pub(super) fn name(content: String, cx: &mut Context<TextInput>) -> TextInput {
     let mut input = TextInput::new(cx, config(TextInputKind::Value));
     input.set_text(&content, cx);

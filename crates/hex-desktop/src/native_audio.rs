@@ -1135,6 +1135,22 @@ impl WorkerAudioSink for NativeAudioSink {
     fn take_plugin_editor_result(&mut self, generation: u64) -> Option<Result<bool, String>> {
         self.plugins.take_editor_result(generation)
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn query_plugin_parameters(
+        &mut self,
+        query: hex_session::service::PluginParameterQuery,
+    ) -> Result<(), String> {
+        self.output.as_ref().ok_or("native output unavailable")?;
+        self.plugins.query_parameters(query)
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn plugin_parameters_ready(&self) -> bool {
+        self.plugins.parameters_ready()
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn take_plugin_parameters(&mut self) -> Option<hex_session::service::PluginParameterResult> {
+        self.plugins.take_parameters()
+    }
     fn finish_plugin_effect(
         &mut self,
         control: &Arc<hex_session::service::PluginEffectControl>,

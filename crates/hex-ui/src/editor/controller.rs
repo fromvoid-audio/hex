@@ -2319,6 +2319,13 @@ impl EditorView {
         self.recovery_failure = event.recovery_failure.clone();
         let sampler_edit_complete = event.sampler_edit_complete;
         self.plugin_effect_complete(&event);
+        if let Some(result) = event.plugin_parameters.take() {
+            super::device_panel::vst3_parameters::install_result(
+                self,
+                result,
+                event.state.revision,
+            );
+        }
         let sampler_load_complete = event.sampler_load_complete;
         let sampler_load_succeeded = event.error.is_none();
         if self

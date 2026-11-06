@@ -216,6 +216,18 @@ impl WorkerAudioSink for ResidentSink {
     fn toggle_plugin_editor(&mut self, generation: u64, device: u64) -> Result<(), String> {
         self.inner.toggle_plugin_editor(generation, device)
     }
+    fn query_plugin_parameters(
+        &mut self,
+        query: hex_session::service::PluginParameterQuery,
+    ) -> Result<(), String> {
+        self.inner.query_plugin_parameters(query)
+    }
+    fn plugin_parameters_ready(&self) -> bool {
+        self.inner.plugin_parameters_ready()
+    }
+    fn take_plugin_parameters(&mut self) -> Option<hex_session::service::PluginParameterResult> {
+        self.inner.take_plugin_parameters()
+    }
     fn plugin_editor_ready(&self) -> bool {
         self.inner.plugin_editor_ready()
     }
