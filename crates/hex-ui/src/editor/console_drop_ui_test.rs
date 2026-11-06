@@ -1397,6 +1397,11 @@ fn recorded_take_range_drag_imports_exact_pcm_in_arrangement_and_session(cx: &mu
         };
     for mode in [EditorMode::Arrangement, EditorMode::Session] {
         let (handle, editor, track, scene, path) = fixture(cx);
+        let mut recorded = std::fs::read(&path).unwrap();
+        for (index, bytes) in recorded[44..].chunks_exact_mut(2).enumerate() {
+            bytes.copy_from_slice(&(8192 + index as i16).to_le_bytes());
+        }
+        std::fs::write(&path, recorded).unwrap();
         let mut visual = VisualTestContext::from_window(handle, cx);
         editor.update(cx, |view, cx| {
             view.mode = mode;
@@ -1460,7 +1465,10 @@ fn recorded_take_range_drag_imports_exact_pcm_in_arrangement_and_session(cx: &mu
             let media = project.asset(id).unwrap().path();
             assert_ne!(media, path);
             let wav = hex_media::decode_wav_file(media, hex_media::Limits::new(4096, 512)).unwrap();
-            assert_eq!(wav.audio().frames(), &[[0.25; 2]; 256]);
+            let expected: Vec<_> = (128..384)
+                .map(|index| [(8192 + index) as f32 / 32768.0; 2])
+                .collect();
+            assert_eq!(wav.audio().frames(), expected);
         });
         for (request, present) in [(Request::Undo, false), (Request::Redo, true)] {
             editor.update(cx, |view, _| assert!(view.enqueue(request)));
