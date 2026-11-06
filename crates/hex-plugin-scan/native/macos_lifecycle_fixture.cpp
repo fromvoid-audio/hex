@@ -340,12 +340,21 @@ extern "C" __attribute__((visibility("default"))) int HexHostMessages(int retain
             attributes->setString("text",oversized.data())!=kResultOk &&
             attributes->setBinary("binary",data,1025)!=kResultOk;
         const void* borrowed=nullptr; uint32 borrowed_size=0;
+        ok=ok && attributes->getBinary("missing",borrowed,borrowed_size)==kResultFalse;
         ok=attributes->getBinary("binary",borrowed,borrowed_size)==kResultOk && borrowed_size==3 && ok;
         ok=attributes->setBinary("binary",borrowed,borrowed_size)==kResultOk && ok;
         message->setMessageID(message->getMessageID());
         for (int n=0;n<12 && ok;++n) { char key[8]{}; std::snprintf(key,sizeof(key),"key%d",n); ok=attributes->setInt(key,n)==kResultOk; }
         ok=ok && attributes->setInt("overflow",1)!=kResultOk && active_controller->connected_peer() &&
             active_controller->connected_peer()->notify(message)==kResultOk;
+        bool wrong_thread_refused=false;
+        std::thread wrong_thread([&] {
+            const void* value=nullptr; uint32 size=0;
+            wrong_thread_refused=!message->getMessageID() && !message->getAttributes() &&
+                attributes->getBinary("binary",value,size)==kResultFalse;
+        });
+        wrong_thread.join();
+        ok=ok && wrong_thread_refused;
         message->release();
     }
     std::array<IMessage*,16> live{};

@@ -83,13 +83,13 @@ public:
     // the caller must also retain its module rather than unload live objects.
     ~Instance() = default;
 
-    bool open(IPluginFactory* admitted_factory, const TUID class_id) {
+    bool open(IPluginFactory* admitted_factory, const TUID class_id,bool trace_messages=false) {
         if (![NSThread isMainThread] || used || !admitted_factory || quarantined.load())
             return false;
         used = true;
         factory = admitted_factory;
         factory->addRef();
-        host = new(std::nothrow) Host();
+        host = new(std::nothrow) Host(trace_messages);
         if (!host) return false;
         if (factory->createInstance(class_id, INLINE_UID_OF(IComponent),
                                     reinterpret_cast<void**>(&component)) != kResultOk || !component)
@@ -496,6 +496,9 @@ public:
     }
     const ParameterSnapshot* parameter_snapshot() const {
         return host?host->snapshot():nullptr;
+    }
+    const HostMessageDiagnostics* message_diagnostics_on_control() const {
+        return host?&host->message_diagnostics():nullptr;
     }
     bool parameter_page_on_control(const ControllerQuery& query,ControllerParameterPage& result) {
         if(![NSThread isMainThread]) return false;

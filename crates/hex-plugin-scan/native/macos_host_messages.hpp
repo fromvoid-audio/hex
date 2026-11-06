@@ -25,6 +25,21 @@ template<typename Char> bool text_length(const Char* value,size_t maximum,size_t
     return false;
 }
 
+// Opt-in counters shared by the host's message leases. Each number is
+// cumulative and sampled independently. No identifiers or payload are copied.
+struct HostMessageDiagnostics {
+    std::atomic<uint64_t> messages{0}, binary_attempts{0}, binary_writes{0}, binary_oversize{0};
+    std::atomic<uint64_t> binary_reads{0}, binary_misses{0}, wrong_thread_reads{0};
+    std::atomic<uint32> max_binary_bytes{0};
+
+    void note_binary_write_attempt(uint32 bytes) {
+        binary_attempts.fetch_add(1,std::memory_order_relaxed);
+        auto largest=max_binary_bytes.load(std::memory_order_relaxed);
+        while(bytes>largest && !max_binary_bytes.compare_exchange_strong(
+            largest,bytes,std::memory_order_relaxed)) {}
+    }
+};
+
 // Permanently constructed in the owning Host pool. Each lease confines payload
 // access to its creating thread, including a synchronous receiver on that lane.
 // References can be released on any thread. Last release returns the slot and
@@ -43,10 +58,16 @@ class HostMessage final : public IMessage, public IAttributeList {
     std::array<Attribute,HOST_ATTRIBUTE_COUNT> values{};
     std::atomic<uint32> references{0};
     FUnknown* owner=nullptr;
+    HostMessageDiagnostics* diagnostics=nullptr;
     pthread_t payload_thread=nullptr;
     bool attributes_only=false, named=false;
     char message_id[HOST_IDENTIFIER_BYTES+1]{};
     bool on_payload_thread() const { return pthread_equal(payload_thread,pthread_self()); }
+    bool can_read_payload() const {
+        if(on_payload_thread()) return true;
+        if(diagnostics) diagnostics->wrong_thread_reads.fetch_add(1,std::memory_order_relaxed);
+        return false;
+    }
     Attribute* find(AttrID id,bool create=false) {
         size_t length=0;
         if (!on_payload_thread() || !text_length(id,HOST_IDENTIFIER_BYTES,length)) return nullptr;
@@ -59,7 +80,7 @@ class HostMessage final : public IMessage, public IAttributeList {
         return nullptr;
     }
 public:
-    void bind(FUnknown* host) { owner=host; }
+    void bind(FUnknown* host,HostMessageDiagnostics* trace) { owner=host;diagnostics=trace; }
     bool acquire(bool attributes) {
         uint32 available=0;
         if (!owner || !references.compare_exchange_strong(available,1,std::memory_order_acq_rel)) return false;
@@ -67,6 +88,7 @@ public:
         payload_thread=pthread_self();
         for (auto& value:values) value.kind=Kind::Empty;
         attributes_only=attributes; named=false; message_id[0]=0;
+        if(diagnostics && !attributes) diagnostics->messages.fetch_add(1,std::memory_order_relaxed);
         return true;
     }
     uint32 PLUGIN_API addRef() override { return ++references; }
@@ -88,7 +110,7 @@ public:
         addRef(); return kResultOk;
     }
     FIDString PLUGIN_API getMessageID() override {
-        return on_payload_thread() && named?message_id:nullptr;
+        return can_read_payload() && named?message_id:nullptr;
     }
     void PLUGIN_API setMessageID(FIDString id) override {
         if (!on_payload_thread()) return;
@@ -97,7 +119,7 @@ public:
         if (named) std::memmove(message_id,id,length+1);
     }
     IAttributeList* PLUGIN_API getAttributes() override {
-        return on_payload_thread()?static_cast<IAttributeList*>(this):nullptr;
+        return can_read_payload()?static_cast<IAttributeList*>(this):nullptr;
     }
     tresult PLUGIN_API setInt(AttrID id,int64 number) override {
         auto* value=find(id,true); if (!value) return kResultFalse;
@@ -128,14 +150,27 @@ public:
         std::memmove(text,value->text,(value->length+1)*sizeof(TChar)); return kResultOk;
     }
     tresult PLUGIN_API setBinary(AttrID id,const void* bytes,uint32 size) override {
+        if(diagnostics) {
+            diagnostics->note_binary_write_attempt(size);
+            if(size>HOST_BINARY_BYTES) diagnostics->binary_oversize.fetch_add(1,std::memory_order_relaxed);
+        }
         if ((!bytes && size) || size>HOST_BINARY_BYTES) return kInvalidArgument;
         auto* value=find(id,true); if (!value) return kResultFalse;
         if (size) std::memmove(value->binary.data(),bytes,size);
-        value->length=size; value->kind=Kind::Binary; return kResultOk;
+        value->length=size; value->kind=Kind::Binary;
+        if(diagnostics) diagnostics->binary_writes.fetch_add(1,std::memory_order_relaxed);
+        return kResultOk;
     }
     tresult PLUGIN_API getBinary(AttrID id,const void*& bytes,uint32& size) override {
-        auto* value=find(id); if (!value || value->kind!=Kind::Binary) return kResultFalse;
-        bytes=value->binary.data(); size=value->length; return kResultOk;
+        if(!can_read_payload()) return kResultFalse;
+        auto* value=find(id);
+        if(!value || value->kind!=Kind::Binary) {
+            if(diagnostics) diagnostics->binary_misses.fetch_add(1,std::memory_order_relaxed);
+            return kResultFalse;
+        }
+        bytes=value->binary.data(); size=value->length;
+        if(diagnostics) diagnostics->binary_reads.fetch_add(1,std::memory_order_relaxed);
+        return kResultOk;
     }
 };
 } // namespace hex_instance
