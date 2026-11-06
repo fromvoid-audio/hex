@@ -310,9 +310,7 @@ impl Block {
         if frame <= previous_frame
             || frame >= self.frames
             || !timing.is_valid()
-            || self
-                .latest_timing()
-                .is_none_or(|previous| previous.playing == timing.playing)
+            || (self.latest_timing().is_none() && !timing.playing)
         {
             return Err(Fault::Protocol);
         }
@@ -350,11 +348,10 @@ impl Block {
         }
         let mut previous = self.timing.map(|timing| TimingChange { frame: 0, timing });
         for &change in self.timing_changes.as_slice() {
-            if change.frame >= quantum
+            if change.frame == 0
+                || change.frame >= quantum
                 || !change.timing.is_valid()
-                || previous.is_none_or(|prior| {
-                    prior.frame >= change.frame || prior.timing.playing == change.timing.playing
-                })
+                || previous.map_or(!change.timing.playing, |prior| prior.frame >= change.frame)
             {
                 return Err(Fault::Protocol);
             }
@@ -873,6 +870,9 @@ impl Callback {
             let position = stage.state.position;
             let offset = (position % q) as usize;
             let sequence = position / q;
+            let origin = authored
+                .as_ref()
+                .and_then(|segment| (segment.origin)(index));
             if offset == 0 {
                 stage.state.input = Block::empty(self.binding, self.quantum);
                 stage.state.input.sequence = sequence;
@@ -899,6 +899,14 @@ impl Callback {
                         sequence - 2,
                     )?;
                 }
+            } else if origin.is_some() && self.authored_origins.frames[offset - 1].is_none() {
+                // Starting a new authored run after unavailable history needs
+                // an SDK call of its own. Otherwise the first parameter point
+                // interpolates backward from the previous call's held value.
+                let change = (timing.at)(index)
+                    .filter(|origin| origin.playing)
+                    .ok_or(Fault::Protocol)?;
+                stage.state.input.add_timing_change(offset as u16, change)?;
             } else if index == 0
                 && let Some(playing) = timing.playing
                 && stage
@@ -960,8 +968,8 @@ impl Callback {
                     })?;
                 }
             }
-            if let Some(authored) = &authored {
-                self.authored_origins.frames[offset] = (authored.origin)(index);
+            if authored.is_some() {
+                self.authored_origins.frames[offset] = origin;
             }
             stage.state.position = position.checked_add(1).ok_or(Fault::Exhausted)?;
             if offset + 1 == usize::from(self.quantum) {

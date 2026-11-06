@@ -61,7 +61,9 @@ impl AuthoredOrigins {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::{Callback, ParameterPoint, SegmentTiming, channel};
+    use crate::transport::{
+        Callback, ParameterPoint, ProcessTiming, SegmentTiming, TimingChange, channel,
+    };
     use std::cell::Cell;
 
     struct Program {
@@ -78,11 +80,22 @@ mod tests {
         fn render_quantum(
             &self,
             origins: &[Option<u64>],
-            _timing_changes: &TimingChanges,
+            timing_changes: &TimingChanges,
             output: &mut Parameters,
         ) -> Result<(), Fault> {
             self.calls.set(self.calls.get() + 1);
             assert_eq!(origins, &[None, Some(8), Some(9), Some(3)]);
+            assert_eq!(
+                timing_changes.as_slice(),
+                &[TimingChange {
+                    frame: 1,
+                    timing: ProcessTiming {
+                        arrangement_frame: 8,
+                        playing: true,
+                        ..ProcessTiming::default()
+                    },
+                }]
+            );
             for (frame, normalized) in [(1, 0.8), (2, 0.9), (if self.invalid { 4 } else { 3 }, 0.3)]
             {
                 output.push(ParameterPoint {
@@ -118,7 +131,13 @@ mod tests {
             &mut output[..origins.len()],
             SegmentTiming {
                 playing: None,
-                at: |_| None,
+                at: |index| {
+                    Some(ProcessTiming {
+                        arrangement_frame: origins[index]? as i64,
+                        playing: true,
+                        ..ProcessTiming::default()
+                    })
+                },
             },
             AuthoredSegment {
                 program,
@@ -178,6 +197,19 @@ mod tests {
             let request = worker.receive_request().unwrap().unwrap();
             assert!(request.authored);
             assert_eq!(request.parameter_capacity, 0);
+            let mut packet = Vec::new();
+            super::super::wire::write(&mut packet, &request.block).unwrap();
+            assert_eq!(&packet[12..14], &[1, 1]);
+            let decoded = super::super::wire::read(&mut packet.as_slice())
+                .unwrap()
+                .unwrap();
+            assert_eq!(decoded.timing, None);
+            assert_eq!(
+                decoded.timing_changes.as_slice(),
+                request.block.timing_changes.as_slice()
+            );
+            packet[13] = 2;
+            assert!(super::super::wire::read(&mut packet.as_slice()).is_err());
             assert_eq!(
                 request.block.parameters.as_slice(),
                 &[

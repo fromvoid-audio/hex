@@ -11,8 +11,9 @@
 //! flags u8 (playing, beat present), then three reserved zero bytes.
 //! Version5 adds meter/cycle presence flags, two meter bytes, one reserved
 //! zero byte, and two u64 Q32.32 cycle endpoints. Absent fields are zero.
-//! Version6 uses the 40-byte context and appends one to seven playing-state
-//! changes. Header byte 12 is their count. Each change carries a u16 sample
+//! Version6 uses the 40-byte context and appends one to seven context
+//! changes. Header byte 12 is their count. Byte 13 is one when the initial
+//! context is absent. Each change carries a u16 sample
 //! offset, six reserved zero bytes, and its own 40-byte context.
 //! Versions 3–6 carry up to 160 input events only when every event has a note
 //! ID. The generic event and worker reply contracts remain capped at 64.
@@ -109,6 +110,9 @@ fn write_with_parameters(
     packet[8..10].copy_from_slice(&(block.events.len as u16).to_le_bytes());
     packet[10..12].copy_from_slice(&(block.parameters.as_slice().len() as u16).to_le_bytes());
     packet[12] = changes.len() as u8;
+    if version == 6 {
+        packet[13] = u8::from(block.timing.is_none());
+    }
     for (index, value) in [
         block.binding.root,
         block.binding.instance,
@@ -247,12 +251,12 @@ pub fn read(reader: &mut impl Read) -> io::Result<Option<Block>> {
     };
     let reserved = match version {
         1 => 10,
-        6 => 13,
+        6 => 14,
         _ => 12,
     };
     if &header[..4] != b"HXVB"
         || !matches!(version, 1..=6)
-        || (version == 6 && !(1..=MAX_TIMING_CHANGES).contains(&change_count))
+        || (version == 6 && (!(1..=MAX_TIMING_CHANGES).contains(&change_count) || header[13] > 1))
         || header[reserved..16].iter().any(|b| *b != 0)
     {
         return Err(invalid());
@@ -338,7 +342,7 @@ pub fn read(reader: &mut impl Read) -> io::Result<Option<Block>> {
             })
             .map_err(|_| invalid())?;
     }
-    if version >= 4 {
+    if version >= 4 && header[13] == 0 {
         block.timing = Some(read_timing(reader, version)?);
     }
     for _ in 0..change_count {

@@ -125,7 +125,7 @@ fn steps_stay_adjacent_and_each_sdk_slice_gets_a_chase() {
         Some(4002),
         None,
     ];
-    let points = render(&program, &origins, &[5]);
+    let points = render(&program, &origins, &[1, 5]);
     assert_eq!(
         points
             .iter()

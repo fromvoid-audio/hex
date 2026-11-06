@@ -595,7 +595,13 @@ impl ForeignProcessors for NativeEffectCallback {
                 Some(ProcessTiming {
                     arrangement_frame: i64::try_from(clock.arrangement_frame_at_offset(index)?)
                         .ok()?,
-                    playing: playing.or_else(|| clock.transport_is_running())?,
+                    playing: if node.automation.is_some()
+                        && clock.authored_arrangement_frame_at_offset(index).is_some()
+                    {
+                        true
+                    } else {
+                        playing.or_else(|| clock.transport_is_running())?
+                    },
                     arrangement_beat_raw: clock.arrangement_beat_at_offset(index),
                     tempo_micro_bpm: clock
                         .tempo_micro_bpm_at_offset(index)

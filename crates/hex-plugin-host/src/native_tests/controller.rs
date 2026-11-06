@@ -710,7 +710,7 @@ fn authored_pcm_rechecks_processing_capability_after_controller_refresh() {
 fn authored_quantum_partition_preserves_signed_pcm_after_pipeline_latency() {
     use crate::transport::{
         AuthoredParameterProgram, AuthoredSegment, Fault, ParameterPoint, Parameters,
-        SegmentTiming, TimingChanges, channel,
+        ProcessTiming, SegmentTiming, TimingChanges, channel,
     };
     use std::num::NonZeroU64;
 
@@ -735,19 +735,38 @@ fn authored_quantum_partition_preserves_signed_pcm_after_pipeline_latency() {
             _: &TimingChanges,
             output: &mut Parameters,
         ) -> std::result::Result<(), Fault> {
-            for (frame, origin) in origins.iter().enumerate() {
-                output.push(ParameterPoint {
-                    frame: frame as u16,
-                    id: 0,
-                    normalized: Self::normalized(origin.ok_or(Fault::InvalidParameters)?),
-                })?;
+            for (frame, &origin) in origins.iter().enumerate() {
+                if let Some(origin) = origin {
+                    output.push(ParameterPoint {
+                        frame: frame as u16,
+                        id: 0,
+                        normalized: Self::normalized(origin),
+                    })?;
+                }
             }
             Ok(())
         }
     }
 
     let build = build();
-    let origins = [0, 1, 2, 3, 4, 5, 6, 7, 20, 21, 22, 23, 0, 1, 2, 3];
+    let origins = [
+        Some(0),
+        Some(1),
+        Some(2),
+        Some(3),
+        Some(4),
+        Some(5),
+        Some(6),
+        Some(7),
+        None,
+        None,
+        None,
+        None,
+        Some(20),
+        Some(21),
+        Some(0),
+        Some(1),
+    ];
     for partitions in [[8, 8, 8, 8, 0], [3, 6, 8, 7, 8]] {
         let case = Case::new();
         let mut instance = Prepared::prepare(
@@ -772,6 +791,7 @@ fn authored_quantum_partition_preserves_signed_pcm_after_pipeline_latency() {
             callback.begin_physical_callback(frames).unwrap();
             let cut = frames / 2;
             for (offset, len) in [(0, cut), (cut, frames - cut)] {
+                let origin = |index| origins[(position + offset + index) % origins.len()];
                 callback
                     .stage_segment_with_authored_parameters(
                         offset,
@@ -780,13 +800,20 @@ fn authored_quantum_partition_preserves_signed_pcm_after_pipeline_latency() {
                         &mut pcm[position + offset..position + offset + len],
                         SegmentTiming {
                             playing: None,
-                            at: |_| None,
+                            at: |index| {
+                                Some(ProcessTiming {
+                                    arrangement_frame: origin(index)? as i64,
+                                    playing: true,
+                                    arrangement_beat_raw: None,
+                                    tempo_micro_bpm: None,
+                                    meter: None,
+                                    cycle_beats_raw: None,
+                                })
+                            },
                         },
                         AuthoredSegment {
                             program: &FixtureEnvelope,
-                            origin: &|index| {
-                                Some(origins[(position + offset + index) % origins.len()])
-                            },
+                            origin: &origin,
                         },
                     )
                     .unwrap();
@@ -808,9 +835,19 @@ fn authored_quantum_partition_preserves_signed_pcm_after_pipeline_latency() {
         assert_eq!(position, pcm.len());
         assert!(pcm[..16].iter().all(|frame| *frame == [0.0; 2]));
         for (index, (&origin, actual)) in origins.iter().zip(&pcm[16..]).enumerate() {
-            let gain = (FixtureEnvelope::normalized(origin)
+            // Compensation had no origin for frames 8–11. The first SDK
+            // slice holds the previous quantum's last value, even though a
+            // new authored value arrives at offset four of the same request.
+            let sdk_slice = if index < 8 {
+                0
+            } else if index < 12 {
+                1
+            } else {
+                2
+            };
+            let gain = (FixtureEnvelope::normalized(origin.unwrap_or(7))
                 * 4.0
-                * (0.5 + (index / 8) as f64 * 0.125)) as f32;
+                * (0.5 + sdk_slice as f64 * 0.125)) as f32;
             assert_eq!(*actual, [0.25 * gain, -0.125 * gain], "frame {index}");
         }
         assert!(

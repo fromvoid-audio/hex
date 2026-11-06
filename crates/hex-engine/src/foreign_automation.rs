@@ -177,7 +177,7 @@ impl Program {
     /// Fill caller-owned storage in physical frame order. The SDK interpolates
     /// between points for one parameter. Points on both sides of each adjacent
     /// discontinuity prevent an unintended ramp. Missing origins emit nothing.
-    /// An interior missing span requires an SDK slice cut before chasing again.
+    /// A missing span requires an SDK slice cut before chasing again.
     pub fn render_quantum(
         &self,
         origins: &[Option<u64>],
@@ -198,15 +198,12 @@ impl Program {
         }
 
         let mut run_count = 0;
-        let mut unavailable = false;
-        let mut seen_origin = false;
         for (index, origin) in origins.iter().enumerate() {
             if origin.is_none() {
-                unavailable |= seen_origin;
                 continue;
             }
             let cut = slice_cuts.binary_search(&(index as u16)).is_ok();
-            if unavailable && !cut {
+            if index > 0 && origins[index - 1].is_none() && !cut {
                 return Err(Invalid(
                     "foreign automation origin resumed without a slice cut",
                 ));
@@ -214,8 +211,6 @@ impl Program {
             if cut || index == 0 || !continuous(origins[index - 1], *origin) {
                 run_count += 1;
             }
-            unavailable = false;
-            seen_origin = true;
         }
         if run_count > self.profile.max_runs {
             return Err(Invalid("foreign automation origin runs exceed admission"));
