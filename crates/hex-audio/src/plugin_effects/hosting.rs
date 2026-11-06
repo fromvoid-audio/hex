@@ -95,11 +95,10 @@ impl Hosting {
             native::TrustUserCode::Acknowledged,
         )
         .map_err(|e| e.to_string())?;
+        // A private bounce has no device presentation and this source is
+        // configured before the isolated downstream graph has been compiled.
         let instance = pending
-            .complete_on_control(Some(PresentationLatency {
-                input_frames: 0,
-                output_frames: u32::try_from(MAX_FRAMES * 2).map_err(|e| e.to_string())?,
-            }))
+            .complete_on_control(None)
             .map_err(|e| e.to_string())?;
         let data_limit = Self::source_data_reservation()?.max_retained_data_bytes;
         NativeEffect::prepare_retained_with_data_limit_on_control(identity, instance, data_limit)
