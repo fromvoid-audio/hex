@@ -24,7 +24,8 @@ mod parameter_automation;
 mod static_processing_tests;
 mod tail_split;
 pub use foreign_processor::{
-    ForeignNote, ForeignProcessorNode, ForeignProcessors, PreparedForeignProcessor, RefuseForeign,
+    ForeignAutomation, ForeignAutomationProgram, ForeignNote, ForeignProcessorNode,
+    ForeignProcessors, PreparedForeignProcessor, RefuseForeign,
 };
 pub use parameter_automation::{
     ExternalParameterAutomation, HostAutomationLane, NativeParameterAutomation,
@@ -751,6 +752,11 @@ impl NativeInstrumentClock for OffsetClock<'_> {
     fn arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
         self.clock
             .arrangement_frame_at_offset(self.offset.checked_add(offset)?)
+    }
+
+    fn authored_arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+        self.clock
+            .authored_arrangement_frame_at_offset(self.offset.checked_add(offset)?)
     }
 
     fn loop_pass_at_offset(&self, offset: usize) -> Option<u64> {
@@ -2850,6 +2856,7 @@ impl NativeRuntimeChain {
                 sample_rate: entry.sample_rate,
                 configuration,
                 prepared: runtime.prepared,
+                automation: None,
                 bypassed: entry.bypassed,
                 input_gain: entry.input_gain,
                 output_gain: if entry.automation_frozen {

@@ -92,6 +92,28 @@ impl PreparedForeignProcessor {
     }
 }
 
+/// An immutable, control-prepared program that fills bounded storage for a
+/// complete physical foreign processing quantum. This call borrows the program
+/// and must perform no allocation, waiting or I/O.
+pub trait ForeignAutomationProgram: Sync {
+    fn render_quantum(
+        &self,
+        origins: &[Option<u64>],
+        slice_cuts: &[u16],
+        output: &mut [ForeignParameterPoint],
+    ) -> Result<usize, DeviceContractError>;
+}
+
+/// A graph's prepared automation for one exact foreign endpoint. The graph
+/// owner must admit the program and reserve a unique revision for it within
+/// the binding's lifetime. Equal scalar bindings alone grant no SDK capability.
+#[derive(Clone, Copy)]
+pub struct ForeignAutomation<'a> {
+    pub binding: ForeignProcessorBinding,
+    pub revision: std::num::NonZeroU64,
+    pub program: &'a dyn ForeignAutomationProgram,
+}
+
 /// One invocation of an existing graph node. Configuration borrows the actual
 /// prepared state; providers do not invent a second source-ID/state namespace.
 /// Equality is a matching fence, never native custody or publication authority.
@@ -103,6 +125,9 @@ pub struct ForeignProcessorNode<'a> {
     pub sample_rate: u32,
     pub configuration: &'a NativeDeviceState,
     pub prepared: PreparedForeignProcessor,
+    /// Borrowed authored input for this segment. An endpoint without
+    /// authored support must refuse the segment before staging any work.
+    pub automation: Option<ForeignAutomation<'a>>,
     pub bypassed: bool,
     /// Cached finite host input trim. Segments contain the original untrimmed
     /// signal so the host can preserve aligned dry history. Apply this gain to
@@ -167,7 +192,7 @@ pub trait ForeignProcessors {
         parameters: &[ForeignParameterPoint],
         clock: Option<&dyn NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
-        if parameters.is_empty() {
+        if parameters.is_empty() && node.automation.is_none() {
             self.process_segment(node, frame_offset, frames, clock)
         } else {
             self.reject_callback();

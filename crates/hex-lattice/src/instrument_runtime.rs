@@ -26,6 +26,12 @@ pub trait NativeInstrumentClock {
     fn arrangement_frame_at_offset(&self, _offset: usize) -> Option<u64> {
         None
     }
+    /// Exact Arrangement content origin eligible for authored foreign
+    /// automation. Stopped monitoring, audition and uncompensated warmup
+    /// return None even if they have a cursor or a musical clock.
+    fn authored_arrangement_frame_at_offset(&self, _offset: usize) -> Option<u64> {
+        None
+    }
     fn loop_pass_at_offset(&self, _offset: usize) -> Option<u64> {
         None
     }

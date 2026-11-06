@@ -429,6 +429,7 @@ fn parameter_capability_default_refuses_nonempty_without_silent_loss_and_preserv
         sample_rate: 48_000,
         configuration: declaration.configuration.as_deref().unwrap(),
         prepared: PreparedForeignProcessor::new(8, 3, 16).unwrap(),
+        automation: None,
         bypassed: false,
         input_gain: 10.0,
         output_gain: 0.1,

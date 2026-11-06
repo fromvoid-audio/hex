@@ -20,6 +20,7 @@ use hex_plugin_host::{
     },
 };
 
+mod automation;
 mod bypass;
 mod definition;
 mod tail;
@@ -498,6 +499,9 @@ impl ForeignProcessors for NativeEffectCallback {
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
         if !self.matches(node)
+            || node.automation.is_some_and(|program| {
+                program.binding != self.configuration.binding || !parameters.is_empty()
+            })
             || (!notes.is_empty() && !self.configuration.prepared.is_instrument_profile())
             || frames.len() > MAX_FRAMES
             || !node.input_gain.is_finite()
@@ -544,41 +548,53 @@ impl ForeignProcessors for NativeEffectCallback {
         // The original joining worker retains processor parameter observations
         // for control queries; the native helper mirrors them to its controller.
         // Receiving that feedback here must not revoke an otherwise valid epoch.
-        let playing = if node.prepared.is_instrument_profile() {
+        let playing = if node.prepared.is_instrument_profile() || node.automation.is_some() {
             clock.and_then(|clock| clock.transport_is_running())
         } else {
             None
         };
-        if self
-            .transport
-            .stage_segment_with_timing(
+        let timing = SegmentTiming {
+            playing,
+            at: |index| {
+                let clock = clock?;
+                Some(ProcessTiming {
+                    arrangement_frame: i64::try_from(clock.arrangement_frame_at_offset(index)?)
+                        .ok()?,
+                    playing: playing.or_else(|| clock.transport_is_running())?,
+                    arrangement_beat_raw: clock.arrangement_beat_at_offset(index),
+                    tempo_micro_bpm: clock
+                        .tempo_micro_bpm_at_offset(index)
+                        .and_then(std::num::NonZeroU32::new),
+                    meter: clock.arrangement_meter_at_offset(index),
+                    cycle_beats_raw: clock.arrangement_cycle_at_offset(index),
+                })
+            },
+        };
+        let input = &self.input[..frames.len()];
+        let result = if let Some(program) = node.automation {
+            let program = automation::TransportProgram(program);
+            self.transport.stage_segment_with_authored_parameters(
                 offset,
-                &self.input[..frames.len()],
+                input,
+                events.as_slice(),
+                frames,
+                timing,
+                hex_plugin_host::transport::AuthoredSegment {
+                    program: &program,
+                    origin: &|index| clock?.authored_arrangement_frame_at_offset(index),
+                },
+            )
+        } else {
+            self.transport.stage_segment_with_timing(
+                offset,
+                input,
                 events.as_slice(),
                 parameters,
                 frames,
-                SegmentTiming {
-                    playing,
-                    at: |index| {
-                        let clock = clock?;
-                        Some(ProcessTiming {
-                            arrangement_frame: i64::try_from(
-                                clock.arrangement_frame_at_offset(index)?,
-                            )
-                            .ok()?,
-                            playing: playing.or_else(|| clock.transport_is_running())?,
-                            arrangement_beat_raw: clock.arrangement_beat_at_offset(index),
-                            tempo_micro_bpm: clock
-                                .tempo_micro_bpm_at_offset(index)
-                                .and_then(std::num::NonZeroU32::new),
-                            meter: clock.arrangement_meter_at_offset(index),
-                            cycle_beats_raw: clock.arrangement_cycle_at_offset(index),
-                        })
-                    },
-                },
+                timing,
             )
-            .is_err()
-        {
+        };
+        if result.is_err() {
             // The transport revoked only this endpoint's epoch. Leave the
             // aligned dry input so a containing carrier can keep rendering.
             frames.copy_from_slice(&self.dry_output[..frames.len()]);

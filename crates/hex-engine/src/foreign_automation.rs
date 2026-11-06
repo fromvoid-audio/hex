@@ -200,6 +200,18 @@ impl Program {
     }
 }
 
+impl hex_lattice::ForeignAutomationProgram for Program {
+    fn render_quantum(
+        &self,
+        origins: &[Option<u64>],
+        slice_cuts: &[u16],
+        output: &mut [ForeignParameterPoint],
+    ) -> Result<usize, hex_lattice_contract::DeviceContractError> {
+        self.render_quantum(origins, slice_cuts, output)
+            .map_err(|_| hex_lattice_contract::DeviceContractError::ForeignProcessingFailed)
+    }
+}
+
 fn continuous(previous: Option<u64>, next: Option<u64>) -> bool {
     previous
         .and_then(|frame| frame.checked_add(1))

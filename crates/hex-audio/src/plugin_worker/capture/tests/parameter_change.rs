@@ -556,10 +556,11 @@ fn rejected_physical_callback_never_consumes_queued_host_parameter_input() {
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn compiled_saved_vst3_lane_reaches_the_signed_worker_without_callback_allocations() {
+    use crate::plugin_effects::{NativeEffect, NativeEffectCallbacks};
     use hex_engine::foreign_automation::{ParameterCapability, Program, QuantumProfile};
-    use hex_plugin_host::transport::{
-        AuthoredParameterProgram, AuthoredSegment, MAX_PARAMETER_POINTS, MAX_TIMING_CHANGES,
-        SegmentTiming, TimingChanges,
+    use hex_lattice::{
+        ForeignAutomation, ForeignProcessorNode, ForeignProcessors, NativeInstrumentClock,
+        ProcessorChainOwner, ProcessorInstanceIdentity,
     };
     use hex_project::{
         AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, Command, Created,
@@ -572,31 +573,19 @@ fn compiled_saved_vst3_lane_reaches_the_signed_worker_without_callback_allocatio
         return;
     }
 
-    struct Compiled(Program);
-    impl AuthoredParameterProgram for Compiled {
-        fn quantum_program_key(&self) -> NonZeroU64 {
-            NonZeroU64::MIN
+    struct Clock<'a>(&'a [u64]);
+    impl NativeInstrumentClock for Clock<'_> {
+        fn beat_at_offset(&self, _: usize) -> Option<u64> {
+            None
         }
-
-        fn render_quantum(
-            &self,
-            origins: &[Option<u64>],
-            timing: &TimingChanges,
-            output: &mut Parameters,
-        ) -> Result<(), Fault> {
-            let mut cuts = [0; MAX_TIMING_CHANGES];
-            for (cut, change) in cuts.iter_mut().zip(timing.as_slice()) {
-                *cut = change.frame;
-            }
-            let mut points = [ParameterPoint::default(); MAX_PARAMETER_POINTS];
-            let len = self
-                .0
-                .render_quantum(origins, &cuts[..timing.as_slice().len()], &mut points)
-                .map_err(|_| Fault::InvalidParameters)?;
-            for &point in &points[..len] {
-                output.push(point)?;
-            }
-            Ok(())
+        fn arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+            self.0.get(offset).copied()
+        }
+        fn authored_arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+            self.arrangement_frame_at_offset(offset)
+        }
+        fn transport_is_running(&self) -> Option<bool> {
+            Some(true)
         }
     }
 
@@ -643,51 +632,64 @@ fn compiled_saved_vst3_lane_reaches_the_signed_worker_without_callback_allocatio
     let path = trace_path().with_extension("hex");
     hex_storage::save_new(&path, editor.project()).unwrap();
     let reopened = hex_storage::load(&path).unwrap();
-    let program = Compiled(
-        Program::prepare(
-            reopened.device(device).unwrap().automation(),
-            class.bytes(),
-            &[ParameterCapability {
-                id: 7,
-                steps: metadata.step_count(7).unwrap(),
-            }],
-            reopened.tempo_map(),
-            QuantumProfile {
-                frames: 8,
-                max_runs: 2,
-            },
-        )
-        .unwrap()
-        .unwrap(),
-    );
+    let program = Program::prepare(
+        reopened.device(device).unwrap().automation(),
+        class.bytes(),
+        &[ParameterCapability {
+            id: 7,
+            steps: metadata.step_count(7).unwrap(),
+        }],
+        reopened.tempo_map(),
+        QuantumProfile {
+            frames: 8,
+            max_runs: 2,
+        },
+    )
+    .unwrap()
+    .unwrap();
     instance
         .arm_authored_parameter_metadata_on_control(metadata)
         .unwrap();
-    let (mut owner, mut endpoint) = NativeWorker::start_on_control(instance).unwrap();
+    let binding = instance.configuration().binding;
+    let identity =
+        ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, binding.instance).unwrap();
+    let effect = NativeEffect::prepare_on_control(identity, instance).unwrap();
+    let state = effect.configuration().clone();
+    let node = ForeignProcessorNode {
+        owner: identity.owner(),
+        device_id: identity.device_id(),
+        device_type: state.type_id(),
+        sample_rate: 48_000,
+        configuration: &state,
+        prepared: effect.prepared(),
+        automation: Some(ForeignAutomation {
+            binding,
+            revision: NonZeroU64::MIN,
+            program: &program,
+        }),
+        bypassed: false,
+        input_gain: 1.0,
+        output_gain: 1.0,
+    };
+    let (mut workers, mut endpoint) =
+        NativeEffectCallbacks::from_effects_on_control(vec![effect]).unwrap();
+    let owner = &mut workers[0];
     let origins = [45, 46, 47, 48, 49, 0, 1, 2];
     for sequence in 0..4 {
-        let mut pcm = [[9.0; 2]; 8];
+        let mut pcm = [[0.5, -0.25]; 8];
         let render = || {
             // Split one actual PCM quantum across two physical callbacks.
             for (start, end) in [(0, 3), (3, 8)] {
-                endpoint.begin_physical_callback(end - start).unwrap();
+                endpoint.begin_host_callback(end - start).unwrap();
                 endpoint
-                    .stage_segment_with_authored_parameters(
+                    .process_segment(
+                        node,
                         0,
-                        &[[0.5, -0.25]; 8][start..end],
-                        &[],
                         &mut pcm[start..end],
-                        SegmentTiming {
-                            playing: None,
-                            at: |_| None,
-                        },
-                        AuthoredSegment {
-                            program: &program,
-                            origin: &|offset| Some(origins[start + offset]),
-                        },
+                        Some(&Clock(&origins[start..end])),
                     )
                     .unwrap();
-                endpoint.finish(true).unwrap();
+                endpoint.finish_host_callback(true).unwrap();
             }
         };
         #[cfg(feature = "allocation-probe")]
@@ -734,7 +736,25 @@ fn compiled_saved_vst3_lane_reaches_the_signed_worker_without_callback_allocatio
             );
         }
     }
-    owner.revoke_on_control();
+    // Even the correct state and processor facts cannot lend this program
+    // to a different source binding.
+    let mut wrong = node.automation.unwrap();
+    wrong.binding.epoch += 1;
+    let mut refused = [[0.5, -0.25]; 8];
+    endpoint.begin_host_callback(refused.len()).unwrap();
+    assert_eq!(
+        endpoint.process_segment(
+            ForeignProcessorNode {
+                automation: Some(wrong),
+                ..node
+            },
+            0,
+            &mut refused,
+            Some(&Clock(&origins)),
+        ),
+        Err(hex_lattice_contract::DeviceContractError::ForeignProcessingUnavailable)
+    );
+    assert_eq!(refused, [[0.0; 2]; 8]);
     let retired = owner.retire_on_control().unwrap();
     assert!(retired.failure.is_none() && retired.native.status.success());
 }
