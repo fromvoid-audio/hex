@@ -322,6 +322,7 @@ impl MediaBank {
             cancel,
             None,
             None,
+            None,
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -339,7 +340,24 @@ impl MediaBank {
             &BTreeMap<AssetId, Arc<hex_engine::StreamedSourceMetadata>>,
         )>,
         effects: Option<&hex_engine::AudioCandidateEffects<'_, '_>>,
+        native_input: Option<hex_engine::NativeParameterInputTarget>,
     ) -> Result<PreparedRevision, hex_engine::Invalid> {
+        if let Some(input) = native_input.filter(|_| effects.is_none()) {
+            return hex_engine::AudioCandidateEffects::with_host_definitions(&[], |effects| {
+                self.prepare_with_device_resources_and_catalog(
+                    project,
+                    table,
+                    previous,
+                    transforms,
+                    resources,
+                    scan_frames,
+                    cancel,
+                    catalog,
+                    Some(effects),
+                    Some(input),
+                )
+            });
+        }
         self.validate_clip_sources(project)?;
         if self.verified.is_empty() {
             if let Some(effects) = effects {
@@ -352,6 +370,7 @@ impl MediaBank {
                     resources,
                     scan_frames,
                     cancel,
+                    native_input,
                 );
             }
             return PreparedRevision::prepare_with_device_resources(
@@ -401,6 +420,7 @@ impl MediaBank {
                 resources,
                 scan_frames,
                 cancel,
+                native_input,
             );
         }
         PreparedRevision::prepare_with_prepared_audio_sources_and_device_resources(

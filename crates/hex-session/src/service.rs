@@ -636,6 +636,14 @@ pub enum Request {
         notes: Arc<[crate::midi_recording::RecordedMidiNote]>,
         stop_frame: u64,
     },
+    ArmNativeParameterRecording {
+        project_generation: u64,
+        revision: u64,
+        target: Option<(
+            hex_project::DeviceId,
+            hex_lattice_contract::DeviceAutomationTarget,
+        )>,
+    },
     ArmGainRecording {
         project_generation: u64,
         revision: u64,
@@ -6002,6 +6010,83 @@ fn run_worker(
                                 }
                             }
                             Err(reason) => error = Some(reason.into()),
+                        }
+                    }
+                }
+                Request::ArmNativeParameterRecording {
+                    project_generation: expected_generation,
+                    revision: expected_revision,
+                    target,
+                } => {
+                    let result = (|| {
+                        if expected_generation != project_generation
+                            || expected_revision != revision
+                        {
+                            return Err(SessionError::Invalid(
+                                "automation arm refused · project changed",
+                            ));
+                        }
+                        if device_gesture.snapshot().is_some() {
+                            return Err(SessionError::Invalid(
+                                "automation arm refused · device edit is still applying",
+                            ));
+                        }
+                        if !events.resident_publication_enabled()
+                            || session.audio_mode() != DocumentAudioMode::Resident
+                        {
+                            return Err(SessionError::Invalid(
+                                "device automation recording requires ordinary resident playback",
+                            ));
+                        }
+                        let current = resident_snapshot.as_ref().ok_or(SessionError::Invalid(
+                            "native automation source unavailable",
+                        ))?;
+                        let sink = events.resident_audio().ok_or(SessionError::Invalid(
+                            "native automation output unavailable",
+                        ))?;
+                        let input = target
+                            .map(|(device, target)| {
+                                hex_engine::native_parameter_input_target(
+                                    session.project(),
+                                    device,
+                                    target,
+                                )
+                            })
+                            .transpose()?;
+                        session.prepare_resident_native_parameter_recording(
+                            input,
+                            hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision,
+                            },
+                            sink,
+                            export_lane.admission_with_resident_owners(
+                                compiled.as_ref().map(|(_, prepared)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(prepared),
+                                    }
+                                }),
+                                resident_seek.as_ref(),
+                                resident_preview.as_ref(),
+                            ),
+                            current,
+                        )
+                    })();
+                    match result {
+                        Ok(snapshot) => {
+                            compiled = Some((revision, Arc::clone(&snapshot.prepared)));
+                            resident_snapshot = Some(snapshot);
+                            status = Some(if target.is_some() {
+                                "device automation target prepared".into()
+                            } else {
+                                "device automation recording disarmed".into()
+                            });
+                        }
+                        Err(reason) => {
+                            error = Some(hex_storage::text::lowercase_outside_verbatim(
+                                &reason.to_string(),
+                            ))
                         }
                     }
                 }

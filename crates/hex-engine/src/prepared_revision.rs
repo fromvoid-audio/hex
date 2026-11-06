@@ -869,6 +869,7 @@ impl PreparedRevision {
             max_scan_frames,
             cancel,
             &effects,
+            None,
         )
     }
 
@@ -888,6 +889,7 @@ impl PreparedRevision {
         max_scan_frames: u64,
         cancel: &std::sync::atomic::AtomicBool,
         effects: &hex_lattice::NativeDeviceRegistry<'_>,
+        native_input: Option<crate::NativeParameterInputTarget>,
     ) -> Result<Self, Invalid> {
         resources.validate_project(project)?;
         let instruments = hex_devices::native_instrument_registry()
@@ -897,15 +899,17 @@ impl PreparedRevision {
             max_scan_frames,
             cancel,
         );
-        Self::prepare_with_registries_and_sampler_sources(
+        Self::prepare_with_source_bank(
             project,
-            media,
+            crate::compile::SourceBank::Resident(media),
             sine_table,
             previous_session,
             effects,
             &instruments,
             transforms,
             Some(&preparation),
+            native_input,
+            &[],
         )
     }
 
@@ -937,6 +941,7 @@ impl PreparedRevision {
             max_scan_frames,
             cancel,
             &effects,
+            None,
         )
     }
 
@@ -956,6 +961,7 @@ impl PreparedRevision {
         max_scan_frames: u64,
         cancel: &std::sync::atomic::AtomicBool,
         effects: &hex_lattice::NativeDeviceRegistry<'_>,
+        native_input: Option<crate::NativeParameterInputTarget>,
     ) -> Result<Self, Invalid> {
         if expected_generation == 0 {
             return Err(Invalid("stream source generation must be positive"));
@@ -977,7 +983,7 @@ impl PreparedRevision {
             &instruments,
             transforms,
             Some(&preparation),
-            None,
+            native_input,
             &[],
         )
     }
