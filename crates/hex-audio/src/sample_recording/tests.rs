@@ -9,6 +9,10 @@ use std::{
 };
 
 fn two_tracks() -> (Playback, [OutputCaptureId; 2]) {
+    tracks_with_timing(false)
+}
+
+fn tracks_with_timing(timing: bool) -> (Playback, [OutputCaptureId; 2]) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let mut tracks = Vec::new();
     let mut media = BTreeMap::new();
@@ -27,6 +31,26 @@ fn two_tracks() -> (Playback, [OutputCaptureId; 2]) {
         editor.execute(Command::Gain { track, gain: 1.0 }).unwrap();
         tracks.push(Track(track));
         media.insert(asset, Audio::new(48_000, vec![value; 512]).unwrap());
+    }
+    if timing {
+        editor
+            .execute(Command::SetProjectTempo {
+                tempo: hex_project::Tempo::new(120_000_000).unwrap(),
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: hex_project::BeatTime::from_raw(1 << 24), // frame 94
+                tempo: hex_project::Tempo::new(60_000_000).unwrap(),
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 32,
+                end: 160,
+                enabled: true,
+            })
+            .unwrap();
     }
     let prepared =
         PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
@@ -194,4 +218,52 @@ fn source_replacement_ends_the_take_before_replacement_audio() {
         Some(End::SourceChanged)
     );
     assert_eq!(confirmed, 64);
+}
+
+#[test]
+fn confirmed_timing_splits_at_tempo_changes_loop_wraps_and_stops() {
+    let (graph, outputs) = tracks_with_timing(true);
+    let (mut control, mut callback) = prepared::channel(48_000).unwrap();
+    control
+        .publish_with_policy_and_context_generation(
+            graph,
+            prepared::PublicationPolicy::InstallFreshRuntime,
+            7,
+        )
+        .unwrap();
+    let mut reader = control.sample_recording.start(7, &outputs, false).unwrap();
+    assert!(reader.ready());
+    assert!(deliver(&mut callback, 2)); // stopped PCM, no beat
+    control.command(PlaybackCommand::Play).unwrap();
+    for _ in 0..3 {
+        assert!(deliver(&mut callback, 2));
+    }
+    control.command(PlaybackCommand::Pause).unwrap();
+    assert!(deliver(&mut callback, 2));
+    let mut cursor = 0;
+    let mut timing = Vec::new();
+    reader.drain_with_timing(|frames, _, _, packet| {
+        for span in packet {
+            super::timing::append(
+                &mut timing,
+                TimingSpan {
+                    take_start: cursor + span.take_start,
+                    take_end: cursor + span.take_end,
+                    ..*span
+                },
+                super::timing::MAX_SPANS,
+            );
+        }
+        cursor += frames as u64;
+    });
+    assert_eq!(cursor, 320);
+    assert_eq!(
+        timing
+            .iter()
+            .map(|span| (span.take_start, span.take_end, span.timeline_start))
+            .collect::<Vec<_>>(),
+        [(64, 158, 0), (158, 224, 94), (224, 256, 32)]
+    );
+    assert_eq!(timing[0].frame_at_beat(0), Some(64));
+    assert_eq!(timing[1].frame_at_beat(1 << 24), Some(158));
 }

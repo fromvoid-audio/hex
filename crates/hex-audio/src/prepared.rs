@@ -4423,7 +4423,7 @@ impl Callback {
         let tracks =
             crate::sample_recording::merge_tracks(spectrum_tracks, record_tracks, &mut joined);
         let recording_observed = recording.is_some();
-        let mut recording = recording;
+        let recording = std::cell::RefCell::new(recording);
         let mut observe_project = |signal, offset, frames: &[Frame]| {
             if let Some(project) = project_capture.as_mut()
                 && match signal {
@@ -4436,14 +4436,32 @@ impl Callback {
             {
                 project.observe(signal, offset, frames);
             }
-            if let Some((layout, stage)) = recording.as_mut() {
+            if let Ok(mut recording) = recording.try_borrow_mut()
+                && let Some((layout, stage)) = recording.as_mut()
+            {
                 stage.observe(layout, signal, capture_offset + offset, frames);
+            }
+        };
+        let mut observe_timing = |offset, start, frames, map: &hex_engine::PreparedTempoMap| {
+            if let Ok(mut recording) = recording.try_borrow_mut()
+                && let Some((_, stage)) = recording.as_mut()
+            {
+                stage.observe_timing(capture_offset + offset, start, frames, map);
             }
         };
         let mut project = tracks
             .filter(|_| project_observed || recording_observed)
             .and_then(|tracks| {
-                hex_engine::ProjectOutputTap::with_returns(tracks, returns, &mut observe_project)
+                let tap = hex_engine::ProjectOutputTap::with_returns(
+                    tracks,
+                    returns,
+                    &mut observe_project,
+                )?;
+                Some(if recording_observed {
+                    tap.with_timing(&mut observe_timing)
+                } else {
+                    tap
+                })
             });
         let node: Option<&mut hex_engine::NodeSignalObserver<'_>> = if node_observed {
             Some(&mut observe)
