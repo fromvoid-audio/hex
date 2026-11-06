@@ -31,6 +31,7 @@ def test_cases(selectors: list[str] | None) -> list[tuple[str, bool]]:
     """Expand selectors to unique test IDs and their bounded-fixture marker."""
     sys.path.insert(0, str(TESTS))
     found: dict[str, bool] = {}
+    early: set[str] = set()
 
     def walk(suite) -> None:
         for item in suite:
@@ -39,7 +40,10 @@ def test_cases(selectors: list[str] | None) -> list[tuple[str, bool]]:
             else:
                 method = getattr(type(item), item._testMethodName, None)
                 bounded = getattr(method, "__hex_shard_bounded__", False) is True
-                found[item.id()] = found.get(item.id(), False) or bounded
+                name = item.id()
+                found[name] = found.get(name, False) or bounded
+                if selectors is None and getattr(item, "__hex_shard_early__", False) is True:
+                    early.add(name)
 
     if selectors is None:
         loader = unittest.TestLoader()
@@ -49,7 +53,8 @@ def test_cases(selectors: list[str] | None) -> list[tuple[str, bool]]:
     else:
         suite = unittest.defaultTestLoader.loadTestsFromNames(selectors)
     walk(suite)
-    return sorted(found.items())
+    # Start long real Cargo fixtures in the first wave of discovery batches.
+    return sorted(found.items(), key=lambda case: (case[0] not in early, case[0]))
 
 
 def run_cases(cases, workers, run, *, use_idle_slots=False):

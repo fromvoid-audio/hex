@@ -201,6 +201,9 @@ class SelectionTests(unittest.TestCase):
                 "    @unittest.skip('optional fixture')\n"
                 "    def test_skip(self): self.fail()\n"
                 "    def test_fail(self): self.fail('expected failure')\n"
+                "class SlowCases(unittest.TestCase):\n"
+                "    __hex_shard_early__ = True\n"
+                "    def test_scheduled_first(self): pass\n"
             )
             runner = ROOT / "scripts/python_shards.py"
             # The runner resolves its own repository, so copy it into the fixture.
@@ -209,6 +212,8 @@ class SelectionTests(unittest.TestCase):
             command = [sys.executable, str(script), "--discover"]
             result = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(result.returncode, 1)
+            self.assertTrue(result.stderr.startswith(
+                "===== budget_nested_fixture.test_cases.SlowCases.test_scheduled_first and 3 more"))
             for method, outcome in (("test_pass", "ok"), ("test_skip", "skipped"), ("test_fail", "FAIL")):
                 self.assertRegex(
                     result.stderr,

@@ -1241,6 +1241,8 @@ class NativeSignatureTests(unittest.TestCase):
 
 
 class ReleaseCargoTests(unittest.TestCase):
+    __hex_shard_early__ = True
+
     def test_real_release_a_b_a_api_outputs_dependencies_and_scope_refusal(self):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)

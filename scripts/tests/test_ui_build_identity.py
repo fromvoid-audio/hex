@@ -21,6 +21,8 @@ DELIVERY_SPEC.loader.exec_module(delivery)
 
 
 class UiBuildIdentityTests(unittest.TestCase):
+    __hex_shard_early__ = True
+
     def test_real_cargo_freshness_source_untracked_changelog_and_raw_fallback(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

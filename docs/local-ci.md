@@ -159,7 +159,9 @@ one process per test from a shared work queue (up to 12 workers), which brings
 Subprocess-heavy test methods explicitly marked `__hex_shard_bounded__ = True`
 use at most two workers. Owner selections run them after ordinary tests.
 Discovery starts them in spare worker slots once all ordinary batches have
-started. Both modes report their results and include their time.
+started. The real Cargo fixture classes marked `__hex_shard_early__ = True`
+start in the first wave of discovery batches. Both modes report every result
+and include the time spent on every case.
 
 Module-scoped test steps build only the library (or, for a binary-only crate,
 the binaries): a `module::path::` filter can never match an integration test,
