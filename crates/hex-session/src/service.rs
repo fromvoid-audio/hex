@@ -3612,18 +3612,20 @@ fn run_worker(
                         match events.restart_audio(project_generation, request_id) {
                             Ok(()) => {
                                 status = Some("restarting audio".into());
+                                let context = hex_engine::AudioSourceContext {
+                                    project_generation,
+                                    editor_revision: revision,
+                                };
                                 if session.audio_mode() == DocumentAudioMode::Resident
                                     && let Some(sink) = events.resident_audio()
+                                    && !sink.plugin_state_restore_pending(context)
                                 {
                                     let admission = export_lane.admission_with_resident_owners(
                                         compiled.as_ref().map(|(_, prepared)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(prepared) }),
                                         resident_seek.as_ref(), None,
                                     );
                                     let metadata = ResidentPublicationMetadata {
-                                        context: hex_engine::AudioSourceContext {
-                                            project_generation,
-                                            editor_revision: revision,
-                                        },
+                                        context,
                                         device_preview: None,
                                         tuning_preview: None,
                                         seek_request: None,
@@ -7206,7 +7208,19 @@ fn run_worker(
                         restore_complete = Some(*generation);
                     }
                     let republish = matches!(&request, Request::RepublishPausedPlayback);
-                    if events.resident_publication_enabled()
+                    let context = hex_engine::AudioSourceContext {
+                        project_generation,
+                        editor_revision: revision,
+                    };
+                    if !republish
+                        && events
+                            .resident_audio()
+                            .is_some_and(|sink| sink.plugin_state_restore_pending(context))
+                    {
+                        // The exact fresh graph ACK gates the editor's cursor
+                        // restore and any held Play. Keep the existing owner.
+                        status = Some("restoring vst3 playback".into());
+                    } else if events.resident_publication_enabled()
                         && session.audio_mode() == DocumentAudioMode::Resident
                     {
                         let result = (|| {
@@ -7215,10 +7229,7 @@ fn run_worker(
                             )?;
                             let selected = snapshot.inputs.clone();
                             let metadata = ResidentPublicationMetadata {
-                                context: hex_engine::AudioSourceContext {
-                                    project_generation,
-                                    editor_revision: revision,
-                                },
+                                context,
                                 device_preview: None,
                                 tuning_preview: None,
                                 seek_request: None,

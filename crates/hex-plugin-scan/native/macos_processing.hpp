@@ -44,12 +44,14 @@ inline bool audio_bus_info(IComponent* component,BusDirection direction,int32 in
 inline bool audio_bus_info(IComponent* component,BusDirection direction,int32 index,BusType type,BusInfo& info) {
     return audio_bus_info(component,direction,index,info) && info.busType==type;
 }
-// Only one trailing auxiliary input is supported, and it is never routed.
-inline bool audio_buses(IComponent* component,BusDirection direction,int32 count,int32 channels,bool exact) {
+// Effects accept one inactive trailing auxiliary input. A single silent
+// instrument input can itself be auxiliary. Neither becomes a graph route.
+inline bool audio_buses(IComponent* component,BusDirection direction,int32 count,int32 channels,
+                        bool exact,BusType first_type=kMain) {
     if (count!=(channels?1:0) && !(direction==kInput && channels && count==2)) return false;
     if (!count) return true;
-    BusInfo main{},aux{};
-    return audio_bus_info(component,direction,0,kMain,main) && (!exact || main.channelCount==channels) &&
+    BusInfo first{},aux{};
+    return audio_bus_info(component,direction,0,first_type,first) && (!exact || first.channelCount==channels) &&
         (count==1 || audio_bus_info(component,direction,1,kAux,aux));
 }
 inline constexpr int32 max_instrument_outputs=16;

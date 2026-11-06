@@ -5,6 +5,7 @@
 #include "macos_editor.hpp"
 #include "macos_instance.hpp"
 #include "macos_instance_wire.hpp"
+#include "pluginterfaces/base/iplugincompatibility.h"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -123,7 +124,7 @@ struct Module {
         if(!url) throw Refusal{};
         bundle=CFBundleCreate(nullptr,url);CFRelease(url);
         if(!bundle || executable(bundle,root)!=request.executable ||
-            digest(member(root,string(request.executable)),16*1024*1024)!=binary ||
+            digest(member(root,string(request.executable)))!=binary ||
             digest(member(root,@"Contents/Info.plist"),65536)!=info)
             throw Refusal{};
         native_attempted=true;
@@ -140,9 +141,12 @@ struct Module {
         for(int32 n=0;n<count;++n) {
             PClassInfo info{};
             if(factory->getClassInfo(n,&info)!=kResultOk || !std::memchr(info.category,0,sizeof info.category)) return false;
-            if(!std::memcmp(info.cid,request.cid.data(),16)) {
-                if(matched || std::strcmp(info.category,kVstAudioEffectClass)) return false;matched=true;
-            }
+            if(std::memcmp(info.cid,request.cid.data(),16)) continue;
+            // A compatibility service can share this CID. Only a single
+            // processor descriptor grants ordinary instance admission.
+            if(!std::strcmp(info.category,kPluginCompatibilityClass)) continue;
+            if(matched || std::strcmp(info.category,kVstAudioEffectClass)) return false;
+            matched=true;
         }
         return matched;
     }
@@ -270,7 +274,8 @@ int main(int argc,char** argv) {
     std::optional<wire::Config> config;
     uint32_t failure=Configuration;bool accepted=false,normal_stop=false;
     uint64_t blocks=0,frames=0;
-    bool closed=false,unloaded=false;
+    using CloseResult=hex_instance::Instance::CloseResult;
+    auto closing=CloseResult::Refused;
     // SDK startup and teardown may autorelease objects with methods in the
     // bundle. Drain those objects before module close can unmap their code.
     @autoreleasepool {
@@ -1143,17 +1148,24 @@ int main(int argc,char** argv) {
             }
             error(channel,config?&*config:nullptr,failure);
         }
-        try { closed=editor.close() && instance.close(); } catch(...) {}
+        try { if(editor.close()) closing=instance.close_for_retirement(); } catch(...) {}
     }
     @autoreleasepool {
-        try { if(closed) unloaded=module.close(); } catch(...) {}
-        if(!closed || !unloaded) failure=Teardown;
+        bool unloaded=false;
+        try { if(closing==CloseResult::Closed) unloaded=module.close(); } catch(...) {}
+        // A successful stop can leave a foreign host reference alive. Keep
+        // its host pool and module mapped and let the OS reclaim both on exit.
+        const bool process_only=closing==CloseResult::RetainedHost && normal_stop && !failure;
+        const bool closed=closing==CloseResult::Closed || process_only;
+        if(!closed || (!unloaded && !process_only)) failure=Teardown;
+        bool terminal_sent=false;
         if(config) {
             wire::Bytes terminal;config->stamp(terminal);wire::number(terminal,blocks,8);wire::number(terminal,frames,8);
             wire::number(terminal,failure,4);wire::number(terminal,closed?1:0,1);wire::number(terminal,unloaded?1:0,1);
-            wire::send(channel,"HXVITR01",terminal);
+            terminal_sent=wire::send(channel,"HXVITR01",terminal);
         }
         ::close(channel);
+        if(process_only) std::_Exit(terminal_sent?0:ProtocolFailure);
         return failure==0 && normal_stop && closed && unloaded?0:static_cast<int>(failure?failure:ProtocolFailure);
     }
 }
