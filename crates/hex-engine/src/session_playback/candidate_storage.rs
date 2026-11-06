@@ -233,6 +233,11 @@ fn chain_storage<'a>(
         return Err(AudioStorageError::SourceMismatch);
     }
     for (index, (entry, prepared)) in view.entries().zip(prepared).enumerate() {
+        // The exact root ledger currently inventories native flat vectors.
+        // A shared foreign program needs its own allocation provenance.
+        if entry.automation().foreign().is_some() {
+            return Err(AudioStorageError::UnsupportedGraph);
+        }
         let (ids, lanes, points) = entry.automation().storage_vectors();
         l.vec(ids)?;
         l.vec(lanes)?;

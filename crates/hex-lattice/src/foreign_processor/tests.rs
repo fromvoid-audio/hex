@@ -109,6 +109,93 @@ fn endpoint(instance: &PreparedRuntimeInstance) -> BorrowedEndpoint {
 }
 
 #[test]
+fn graph_owns_one_program_for_the_exact_effect_binding() {
+    struct Program;
+    impl ForeignAutomationProgram for Program {
+        fn render_quantum(
+            &self,
+            _: &[Option<u64>],
+            _: &[u16],
+            output: &mut [ForeignParameterPoint],
+        ) -> Result<usize, DeviceContractError> {
+            output[0] = ForeignParameterPoint {
+                frame: 0,
+                id: 0,
+                normalized: 0.25,
+            };
+            Ok(1)
+        }
+    }
+    struct Endpoint(ForeignProcessorBinding);
+    impl ForeignProcessors for Endpoint {
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [StereoFrame],
+            _: Option<&dyn NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            let program = node.automation.unwrap();
+            assert_eq!(program.binding, self.0);
+            assert_eq!(program.revision, NonZeroU64::MIN);
+            let mut points = [ForeignParameterPoint::default()];
+            assert_eq!(
+                program
+                    .program
+                    .render_quantum(&[Some(0); 8], &[], &mut points)?,
+                1
+            );
+            assert_eq!(points[0].id, 0);
+            frames.fill([points[0].normalized as f32; 2]);
+            Ok(())
+        }
+
+        fn reject_callback(&mut self) {}
+    }
+
+    let binding = ForeignProcessorBinding {
+        root: 1,
+        instance: 17,
+        graph: 2,
+        epoch: 3,
+    };
+    let mut instance = declaration(ProcessorChainOwner::Track(5), false);
+    let baseline = NativeRuntimeChain::declared_storage_preflight_bytes_for_prepared(
+        std::slice::from_ref(&instance),
+    )
+    .unwrap();
+    let program = PreparedForeignAutomation::new(binding, NonZeroU64::MIN, Program, 0).unwrap();
+    let bytes = program.storage_bytes();
+    instance.automation = crate::PreparedParameterAutomation::for_foreign(program);
+    assert!(matches!(
+        NativeRuntimeChain::new_prepared(vec![instance.clone()]),
+        Err(DeviceContractError::ForeignProcessingUnavailable)
+    ));
+    instance.definition = Some(PreparedProcessorFactory::Foreign(
+        PreparedForeignProcessor::new(8, 3, 16)
+            .unwrap()
+            .with_binding(binding)
+            .unwrap(),
+    ));
+    assert_eq!(
+        NativeRuntimeChain::declared_storage_preflight_bytes_for_prepared(std::slice::from_ref(
+            &instance
+        )),
+        Some(baseline + bytes)
+    );
+    let mut chain = NativeRuntimeChain::new_prepared(vec![instance]).unwrap();
+    assert_eq!(chain.accounted_storage_bytes(), Some(baseline + bytes));
+    let mut frames = [[0.0; 2]; 8];
+    chain.begin_block();
+    chain
+        .process_range_with_foreign(0..1, &mut frames, 0, None, None, &mut Endpoint(binding))
+        .unwrap();
+    chain.commit_block();
+    // This endpoint returns pre-trim audio. The chain retains its own gain law.
+    assert_eq!(frames, [[0.025; 2]; 8]);
+}
+
+#[test]
 fn post_trim_endpoint_applies_output_trim_once_and_keeps_bypass_dry() {
     struct PostTrim;
     impl ForeignProcessors for PostTrim {

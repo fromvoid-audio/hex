@@ -25,8 +25,8 @@ mod static_processing_tests;
 mod tail_split;
 pub use foreign_processor::{
     ForeignAutomation, ForeignAutomationProgram, ForeignAutomationSource, ForeignNote,
-    ForeignParameterCapability, ForeignProcessorNode, ForeignProcessors, PreparedForeignProcessor,
-    RefuseForeign,
+    ForeignParameterCapability, ForeignProcessorNode, ForeignProcessors, PreparedForeignAutomation,
+    PreparedForeignProcessor, RefuseForeign,
 };
 pub use parameter_automation::{
     ExternalParameterAutomation, HostAutomationLane, NativeParameterAutomation,
@@ -1065,6 +1065,16 @@ impl NativeRuntimeChain {
                 .as_ref()
                 .is_none_or(|state| state.as_ref().type_id() != instance.device_type)
                 || !instance.matrix.is_identity())
+            {
+                return Err(DeviceContractError::ForeignProcessingUnavailable);
+            }
+            if let Some(automation) = instance.automation.foreign()
+                && !matches!(
+                    instance.definition,
+                    Some(PreparedProcessorFactory::Foreign(processor))
+                        if !processor.is_instrument_profile()
+                            && processor.binding() == Some(automation.borrow().binding)
+                )
             {
                 return Err(DeviceContractError::ForeignProcessingUnavailable);
             }
@@ -2973,7 +2983,10 @@ impl NativeRuntimeChain {
                 sample_rate: entry.sample_rate,
                 configuration,
                 prepared: runtime.prepared,
-                automation: None,
+                automation: entry
+                    .automation
+                    .foreign()
+                    .map(PreparedForeignAutomation::borrow),
                 bypassed: entry.bypassed,
                 input_gain: entry.input_gain,
                 output_gain: if entry.automation_frozen {
@@ -2986,6 +2999,13 @@ impl NativeRuntimeChain {
             // A failed stage supplies no new observation. Invalidate scratch
             // first so an earlier quiet state cannot mask renewed input.
             runtime.scratch_drained = false;
+            // A detached tail retains its old program key while finishing any
+            // partial PCM quantum. Its new input has no authored origin.
+            let clock = if entry.automation_frozen && node.automation.is_some() {
+                None
+            } else {
+                clock
+            };
             foreign.process_segment(node, frame_offset, frames, clock)?;
             runtime.scratch_drained =
                 matches!(runtime.prepared.output_tail(), OutputTail::Finite { .. })

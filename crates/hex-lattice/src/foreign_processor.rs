@@ -6,6 +6,7 @@ use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, ForeignParameterPoint, ForeignProcessorBinding,
     NativeDeviceState,
 };
+use std::{alloc::Layout, num::NonZeroU64, sync::Arc};
 
 /// Control-validated facts for a copied foreign endpoint. No runtime factory,
 /// native pointer or resource owner lives here. The host must bind these facts
@@ -132,6 +133,77 @@ pub struct ForeignAutomation<'a> {
     pub binding: ForeignProcessorBinding,
     pub revision: std::num::NonZeroU64,
     pub program: &'a dyn ForeignAutomationProgram,
+}
+
+/// Immutable graph data. Prepared and runtime entries share the allocation
+/// on control. The callback borrows it without acquiring or releasing custody.
+#[derive(Clone)]
+pub struct PreparedForeignAutomation {
+    binding: ForeignProcessorBinding,
+    revision: NonZeroU64,
+    program: Arc<dyn ForeignAutomationProgram + Send>,
+    storage_bytes: usize,
+}
+
+impl PreparedForeignAutomation {
+    /// The compiler supplies actual retained backing bytes beyond the inline
+    /// program payload. Include both in the existing chain storage budget.
+    pub fn new<P: ForeignAutomationProgram + Send + 'static>(
+        binding: ForeignProcessorBinding,
+        revision: NonZeroU64,
+        program: P,
+        backing_bytes: usize,
+    ) -> Result<Self, DeviceContractError> {
+        if !binding.is_valid() {
+            return Err(DeviceContractError::InvalidId);
+        }
+        let layout = Layout::new::<[usize; 2]>()
+            .extend(Layout::new::<P>())
+            .map_err(|_| DeviceContractError::RuntimeBudgetExceeded)?
+            .0
+            .pad_to_align();
+        let storage_bytes = layout
+            .size()
+            .checked_add(backing_bytes)
+            .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
+        Ok(Self {
+            binding,
+            revision,
+            program: Arc::new(program),
+            storage_bytes,
+        })
+    }
+
+    pub fn storage_bytes(&self) -> usize {
+        self.storage_bytes
+    }
+
+    pub fn borrow(&self) -> ForeignAutomation<'_> {
+        ForeignAutomation {
+            binding: self.binding,
+            revision: self.revision,
+            program: self.program.as_ref(),
+        }
+    }
+}
+
+impl PartialEq for PreparedForeignAutomation {
+    fn eq(&self, other: &Self) -> bool {
+        self.binding == other.binding
+            && self.revision == other.revision
+            && Arc::ptr_eq(&self.program, &other.program)
+    }
+}
+
+impl std::fmt::Debug for PreparedForeignAutomation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreparedForeignAutomation")
+            .field("binding", &self.binding)
+            .field("revision", &self.revision)
+            .field("storage_bytes", &self.storage_bytes)
+            .finish_non_exhaustive()
+    }
 }
 
 /// One invocation of an existing graph node. Configuration borrows the actual
