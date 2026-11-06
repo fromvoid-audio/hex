@@ -379,6 +379,20 @@ impl SessionPlayback {
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
+        // The runtime keeps this revision throughout rendering. Its cloned
+        // handle cannot become the final owner on the callback.
+        let revision =
+            (!self.revision.foreign_automation.is_empty()).then(|| Arc::clone(&self.revision));
+        let mut authored;
+        let foreign = if let Some(revision) = revision.as_ref() {
+            authored = crate::foreign_automation::WithPrograms {
+                programs: &revision.foreign_automation,
+                inner: foreign,
+            };
+            &mut authored as &mut dyn hex_lattice::ForeignProcessors
+        } else {
+            foreign
+        };
         // Lend the per-voice miss-fade table to the page view for this render
         // (`crate::stream_miss_fade`); it is a plain array, so nothing allocates.
         let mut fades = self.stream_miss_fades;

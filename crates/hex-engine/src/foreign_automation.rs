@@ -2,7 +2,9 @@
 //! The host supplies exact-source SDK facts and proves the origin-run limit
 //! before admission. This owner neither loads a plug-in nor publishes a graph.
 use crate::Invalid;
+use hex_lattice::{ForeignNote, ForeignProcessorNode, ForeignProcessors, NativeInstrumentClock};
 use hex_lattice_contract::{DeviceAutomationTarget, ForeignParameterPoint};
+use hex_lattice_contract::{DeviceContractError, ForeignProcessorBinding};
 use hex_project::{AutomationInterpolation, AutomationPoint, DeviceAutomation, TempoMap};
 
 const MAX_QUANTUM_FRAMES: u16 = 256;
@@ -42,7 +44,8 @@ struct Knot {
 #[derive(Debug)]
 pub struct BoundProgram {
     program: Program,
-    binding: hex_lattice_contract::ForeignProcessorBinding,
+    binding: ForeignProcessorBinding,
+    sample_rate: u32,
     revision: std::num::NonZeroU64,
 }
 
@@ -76,6 +79,7 @@ impl BoundProgram {
         .map(|program| Self {
             program,
             binding: source.binding,
+            sample_rate: source.sample_rate,
             revision,
         }))
     }
@@ -86,6 +90,190 @@ impl BoundProgram {
             revision: self.revision,
             program: &self.program,
         }
+    }
+}
+
+/// Immutable revision-owned programs. Callback lookup borrows the original
+/// backing and requires the exact prepared endpoint binding.
+#[derive(Default)]
+pub(crate) struct Programs(Vec<BoundProgram>);
+
+impl Programs {
+    pub(crate) fn prepare(
+        mut programs: Vec<BoundProgram>,
+        arrangement: &crate::Project,
+        reserved_bytes: usize,
+    ) -> Result<Self, Invalid> {
+        if programs.len() > hex_lattice::MAX_STATEFUL_PROCESSORS {
+            return Err(Invalid("foreign automation program count exceeds capacity"));
+        }
+        programs.sort_unstable_by_key(|program| program.binding);
+        if programs
+            .windows(2)
+            .any(|pair| pair[0].binding == pair[1].binding)
+        {
+            return Err(Invalid("duplicate foreign automation source binding"));
+        }
+        let mut bytes = programs
+            .capacity()
+            .checked_mul(std::mem::size_of::<BoundProgram>())
+            .ok_or(Invalid("foreign automation storage size overflow"))?;
+        for program in &programs {
+            let mut nodes = arrangement
+                .tracks
+                .iter()
+                .flat_map(|track| track.device_chain.iter())
+                .chain(
+                    arrangement
+                        .return_buses
+                        .iter()
+                        .flat_map(|bus| bus.device_chain.iter()),
+                )
+                .chain(arrangement.main_device_chain.iter())
+                .filter(|node| {
+                    node.sample_rate == program.sample_rate
+                        && node.device_id == program.binding.instance
+                        && matches!(
+                            node.definition,
+                            Some(hex_lattice::PreparedProcessorFactory::Foreign(facts))
+                                if facts.binding() == Some(program.binding)
+                                    && facts.quantum_frames() == program.program.profile.frames
+                        )
+                });
+            if nodes.next().is_none() || nodes.next().is_some() {
+                return Err(Invalid(
+                    "foreign automation source differs from the prepared graph",
+                ));
+            }
+            bytes = bytes
+                .checked_add(
+                    program
+                        .program
+                        .backing_bytes()
+                        .ok_or(Invalid("foreign automation storage size overflow"))?,
+                )
+                .ok_or(Invalid("foreign automation storage size overflow"))?;
+        }
+        if bytes > reserved_bytes {
+            return Err(Invalid("foreign automation storage exceeds reservation"));
+        }
+        Ok(Self(programs))
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub(crate) fn visit_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        if self.0.capacity() != 0 {
+            ledger.vec(&self.0)?;
+        }
+        for bound in &self.0 {
+            ledger.vec(&bound.program.lanes)?;
+            for lane in &bound.program.lanes {
+                ledger.vec(&lane.knots)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn for_binding(
+        &self,
+        binding: ForeignProcessorBinding,
+    ) -> Option<hex_lattice::ForeignAutomation<'_>> {
+        let index = self
+            .0
+            .binary_search_by_key(&binding, |program| program.binding)
+            .ok()?;
+        Some(self.0[index].borrow())
+    }
+
+    fn attach<'a>(
+        &'a self,
+        node: ForeignProcessorNode<'a>,
+    ) -> Result<ForeignProcessorNode<'a>, DeviceContractError> {
+        let automation = node
+            .prepared
+            .binding()
+            .and_then(|binding| self.for_binding(binding));
+        if automation.is_some() && node.automation.is_some() {
+            return Err(DeviceContractError::ForeignProcessingUnavailable);
+        }
+        Ok(ForeignProcessorNode {
+            automation: automation.or(node.automation),
+            ..node
+        })
+    }
+}
+
+/// Supply a revision's programs at the existing foreign render boundary.
+/// Retained tails from a different source epoch do not match this table.
+pub(crate) struct WithPrograms<'a> {
+    pub(crate) programs: &'a Programs,
+    pub(crate) inner: &'a mut dyn ForeignProcessors,
+}
+
+impl ForeignProcessors for WithPrograms<'_> {
+    fn returns_post_trim(&self, node: ForeignProcessorNode<'_>) -> bool {
+        self.inner.returns_post_trim(node)
+    }
+
+    fn process_segment(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        clock: Option<&dyn NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        self.inner
+            .process_segment(self.programs.attach(node)?, offset, frames, clock)
+    }
+
+    fn process_segment_with_parameters(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        parameters: &[ForeignParameterPoint],
+        clock: Option<&dyn NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        self.inner.process_segment_with_parameters(
+            self.programs.attach(node)?,
+            offset,
+            frames,
+            parameters,
+            clock,
+        )
+    }
+
+    fn process_segment_with_notes(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        parameters: &[ForeignParameterPoint],
+        notes: &[ForeignNote],
+        clock: Option<&dyn NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        self.inner.process_segment_with_notes(
+            self.programs.attach(node)?,
+            offset,
+            frames,
+            parameters,
+            notes,
+            clock,
+        )
+    }
+
+    fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
+        self.inner.committed_tail_is_drained(node)
+    }
+
+    fn reject_callback(&mut self) {
+        self.inner.reject_callback();
     }
 }
 

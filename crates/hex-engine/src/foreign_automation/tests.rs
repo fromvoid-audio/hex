@@ -271,3 +271,50 @@ fn bound_program_requires_the_source_rate_and_preserves_the_worker_revision() {
     assert_eq!(program.borrow().binding, binding);
     assert_eq!(program.borrow().revision, revision);
 }
+
+#[test]
+fn revision_program_storage_accounts_for_the_table_and_each_lane_backing() {
+    let program = Program::prepare(
+        &[lane(
+            0,
+            vec![point(BeatTime::ZERO, 0.25, AutomationInterpolation::Step)],
+        )],
+        CLASS,
+        &[ParameterCapability { id: 0, steps: 0 }],
+        &tempo(),
+        QuantumProfile {
+            frames: 8,
+            max_runs: 1,
+        },
+    )
+    .unwrap()
+    .unwrap();
+    let programs = Programs(vec![BoundProgram {
+        program,
+        binding: ForeignProcessorBinding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 4,
+        },
+        sample_rate: 8000,
+        revision: std::num::NonZeroU64::MIN,
+    }]);
+    let expected = programs.0.capacity() * std::mem::size_of::<BoundProgram>()
+        + programs.0[0].program.backing_bytes().unwrap();
+    let mut ledger =
+        crate::AudioRootStorageLedger::try_new_on_control(crate::AudioStorageLedgerReservation {
+            data_rows: 3,
+            handle_rows: 0,
+            root_rows: 0,
+            max_retained_bytes: usize::MAX,
+            max_construction_peak_bytes: usize::MAX,
+        })
+        .unwrap();
+    ledger
+        .mutate(|ledger| programs.visit_storage(ledger))
+        .unwrap();
+    let summary = ledger.summary().unwrap();
+    assert_eq!(summary.data_allocations, 3);
+    assert_eq!(summary.data_bytes, expected);
+}

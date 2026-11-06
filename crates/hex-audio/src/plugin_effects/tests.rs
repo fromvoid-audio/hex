@@ -1333,7 +1333,7 @@ fn actual_arrangement_instrument_renders_authored_notes_at_compensated_offsets()
 #[cfg(feature = "allocation-probe")]
 fn actual_arrangement_renderer_clock_drives_the_signed_authored_effect() {
     use hex_engine::foreign_automation::BoundProgram;
-    use hex_lattice::{DevicePreparationContext, ForeignAutomation, NativeInstrumentClock};
+    use hex_lattice::{DevicePreparationContext, ForeignAutomationSource};
     use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime};
 
     const NAME: &str = "plugin_effects::tests::actual_arrangement_renderer_clock_drives_the_signed_authored_effect";
@@ -1354,40 +1354,8 @@ fn actual_arrangement_renderer_clock_drives_the_signed_authored_effect() {
         return;
     }
 
-    // Use the normal Arrangement renderer and endpoint carrier. This shim
-    // lends one separately prepared program until graph admission owns it.
-    struct AuthoredEndpoint<'a> {
-        endpoints: &'a mut NativeEffectCallbacks,
-        program: ForeignAutomation<'a>,
-    }
-    impl ForeignProcessors for AuthoredEndpoint<'_> {
-        fn returns_post_trim(&self, node: ForeignProcessorNode<'_>) -> bool {
-            self.endpoints.returns_post_trim(node)
-        }
-        fn process_segment(
-            &mut self,
-            node: ForeignProcessorNode<'_>,
-            offset: usize,
-            frames: &mut [[f32; 2]],
-            clock: Option<&dyn NativeInstrumentClock>,
-        ) -> Result<(), DeviceContractError> {
-            let node = ForeignProcessorNode {
-                automation: Some(self.program),
-                ..node
-            };
-            self.endpoints.process_segment(node, offset, frames, clock)
-        }
-        fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
-            self.endpoints.committed_tail_is_drained(node)
-        }
-        fn reject_callback(&mut self) {
-            self.endpoints.reject_callback();
-        }
-    }
-
     let mut fixture = fixture_with_authored_parameter(2, false, Some(7));
-    let revision = prepare(&fixture);
-    let mut runtime = hex_engine::SessionPlayback::new(revision).unwrap();
+    let mut revision = Arc::try_unwrap(prepare(&fixture)).unwrap();
     fixture
         .editor
         .execute(Command::ReplaceDeviceAutomationTarget {
@@ -1419,15 +1387,45 @@ fn actual_arrangement_renderer_clock_drives_the_signed_authored_effect() {
         .unwrap()
         .unwrap();
     let project = fixture.editor.project();
-    let program = BoundProgram::prepare(
-        project.device(fixture.device).unwrap().automation(),
-        source,
-        project.tempo_map(),
-        1,
-        std::num::NonZeroU64::MIN,
-    )
-    .unwrap()
-    .unwrap();
+    let lanes = project.device(fixture.device).unwrap().automation();
+    let prepare_program = |source| {
+        BoundProgram::prepare(
+            lanes,
+            source,
+            project.tempo_map(),
+            1,
+            std::num::NonZeroU64::MIN,
+        )
+        .unwrap()
+        .unwrap()
+    };
+    let mut stale = ForeignAutomationSource { ..source };
+    stale.binding.epoch += 1;
+    assert_eq!(
+        revision.install_foreign_automation_on_control(vec![prepare_program(stale)], 4096),
+        Err(hex_engine::Invalid(
+            "foreign automation source differs from the prepared graph"
+        ))
+    );
+    assert_eq!(
+        revision.install_foreign_automation_on_control(vec![prepare_program(source)], 0),
+        Err(hex_engine::Invalid(
+            "foreign automation storage exceeds reservation"
+        ))
+    );
+    assert_eq!(
+        revision.install_foreign_automation_on_control(
+            vec![prepare_program(source), prepare_program(source)],
+            4096,
+        ),
+        Err(hex_engine::Invalid(
+            "duplicate foreign automation source binding"
+        ))
+    );
+    revision
+        .install_foreign_automation_on_control(vec![prepare_program(source)], 4096)
+        .unwrap();
+    let mut runtime = hex_engine::SessionPlayback::new(Arc::new(revision)).unwrap();
     let (mut workers, mut endpoints) =
         NativeEffectCallbacks::from_effects_on_control(vec![fixture.effect]).unwrap();
     runtime
@@ -1439,16 +1437,7 @@ fn actual_arrangement_renderer_clock_drives_the_signed_authored_effect() {
         let measured = allocation_counter::measure(|| {
             endpoints.begin_host_callback(frames.len()).unwrap();
             runtime
-                .render_with_foreign_processors(
-                    frames,
-                    None,
-                    None,
-                    None,
-                    &mut AuthoredEndpoint {
-                        endpoints: &mut endpoints,
-                        program: program.borrow(),
-                    },
-                )
+                .render_with_foreign_processors(frames, None, None, None, &mut endpoints)
                 .unwrap();
             endpoints.finish_host_callback(true).unwrap();
         });

@@ -148,6 +148,7 @@ pub struct PreparedRevision {
     gain_recording_track: Option<TrackId>,
     native_parameter_input: Option<crate::device_automation::NativeParameterInputTarget>,
     pub(crate) scalar_automation: Option<Box<[crate::scalar_automation::PreparedBinding]>>,
+    pub(crate) foreign_automation: crate::foreign_automation::Programs,
 }
 
 impl std::fmt::Debug for PreparedRevision {
@@ -834,6 +835,7 @@ impl PreparedRevision {
                 gain_recording_track: None,
                 native_parameter_input: native_input,
                 scalar_automation: None,
+                foreign_automation: Default::default(),
             })
         })
     }
@@ -1131,7 +1133,28 @@ impl PreparedRevision {
             gain_recording_track: None,
             native_parameter_input: None,
             scalar_automation: None,
+            foreign_automation: Default::default(),
         })
+    }
+
+    /// Install preflighted authored programs before publishing this revision.
+    /// The preparation owner must prove the program bounds for the transport
+    /// profile and ensure the original armed worker starts with this program
+    /// at a physical quantum boundary. A refusal leaves this revision intact.
+    pub fn install_foreign_automation_on_control(
+        &mut self,
+        programs: Vec<crate::foreign_automation::BoundProgram>,
+        reserved_bytes: usize,
+    ) -> Result<(), Invalid> {
+        if !self.foreign_automation.is_empty() {
+            return Err(Invalid("foreign automation is already prepared"));
+        }
+        self.foreign_automation = crate::foreign_automation::Programs::prepare(
+            programs,
+            self.arrangement.as_ref(),
+            reserved_bytes,
+        )?;
+        Ok(())
     }
 
     /// Immutable contributor/receiver metadata; no independent DSP owner.
