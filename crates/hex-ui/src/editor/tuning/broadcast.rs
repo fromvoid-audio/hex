@@ -258,7 +258,7 @@ impl EditorView {
 #[cfg(all(test, feature = "ui-test-support"))]
 #[gpui::test]
 fn cancelling_mts_recovery_does_not_submit_a_reset(cx: &mut gpui::TestAppContext) {
-    use gpui::{AppContext, Modifiers, VisualTestContext};
+    use gpui::{Modifiers, VisualTestContext};
 
     let worker = hex_mts::Worker::start().unwrap();
     let publisher = worker.handle();
