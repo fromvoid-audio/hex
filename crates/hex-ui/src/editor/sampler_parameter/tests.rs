@@ -50,6 +50,16 @@ fn numeric_sampler_fixture(
     else {
         panic!("device")
     };
+    let Created::Clip(clip) = authored
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: hex_project::BeatTime::ZERO,
+            length: hex_project::BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
     let (window, editor) = super::super::clip_drag_ui_test::editor_window(
         cx,
         authored.project().clone(),
@@ -58,6 +68,7 @@ fn numeric_sampler_fixture(
     let mut visual = VisualTestContext::from_window(window, cx);
     editor.update(&mut visual, |view, cx| {
         view.selected_track = Some(track);
+        view.selected_clip = Some(clip);
         view.device_panel.owner = Some(device_panel::DevicePanelOwner::Track(track));
         view.device_panel_active = true;
         view.clip_view_open = true;
@@ -107,6 +118,18 @@ fn unrelated_edit_preserves_sampler_numeric_text_and_valid_commit(cx: &mut TestA
             .unwrap()
             .id();
         assert!(!view.enqueue(Request::RelinkMedia([(asset, "other.wav".into())].into(),)));
+        assert!(!view.enqueue(Request::EditArrangementSection {
+            project_generation: generation,
+            revision,
+            command: Command::AddArrangementSection {
+                name: "section".into(),
+                color: hex_project::ElementColor::Cyan,
+                start: hex_project::BeatTime::ZERO,
+                end: hex_project::BeatTime::ONE,
+            },
+        }));
+        view.duplicate_selected();
+        assert!(!view.duplicate_intent.is_pending());
         let control = view
             .sampler_parameter
             .controls

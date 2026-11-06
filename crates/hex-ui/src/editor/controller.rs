@@ -3366,8 +3366,9 @@ impl EditorView {
             });
             return false;
         }
-        // These imports can advance the canonical revision just like an
-        // ordinary edit. Refuse them before taking worker or receipt custody.
+        // Independent edits can advance the canonical revision even when they
+        // carry source stamps. Refuse them before taking worker custody.
+        // Duplicate repeats submit a new edit after the prior terminal.
         let independent_edit = matches!(
             &request,
             Request::Edit(_)
@@ -3382,6 +3383,15 @@ impl EditorView {
                 | Request::LoadFirstSampler { .. }
                 | Request::AssignSampler { .. }
                 | Request::RelinkMedia(_)
+                | Request::EditArrangementSection { .. }
+                | Request::MoveExistingClips { .. }
+                | Request::DuplicateClips { .. }
+                | Request::DuplicateAliasClips { .. }
+                | Request::DuplicateSessionCell { .. }
+                | Request::GroupClips { .. }
+                | Request::GroupTimeRange { .. }
+                | Request::GroupAudioEvents { .. }
+                | Request::CopyArrangementClipToConsoleTrack { .. }
         );
         if independent_edit && self.gain_lane.draft.is_some() {
             self.error = Some("finish or cancel the gain point gesture before editing".into());
