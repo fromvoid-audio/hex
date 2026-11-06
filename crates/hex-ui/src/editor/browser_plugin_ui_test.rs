@@ -42,6 +42,103 @@ fn original_plugin_catalog(path: std::path::PathBuf) -> hex_plugin_catalog::Cata
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[gpui::test]
+fn vst3_groups_are_visible_without_becoming_keyboard_items(cx: &mut TestAppContext) {
+    use crate::editor::browser::BrowserItemKey;
+    cx.update(crate::editor::bind_editor_keys);
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+    let physical = directory.0.canonicalize().unwrap();
+    let mut catalog = hex_plugin_catalog::Catalog::default();
+    for (module, name, role) in [
+        ("A-delay.vst3", "Space Delay", Some("Fx")),
+        ("Z-synth.vst3", "Zebra Synth", Some("Instrument")),
+        ("other.vst3", "Unknown Processor", None),
+    ] {
+        let mut entry = original_plugin_catalog(physical.join(module))
+            .entries
+            .remove(0);
+        let class = &mut entry
+            .last_good
+            .as_mut()
+            .unwrap()
+            .discovery
+            .as_mut()
+            .unwrap()
+            .classes[0];
+        class.name = name.into();
+        if let Some(role) = role {
+            class.class_flags = Some(0);
+            class.subcategories = Some(role.into());
+            class.class_vendor = Some("Original Vendor".into());
+            class.class_version = Some("1".into());
+            class.class_sdk_version = Some("3.8".into());
+        }
+        catalog.entries.push(entry);
+    }
+    catalog.validate().unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    wait_for_plugin_scan(&mut visual, &editor);
+    editor.update(&mut visual, |view, cx| {
+        view.select_browser_source(BrowserSection::Plugins, cx);
+        view.apply_plugin_catalog(catalog, cx);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let instruments = visual
+        .debug_bounds("browser-vst3-group-instruments")
+        .unwrap();
+    let effects = visual.debug_bounds("browser-vst3-group-effects").unwrap();
+    let first = visual.debug_bounds("browser-vst3-row-0").unwrap();
+    let second = visual.debug_bounds("browser-vst3-row-1").unwrap();
+    assert!(instruments.origin.y < first.origin.y && first.origin.y < effects.origin.y);
+    assert!(effects.origin.y < second.origin.y);
+    assert!(
+        visual
+            .debug_bounds("browser-vst3-group-other vst3")
+            .is_some()
+    );
+    visual.simulate_click(first.center(), Modifiers::default());
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(
+            view.browser_selected_item(cx),
+            Some(BrowserItemKey::Plugin(
+                physical.join("Z-synth.vst3"),
+                Some([1; 16])
+            ))
+        );
+    });
+    visual.simulate_keystrokes("down");
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(
+            view.browser_selected_item(cx),
+            Some(BrowserItemKey::Plugin(
+                physical.join("A-delay.vst3"),
+                Some([1; 16])
+            ))
+        );
+    });
+    editor.update(&mut visual, |view, cx| {
+        view.browser
+            .search
+            .update(cx, |input, cx| input.set_text("space", cx));
+        view.sync_browser_query(cx);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("browser-vst3-group-effects").is_some());
+    assert!(
+        visual
+            .debug_bounds("browser-vst3-group-instruments")
+            .is_none()
+    );
+    assert!(
+        visual
+            .debug_bounds("browser-vst3-group-other vst3")
+            .is_none()
+    );
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[gpui::test]
 fn browser_vst3_reload_marks_missing_source_without_rewriting_last_good_or_scanning(
     cx: &mut TestAppContext,
 ) {

@@ -1588,9 +1588,10 @@ impl EditorView {
                 .map(|entry| entry.path);
             self.browser_selection_audition(path, cx);
         }
-        self.browser
-            .scroll
-            .scroll_to_item(self.browser.selected_index, gpui::ScrollStrategy::Top);
+        self.browser.scroll.scroll_to_item(
+            self.browser_scroll_row(self.browser.selected_index, cx),
+            gpui::ScrollStrategy::Top,
+        );
         cx.notify();
     }
 
@@ -1748,9 +1749,10 @@ impl EditorView {
         if let Some(index) = index {
             self.browser.selected_index = index;
             self.browser.results_focused = true;
-            self.browser
-                .scroll
-                .scroll_to_item(index, gpui::ScrollStrategy::Top);
+            self.browser.scroll.scroll_to_item(
+                self.browser_scroll_row(index, cx),
+                gpui::ScrollStrategy::Top,
+            );
         } else {
             self.reset_browser_results();
         }
@@ -1950,7 +1952,14 @@ impl EditorView {
         let file_count = entries.len();
         let device_count = devices.len();
         let plugins = self.browser_visible_plugins(cx);
-        let row_count = file_count + device_count + plugins.len();
+        let plugin_groups =
+            (section == BrowserSection::Plugins).then(|| plugins::PluginGroups::new(&plugins));
+        let row_count = file_count
+            + device_count
+            + plugins.len()
+            + plugin_groups
+                .as_ref()
+                .map_or(0, plugins::PluginGroups::heading_count);
         let positions = BrowserRows::new(
             file_count,
             device_count,
@@ -1963,7 +1972,17 @@ impl EditorView {
             cx.processor(move |view, range: std::ops::Range<usize>, _window, cx| {
                 range
                     .filter_map(|index| {
-                        if positions.files.contains(&index) {
+                        if let Some(groups) = &plugin_groups {
+                            match groups.line(index)? {
+                                plugins::PluginLine::Heading(group, _) => {
+                                    Some(Self::browser_plugin_heading(group))
+                                }
+                                plugins::PluginLine::Plugin(logical) => plugins
+                                    .get(logical)
+                                    .cloned()
+                                    .map(|row| view.browser_plugin_row(logical, row, cx)),
+                            }
+                        } else if positions.files.contains(&index) {
                             entries
                                 .get(index - positions.files.start)
                                 .cloned()
