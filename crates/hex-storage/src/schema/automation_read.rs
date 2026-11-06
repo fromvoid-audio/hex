@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum Selection {
+pub(super) enum Selection {
     Authored,
     Base,
 }

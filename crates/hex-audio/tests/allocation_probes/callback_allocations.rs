@@ -1437,6 +1437,95 @@ fn hybrid_arrangement_audio_and_midi_callback_is_allocation_free_and_exact()
 }
 
 #[test]
+fn reverb_automation_publication_and_render_are_allocation_free() -> Result<(), Box<dyn Error>> {
+    use hex_devices::reverb::{REVERB_TYPE_ID, parameter};
+    use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue};
+    let mut editor = Editor::new(Project::new(RATE)?, 8)?;
+    let Created::Imported { track, asset, .. } =
+        editor.execute(Command::ImportPreparedAudioTrack {
+            name: "automated room".into(),
+            path: "memory/automated-room.wav".into(),
+            source_sample_rate: RATE,
+            source_frames: (BLOCK * 3) as u64,
+            playback_frames: (BLOCK * 3) as u64,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        })?
+    else {
+        return Err("expected imported audio".into());
+    };
+    let Created::Device(device) = editor.execute(Command::InsertDevice {
+        track,
+        before: None,
+        state: hex_engine::default_native_device_state(REVERB_TYPE_ID)?,
+    })?
+    else {
+        return Err("expected reverb device".into());
+    };
+    let lane = |value| -> Result<Command, hex_project::Invalid> {
+        Ok(Command::ReplaceDeviceAutomation {
+            device,
+            parameter: parameter::DRY_WET,
+            points: vec![AutomationPoint {
+                beat: BeatTime::ZERO,
+                value: AutomationValue::new(value)?,
+                outgoing: AutomationInterpolation::Step,
+            }],
+        })
+    };
+    editor.execute(lane(0.0)?)?;
+    let dry = [0.125, -0.0625];
+    let media = BTreeMap::from([(asset, Audio::new(RATE, vec![dry; BLOCK * 3])?)]);
+    let table = Arc::new(SineTable::new());
+    let first = Arc::new(PreparedRevision::prepare(
+        editor.project(),
+        &media,
+        Arc::clone(&table),
+        None,
+    )?);
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(Playback::try_from_prepared_with_session(Arc::clone(
+            &first,
+        ))?)
+        .map_err(|_| "initial playback publication failed")?;
+    control
+        .command(PlaybackCommand::Play)
+        .map_err(|_| "Play admission failed")?;
+    let mut actual = [[0.0; 2]; BLOCK];
+    measured_block(&mut callback, &mut actual);
+    compare_output(&actual, &[dry; BLOCK]);
+
+    editor.execute(lane(0.75)?)?;
+    let path =
+        std::env::temp_dir().join(format!("hex-reverb-automation-{}.hex", std::process::id()));
+    hex_storage::save_new(&path, editor.project())?;
+    let reopened = hex_storage::load(&path);
+    std::fs::remove_file(path)?;
+    let reopened = reopened?;
+    assert_eq!(editor.project(), &reopened);
+    let second = Arc::new(PreparedRevision::prepare(
+        &reopened,
+        &media,
+        table,
+        Some(first.session()),
+    )?);
+    let mut oracle = Renderer::new(second.arrangement());
+    oracle.play();
+    let mut expected = [[0.0; 2]; BLOCK];
+    oracle.render(&mut expected)?;
+    oracle.render(&mut expected)?;
+    control
+        .publish(Playback::try_from_prepared_with_session(second)?)
+        .map_err(|_| "automation publication failed")?;
+    measured_block(&mut callback, &mut actual);
+    compare_output(&actual, &expected);
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut actual);
+    control.reclaim();
+    Ok(())
+}
+
+#[test]
 fn auto_pan_prepared_callback_and_parameter_handoff_are_allocation_free()
 -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 8)?;

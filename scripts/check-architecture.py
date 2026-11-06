@@ -22,7 +22,7 @@ ALLOWED = {
     'hex-plugin-host': {'hex-plugin-scan', 'hex-plugin-state', 'hex-lattice-contract'},
     'hex-diagnostics': set(),
     'hex-lattice-contract': set(),
-    'hex-project': {'hex-lattice-contract', 'hex-tuning'},
+    'hex-project': {'hex-lattice-contract', 'hex-plugin-state', 'hex-tuning'},
     'hex-lattice': {'hex-lattice-contract', 'hex-dsp', 'hex-tuning'},
     'hex-devices': {'hex-lattice', 'hex-lattice-contract', 'hex-dsp'},
     'hex-media': {'hex-engine', 'hex-project'},

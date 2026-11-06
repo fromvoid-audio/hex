@@ -17,7 +17,9 @@
 //! policy: removed frozen tails persist until Stop, using bounded tail banks
 //! and explicit admission backpressure. Unfrozen rooms hard-clear at their
 //! declared zero-input deadline (including up to 100 ms of copied smoothing).
-//! No device-specific host lifecycle is introduced.
+//! The shared Arrangement dry/wet curve supplies each sample's blend. The
+//! base setting retains its configured smoothing. Neither changes tank
+//! history or the declared tail. No device-specific host lifecycle is introduced.
 mod runtime;
 mod state;
 use hex_lattice::{NativeDeviceDefinition, StereoMatrix};
@@ -134,7 +136,11 @@ impl NativeDeviceMetadata for ReverbDefinition {
             access: A::ReadWrite,
             normalization,
             stepping,
-            automation: E::Unsupported,
+            automation: if id == parameter::DRY_WET {
+                E::DeviceArrangementEnvelope
+            } else {
+                E::Unsupported
+            },
             modulation: M::Unsupported,
             smoothing: S::DeviceManaged,
             change_impact: I::ValueOnly,
@@ -142,6 +148,33 @@ impl NativeDeviceMetadata for ReverbDefinition {
     }
 }
 impl NativeDeviceDefinition for ReverbDefinition {
+    fn supports_parameter_automation(
+        &self,
+        state: &NativeDeviceState,
+        parameter: ParameterId,
+    ) -> Result<bool, DeviceContractError> {
+        decode(state)?;
+        Ok(parameter == self::parameter::DRY_WET)
+    }
+
+    fn prepare_automated_runtime_instance(
+        &self,
+        _identity: hex_lattice::ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+        parameters: &[ParameterId],
+    ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
+        if parameters != [parameter::DRY_WET] {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
+        Ok(hex_lattice::PreparedRuntimeDevice {
+            matrix: StereoMatrix::identity(),
+            processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(
+                std::sync::Arc::new(Self::prepare_owned_room(state, context.sample_rate)?),
+            )),
+        })
+    }
+
     fn prepare_matrix(
         &self,
         state: &NativeDeviceState,
