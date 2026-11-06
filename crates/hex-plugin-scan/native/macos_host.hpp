@@ -65,6 +65,7 @@ struct EditEvent {
     ParamValue normalized=0;
     ParamID id=0;
     uint32 kind=Restart;
+    bool standalone_begin=false;
 };
 enum class HostDisposition { Idle, Refreshed, InvalidMetadata, NoController, Recursive, Retiring, WrongThread, Capacity, Pending, EditQueued };
 struct HostDispatch {
@@ -86,7 +87,8 @@ enum HostRefusal : uint32 { WrongThread=1, UnknownRestart=2, GraphControlRequire
 // unavailable until the product's owning runtime/bridge/PDC contracts exist.
 // Callbacks acknowledge queuing rather than DSP application. When a native
 // drag saturates the main FIFO, replace a superseded, undispatched value for
-// that gesture. Begin, End and restart records are never replaced.
+// that gesture. A standalone value can supersede another complete standalone
+// edit. Explicit gesture boundaries and restart records are never replaced.
 class Host final : public IHostApplication, public IComponentHandler {
     std::atomic<uint32> references{1}, refusals{0};
     std::array<HostMessage,HOST_MESSAGE_COUNT> messages{};
@@ -273,6 +275,40 @@ private:
         }
         return true;
     }
+    bool replace_standalone_edit(ParamID id) {
+        // Only replace a complete triplet still owned by the main FIFO, in
+        // the same restart segment and after the last explicit edit for id.
+        for(size_t n=count;n>0;--n) {
+            const auto& end=requests[(first+n-1)%requests.size()];
+            if(end.kind==Restart) break;
+            if(end.id!=id) continue;
+            if(end.kind!=End || n<3) break;
+            const auto& begin=requests[(first+n-3)%requests.size()];
+            if(!begin.standalone_begin || begin.gesture!=end.gesture) break;
+            for(size_t record=0;record<3;++record) erase_request(n-3);
+            return true;
+        }
+        return false;
+    }
+    tresult admit_standalone_edit(ParameterSnapshot::Parameter& info,ParamValue value) {
+        constexpr size_t records=3;
+        if(sequence>std::numeric_limits<uint64>::max()-records) {
+            refuse(QueueFull);return kResultFalse;
+        }
+        // Some controllers send a valid value without beginEdit. Present it
+        // as a complete one-shot gesture to the existing DSP/receipt path.
+        const auto id=info.info.id;
+        const bool has_room=make_edit_room(records);
+        if(!has_room && !replace_standalone_edit(id)) return kResultFalse;
+        const auto gesture=sequence+1;
+        requests[(first+count++)%requests.size()]={gesture,gesture,0,id,Begin,true};
+        requests[(first+count++)%requests.size()]={gesture+1,gesture,value,id,Perform};
+        requests[(first+count++)%requests.size()]={gesture+2,gesture,0,id,End};
+        sequence=gesture+2;
+        info.editor_sequence=gesture+1;
+        if(has_room) pending_edits.fetch_add(records,std::memory_order_release);
+        return kResultOk;
+    }
     tresult admit_edit(ParamID id,uint32 kind,ParamValue value) {
         if(![NSThread isMainThread]) {refuse(WrongThread);return kResultFalse;}
         if(!accepting) {refuse(Retiring);return kResultFalse;}
@@ -293,7 +329,8 @@ private:
         }
         if(kind==Begin && active!=active_tokens.size()) {refuse(InvalidEdit|DuplicateEditBegin);return kResultFalse;}
         if(kind!=Begin && active==active_tokens.size()) {
-            refuse(InvalidEdit|(kind==Perform?MissingPerformBegin:MissingEndBegin));return kResultFalse;
+            if(kind==Perform) return admit_standalone_edit(*info,value);
+            refuse(InvalidEdit|MissingEndBegin);return kResultFalse;
         }
         if(sequence==std::numeric_limits<uint64>::max()) {refuse(QueueFull);return kResultFalse;}
         const auto next=sequence+1;
