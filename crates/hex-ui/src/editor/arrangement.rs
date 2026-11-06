@@ -652,10 +652,10 @@ impl EditorView {
         {
             None
         } else {
-            self.active_browser_audio_drag
+            self.pending_sample_drop
                 .as_ref()
-                .filter(|drag| self.browser_audio_drag_is_current(drag))
-                .and_then(|drag| drag.insertion_line_y.get())
+                .and_then(|drop| drop.insertion_line_y)
+                .or_else(|| self.displayed_browser_audio_drag()?.insertion_line_y.get())
                 .or_else(|| {
                     self.displayed_clip_drag()
                         .and_then(|drag| drag.insertion_line_y.get())
