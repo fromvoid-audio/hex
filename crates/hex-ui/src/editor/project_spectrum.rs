@@ -400,7 +400,7 @@ impl EditorView {
         let expanded = self.project_spectrum.expanded;
         let height = self.project_spectrum_height(window);
         if self.sample_recorder.visible {
-            return self.sample_recorder_panel(f32::from(height), cx);
+            return self.sample_recorder_panel(height, cx);
         }
         let style = theme::device_style(theme::DeviceStyleRole::Display);
         let available = self
