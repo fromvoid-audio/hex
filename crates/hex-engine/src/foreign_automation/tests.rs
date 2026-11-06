@@ -17,6 +17,7 @@ fn lane(id: u32, points: Vec<AutomationPoint>) -> DeviceAutomation {
         target: DeviceAutomationTarget::Vst3 { parameter: id },
         vst3_class: Some(CLASS),
         points,
+        touch: Vec::new(),
     }
 }
 

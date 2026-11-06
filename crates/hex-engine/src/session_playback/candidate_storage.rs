@@ -245,6 +245,7 @@ fn chain_storage<'a>(
         l.vec(ids)?;
         l.vec(lanes)?;
         l.vec(points)?;
+        l.vec(entry.automation().touch_storage())?;
         let foreign = match &prepared.definition {
             Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) => Some(*facts),
             _ => None,

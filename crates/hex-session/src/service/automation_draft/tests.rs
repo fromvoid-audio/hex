@@ -535,7 +535,7 @@ fn native_deliveries_seal_only_the_exact_target_values_and_restoration() {
         let outcome = worker.join_on_control().unwrap();
         assert_eq!(outcome.progress.durable_events, 1);
         assert!(outcome.failure.is_none());
-        let take = CompletedAutomationTake::open_on_control(
+        let mut take = CompletedAutomationTake::open_on_control(
             &path,
             DraftReadLimits {
                 max_source_bytes: 64 * 1024,
@@ -564,5 +564,32 @@ fn native_deliveries_seal_only_the_exact_target_values_and_restoration() {
                 value: AutomationValue::new(normalized).unwrap(),
             })
         );
+        if index == 2 {
+            let prepare = super::super::automation_take::prepare_native_take_adoption_on_control;
+            assert!(prepare(&session, None, &mut take, stale).is_err());
+            let before = session.project().clone();
+            let command = prepare(&session, None, &mut take, stamp).unwrap();
+            session.command(command).unwrap();
+            let lane = session
+                .project()
+                .device(device)
+                .unwrap()
+                .automation_target(target)
+                .unwrap();
+            let beat = |frame| session.project().tempo_map().frame_to_beat(frame).unwrap();
+            assert_eq!(lane.value_at(beat(7)), None);
+            assert_eq!(
+                lane.value_at(beat(8)),
+                Some(AutomationValue::new(normalized).unwrap())
+            );
+            assert_eq!(lane.value_at(beat(12)), None);
+            assert!(prepare(&session, None, &mut take, stamp).is_err());
+            let recorded = session.project().clone();
+            assert!(session.undo());
+            assert_eq!(session.project(), &before);
+            assert!(session.redo());
+            assert_eq!(session.project(), &recorded);
+            assert!(path.exists(), "the sealed source remains available");
+        }
     }
 }

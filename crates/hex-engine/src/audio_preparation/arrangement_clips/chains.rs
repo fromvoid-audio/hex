@@ -174,7 +174,7 @@ impl ChainCustody {
                     device.reading_automation().count().checked_sub(provider)?,
                     device
                         .reading_automation()
-                        .try_fold(0usize, |sum, lane| sum.checked_add(lane.points.len()))?,
+                        .try_fold(0usize, |sum, lane| sum.checked_add(lane.point_count()))?,
                 ).and_then(|bytes| bytes.checked_add(crate::device_automation::input_construction_growth_overlap(device, native_input).ok()?))
             })
             .try_fold(0usize, |largest, value| Some(largest.max(value?)))
@@ -244,7 +244,7 @@ impl ChainCustody {
                     device.reading_automation().count().checked_sub(provider)?,
                     device
                         .reading_automation()
-                        .try_fold(0usize, |sum, lane| sum.checked_add(lane.points.len()))?,
+                        .try_fold(0usize, |sum, lane| sum.checked_add(lane.point_count()))?,
                 ).and_then(|bytes| bytes.checked_add(crate::device_automation::input_construction_growth_overlap(device, native_input).ok()?))
             })
             .try_fold(0usize, |largest, value| Some(largest.max(value?)))
@@ -626,6 +626,7 @@ impl ChainCustody {
             l.vec(ids)?;
             l.vec(lanes)?;
             l.vec(points)?;
+            l.vec(value.automation.touch_storage())?;
             if let Some(program) = value.automation.foreign() {
                 let owner = program.storage_owner();
                 l.shared(
@@ -813,6 +814,7 @@ mod tests {
                     .push(hex_project::DeviceSnapshot {
                         automation: if automated {
                             vec![hex_project::DeviceAutomation {
+                                touch: Vec::new(),
                                 vst3_class: None,
                                 read_selection: hex_project::AutomationReadSelection::Authored,
                                 target: hex_lattice_contract::DeviceAutomationTarget::Parameter(
@@ -858,6 +860,7 @@ mod tests {
                         hex_lattice_contract::DeviceAutomationTarget::HostOutputGain,
                     ] {
                         device.automation.push(hex_project::DeviceAutomation {
+                            touch: Vec::new(),
                             vst3_class: None,
                             read_selection: hex_project::AutomationReadSelection::Authored,
                             target,
