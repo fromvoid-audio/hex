@@ -19,6 +19,7 @@ pub struct PreparedForeignProcessor {
     total_latency: u32,
     binding: Option<ForeignProcessorBinding>,
     output_tail: crate::OutputTail,
+    instrument_profile: bool,
 }
 impl PreparedForeignProcessor {
     pub fn new(
@@ -39,6 +40,7 @@ impl PreparedForeignProcessor {
             total_latency,
             binding: None,
             output_tail: crate::OutputTail::Unbounded,
+            instrument_profile: false,
         })
     }
     /// Retain the exact existing source/endpoint binding in immutable graph
@@ -63,6 +65,15 @@ impl PreparedForeignProcessor {
     }
     pub fn output_tail(self) -> crate::OutputTail {
         self.output_tail
+    }
+    /// Declare the zero-audio-input configuration used for instrument
+    /// workers. The host still owns the actual source binding.
+    pub fn with_instrument_profile(mut self) -> Self {
+        self.instrument_profile = true;
+        self
+    }
+    pub fn is_instrument_profile(self) -> bool {
+        self.instrument_profile
     }
     pub fn binding(self) -> Option<ForeignProcessorBinding> {
         self.binding
