@@ -73,7 +73,9 @@ pub use device_automation_control::DeviceAutomationControlEdit;
 mod device_comparison;
 mod effect_bus;
 mod plugin_effect;
+mod plugin_parameters;
 mod plugin_state_save;
+pub use plugin_parameters::{PluginParameterQuery, PluginParameterResult, PluginParameterRow};
 pub use plugin_state_save::{PluginStateCapture, PluginStateSaveInput};
 pub mod diagnostics;
 mod request_cancellation;
@@ -268,6 +270,7 @@ pub struct Event {
     pub sampler_edit_complete: Option<u64>,
     /// At most two exact terminals: a refused new request and an invalidated pending one.
     pub plugin_effect_complete: Vec<PluginEffectCompletion>,
+    pub plugin_parameters: Option<PluginParameterResult>,
     pub computer_keyboard_complete: Option<u64>,
     /// Exact terminal for a retained MIDI take commit, including refusal.
     pub midi_take_complete: Option<MidiTakeCompletion>,
@@ -589,6 +592,8 @@ pub enum Request {
         device: hex_project::DeviceId,
     },
     ContinuePluginEditor,
+    QueryPluginParameters(PluginParameterQuery),
+    ContinuePluginParameters,
     /// Internal fresh-output state restoration; no authored edit or revision.
     ContinuePluginStateRestore,
     /// Catalog effect insertion; defaults and target admission belong to the worker.
@@ -2297,6 +2302,7 @@ fn run_worker(
                 sampler_load_complete: None,
                 sampler_edit_complete: None,
                 plugin_effect_complete: Vec::new(),
+                plugin_parameters: None,
                 computer_keyboard_complete: None,
                 midi_take_complete: None,
                 tuning_audition_complete: None,
@@ -2337,6 +2343,7 @@ fn run_worker(
             sampler_load_complete: None,
             sampler_edit_complete: None,
             plugin_effect_complete: Vec::new(),
+            plugin_parameters: None,
             computer_keyboard_complete: None,
             midi_take_complete: None,
             tuning_audition_complete: None,
@@ -2590,10 +2597,12 @@ fn run_worker(
             Request::ContinueSamplerEdit
                 | Request::ContinuePluginEffect
                 | Request::ContinuePluginEditor
+                | Request::ContinuePluginParameters
                 | Request::ContinuePluginStateRestore
                 | Request::ContinueStoppedPlaybackRestore
         );
         let mut plugin_effect_complete = Vec::new();
+        let mut plugin_parameters = None;
         let mut sampler_edit_complete = None;
         if matches!(
             &request,
@@ -3464,6 +3473,8 @@ fn run_worker(
                     | Request::ContinuePluginEffect
                     | Request::TogglePluginEditor { .. }
                     | Request::ContinuePluginEditor
+                    | Request::QueryPluginParameters(_)
+                    | Request::ContinuePluginParameters
                     | Request::ContinuePluginStateRestore
                     | Request::PrepareComputerKeyboard { .. }
                     | Request::AssignSampler { .. }
@@ -3957,6 +3968,34 @@ fn run_worker(
                         Some(Err(reason)) => error = Some(reason),
                         None => {}
                     }
+                }
+                Request::QueryPluginParameters(query) => {
+                    let result = if query.context.project_generation != project_generation
+                        || query.context.editor_revision != revision
+                        || !session
+                            .project()
+                            .device(query.device)
+                            .is_some_and(|device| {
+                                device.state().type_id().as_str() == Ok("hex.vst3")
+                            }) {
+                        Err("vst3 parameter target changed".into())
+                    } else {
+                        events
+                            .sampler_edit_audio()
+                            .ok_or_else(|| "vst3 parameters unavailable for this output".to_owned())
+                            .and_then(|audio| audio.query_plugin_parameters(query))
+                    };
+                    if let Err(reason) = result {
+                        plugin_parameters = Some(PluginParameterResult {
+                            query,
+                            rows: Err(reason),
+                        });
+                    }
+                }
+                Request::ContinuePluginParameters => {
+                    plugin_parameters = events
+                        .sampler_edit_audio()
+                        .and_then(|audio| audio.take_plugin_parameters());
                 }
                 request @ (Request::InsertPluginEffect(_) | Request::ContinuePluginEffect) => {
                     if let Request::InsertPluginEffect(insertion) = request {
@@ -7792,6 +7831,7 @@ fn run_worker(
                 sampler_load_complete,
                 sampler_edit_complete,
                 plugin_effect_complete,
+                plugin_parameters,
                 computer_keyboard_complete,
                 midi_take_complete,
                 tuning_audition_complete,

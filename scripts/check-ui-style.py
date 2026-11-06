@@ -278,7 +278,11 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/log_viewer.rs'
             and suffix.startswith(('display)', 'session)', 'detail)', 'status)', 'self.query.clone())', 'list)', 'self.log_scrollbar('))
         )
-        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not browser_scrollbar_component and not transport_vector_component and not limiter_component and not device_insertion_component and not log_viewer_source:
+        plugin_parameter_search = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/vst3_parameters.rs'
+            and suffix.startswith('panel.search.clone())')
+        )
+        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not browser_scrollbar_component and not transport_vector_component and not limiter_component and not device_insertion_component and not log_viewer_source and not plugin_parameter_search:
             line = source.count('\n', 0, match.start()) + 1
             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):
