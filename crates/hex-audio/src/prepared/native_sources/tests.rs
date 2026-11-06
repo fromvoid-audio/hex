@@ -161,6 +161,7 @@ fn source_for_profile(
             identity.device_id(),
             12,
             48_000,
+            crate::plugin_effects::PluginProfile::Effect,
             restore,
         )
         .unwrap();
@@ -262,6 +263,7 @@ fn actual_selected_effect_revalidation_refuses_changed_metadata_before_root_rese
                     3,
                     12,
                     48_000,
+                    crate::plugin_effects::PluginProfile::Effect,
                     None,
                 )
                 .is_err()
