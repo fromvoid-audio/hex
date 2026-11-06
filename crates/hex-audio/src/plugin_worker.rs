@@ -88,6 +88,26 @@ struct State {
     control_turn: u8,
 }
 impl State {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn report_native_failure(&self, exchange: &str, error: &hex_plugin_host::Error) {
+        use std::io::Write as _;
+
+        let Some(Processor::Native(instance)) = self.processor.as_ref() else {
+            return;
+        };
+        let configuration = instance.configuration();
+        let bundle = std::path::Path::new(&configuration.bundle)
+            .file_name()
+            .unwrap_or_default();
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "vst3 worker failed: exchange={exchange} bundle={bundle:?} binding={:?} child={:?} completed_blocks={} cause={error}",
+            configuration.binding,
+            instance.child_id_on_control(),
+            instance.completed_blocks_on_control(),
+        );
+    }
+
     fn prepare_transport(&mut self) -> Result<(), Fault> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
@@ -329,6 +349,10 @@ fn transport_runner_with_setup(
                     if let Err(error) = result {
                         state.worker.revoke();
                         if error != Fault::Revoked {
+                            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                            if let Some(error) = &state.native_error {
+                                state.report_native_failure("pcm", error);
+                            }
                             fault = Some(error);
                         }
                         break;
@@ -353,11 +377,12 @@ fn transport_runner_with_setup(
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             if let Err(error) = state.advance_native_control(&published) {
                 let refused = matches!(error, hex_plugin_host::Error::Cancelled);
-                state.native_error = Some(error);
                 state.worker.revoke();
                 if !refused {
+                    state.report_native_failure("control", &error);
                     fault = Some(Fault::Protocol);
                 }
+                state.native_error = Some(error);
                 break;
             }
         }
