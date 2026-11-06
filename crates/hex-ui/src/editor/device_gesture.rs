@@ -211,12 +211,21 @@ impl EditorView {
     ) -> bool {
         let terminal =
             matches!(ack.phase, GesturePhase::Commit | GesturePhase::Cancel) || ack.source_lost;
+        let plugin = self.device_gesture.snapshot().is_some_and(|active| {
+            active.key == ack.key && matches!(active.target, GestureTarget::PluginParameter { .. })
+        });
         let matched = self.device_gesture.acknowledge_with_snapshot(ack, snapshot);
         if !matched {
             self.refuse_effect_bus_barriers(
                 "effect insertion canceled · device acknowledgment did not match",
             );
             return false;
+        }
+        if plugin
+            && !ack.preview_retained
+            && (terminal || ack.phase == GesturePhase::Begin && !ack.accepted)
+        {
+            super::device_panel::vst3_parameters::refresh(self);
         }
         if terminal {
             self.settle_effect_bus_barriers(ack);

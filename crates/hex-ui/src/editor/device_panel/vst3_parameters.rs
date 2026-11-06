@@ -3,13 +3,19 @@
 use super::*;
 use gpui::{Entity, Subscription, UniformListScrollHandle, uniform_list};
 use hex_engine::AudioSourceContext;
+use hex_session::device_gesture::{GestureKey, PluginParameterOrigin, PluginParameterValue};
 use hex_session::service::{PluginParameterQuery, PluginParameterResult, PluginParameterRow};
-use hex_widgets::TextInput;
+use hex_widgets::{
+    NumericControl, NumericControlConfig, NumericControlEvent, NumericControlPresentation,
+    NumericEventPhase, NumericGestureId, NumericScale, NumericSpec, TextInput,
+};
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 #[derive(Default)]
 pub(super) struct State {
     serial: u64,
     panel: Option<Panel>,
+    refresh: bool,
 }
 struct Panel {
     query: PluginParameterQuery,
@@ -19,7 +25,13 @@ struct Panel {
     result: Option<Result<Arc<Vec<PluginParameterRow>>, String>>,
     matched: Arc<Vec<usize>>,
     filter: String,
+    knobs: HashMap<u32, Knob>,
 }
+struct Knob {
+    control: Entity<NumericControl>,
+    _subscription: Subscription,
+}
+
 impl Panel {
     fn refilter(&mut self) {
         let Some(Ok(rows)) = &self.result else { return };
@@ -67,6 +79,17 @@ fn open(view: &mut EditorView, device: DeviceId, cx: &mut Context<EditorView>) {
     if !view.enqueue(Request::QueryPluginParameters(query)) {
         return;
     }
+    view.device_panel.vst3_parameters.serial = request_id;
+    if let Some(panel) = view.device_panel.vst3_parameters.panel.as_mut()
+        && panel.query.device == device
+        && panel.query.context.project_generation == context.project_generation
+    {
+        panel.query = query;
+        panel.result = None;
+        panel.knobs.clear();
+        view.device_panel.vst3_parameters.refresh = false;
+        return;
+    }
     let search = cx.new(super::super::browser_input::plugin_parameter_search);
     let observe_search = cx.observe(&search, |view, _, cx| {
         if let Some(panel) = view.device_panel.vst3_parameters.panel.as_mut() {
@@ -75,7 +98,6 @@ fn open(view: &mut EditorView, device: DeviceId, cx: &mut Context<EditorView>) {
         }
         cx.notify();
     });
-    view.device_panel.vst3_parameters.serial = request_id;
     view.device_panel.vst3_parameters.panel = Some(Panel {
         query,
         search,
@@ -84,6 +106,7 @@ fn open(view: &mut EditorView, device: DeviceId, cx: &mut Context<EditorView>) {
         result: None,
         matched: Arc::default(),
         filter: String::new(),
+        knobs: HashMap::new(),
     });
 }
 
@@ -121,12 +144,32 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
         .audio
         .as_ref()
         .and_then(|audio| audio.control.output_identity());
-    let state = &mut view.device_panel.vst3_parameters;
-    if state.panel.as_ref().is_some_and(|panel| {
-        Some(panel.query.context) != context || Some(panel.query.output_identity) != output
-    }) {
-        state.panel = None;
+    if view
+        .device_panel
+        .vst3_parameters
+        .panel
+        .as_ref()
+        .is_some_and(|panel| {
+            Some(panel.query.output_identity) != output
+                || panel.query.context.project_generation != view.project_generation
+        })
+    {
+        view.device_panel.vst3_parameters.panel = None;
     }
+    if view
+        .device_panel
+        .vst3_parameters
+        .panel
+        .as_ref()
+        .is_some_and(|panel| {
+            panel.query.device == device
+                && (Some(panel.query.context) != context
+                    || view.device_panel.vst3_parameters.refresh)
+        })
+    {
+        open(view, device, cx);
+    }
+    let state = &view.device_panel.vst3_parameters;
     let panel = state
         .panel
         .as_ref()
@@ -169,14 +212,24 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
         Some(Ok(rows)) => {
             let rows = Arc::clone(rows);
             let matched = Arc::clone(&panel.matched);
+            let query = panel.query;
+            let editor = cx.weak_entity();
             body.child(
                 uniform_list(
                     ("vst3-parameter-list", device.value()),
                     matched.len(),
-                    move |range, _, _| {
+                    move |range, _, app| {
                         range
                             .filter_map(|index| {
                                 let row = rows.get(*matched.get(index)?)?;
+                                let knob = if row.editable {
+                                    editor
+                                        .update(app, |view, cx| knob(view, query, row, cx))
+                                        .ok()
+                                        .flatten()
+                                } else {
+                                    None
+                                };
                                 Some(
                                     div()
                                         .id(("vst3-parameter", row.id))
@@ -184,7 +237,7 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
                                             let id = row.id;
                                             move || format!("vst3-parameter-row-{id}")
                                         })
-                                        .h(px(22.0))
+                                        .h(px(28.0))
                                         .w_full()
                                         .min_w_0()
                                         .flex()
@@ -196,11 +249,14 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
                                                 &row.name,
                                             )),
                                         ))
-                                        .child(div().max_w(px(92.0)).truncate().child(
-                                            theme::text(hex_session::service::text::verbatim(
-                                                &row.value,
-                                            )),
-                                        )),
+                                        .children(knob)
+                                        .when(!row.editable, |item| {
+                                            item.child(div().max_w(px(92.0)).truncate().child(
+                                                theme::text(hex_session::service::text::verbatim(
+                                                    &row.value,
+                                                )),
+                                            ))
+                                        }),
                                 )
                             })
                             .collect::<Vec<_>>()
@@ -212,6 +268,139 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
                 .w_full(),
             )
         }
+    }
+}
+
+pub(in crate::editor) fn refresh(view: &mut EditorView) {
+    view.device_panel.vst3_parameters.refresh = true;
+}
+
+fn knob(
+    view: &mut EditorView,
+    query: PluginParameterQuery,
+    row: &PluginParameterRow,
+    cx: &mut Context<EditorView>,
+) -> Option<Entity<NumericControl>> {
+    let panel = view
+        .device_panel
+        .vst3_parameters
+        .panel
+        .as_mut()
+        .filter(|panel| panel.query == query)?;
+    if let Some(knob) = panel.knobs.get(&row.id) {
+        return Some(knob.control.clone());
+    }
+    let origin = PluginParameterOrigin {
+        context: query.context,
+        device: query.device,
+        parameter: row.id,
+        page_first: row.page_first,
+        metadata_revision: row.metadata_revision,
+        initial: PluginParameterValue::new(row.normalized).ok()?,
+    };
+    let spec = NumericSpec::new(
+        0.0,
+        1.0,
+        row.default_normalized,
+        NumericScale::Linear,
+        3,
+        None::<&str>,
+    )
+    .ok()?;
+    let config = NumericControlConfig::new(
+        format!("vst3-knob-{}-{}", query.device.value(), row.id),
+        theme::text(hex_session::service::text::verbatim(&row.name)),
+        NumericControlPresentation::MicroDial,
+        spec,
+        row.normalized,
+        theme::control_style(),
+    )
+    .ok()?;
+    let control = cx.new(|cx| NumericControl::from_config(cx, config));
+    let drag = Rc::new(RefCell::new(None));
+    let steps = row.steps;
+    let subscription = cx.subscribe(
+        &control,
+        move |view, emitter, event: &NumericControlEvent, cx| {
+            let current = view
+                .device_panel
+                .vst3_parameters
+                .panel
+                .as_ref()
+                .filter(|panel| panel.query == query)
+                .and_then(|panel| panel.knobs.get(&origin.parameter))
+                .is_some_and(|knob| knob.control.entity_id() == emitter.entity_id());
+            if !current || current_context(view) != Some(origin.context) {
+                return;
+            }
+            if let Err(reason) = knob_event(view, origin, event, steps, &drag) {
+                view.error = Some(reason.into());
+            }
+            view.pump_device_gesture();
+            cx.notify();
+        },
+    );
+    panel.knobs.insert(
+        row.id,
+        Knob {
+            control: control.clone(),
+            _subscription: subscription,
+        },
+    );
+    Some(control)
+}
+
+type KnobDrag = RefCell<Option<(Option<NumericGestureId>, GestureKey)>>;
+
+fn knob_event(
+    view: &mut EditorView,
+    origin: PluginParameterOrigin,
+    event: &NumericControlEvent,
+    steps: u32,
+    drag: &KnobDrag,
+) -> Result<(), &'static str> {
+    let normalized = if steps == 0 {
+        event.value
+    } else {
+        let steps = f64::from(steps);
+        (event.value * steps).round() / steps
+    };
+    let value = PluginParameterValue::new(normalized)?;
+    let mut drag = drag.borrow_mut();
+    if event.phase == NumericEventPhase::Begin {
+        let key = view.device_gesture.begin_plugin(origin)?;
+        *drag = Some((event.gesture.clone(), key));
+        return Ok(());
+    }
+    if event.phase == NumericEventPhase::Commit
+        && event.gesture.is_none()
+        && view.device_gesture.snapshot().is_none()
+    {
+        view.device_gesture.begin_plugin(origin)?;
+        return view.device_gesture.finish_plugin(value);
+    }
+    let Some((pointer, key)) = drag.as_ref() else {
+        return Ok(());
+    };
+    if *pointer != event.gesture
+        || view
+            .device_gesture
+            .snapshot()
+            .is_none_or(|active| active.key != *key)
+    {
+        return Ok(());
+    }
+    match event.phase {
+        NumericEventPhase::Change => view.device_gesture.change_plugin(value).map(|_| ()),
+        NumericEventPhase::Commit => {
+            *drag = None;
+            view.device_gesture.finish_plugin(value)
+        }
+        NumericEventPhase::Cancel => {
+            *drag = None;
+            view.device_gesture.cancel()
+        }
+        NumericEventPhase::Begin => Ok(()),
     }
 }
 
@@ -228,6 +417,12 @@ mod tests {
                 id: 100 + 3 * i as u32,
                 name: name.into(),
                 value: "25%".into(),
+                normalized: 0.25,
+                default_normalized: 0.25,
+                steps: 0,
+                editable: true,
+                page_first: 0,
+                metadata_revision: 1,
             })
             .collect::<Vec<_>>();
         let found = matching_rows(&rows, "filter");

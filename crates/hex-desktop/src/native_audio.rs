@@ -1048,6 +1048,93 @@ impl NativeAudioSink {
     }
 }
 impl WorkerAudioSink for NativeAudioSink {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn prepare_plugin_parameter_gesture(
+        &mut self,
+        input: hex_session::service::PluginParameterGestureInput<'_>,
+    ) -> Result<
+        hex_session::service::PluginParameterGestureResult,
+        hex_session::service::PluginParameterGestureError,
+    > {
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .ok_or_else(|| {
+                hex_session::service::PluginParameterGestureError::SourceLost(
+                    "vst3 output is unavailable".into(),
+                )
+            })?;
+        self.plugins.parameter_gesture(control, input)
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn confirm_plugin_parameter_publication(
+        &mut self,
+        context: AudioSourceContext,
+        acceptance: hex_session::service::ResidentPublicationAcceptance,
+    ) -> Result<(), hex_session::service::PluginParameterGestureError> {
+        use hex_session::service::{
+            PluginParameterGestureError as Error, ResidentPublicationAcceptance,
+        };
+        let ResidentPublicationAcceptance::Submitted {
+            output_identity,
+            audio_revision,
+        } = acceptance
+        else {
+            return Err(Error::SourceLost("vst3 edit lost its audio output".into()));
+        };
+        use std::time::{Duration, Instant};
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let Some(control) = self
+                .output
+                .as_mut()
+                .and_then(|output| output.publication.control())
+                .filter(|control| control.output_identity() == Some(output_identity))
+            else {
+                return Err(Error::SourceLost("vst3 edit lost its audio output".into()));
+            };
+            let status = &control.status;
+            if status.recording_source().is_some_and(|source| {
+                source.output_identity == output_identity
+                    && source.audio_revision == audio_revision
+                    && source.context == context
+            }) {
+                return Ok(());
+            }
+            if let Some((revision, reason)) = status.rejected_revision()
+                && revision == audio_revision
+            {
+                return Err(Error::Refused(format!(
+                    "vst3 edit playback refused · {}",
+                    reason.message()
+                )));
+            }
+            if status.device_fault.load(Acquire)
+                || status.render_fault.load(Acquire)
+                || Instant::now() >= deadline
+            {
+                // The queued graph can still own endpoints. Retire the output
+                // before reporting failure so it cannot later become canonical.
+                self.relinquish_output();
+                return Err(Error::SourceLost(
+                    "vst3 edit lost audio confirmation · restart audio".into(),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn finish_plugin_parameter_commit(
+        &mut self,
+        context: AudioSourceContext,
+        key: hex_session::device_gesture::GestureKey,
+        sequence: u64,
+        accepted: bool,
+    ) {
+        self.plugins
+            .finish_parameter_gesture(context, key, sequence, accepted);
+    }
     fn resident_publication_readiness(
         &mut self,
     ) -> hex_session::service::ResidentPublicationReadiness {

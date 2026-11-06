@@ -1264,3 +1264,120 @@ fn rendered_vst3_instrument_drop_targets_the_instrument_slot_and_shows_editor_to
     fixture.visual.update(|window, _| window.remove_window());
     fixture.visual.run_until_parked();
 }
+
+#[gpui::test]
+#[ignore = "explicit original SDK helper/source receipts required"]
+fn live_vst3_pointer_drag_reaches_native_device_during_playback(cx: &mut gpui::TestAppContext) {
+    const CHILD: &str = "HEX_DESKTOP_TEST_NATIVE_PARAMETER_POINTER";
+    if std::env::var_os(CHILD).is_none() {
+        let files = Files::new();
+        let name = std::thread::current().name().unwrap().to_owned();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "37")
+            .env("HEX_ORIGINAL_RESTORE_TRACE", files.0.join("restore-trace"))
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let _native = native_fixture();
+    let mut fixture = open_browser(
+        cx,
+        2,
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    fixture.activate_to_facts(cx, false);
+    fixture.resume.send(()).unwrap();
+    let revision = fixture.state.revision + 1;
+    until("original VST3 inserted and applied", || {
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        !view.pending
+            && view
+                .applied
+                .is_some_and(|source| source.context.editor_revision == revision)
+    });
+    let initial = fixture.view(cx).state.unwrap().project.clone();
+    let device = initial.main_devices()[0].id();
+    let callback = Arc::clone(&fixture.callback);
+    let window = fixture.window;
+    let mut visual = fixture.visual;
+    let view = |cx: &mut gpui::TestAppContext| {
+        cx.update(|app| hex_ui::plugin_effect_test_view(window, app))
+            .unwrap()
+    };
+    let render = || {
+        let mut pcm = [[0.0; 2]; 256];
+        callback
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .render_native_direct(&mut pcm, &mut [0.0; 512])
+            .unwrap();
+        wait(|| {
+            callback
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .native_workers_idle_on_control()
+                == Some(true)
+        });
+        pcm
+    };
+    click(&mut visual, "main-track-header");
+    let parameters = Box::leak(format!("vst3-parameters-{}", device.value()).into_boxed_str());
+    click(&mut visual, parameters);
+    let knob = Box::leak(format!("vst3-knob-{}-7-knob", device.value()).into_boxed_str());
+    until("actual controller knob paints", || {
+        repaint(cx, &mut visual);
+        assert!(view(cx).error.is_none(), "{:?}", view(cx).error);
+        visual.debug_bounds(knob).is_some()
+    });
+    click(&mut visual, "play or pause · space");
+    for _ in 0..3 {
+        render();
+    }
+    let start = visual.debug_bounds(knob).unwrap().center();
+    let end = gpui::point(start.x, start.y - gpui::px(40.0));
+    let mods = gpui::Modifiers::default();
+    visual.simulate_mouse_down(start, gpui::MouseButton::Left, mods);
+    repaint(cx, &mut visual);
+    visual.simulate_mouse_move(end, gpui::MouseButton::Left, mods);
+    repaint(cx, &mut visual);
+    let mut peak: f32 = 0.0;
+    for _ in 0..6 {
+        std::thread::sleep(Duration::from_millis(5));
+        let pcm = render();
+        peak = peak.max(pcm.iter().map(|frame| frame[0].abs()).fold(0.0, f32::max));
+        repaint(cx, &mut visual);
+    }
+    assert!(
+        peak > 0.30,
+        "original PCM while mouse is still held: {peak}"
+    );
+    assert_eq!(view(cx).state.unwrap().project, initial);
+    visual.simulate_mouse_up(end, gpui::MouseButton::Left, mods);
+    until("pointer release commits one VST3 edit", || {
+        render();
+        repaint(cx, &mut visual);
+        let view = view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        view.state.is_some_and(|state| {
+            state.revision == revision + 1
+                && state.project.device(device).unwrap().state()
+                    != initial.device(device).unwrap().state()
+        })
+    });
+}

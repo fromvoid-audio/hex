@@ -69,7 +69,10 @@ struct SavedEffectFixture {
     old_output: u64,
 }
 fn nondefault_fixture() -> SavedEffectFixture {
-    let (old, files, saved) = fixture(Start::Saved);
+    nondefault_fixture_with_frames(2048)
+}
+fn nondefault_fixture_with_frames(frames: u32) -> SavedEffectFixture {
+    let (old, files, saved) = fixture_with_frames(Start::Saved, frames);
     let device = &saved.project.main_devices()[0];
     let captured = hex_plugin_state::decode(device.state()).unwrap();
     let mut component = captured.component.unwrap().to_vec();
@@ -848,8 +851,15 @@ enum Start {
 }
 
 fn fixture(start: Start) -> (ResidentHarness, Files, Arc<hex_session::service::ViewState>) {
+    fixture_with_frames(start, 2048)
+}
+
+fn fixture_with_frames(
+    start: Start,
+    frames: u32,
+) -> (ResidentHarness, Files, Arc<hex_session::service::ViewState>) {
     let files = Files::new();
-    let wave = files.wav(48_000, 2048);
+    let wave = files.wav(48_000, frames);
     let wave_bytes = fs::read(&wave).unwrap();
     let mut h = ResidentHarness::with_plugins(
         host(),

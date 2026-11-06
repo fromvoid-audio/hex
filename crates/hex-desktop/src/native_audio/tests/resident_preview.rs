@@ -216,6 +216,33 @@ impl WorkerAudioSink for ResidentSink {
     fn toggle_plugin_editor(&mut self, generation: u64, device: u64) -> Result<(), String> {
         self.inner.toggle_plugin_editor(generation, device)
     }
+    fn prepare_plugin_parameter_gesture(
+        &mut self,
+        input: hex_session::service::PluginParameterGestureInput<'_>,
+    ) -> Result<
+        hex_session::service::PluginParameterGestureResult,
+        hex_session::service::PluginParameterGestureError,
+    > {
+        self.inner.prepare_plugin_parameter_gesture(input)
+    }
+    fn confirm_plugin_parameter_publication(
+        &mut self,
+        context: AudioSourceContext,
+        acceptance: hex_session::service::ResidentPublicationAcceptance,
+    ) -> Result<(), hex_session::service::PluginParameterGestureError> {
+        self.inner
+            .confirm_plugin_parameter_publication(context, acceptance)
+    }
+    fn finish_plugin_parameter_commit(
+        &mut self,
+        context: AudioSourceContext,
+        key: hex_session::device_gesture::GestureKey,
+        sequence: u64,
+        accepted: bool,
+    ) {
+        self.inner
+            .finish_plugin_parameter_commit(context, key, sequence, accepted);
+    }
     fn query_plugin_parameters(
         &mut self,
         query: hex_session::service::PluginParameterQuery,
