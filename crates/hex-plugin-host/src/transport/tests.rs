@@ -27,7 +27,7 @@ fn constructor_storage_requires_the_original_pair_and_survives_exchange_and_reti
         storage.data_bytes,
         2 * (QUEUE_CAPACITY * std::mem::size_of::<Block>()
             + std::mem::size_of::<RingBuffer<Block>>())
-            + std::mem::size_of::<AtomicBool>()
+            + std::mem::size_of::<Revocation>()
     );
     assert_eq!((storage.shared_groups, storage.shared_handle_bound), (3, 7));
     for _ in 0..4 {
@@ -51,6 +51,7 @@ fn constructor_storage_requires_the_original_pair_and_survives_exchange_and_reti
         callback.fault().is_none(),
         "revocation is separate from a visited fault"
     );
+    assert_eq!(control.take_callback_fault(), None);
     drop(worker);
     assert_eq!(
         callback.constructor_storage_on_control(&control),
@@ -187,6 +188,10 @@ fn missed_deadline_silences_and_revokes_without_replaying_last_output() {
     assert!(control.is_revoked());
     assert_eq!(worker.complete(late), Err(Fault::Revoked));
     assert!(callback.replies.is_empty());
+    callback.reject(Fault::Protocol);
+    assert_eq!(control.take_callback_fault(), Some(Fault::MissingOutput));
+    assert_eq!(control.take_callback_fault(), None);
+    assert_eq!(callback.fault(), Some(Fault::MissingOutput));
 }
 
 #[test]
@@ -348,6 +353,10 @@ fn bounded_input_validation_and_queue_independent_stop() {
         );
         assert!(control.is_revoked());
         assert_eq!(output, [[0.0; 2]; 8]);
+        assert_eq!(
+            control.take_callback_fault(),
+            fault.filter(|&reason| reason != Fault::Revoked)
+        );
     }
     for q in [0, 257, u16::MAX] {
         assert!(matches!(channel(BINDING, q), Err(Fault::Configuration)));
