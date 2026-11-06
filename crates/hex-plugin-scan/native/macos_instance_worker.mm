@@ -496,12 +496,14 @@ int main(int argc,char** argv) {
                     hex_instance::InputNotes input_notes;
                     std::array<float,wire::max_frames> left{},right{},output_left{},output_right{};
                     float* input_pointers[]={left.data(),right.data()};float* output_pointers[]={output_left.data(),output_right.data()};
-                    AudioBusBuffers input{},output{};input.numChannels=config->inputs;output.numChannels=config->outputs;
+                    AudioBusBuffers input{},output{};
+                    input.numChannels=instance.configuration()->input_channels;output.numChannels=config->outputs;
+                    const auto input_silence=config->inputs?0u:(uint64_t{1}<<input.numChannels)-1;
                     input.channelBuffers32=input_pointers;output.channelBuffers32=output_pointers;
                     ProcessData data{};data.processMode=kRealtime;data.symbolicSampleSize=kSample32;
                     uint64_t live_operation=0;
                     auto live_started=std::chrono::steady_clock::now();
-                    data.numInputs=config->inputs?1:0;data.numOutputs=1;data.inputs=config->inputs?&input:nullptr;data.outputs=&output;
+                    data.numInputs=input.numChannels?1:0;data.numOutputs=1;data.inputs=data.numInputs?&input:nullptr;data.outputs=&output;
                     // A live SDK failure waits only for the next serialized
                     // request to report its error, without another DSP call.
                     // This keeps the failure reply paired with that exchange
@@ -681,7 +683,7 @@ int main(int argc,char** argv) {
                             continue;
                         }
                         if(received!=1) { worker_failure.store(ProtocolFailure);break; }
-                        bool valid=true;output_right.fill(0);input.silenceFlags=0;output.silenceFlags=0;
+                        bool valid=true;output_right.fill(0);input.silenceFlags=input_silence;output.silenceFlags=0;
                         for(size_t n=0;n<packet.frames;++n) {
                             left[n]=wire::sample(packet.bytes.data()+wire::header_size+n*8);
                             right[n]=wire::sample(packet.bytes.data()+wire::header_size+n*8+4);

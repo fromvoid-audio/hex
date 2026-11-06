@@ -1199,18 +1199,21 @@ fn actual_arrangement_instrument_renders_authored_notes_at_compensated_offsets()
     const NAME: &str = "plugin_effects::tests::actual_arrangement_instrument_renders_authored_notes_at_compensated_offsets";
     const CHILD: &str = "HEX_ARRANGEMENT_INSTRUMENT_TEST_CHILD";
     if std::env::var_os(CHILD).is_none() {
-        let result = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", NAME, "--ignored"])
-            .env(CHILD, "1")
-            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "115")
-            .output()
-            .unwrap();
-        assert!(
-            result.status.success() && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
-            "{}\n{}",
-            String::from_utf8_lossy(&result.stdout),
-            String::from_utf8_lossy(&result.stderr),
-        );
+        for variant in ["115", "120"] {
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--ignored"])
+                .env(CHILD, "1")
+                .env("HEX_ORIGINAL_INSTANCE_VARIANT", variant)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success()
+                    && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+                "variant {variant}\n{}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr),
+            );
+        }
         return;
     }
 
