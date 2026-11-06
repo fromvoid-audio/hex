@@ -2504,6 +2504,56 @@ struct MutableInstrumentChunkContext<'a, T: ?Sized> {
     timing: &'a T,
 }
 
+/// Gather canonical Console note onsets for an already selected MIDI route.
+/// Both native and foreign generators consume the same admitted clip template.
+pub(super) fn collect_console_midi_onsets<T: MidiTiming + ?Sized>(
+    midi: &crate::session_inventory::EffectiveSessionMidi<'_>,
+    route: TrackRoute,
+    timing: &T,
+    start: u64,
+    end: u64,
+    spans: &mut MidiSpanBuffer,
+    onsets: &mut MutableOnsetBuffer,
+) -> Result<(), SessionPlaybackError> {
+    let RouteOwner::Session { clip, origin } = route.owner else {
+        return Err(SessionPlaybackError::InvalidCommand);
+    };
+    let prepared = midi
+        .midi_clip_for_track(clip, route.id)
+        .ok_or(SessionPlaybackError::UnknownClip)?;
+    if prepared.track != route.id {
+        return Err(SessionPlaybackError::ClipTrackMismatch);
+    }
+    if !prepared.instrument_enabled() {
+        return Ok(());
+    }
+    prepared
+        .instrument_template()
+        .query_with_origin(origin, timing, start, end, spans)
+        .map_err(SessionPlaybackError::Midi)?;
+    for span in spans.spans() {
+        onsets
+            .push(crate::mutable_instrument::MutableNoteOnset {
+                key: crate::mutable_instrument::MutableOccurrenceKey::new(
+                    prepared.track,
+                    span.clip,
+                    span.note,
+                    span.iteration,
+                    route.current_incarnation,
+                ),
+                onset_beat: span.onset_beat,
+                gate_end_beat: span.gate_end_beat,
+                source_start: span.start_frame,
+                source_gate_end: span.gate_end_frame,
+                pitch: span.pitch,
+                channel: span.channel,
+                velocity: span.velocity,
+            })
+            .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
+    }
+    Ok(())
+}
+
 fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?Sized>(
     context: MutableInstrumentChunkContext<'_, T>,
     index: usize,
@@ -2611,39 +2661,16 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
                 return Err(SessionPlaybackError::MutableInstrumentEvents);
             }
         }
-        RouteOwner::Session { clip, origin } => {
-            let prepared = midi
-                .midi_clip_for_track(clip, track_id)
-                .ok_or(SessionPlaybackError::UnknownClip)?;
-            if prepared.track != routes[index].id {
-                return Err(SessionPlaybackError::ClipTrackMismatch);
-            }
-            if prepared.instrument_enabled() {
-                prepared
-                    .instrument_template()
-                    .query_with_origin(origin, timing, performance_frame, source_end, spans)
-                    .map_err(SessionPlaybackError::Midi)?;
-                for span in spans.spans() {
-                    onsets
-                        .push(crate::mutable_instrument::MutableNoteOnset {
-                            key: crate::mutable_instrument::MutableOccurrenceKey::new(
-                                prepared.track,
-                                span.clip,
-                                span.note,
-                                span.iteration,
-                                routes[index].current_incarnation,
-                            ),
-                            onset_beat: span.onset_beat,
-                            gate_end_beat: span.gate_end_beat,
-                            source_start: span.start_frame,
-                            source_gate_end: span.gate_end_frame,
-                            pitch: span.pitch,
-                            channel: span.channel,
-                            velocity: span.velocity,
-                        })
-                        .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
-                }
-            }
+        RouteOwner::Session { .. } => {
+            collect_console_midi_onsets(
+                &midi,
+                midi_route,
+                timing,
+                performance_frame,
+                source_end,
+                spans,
+                onsets,
+            )?;
         }
         RouteOwner::SessionAudio { .. } | RouteOwner::Silence => {}
     }

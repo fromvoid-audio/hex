@@ -5,6 +5,14 @@ use super::*;
 
 /// The copied worker input reserves 64 combined events per quantum.
 pub(crate) const MAX_FOREIGN_NOTES: usize = 64;
+pub(crate) const FOREIGN_GATE_LIMITS: crate::midi_compile::MutableInstrumentLimits =
+    crate::midi_compile::MutableInstrumentLimits {
+        max_events_per_query: MAX_FOREIGN_NOTES,
+        max_active_occurrences: MAX_FOREIGN_NOTES,
+        max_release_tail_frames: 0,
+        supports_clip_volume: false,
+        steals_releasing_voices: true,
+    };
 
 #[derive(Clone, Copy)]
 pub(crate) struct AuthoredGate {

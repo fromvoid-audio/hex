@@ -1,13 +1,15 @@
-//! Arrangement gate ownership for prepared VST3 generators. The engine owns
+//! Authored route gate ownership for prepared VST3 generators. The engine owns
 //! the bounded note ledger. The audio host owns the worker and accepts or
 //! revokes staged events with the complete physical callback.
-use super::{MAX_TRACKS, PreparedRevision, SessionPlaybackError};
+use super::{
+    MAX_TRACKS, MidiSpanBuffer, PreparedRevision, RouteOwner, SessionPlaybackError, TrackRoute,
+};
 use crate::mutable_instrument::{
     MutableInstrumentRuntimeError, MutableNoteOnset, MutableOccurrence, MutableOccurrenceKey,
     MutableOccurrenceSignature, MutableOnsetBuffer,
     authored_gate::{AuthoredGate, AuthoredGateContext, MAX_FOREIGN_NOTES, stage_authored_gates},
 };
-use crate::{Frame, Track};
+use crate::{Frame, MidiTiming, Track, session_inventory::EffectiveSessionMidi};
 use hex_lattice::{
     ForeignNote, ForeignProcessorNode, ForeignProcessors, NativeInstrumentClock,
     PreparedForeignProcessor, PreparedProcessorFactory,
@@ -20,6 +22,7 @@ struct Ledger {
     notes: Vec<MutableOccurrence>,
     next_id: u64,
     loop_pass: Option<u64>,
+    route: Option<RouteOwner>,
     cut: bool,
 }
 
@@ -204,7 +207,16 @@ impl ForeignArrangement {
                 .ok_or(SessionPlaybackError::RevisionTrackMismatch)? = true;
             plan.requires_clock_continuity |=
                 ledger.loop_pass.is_some() && (cut.playing || ledger.has_held_notes());
-            if !ledger.cut && ledger.loop_pass == Some(cut.loop_pass) {
+            if !ledger.cut
+                && matches!(ledger.route, Some(RouteOwner::Session { .. }))
+                && ledger.has_held_notes()
+            {
+                return Err(INCOMPATIBLE_HANDOFF);
+            }
+            if !ledger.cut
+                && ledger.route == Some(RouteOwner::Arrangement)
+                && ledger.loop_pass == Some(cut.loop_pass)
+            {
                 let track = tracks
                     .get(index)
                     .ok_or(SessionPlaybackError::RevisionTrackMismatch)?;
@@ -252,6 +264,7 @@ impl ForeignArrangement {
             scratch.notes.extend_from_slice(&committed.notes);
             scratch.next_id = committed.next_id;
             scratch.loop_pass = committed.loop_pass;
+            scratch.route = committed.route;
             scratch.cut = committed.cut;
         }
     }
@@ -274,6 +287,7 @@ impl ForeignArrangement {
         index: usize,
         track: &Track,
         context: FrameContext,
+        session: SessionRoute<'_>,
         output: &mut [Frame; 1],
         onsets: &mut MutableOnsetBuffer,
         offset: usize,
@@ -307,11 +321,14 @@ impl ForeignArrangement {
             events.push(ForeignNote::try_from(gate)?);
             Ok(())
         };
-        let wrapped = !ledger.cut
+        let route_changed = ledger.route.is_some_and(|old| old != session.route.owner);
+        let wrapped = session.route.owner == RouteOwner::Arrangement
+            && !route_changed
+            && !ledger.cut
             && ledger
                 .loop_pass
                 .is_some_and(|pass| pass != context.loop_pass);
-        if ledger.cut || wrapped {
+        if ledger.cut || wrapped || route_changed {
             for occurrence in ledger.notes.drain(..).filter(|note| !note.note_off_sent) {
                 emit(AuthoredGate::release_now(occurrence))
                     .map_err(|error| error.render_error())?;
@@ -323,38 +340,55 @@ impl ForeignArrangement {
                 .canonical_track_id()
                 .ok_or(SessionPlaybackError::RevisionTrackMismatch)?;
             onsets.clear();
-            let end = context
-                .arrangement
+            let source_start = match session.route.owner {
+                RouteOwner::Arrangement => context.arrangement,
+                _ => context.performance,
+            };
+            let end = source_start
                 .checked_add(1)
                 .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-            let mut overflow = false;
-            track
-                .for_each_mutable_midi_span(context.arrangement, end, |span| {
-                    if span.start < context.arrangement && !(context.chase || wrapped) {
-                        return;
-                    }
-                    overflow |= onsets
-                        .push(MutableNoteOnset {
-                            key: MutableOccurrenceKey::new(
-                                id,
-                                span.clip,
-                                span.note,
-                                span.iteration,
-                                context.loop_pass,
-                            ),
-                            onset_beat: span.onset_beat,
-                            gate_end_beat: span.gate_end_beat,
-                            source_start: span.start.max(context.arrangement),
-                            source_gate_end: span.gate_end,
-                            pitch: span.pitch,
-                            channel: span.channel,
-                            velocity: span.velocity,
+            match session.route.owner {
+                RouteOwner::Arrangement => {
+                    let mut overflow = false;
+                    track
+                        .for_each_mutable_midi_span(context.arrangement, end, |span| {
+                            if span.start < context.arrangement && !(context.chase || wrapped) {
+                                return;
+                            }
+                            overflow |= onsets
+                                .push(MutableNoteOnset {
+                                    key: MutableOccurrenceKey::new(
+                                        id,
+                                        span.clip,
+                                        span.note,
+                                        span.iteration,
+                                        context.loop_pass,
+                                    ),
+                                    onset_beat: span.onset_beat,
+                                    gate_end_beat: span.gate_end_beat,
+                                    source_start: span.start.max(context.arrangement),
+                                    source_gate_end: span.gate_end,
+                                    pitch: span.pitch,
+                                    channel: span.channel,
+                                    velocity: span.velocity,
+                                })
+                                .is_err();
                         })
-                        .is_err();
-                })
-                .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
-            if overflow {
-                return Err(SessionPlaybackError::MutableInstrumentEvents);
+                        .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
+                    if overflow {
+                        return Err(SessionPlaybackError::MutableInstrumentEvents);
+                    }
+                }
+                RouteOwner::Session { .. } => super::render::collect_console_midi_onsets(
+                    &session.midi,
+                    session.route,
+                    session.timing,
+                    source_start,
+                    end,
+                    session.spans,
+                    onsets,
+                )?,
+                RouteOwner::SessionAudio { .. } | RouteOwner::Silence => {}
             }
             stage_authored_gates(
                 &mut ledger.notes,
@@ -363,7 +397,7 @@ impl ForeignArrangement {
                 AuthoredGateContext {
                     track: Some(id),
                     performance_start: context.performance,
-                    source_start: context.arrangement,
+                    source_start,
                     width: 1,
                     source_age: None,
                     tail_frames: 0,
@@ -377,6 +411,7 @@ impl ForeignArrangement {
             .map_err(|error| error.render_error())?;
         }
         ledger.loop_pass = Some(context.loop_pass);
+        ledger.route = Some(session.route.owner);
         let node = ForeignProcessorNode {
             owner: node.owner,
             device_id: node.device_id,
@@ -394,6 +429,13 @@ impl ForeignArrangement {
             .process_segment_with_notes(node, offset, output, &[], events, Some(clock))
             .map_err(|_| SessionPlaybackError::DeviceRuntime)
     }
+}
+
+pub(super) struct SessionRoute<'a> {
+    pub(super) route: TrackRoute,
+    pub(super) midi: EffectiveSessionMidi<'a>,
+    pub(super) timing: &'a dyn MidiTiming,
+    pub(super) spans: &'a mut MidiSpanBuffer,
 }
 
 fn validate_held_gates(

@@ -30,17 +30,6 @@ impl SessionPlayback {
         &self,
         command: &SessionPlaybackCommand,
     ) -> Result<(), SessionPlaybackError> {
-        if !self.foreign_arrangement.is_empty()
-            && !matches!(
-                command,
-                SessionPlaybackCommand::Play
-                    | SessionPlaybackCommand::Pause
-                    | SessionPlaybackCommand::Stop
-                    | SessionPlaybackCommand::Seek(_)
-            )
-        {
-            return Err(SessionPlaybackError::InvalidCommand);
-        }
         if self.current_sampler_console
             && matches!(
                 command,
@@ -795,6 +784,14 @@ impl SessionPlayback {
             (owner, None) => owner,
             _ => return Err(SessionPlaybackError::InvalidCommand),
         };
+        let has_clip_volume = match next_owner {
+            RouteOwner::Session { clip, .. } => self
+                .revision
+                .session()
+                .midi_clip(clip)
+                .is_some_and(|clip| clip.volume_program().is_some()),
+            _ => false,
+        };
         if next_owner != owner || matches!(target, RouteTarget::Session(_)) {
             self.check_shared_transition_capacity(index, next_owner, moment.target_frame, false)?;
         }
@@ -822,12 +819,19 @@ impl SessionPlayback {
             None
         };
         for destination in 0..self.route_scratch.len() {
-            if self.revision.arrangement().tracks()[destination]
-                .midi_source_index
-                .unwrap_or(destination)
-                != index
-            {
+            let track = &self.revision.arrangement().tracks()[destination];
+            if track.midi_source_index.unwrap_or(destination) != index {
                 continue;
+            }
+            if has_clip_volume
+                && track
+                    .foreign_instrument
+                    .as_ref()
+                    .is_some_and(|node| !node.bypassed)
+            {
+                return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                    "console clip volume is unavailable for vst3 instruments",
+                ));
             }
             if !proven_current
                 && self.shared_source_runtime_index(destination).is_none()
