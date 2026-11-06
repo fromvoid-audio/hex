@@ -451,16 +451,16 @@ class NativeInstanceTests(unittest.TestCase):
 
         session = self.session(variant=115, channels=(0, 2))
         self.assertEqual(session.message()[0], b"HXVIRD05")
-        pairs = [event for identity in range(1, 64)
+        pairs = [event for identity in range(1, 80)
                  for event in ((2, 0x92, 127, identity), (2, 0x82, 0, identity))]
-        send(session, pairs + [(3, 0x92, 127, 64), (4, 0x92, 127, 65)])
+        send(session, pairs + [(3, 0x92, 127, 80), (4, 0x92, 127, 81)])
         magic, reply = session.message()
         self.assertEqual(magic, b"HXVB")
         self.assertEqual(struct.unpack("<16f", reply[64:]),
                          tuple(x for v in [0.] * 3 + [.5] + [1.] * 4 for x in (v, v)))
         session.sequence += 1
         session.frames += 8
-        send(session, [(1, 0x82, 0, 65), (6, 0x82, 0, 64)])
+        send(session, [(1, 0x82, 0, 81), (6, 0x82, 0, 80)])
         magic, reply = session.message()
         self.assertEqual(magic, b"HXVB")
         self.assertEqual(struct.unpack("<16f", reply[64:]),
@@ -469,7 +469,7 @@ class NativeInstanceTests(unittest.TestCase):
         session.frames += 8
         self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (2, 16))
 
-        for notes, version in ((pairs + [(3, 0x92, 127, 64)] * 3, 3),
+        for notes, version in ((pairs + [(3, 0x92, 127, 80)] * 3, 3),
                                (pairs[:64] + [(3, 0x92, 127, 0)], 3),
                                (pairs[:65], 1)):
             with self.subTest(length=len(notes), version=version):

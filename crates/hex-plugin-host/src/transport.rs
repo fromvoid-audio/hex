@@ -32,9 +32,10 @@ pub use storage::{ConstructorStorage, channel_storage_bound};
 
 pub const MAX_FRAMES: usize = 256;
 pub const MAX_EVENTS: usize = 64;
-/// Identified notes can share an instrument input quantum with live releases.
-/// Byte-only messages and all replies keep the smaller generic event bound.
-pub const MAX_IDENTIFIED_INPUT_NOTES: usize = 128;
+/// Reserve 32 hardware MIDI events beside the existing 128 identified notes
+/// for authored playback and computer keys. Byte-only MIDI and replies keep
+/// the smaller generic event bound.
+pub const MAX_IDENTIFIED_INPUT_NOTES: usize = 160;
 pub const QUEUE_CAPACITY: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

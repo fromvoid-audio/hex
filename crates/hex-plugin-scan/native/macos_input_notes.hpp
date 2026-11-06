@@ -13,7 +13,9 @@ using namespace Steinberg;
 using namespace Steinberg::Vst;
 
 inline constexpr size_t LEGACY_INPUT_NOTE_COUNT=64;
-inline constexpr size_t INPUT_NOTE_COUNT=128;
+// Matches the copied identified-note limit in hex-plugin-host. Keep room for
+// the corresponding release set on stopped worker renewal.
+inline constexpr size_t INPUT_NOTE_COUNT=160;
 struct InputNote {
     int32 offset=0;
     int16 channel=0,pitch=0;
