@@ -183,6 +183,9 @@ impl WorkerAudioSink for ResidentSink {
     fn finish_resident_effect_edit(&mut self, context: AudioSourceContext, accepted: bool) {
         self.inner.finish_resident_effect_edit(context, accepted);
     }
+    fn plugin_state_restore_pending(&self, context: AudioSourceContext) -> bool {
+        self.inner.plugin_state_restore_pending(context)
+    }
     fn plugin_state_restore_ready(&self) -> Option<AudioSourceContext> {
         self.inner.plugin_state_restore_ready()
     }

@@ -19,6 +19,8 @@ pub struct Package {
     pub scanner: PathBuf,
     pub receipt: PathBuf,
     pub source: String,
+    /// Combined SHA-256 identity of the verified scanner and native receipt.
+    pub scan_sha256: String,
     pub build: Build,
 }
 
@@ -54,8 +56,10 @@ impl Package {
         let scanner_bytes = read_file(&scanner, MAX_BINARY)?;
         let receipt = relative_file(app, RECEIPT)?;
         let receipt_bytes = read_file(&receipt, MAX_BINARY)?;
-        if evidence["scanner_sha256"] != hash(&scanner_bytes)
-            || evidence["receipt_sha256"] != hash(&receipt_bytes)
+        let scanner_sha256 = hash(&scanner_bytes);
+        let receipt_sha256 = hash(&receipt_bytes);
+        if evidence["scanner_sha256"] != scanner_sha256
+            || evidence["receipt_sha256"] != receipt_sha256
             || macho::inspect(&scanner_bytes, Role::Helper)? != Image::ThinArm64
         {
             return Err("changed or incompatible packaged discovery tools".into());
@@ -86,6 +90,7 @@ impl Package {
             scanner,
             receipt,
             source: source.to_owned(),
+            scan_sha256: hash(format!("{scanner_sha256}{receipt_sha256}").as_bytes()),
             build,
         })
     }

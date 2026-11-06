@@ -225,6 +225,10 @@ impl EditorView {
                 .items_center()
                 .gap(px(3.0))
                 .child(gain_control)
+                .child(self.sample_arm_button(
+                    super::sample_recorder::Arm::Output(hex_engine::OutputCaptureId::Return(id)),
+                    cx,
+                ))
                 .child(
                     return_button(
                         format!("return-mute-{}", id.value()),

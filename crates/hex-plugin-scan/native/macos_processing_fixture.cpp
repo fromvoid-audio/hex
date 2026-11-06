@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include "pluginterfaces/base/ibstream.h"
+#include "pluginterfaces/base/iplugincompatibility.h"
 #ifndef HEX_FIXTURE_RESIDUAL_ECHO
 #define HEX_FIXTURE_RESIDUAL_ECHO 0
 #endif
@@ -371,7 +372,8 @@ public:
 class ProcessingProcessor final : public Processor,public IAudioPresentationLatency {
     const int fault=next_fault;
     const bool multiple_outputs=fault>=128 && fault<=130;
-    const bool midi_instrument=fault==115 || fault==120 || fault==127 || multiple_outputs;
+    const bool silent_input=fault==120 || fault==136;
+    const bool midi_instrument=fault==115 || silent_input || fault==127 || multiple_outputs;
     const int mode=midi_instrument?1:next_mode;
     bool initialized=false, arranged=false, setup=false, active=false;
     std::atomic<bool> processing{false};
@@ -540,7 +542,10 @@ public:
     tresult PLUGIN_API initialize(FUnknown* host) override {
         if (!control() || initialized || !host) return kResultFalse;
         const auto result=Processor::initialize(host);
-        if (result==kResultOk) { initialized=true; ++observed.initialized; }
+        if (result==kResultOk) {
+            initialized=true; ++observed.initialized;
+            if (fault==137) host->addRef(); // simulate a process-lifetime host reference
+        }
         return result;
     }
     tresult PLUGIN_API terminate() override {
@@ -556,7 +561,7 @@ public:
         if (fault==5) return 2;
         if (fault==106 && direction==kInput) return 2;
         if (multiple_outputs && direction==kOutput) return 3;
-        return direction==kInput && mode==1 && fault!=120?0:1;
+        return direction==kInput && mode==1 && !silent_input?0:1;
     }
     tresult PLUGIN_API getBusInfo(MediaType media,BusDirection direction,int32 index,BusInfo& info) override {
         const bool auxiliary=fault==106 && media==kAudio && direction==kInput && index==1;
@@ -566,6 +571,7 @@ public:
         info={};info.mediaType=media;info.direction=direction;info.busType=kMain;
         info.channelCount=media==kEvent?4:(direction==kInput?inputs:outputs);
         if (auxiliary) { info.busType=kAux;info.channelCount=2; }
+        if (fault==136 && media==kAudio && direction==kInput) info.busType=kAux;
         if (extra_output) {
             info.busType=index==1?kAux:kMain;
             info.channelCount=index==1 && fault!=130?1:2;
@@ -591,7 +597,7 @@ public:
         return size==kSample32 || (mode==2 && size==kSample64)?kResultOk:kResultFalse;
     }
     tresult PLUGIN_API setBusArrangements(SpeakerArrangement* in,int32 ni,SpeakerArrangement* out,int32 no) override {
-        if(fault==120) return kResultFalse; // this default is already configured
+        if(silent_input) return kResultFalse; // this default is already configured
         if (!control() || !initialized || active || processing || ni!=(fault==106?2:(mode==1?0:1)) || no!=1 ||
             !out || (ni && !in)) return kInvalidArgument;
         if (fault==106 && in[1]!=SpeakerArr::kStereo) return kResultFalse;
@@ -606,7 +612,7 @@ public:
         return fault==1?kResultFalse:kResultOk; // real refusal can mutate arrangement
     }
     tresult PLUGIN_API setupProcessing(ProcessSetup& request) override {
-        if (!control() || (!arranged && fault!=120 && !multiple_outputs) || active || processing || request.processMode!=kRealtime ||
+        if (!control() || (!arranged && !silent_input && !multiple_outputs) || active || processing || request.processMode!=kRealtime ||
             (request.symbolicSampleSize!=kSample32 && !(mode==2 && request.symbolicSampleSize==kSample64)) ||
             request.maxSamplesPerBlock<1 || request.maxSamplesPerBlock>256 ||
             (request.sampleRate!=44100 && request.sampleRate!=48000 && request.sampleRate!=96000)) return kResultFalse;
@@ -723,12 +729,12 @@ public:
         }
         if (!processing || data.numSamples<1 || data.numSamples>maximum ||
             (midi_instrument?(!event_active || !data.inputEvents):data.inputEvents!=nullptr) ||
-            data.numInputs!=((mode==1 && fault!=120) || (!input && data.numInputs==0)?0:1) ||
+            data.numInputs!=((mode==1 && !silent_input) || (!input && data.numInputs==0)?0:1) ||
             data.numOutputs!=(!output && data.numOutputs==0?0:(multiple_outputs?3:1))) return kInvalidArgument;
         if (data.numInputs && (!data.inputs || data.inputs[0].numChannels!=inputs ||
             (precision==kSample32?!data.inputs[0].channelBuffers32:!data.inputs[0].channelBuffers64)))
             return kInvalidArgument;
-        if (fault==120) {
+        if (silent_input) {
             if (!input || data.numInputs!=1 || data.inputs[0].silenceFlags!=3) return kInvalidArgument;
             for(int32 channel=0;channel<inputs;++channel) for(int32 frame=0;frame<data.numSamples;++frame)
                 if(data.inputs[0].channelBuffers32[channel][frame]!=0) return kInvalidArgument;
@@ -912,9 +918,17 @@ public:
         if (!out) return kInvalidArgument;
         *out=PFactoryInfo("hex original fixtures","https://invalid.example","fixture@invalid.example",0);return kResultOk;
     }
-    int32 PLUGIN_API countClasses() override { return next_fault>=37 && next_fault!=55?2:1; }
+    int32 PLUGIN_API countClasses() override {
+        if (next_fault==138 || next_fault==139) return 3;
+        return next_fault>=37 && next_fault!=55?2:1;
+    }
     tresult PLUGIN_API getClassInfo(int32 index,PClassInfo* out) override {
         if (!out || index<0 || index>=countClasses()) return kInvalidArgument;
+        if (index==2) {
+            const auto category=next_fault==138?kPluginCompatibilityClass:kVstAudioEffectClass;
+            *out=PClassInfo(processing_id,PClassInfo::kManyInstances,category,"hex original shared id");
+            return kResultOk;
+        }
         if(index==1) {*out=PClassInfo(restore_controller_id,PClassInfo::kManyInstances,"Component Controller Class","hex original restore controller");return kResultOk;}
         *out=PClassInfo(processing_id,PClassInfo::kManyInstances,"Audio Module Class","hex original processing fixture");return kResultOk;
     }
@@ -950,7 +964,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>135) return false;next_fault=value;
+        if (value>139) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

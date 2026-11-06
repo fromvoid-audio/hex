@@ -499,6 +499,16 @@ class NativeInstanceTests(unittest.TestCase):
         self.assertEqual((magic, struct.unpack_from("<I", error, 35)[0]), (b"HXVIER01", 8))
         self.assertEqual(self.terminal(malformed, 8)[5:7], (0, 0))
 
+    def test_instrument_with_single_auxiliary_input_renders_midi_with_silence_on_aux(self):
+        session = self.session(variant=136, channels=(0, 2))
+        self.assertEqual(session.message()[0], b"HXVIRD05")
+        for notes, audible in [([], False), ([(0, 0x92, 60, 100)], True),
+                               ([(0, 0x82, 60, 0)], False)]:
+            magic, reply = self.instrument_block(session, notes)
+            self.assertEqual(magic, b"HXVB")
+            self.assertEqual(any(struct.unpack("<16f", reply[64:])), audible)
+        self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (3, 24))
+
     def test_silent_input_instrument_refuses_routed_pcm_and_requires_a_midi_bus(self):
         audio_only = self.session(variant=0, channels=(0, 2))
         self.error(audio_only, 20)
@@ -1033,6 +1043,16 @@ class NativeInstanceTests(unittest.TestCase):
                 self.terminal(session, 7)
                 self.assertEqual(self.observation()[8:11], (1, 1, 1))
 
+    def test_compatibility_class_can_share_processor_cid_but_duplicate_processor_refuses(self):
+        session = self.session(variant=138)
+        self.ready(session, controller=True)
+        self.assertEqual(session.render(8)[2][0], b"HXVB")
+        self.terminal(session, 0, message=session.stop())
+
+        duplicate = self.session(variant=139)
+        self.error(duplicate, 3)
+        self.terminal(duplicate, 3)
+
     def test_class_and_binary_refusals_never_prepare_another_instance(self):
         for change, code in [({"cid": bytes([1])*16}, 3), ({"corrupt_hash": True}, 2)]:
             with self.subTest(change=change):
@@ -1074,6 +1094,13 @@ class NativeInstanceTests(unittest.TestCase):
                 # changed its own state. Neither authorizes setActive/terminate.
                 self.assertEqual(self.observation()[0], 15 if variant == 25 else 7)
                 self.assertEqual(self.observation()[4], 0)
+
+    def test_stopped_instance_with_retained_host_reaps_without_module_unload(self):
+        session = self.session(variant=137)
+        self.ready(session, controller=True)
+        self.assertEqual(session.render(8)[2][0], b"HXVB")
+        self.assertEqual(self.terminal(session, 0, unloaded=False, message=session.stop())[5:7], (1, 8))
+        self.assertEqual(self.observation()[0], 5)  # terminate ran and bundleExit was skipped
 
     def test_refused_module_exit_does_not_claim_unload(self):
         session = self.session(variant=20)

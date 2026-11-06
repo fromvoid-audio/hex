@@ -282,6 +282,12 @@ pub trait WorkerAudioSink: Send {
     ) {
     }
 
+    /// The fresh output's plug-in restoration owns publication for this
+    /// context. Restart must wait for its ready receipt before compiling.
+    fn plugin_state_restore_pending(&self, _context: hex_engine::AudioSourceContext) -> bool {
+        false
+    }
+
     /// A fresh-output owner has restored the unchanged canonical plugin state
     /// through its actual native/endpoint ACKs. The worker may now recompile
     /// that exact context; this scalar transfers no source or graph custody.
