@@ -1572,6 +1572,8 @@ impl EditorView {
             .bg(rgb(name_fill))
             .text_color(rgb(name_text))
             .child(track_name_view);
+        let sample_source =
+            super::sample_recorder::Arm::Output(hex_engine::OutputCaptureId::Track(track_id));
         let resident_layout = self.document_audio_mode == hex_session::DocumentAudioMode::Resident;
         // Empty header gutters bubble to the shared selection/focus owner.
         // Only actual control hit regions stop clicks; row-wide stops make the
@@ -1582,7 +1584,10 @@ impl EditorView {
             div()
                 .id(("compact-track-title", track_id.value()))
                 .w_full()
-                .children([name_area.w_full()])
+                .flex()
+                .items_center()
+                .children([name_area.flex_1().min_w_0()])
+                .child(self.sample_arm_button(sample_source, cx))
         } else if resident_layout {
             let (active_background, active_text) =
                 super::track_gain::activator_colors(!track.muted());
@@ -1716,7 +1721,8 @@ impl EditorView {
                                 .gap(px(2.0))
                                 .child(activator)
                                 .child(solo)
-                                .child(arm),
+                                .child(arm)
+                                .child(self.sample_arm_button(sample_source, cx)),
                         )
                         .child(
                             div()
@@ -1828,7 +1834,8 @@ impl EditorView {
                         view.send_menu_track = next;
                         cx.notify();
                     })),
-                );
+                )
+                .child(self.sample_arm_button(sample_source, cx));
             div()
                 .id(("streaming-track-controls", track_id.value()))
                 .w_full()
@@ -1887,12 +1894,6 @@ impl EditorView {
                 .items_center()
                 .gap(px(2.0))
                 .children([header_content.flex_1().min_w_0()])
-                .child(self.sample_arm_button(
-                    super::sample_recorder::Arm::Output(hex_engine::OutputCaptureId::Track(
-                        track_id,
-                    )),
-                    cx,
-                ))
                 .children(
                     self.track_performance_indicator(hex_engine::OutputCaptureId::Track(track_id)),
                 )
