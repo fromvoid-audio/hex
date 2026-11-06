@@ -11,7 +11,10 @@
 //! flags u8 (playing, beat present), then three reserved zero bytes.
 //! Version5 adds meter/cycle presence flags, two meter bytes, one reserved
 //! zero byte, and two u64 Q32.32 cycle endpoints. Absent fields are zero.
-//! Versions 3–5 carry up to 128 input events only when every event has a note
+//! Version6 uses the 40-byte context and appends one to seven playing-state
+//! changes. Header byte 12 is their count. Each change carries a u16 sample
+//! offset, six reserved zero bytes, and its own 40-byte context.
+//! Versions 3–6 carry up to 128 input events only when every event has a note
 //! ID. The generic event and worker reply contracts remain capped at 64.
 //! These records carry transport data; they do not promise SDK event admission.
 use super::*;
@@ -20,11 +23,13 @@ use std::io::{self, Read, Write};
 pub const HEADER_BYTES: usize = 64;
 const TIMING_BYTES: usize = 24;
 const EXTENDED_TIMING_BYTES: usize = 40;
+const TIMING_CHANGE_BYTES: usize = 8 + EXTENDED_TIMING_BYTES;
 pub const MAX_PACKET_BYTES: usize = HEADER_BYTES
     + MAX_FRAMES * 8
     + MAX_IDENTIFIED_INPUT_NOTES * 12
     + MAX_PARAMETER_POINTS * 16
-    + EXTENDED_TIMING_BYTES;
+    + EXTENDED_TIMING_BYTES
+    + MAX_TIMING_CHANGES * TIMING_CHANGE_BYTES;
 
 fn invalid() -> io::Error {
     io::ErrorKind::InvalidData.into()
@@ -49,7 +54,10 @@ pub fn write(writer: &mut impl Write, block: &Block) -> io::Result<()> {
     }
     let mut packet = [0_u8; MAX_PACKET_BYTES];
     packet[..4].copy_from_slice(b"HXVB");
-    let version = if block
+    let changes = block.timing_changes.as_slice();
+    let version = if !changes.is_empty() {
+        6_u16
+    } else if block
         .timing
         .is_some_and(|timing| timing.meter.is_some() || timing.cycle_beats_raw.is_some())
     {
@@ -72,6 +80,7 @@ pub fn write(writer: &mut impl Write, block: &Block) -> io::Result<()> {
     packet[6..8].copy_from_slice(&block.frames.to_le_bytes());
     packet[8..10].copy_from_slice(&(block.events.len as u16).to_le_bytes());
     packet[10..12].copy_from_slice(&(block.parameters.as_slice().len() as u16).to_le_bytes());
+    packet[12] = changes.len() as u8;
     for (index, value) in [
         block.binding.root,
         block.binding.instance,
@@ -110,35 +119,79 @@ pub fn write(writer: &mut impl Write, block: &Block) -> io::Result<()> {
         offset += 16;
     }
     if let Some(timing) = block.timing {
-        packet[offset..offset + 8].copy_from_slice(&timing.arrangement_frame.to_le_bytes());
-        packet[offset + 8..offset + 16]
-            .copy_from_slice(&timing.arrangement_beat_raw.unwrap_or(0).to_le_bytes());
-        packet[offset + 16..offset + 20].copy_from_slice(
-            &timing
-                .tempo_micro_bpm
-                .map_or(0, std::num::NonZeroU32::get)
-                .to_le_bytes(),
+        let width = timing_width(version);
+        encode_timing(&mut packet[offset..offset + width], timing);
+        offset += width;
+    }
+    for change in changes {
+        packet[offset..offset + 2].copy_from_slice(&change.frame.to_le_bytes());
+        encode_timing(
+            &mut packet[offset + 8..offset + TIMING_CHANGE_BYTES],
+            change.timing,
         );
-        packet[offset + 20] =
-            u8::from(timing.playing) | (u8::from(timing.arrangement_beat_raw.is_some()) << 1);
-        if let Some((numerator, denominator)) = timing.meter {
-            packet[offset + 20] |= 4;
-            packet[offset + 21] = numerator;
-            packet[offset + 22] = denominator;
-        }
-        if let Some((start, end)) = timing.cycle_beats_raw {
-            packet[offset + 20] |= 8;
-            packet[offset + 24..offset + 32].copy_from_slice(&start.to_le_bytes());
-            packet[offset + 32..offset + 40].copy_from_slice(&end.to_le_bytes());
-        }
-        offset += if version == 5 {
-            EXTENDED_TIMING_BYTES
-        } else {
-            TIMING_BYTES
-        };
+        offset += TIMING_CHANGE_BYTES;
     }
     writer.write_all(&packet[..offset])?;
     writer.flush()
+}
+
+fn timing_width(version: u16) -> usize {
+    if version >= 5 {
+        EXTENDED_TIMING_BYTES
+    } else {
+        TIMING_BYTES
+    }
+}
+
+fn encode_timing(bytes: &mut [u8], timing: ProcessTiming) {
+    bytes[..8].copy_from_slice(&timing.arrangement_frame.to_le_bytes());
+    bytes[8..16].copy_from_slice(&timing.arrangement_beat_raw.unwrap_or(0).to_le_bytes());
+    bytes[16..20].copy_from_slice(
+        &timing
+            .tempo_micro_bpm
+            .map_or(0, std::num::NonZeroU32::get)
+            .to_le_bytes(),
+    );
+    bytes[20] = u8::from(timing.playing) | (u8::from(timing.arrangement_beat_raw.is_some()) << 1);
+    if let Some((numerator, denominator)) = timing.meter {
+        bytes[20] |= 4;
+        bytes[21] = numerator;
+        bytes[22] = denominator;
+    }
+    if let Some((start, end)) = timing.cycle_beats_raw {
+        bytes[20] |= 8;
+        bytes[24..32].copy_from_slice(&start.to_le_bytes());
+        bytes[32..40].copy_from_slice(&end.to_le_bytes());
+    }
+}
+
+fn read_timing(reader: &mut impl Read, version: u16) -> io::Result<ProcessTiming> {
+    let mut bytes = [0_u8; EXTENDED_TIMING_BYTES];
+    reader.read_exact(&mut bytes[..timing_width(version)])?;
+    let frame = i64::from_le_bytes(bytes[..8].try_into().map_err(|_| invalid())?);
+    let beat = u64::from_le_bytes(bytes[8..16].try_into().map_err(|_| invalid())?);
+    let tempo = u32::from_le_bytes(bytes[16..20].try_into().map_err(|_| invalid())?);
+    let flags = bytes[20];
+    let start = u64::from_le_bytes(bytes[24..32].try_into().map_err(|_| invalid())?);
+    let end = u64::from_le_bytes(bytes[32..40].try_into().map_err(|_| invalid())?);
+    if flags & !15 != 0
+        || (version < 5 && flags & 12 != 0)
+        || (version == 5 && flags & 12 == 0)
+        || bytes[23] != 0
+        || (flags & 2 == 0 && beat != 0)
+        || (flags & 4 == 0 && bytes[21..23] != [0; 2])
+        || (flags & 8 == 0 && (start != 0 || end != 0))
+    {
+        return Err(invalid());
+    }
+    Ok(ProcessTiming {
+        arrangement_frame: frame,
+        playing: flags & 1 != 0,
+        arrangement_beat_raw: (flags & 2 != 0).then_some(beat),
+        tempo_micro_bpm: std::num::NonZeroU32::new(tempo),
+        meter: (flags & 4 != 0).then_some((bytes[21], bytes[22])),
+        cycle_beats_raw: (flags & 8 != 0).then_some((start, end)),
+    })
 }
 
 /// Read exactly one packet, without allocating or trusting a peer's extent.
@@ -152,11 +205,20 @@ pub fn read(reader: &mut impl Read) -> io::Result<Option<Block>> {
     }
     reader.read_exact(&mut header[1..])?;
     let version = u16::from_le_bytes([header[4], header[5]]);
+    let change_count = if version == 6 {
+        usize::from(header[12])
+    } else {
+        0
+    };
+    let reserved = match version {
+        1 => 10,
+        6 => 13,
+        _ => 12,
+    };
     if &header[..4] != b"HXVB"
-        || !matches!(version, 1..=5)
-        || header[if version == 1 { 10 } else { 12 }..16]
-            .iter()
-            .any(|b| *b != 0)
+        || !matches!(version, 1..=6)
+        || (version == 6 && !(1..=MAX_TIMING_CHANGES).contains(&change_count))
+        || header[reserved..16].iter().any(|b| *b != 0)
     {
         return Err(invalid());
     }
@@ -242,38 +304,20 @@ pub fn read(reader: &mut impl Read) -> io::Result<Option<Block>> {
             .map_err(|_| invalid())?;
     }
     if version >= 4 {
-        let extended = version == 5;
-        let mut bytes = [0_u8; EXTENDED_TIMING_BYTES];
-        reader.read_exact(
-            &mut bytes[..if extended {
-                EXTENDED_TIMING_BYTES
-            } else {
-                TIMING_BYTES
-            }],
-        )?;
-        let frame = i64::from_le_bytes(bytes[..8].try_into().map_err(|_| invalid())?);
-        let beat = u64::from_le_bytes(bytes[8..16].try_into().map_err(|_| invalid())?);
-        let tempo = u32::from_le_bytes(bytes[16..20].try_into().map_err(|_| invalid())?);
-        let flags = bytes[20];
-        let start = u64::from_le_bytes(bytes[24..32].try_into().map_err(|_| invalid())?);
-        let end = u64::from_le_bytes(bytes[32..40].try_into().map_err(|_| invalid())?);
-        if flags & !15 != 0
-            || extended != (flags & 12 != 0)
-            || bytes[23] != 0
-            || (flags & 2 == 0 && beat != 0)
-            || (flags & 4 == 0 && bytes[21..23] != [0; 2])
-            || (flags & 8 == 0 && (start != 0 || end != 0))
-        {
+        block.timing = Some(read_timing(reader, version)?);
+    }
+    for _ in 0..change_count {
+        let mut prefix = [0; 8];
+        reader.read_exact(&mut prefix)?;
+        if prefix[2..] != [0; 6] {
             return Err(invalid());
         }
-        block.timing = Some(ProcessTiming {
-            arrangement_frame: frame,
-            playing: flags & 1 != 0,
-            arrangement_beat_raw: (flags & 2 != 0).then_some(beat),
-            tempo_micro_bpm: std::num::NonZeroU32::new(tempo),
-            meter: (flags & 4 != 0).then_some((bytes[21], bytes[22])),
-            cycle_beats_raw: (flags & 8 != 0).then_some((start, end)),
-        });
+        block
+            .add_timing_change(
+                u16::from_le_bytes([prefix[0], prefix[1]]),
+                read_timing(reader, version)?,
+            )
+            .map_err(|_| invalid())?;
     }
     block
         .valid(binding, frames, block.sequence)

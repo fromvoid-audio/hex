@@ -137,9 +137,9 @@ impl<const CAPACITY: usize> Events<CAPACITY> {
     }
 }
 
-/// Exact Arrangement origin for the first sample of a worker quantum.
+/// Exact Arrangement origin for the first sample of an SDK processing slice.
 /// Optional musical facts come from the same aligned input origin.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ProcessTiming {
     pub arrangement_frame: i64,
     pub playing: bool,
@@ -147,6 +147,33 @@ pub struct ProcessTiming {
     pub tempo_micro_bpm: Option<std::num::NonZeroU32>,
     pub meter: Option<(u8, u8)>,
     pub cycle_beats_raw: Option<(u64, u64)>,
+}
+
+pub const MAX_TIMING_CHANGES: usize = 7;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TimingChange {
+    pub frame: u16,
+    pub timing: ProcessTiming,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct TimingChanges {
+    values: [TimingChange; MAX_TIMING_CHANGES],
+    len: usize,
+}
+
+impl TimingChanges {
+    pub fn as_slice(&self) -> &[TimingChange] {
+        &self.values[..self.len]
+    }
+}
+
+/// The run state is constant throughout one graph segment. Instruments opt
+/// into observing it. Full origin facts are read only at SDK slice starts.
+pub struct SegmentTiming<F> {
+    pub playing: Option<bool>,
+    pub at: F,
 }
 
 impl ProcessTiming {
@@ -170,6 +197,7 @@ pub struct Block {
     pub events: InputEvents,
     pub parameters: Parameters,
     pub timing: Option<ProcessTiming>,
+    pub timing_changes: TimingChanges,
 }
 impl Block {
     fn empty(binding: Binding, quantum: u16) -> Self {
@@ -182,7 +210,40 @@ impl Block {
             events: Events::default(),
             parameters: Parameters::default(),
             timing: None,
+            timing_changes: TimingChanges::default(),
         }
+    }
+
+    fn latest_timing(&self) -> Option<ProcessTiming> {
+        self.timing_changes
+            .as_slice()
+            .last()
+            .map(|change| change.timing)
+            .or(self.timing)
+    }
+
+    fn add_timing_change(&mut self, frame: u16, timing: ProcessTiming) -> Result<(), Fault> {
+        let previous_frame = self
+            .timing_changes
+            .as_slice()
+            .last()
+            .map_or(0, |change| change.frame);
+        if frame <= previous_frame
+            || frame >= self.frames
+            || !timing.is_valid()
+            || self
+                .latest_timing()
+                .is_none_or(|previous| previous.playing == timing.playing)
+        {
+            return Err(Fault::Protocol);
+        }
+        *self
+            .timing_changes
+            .values
+            .get_mut(self.timing_changes.len)
+            .ok_or(Fault::Protocol)? = TimingChange { frame, timing };
+        self.timing_changes.len += 1;
+        Ok(())
     }
     fn valid(&self, binding: Binding, quantum: u16, sequence: u64) -> Result<(), Fault> {
         if self.binding != binding
@@ -208,12 +269,27 @@ impl Block {
         if self.timing.is_some_and(|timing| !timing.is_valid()) {
             return Err(Fault::Protocol);
         }
+        let mut previous = self.timing.map(|timing| TimingChange { frame: 0, timing });
+        for &change in self.timing_changes.as_slice() {
+            if change.frame >= quantum
+                || !change.timing.is_valid()
+                || previous.is_none_or(|prior| {
+                    prior.frame >= change.frame || prior.timing.playing == change.timing.playing
+                })
+            {
+                return Err(Fault::Protocol);
+            }
+            previous = Some(change);
+        }
         Ok(())
     }
 
     fn valid_reply(&self, binding: Binding, quantum: u16, sequence: u64) -> Result<(), Fault> {
         if self.events.len > MAX_EVENTS {
             return Err(Fault::InvalidEvents);
+        }
+        if !self.timing_changes.as_slice().is_empty() {
+            return Err(Fault::Protocol);
         }
         self.valid(binding, quantum, sequence)
     }
@@ -473,11 +549,22 @@ impl Callback {
         parameters: &[ParameterPoint],
         output: &mut [Frame],
     ) -> Result<SegmentReply, Fault> {
-        self.stage_segment_with_timing(frame_offset, input, events, parameters, output, |_| None)
+        self.stage_segment_with_timing(
+            frame_offset,
+            input,
+            events,
+            parameters,
+            output,
+            SegmentTiming {
+                playing: None,
+                at: |_| None,
+            },
+        )
     }
 
-    /// Read clock facts only at a quantum's first input frame. In particular,
-    /// a partial quantum keeps its first segment's timing across callbacks.
+    /// A partial quantum retains the exact first origin and any opted-in
+    /// transport changes across physical callbacks. Copy a new origin only
+    /// when the segment changes the most recent valid playing state.
     pub fn stage_segment_with_timing(
         &mut self,
         frame_offset: usize,
@@ -485,11 +572,11 @@ impl Callback {
         events: &[MidiEvent],
         parameters: &[ParameterPoint],
         output: &mut [Frame],
-        timing_at: impl FnMut(usize) -> Option<ProcessTiming>,
+        timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
     ) -> Result<SegmentReply, Fault> {
         output.fill([0.0; 2]);
         let result =
-            self.stage_segment_inner(frame_offset, input, events, parameters, output, timing_at);
+            self.stage_segment_inner(frame_offset, input, events, parameters, output, timing);
         if let Err(fault) = result {
             output.fill([0.0; 2]);
             return self.fail(fault);
@@ -503,7 +590,7 @@ impl Callback {
         events: &[MidiEvent],
         parameters: &[ParameterPoint],
         output: &mut [Frame],
-        mut timing_at: impl FnMut(usize) -> Option<ProcessTiming>,
+        mut timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
     ) -> Result<SegmentReply, Fault> {
         if self.revoked.load(Acquire) {
             return Err(Fault::Revoked);
@@ -560,13 +647,13 @@ impl Callback {
                 stage.state.input = Block::empty(self.binding, self.quantum);
                 stage.state.input.sequence = sequence;
                 stage.state.input.first_frame = position;
-                stage.state.input.timing = timing_at(index);
-                if stage
-                    .state
-                    .input
-                    .timing
-                    .is_some_and(|timing| !timing.is_valid())
-                {
+                stage.state.input.timing = (timing.at)(index);
+                if stage.state.input.timing.is_some_and(|origin| {
+                    !origin.is_valid()
+                        || timing
+                            .playing
+                            .is_some_and(|playing| origin.playing != playing)
+                }) {
                     return Err(Fault::Protocol);
                 }
                 if sequence >= self.first_reply_sequence {
@@ -574,6 +661,18 @@ impl Callback {
                     reply.valid_reply(self.binding, self.quantum, sequence - 2)?;
                     stage.state.output = reply;
                 }
+            } else if index == 0
+                && let Some(playing) = timing.playing
+                && stage
+                    .state
+                    .input
+                    .latest_timing()
+                    .is_some_and(|prior| prior.playing != playing)
+            {
+                let change = (timing.at)(index)
+                    .filter(|origin| origin.playing == playing)
+                    .ok_or(Fault::Protocol)?;
+                stage.state.input.add_timing_change(offset as u16, change)?;
             }
             stage.state.input.pcm[offset] = *source;
             while let Some(event) = events
