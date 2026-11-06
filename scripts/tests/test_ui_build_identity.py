@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from test_ci_target_storage import reuse_scratch_volume_observations
+from test_ci_target_storage import reuse_fixed_scratch_observations
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("identity_ci", ROOT / "scripts/local-ci.py")
@@ -25,7 +25,7 @@ class UiBuildIdentityTests(unittest.TestCase):
     __hex_shard_early__ = True
 
     def setUp(self):
-        reuse_scratch_volume_observations(self, ci, delivery.ci)
+        reuse_fixed_scratch_observations(self, ci, delivery.ci)
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = self.root = Path(temporary.name).resolve()
