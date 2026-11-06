@@ -389,6 +389,40 @@ fn native_effect_saved_state_restores_fresh_instance_and_nondefault_pcm() {
             "restored source sample {index}"
         );
     }
+    // Restart audio inside the same document, as the editor does after a
+    // degraded worker. The replacement must run the saved sound again.
+    let old = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let restarted = h.run(Request::RestartAudio {
+        project_generation: metadata.context.project_generation,
+        request_id: 1,
+    });
+    assert!(restarted.error.is_none(), "{:?}", restarted.error);
+    assert_eq!(restarted.state.revision, restored.state.revision);
+    assert_eq!(restarted.state.project, restored.state.project);
+    h.release_relinquished_output();
+    h.wait_fresh_output(old);
+    let requested = h.run(Request::RestorePlayback { generation: 1 });
+    assert_eq!(requested.restore_complete, Some(1));
+    let (_, recovered) = h.applied(0);
+    assert_eq!(recovered.context, metadata.context);
+    assert_eq!(
+        h.submitted_observation()
+            .unwrap()
+            .foreign_processor(device_id.value(), expected.type_id()),
+        Some(true)
+    );
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let mut restarted_pcm = Vec::new();
+    for block in 0..6 {
+        restarted_pcm.extend(h.render_plugin_block());
+        wait(|| h.plugin_completed.load(Acquire) > block);
+    }
+    assert_eq!(restarted_pcm, pcm);
     assert_eq!(fs::read(path).unwrap(), original_saved);
     assert_eq!(
         fs::read(files.0.join("mixed-rate.wav")).unwrap(),

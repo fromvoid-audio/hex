@@ -3,6 +3,7 @@ use crate::{Catalog, FailedScan, validate_report};
 use hex_plugin_scan::macos::{
     identity::Bundle,
     package::Package,
+    protocol::WAIT_FOR_PLUGIN_ARG,
     report::{Cleanup, Report},
 };
 use std::{
@@ -11,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU8, Ordering},
     },
     time::{Duration, Instant},
@@ -24,10 +25,14 @@ const CANCELLED: u8 = 1;
 const COMMITTING: u8 = 2;
 const FINISHED: u8 = 3;
 
-/// Per-bundle native scan time, excluding the two-second cleanup allowance.
-/// The range matches the bundled scanner's accepted millisecond argument.
+/// Per-bundle scan deadline. Interactive scans let the native plug-in run
+/// until it returns or the user cancels. The scanner still bounds preflight
+/// and the wait for the helper to exit after its result.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ScanDeadline(u32);
+pub struct ScanDeadline {
+    millis: u32,
+    wait_for_plugin: bool,
+}
 
 impl ScanDeadline {
     /// Reject values the bundled scanner cannot accept.
@@ -35,21 +40,34 @@ impl ScanDeadline {
         if !(1..=30_000).contains(&milliseconds) {
             return Err("scan deadline must be 1 to 30000 milliseconds");
         }
-        Ok(Self(milliseconds))
+        Ok(Self {
+            millis: milliseconds,
+            wait_for_plugin: false,
+        })
+    }
+
+    pub fn interactive() -> Self {
+        Self {
+            wait_for_plugin: true,
+            ..Self::default()
+        }
     }
 
     fn outer_limit(self) -> Duration {
-        Duration::from_millis(u64::from(self.0)) + Duration::from_secs(2)
+        Duration::from_millis(u64::from(self.millis)) + Duration::from_secs(2)
     }
 
     fn expired(self, elapsed: Duration) -> bool {
-        elapsed > self.outer_limit()
+        !self.wait_for_plugin && elapsed > self.outer_limit()
     }
 }
 
 impl Default for ScanDeadline {
     fn default() -> Self {
-        Self(10_000)
+        Self {
+            millis: 10_000,
+            wait_for_plugin: false,
+        }
     }
 }
 
@@ -58,13 +76,17 @@ fn scanner_command(scanner: &Path, module: &Path, deadline: ScanDeadline) -> Com
     command
         .args(["--bundled", "--trust-user-code"])
         .arg(module)
-        .arg(deadline.0.to_string());
+        .arg(deadline.millis.to_string());
+    if deadline.wait_for_plugin {
+        command.arg(WAIT_FOR_PLUGIN_ARG);
+    }
     command
 }
 
 struct Operation {
     phase: AtomicU8,
     scanner_started: AtomicBool,
+    current_module: Mutex<Option<PathBuf>>,
 }
 /// UI/control owner. Dropping a view requests cancellation without waiting.
 pub struct Cancellation(Arc<Operation>);
@@ -73,6 +95,7 @@ impl Default for Cancellation {
         Self(Arc::new(Operation {
             phase: AtomicU8::new(RUNNING),
             scanner_started: AtomicBool::new(false),
+            current_module: Mutex::new(None),
         }))
     }
 }
@@ -89,6 +112,11 @@ impl Cancellation {
             Ok(_) | Err(CANCELLED)
         )
     }
+    /// Bundle currently being inspected or executed, for UI progress only.
+    pub fn current_module(&self) -> Option<PathBuf> {
+        self.0.current_module.lock().ok()?.clone()
+    }
+
     /// Historical observation of this operation's actual outer scanner spawn.
     /// This proves neither current liveness nor native child entry/retirement.
     pub fn has_started_scanner(&self) -> bool {
@@ -102,6 +130,12 @@ impl Drop for Cancellation {
 }
 pub struct Token(Arc<Operation>);
 impl Token {
+    fn set_current_module(&self, path: Option<&Path>) {
+        if let Ok(mut current) = self.0.current_module.lock() {
+            *current = path.map(Path::to_path_buf);
+        }
+    }
+
     fn cancelled(&self) -> bool {
         self.0.phase.load(Ordering::Acquire) == CANCELLED
     }
@@ -246,6 +280,7 @@ impl DiscoveryOutcome {
     }
 }
 fn discover(app: &Path, path: &Path, token: &Token, deadline: ScanDeadline) -> DiscoveryOutcome {
+    token.set_current_module(Some(path));
     let started = Instant::now();
     let mut chain_retired = true; // No child has been started yet.
     let mut failed_scan = None;
@@ -263,6 +298,7 @@ fn discover(app: &Path, path: &Path, token: &Token, deadline: ScanDeadline) -> D
         &mut failed_scan,
     );
     diagnostics.elapsed = started.elapsed();
+    token.set_current_module(None);
     DiscoveryOutcome {
         result,
         chain_retired,
@@ -782,7 +818,7 @@ mod tests {
         assert!(ScanDeadline::from_millis(1).is_ok());
         assert!(ScanDeadline::from_millis(30_000).is_ok());
         let default = ScanDeadline::default();
-        assert_eq!(default.0, 10_000);
+        assert_eq!(default.millis, 10_000);
         assert_eq!(default.outer_limit(), Duration::from_secs(12));
         let deadline = ScanDeadline::from_millis(23_456).unwrap();
         let command = scanner_command(Path::new("/scanner"), Path::new("/test.vst3"), deadline);

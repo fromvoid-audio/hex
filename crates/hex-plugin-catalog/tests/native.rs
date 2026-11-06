@@ -461,7 +461,13 @@ fn cancelled_folder_batch_retires_current_chain_without_publishing_pending_resul
     let package = app();
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     let thread = std::thread::spawn(move || {
-        let result = worker::scan_folders(&catalog, &package, &[root], token);
+        let result = worker::scan_folders_with_deadline(
+            &catalog,
+            &package,
+            &[root],
+            token,
+            worker::ScanDeadline::interactive(),
+        );
         let _ = tx.send(result);
     });
     let deadline = std::time::Instant::now() + Duration::from_secs(8);
@@ -502,6 +508,7 @@ fn cancelled_folder_batch_retires_current_chain_without_publishing_pending_resul
         }
         std::thread::sleep(Duration::from_millis(2));
     }
+    assert_eq!(owner.current_module().as_deref(), Some(first.as_path()));
     if !owner.has_started_scanner() || !owner.cancel() {
         f.1.store(true, Ordering::Release);
         let _ = owner.cancel();
@@ -521,6 +528,7 @@ fn cancelled_folder_batch_retires_current_chain_without_publishing_pending_resul
         }
     };
     thread.join().unwrap();
+    assert!(owner.current_module().is_none());
     // Preserve this isolated fixture if the scanner's final custody cannot be
     // proven, even when the worker itself has returned.
     f.1.store(true, Ordering::Release);
