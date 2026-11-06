@@ -17,6 +17,7 @@ mod editor;
 mod restore;
 use restore::Restore;
 mod edits;
+mod offline_bounce;
 mod reopen;
 mod save;
 use reopen::Reopen;

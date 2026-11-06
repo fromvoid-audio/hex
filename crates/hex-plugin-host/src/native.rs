@@ -266,6 +266,27 @@ impl Pending {
             |_| {},
         )
     }
+    /// Configure a new source in the SDK's offline mode from confirmed state.
+    /// The caller owns it independently of any live processor or output.
+    pub fn prepare_offline_restored_on_control(
+        build: &InstanceBuild,
+        source: Source,
+        preparation: Preparation,
+        state: NativeDeviceState,
+        cancellation: PreparationCancellation,
+        _trust: TrustUserCode,
+    ) -> Result<Self> {
+        Self::prepare_with_restore(
+            build,
+            source,
+            preparation,
+            Some(state),
+            cancellation,
+            |command| {
+                command.arg("--offline");
+            },
+        )
+    }
     fn prepare(
         build: &InstanceBuild,
         source: Source,

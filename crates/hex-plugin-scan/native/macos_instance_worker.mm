@@ -260,8 +260,10 @@ int main(int argc,char** argv) {
     // No SDK entry or protocol/guardian is used by the actual waitable-child
     // preflight. The caller must observe normal direct reap before loading code.
     if(argc==2 && !std::strcmp(argv[1],"--child-custody-probe")) return 0;
-    const bool supervised=argc==2 && !std::strcmp(argv[1],"--supervised");
+    const bool offline=argc==3 && !std::strcmp(argv[2],"--offline");
+    const bool supervised=(argc==2 || offline) && !std::strcmp(argv[1],"--supervised");
     if(argc!=1 && !supervised) return Configuration;
+    const auto process_mode=offline?kOffline:kRealtime;
     // Static lifetime keeps cancellation live through main-thread TLS/atexit
     // cleanup registered by subsequently loaded SDK modules, not just main.
     static CancellationGuardian guardian;
@@ -300,6 +302,7 @@ int main(int argc,char** argv) {
             setup.sample_rate=config->rate;setup.maximum_frames=config->maximum;
             setup.input_channels=config->inputs;setup.output_channels=config->outputs;
             setup.input_enabled=config->inputs!=0;
+            setup.process_mode=process_mode;
             const auto configured=instance.configure(setup);
             if(configured!=hex_instance::ConfigurationResult::Prepared) {
                 failure=setup_failure(configured);throw Refusal{};
@@ -458,7 +461,7 @@ int main(int argc,char** argv) {
                             if(!parameter_input.begin_sdk() || !parameter_output.begin_sdk()) {
                                 error(channel,&*config,Processing);std::_Exit(Processing);
                             }
-                            ProcessData flush{};flush.processMode=kRealtime;flush.symbolicSampleSize=kSample32;
+                            ProcessData flush{};flush.processMode=process_mode;flush.symbolicSampleSize=kSample32;
                             flush.inputParameterChanges=&parameter_input;flush.outputParameterChanges=&parameter_output;
                             phase.store(2,std::memory_order_release);
                             const auto result=instance.flush_idle(flush);
@@ -548,7 +551,7 @@ int main(int argc,char** argv) {
                     input.numChannels=instance.configuration()->input_channels;output.numChannels=config->outputs;
                     const auto input_silence=config->inputs?0u:(uint64_t{1}<<input.numChannels)-1;
                     input.channelBuffers32=input_pointers;output.channelBuffers32=output_pointers;
-                    ProcessData data{};data.processMode=kRealtime;data.symbolicSampleSize=kSample32;
+                    ProcessData data{};data.processMode=process_mode;data.symbolicSampleSize=kSample32;
                     uint64_t live_operation=0;
                     auto live_started=std::chrono::steady_clock::now();
                     data.numInputs=input.numChannels?1:0;data.numOutputs=1;data.inputs=data.numInputs?&input:nullptr;data.outputs=&output;
@@ -699,7 +702,7 @@ int main(int argc,char** argv) {
                                     }
                                     if(!valid || !stage_edits()) { worker_failure.store(ProtocolFailure);break; }
                                     if(!parameter_input.begin_sdk() || !parameter_output.begin_sdk()) { error(channel,&*config,Processing);std::_Exit(Processing); }
-                                    ProcessData flush{};flush.processMode=kRealtime;flush.symbolicSampleSize=kSample32;
+                                    ProcessData flush{};flush.processMode=process_mode;flush.symbolicSampleSize=kSample32;
                                     flush.inputParameterChanges=parameter_input.size()?&parameter_input:nullptr;flush.outputParameterChanges=&parameter_output;
                                     phase.store(2,std::memory_order_release);
                                     const auto result=instance.flush_stopped(flush);

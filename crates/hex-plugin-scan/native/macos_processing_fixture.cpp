@@ -389,6 +389,7 @@ class ProcessingProcessor final : public Processor,public IAudioPresentationLate
     int32 inputs=2,outputs=2,maximum=0,precision=kSample32;
     std::atomic<int32> block{0};
     double sample_rate=0;
+    int32 process_mode=kRealtime;
     std::atomic<float> gain{1};
     uint32 input_latency=0,output_latency=0,restored_latency=0;
     std::array<std::array<double,2>,32> delay{};uint32 delay_cursor=0;
@@ -612,12 +613,14 @@ public:
         return fault==1?kResultFalse:kResultOk; // real refusal can mutate arrangement
     }
     tresult PLUGIN_API setupProcessing(ProcessSetup& request) override {
-        if (!control() || (!arranged && !silent_input && !multiple_outputs) || active || processing || request.processMode!=kRealtime ||
+        if (!control() || (!arranged && !silent_input && !multiple_outputs) || active || processing ||
+            (request.processMode!=kRealtime && request.processMode!=kOffline) ||
             (request.symbolicSampleSize!=kSample32 && !(mode==2 && request.symbolicSampleSize==kSample64)) ||
             request.maxSamplesPerBlock<1 || request.maxSamplesPerBlock>256 ||
             (request.sampleRate!=44100 && request.sampleRate!=48000 && request.sampleRate!=96000)) return kResultFalse;
         ++observed.setups;
         sample_rate=request.sampleRate;maximum=request.maxSamplesPerBlock;precision=request.symbolicSampleSize;
+        process_mode=request.processMode;
         if (fault==3) { sample_rate=12345;return kResultFalse; }
         setup=true;return kResultOk;
     }
@@ -687,7 +690,7 @@ public:
         return fault==122?kNotImplemented:kResultOk;
     }
     tresult PLUGIN_API process(ProcessData& data) override {
-        if (pthread_main_np() || !same_worker() || !active || !std::isfinite(sample_rate) || data.processMode!=kRealtime ||
+        if (pthread_main_np() || !same_worker() || !active || !std::isfinite(sample_rate) || data.processMode!=process_mode ||
             data.symbolicSampleSize!=precision) { ++observed.violations;return kResultFalse; }
         if (!data.numSamples && !data.numInputs && !data.numOutputs && !data.inputs && !data.outputs) {
             if(saturated_editor_drag(fault) && data.inputParameterChanges) {

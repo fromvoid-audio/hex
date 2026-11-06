@@ -155,6 +155,12 @@ pub fn render_arrangement_bounce_with_pages(
 /// error aborts the job before its WAV or model edit can be published.
 pub trait ForeignBounceRenderer {
     fn max_block_frames(&self) -> usize;
+    /// True only when the processor's declared finite tail allowance has
+    /// elapsed since the selected span ended and the engine released its
+    /// source gates. Unknown tails retain the existing finite render cap.
+    fn tail_is_drained(&self, _quiescent_source_frames: u64) -> bool {
+        false
+    }
     fn render_block(
         &mut self,
         playback: &mut SessionPlayback,
@@ -301,6 +307,7 @@ fn render_arrangement_bounce_partitioned(
     let mut rendered = 0;
     let mut quiet_frames = 0_u64;
     let mut tail_quiescent = false;
+    let mut quiet_source_at = None;
     let mut quiet_start = None;
     let mut last_audible_block_end = frames;
     let stopped_quiescent = loop {
@@ -326,10 +333,19 @@ fn render_arrangement_bounce_partitioned(
         }
         if rendered >= frames && include_tails {
             let was_quiescent = tail_quiescent;
-            // The engine's owned runtimes cannot attest an independently
-            // held foreign tail. Render to the existing finite cap and trim
-            // after observing the complete captured signal.
-            tail_quiescent = inputs.foreign.is_none() && playback.arrangement_bounce_is_quiescent();
+            let source_quiescent = playback.arrangement_bounce_is_quiescent();
+            if !source_quiescent {
+                quiet_source_at = None;
+            }
+            tail_quiescent = source_quiescent
+                && inputs.foreign.as_ref().is_none_or(|foreign| {
+                    let since = rendered - *quiet_source_at.get_or_insert(rendered);
+                    foreign.tail_is_drained(since)
+                        && block[..count]
+                            .iter()
+                            .flatten()
+                            .all(|sample| sample.abs() <= BOUNCE_TAIL_SILENCE_PEAK)
+                });
             if !tail_quiescent {
                 quiet_start = None;
             } else if !was_quiescent {
