@@ -118,7 +118,9 @@ pub use device_automation::{
     native_device_automation_target_supported, native_parameter_automation_supported,
     native_parameter_input_target, project_device_automation_target_supported,
 };
-pub use native_parameter_input::NativeParameterApplication;
+// Host control values cross the existing prepared native-input API.
+pub use hex_lattice::{NativeTransientOperation, NativeTransientValue};
+pub use native_parameter_input::{NativeParameterApplication, NativeParameterCapture};
 mod gain_envelope;
 pub use gain_envelope::{
     GainAutomationCapacity, GainAutomationPreview, GainEnvelopeKnot, GainPreviewSegment,
