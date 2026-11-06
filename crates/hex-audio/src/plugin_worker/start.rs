@@ -204,16 +204,20 @@ impl NativeWorker {
         let binding = instance.configuration().binding;
         let quantum = instance.configuration().quantum;
         let prefix = instance.completed_blocks_on_control();
-        let (control, callback, worker) =
-            match channel_from_completed_prefix(binding, quantum, prefix) {
-                Ok(pair) => pair,
-                Err(fault) => {
-                    return Err(NativeWorkerStartFailure::retain_source_on_control(
-                        Error::Protocol(fault.message()),
-                        instance,
-                    ));
-                }
-            };
+        let channel = if instance.configuration().input_channels == 0 {
+            instrument_channel_from_completed_prefix(binding, quantum, prefix)
+        } else {
+            channel_from_completed_prefix(binding, quantum, prefix)
+        };
+        let (control, callback, worker) = match channel {
+            Ok(pair) => pair,
+            Err(fault) => {
+                return Err(NativeWorkerStartFailure::retain_source_on_control(
+                    Error::Protocol(fault.message()),
+                    instance,
+                ));
+            }
+        };
         let cancellation = instance.cancellation_on_control();
         match spawn_processor_with(
             control,
