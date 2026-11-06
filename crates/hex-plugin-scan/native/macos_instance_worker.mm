@@ -129,8 +129,10 @@ struct Module {
     }
     bool close() {
         if(loaded && !opened) return false; // no successful module-entry/factory contract
-        if(factory) { factory->release();factory=nullptr; }
-        if(entered) { if(!exit || !exit()) return false;entered=false; }
+        @autoreleasepool {
+            if(factory) { factory->release();factory=nullptr; }
+            if(entered) { if(!exit || !exit()) return false;entered=false; }
+        }
         if(loaded) { CFBundleUnloadExecutable(bundle);if(CFBundleIsExecutableLoaded(bundle)) return false;loaded=false; }
         if(bundle) { CFRelease(bundle);bundle=nullptr; }
         return true;
@@ -242,11 +244,14 @@ int main(int argc,char** argv) {
     static CancellationGuardian guardian;
     if(supervised && !guardian.start()) return Configuration;
     const int channel=isolate_channel();if(channel<0) return Configuration;
+    Module module;hex_instance::Instance instance;hex_instance::EditorWindow editor;
+    std::optional<wire::Config> config;
+    uint32_t failure=Configuration;bool accepted=false,normal_stop=false;
+    uint64_t blocks=0,frames=0;
+    bool closed=false,unloaded=false;
+    // SDK startup and teardown may autorelease objects with methods in the
+    // bundle. Drain those objects before module close can unmap their code.
     @autoreleasepool {
-        Module module;hex_instance::Instance instance;hex_instance::EditorWindow editor;
-        std::optional<wire::Config> config;
-        uint32_t failure=Configuration;bool accepted=false,normal_stop=false;
-        uint64_t blocks=0,frames=0;
         try {
             auto request=wire::configuration(channel);config.emplace(request);
             const auto restoration=wire::startup(channel,*config);
@@ -849,7 +854,9 @@ int main(int argc,char** argv) {
             { std::lock_guard<std::mutex> lock(startup_mutex);go=true;startup_changed.notify_all(); }
             // Pump the helper main lane, never the Hex callback. Unsupported
             // restart/control requests cannot be silently acknowledged as applied.
-            while(!done.load(std::memory_order_acquire)) {
+            // Foreign timers and controller calls can also autorelease work
+            // on turns that do not visit the editor's AppKit event pump.
+            while(!done.load(std::memory_order_acquire)) @autoreleasepool {
                 try {
                     if(worker_failure.load()) {
                         // The joining worker/guardian owns terminal progress.
@@ -1084,8 +1091,10 @@ int main(int argc,char** argv) {
             }
             error(channel,config?&*config:nullptr,failure);
         }
-        bool closed=false,unloaded=false;
-        try { closed=editor.close() && instance.close();if(closed) unloaded=module.close(); } catch(...) {}
+        try { closed=editor.close() && instance.close(); } catch(...) {}
+    }
+    @autoreleasepool {
+        try { if(closed) unloaded=module.close(); } catch(...) {}
         if(!closed || !unloaded) failure=Teardown;
         if(config) {
             wire::Bytes terminal;config->stamp(terminal);wire::number(terminal,blocks,8);wire::number(terminal,frames,8);

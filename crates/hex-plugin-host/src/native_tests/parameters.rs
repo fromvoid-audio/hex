@@ -925,6 +925,46 @@ fn assert_saturated_editor_drags(variant: u32, drags: usize) {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_sdk_drains_deferred_main_lane_objects_before_unload() {
+    let case = Case::new();
+    let events = case.root.join("module-events");
+    let event_path = events.clone();
+    let setup = case.setup_restore(134);
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        move |command| {
+            setup(command);
+            command.env("HEX_ORIGINAL_INSTANCE_MODULE_EVENTS", event_path);
+        },
+    )
+    .unwrap();
+    fs::write(case.release(), b"trigger a controller timer").unwrap();
+    let until = Instant::now() + Duration::from_secs(1);
+    loop {
+        if fs::read(&events).unwrap() == b"ER" {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "the timer's deferred release must run while the worker is active"
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+    instance
+        .exchange_on_worker(request(instance.configuration(), 0))
+        .unwrap();
+    let retired = instance.stop_and_reap_on_control().unwrap();
+    assert!(retired.status.success());
+    let terminal = retired.terminal.unwrap();
+    assert!(terminal.closed && terminal.unloaded);
+    assert_eq!(fs::read(&events).unwrap(), b"ERCXT");
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_sdk_standalone_edits_keep_the_last_value_at_queue_capacity() {
     use crate::protocol::ParameterEditKind::{Begin, End, Perform};
 
