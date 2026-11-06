@@ -146,6 +146,16 @@ impl<'a, 'b> MeterCapture<'a, 'b> {
     }
 }
 impl CaptureSink for MeterCapture<'_, '_> {
+    fn observes_timing(&self) -> bool {
+        self.downstream
+            .as_ref()
+            .is_some_and(|sink| sink.observes_timing())
+    }
+    fn timing(&mut self, offset: usize, start: u64, frames: usize, map: &crate::PreparedTempoMap) {
+        if let Some(sink) = self.downstream.as_mut() {
+            sink.timing(offset, start, frames, map);
+        }
+    }
     fn selects(&self, id: OutputCaptureId) -> bool {
         self.index(id).is_some()
             || self

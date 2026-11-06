@@ -127,7 +127,7 @@ impl Inputs<'_> {
         context: hex_engine::AudioSourceContext,
     ) -> Result<Snapshot, SessionError> {
         self.prepare_with_gain(
-            project, sink, media, table, transforms, waveforms, None, None, context,
+            project, sink, media, table, transforms, waveforms, None, None, context, None,
         )
     }
     /// Validate a canonical tuning transition before Arc publication. Explicit
@@ -156,6 +156,7 @@ impl Inputs<'_> {
             None,
             Some((source, explicit_tuning)),
             context,
+            None,
         )
     }
     #[allow(clippy::too_many_arguments)] // Compile inputs plus raw-fader and exact canonical tuning source.
@@ -170,6 +171,7 @@ impl Inputs<'_> {
         gain_recording: Option<hex_project::TrackId>,
         tuning_source: Option<(&Project, bool)>,
         context: hex_engine::AudioSourceContext,
+        offline: Option<&dyn super::OfflineBounceSource>,
     ) -> Result<Snapshot, SessionError> {
         if self.shutdown.load(Ordering::Acquire)
             || self
@@ -251,25 +253,29 @@ impl Inputs<'_> {
             })
         };
         let mut invoked = false;
-        let hosted = sink
-            .prepare_resident_effects(
+        let mut compile = |effects: &hex_engine::AudioCandidateEffects<'_, '_>| {
+            if invoked {
+                return Err(hex_engine::Invalid(
+                    "host effect compiler was invoked more than once",
+                ));
+            }
+            invoked = true;
+            prepare(Some(effects))
+        };
+        let hosted = if let Some(offline) = offline {
+            offline.prepare(&mut compile).map(Some)
+        } else {
+            sink.prepare_resident_effects(
                 ResidentEffectPreparation {
                     project,
                     context,
                     restoring_plugin_state: self.restoring_plugin_state,
                     preparing_edit: self.preparing_edit,
                 },
-                &mut |effects| {
-                    if invoked {
-                        return Err(hex_engine::Invalid(
-                            "host effect compiler was invoked more than once",
-                        ));
-                    }
-                    invoked = true;
-                    prepare(Some(effects))
-                },
+                &mut compile,
             )
-            .map_err(SessionError::NativeAudio)?;
+        }
+        .map_err(SessionError::NativeAudio)?;
         let prepared = match (hosted, invoked) {
             (Some(prepared), true) => prepared,
             (None, false) => prepare(None)?,
@@ -1841,6 +1847,7 @@ impl Session {
             Some(track),
             None,
             context,
+            None,
         )?;
         inputs.publish(&mut snapshot, self.project(), sink, context)?;
         Ok(snapshot)

@@ -22,6 +22,9 @@ pub struct ResidentEffectPreparation<'a> {
     pub(in crate::service) preparing_edit: bool,
 }
 impl<'a> ResidentEffectPreparation<'a> {
+    pub fn sample_rate(&self) -> u32 {
+        self.project.sample_rate()
+    }
     pub fn context(&self) -> hex_engine::AudioSourceContext {
         self.context
     }
@@ -93,6 +96,19 @@ impl<'a> ResidentEffectPreparation<'a> {
         }
         Ok(())
     }
+}
+
+/// One private native bounce owner. It supplies exact compile facts before
+/// rendering and is dropped before Session adopts any of the output media.
+pub trait OfflineBounceSource: hex_export::ForeignBounceRenderer {
+    fn retained_data_bytes(&self) -> usize;
+    fn prepare(
+        &self,
+        compile: &mut dyn FnMut(
+            &hex_engine::AudioCandidateEffects<'_, '_>,
+        )
+            -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<hex_engine::PreparedRevision, String>;
 }
 
 fn is_plugin_effect(device: &hex_project::Device) -> bool {
@@ -358,6 +374,17 @@ pub trait WorkerAudioSink: Send {
         )
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<Option<hex_engine::PreparedRevision>, String> {
+        Ok(None)
+    }
+    /// A host with no private offline capability must refuse foreign bounce
+    /// instead of using its live source or publishing unprocessed audio.
+    fn prepare_offline_bounce(
+        &mut self,
+        input: ResidentEffectPreparation<'_>,
+    ) -> Result<Option<Box<dyn OfflineBounceSource>>, String> {
+        if input.requires_plugin_profile() {
+            return Err("offline vst3 bounce unavailable for this host".into());
+        }
         Ok(None)
     }
     /// Rate of the current default interface for an un-authored document.

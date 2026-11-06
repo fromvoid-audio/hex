@@ -239,6 +239,12 @@ impl WorkerAudioSink for ResidentSink {
     ) -> Result<Option<hex_engine::PreparedRevision>, String> {
         self.inner.prepare_resident_effects(input, prepare)
     }
+    fn prepare_offline_bounce(
+        &mut self,
+        input: hex_session::service::ResidentEffectPreparation<'_>,
+    ) -> Result<Option<Box<dyn hex_session::service::OfflineBounceSource>>, String> {
+        self.inner.prepare_offline_bounce(input)
+    }
     fn ordinary_source_reservation(&self) -> Option<hex_session::SourcePlanReservation> {
         self.inner.ordinary_source_reservation()
     }
@@ -577,11 +583,21 @@ impl ResidentHarness {
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
         catalog: PathBuf,
     ) -> Self {
+        Self::with_plugins_at_rate_and_catalog(host, presentation, 48_000, catalog, 8192)
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn with_plugins_at_rate_and_catalog(
+        host: hex_audio::plugin_effects::Hosting,
+        presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
+        rate: u32,
+        catalog: PathBuf,
+        frame_limit: u64,
+    ) -> Self {
         Self::with_plugin_fixture(
-            8192,
+            frame_limit,
             Arc::new(AtomicBool::new(true)),
             4,
-            48_000,
+            rate,
             Some((host, presentation)),
             None,
             Some(catalog),

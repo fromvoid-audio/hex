@@ -4054,6 +4054,7 @@ pub mod midi_template;
 mod mutable_instrument;
 mod prepared_revision;
 mod prepared_tempo;
+pub use prepared_tempo::CaptureTempo;
 mod session_inventory;
 pub mod session_playback;
 mod shared_analytic;

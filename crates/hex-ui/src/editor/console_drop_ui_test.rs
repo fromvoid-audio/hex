@@ -1410,6 +1410,7 @@ fn recorded_take_range_drag_imports_exact_pcm_in_arrangement_and_session(cx: &mu
                 path: path.clone(),
                 frames: 512,
                 sample_rate: 48_000,
+                timing: Default::default(),
             });
             cx.notify();
         });

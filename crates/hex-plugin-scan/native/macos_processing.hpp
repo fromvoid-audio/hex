@@ -19,6 +19,7 @@ struct ProcessingConfiguration {
     int32 input_channels=2, output_channels=2;
     int32 precision=kSample32;
     bool input_enabled=true, output_enabled=true;
+    int32 process_mode=kRealtime;
 };
 enum class ConfigurationResult {
     Prepared, InvalidState, InvalidConfiguration, UnsupportedPrecision,
@@ -31,7 +32,8 @@ inline bool valid_configuration(const ProcessingConfiguration& c) {
     return std::isfinite(c.sample_rate) && c.sample_rate>0 && c.sample_rate<=768000 &&
         c.maximum_frames>=1 && c.maximum_frames<=8192 &&
         c.input_channels>=0 && c.input_channels<=2 && c.output_channels>=1 && c.output_channels<=2 &&
-        (c.input_channels!=0 || !c.input_enabled);
+        (c.input_channels!=0 || !c.input_enabled) &&
+        (c.process_mode==kRealtime || c.process_mode==kOffline);
 }
 inline SpeakerArrangement arrangement(int32 channels) {
     return channels==1?SpeakerArr::kMono:SpeakerArr::kStereo;
@@ -111,7 +113,7 @@ inline bool partial_overlap(const float* a,const float* b,int32 frames) {
     return left<right+bytes && right<left+bytes;
 }
 inline bool processing_data(const ProcessingConfiguration& c,const ProcessData& data) {
-    if (data.processMode!=kRealtime || data.symbolicSampleSize!=kSample32 ||
+    if (data.processMode!=c.process_mode || data.symbolicSampleSize!=kSample32 ||
         data.numSamples<1 || data.numSamples>c.maximum_frames ||
         !bus_buffers(data.inputs,data.numInputs,c.input_channels,c.input_enabled) ||
         !bus_buffers(data.outputs,data.numOutputs,c.output_channels,c.output_enabled)) return false;
