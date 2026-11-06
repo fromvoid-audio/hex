@@ -24,6 +24,11 @@
 //! dense reconstructed-output tests cover modulation and intersample peaks;
 //! this finite model does not prove every DAC's continuous-time behavior or
 //! acoustic identity with Live's unpublished reconstruction/release laws.
+//! The detector reconstructs the pre-gain input, so gain that moves inside the
+//! detector window can create untracked intersample peaks. On gated-burst
+//! fixtures the standard BS.1770-4 4x meter reads up to about +0.25 dB above
+//! the ceiling (tests bound it at +0.3 dB) and ideal reconstruction reads
+//! higher; an output-aware gain path is required to remove this.
 //!
 //! M/s uses one independently linked encoded stage followed by a fully linked
 //! l/r safety stage after decoding, so arbitrary stereo signals respect the
@@ -34,6 +39,9 @@
 //! Both stages' delays are declared. No final
 //! hard clamp is used. Histories, queues and telemetry commit atomically; buffer
 //! copies are bounded by the prepared rate/lookahead, not callback duration.
+//! Metering carries the first-stage linear attenuation with its delayed sample,
+//! combines the final-stage and shaper factors for that same sample, and converts
+//! each process call's minimum to dB. Each factor retains the 1e-30 floor.
 //!
 //! Closed transactions at the same rate retain full history for a compatible
 //! layout, including silent attenuation and parameter ramps. A layout change
@@ -51,10 +59,12 @@ use std::any::Any;
 
 const TAPS: usize = 32;
 const PHASES: usize = 32;
+// Zero is the untouched-slot sentinel for unity. Every stored first-stage
+// factor is floored at 1e-30, so it remains strictly positive in f32.
 #[derive(Clone, Copy, Default)]
 struct Sample {
     signal: [f64; 2],
-    reduction: [f32; 2],
+    attenuation: [f32; 2],
     detector: [f64; 2],
 }
 #[derive(Clone, Copy, Default)]
@@ -164,7 +174,7 @@ impl Stage {
         config: &Config,
         link: f64,
         physical_guard: bool,
-    ) -> Sample {
+    ) -> (Sample, [f64; 2]) {
         let s = &mut self.scalar;
         s.input[s.input_next] = sample.signal;
         s.input_next = (s.input_next + 1) % TAPS;
@@ -263,14 +273,16 @@ impl Stage {
         }
         for (lane, gain) in applied.into_iter().enumerate() {
             delayed.signal[lane] *= gain;
-            delayed.reduction[lane] += reduction(gain);
         }
         s.stamp = s.stamp.wrapping_add(1);
-        delayed
+        (delayed, applied)
     }
 }
-fn reduction(gain: f64) -> f32 {
-    (-20.0 * gain.max(1e-30).log10()).max(0.0) as f32
+fn reduction(attenuation: f64) -> f32 {
+    (-20.0 * attenuation.log10()).max(0.0) as f32
+}
+fn meter_factor(gain: f64) -> f64 {
+    if gain > 1.0 { 1.0 } else { gain.max(1e-30) }
 }
 fn amplitude(db: f32) -> f64 {
     10.0_f64.powf(f64::from(db) / 20.0)
@@ -385,6 +397,9 @@ impl Factory {
     }
 }
 impl PreparedOwnedProcessorRuntime for Factory {
+    fn reserved_bypass_latency_frames(&self) -> Option<u32> {
+        Some(self.config.latency())
+    }
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -495,6 +510,8 @@ impl OwnedProcessorRuntime for Runtime {
         }
         let config = &self.config;
         let history = &mut self.scratch;
+        let mut post_input_peak = 0.0_f64;
+        let mut min_attenuation = [1.0_f64; 2];
         for frame in frames {
             // Compatible edits ramp input/output gain over 5 ms. A falling ceiling
             // is immediate, preserving its safety invariant on the first sample.
@@ -509,10 +526,11 @@ impl OwnedProcessorRuntime for Runtime {
                     0.0
                 }
             });
+            post_input_peak = post_input_peak.max(signal[0].abs()).max(signal[1].abs());
             if config.mid_side {
                 signal = [(signal[0] + signal[1]) * 0.5, (signal[0] - signal[1]) * 0.5];
             }
-            let mut sample = history.first.process(
+            let (mut sample, first_gain) = history.first.process(
                 Sample {
                     signal,
                     ..Sample::default()
@@ -521,12 +539,24 @@ impl OwnedProcessorRuntime for Runtime {
                 config.link,
                 false,
             );
+            let mut attenuation = first_gain.map(meter_factor);
             if let Some(final_stage) = &mut history.final_stage {
+                // The final stage delays this exact first-stage factor together
+                // with its signal; its own factor is applied only on output.
+                sample.attenuation = attenuation.map(|gain| gain as f32);
                 sample.signal = [
                     sample.signal[0] + sample.signal[1],
                     sample.signal[0] - sample.signal[1],
                 ];
-                sample = final_stage.process(sample, config, 1.0, true);
+                let (delayed, final_gain) = final_stage.process(sample, config, 1.0, true);
+                sample = delayed;
+                attenuation = std::array::from_fn(|lane| {
+                    (if sample.attenuation[lane] == 0.0 {
+                        1.0
+                    } else {
+                        f64::from(sample.attenuation[lane])
+                    }) * meter_factor(final_gain[lane])
+                });
             }
             if config.soft_clip {
                 let ratios = sample.signal.map(|v| {
@@ -550,14 +580,33 @@ impl OwnedProcessorRuntime for Runtime {
                     .any(|v| v.abs() > config.output_ceiling);
                 for (lane, ratio) in ratios.into_iter().enumerate() {
                     sample.signal[lane] *= ratio;
-                    sample.reduction[lane] += reduction(ratio);
+                    attenuation[lane] *= meter_factor(ratio);
                 }
             }
             *frame = sample.signal.map(|v| (v * history.output) as f32);
             for lane in 0..2 {
-                history.meter.reduction_db[lane] =
-                    history.meter.reduction_db[lane].max(sample.reduction[lane]);
+                min_attenuation[lane] = min_attenuation[lane].min(attenuation[lane]);
             }
+        }
+        history.meter.post_input_peak = history.meter.post_input_peak.max(post_input_peak as f32);
+        for (lane, attenuation) in min_attenuation.into_iter().enumerate() {
+            history.meter.reduction_db[lane] =
+                history.meter.reduction_db[lane].max(reduction(attenuation));
+        }
+    }
+    fn process_bypassed_block_with_clock(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        resources: &dyn hex_lattice::DeviceResources,
+    ) {
+        // Bounded stack scratch preserves dry input without allocating, even
+        // when the host supplies an arbitrarily large segment.
+        let mut scratch = [[0.0; 2]; 256];
+        for chunk in frames.chunks(256) {
+            let work = &mut scratch[..chunk.len()];
+            work.copy_from_slice(chunk);
+            self.process_block(work, resources);
         }
     }
     fn commit_block(&mut self) {

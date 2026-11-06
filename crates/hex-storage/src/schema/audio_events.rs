@@ -123,6 +123,10 @@ pub(crate) fn encode(project: &Project) -> Result<Document<'_>, StorageError> {
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     decode_version(bytes, 28)
 }
+/// Decode an already duplicate-checked schema28 envelope.
+pub(super) fn decode_value(value: serde_json::Value) -> Result<Project, StorageError> {
+    decode_version_value(value, 28)
+}
 // Preserve the pre-integration event-only schema27 lineage without accepting
 // mixed appearance/event metadata under an ambiguous old version.
 pub(crate) fn decode_legacy(bytes: &[u8]) -> Result<Project, StorageError> {
@@ -137,8 +141,12 @@ pub(super) fn decode_historical(bytes: &[u8], version: u32) -> Result<Project, S
     decode_version(bytes, u64::from(version))
 }
 fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
-    let _: UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    decode_version_value(parse_unique(bytes)?, version)
+}
+fn decode_version_value(
+    mut value: serde_json::Value,
+    version: u64,
+) -> Result<Project, StorageError> {
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid audio event envelope"))?;
@@ -158,11 +166,10 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("audio event state limit reached"));
     }
     object.insert("version".into(), (version - 1).into());
-    let bytes = serde_json::to_vec(&value)?;
     let base = match version {
-        26 => super::musical_audio::DocumentV25::decode(&bytes)?,
-        27 => super::clip_names::DocumentV26::decode(&bytes)?,
-        28 => super::appearance::DocumentV27::decode(&bytes)?,
+        26 => super::musical_audio::DocumentV25::decode_value(value)?,
+        27 => super::clip_names::DocumentV26::decode_value(value)?,
+        28 => super::appearance::DocumentV27::decode_value(value)?,
         _ => return Err(StorageError::Invalid("invalid audio event version")),
     };
     let mut snapshot = base.snapshot();
@@ -193,6 +200,7 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
                         .into_iter()
                         .map(|e| AudioEvent {
                             active: true,
+                            gain: hex_project::ClipGain::UNITY,
                             source: 0,
                             id: e.id,
                             start: e.start,
@@ -223,6 +231,15 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
 // token stream before adapting the versioned envelope so strict historical
 // parsing cannot accidentally accept an ambiguous document.
 pub(super) struct UniqueKeys;
+
+/// Parse a document once for the migration chain: check the original token
+/// stream for duplicate fields, then build the single `Value` every frozen
+/// layer adapts in place. Layers hand that value down instead of re-serializing
+/// it; a `Value` cannot hold duplicate fields, so no later recheck is needed.
+pub(super) fn parse_unique(bytes: &[u8]) -> Result<serde_json::Value, StorageError> {
+    let _: UniqueKeys = serde_json::from_slice(bytes)?;
+    Ok(serde_json::from_slice(bytes)?)
+}
 impl<'de> Deserialize<'de> for UniqueKeys {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         struct Visitor;

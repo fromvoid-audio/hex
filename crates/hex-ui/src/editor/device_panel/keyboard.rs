@@ -1,14 +1,34 @@
 //! Device-selection keys own only the directly focused card, never its editors.
 //! C/zero read live canonical bypass and use the same terminal barrier as pointer
 //! bypass; rendered generation/owner/type identity refuses retired card handlers.
+//! Left/right step the selection through the chain, and paste targets a chosen
+//! insertion gap, else the position after the selection.
 use super::*;
 use crate::diagnostics::ActionTraceContext as _;
 use gpui::{FocusHandle, KeyBinding};
 
-gpui::actions!(hex_device_selection, [RemoveSelectedDevice]);
+gpui::actions!(
+    hex_device_selection,
+    [
+        RemoveSelectedDevice,
+        RemoveSelectedDeviceX,
+        CopyDevices,
+        CutDevices,
+        PasteDevices,
+        SelectPreviousDevice,
+        SelectNextDevice
+    ]
+);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DeleteKey {
+    Backspace,
+    X,
+}
 
 #[derive(Clone, Copy)]
 pub(super) struct RefusedDelete {
+    key: DeleteKey,
     generation: u64,
     owner: Option<DevicePanelOwner>,
     device: DeviceId,
@@ -52,11 +72,129 @@ pub(super) fn after_pointer_removal(
 }
 
 pub(in crate::editor) fn bind_keys(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new(
-        "backspace",
-        RemoveSelectedDevice,
-        Some("hex_device_selection"),
-    )]);
+    cx.bind_keys([
+        KeyBinding::new(
+            "backspace",
+            RemoveSelectedDevice,
+            Some("hex_device_selection"),
+        ),
+        KeyBinding::new(
+            "x",
+            RemoveSelectedDeviceX,
+            Some("hex_device_selection && !hex_text_editing && !hex_text_input && !hex_response_graph_remove"),
+        ),
+        KeyBinding::new("cmd-c", CopyDevices, Some("hex_device_selection")),
+        KeyBinding::new("cmd-x", CutDevices, Some("hex_device_selection")),
+        KeyBinding::new("cmd-v", PasteDevices, Some("hex_device_selection")),
+        // Deeper than the editor's clip/session arrows; nested controls that
+        // own focus receive them through propagation.
+        KeyBinding::new("left", SelectPreviousDevice, Some("hex_device_selection")),
+        KeyBinding::new("right", SelectNextDevice, Some("hex_device_selection")),
+    ]);
+}
+
+#[derive(Clone, Copy)]
+enum ClipboardIntent {
+    Copy,
+    Cut,
+    Paste,
+}
+
+fn clipboard(
+    view: &mut EditorView,
+    intent: ClipboardIntent,
+    window: &mut Window,
+    cx: &mut Context<EditorView>,
+) {
+    use hex_session::service::DeviceClipboardAction as Action;
+    if view.edit_pending() || view.export_pending || view.device_panel.has_pending_draft(cx) {
+        view.error = Some("finish pending edits before copying devices".into());
+        cx.notify();
+        return;
+    }
+    let Some(owner) = view.device_panel.owner else {
+        return;
+    };
+    let Some(state) = view.state.as_ref() else {
+        return;
+    };
+    if selected_owner(view, state) != Some(owner) {
+        return;
+    }
+    let order = chain_ids(&state.project, owner);
+    let selected: Vec<_> = order
+        .iter()
+        .copied()
+        .filter(|id| view.device_panel.is_selected(*id))
+        .collect();
+    let before = view
+        .device_panel
+        .insertion_before(&order)
+        .unwrap_or_else(|| {
+            order
+                .iter()
+                .rposition(|id| selected.contains(id))
+                .and_then(|index| order.get(index + 1).copied())
+        });
+    let action = match intent {
+        ClipboardIntent::Copy | ClipboardIntent::Cut => {
+            let Ok(selected) = hex_project::DeviceSelectionIds::new(&selected) else {
+                return;
+            };
+            match intent {
+                ClipboardIntent::Copy => Action::Copy {
+                    owner: project_owner(owner),
+                    selected,
+                },
+                ClipboardIntent::Cut => Action::Cut {
+                    owner: project_owner(owner),
+                    selected,
+                },
+                ClipboardIntent::Paste => return,
+            }
+        }
+        ClipboardIntent::Paste => Action::Paste {
+            owner: project_owner(owner),
+            before,
+        },
+    };
+    let request = Request::DeviceClipboard {
+        project_generation: view.project_generation,
+        revision: state.revision,
+        action,
+    };
+    if view.enqueue(request) && matches!(intent, ClipboardIntent::Cut) {
+        view.device_panel
+            .chain_window
+            .selection_focus(cx)
+            .focus(window);
+    }
+    cx.notify();
+}
+
+/// Select the neighboring device and move keyboard focus to its card.
+/// Selection is view state; no parameter draft is finalized or dispatched.
+fn step(view: &mut EditorView, forward: bool, window: &mut Window, cx: &mut Context<EditorView>) {
+    let Some(owner) = view.device_panel.owner else {
+        return;
+    };
+    let Some(state) = view.state.as_ref() else {
+        return;
+    };
+    if selected_owner(view, state) != Some(owner) {
+        return;
+    }
+    let order = chain_ids(&state.project, owner);
+    let Some(device) = view.device_panel.step_target(&order, forward) else {
+        return;
+    };
+    view.device_panel.select_only(Some(device));
+    view.device_panel.chain_window.reveal(device);
+    view.device_panel
+        .chain_window
+        .focus(device, cx)
+        .focus(window);
+    cx.notify();
 }
 
 pub(super) fn rail(view: &mut EditorView, cx: &Context<EditorView>, rail: Div) -> Div {
@@ -65,6 +203,69 @@ pub(super) fn rail(view: &mut EditorView, cx: &Context<EditorView>, rail: Div) -
         .key_context("hex_device_selection")
         // Other actions, including Undo and transport, still reach the editor.
         .on_action(cx.trace(|_, _: &RemoveSelectedDevice, _, cx| cx.stop_propagation()))
+        .on_action(cx.trace(|_, _: &RemoveSelectedDeviceX, _, cx| cx.stop_propagation()))
+        .on_action(cx.trace(|view, _: &CopyDevices, window, cx| {
+            if view
+                .device_panel
+                .chain_window
+                .selection_focus(cx)
+                .is_focused(window)
+            {
+                clipboard(view, ClipboardIntent::Copy, window, cx);
+            } else {
+                cx.propagate();
+            }
+        }))
+        .on_action(cx.trace(|view, _: &CutDevices, window, cx| {
+            if view
+                .device_panel
+                .chain_window
+                .selection_focus(cx)
+                .is_focused(window)
+            {
+                clipboard(view, ClipboardIntent::Cut, window, cx);
+            } else {
+                cx.propagate();
+            }
+        }))
+        .on_action(cx.trace(|view, _: &PasteDevices, window, cx| {
+            if view
+                .device_panel
+                .chain_window
+                .selection_focus(cx)
+                .is_focused(window)
+            {
+                clipboard(view, ClipboardIntent::Paste, window, cx);
+            } else {
+                cx.propagate();
+            }
+        }))
+        .on_action(
+            cx.trace(|view, _: &SelectPreviousDevice, window, cx| {
+                rail_step(view, false, window, cx)
+            }),
+        )
+        .on_action(
+            cx.trace(|view, _: &SelectNextDevice, window, cx| rail_step(view, true, window, cx)),
+        )
+}
+
+fn rail_step(
+    view: &mut EditorView,
+    forward: bool,
+    window: &mut Window,
+    cx: &mut Context<EditorView>,
+) {
+    if view
+        .device_panel
+        .chain_window
+        .selection_focus(cx)
+        .is_focused(window)
+    {
+        step(view, forward, window, cx);
+    } else {
+        cx.propagate();
+    }
 }
 
 /// Observe release even after focus moved from the neutral rail into text.
@@ -75,7 +276,17 @@ pub(in crate::editor) fn key_up(
     window: &mut Window,
     cx: &mut Context<EditorView>,
 ) {
-    if event.keystroke.key != "backspace" {
+    let key = match event.keystroke.key.as_str() {
+        "backspace" => DeleteKey::Backspace,
+        "x" => DeleteKey::X,
+        _ => return,
+    };
+    if !view
+        .device_panel
+        .chain_window
+        .refused_delete
+        .is_some_and(|intent| intent.key == key)
+    {
         return;
     }
     let Some(intent) = view.device_panel.chain_window.refused_delete.take() else {
@@ -147,6 +358,81 @@ fn removal(
     }
 }
 
+fn remove_selected_device(
+    view: &mut EditorView,
+    intent: RefusedDelete,
+    focus: &FocusHandle,
+    window: &mut Window,
+    cx: &mut Context<EditorView>,
+) {
+    let RefusedDelete {
+        generation,
+        owner,
+        device,
+        ..
+    } = intent;
+    cx.stop_propagation();
+    if !focus.is_focused(window) {
+        return;
+    }
+    if generation != view.project_generation
+        || owner != view.device_panel.owner
+        || view.device_panel.selected_device != Some(device)
+        || !view.clip_view_open
+        || !view.device_panel_active
+        || view.device_panel.chain_window.refused_delete.is_some()
+    {
+        suspend_until_release(view, intent, focus, window, cx);
+        return;
+    }
+    if !view.device_panel.selected_others.is_empty() {
+        view.error = Some("select one device to remove it".into());
+        suspend_until_release(view, intent, focus, window, cx);
+        cx.notify();
+        return;
+    }
+    // Refuse unrelated work; an active numeric gesture may be finalized
+    // through its existing terminal barrier before this exact removal.
+    if view.opening_project
+        || view.close_prompt_open
+        || view.gain_recorder.blocks_edits()
+        || !view.pending_requests.is_empty()
+        || !view.device_gesture_barriers.is_empty()
+        || view.worker_requests_pending > 1
+        || (view.worker_requests_pending != 0 && view.device_gesture.snapshot().is_none())
+    {
+        view.error = Some("finish pending edits before removing the selected device".into());
+        suspend_until_release(view, intent, focus, window, cx);
+        cx.notify();
+        return;
+    }
+    let command = owner.and_then(|owner| {
+        view.state
+            .as_ref()
+            .and_then(|state| removal(&state.project, owner, device))
+    });
+    let Some(command) = command else {
+        suspend_until_release(view, intent, focus, window, cx);
+        return;
+    };
+    if finalize_controls(view, cx) {
+        // Canonical reconciliation clears selection only after removal.
+        // Pending work refuses repeat; no next device is selected.
+        if view.enqueue_device_barrier(Request::Edit(command)) {
+            view.device_panel.chain_window.refused_delete = None;
+            view.device_panel
+                .chain_window
+                .selection_focus(cx)
+                .focus(window);
+        } else {
+            suspend_until_release(view, intent, focus, window, cx);
+        }
+    } else {
+        suspend_until_release(view, intent, focus, window, cx);
+    }
+    cx.notify();
+}
+
 pub(super) fn card(
     view: &EditorView,
     cx: &mut Context<EditorView>,
@@ -157,15 +443,57 @@ pub(super) fn card(
     let generation = view.project_generation;
     let owner = view.device_panel.owner;
     let intent = RefusedDelete {
+        key: DeleteKey::Backspace,
         generation,
         owner,
         device,
     };
+    let x_focus = focus.clone();
     let toggle_focus = focus.clone();
     let type_id = view.state.as_ref().and_then(|state| {
         owned_device(&state.project, owner?, device).map(|item| item.state().type_id())
     });
+    let copy_focus = focus.clone();
+    let cut_focus = focus.clone();
+    let paste_focus = focus.clone();
+    let previous_focus = focus.clone();
+    let next_focus = focus.clone();
     card.key_context("hex_device_selection")
+        .on_action(cx.trace(move |view, _: &SelectPreviousDevice, window, cx| {
+            if previous_focus.is_focused(window) {
+                step(view, false, window, cx);
+            } else {
+                cx.propagate();
+            }
+        }))
+        .on_action(cx.trace(move |view, _: &SelectNextDevice, window, cx| {
+            if next_focus.is_focused(window) {
+                step(view, true, window, cx);
+            } else {
+                cx.propagate();
+            }
+        }))
+        .on_action(cx.trace(move |view, _: &CopyDevices, window, cx| {
+            if copy_focus.is_focused(window) {
+                clipboard(view, ClipboardIntent::Copy, window, cx);
+            } else {
+                cx.propagate();
+            }
+        }))
+        .on_action(cx.trace(move |view, _: &CutDevices, window, cx| {
+            if cut_focus.is_focused(window) {
+                clipboard(view, ClipboardIntent::Cut, window, cx);
+            } else {
+                cx.propagate();
+            }
+        }))
+        .on_action(cx.trace(move |view, _: &PasteDevices, window, cx| {
+            if paste_focus.is_focused(window) {
+                clipboard(view, ClipboardIntent::Paste, window, cx);
+            } else {
+                cx.propagate();
+            }
+        }))
         // A character binding in the ancestor key context would swallow c/0 in
         // nested text editors. Handle only the card's own exact focus instead.
         .on_key_down(
@@ -192,97 +520,47 @@ pub(super) fn card(
                 if view.opening_project
                     || view.close_prompt_open
                     || view.gain_recorder.blocks_edits()
-                    || !view.pending_requests.is_empty()
-                    || !view.device_gesture_barriers.is_empty()
-                    || view.worker_requests_pending > 1
-                    || (view.worker_requests_pending != 0
-                        && view.device_gesture.snapshot().is_none())
+                    || ((!view.pending_requests.is_empty()
+                        || !view.device_gesture_barriers.is_empty()
+                        || view.worker_requests_pending > 1
+                        || (view.worker_requests_pending != 0
+                            && view.device_gesture.snapshot().is_none()))
+                        && !view.only_bypass_requests_pending())
                 {
                     view.error =
                         Some("finish pending edits before toggling the selected device".into());
                     cx.notify();
                     return;
                 }
-                let bypassed = view.state.as_ref().and_then(|state| {
+                let valid = view.state.as_ref().and_then(|state| {
                     let owner = owner?;
                     if selected_owner(view, state) != Some(owner) {
                         return None;
                     }
                     let item = owned_device(&state.project, owner, device)?;
-                    (Some(item.state().type_id()) == type_id).then_some(!item.bypassed())
+                    (Some(item.state().type_id()) == type_id).then_some(())
                 });
-                if let Some(bypassed) = bypassed
-                    && finalize_controls(view, cx)
-                {
-                    view.enqueue_device_barrier(Request::Edit(Command::SetDeviceBypass {
-                        device,
-                        bypassed,
-                    }));
+                if valid.is_some() && finalize_controls(view, cx) {
+                    view.toggle_device_bypass(device);
                     cx.notify();
                 }
             }),
         )
         .on_action(cx.trace(move |view, _: &RemoveSelectedDevice, window, cx| {
-            cx.stop_propagation();
-            if !focus.is_focused(window) {
-                return;
-            }
-            if generation != view.project_generation
-                || owner != view.device_panel.owner
-                || view.device_panel.selected_device != Some(device)
-                || !view.clip_view_open
-                || !view.device_panel_active
-                || view.device_panel.chain_window.refused_delete.is_some()
-            {
-                suspend_until_release(view, intent, &focus, window, cx);
-                return;
-            }
-            if !view.device_panel.selected_others.is_empty() {
-                view.error = Some("select one device to remove it".into());
-                suspend_until_release(view, intent, &focus, window, cx);
-                cx.notify();
-                return;
-            }
-            // Refuse unrelated work; an active numeric gesture may be finalized
-            // through its existing terminal barrier before this exact removal.
-            if view.opening_project
-                || view.close_prompt_open
-                || view.gain_recorder.blocks_edits()
-                || !view.pending_requests.is_empty()
-                || !view.device_gesture_barriers.is_empty()
-                || view.worker_requests_pending > 1
-                || (view.worker_requests_pending != 0 && view.device_gesture.snapshot().is_none())
-            {
-                view.error =
-                    Some("finish pending edits before removing the selected device".into());
-                suspend_until_release(view, intent, &focus, window, cx);
-                cx.notify();
-                return;
-            }
-            let command = owner.and_then(|owner| {
-                view.state
-                    .as_ref()
-                    .and_then(|state| removal(&state.project, owner, device))
-            });
-            let Some(command) = command else {
-                suspend_until_release(view, intent, &focus, window, cx);
-                return;
-            };
-            if finalize_controls(view, cx) {
-                // Canonical reconciliation clears selection only after removal.
-                // Pending work refuses repeat; no next device is selected.
-                if view.enqueue_device_barrier(Request::Edit(command)) {
-                    view.device_panel.chain_window.refused_delete = None;
-                    view.device_panel
-                        .chain_window
-                        .selection_focus(cx)
-                        .focus(window);
-                } else {
-                    suspend_until_release(view, intent, &focus, window, cx);
-                }
-            } else {
-                suspend_until_release(view, intent, &focus, window, cx);
-            }
-            cx.notify();
+            remove_selected_device(view, intent, &focus, window, cx);
         }))
+        .on_action(
+            cx.trace(move |view, _: &RemoveSelectedDeviceX, window, cx| {
+                remove_selected_device(
+                    view,
+                    RefusedDelete {
+                        key: DeleteKey::X,
+                        ..intent
+                    },
+                    &x_focus,
+                    window,
+                    cx,
+                );
+            }),
+        )
 }

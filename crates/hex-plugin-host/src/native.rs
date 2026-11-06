@@ -3,6 +3,7 @@
 mod edits;
 mod epoch;
 mod live_capture;
+mod parameter_page;
 pub use epoch::Quiescent;
 mod preparation_failure;
 pub use preparation_failure::{PreparationDisposal, PreparationFailure};
@@ -188,8 +189,11 @@ pub struct Prepared {
     live_capture: Option<live_capture::PendingCapture>,
     live_capture_sequence: u64,
     edit_query_sequence: u64,
+    idle_flush_sequence: u64,
     last_edit_sequence: u64,
     last_edit_frame: u64,
+    parameter_page: Option<parameter_page::PendingPage>,
+    parameter_page_sequence: u64,
 }
 /// Source-bound configured component awaiting actual graph presentation facts.
 /// No processing/state capture or canonical/audio acceptance has occurred. Keep
@@ -261,6 +265,27 @@ impl Pending {
             Some(state),
             cancellation,
             |_| {},
+        )
+    }
+    /// Configure a new source in the SDK's offline mode from confirmed state.
+    /// The caller owns it independently of any live processor or output.
+    pub fn prepare_offline_restored_on_control(
+        build: &InstanceBuild,
+        source: Source,
+        preparation: Preparation,
+        state: NativeDeviceState,
+        cancellation: PreparationCancellation,
+        _trust: TrustUserCode,
+    ) -> Result<Self> {
+        Self::prepare_with_restore(
+            build,
+            source,
+            preparation,
+            Some(state),
+            cancellation,
+            |command| {
+                command.arg("--offline");
+            },
         )
     }
     fn prepare(
@@ -369,6 +394,7 @@ impl Pending {
             receiver: child_cancel,
         } = cancellation;
         let channel = Channel::new(data).map_err(PreparationFailure::before_native)?;
+        let mut packet = Packet::new().map_err(PreparationFailure::before_native)?;
         let mut command = Command::new(build.helper());
         command
             .arg("--supervised")
@@ -392,7 +418,6 @@ impl Pending {
             #[cfg(test)]
             reap_probe: None,
         };
-        let mut packet = Packet::new();
         let token = pending.cancellation.clone();
         let prepared = (|| {
             let until = end_after(options.limits.startup)?;
@@ -411,7 +436,7 @@ impl Pending {
                     config.binding,
                 )?));
             }
-            if packet.magic() != b"HXVIFA03" {
+            if packet.magic() != b"HXVIFA04" {
                 return Err(Error::Protocol("worker did not report preparation facts"));
             }
             let facts = Facts::decode(packet.body()?, &config)?;
@@ -481,25 +506,28 @@ impl Pending {
         self,
         presentation: Option<PresentationLatency>,
     ) -> Result<Prepared> {
+        self.complete_with_plan_on_control(presentation.into())
+    }
+    pub fn complete_with_plan_on_control(
+        self,
+        presentation: protocol::PresentationPlan,
+    ) -> Result<Prepared> {
         self.complete_retained_on_control(presentation)
             .map_err(PreparationFailure::finish_on_control)
     }
     /// Completion errors retain the same actual child for Root's independent
-    /// cleanup observation. Failure cannot create a reusable prepared source.
+    /// cleanup observation. Callers can explicitly allow unknown presentation.
     pub fn complete_retained_on_control(
         mut self,
-        presentation: Option<PresentationLatency>,
+        presentation: impl Into<protocol::PresentationPlan>,
     ) -> std::result::Result<Prepared, PreparationFailure> {
+        let presentation = presentation.into();
         let token = self.lease.cancellation.clone();
         let result = (|| {
             token.check()?;
             self.source.unchanged()?;
             self.build.unchanged().map_err(Error::Validation)?;
-            if self.facts.presentation_available && presentation.is_none() {
-                return Err(Error::Protocol(
-                    "actual presentation contributions are unavailable",
-                ));
-            }
+            let expected = presentation.expected(self.facts.presentation_available)?;
             let until = end_after(self.limits.startup)?;
             let request = protocol::presentation_request(self.config.binding, presentation)?;
             self.lease
@@ -514,7 +542,7 @@ impl Pending {
                     self.config.binding,
                 )?));
             }
-            if self.packet.magic() != b"HXVIRD04" {
+            if self.packet.magic() != b"HXVIRD05" {
                 return Err(Error::Protocol(
                     "missing final prepared instance acknowledgement",
                 ));
@@ -523,8 +551,7 @@ impl Pending {
             if ready.restored != self.facts.restored
                 || ready.algorithmic_latency_frames != self.facts.algorithmic_latency_frames
                 || ready.tail_frames != self.facts.tail_frames
-                || (ready.presentation == protocol::Presentation::Applied)
-                    != self.facts.presentation_available
+                || ready.presentation != expected
             {
                 return Err(Error::Protocol(
                     "prepared facts changed before final acknowledgement",
@@ -560,8 +587,11 @@ impl Pending {
             live_capture: None,
             live_capture_sequence: 0,
             edit_query_sequence: 0,
+            idle_flush_sequence: 0,
             last_edit_sequence: 0,
             last_edit_frame: 0,
+            parameter_page: None,
+            parameter_page_sequence: 0,
         })
     }
 }
@@ -628,6 +658,7 @@ impl Prepared {
     }
     fn exchange(&mut self, block: Block) -> Result<Block> {
         self.check_live_capture_deadline()?;
+        self.check_parameter_page_deadline()?;
         self.config.validate_block(&block, self.sequence)?;
         let next = self
             .sequence
@@ -657,6 +688,9 @@ impl Prepared {
         Ok(output)
     }
     pub fn stop_and_reap_on_control(&mut self) -> Result<Retirement> {
+        if self.parameter_page.is_some() {
+            return Err(Error::Protocol("controller page is still pending"));
+        }
         if self.live_capture.is_some() {
             return Err(Error::Protocol("native capture is still pending"));
         }
@@ -693,9 +727,10 @@ impl Prepared {
             self.retired = Some(retired);
             token.check()?;
             self.lease.channel.reject_queued_after_reap()?;
+            // A clean process-only stop can leave the module mapped until
+            // the OS reclaims it. Require the same terminal and reaped status.
             if terminal.failure != 0
                 || !terminal.closed
-                || !terminal.unloaded
                 || terminal.blocks != self.sequence
                 || terminal.frames != frames
                 || !status.success()

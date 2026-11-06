@@ -46,15 +46,14 @@ fn preview(
     let rate = state.project.sample_rate();
     let variant = entry.active_variant();
     let authored = entry.state();
-    if let Some(cache) = view.device_panel.reverb_previews.get(&device) {
-        if cache.generation == view.project_generation
-            && cache.variant == variant
-            && cache.state == *authored
-            && cache.values == values
-            && cache.rate == rate
-        {
-            return cache.curve.clone();
-        }
+    if let Some(cache) = view.device_panel.reverb_previews.get(&device)
+        && cache.generation == view.project_generation
+        && cache.variant == variant
+        && cache.state == *authored
+        && cache.values == values
+        && cache.rate == rate
+    {
+        return cache.curve.clone();
     }
     let state = authored.clone();
     let mut draft = state.clone();
@@ -169,16 +168,15 @@ fn title(device: DeviceId, label: &'static str) -> Div {
 }
 fn graph(device: DeviceId, kind: &'static str, points: Option<[[f32; 2]; 65]>, height: f32) -> Div {
     let mut graph = div().w_full().flex_1().min_h_0();
-    if let Some(points) = points {
-        if let Some(plot) = hex_widgets::curve_plot(
+    if let Some(points) = points
+        && let Some(plot) = hex_widgets::curve_plot(
             points,
             theme::device_style(theme::DeviceStyleRole::Display),
             hex_widgets::CurvePlotGrid::Horizontal,
-        ) {
-            let plot =
-                plot.debug_selector(move || format!("reverb-{}-{kind}-curve", device.value()));
-            graph = graph.child(plot);
-        }
+        )
+    {
+        let plot = plot.debug_selector(move || format!("reverb-{}-{kind}-curve", device.value()));
+        graph = graph.child(plot);
     }
     // Shared plots fill remaining space with a zero flex basis. This panel
     // allocates fixed plot rows; flex_none alone does not clear that basis.

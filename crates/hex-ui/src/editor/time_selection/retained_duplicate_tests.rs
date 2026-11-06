@@ -9,7 +9,7 @@ use hex_session::service::Service;
 use std::{sync::Arc, time::Duration};
 
 fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(&mut *visual, |view, cx| {
             let changed =
@@ -82,7 +82,7 @@ fn fixture_with_recovery(
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, _| window.activate_window());
     visual.simulate_resize(size(px(1500.0), px(800.0)));
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         editor.update(&mut visual, |view, cx| {
             if view.tick(cx) {
@@ -95,7 +95,10 @@ fn fixture_with_recovery(
         }) {
             break;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "fixture_with_recovery: hang guard expired"
+        );
         std::thread::yield_now();
     }
     let mut tracks = Vec::new();

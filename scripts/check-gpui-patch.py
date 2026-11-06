@@ -85,6 +85,7 @@ def main():
         "src/interactive.rs",
         "src/platform/mac/events.rs",
         "src/platform/mac/window.rs",
+        "src/platform/blade/blade_renderer.rs",
         "src/platform/windows/events.rs",
         "src/platform/linux/wayland/client.rs",
         "src/platform/linux/x11/client.rs",
@@ -104,6 +105,8 @@ def main():
         "src/gpui.rs",
         "src/elements/div.rs",
         "src/view.rs",
+        "src/text_system.rs",
+        "src/text_system/line.rs",
     }
     if set(manifest["patched_files"]) != expected_changes:
         errors.append("unexpected GPUI patch scope")

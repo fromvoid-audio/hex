@@ -3,6 +3,7 @@ use super::{CancelClipName, CommitClipName, EditorMode, EditorView, RenameClip, 
 use crate::theme;
 use gpui::{
     App, AppContext, Context, Entity, KeyBinding, Subscription, Window, div, prelude::*, px, rgb,
+    rgba,
 };
 use hex_project::{ClipId, Command, SessionCellContent};
 use hex_session::service::Request;
@@ -329,6 +330,8 @@ fn clip_name_surface(fill: u32) -> gpui::Div {
         .text_xs()
         .line_height(px(14.0))
         .bg(rgb(fill))
+        .border_b(px(0.5))
+        .border_color(rgba((text << 8) | 0x70))
         .text_color(rgb(text))
 }
 
@@ -467,7 +470,11 @@ mod tests {
                 scene: audio_scene,
             })
             .unwrap();
-        for (track, scene) in [(track, midi_scene), (audio_track, audio_scene)] {
+        // Each installed snapshot gets a new revision, as real project updates do,
+        // so the Session projection rebuilds and includes the imported track.
+        for (revision, (track, scene)) in
+            (2..).zip([(track, midi_scene), (audio_track, audio_scene)])
+        {
             visual.update(|window, cx| {
                 editor.update(cx, |v, cx| {
                     v.state = Some(Arc::new(hex_session::service::ViewState {
@@ -482,7 +489,7 @@ mod tests {
                         timeline_frames: 384_000,
                         can_undo: false,
                         can_redo: false,
-                        revision: 1,
+                        revision,
                         unsaved: false,
                         document_path: None,
                     }));

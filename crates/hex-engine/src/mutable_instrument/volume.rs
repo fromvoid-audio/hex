@@ -60,7 +60,8 @@ impl VolumeSlice {
             .ramp
             .gain_at(end)
             .map_err(|_| MutableInstrumentRuntimeError::InvalidSourceSpan)?;
-        if !last.is_finite() || !(0.0..=4.0).contains(&last) {
+        if !last.is_finite() || !(0.0..=hex_lattice::MAX_INSTRUMENT_OCCURRENCE_GAIN).contains(&last)
+        {
             return Err(MutableInstrumentRuntimeError::InvalidSourceSpan);
         }
         Ok((

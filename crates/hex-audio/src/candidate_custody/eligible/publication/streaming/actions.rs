@@ -8,7 +8,7 @@ pub(crate) enum StageAction {
     Refused(PlaybackActionRejection),
 }
 pub(super) enum ActionResolution {
-    Ready(Option<(u64, PlaybackActionRejection)>),
+    Ready(Option<(u64, Result<(), PlaybackActionRejection>)>),
     Pending,
 }
 impl ActiveView<'_> {
@@ -140,9 +140,19 @@ impl ActiveView<'_> {
             Ok(Some(_)) => {}
             Ok(None) => return ActionResolution::Pending,
             Err(_) => {
+                let source_changed = self
+                    .state
+                    .streaming
+                    .as_mut()
+                    .is_some_and(|workspace| std::mem::take(&mut workspace.source_changed));
+                let reason = if source_changed {
+                    PlaybackActionRejection::StreamSourceChanged
+                } else {
+                    PlaybackActionRejection::StreamPagesNotReady
+                };
                 return ActionResolution::Ready(
                     self.cancel_stream_action(request.domains)
-                        .map(|ticket| (ticket, PlaybackActionRejection::StreamPagesNotReady)),
+                        .map(|ticket| (ticket, Err(reason))),
                 );
             }
         }
@@ -151,7 +161,7 @@ impl ActiveView<'_> {
             Err(_) => {
                 return ActionResolution::Ready(
                     self.cancel_stream_action(request.domains)
-                        .map(|ticket| (ticket, PlaybackActionRejection::StreamPagesNotReady)),
+                        .map(|ticket| (ticket, Err(PlaybackActionRejection::StreamPagesNotReady))),
                 );
             }
         };
@@ -171,12 +181,15 @@ impl ActiveView<'_> {
             .and_then(|runtime| runtime.commit_stream_action(pending.prepared));
         if let Err(error) = result {
             self.state.cancel_stream_pending(request.domains);
-            return ActionResolution::Ready(Some((pending.ticket, error.telemetry_rejection())));
+            return ActionResolution::Ready(Some((
+                pending.ticket,
+                Err(error.telemetry_rejection()),
+            )));
         }
         for promotion in promotions.into_iter().flatten() {
             promotion.commit();
         }
         self.state.record_stream_commit();
-        ActionResolution::Ready(None)
+        ActionResolution::Ready(Some((pending.ticket, Ok(()))))
     }
 }

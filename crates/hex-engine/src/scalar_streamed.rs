@@ -80,8 +80,21 @@ pub struct ScalarProjectionIdentity {
     pub version: u32,
     pub fingerprint: [u8; 32],
 }
+/// The exact target captured in the verified completed take.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScalarSourceTarget {
+    TrackGain {
+        track: hex_project::TrackId,
+    },
+    Device {
+        device: hex_project::DeviceId,
+        target: hex_project::DeviceAutomationTarget,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScalarSourceMetadata {
+    target: ScalarSourceTarget,
     key: ScalarSourceKey,
     rate: u32,
     start: u64,
@@ -92,6 +105,7 @@ pub struct ScalarSourceMetadata {
 impl ScalarSourceMetadata {
     pub fn new(
         key: ScalarSourceKey,
+        target: ScalarSourceTarget,
         rate: u32,
         start: u64,
         end: u64,
@@ -108,6 +122,7 @@ impl ScalarSourceMetadata {
         }
         Ok(Self {
             key,
+            target,
             rate,
             start,
             end,
@@ -117,6 +132,9 @@ impl ScalarSourceMetadata {
     }
     pub const fn key(&self) -> ScalarSourceKey {
         self.key
+    }
+    pub const fn target(&self) -> ScalarSourceTarget {
+        self.target
     }
     pub const fn project_rate(&self) -> u32 {
         self.rate
@@ -212,7 +230,7 @@ pub fn read_scalar_values<P: MediaPages + ?Sized>(
             {
                 return Err(Invalid("automation page identity or extent changed"));
             }
-            if expected % 64 != 0
+            if !expected.is_multiple_of(64)
                 && page
                     .coverage
                     .last()
@@ -293,8 +311,19 @@ mod tests {
         }
     }
     fn metadata(end: u64) -> ScalarSourceMetadata {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let hex_project::Created::Track(track) = editor
+            .execute(hex_project::Command::AddTrack {
+                name: "scalar".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
         ScalarSourceMetadata::new(
             ScalarSourceKey::new(1, 1, 1).unwrap(),
+            ScalarSourceTarget::TrackGain { track },
             48_000,
             0,
             end,

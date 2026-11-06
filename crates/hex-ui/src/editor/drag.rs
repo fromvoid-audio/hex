@@ -62,6 +62,10 @@ pub(super) struct ClipDrag {
 }
 
 impl ClipDrag {
+    pub(super) fn alias_copy(&self) -> bool {
+        self.copy_modifier.get() && self.snap_modifier.get()
+    }
+
     pub(super) fn retire(&self) {
         self.preview.set(None);
         self.group.borrow_mut().capture = None;
@@ -71,12 +75,12 @@ impl ClipDrag {
     }
 }
 
-/// In-window drag payload for a WAV file from the library browser.
+/// In-window drag payload for a WAV from the library or retained take.
 #[derive(Clone)]
 pub(super) struct BrowserAudioDrag {
     pub(super) project_generation: u64,
     pub(super) revision: u64,
-    pub(super) browser_generation: u64,
+    pub(super) browser_generation: Option<u64>,
     pub(super) sample_rate: u32,
     pub(super) path: std::path::PathBuf,
     pub(super) label: String,
@@ -106,12 +110,13 @@ pub(super) struct NativeDeviceDropTarget {
     pub(super) replace: Option<hex_project::DeviceId>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum NativeDeviceDragSource {
     Browser {
         class: hex_engine::NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
     },
+    PluginEffect(std::sync::Arc<hex_plugin_catalog::PluginSelection>),
     Existing {
         device: hex_project::DeviceId,
         class: hex_engine::NativeDeviceClass,
@@ -495,7 +500,7 @@ pub(super) fn is_noop(drag: &ClipDrag, state: &DropState<'_>) -> bool {
     drag.source_track == state.target_track && drag.position == state.position
 }
 
-fn group_position(position: ClipPosition) -> hex_project::ClipGroupPosition {
+pub(super) fn group_position(position: ClipPosition) -> hex_project::ClipGroupPosition {
     match position {
         ClipPosition::Audio { start, .. } => hex_project::ClipGroupPosition::Audio(start),
         ClipPosition::Midi { start, .. } => hex_project::ClipGroupPosition::Midi(start),
@@ -537,15 +542,18 @@ fn move_to_new_track_command(
     name: String,
     before_track: Option<TrackId>,
     position: ClipPosition,
+    gain: f32,
 ) -> Command {
     match position {
         ClipPosition::Audio { start, .. } => Command::MoveClipToNewTrack {
+            initial_gain: Some(gain),
             clip,
             name,
             before_track,
             start,
         },
         ClipPosition::Midi { start, .. } => Command::MoveMidiClipToNewTrack {
+            initial_gain: Some(gain),
             clip,
             name,
             before_track,
@@ -559,15 +567,18 @@ fn copy_to_new_track_command(
     name: String,
     before_track: Option<TrackId>,
     position: ClipPosition,
+    gain: f32,
 ) -> Command {
     match position {
         ClipPosition::Audio { start, .. } => Command::CopyClipToNewTrack {
+            initial_gain: Some(gain),
             clip,
             name,
             before_track,
             start,
         },
         ClipPosition::Midi { start, .. } => Command::CopyMidiClipToNewTrack {
+            initial_gain: Some(gain),
             clip,
             name,
             before_track,
@@ -820,6 +831,7 @@ impl super::EditorView {
     }
 
     pub(super) fn retire_active_clip_drag(&mut self) -> bool {
+        self.drag_bounce_held = false;
         let Some(drag) = self.active_clip_drag.take() else {
             return false;
         };
@@ -923,19 +935,114 @@ impl super::EditorView {
             cx.notify();
             return;
         }
+        let gain = match self.track_defaults.captured_gain() {
+            Ok(gain) => gain,
+            Err(error) => {
+                self.error = Some(error.into());
+                self.clear_clip_drag(drag.project_generation, drag.clip);
+                cx.notify();
+                return;
+            }
+        };
         let count = self
             .state
             .as_ref()
             .map_or(0, |state| state.project.tracks().len());
         let name = format!("track {}", count + 1);
-        let command = if drag.copy_modifier.get() {
-            copy_to_new_track_command(drag.clip, name, before_track, position)
+        if drag.alias_copy() {
+            let command = Command::DuplicateAliasClipToNewTrack {
+                initial_gain: Some(gain),
+                clip: drag.clip,
+                name,
+                before_track,
+                position: group_position(position),
+            };
+            let copy_intent = super::group_copy::Pending::capture(self, &command);
+            let Some(source) = self
+                .state
+                .as_ref()
+                .map(|state| std::sync::Arc::clone(&state.project))
+            else {
+                self.clear_clip_drag(drag.project_generation, drag.clip);
+                return;
+            };
+            self.pending_clip_move = self
+                .active_clip_drag
+                .take()
+                .map(|drag| super::pending_clip_move::Pending::new(drag, command.clone(), source));
+            let before_pending = self.worker_requests_pending;
+            if self.enqueue(Request::MoveExistingClips {
+                project_generation: drag.project_generation,
+                revision: drag.revision,
+                command,
+            }) {
+                if let Some(mut intent) = copy_intent {
+                    if self.worker_requests_pending > before_pending {
+                        intent.submitted(self.worker_requests_pending);
+                    }
+                    self.pending_group_copy = Some(intent);
+                }
+            } else {
+                self.retire_pending_clip_move();
+                self.clear_clip_drag(drag.project_generation, drag.clip);
+            }
         } else {
-            move_to_new_track_command(drag.clip, name, before_track, position)
-        };
-        self.clear_clip_drag(drag.project_generation, drag.clip);
-        self.enqueue(Request::Edit(command));
+            let command = if drag.copy_modifier.get() {
+                copy_to_new_track_command(drag.clip, name, before_track, position, gain)
+            } else {
+                move_to_new_track_command(drag.clip, name, before_track, position, gain)
+            };
+            let Some(source) = self
+                .state
+                .as_ref()
+                .map(|state| std::sync::Arc::clone(&state.project))
+            else {
+                self.clear_clip_drag(drag.project_generation, drag.clip);
+                return;
+            };
+            self.pending_clip_move = self
+                .active_clip_drag
+                .take()
+                .map(|drag| super::pending_clip_move::Pending::new(drag, command.clone(), source));
+            if !self.enqueue(Request::Edit(command)) {
+                self.retire_pending_clip_move();
+                self.clear_clip_drag(drag.project_generation, drag.clip);
+            }
+        }
         cx.notify();
+    }
+
+    pub(super) fn audio_file_drag_payload(
+        &self,
+        path: std::path::PathBuf,
+        label: String,
+        browser_generation: Option<u64>,
+        metadata: Rc<RefCell<Option<Rc<AudioPreview>>>>,
+        metadata_error: Rc<RefCell<Option<String>>>,
+    ) -> Option<BrowserAudioDrag> {
+        let state = self.state.as_ref()?;
+        let viewport = self.visible_viewport(state.timeline_frames);
+        Some(BrowserAudioDrag {
+            project_generation: self.project_generation,
+            revision: state.revision,
+            browser_generation,
+            sample_rate: state.project.sample_rate(),
+            path,
+            label,
+            viewport_start: viewport.start,
+            viewport_length: viewport.length,
+            scroll: Default::default(),
+            snap_grid: self.snap_grid,
+            snap_modifier: Rc::new(Cell::new(false)),
+            copy_modifier: Rc::new(Cell::new(false)),
+            metadata,
+            metadata_error,
+            preview: Rc::new(Cell::new(None)),
+            destination: Rc::new(Cell::new(None)),
+            insertion_line_y: Rc::new(Cell::new(None)),
+            lane_hovered: Rc::new(Cell::new(false)),
+            last_pointer: Rc::new(Cell::new(None)),
+        })
     }
 
     pub(super) fn begin_browser_audio_drag(&mut self, drag: &BrowserAudioDrag) {
@@ -948,7 +1055,10 @@ impl super::EditorView {
         self.arrangement_device_preview = None;
         self.retire_active_clip_drag();
         self.active_browser_audio_drag = None;
-        if matches!(drag.source, NativeDeviceDragSource::Browser { .. }) {
+        if matches!(
+            drag.source,
+            NativeDeviceDragSource::Browser { .. } | NativeDeviceDragSource::PluginEffect(_)
+        ) {
             // Make the native-device receiver visible as soon as a catalog drag
             // becomes active. Keep the selected track/clip untouched: a missing
             // target remains an empty device pane and the eventual drop can refuse.
@@ -969,7 +1079,9 @@ impl super::EditorView {
             return false;
         }
         match drag.source {
-            NativeDeviceDragSource::Browser { .. } => true,
+            NativeDeviceDragSource::Browser { .. } | NativeDeviceDragSource::PluginEffect(_) => {
+                true
+            }
             NativeDeviceDragSource::Existing {
                 device,
                 class,
@@ -1016,6 +1128,7 @@ impl super::EditorView {
         {
             self.arrangement_device_preview = None;
             self.active_native_device_drag = None;
+            self.device_panel.drag_copy = None;
         }
         drag.destination.set(None);
         drag.return_destination.set(None);
@@ -1026,6 +1139,7 @@ impl super::EditorView {
         let Some(drag) = self.active_native_device_drag.take() else {
             return false;
         };
+        self.device_panel.drag_copy = None;
         drag.destination.set(None);
         drag.return_destination.set(None);
         true
@@ -1040,7 +1154,9 @@ impl super::EditorView {
             || self.close_prompt_open
             || self.worker_requests_pending != 0
             || !self.pending_requests.is_empty()
-            || self.browser.scan_generation() != drag.browser_generation
+            || drag
+                .browser_generation
+                .is_some_and(|generation| self.browser.scan_generation() != generation)
         {
             return false;
         }
@@ -1326,9 +1442,11 @@ impl super::EditorView {
                 start,
             },
         };
-        self.enqueue(request);
-        self.status = "importing sample to arrangement".into();
-        self.active_browser_audio_drag = None;
+        if self.enqueue_sample_drop(request, drag, destination) {
+            self.stop_browser_preview_for_drop();
+            self.status = "importing sample to arrangement".into();
+        }
+        self.clear_browser_audio_drag(drag);
         cx.notify();
     }
 
@@ -1361,6 +1479,12 @@ impl super::EditorView {
         {
             if self.worker_requests_pending != 0 || !self.pending_requests.is_empty() {
                 self.error = Some("clip move canceled · project work pending".into());
+                clear(self);
+                cx.notify();
+                return;
+            }
+            if self.drag_bounce_held {
+                self.error = Some("bounce drop needs an existing track".into());
                 clear(self);
                 cx.notify();
                 return;
@@ -1423,11 +1547,23 @@ impl super::EditorView {
             cx.notify();
             return;
         }
+        if std::mem::take(&mut self.drag_bounce_held) {
+            self.drop_clip_bounce(drag, target_track, preview);
+            cx.notify();
+            return;
+        }
         if is_noop(drag, &drop_state) {
             clear(self);
             return;
         }
-        let command = if drag.group.borrow().ids.len() > 1 {
+        let command = if drag.alias_copy() {
+            Command::DuplicateAliasClipsAt {
+                clips: drag.group.borrow().ids.clone(),
+                anchor: drag.clip,
+                track: target_track,
+                position: group_position(preview.position),
+            }
+        } else if drag.group.borrow().ids.len() > 1 {
             Command::MoveClipsWithOverwrite {
                 clips: drag.group.borrow().ids.clone(),
                 anchor: drag.clip,

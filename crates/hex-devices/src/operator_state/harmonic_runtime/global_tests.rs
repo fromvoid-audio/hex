@@ -123,6 +123,440 @@ fn active(r: &Runtime) -> Vec<u64> {
     ids.sort_unstable();
     ids
 }
+
+#[test]
+fn uniform_ordinary_envelopes_match_independent_render_across_handoff_and_release() {
+    for global in [false, true] {
+        let mut s = settings();
+        s.global.active = global;
+        for i in 0..4 {
+            let base = CORE_FIELDS + i * ENVELOPE_FIELDS;
+            s.fields[base..base + 6].copy_from_slice(&[0.1, 1.0, 0.3, 0.001, 0.002, 0.003]);
+        }
+        let mut fast = runtime(s);
+        let mut reference = runtime(s);
+        assert!(fast.factory.uniform_envelopes);
+        assert!(!fast.factory.companion_active);
+        reference.factory.uniform_envelopes = false;
+        assert_eq!(
+            process(&mut fast, &[on(1, 60)], 128),
+            process(&mut reference, &[on(1, 60)], 128)
+        );
+        let mut handoff = runtime(s);
+        handoff.copy_history_from(&fast);
+        assert_eq!(
+            process(&mut handoff, &[off(1)], 512),
+            process(&mut reference, &[off(1)], 512)
+        );
+        s.fields[CORE_FIELDS + 3 * ENVELOPE_FIELDS + 2] = 0.5;
+        assert!(!runtime(s).factory.uniform_envelopes);
+    }
+}
+
+#[test]
+fn held_voice_preflight_rejects_frame_and_age_overflow() {
+    for global in [false, true] {
+        let mut s = settings();
+        s.global.active = global;
+        let mut r = runtime(s);
+        process(&mut r, &[on(1, 60)], 1);
+        let voice = r.voices.iter_mut().find(|voice| voice.id == 1).unwrap();
+        voice.age = u64::MAX - 1;
+        assert!(
+            r.preflight_events(&[], 1, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                .is_ok()
+        );
+        assert_eq!(
+            r.preflight_events(&[], 2, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+            Err(Error::InvalidEventBatch)
+        );
+        r.voices.iter_mut().find(|voice| voice.id == 1).unwrap().age = 1;
+        r.local_frame = u64::MAX - 1;
+        assert_eq!(
+            r.preflight_events(&[], 2, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+            Err(Error::InvalidEventBatch)
+        );
+    }
+}
+
+#[test]
+fn releasing_voice_can_retire_before_its_age_would_overflow() {
+    let mut r = runtime(settings());
+    process(&mut r, &[on(1, 60)], 1);
+    let voice = r.voices.iter_mut().find(|voice| voice.id == 1).unwrap();
+    voice.age = u64::MAX - 1;
+    voice.gate = Some(0);
+    voice.envelope_gate = Some(0);
+    voice.envelope_age = u64::MAX as f64;
+    voice.drain = quality::TAIL as u32 - 1;
+    assert!(
+        r.preflight_events(&[], 2, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .is_ok()
+    );
+}
+
+#[test]
+fn note_added_in_later_slot_mid_block_matches_partitioned_render() {
+    for global in [false, true] {
+        let mut s = settings();
+        s.global.active = global;
+        let mut whole = runtime(s);
+        let mut partitioned = runtime(s);
+        let mut one_voice = runtime(s);
+        assert_eq!(
+            process(&mut whole, &[on(1, 60)], 64),
+            process(&mut partitioned, &[on(1, 60)], 64)
+        );
+        process(&mut one_voice, &[on(1, 60)], 64);
+        let without_new_voice = process(&mut one_voice, &[], 128);
+        let delayed = NativeInstrumentEvent::NoteOn {
+            frame_offset: 33,
+            occurrence_id: 2,
+            pitch: 67,
+            velocity: 100,
+        };
+        let actual = process(&mut whole, &[delayed], 128);
+        let mut expected = process(&mut partitioned, &[], 33);
+        expected.extend(process(&mut partitioned, &[on(2, 67)], 95));
+        assert_eq!(actual, expected);
+        assert_ne!(actual, without_new_voice);
+    }
+}
+
+#[test]
+fn held_voice_release_inside_block_matches_partitioned_render() {
+    for global in [false, true] {
+        let mut s = settings();
+        s.global.active = global;
+        let mut whole = runtime(s);
+        let mut partitioned = runtime(s);
+        assert_eq!(
+            process(&mut whole, &[on(1, 60)], 128),
+            process(&mut partitioned, &[on(1, 60)], 128)
+        );
+        let delayed_off = NativeInstrumentEvent::NoteOff {
+            frame_offset: 33,
+            occurrence_id: 1,
+        };
+        let actual = process(&mut whole, &[delayed_off], 256);
+        let mut expected = process(&mut partitioned, &[], 33);
+        expected.extend(process(&mut partitioned, &[off(1)], 223));
+        assert_eq!(actual, expected);
+        assert_eq!(
+            process(&mut whole, &[], 5000),
+            process(&mut partitioned, &[], 5000)
+        );
+        assert!(whole.is_quiescent());
+        assert!(partitioned.is_quiescent());
+    }
+}
+
+#[test]
+fn uniform_companion_matches_independent_machines_through_handoff_and_release() {
+    struct Clock(u64);
+    impl NativeInstrumentClock for Clock {
+        fn beat_at_offset(&self, offset: usize) -> Option<u64> {
+            let frame = self.0 + offset as u64;
+            Some(frame * (1 << 25) + if frame >= 40 { 1000 << 32 } else { 0 })
+        }
+        fn performance_frame_at_offset(&self, offset: usize) -> Option<u64> {
+            Some(self.0 + offset as u64)
+        }
+        fn transport_is_running(&self) -> Option<bool> {
+            Some(true)
+        }
+    }
+    fn render(
+        r: &mut Runtime,
+        events: &[NativeInstrumentEvent],
+        frames: usize,
+        at: u64,
+    ) -> Vec<StereoFrame> {
+        let clock = Clock(at);
+        r.preflight_events(events, frames, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .unwrap();
+        r.preflight_clock(Some(&clock), frames, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .unwrap();
+        let mut output = vec![[0.0; 2]; frames];
+        r.process_block_with_clock(
+            events,
+            &mut output,
+            Some(&clock),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
+        output
+    }
+    for mode in 1..=4 {
+        for global in [false, true] {
+            let mut s = settings();
+            s.global.active = global;
+            for row in &mut s.companion.words {
+                row[5] = mode;
+                row[6] = 0.001_f32.to_bits();
+                row[7] = 0;
+            }
+            let mut fast = runtime(s);
+            let mut reference = runtime(s);
+            assert!(fast.factory.uniform_companion);
+            reference.factory.uniform_companion = false;
+            assert_eq!(
+                render(&mut fast, &[on(1, 60)], 128, 0),
+                render(&mut reference, &[on(1, 60)], 128, 0)
+            );
+            let mut fast_handoff = runtime(s);
+            let mut reference_handoff = runtime(s);
+            reference_handoff.factory.uniform_companion = false;
+            assert!(fast_handoff.can_copy_history_from(&fast));
+            fast_handoff.copy_history_from(&fast);
+            reference_handoff.copy_history_from(&reference);
+            let mut retargeted = runtime(s);
+            let mut reference_retargeted = runtime(s);
+            reference_retargeted.factory.uniform_companion = false;
+            let InstrumentHistoryRetargetPreparation::Prepared(proof) = retargeted
+                .factory
+                .prepare_history_retarget_target()
+                .unwrap()
+            else {
+                panic!("prepared target")
+            };
+            let InstrumentHistoryRetargetPreparation::Prepared(reference_proof) =
+                reference_retargeted
+                    .factory
+                    .prepare_history_retarget_target()
+                    .unwrap()
+            else {
+                panic!("prepared target")
+            };
+            assert!(retargeted.can_retarget_history_from(&fast, proof.as_ref()));
+            assert!(
+                reference_retargeted
+                    .can_retarget_history_from(&reference, reference_proof.as_ref())
+            );
+            retargeted.retarget_history_from(&fast, proof.as_ref());
+            reference_retargeted.retarget_history_from(&reference, reference_proof.as_ref());
+            assert_eq!(
+                render(&mut fast_handoff, &[off(1)], 128, 128),
+                render(&mut reference_handoff, &[off(1)], 128, 128)
+            );
+            assert_eq!(
+                render(&mut retargeted, &[off(1)], 128, 128),
+                render(&mut reference_retargeted, &[off(1)], 128, 128)
+            );
+            assert_eq!(
+                render(&mut fast_handoff, &[], 5000, 256),
+                render(&mut reference_handoff, &[], 5000, 256)
+            );
+            assert!(fast_handoff.is_quiescent());
+            assert!(reference_handoff.is_quiescent());
+        }
+    }
+}
+
+#[test]
+fn partial_companion_groups_match_independent_machines_across_lifecycle() {
+    struct Clock(u64);
+    impl NativeInstrumentClock for Clock {
+        fn beat_at_offset(&self, offset: usize) -> Option<u64> {
+            let frame = self.0 + offset as u64;
+            Some(frame * (1 << 25) + if frame >= 40 { 1000 << 32 } else { 0 })
+        }
+        fn performance_frame_at_offset(&self, offset: usize) -> Option<u64> {
+            Some(self.0 + offset as u64)
+        }
+        fn transport_is_running(&self) -> Option<bool> {
+            Some(true)
+        }
+    }
+    fn render(
+        r: &mut Runtime,
+        events: &[NativeInstrumentEvent],
+        frames: usize,
+        at: u64,
+    ) -> Vec<StereoFrame> {
+        let clock = Clock(at);
+        r.preflight_events(events, frames, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .unwrap();
+        r.preflight_clock(Some(&clock), frames, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .unwrap();
+        let mut output = vec![[0.0; 2]; frames];
+        r.process_block_with_clock(
+            events,
+            &mut output,
+            Some(&clock),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
+        output
+    }
+    let partitions = [
+        [0, 0, 0, 0],
+        [0, 0, 0, 1],
+        [0, 0, 1, 0],
+        [0, 0, 1, 1],
+        [0, 0, 1, 2],
+        [0, 1, 0, 0],
+        [0, 1, 0, 1],
+        [0, 1, 0, 2],
+        [0, 1, 1, 0],
+        [0, 1, 1, 1],
+        [0, 1, 1, 2],
+        [0, 1, 2, 0],
+        [0, 1, 2, 1],
+        [0, 1, 2, 2],
+        [0, 1, 2, 3],
+    ];
+    for (index, pattern) in partitions.into_iter().enumerate() {
+        for mode in 0..=if index == 1 || index == 6 { 4 } else { 1 } {
+            for global in [false, true] {
+                let mut s = settings();
+                s.global.active = global;
+                for (operator, group) in pattern.into_iter().enumerate() {
+                    s.fields[28 + operator] = 0.25;
+                    s.fields[CORE_FIELDS + operator * ENVELOPE_FIELDS + 2] =
+                        [0.2, 0.4, 0.6, 0.8][group];
+                    s.companion.words[operator][5] = mode;
+                    s.companion.words[operator][4] = 0.1_f32.to_bits();
+                    s.companion.words[operator][6] = 0.001_f32.to_bits();
+                    s.companion.words[operator][7] = 0;
+                }
+                let mut fast = runtime(s);
+                let mut reference = runtime(s);
+                if pattern == [0, 0, 0, 0] {
+                    assert!(fast.factory.uniform_companion);
+                } else if pattern == [0, 1, 2, 3] {
+                    assert!(!fast.factory.uniform_companion && !fast.factory.partial_companion);
+                    assert_eq!(fast.factory.shared_loop_timing, mode == 1);
+                } else {
+                    assert!(fast.factory.partial_companion);
+                }
+                reference.factory.uniform_companion = false;
+                reference.factory.partial_companion = false;
+                reference.factory.shared_loop_timing = false;
+                assert_eq!(
+                    render(&mut fast, &[on(1, 60)], 128, 0),
+                    render(&mut reference, &[on(1, 60)], 128, 0),
+                    "pattern={pattern:?} mode={mode} global={global}"
+                );
+                let mut fast_handoff = runtime(s);
+                let mut reference_handoff = runtime(s);
+                reference_handoff.factory.uniform_companion = false;
+                reference_handoff.factory.partial_companion = false;
+                reference_handoff.factory.shared_loop_timing = false;
+                assert!(fast_handoff.can_copy_history_from(&fast));
+                fast_handoff.copy_history_from(&fast);
+                reference_handoff.copy_history_from(&reference);
+                if index == 1 || index == 6 || index == 14 {
+                    let mut retargeted = runtime(s);
+                    let mut reference_retargeted = runtime(s);
+                    reference_retargeted.factory.uniform_companion = false;
+                    reference_retargeted.factory.partial_companion = false;
+                    reference_retargeted.factory.shared_loop_timing = false;
+                    let InstrumentHistoryRetargetPreparation::Prepared(proof) = retargeted
+                        .factory
+                        .prepare_history_retarget_target()
+                        .unwrap()
+                    else {
+                        panic!("prepared target")
+                    };
+                    let InstrumentHistoryRetargetPreparation::Prepared(reference_proof) =
+                        reference_retargeted
+                            .factory
+                            .prepare_history_retarget_target()
+                            .unwrap()
+                    else {
+                        panic!("prepared target")
+                    };
+                    assert!(retargeted.can_retarget_history_from(&fast, proof.as_ref()));
+                    assert!(
+                        reference_retargeted
+                            .can_retarget_history_from(&reference, reference_proof.as_ref())
+                    );
+                    retargeted.retarget_history_from(&fast, proof.as_ref());
+                    reference_retargeted
+                        .retarget_history_from(&reference, reference_proof.as_ref());
+                    assert_eq!(
+                        render(&mut retargeted, &[off(1)], 128, 128),
+                        render(&mut reference_retargeted, &[off(1)], 128, 128)
+                    );
+                }
+                assert_eq!(
+                    render(&mut fast_handoff, &[off(1)], 128, 128),
+                    render(&mut reference_handoff, &[off(1)], 128, 128),
+                    "pattern={pattern:?} mode={mode} global={global}"
+                );
+                let tail = if index == 1 || index == 6 || index == 14 {
+                    5000
+                } else {
+                    256
+                };
+                assert_eq!(
+                    render(&mut fast_handoff, &[], tail, 256),
+                    render(&mut reference_handoff, &[], tail, 256),
+                    "pattern={pattern:?} mode={mode} global={global}"
+                );
+                if tail == 5000 {
+                    assert!(fast_handoff.is_quiescent());
+                    assert!(reference_handoff.is_quiescent());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn shared_loop_timing_requires_matching_prepared_timing_inputs() {
+    let mut s = settings();
+    for i in 0..4 {
+        s.companion.words[i][5] = 1;
+        s.fields[CORE_FIELDS + i * ENVELOPE_FIELDS + 2] = 0.1 + i as f32 * 0.2;
+    }
+    assert!(runtime(s).factory.shared_loop_timing);
+    for word in [3, 5, 6] {
+        let mut different = s;
+        different.companion.words[3][word] ^= 1;
+        assert!(!runtime(different).factory.shared_loop_timing);
+    }
+    for field in [3, 4] {
+        let mut different = s;
+        different.fields[CORE_FIELDS + 3 * ENVELOPE_FIELDS + field] = 0.1;
+        assert!(!runtime(different).factory.shared_loop_timing);
+    }
+}
+
+#[test]
+fn uniform_companion_requires_bit_identical_authored_laws() {
+    let mut s = settings();
+    for row in &mut s.companion.words {
+        row[5] = 1;
+    }
+    assert!(runtime(s).factory.uniform_companion);
+    s.companion.words[3][5] = 4;
+    assert!(!runtime(s).factory.uniform_companion);
+    s.fields[31] = 1.0;
+    let mut independent = runtime(s);
+    let mut incorrectly_shared = runtime(s);
+    incorrectly_shared.factory.uniform_companion = true;
+    assert_ne!(
+        process(&mut independent, &[on(1, 60)], 512),
+        process(&mut incorrectly_shared, &[on(1, 60)], 512)
+    );
+    s.companion.words[3][5] = 1;
+    let mut different_law = s;
+    different_law.fields[CORE_FIELDS + 3 * ENVELOPE_FIELDS + 2] = 0.8;
+    let mut previous = runtime(different_law);
+    process(&mut previous, &[on(1, 60)], 64);
+    let target = runtime(s);
+    let InstrumentHistoryRetargetPreparation::Prepared(proof) =
+        target.factory.prepare_history_retarget_target().unwrap()
+    else {
+        panic!("prepared target")
+    };
+    assert!(!target.can_retarget_history_from(&previous, proof.as_ref()));
+    for i in 0..4 {
+        s.fields[CORE_FIELDS + i * ENVELOPE_FIELDS] = 0.0;
+    }
+    s.fields[CORE_FIELDS] = -0.0;
+    assert!(!runtime(s).factory.uniform_companion);
+}
 #[test]
 fn oldest_stealing_keeps_64_occurrence_admission_and_silent_noteoffs() {
     let mut s = settings();

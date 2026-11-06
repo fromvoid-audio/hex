@@ -692,9 +692,13 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
             offset += frames;
         }
         for index in 0..8 {
-            let current = if replacement { [0.1, -0.025] } else { [0.0; 2] };
+            let current = if replacement {
+                [0.1, -0.1 + 0.075 * (index + 1) as f32 / 240.0]
+            } else {
+                [0.0; 2]
+            };
             let current_return = if replacement {
-                [(0.1 - 0.025) * 0.5 * 0.25; 2]
+                [(current[0] + current[1]) * 0.5 * 0.25; 2]
             } else {
                 [0.0; 2]
             };
@@ -1452,4 +1456,119 @@ fn feed_capture_includes_retired_return_tail_once_without_refeeding_it() {
         }
         offset += count;
     }
+}
+
+#[test]
+fn detached_track_tail_reaches_group_once_and_unsafe_reparent_refuses() {
+    let mut snapshot = prepared_return_project(true, 1.0).snapshot();
+    snapshot.tracks[0].content = hex_project::TrackContentSnapshot::Audio(Vec::new());
+    snapshot.session = hex_project::SessionSnapshot::default();
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let track = project.tracks()[0].id();
+    let return_id = project.return_tracks()[0].id();
+    let mut editor = hex_project::Editor::new(project, 8).unwrap();
+    let hex_project::Created::Track(group) = editor
+        .execute(hex_project::Command::GroupTracks {
+            tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+            name: "group".into(),
+        })
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    editor
+        .execute(hex_project::Command::Gain {
+            track: group,
+            gain: 0.5,
+        })
+        .unwrap();
+    let grouped = editor.project();
+    let mut snapshot = grouped.snapshot();
+    for track in &mut snapshot.tracks {
+        track.kind = hex_project::TrackKind::Ordinary;
+        track.parent_group = None;
+    }
+    let flat = Project::from_snapshot(snapshot).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let prepare = |grouped_graph: bool| {
+        let mut revision =
+            PreparedRevision::prepare(&flat, &BTreeMap::new(), Arc::clone(&table), None).unwrap();
+        if grouped_graph {
+            revision.test_install_group_graph(grouped);
+        }
+        Arc::new(revision)
+    };
+    let revision = prepare(true);
+    let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 1]).unwrap();
+    old.tail_groups[0] = Some(active_tail_chain(
+        return_id,
+        1,
+        4,
+        std::mem::size_of::<HoldRuntime>(),
+    ));
+    old.tail_track_ids[0] = Some(track);
+    old.tail_mixes[0] = crate::PreparedTrackMix::new(1.0, 0.0, false).unwrap();
+    old.tail_suffix_starts[0] = 0;
+    old.tail_output_active[0] = true;
+    let mut refused = SessionPlayback::new(prepare(false)).unwrap();
+    assert!(matches!(
+        refused.preview_stream_handoff(&mut old, 1, None, &mut |_| Ok(())),
+        Err(SessionPlaybackError::GroupTailRoutingBusy)
+    ));
+    assert!(matches!(
+        refused.try_inherit_state_from(&mut old),
+        Err(SessionPlaybackError::GroupTailRoutingBusy)
+    ));
+    assert!(old.tail_groups[0].is_some());
+    let mut changed = Editor::new(grouped.clone(), 8).unwrap();
+    changed
+        .execute(Command::InsertDevice {
+            track: group,
+            before: None,
+            state: hex_devices::utility::UTILITY_DEFINITION
+                .default_state()
+                .unwrap(),
+        })
+        .unwrap();
+    let mut changed_snapshot = changed.project().snapshot();
+    for row in &mut changed_snapshot.tracks {
+        row.kind = hex_project::TrackKind::Ordinary;
+        row.parent_group = None;
+    }
+    let changed_flat = Project::from_snapshot(changed_snapshot).unwrap();
+    let mut changed_revision =
+        PreparedRevision::prepare(&changed_flat, &BTreeMap::new(), Arc::clone(&table), None)
+            .unwrap();
+    changed_revision.test_install_group_graph(changed.project());
+    let mut changed_candidate = SessionPlayback::new(Arc::new(changed_revision)).unwrap();
+    assert!(matches!(
+        changed_candidate.try_inherit_state_from(&mut old),
+        Err(SessionPlaybackError::GroupTailRoutingBusy)
+    ));
+    assert!(old.tail_groups[0].is_some());
+    let mut next = SessionPlayback::new(revision).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
+    let plan = next
+        .output_capture_plan(
+            &[
+                OutputCaptureId::Track(track),
+                OutputCaptureId::Return(return_id),
+            ],
+            4,
+        )
+        .unwrap();
+    let mut main = [[0.0; 2]; 4];
+    let mut track_output = main;
+    let mut returned = main;
+    let mut buffers: [&mut [Frame]; 2] = [&mut track_output, &mut returned];
+    let mut capture = OutputCapture::new(&plan, &mut buffers);
+    next.render_with_capture(&mut main, &mut capture).unwrap();
+    assert_eq!(track_output, [[0.25, -0.5]; 4]);
+    assert_eq!(
+        returned, [[0.0; 2]; 4],
+        "old tails must not enter current sends"
+    );
+    assert_eq!(main, [[0.125, -0.25]; 4]);
 }

@@ -29,6 +29,13 @@ fn scalar_source_with_value(
     target: DeviceAutomationTarget,
     value: f32,
 ) -> (DraftFile, hex_stream::ScalarSourceDefinition) {
+    scalar_source_for_target(project, DraftTarget::Device { device, target }, value)
+}
+fn scalar_source_for_target(
+    project: &hex_project::Project,
+    target: DraftTarget,
+    value: f32,
+) -> (DraftFile, hex_stream::ScalarSourceDefinition) {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let path = std::env::temp_dir().join(format!(
         "hex-native-scalar-{}-{}",
@@ -38,7 +45,7 @@ fn scalar_source_with_value(
     let mut writer = DraftWriter::create_with_clock(
         &path,
         project,
-        DraftTarget::Device { device, target },
+        target,
         DraftProvenance {
             sample_rate: 48_000,
             output_identity: 1,
@@ -96,6 +103,69 @@ fn scalar_source_with_value(
     )
     .unwrap();
     (DraftFile(path), source)
+}
+
+#[test]
+fn sealed_take_cannot_be_bound_to_another_parameter_device_or_track_gain_target() {
+    let mut snapshot = readiness::project_with_frames(8192).snapshot();
+    snapshot.assets[0].path = std::env::temp_dir().join("hex-scalar-target-source.wav");
+    let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+    let track = project.tracks()[0].id();
+    let mut editor = Editor::new(project, 8).unwrap();
+    let mut devices = Vec::new();
+    for _ in 0..2 {
+        let Created::Device(device) = editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: hex_engine::default_native_device_state(DeviceTypeId::from_static(
+                    "hex.utility",
+                ))
+                .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("utility device")
+        };
+        devices.push(device);
+    }
+    let project = editor.project();
+    let gain = DeviceAutomationTarget::Parameter(hex_devices::utility::parameter::GAIN);
+    let mute = DeviceAutomationTarget::Parameter(hex_devices::utility::parameter::MUTE);
+    let (_take, source) = scalar_source(project, devices[0], gain);
+    let (_track_take, track_source) =
+        scalar_source_for_target(project, DraftTarget::TrackGain { track }, 0.75);
+    let asset = project.assets().next().unwrap().id();
+    let media = BTreeMap::from([(
+        asset,
+        hex_engine::Audio::new(48_000, vec![[0.25; 2]; 8192]).unwrap(),
+    )]);
+    let prepare = |device, target, source: &hex_stream::ScalarSourceDefinition| {
+        hex_engine::PreparedRevision::prepare_with_scalar_automation(
+            project,
+            &media,
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+            hex_engine::ScalarAutomationBinding {
+                device,
+                target,
+                source: source.metadata().clone(),
+            },
+        )
+    };
+    assert!(prepare(devices[0], gain, &source).is_ok());
+    assert!(
+        prepare(devices[0], mute, &source).is_err(),
+        "a gain take cannot silently drive mute"
+    );
+    assert!(
+        prepare(devices[1], gain, &source).is_err(),
+        "a take cannot silently move to another device"
+    );
+    assert!(
+        prepare(devices[0], gain, &track_source).is_err(),
+        "track-gain takes are not device takes"
+    );
 }
 fn compile(
     project: &hex_project::Project,
@@ -165,6 +235,120 @@ fn measured_block(
     );
     output
 }
+#[test]
+fn changed_scalar_source_is_not_reported_as_changed_audio_media() {
+    let _serial = serial();
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    let mut snapshot = readiness::project_with_frames(8192).snapshot();
+    snapshot.assets[0].path = std::env::temp_dir().join("hex-native-scalar-resident.wav");
+    let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+    let track = project.tracks()[0].id();
+    let mut editor = Editor::new(project, 8).unwrap();
+    let Created::Device(device) = editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: hex_engine::default_native_device_state(DeviceTypeId::from_static(
+                "hex.utility",
+            ))
+            .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("utility fixture device")
+    };
+    let project = editor.project();
+    let target = DeviceAutomationTarget::Parameter(hex_devices::utility::parameter::GAIN);
+    let (file, source) = scalar_source(project, device, target);
+    let metadata = source.metadata().clone();
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_device_resource_publication_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 256,
+                root_rows: 128,
+                max_retained_bytes: 20_000_000,
+                max_construction_peak_bytes: 20_000_000,
+            },
+        )
+        .unwrap();
+    control
+        .configure_ordinary_streaming_on_control(
+            crate::AudioCandidateDomainReservation {
+                max_retained_data_bytes: 8 * 1024 * 1024,
+                max_construction_peak_data_bytes: 8 * 1024 * 1024,
+            },
+            3,
+            4096,
+        )
+        .unwrap();
+    let mut runtime = hex_stream::StreamRuntime::spawn_with_scalar_sources(
+        hex_stream::StreamConfig::with_pool_pages(4),
+        vec![],
+        vec![source],
+    )
+    .unwrap();
+    runtime
+        .wait_until_ready(std::time::Duration::from_secs(2))
+        .unwrap();
+    let domain = control
+        .register_audio_candidate_domain_with_readiness(
+            runtime.split().ok().unwrap(),
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3,
+            },
+        )
+        .unwrap_or_else(|_| panic!("scalar domain registration"));
+    std::fs::write(&file.0, b"changed automation bytes").unwrap();
+    data.owner_mut().unwrap().run(|c, _| c.begin_block());
+    let revision = control
+        .publish_with_admission_and_source_on_control(
+            compile(project, device, target, metadata, None),
+            PublicationPolicy::InheritRuntime,
+            hex_engine::AudioSourceContext {
+                project_generation: 7,
+                editor_revision: 3,
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap_or_else(|_| panic!("scalar publication"));
+    control.command(PlaybackCommand::Play).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let rejection = loop {
+        assert_eq!(measured_block(&mut data), [[0.0; 2]; 8]);
+        if let Some(rejection) = control.status.rejected_revision() {
+            break rejection;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    };
+    let source_changed = control.status.stream_source_changed.load(Acquire);
+    assert!(control.retire_audio_candidate_domain(domain));
+    control.request_shutdown();
+    loop {
+        measured_block(&mut data);
+        control.reclaim();
+        if let Some(report) = control.recover_audio_candidate_domain(domain) {
+            assert!(report.worker_joined && report.accounting_complete);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    drop(data);
+    drop(errors);
+    drop(control);
+    finish(&mut retirement);
+    assert_eq!(
+        rejection,
+        (revision, PlaybackHandoffRejection::StreamedPagesNotReady)
+    );
+    assert!(!source_changed);
+}
+
 #[test]
 fn real_scalar_only_native_source_requires_catalog_and_pages_then_renders_and_joins_without_callback_allocations()
  {
@@ -300,6 +484,41 @@ fn scalar_case(target: DeviceAutomationTarget, mixed: bool) {
         (0, 0, 0, 0)
     );
     assert!(control.audio_candidate_domain_endpoint_is_installed(domain));
+    if target == DeviceAutomationTarget::Parameter(hex_devices::utility::parameter::GAIN) {
+        let forged_target =
+            DeviceAutomationTarget::Parameter(hex_devices::utility::parameter::MUTE);
+        let forged = hex_engine::ScalarSourceMetadata::new(
+            metadata.key(),
+            hex_engine::ScalarSourceTarget::Device {
+                device,
+                target: forged_target,
+            },
+            metadata.project_rate(),
+            metadata.start_frame(),
+            metadata.end_frame(),
+            metadata.projection_identity(),
+            metadata.file_identity(),
+        )
+        .unwrap();
+        let refused = control.publish_with_admission_and_source_on_control(
+            compile(
+                project,
+                device,
+                forged_target,
+                forged,
+                audio_metadata.as_ref(),
+            ),
+            PublicationPolicy::InheritRuntime,
+            context,
+            |_| Ok::<_, ()>(()),
+        );
+        assert!(
+            refused.is_err(),
+            "the actual catalog must reject forged target facts"
+        );
+        assert_eq!(control.submitted_revision(), 0);
+        assert_eq!(control.unreturned_resident_graphs_on_control(), Some(0));
+    }
     let revision = control
         .publish_with_admission_and_source_on_control(
             compile(project, device, target, metadata, audio_metadata.as_ref()),
@@ -669,12 +888,12 @@ fn conflicting_scalar_key_facts_across_selected_domains_refuse_before_publicatio
         measured_block(&mut data);
         control.reclaim();
         for (index, token) in domains.iter().enumerate() {
-            if !reports[index] {
-                if let Some(report) = control.recover_audio_candidate_domain(*token) {
-                    assert!(report.worker_joined && report.accounting_complete);
-                    assert_eq!(report.page_buffers, 4);
-                    reports[index] = true;
-                }
+            if !reports[index]
+                && let Some(report) = control.recover_audio_candidate_domain(*token)
+            {
+                assert!(report.worker_joined && report.accounting_complete);
+                assert_eq!(report.page_buffers, 4);
+                reports[index] = true;
             }
         }
         assert!(std::time::Instant::now() < deadline);

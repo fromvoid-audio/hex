@@ -68,6 +68,11 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
                 DeviceAutomationTarget::Parameter(_) => continue,
                 DeviceAutomationTarget::HostInputGain => Target::InputGain,
                 DeviceAutomationTarget::HostOutputGain => Target::OutputGain,
+                DeviceAutomationTarget::Vst3 { .. } => {
+                    return Err(StorageError::Invalid(
+                        "older schema cannot save vst3 automation targets",
+                    ));
+                }
             };
             rows.push(Lane {
                 device: device.id().value(),
@@ -99,8 +104,10 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
     Ok(value)
 }
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?)
+}
+/// Decode an envelope parsed once by [`super::audio_events::parse_unique`].
+pub(crate) fn decode_value(mut value: serde_json::Value) -> Result<Project, StorageError> {
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid host automation document"))?;
@@ -113,7 +120,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             .ok_or(StorageError::Invalid("host automation inventory missing"))?,
     )?;
     object.insert("version".into(), 52.into());
-    let core = super::clip_aliases::decode(&serde_json::to_vec(&value)?)?;
+    let core = super::clip_aliases::decode_value(value)?;
     let known: std::collections::BTreeSet<_> =
         core.automation_devices().map(|d| d.id().value()).collect();
     let mut snapshot = core.snapshot();
@@ -150,6 +157,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             .entry(row.device)
             .or_default()
             .push(DeviceAutomation {
+                vst3_class: None,
                 read_selection: hex_project::AutomationReadSelection::Authored,
                 target: match row.target {
                     Target::InputGain => DeviceAutomationTarget::HostInputGain,

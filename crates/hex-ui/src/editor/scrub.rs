@@ -112,6 +112,7 @@ impl EditorView {
         ) else {
             return false;
         };
+        self.latency_rebuild = None;
         self.scrub.gesture = Some(ScrubGesture {
             context,
             latest: Some(frame),

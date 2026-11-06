@@ -86,6 +86,8 @@ impl StateView<'_> {
             .filter(|w| w.valid())
             .ok_or(hex_engine::Invalid("stream demand workspace unavailable"))?;
         workspace.handoff_diagnostic = None;
+        workspace.source_changed = false;
+        workspace.capacity_conflict = false;
         let runtime = self
             .runtime
             .as_mut()
@@ -236,10 +238,14 @@ impl StateView<'_> {
                 // stale buffers returned. Consuming its receipt releases the
                 // failed pending key; continue bounded service below. Actual
                 // source/read failures still refuse the affected window.
-                failed_window |= failure.kind != hex_stream::StreamFailureKind::CapacityExhausted
-                    && rows.iter().any(|row| {
-                        row.source == failure.key && row.page_index == failure.page_index
-                    });
+                let demanded = rows
+                    .iter()
+                    .any(|row| row.source == failure.key && row.page_index == failure.page_index);
+                failed_window |=
+                    failure.kind != hex_stream::StreamFailureKind::CapacityExhausted && demanded;
+                workspace.source_changed |= demanded
+                    && failure.kind == hex_stream::StreamFailureKind::SourceChanged
+                    && matches!(failure.key, hex_engine::StreamResourceKey::Audio(_));
                 pages.inner.last_failure = Some(failure);
             }
             if failed_window {
@@ -276,8 +282,10 @@ impl StateView<'_> {
                     admitted_command_prefix: request.command_prefix,
                     window,
                 };
-                loan.submit_resources(role, stamp, rows)
-                    .map_err(|_| hex_engine::Invalid("stream protection reservation refused"))?;
+                if let Err(refusal) = loan.submit_resources(role, stamp, rows) {
+                    workspace.capacity_conflict = refusal == hex_stream::ReadinessRefusal::Capacity;
+                    return Err(hex_engine::Invalid("stream protection reservation refused"));
+                }
                 pages.inner.epoch = epoch;
                 stamps[token.slot] = Some(stamp);
             }
@@ -414,6 +422,15 @@ impl hex_engine::MediaPages for PagePair<'_> {
     }
     fn request_scalar_page(&mut self, _key: hex_engine::ScalarSourceKey, _index: u64) {}
     fn request_page(&mut self, _key: hex_engine::StreamSourceKey, _index: u64) {}
+    fn prefetch_page(&mut self, key: hex_engine::StreamSourceKey, index: u64) {
+        // Each endpoint ignores sources outside its catalog.
+        for pages in [self.left.as_mut(), self.right.as_mut()]
+            .into_iter()
+            .flatten()
+        {
+            pages.prefetch_page(key, index);
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StreamProgress {
@@ -424,8 +441,10 @@ pub(crate) struct StreamOutcome {
     pub(crate) progress: StreamProgress,
     pub(crate) play_applied: bool,
     pub(crate) readiness_refused: bool,
+    pub(crate) source_changed: bool,
     pub(crate) fault: Option<hex_engine::Invalid>,
     pub(crate) action_rejection: Option<(u64, hex_engine::PlaybackActionRejection)>,
+    pub(crate) action_applied: Option<u64>,
     pub(crate) activated: Option<u64>,
 }
 impl ActiveView<'_> {
@@ -464,14 +483,21 @@ impl ActiveView<'_> {
         mut project: Option<&mut hex_engine::ProjectOutputTap<'_, '_>>,
         mut foreign: Option<&mut dyn hex_lattice::ForeignProcessors>,
     ) -> StreamOutcome {
+        if let Some(workspace) = self.state.streaming.as_mut() {
+            workspace.capacity_conflict = false;
+        }
         let mut request = StreamInstall {
             domains,
             pending_play: false,
             command_prefix,
             frames: output.len(),
         };
-        let action_rejection = match self.resolve_stream_action(&mut request) {
-            super::actions::ActionResolution::Ready(rejection) => rejection,
+        let (action_applied, action_rejection) = match self.resolve_stream_action(&mut request) {
+            super::actions::ActionResolution::Ready(Some((ticket, Ok(())))) => (Some(ticket), None),
+            super::actions::ActionResolution::Ready(Some((ticket, Err(reason)))) => {
+                (None, Some((ticket, reason)))
+            }
+            super::actions::ActionResolution::Ready(None) => (None, None),
             super::actions::ActionResolution::Pending => {
                 output.fill([0.0; 2]);
                 return StreamOutcome {
@@ -480,8 +506,10 @@ impl ActiveView<'_> {
                     },
                     play_applied: false,
                     readiness_refused: false,
+                    source_changed: false,
                     fault: None,
                     action_rejection: None,
+                    action_applied: None,
                     activated: None,
                 };
             }
@@ -500,6 +528,11 @@ impl ActiveView<'_> {
             let mut planned =
                 self.state
                     .prepare_stream_window(None, &mut request, ProtectionRole::Transition);
+            let mut source_changed = self
+                .state
+                .streaming
+                .as_mut()
+                .is_some_and(|workspace| std::mem::take(&mut workspace.source_changed));
             if !matches!(planned, Ok(Some(_))) && self.revoke_launch_prewarm(request.domains) {
                 if let Some(scheduled) = self
                     .state
@@ -518,12 +551,23 @@ impl ActiveView<'_> {
                     &mut request,
                     ProtectionRole::Transition,
                 );
+                source_changed |= self
+                    .state
+                    .streaming
+                    .as_mut()
+                    .is_some_and(|workspace| std::mem::take(&mut workspace.source_changed));
             }
             let window = match planned {
                 Ok(Some(window)) => window,
                 result => {
                     let refused = result.is_err();
-                    self.state.cancel_stream_pending(domains);
+                    // Keep partial ready pages under their exact pending intent
+                    // across buffering callbacks. Changed demand or commands
+                    // invalidate the stamp on the next preparation; failures
+                    // still release it immediately.
+                    if refused {
+                        self.state.cancel_stream_pending(domains);
+                    }
                     output[committed..].fill([0.0; 2]);
                     return StreamOutcome {
                         progress: StreamProgress::Buffering {
@@ -531,8 +575,10 @@ impl ActiveView<'_> {
                         },
                         play_applied,
                         readiness_refused: refused,
+                        source_changed,
                         fault: None,
                         action_rejection,
+                        action_applied,
                         activated,
                     };
                 }
@@ -547,8 +593,10 @@ impl ActiveView<'_> {
                         },
                         play_applied,
                         readiness_refused: true,
+                        source_changed: false,
                         fault: None,
                         action_rejection,
+                        action_applied,
                         activated,
                     };
                 }
@@ -561,7 +609,7 @@ impl ActiveView<'_> {
                     .ok_or(hex_engine::Invalid("stream current owner missing"))
                     .and_then(|runtime| {
                         runtime
-                            .apply_action(hex_engine::PlaybackAction::Transport(
+                            .apply_declicked_action(hex_engine::PlaybackAction::Transport(
                                 hex_engine::PlaybackCommand::Play,
                             ))
                             .map_err(|_| hex_engine::Invalid("ready stream Play refused"))
@@ -574,8 +622,10 @@ impl ActiveView<'_> {
                         },
                         play_applied,
                         readiness_refused: false,
+                        source_changed: false,
                         fault: Some(error),
                         action_rejection,
+                        action_applied,
                         activated,
                     };
                 }
@@ -608,26 +658,19 @@ impl ActiveView<'_> {
                 };
                 let observer: Option<&mut hex_engine::NodeSignalObserver<'_>> =
                     if observed { Some(&mut observe) } else { None };
-                let mut project_ids = [0; hex_engine::MAX_SESSION_ROUTE_TRACKS];
-                let project_count = project.as_ref().map_or(0, |tap| {
-                    let count = tap.tracks().len();
-                    project_ids[..count].copy_from_slice(tap.tracks());
-                    count
-                });
-                let project_observed = project.is_some();
+                let project_selection = project.as_ref().map(|tap| (tap.tracks(), tap.returns()));
                 let mut observe_project = |signal, offset, frames: &[hex_engine::Frame]| {
                     if let Some(project) = project.as_mut() {
                         project.observe(signal, committed + offset, frames);
                     }
                 };
-                let mut project_tap = if project_observed {
-                    hex_engine::ProjectOutputTap::new(
-                        &project_ids[..project_count],
+                let mut project_tap = project_selection.and_then(|(tracks, returns)| {
+                    hex_engine::ProjectOutputTap::with_returns(
+                        tracks,
+                        returns,
                         &mut observe_project,
                     )
-                } else {
-                    None
-                };
+                });
                 let rendered = self
                     .state
                     .runtime
@@ -661,8 +704,10 @@ impl ActiveView<'_> {
                         },
                         play_applied,
                         readiness_refused: false,
+                        source_changed: false,
                         fault: Some(error),
                         action_rejection,
+                        action_applied,
                         activated,
                     };
                 }
@@ -691,8 +736,10 @@ impl ActiveView<'_> {
             progress: StreamProgress::Complete,
             play_applied,
             readiness_refused: false,
+            source_changed: false,
             fault: None,
             action_rejection,
+            action_applied,
             activated,
         }
     }

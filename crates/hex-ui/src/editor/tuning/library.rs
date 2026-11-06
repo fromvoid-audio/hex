@@ -23,7 +23,9 @@ impl EditorView {
         {
             return;
         }
-        let context = self.tuning.library_terminal.take().unwrap();
+        let Some(context) = self.tuning.library_terminal.take() else {
+            return;
+        };
         if !accepted || !context.refresh || key.generation != self.project_generation {
             return;
         }
@@ -37,21 +39,21 @@ impl EditorView {
                 operation_id,
                 ..
             } = request
+                && *operation_id == context.operation_id
+                && *project_generation == key.generation
             {
-                if *operation_id == context.operation_id && *project_generation == key.generation {
-                    // Rebind exactly this queued current-context action, in place.
-                    // Previously opened dialogs retain their original context.
-                    *revision = state.revision;
-                    break;
-                }
+                // Rebind exactly this queued current-context action, in place.
+                // Previously opened dialogs retain their original context.
+                *revision = state.revision;
+                break;
             }
         }
     }
     pub(in crate::editor) fn retire_tuning_library_device_terminal(&mut self) {
-        if let Some(context) = self.tuning.library_terminal.take() {
-            if self.tuning.library_pending == Some(context.operation_id) {
-                self.tuning.library_pending = None;
-            }
+        if let Some(context) = self.tuning.library_terminal.take()
+            && self.tuning.library_pending == Some(context.operation_id)
+        {
+            self.tuning.library_pending = None;
         }
     }
 
@@ -188,11 +190,11 @@ impl EditorView {
                     Some("device edit queue full · retry the library action".into());
                 return;
             }
-            if !self.device_gesture.has_pending_terminal() {
-                if let Err(error) = self.device_gesture.finish_current() {
-                    self.tuning.error = Some(error.into());
-                    return;
-                }
+            if !self.device_gesture.has_pending_terminal()
+                && let Err(error) = self.device_gesture.finish_current()
+            {
+                self.tuning.error = Some(error.into());
+                return;
             }
             if self.tuning.client.snapshot().is_some() {
                 let _ = self.tuning.client.cancel();

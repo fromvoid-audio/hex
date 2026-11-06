@@ -2,7 +2,10 @@
 //! grants native ownership: its finite PCM is copied into a fresh constructor
 //! receipt, retained in the slot, then aliased to the exact graph destination.
 use super::*;
-use crate::{audio_transform::GroupSource, compile::PreparedAudioSourceRef};
+use crate::{
+    audio_transform::{GroupSource, sparse_group_plan},
+    compile::PreparedAudioSourceRef,
+};
 use hex_project::{AudioDomainClock, AudioViewProjection, MAX_AUDIO_DOMAIN_FRAMES};
 
 pub(crate) fn transformed_count(project: &hex_project::Project) -> usize {
@@ -57,16 +60,19 @@ fn root_work(
 fn clip_quote(
     clip: &hex_project::Clip,
     tempo: &hex_project::TempoMap,
-) -> Result<(u64, u64), AudioStorageError> {
+) -> Result<(u64, u64, usize), AudioStorageError> {
     let Some(edit) = clip.audio_edit() else {
-        return Ok((0, 0));
+        return Ok((0, 0, 0));
     };
     let grouped = edit
         .domain
         .events
         .as_ref()
         .filter(|events| !events.sources.is_empty());
-    let frames = if grouped.is_some() || edit.placement.is_some() || edit.content_view.is_some() {
+    let sparse = sparse_group_plan(clip).map_err(invalid)?;
+    let frames = if let Some((_, frames, _)) = sparse {
+        u64::try_from(frames).map_err(|_| AudioStorageError::Overflow)?
+    } else if grouped.is_some() || edit.placement.is_some() || edit.content_view.is_some() {
         clip.duration()
     } else {
         edit.projected_domain(tempo).map_err(invalid)?.1
@@ -75,7 +81,11 @@ fn clip_quote(
         return Err(AudioStorageError::Capacity);
     }
     let work = if grouped.is_some() {
-        let mut work = edit.domain.clock.length();
+        let mut work = if sparse.is_some() {
+            frames
+        } else {
+            edit.domain.clock.length()
+        };
         for root in clip.retained_audio_roots() {
             work = work
                 .checked_add(root_work(&root.clip, &root.tempo)?)
@@ -83,7 +93,7 @@ fn clip_quote(
                 .filter(|frames| *frames <= MAX_AUDIO_DOMAIN_FRAMES)
                 .ok_or(AudioStorageError::Capacity)?;
         }
-        work.checked_add(clip.duration())
+        work.checked_add(if sparse.is_some() { 0 } else { clip.duration() })
             .ok_or(AudioStorageError::Overflow)?
     } else {
         root_work(clip, tempo)?
@@ -97,7 +107,12 @@ fn clip_quote(
     if work > MAX_AUDIO_DOMAIN_FRAMES * 2 {
         return Err(AudioStorageError::Capacity);
     }
-    Ok((frames, work))
+    let layout_bytes = if let Some((_, _, spans)) = sparse {
+        crate::SparseFrameMap::allocation_bytes(spans).ok_or(AudioStorageError::UnknownStorage)?
+    } else {
+        0
+    };
+    Ok((frames, work, layout_bytes))
 }
 
 pub(crate) fn prepared_pcm_frames(
@@ -130,7 +145,7 @@ pub(crate) fn transformed_audio_quote(
     let mut retained = 0usize;
     let mut workspace = 0usize;
     for clip in project.tracks().iter().flat_map(|track| track.clips()) {
-        let (frames, work) = clip_quote(clip, project.tempo_map())?;
+        let (frames, work, layout_bytes) = clip_quote(clip, project.tempo_map())?;
         if frames == 0 {
             continue;
         }
@@ -143,6 +158,7 @@ pub(crate) fn transformed_audio_quote(
                     .declared_bytes()
                     .ok_or(AudioStorageError::Overflow)?,
             )
+            .and_then(|n| n.checked_add(layout_bytes))
             .ok_or(AudioStorageError::Overflow)?;
         workspace = workspace.max(
             workspace_for_frames(work)?
@@ -288,7 +304,11 @@ pub(super) fn construct_origin(
             };
             sources.push(GroupSource { root, asset, audio });
         }
-        Some(transforms.compile_group(clip, &sources).map_err(invalid)?)
+        Some(
+            transforms
+                .compile_arrangement_group(clip, &sources)
+                .map_err(invalid)?,
+        )
     } else {
         let asset = project
             .asset(clip.asset())
@@ -317,6 +337,20 @@ pub(super) fn construct_origin(
             return Err(AudioStorageError::SourceMismatch);
         }
     }
+    let layout = compiled
+        .as_mut()
+        .and_then(|clip| clip.metadata.as_mut())
+        .and_then(|metadata| metadata.sparse.take());
+    if layout.as_ref().map(|map| map.packed_len()) != slot.sparse_frames {
+        return Err(AudioStorageError::SourceMismatch);
+    }
+    if let Some(layout) = &layout {
+        let (_, _, reserved) = clip_quote(clip, project.tempo_map())?;
+        if layout.retained_bytes().is_none_or(|bytes| bytes > reserved) {
+            return Err(AudioStorageError::ReservationExceeded);
+        }
+    }
+    slot.sparse = layout;
     let mut frames = Vec::new();
     let length = compiled
         .as_ref()

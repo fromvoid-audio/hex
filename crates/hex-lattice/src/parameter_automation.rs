@@ -381,7 +381,9 @@ impl PreparedParameterAutomation {
             match lane.target {
                 DeviceAutomationTarget::HostInputGain => host_input = Some(prepared.len()),
                 DeviceAutomationTarget::HostOutputGain => host_output = Some(prepared.len()),
-                DeviceAutomationTarget::Parameter(_) => return Err(Error::InvalidDescriptor),
+                DeviceAutomationTarget::Parameter(_) | DeviceAutomationTarget::Vst3 { .. } => {
+                    return Err(Error::InvalidDescriptor);
+                }
             }
             end = lane.points.end;
             prepared.push(PreparedParameterAutomationLane {
@@ -502,7 +504,9 @@ impl PreparedParameterAutomation {
         let slot = match target {
             DeviceAutomationTarget::HostInputGain => self.host_input,
             DeviceAutomationTarget::HostOutputGain => self.host_output,
-            DeviceAutomationTarget::Parameter(_) => return Err(Error::InvalidDescriptor),
+            DeviceAutomationTarget::Parameter(_) | DeviceAutomationTarget::Vst3 { .. } => {
+                return Err(Error::InvalidDescriptor);
+            }
         };
         if slot.is_some() {
             return Ok(());
@@ -522,7 +526,9 @@ impl PreparedParameterAutomation {
         match target {
             DeviceAutomationTarget::HostInputGain => self.host_input = Some(index),
             DeviceAutomationTarget::HostOutputGain => self.host_output = Some(index),
-            DeviceAutomationTarget::Parameter(_) => return Err(Error::InvalidDescriptor),
+            DeviceAutomationTarget::Parameter(_) | DeviceAutomationTarget::Vst3 { .. } => {
+                return Err(Error::InvalidDescriptor);
+            }
         }
         Ok(())
     }
@@ -556,11 +562,20 @@ impl PreparedParameterAutomation {
     pub fn is_empty(&self) -> bool {
         self.lanes.is_empty() && self.input_target.is_none()
     }
+    /// The tail split can stage output-gain control while input gain stays
+    /// static. Provider controls, authored curves and input-gain windows need
+    /// their own verified combined-signal contracts.
+    pub(crate) fn supports_tail_split_controls(&self) -> bool {
+        self.points.is_empty()
+            && self.ids.is_empty()
+            && self.host_input.is_none()
+            && self.input_target != Some(DeviceAutomationTarget::HostInputGain)
+    }
     pub fn has_host_target(&self, target: DeviceAutomationTarget) -> bool {
         match target {
             DeviceAutomationTarget::HostInputGain => self.host_input.is_some(),
             DeviceAutomationTarget::HostOutputGain => self.host_output.is_some(),
-            DeviceAutomationTarget::Parameter(_) => false,
+            DeviceAutomationTarget::Parameter(_) | DeviceAutomationTarget::Vst3 { .. } => false,
         }
     }
     pub fn has_host_targets(&self) -> bool {
@@ -734,7 +749,9 @@ impl ParameterAutomationBlock<'_> {
         let index = match target {
             DeviceAutomationTarget::HostInputGain => self.program.host_input?,
             DeviceAutomationTarget::HostOutputGain => self.program.host_output?,
-            DeviceAutomationTarget::Parameter(_) => return None,
+            DeviceAutomationTarget::Parameter(_) | DeviceAutomationTarget::Vst3 { .. } => {
+                return None;
+            }
         };
         self.external_value(index, target, offset)
             .or_else(|| self.value_at_beat(index, self.clock?.arrangement_beat_at_offset(offset)?))?

@@ -38,6 +38,67 @@ fn fixture() -> (Editor, TrackId, ClipId) {
     (editor, track, clip)
 }
 #[test]
+fn scalar_gain_survives_copy_split_history_and_curve_replacement() {
+    let (mut editor, _, clip) = fixture();
+    editor
+        .execute(Command::ReplaceMidiClipVolume {
+            clip,
+            volume: volume(),
+        })
+        .unwrap();
+    let scalar = hex_project::ClipGain::new(-9_000).unwrap();
+    editor
+        .execute(Command::SetMidiClipGain { clip, gain: scalar })
+        .unwrap();
+    let Created::Clip(copy) = editor.execute(Command::DuplicateMidiClip(clip)).unwrap() else {
+        panic!("copy")
+    };
+    assert_eq!(
+        editor.project().midi_clip_volume(copy).unwrap().clip_gain(),
+        scalar
+    );
+    let Created::Clip(right) = editor
+        .execute(Command::SplitMidiClip {
+            clip,
+            beat: beat(4),
+        })
+        .unwrap()
+    else {
+        panic!("split")
+    };
+    for id in [clip, right, copy] {
+        assert_eq!(
+            editor.project().midi_clip_volume(id).unwrap().clip_gain(),
+            scalar
+        );
+    }
+    assert!(editor.undo());
+    assert!(editor.project().midi_clip(right).is_none());
+    assert_eq!(
+        editor.project().midi_clip_volume(clip).unwrap().clip_gain(),
+        scalar
+    );
+    editor
+        .execute(Command::ReplaceMidiClipVolume {
+            clip,
+            volume: MidiClipVolume::default(),
+        })
+        .unwrap();
+    assert_eq!(
+        editor.project().midi_clip_volume(clip).unwrap().clip_gain(),
+        scalar
+    );
+    assert_eq!(
+        editor.project().midi_clip_volume(copy).unwrap().points(),
+        volume().points()
+    );
+    assert_eq!(
+        Project::from_snapshot(editor.project().snapshot()).unwrap(),
+        *editor.project()
+    );
+}
+
+#[test]
 fn volume_edit_preserves_note_identity_has_own_history_and_does_not_change_copied_clip() {
     let (mut editor, _track, clip) = fixture();
     let before = editor.project().clone();
@@ -248,6 +309,10 @@ fn frame_range_clipboard_preserves_volume_across_source_and_destination_tempo_ch
             volume: volume(),
         })
         .unwrap();
+    let scalar = hex_project::ClipGain::new(-6_000).unwrap();
+    editor
+        .execute(Command::SetMidiClipGain { clip, gain: scalar })
+        .unwrap();
     let map = editor.project().tempo_map().clone();
     let start = map.beat_to_frame(beat(1)).unwrap();
     let end = map.beat_to_frame(beat(7)).unwrap();
@@ -272,6 +337,7 @@ fn frame_range_clipboard_preserves_volume_across_source_and_destination_tempo_ch
         .iter()
         .find(|owner| owner.id() != clip)
         .unwrap();
+    assert_eq!(pasted.volume().clip_gain(), scalar);
     for offset in [
         0,
         12000,

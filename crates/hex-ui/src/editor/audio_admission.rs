@@ -12,9 +12,41 @@ pub(super) struct ProjectRevision {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum StoppedPlaybackRestore {
+    WaitingForEdits { generation: u64, output: u64 },
     Preparing,
     Ready,
     Published(u64),
+}
+
+/// A canonical or native latency change can rebuild after a faded Stop.
+/// The output and project identities fence both the stop and the later resume.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LatencyRebuild {
+    Unresolved {
+        generation: u64,
+        output: u64,
+        audio_revision: u64,
+    },
+    Waiting {
+        project: ProjectRevision,
+        output: u64,
+        runtime_audio: Option<u64>,
+    },
+    Fading {
+        project: ProjectRevision,
+        output: u64,
+        frame: u64,
+        ticket: u64,
+        runtime_audio: Option<u64>,
+    },
+    Restoring {
+        project: ProjectRevision,
+        output: u64,
+        frame: u64,
+        resume: bool,
+        runtime_audio: Option<u64>,
+        installed: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -267,6 +299,18 @@ mod tests {
     }
 
     #[test]
+    fn changed_media_rejection_reaches_the_admission_description() {
+        let current = project(2, 17);
+        let mut status = AudioAdmissionStatus::default();
+        status.canonical_revision(current);
+        status.published(current, 31);
+        let reason = hex_engine::PlaybackHandoffRejection::StreamSourceChanged.message();
+        assert!(status.rejected(current, 31, reason));
+        assert!(status.description().contains("original media changed"));
+        assert!(status.description().contains("reopen or relink"));
+    }
+
+    #[test]
     fn current_revision_transitions_pending_applied_and_rejected() {
         let current = project(2, 17);
         let mut status = AudioAdmissionStatus::default();
@@ -279,11 +323,13 @@ mod tests {
         assert_eq!(status.current().unwrap().audio_revision, Some(31));
         assert_eq!(status.last_audible(), None);
 
-        assert!(status.rejected(current, 31, "session graph handoff was rejected"));
+        let reason = hex_engine::PlaybackHandoffRejection::SourceHistoryUnavailable.message();
+        assert!(status.rejected(current, 31, reason));
         assert_eq!(
             status.current().unwrap().state,
-            AdmissionState::Rejected("session graph handoff was rejected")
+            AdmissionState::Rejected(reason)
         );
+        assert!(status.description().contains("previous audio continues"));
         assert!(status.description().contains("audio revision 31"));
         assert!(status.description().contains("rejected:"));
 

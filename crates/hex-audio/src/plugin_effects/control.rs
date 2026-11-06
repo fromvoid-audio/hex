@@ -1,7 +1,10 @@
 //! Original worker custody while its unique callback is loaned through Root's
 //! existing carrier. There is no public constructor, clone or worker extraction.
 use super::*;
-use crate::plugin_worker::{NativeWorkerCapture, NativeWorkerCaptureProgress};
+use crate::plugin_worker::{
+    NativeWorkerCapture, NativeWorkerCaptureProgress, NativeWorkerControllerProgress,
+    NativeWorkerControllerQuery,
+};
 
 pub(crate) struct NativeEffectControl {
     worker: NativeWorker,
@@ -10,6 +13,48 @@ pub(crate) struct NativeEffectControl {
     source_metadata: EffectSourceMetadata,
 }
 impl NativeEffect {
+    pub(crate) fn begin_parameter_change(
+        &mut self,
+        id: u32,
+        normalized: f64,
+        idle: bool,
+    ) -> Result<crate::plugin_worker::NativeWorkerParameterChange, &'static str> {
+        self.worker.begin_parameter_change(id, normalized, idle)
+    }
+    pub(crate) fn withdraw_parameter_change(
+        &mut self,
+        request: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<bool, &'static str> {
+        self.worker.withdraw_parameter_change_on_control(request)
+    }
+    pub(crate) fn poll_parameter_change(
+        &mut self,
+        request: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<crate::plugin_worker::NativeWorkerParameterProgress, &'static str> {
+        self.worker.poll_parameter_change_on_control(request)
+    }
+    pub(crate) fn drain_stopped_parameter_change(
+        &mut self,
+        request: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<crate::plugin_worker::NativeWorkerParameterProgress, &'static str> {
+        self.worker
+            .drain_stopped_parameter_change_on_control(request)
+    }
+    pub(crate) fn parameter_change_pending(&self) -> Result<bool, &'static str> {
+        self.worker.parameter_change_pending_on_control()
+    }
+    pub(crate) fn begin_controller_query(
+        &mut self,
+        query: hex_plugin_host::protocol::ControllerRequest,
+    ) -> Result<NativeWorkerControllerQuery, &'static str> {
+        self.worker.begin_controller_query_on_control(query)
+    }
+    pub(crate) fn poll_controller_query(
+        &mut self,
+        request: &NativeWorkerControllerQuery,
+    ) -> Result<NativeWorkerControllerProgress, &'static str> {
+        self.worker.poll_controller_query_on_control(request)
+    }
     pub(crate) fn parameter_values(
         &self,
     ) -> Result<crate::plugin_worker::NativeParameterValues, &'static str> {
@@ -19,6 +64,12 @@ impl NativeEffect {
         &mut self,
     ) -> Result<Option<hex_plugin_host::protocol::ParameterEdits>, &'static str> {
         self.worker.poll_parameter_edits_on_control()
+    }
+    pub(crate) fn poll_recovery_edits(
+        &mut self,
+        flush_idle: bool,
+    ) -> Result<Option<hex_plugin_host::protocol::RecoveryEdits>, &'static str> {
+        self.worker.poll_recovery_edits_on_control(flush_idle)
     }
     pub(crate) fn begin_state_capture(&mut self) -> Result<NativeWorkerCapture, &'static str> {
         self.worker.begin_state_capture_on_control()
@@ -52,6 +103,45 @@ impl NativeEffect {
     }
 }
 impl NativeEffectControl {
+    pub(crate) fn begin_parameter_change(
+        &mut self,
+        id: u32,
+        normalized: f64,
+        idle: bool,
+    ) -> Result<crate::plugin_worker::NativeWorkerParameterChange, &'static str> {
+        self.worker.begin_parameter_change(id, normalized, idle)
+    }
+    pub(crate) fn withdraw_parameter_change(
+        &mut self,
+        request: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<bool, &'static str> {
+        self.worker.withdraw_parameter_change_on_control(request)
+    }
+    pub(crate) fn poll_parameter_change(
+        &mut self,
+        request: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<crate::plugin_worker::NativeWorkerParameterProgress, &'static str> {
+        self.worker.poll_parameter_change_on_control(request)
+    }
+    pub(crate) fn drain_stopped_parameter_change(
+        &mut self,
+        request: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<crate::plugin_worker::NativeWorkerParameterProgress, &'static str> {
+        self.worker
+            .drain_stopped_parameter_change_on_control(request)
+    }
+    pub(crate) fn begin_controller_query(
+        &mut self,
+        query: hex_plugin_host::protocol::ControllerRequest,
+    ) -> Result<NativeWorkerControllerQuery, &'static str> {
+        self.worker.begin_controller_query_on_control(query)
+    }
+    pub(crate) fn poll_controller_query(
+        &mut self,
+        request: &NativeWorkerControllerQuery,
+    ) -> Result<NativeWorkerControllerProgress, &'static str> {
+        self.worker.poll_controller_query_on_control(request)
+    }
     pub(crate) fn parameter_values(
         &self,
     ) -> Result<crate::plugin_worker::NativeParameterValues, &'static str> {
@@ -61,6 +151,12 @@ impl NativeEffectControl {
         &mut self,
     ) -> Result<Option<hex_plugin_host::protocol::ParameterEdits>, &'static str> {
         self.worker.poll_parameter_edits_on_control()
+    }
+    pub(crate) fn poll_recovery_edits(
+        &mut self,
+        flush_idle: bool,
+    ) -> Result<Option<hex_plugin_host::protocol::RecoveryEdits>, &'static str> {
+        self.worker.poll_recovery_edits_on_control(flush_idle)
     }
     pub(crate) fn begin_state_capture(&mut self) -> Result<NativeWorkerCapture, &'static str> {
         self.worker.begin_state_capture_on_control()
@@ -145,6 +241,12 @@ impl NativeEffectReference<'_> {
         match self {
             Self::Unsplit(effect) => !effect.callback.transport.is_revoked(),
             Self::Loaned(control) => control.transport_is_live_on_control(),
+        }
+    }
+    pub(crate) fn take_failure_diagnostic_on_control(&self) -> Option<String> {
+        match self {
+            Self::Unsplit(effect) => effect.worker.take_failure_diagnostic_on_control(),
+            Self::Loaned(control) => control.worker.take_failure_diagnostic_on_control(),
         }
     }
     pub(crate) fn matches_prepared(&self, node: &hex_lattice::PreparedRuntimeInstance) -> bool {

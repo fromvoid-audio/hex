@@ -202,6 +202,7 @@ fn target_supported(
 ) -> bool {
     match target {
         DeviceAutomationTarget::Parameter(id) => supported(registry, state, id),
+        DeviceAutomationTarget::Vst3 { .. } => false,
         DeviceAutomationTarget::HostInputGain | DeviceAutomationTarget::HostOutputGain => {
             // Registry presence alone must not grant foreign providers a host
             // law that would bypass their aligned dry-input history.

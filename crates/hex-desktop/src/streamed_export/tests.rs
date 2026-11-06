@@ -28,6 +28,10 @@ fn scalar_offline_capture_refuses_before_source_resolution() {
     };
     let source = hex_engine::ScalarSourceMetadata::new(
         hex_engine::ScalarSourceKey::new(1, 1, 1).unwrap(),
+        hex_engine::ScalarSourceTarget::Device {
+            device,
+            target: hex_project::DeviceAutomationTarget::HostInputGain,
+        },
         48_000,
         0,
         4,

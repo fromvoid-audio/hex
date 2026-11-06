@@ -143,7 +143,7 @@ fn missing_actual_terminal_is_interrupted_and_failure_publication_is_once_only()
     drop(data);
     drop(errors);
     assert!(dispose(&mut retirement));
-    retirement.fail_scalar_receipts();
+    retirement.fail_retained_receipts();
     let batch = token.try_take().unwrap().unwrap();
     assert_eq!(batch.terminal(), ScalarReceiptTerminal::Interrupted);
     assert_eq!(batch.receipts().count(), 0);
@@ -224,15 +224,17 @@ fn gain_late_sink_finished_survives_close_and_callback_first_retirement() {
                 c.finish_gain_recording_quantum(true);
             })
         });
-        assert_eq!(output, [[0.2, -0.4]; 16]);
+        let gain = 0.8 * 16.0 / 240.0;
+        assert!((output[15][0] - 0.25 * gain).abs() < 1e-6);
         client.gain_release().unwrap();
+        let mut release = [[0.0; 2]; 240];
         counted(|| {
             data.owner_mut().unwrap().run(|c, _| {
                 c.begin_block();
-                c.render(&mut output).unwrap();
+                c.render(&mut release).unwrap();
             })
         });
-        assert_eq!(output, [[0.0; 2]; 16]);
+        assert_eq!(release[239], [0.0; 2]);
         let mut token = if callback_first {
             None
         } else {
@@ -288,13 +290,13 @@ fn published_receipts_survive_later_destructor_panic_and_failure_is_distinct_fro
         drop(data);
         drop(errors);
         if fail_before_collection {
-            retirement.fail_scalar_receipts();
+            retirement.fail_retained_receipts();
         }
         assert!(
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dispose(&mut retirement)))
                 .is_err()
         );
-        retirement.fail_scalar_receipts();
+        retirement.fail_retained_receipts();
         if fail_before_collection {
             assert!(matches!(
                 token.try_take(),

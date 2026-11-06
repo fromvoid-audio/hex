@@ -779,6 +779,7 @@ mod tests {
                     .push(hex_project::DeviceSnapshot {
                         automation: if automated {
                             vec![hex_project::DeviceAutomation {
+                                vst3_class: None,
                                 read_selection: hex_project::AutomationReadSelection::Authored,
                                 target: hex_lattice_contract::DeviceAutomationTarget::Parameter(
                                     if auto_pan {
@@ -823,6 +824,7 @@ mod tests {
                         hex_lattice_contract::DeviceAutomationTarget::HostOutputGain,
                     ] {
                         device.automation.push(hex_project::DeviceAutomation {
+                            vst3_class: None,
                             read_selection: hex_project::AutomationReadSelection::Authored,
                             target,
                             points: vec![
@@ -914,11 +916,36 @@ mod tests {
                 owner.test_render(&mut actual).unwrap();
                 reference.render(&mut expected).unwrap();
                 assert_eq!(actual, expected);
-                if saturator || auto_pan {
+                if saturator {
+                    // The oversampled Saturator delays its output and drains
+                    // within its declared finite tail after the 16-frame input.
+                    use hex_lattice::PreparedNativeProcessor as _;
+                    let prepared = hex_devices::saturator::SaturatorDefinition::prepare_owned(
+                        project.tracks()[0].devices()[0].state(),
+                        project.sample_rate(),
+                        &[],
+                    )
+                    .unwrap();
+                    let hex_lattice::OutputTail::Finite { max_tail_frames } =
+                        prepared.output_tail()
+                    else {
+                        panic!("finite saturator tail")
+                    };
+                    let end = 16 + usize::try_from(max_tail_frames).unwrap();
+                    assert!(actual[..16].iter().any(|frame| frame[0] != 0.0));
+                    assert!(
+                        actual[16..end].iter().any(|frame| frame[0] != 0.0),
+                        "the delayed output continues past the input"
+                    );
+                    assert!(
+                        actual[end..].iter().all(|frame| *frame == [0.0; 2]),
+                        "Saturator output ends within its declared tail"
+                    );
+                } else if auto_pan {
                     assert!(actual[..16].iter().any(|frame| frame[0] != 0.0));
                     assert!(
                         actual[16..].iter().all(|frame| *frame == [0.0; 2]),
-                        "memoryless Saturator/Auto Pan has no output tail"
+                        "memoryless Auto Pan has no output tail"
                     );
                 } else {
                     assert!(actual[16..].iter().any(|f| f[0] != 0.0));

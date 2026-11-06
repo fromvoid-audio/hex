@@ -45,9 +45,6 @@ pub(crate) fn validate_constructor_project_with_effects(
     project: &hex_project::Project,
     effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
 ) -> Result<(), AudioStorageError> {
-    if project.has_group_tracks() {
-        return Err(AudioStorageError::UnsupportedGraph);
-    }
     let supported = |d: &hex_project::Device| {
         d.state().asset_references().is_empty()
             && (d.state().type_id() == hex_devices::utility::UTILITY_TYPE_ID
@@ -339,6 +336,8 @@ struct SourceSlot {
     owner: Option<OwnedAudioSource>,
     // Fresh constructor root stays here after its distinct graph alias moves.
     prepared_origin: Option<OwnedAudioSource>,
+    sparse_frames: Option<usize>,
+    sparse: Option<std::sync::Arc<crate::SparseFrameMap>>,
     transformed: bool,
     disposal: Disposal,
     #[cfg(test)]
@@ -1253,7 +1252,7 @@ impl AudioPreparationCustody {
             slots,
             capacity,
             next,
-            signal_graph: effects.is_some(),
+            signal_graph: effects.is_some() || project.has_group_tracks(),
         })
     }
     fn construct_reserved_on_control(
@@ -1425,17 +1424,16 @@ impl AudioPreparationCustody {
         resources: ConstructorResources<'_>,
     ) -> Result<u64, AudioStorageError> {
         let effects = resources.effects;
-        if let Some(input) = resources.native_input {
-            if crate::device_automation::native_parameter_input_target(
+        if let Some(input) = resources.native_input
+            && crate::device_automation::native_parameter_input_target(
                 project,
                 input.device(),
                 input.target(),
             )
             .map_err(|_| AudioStorageError::UnsupportedGraph)?
                 != input
-            {
-                return Err(AudioStorageError::SourceMismatch);
-            }
+        {
+            return Err(AudioStorageError::SourceMismatch);
         }
 
         let allow_sampler = resources.sampler.is_some();
@@ -1620,15 +1618,14 @@ impl AudioPreparationCustody {
                 {
                     return Err(AudioStorageError::SourceMismatch);
                 }
-                if let SourceKind::Streamed(meta) = &owner.kind {
-                    if meta.key().generation() != generation
+                if let SourceKind::Streamed(meta) = &owner.kind
+                    && (meta.key().generation() != generation
                         || meta.key().asset() != asset.id()
                         || meta.source_rate() != asset.source_sample_rate()
                         || meta.source_frames() != asset.source_frames()
-                        || meta.conversion_version() != asset.conversion_version()
-                    {
-                        return Err(AudioStorageError::SourceMismatch);
-                    }
+                        || meta.conversion_version() != asset.conversion_version())
+                {
+                    return Err(AudioStorageError::SourceMismatch);
                 }
                 let transformed = clip.audio_edit().is_some();
                 transformed::validate_sources(project, inputs, clip)?;
@@ -1682,6 +1679,10 @@ impl AudioPreparationCustody {
                     },
                     owner: None,
                     prepared_origin: None,
+                    sparse_frames: crate::audio_transform::sparse_group_plan(clip)
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?
+                        .map(|(_, frames, _)| frames),
+                    sparse: None,
                     transformed,
                     disposal: Disposal::Unstarted,
                     #[cfg(test)]
@@ -1772,6 +1773,7 @@ impl AudioPreparationCustody {
             let result = catch_unwind(AssertUnwindSafe(|| {
                 drop(self.slots[index].owner.take());
                 drop(self.slots[index].prepared_origin.take());
+                drop(self.slots[index].sparse.take());
                 #[cfg(test)]
                 drop(self.slots[index].probe.take());
             }));
@@ -2075,7 +2077,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
     #[test]
-    fn group_tracks_refuse_compilation_and_native_admission_until_submix_support() {
+    fn group_tracks_admit_compilation_and_supported_native_preparation() {
         use hex_project::{Command, Created, Editor, Project, TrackSelectionIds};
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Track(track) = editor
@@ -2094,16 +2096,12 @@ mod tests {
                 name: "group".into(),
             })
             .unwrap();
-        assert!(matches!(
-            validate_constructor_project(editor.project()),
-            Err(AudioStorageError::UnsupportedGraph)
-        ));
-        assert!(crate::compile::project(editor.project(), &Default::default()).is_err());
+        assert!(validate_constructor_project(editor.project()).is_ok());
+        assert!(crate::compile::project(editor.project(), &Default::default()).is_ok());
         let effects = hex_devices::native_registry().unwrap();
-        assert!(matches!(
-            validate_constructor_project_with_effects(editor.project(), Some(&effects)),
-            Err(AudioStorageError::UnsupportedGraph)
-        ));
+        assert!(
+            validate_constructor_project_with_effects(editor.project(), Some(&effects)).is_ok()
+        );
     }
     #[test]
     fn rooted_bank_reservation_refusal_preserves_exact_bank_then_success_transfers_once() {

@@ -147,24 +147,7 @@ pub(super) fn project_with_captures(
         if !target.state.processing_eq(&capture.expected) {
             return Err("captured device source changed before saving".into());
         }
-        let expected = hex_plugin_state::decode(&capture.expected)
-            .map_err(|_| "captured source envelope is unavailable")?;
-        capture
-            .expected
-            .require_asset_free_processing()
-            .map_err(|_| "captured source has unsupported asset bindings")?;
-        let current = hex_plugin_state::decode(&capture.captured)
-            .map_err(|_| "captured state envelope is invalid")?;
-        capture
-            .captured
-            .require_asset_free_processing()
-            .map_err(|_| "captured state has unsupported asset bindings")?;
-        if current.identity != expected.identity
-            || expected.component.is_none()
-            || current.component.is_none()
-        {
-            return Err("captured state does not match original plugin source".into());
-        }
+        validate_capture(&capture.expected, &capture.captured)?;
         target.state = capture
             .captured
             .with_input_gain_millidb(target.state.input_gain_millidb())
@@ -184,5 +167,30 @@ pub(super) fn project_with_captures(
             source_device.state = saved_state;
         }
     }
-    hex_project::Project::from_snapshot(snapshot).map_err(|error| error.to_string().to_lowercase())
+    hex_project::Project::from_snapshot(snapshot)
+        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
+}
+
+/// A control capture may replace opaque bytes only for the same retained source.
+pub(super) fn validate_capture(
+    expected_state: &NativeDeviceState,
+    captured: &NativeDeviceState,
+) -> Result<(), &'static str> {
+    let expected = hex_plugin_state::decode(expected_state)
+        .map_err(|_| "captured source envelope is unavailable")?;
+    expected_state
+        .require_asset_free_processing()
+        .map_err(|_| "captured source has unsupported asset bindings")?;
+    let current =
+        hex_plugin_state::decode(captured).map_err(|_| "captured state envelope is invalid")?;
+    captured
+        .require_asset_free_processing()
+        .map_err(|_| "captured state has unsupported asset bindings")?;
+    if current.identity != expected.identity
+        || expected.component.is_none()
+        || current.component.is_none()
+    {
+        return Err("captured state does not match original plugin source");
+    }
+    Ok(())
 }
