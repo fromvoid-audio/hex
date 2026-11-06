@@ -458,6 +458,60 @@ pub(in crate::editor) mod native {
                     edit: hex_session::service::DeviceAutomationControlEdit::Reenable,
                 })
             );
+            use hex_session::service::{Request, TruncatedImportRecovery};
+            use hex_session::tuning_gesture::TuningLibraryOperation;
+            let requests = [
+                Request::RecoverTruncatedImport(
+                    TruncatedImportRecovery::new(Request::Import("fixture.wav".into())).unwrap(),
+                ),
+                Request::ReorderTracks {
+                    project_generation: generation,
+                    revision,
+                    tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                    before: None,
+                },
+                Request::AddNativeDevice {
+                    track,
+                    class: hex_engine::NativeDeviceClass::Effect,
+                    type_id: Box::new(
+                        hex_lattice_contract::DeviceTypeId::new("hex.utility").unwrap(),
+                    ),
+                    before: None,
+                },
+                Request::BounceArrangement {
+                    project_generation: generation,
+                    revision,
+                    target: hex_project::BounceTarget::Track(track),
+                    in_place: true,
+                    adoption: hex_project::BounceAdoption::NewTracks,
+                    control: hex_session::service::ExportControl::default(),
+                },
+                Request::TuningLibrary {
+                    project_generation: generation,
+                    revision,
+                    operation_id: 1,
+                    operation: TuningLibraryOperation::Load { slot: 0 },
+                },
+                Request::Undo,
+                Request::Redo,
+            ];
+            for request in requests {
+                let request_name = std::mem::discriminant(&request);
+                assert!(!view.enqueue(request), "admitted {request_name:?}");
+                assert_eq!(
+                    view.error.as_deref(),
+                    Some("finish or cancel the numeric draft before editing")
+                );
+            }
+            view.begin_device_gesture(
+                hex_session::device_gesture::GestureTarget::TrackGain { track },
+                hex_lattice_contract::ParameterValue::Float(1.0),
+            )
+            .unwrap();
+            assert!(!view.enqueue_device_barrier(Request::Undo));
+            assert!(view.device_gesture_barriers.is_empty());
+            assert!(!view.device_gesture.has_pending_terminal());
+            view.device_gesture.reset();
             assert_eq!(
                 view.gain_lane
                     .gain
