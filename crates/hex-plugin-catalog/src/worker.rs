@@ -1,5 +1,5 @@
 //! Background control work. The standalone scanner alone owns native children.
-use crate::{Catalog, validate_report};
+use crate::{Catalog, FailedScan, validate_report};
 use hex_plugin_scan::macos::{
     identity::Bundle,
     package::Package,
@@ -232,15 +232,15 @@ struct DiscoveryOutcome {
     result: Result<(Report, String), String>,
     chain_retired: bool,
     diagnostics: ScanDiagnostics,
-    /// Bundle identity inspected before any code ran, when inspection succeeded.
-    bundle: Option<Bundle>,
+    /// Bundle and scan tools inspected before any code ran.
+    failed_scan: Option<FailedScan>,
 }
 impl DiscoveryOutcome {
     /// Identity to remember with a failure. Only a failure after the scanner
     /// started this bundle is attributed to it; tool/setup failures before the
     /// launch stay unremembered so the next scan retries them.
-    fn failure_identity(&self) -> Option<Bundle> {
-        self.bundle
+    fn failure_identity(&self) -> Option<FailedScan> {
+        self.failed_scan
             .clone()
             .filter(|_| self.diagnostics.scanner_started)
     }
@@ -248,7 +248,7 @@ impl DiscoveryOutcome {
 fn discover(app: &Path, path: &Path, token: &Token, deadline: ScanDeadline) -> DiscoveryOutcome {
     let started = Instant::now();
     let mut chain_retired = true; // No child has been started yet.
-    let mut bundle = None;
+    let mut failed_scan = None;
     let mut diagnostics = ScanDiagnostics {
         module: path.to_path_buf(),
         ..ScanDiagnostics::default()
@@ -260,14 +260,14 @@ fn discover(app: &Path, path: &Path, token: &Token, deadline: ScanDeadline) -> D
         deadline,
         &mut chain_retired,
         &mut diagnostics,
-        &mut bundle,
+        &mut failed_scan,
     );
     diagnostics.elapsed = started.elapsed();
     DiscoveryOutcome {
         result,
         chain_retired,
         diagnostics,
-        bundle,
+        failed_scan,
     }
 }
 fn discover_inner(
@@ -277,14 +277,17 @@ fn discover_inner(
     deadline: ScanDeadline,
     chain_retired: &mut bool,
     diagnostics: &mut ScanDiagnostics,
-    bundle: &mut Option<Bundle>,
+    failed_scan: &mut Option<FailedScan>,
 ) -> Result<(Report, String), String> {
     if token.cancelled() {
         return Err("scan cancelled".into());
     }
     let package = Package::inspect(app)?;
     let initial = Bundle::inspect(path)?;
-    *bundle = Some(initial.clone());
+    *failed_scan = Some(FailedScan {
+        bundle: initial.clone(),
+        tools_sha256: package.scan_sha256.clone(),
+    });
     let (mut output, child_output) =
         UnixStream::pair().map_err(|e| format!("scanner output channel failed: {e}"))?;
     let (mut diagnostic, child_diagnostic) =
@@ -409,8 +412,7 @@ fn discover_inner(
             .ok_or("scanner executable identity missing")?,
     )?;
     let fresh = Package::inspect(app)?;
-    if fresh.source != package.source || fresh.build.receipt_sha256 != package.build.receipt_sha256
-    {
+    if fresh.source != package.source || fresh.scan_sha256 != package.scan_sha256 {
         return Err("discovery package changed during scan".into());
     }
     Ok((report, package.source))
@@ -459,7 +461,7 @@ pub fn scan_with_deadline(
     }
     // An explicit selection always runs, even for a remembered failure.
     let outcome = discover(app, &path, &token, deadline);
-    let bundle = outcome.failure_identity();
+    let failure_identity = outcome.failure_identity();
     let DiscoveryOutcome {
         result,
         diagnostics,
@@ -478,12 +480,12 @@ pub fn scan_with_deadline(
         }
     };
     let status = match &result {
-        Ok(_) => "vst3 discovered · hosting unavailable".into(),
+        Ok(_) => "vst3 discovered".into(),
         Err(error) => error.clone(),
     };
     match crate::storage::update(catalog_path, |catalog| match result {
         Ok(found) => catalog.record(path, Ok(found)),
-        Err(error) => catalog.record_failure(path, error, bundle),
+        Err(error) => catalog.record_failure(path, error, failure_identity),
     }) {
         Ok(publication) => Update {
             catalog: Some(publication.catalog),
@@ -552,19 +554,20 @@ pub fn scan_folders_with_deadline(
         if paths.len() > crate::MAX_MODULES {
             return Err("plugin catalog module capacity reached before scanning".into());
         }
-        Package::inspect(app)?;
+        let package = Package::inspect(app)?;
         let batch = scan_batch(
             &mut staged,
             enumeration.bundles,
             &token,
             &mut diagnostics,
+            &package.scan_sha256,
             |path| Bundle::inspect(path).ok(),
             |path| discover(app, path, &token, deadline),
         )?;
         Ok((
             batch.results,
             format!(
-                "vst3 scan {} · {} discovered · {} failed · {} unchanged failures skipped · {} linked entries skipped{} · hosting unavailable",
+                "vst3 scan {} · {} discovered · {} failed · {} unchanged failures skipped · {} linked entries skipped{}",
                 if batch.stopped.is_some() {
                     "stopped early"
                 } else {
@@ -633,14 +636,14 @@ pub fn scan_folders_with_deadline(
 struct Recorded {
     path: PathBuf,
     result: Result<(Report, String), String>,
-    bundle: Option<Bundle>,
+    failed_scan: Option<FailedScan>,
 }
 impl Recorded {
     fn apply(&self, catalog: &mut Catalog) -> Result<(), String> {
         match &self.result {
             Ok(found) => catalog.record(self.path.clone(), Ok(found.clone())),
             Err(error) => {
-                catalog.record_failure(self.path.clone(), error.clone(), self.bundle.clone())
+                catalog.record_failure(self.path.clone(), error.clone(), self.failed_scan.clone())
             }
         }
     }
@@ -662,6 +665,7 @@ fn scan_batch(
     bundles: Vec<PathBuf>,
     token: &Token,
     diagnostics: &mut Option<ScanDiagnostics>,
+    tools_sha256: &str,
     mut identify: impl FnMut(&Path) -> Option<Bundle>,
     mut discover: impl FnMut(&Path) -> DiscoveryOutcome,
 ) -> Result<Batch, String> {
@@ -677,7 +681,9 @@ fn scan_batch(
         if token.cancelled() {
             return Err("folder scan cancelled · catalog unchanged".into());
         }
-        if identify(&path).is_some_and(|current| staged.failed_unchanged(&path, &current)) {
+        if identify(&path)
+            .is_some_and(|current| staged.failed_unchanged(&path, &current, tools_sha256))
+        {
             batch.skipped += 1;
             continue;
         }
@@ -712,7 +718,7 @@ fn scan_batch(
         let recorded = Recorded {
             path,
             result,
-            bundle: failure_identity,
+            failed_scan: failure_identity,
         };
         if recorded.result.is_ok() {
             batch.successful += 1;
@@ -883,6 +889,8 @@ mod tests {
     }
 
     /// Fake discovery outcomes keyed by bundle name; counts native launches.
+    const TOOLS: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
     fn fake_discovery(path: &Path, launches: &mut Vec<PathBuf>) -> DiscoveryOutcome {
         launches.push(path.to_path_buf());
         let name = path
@@ -908,7 +916,10 @@ mod tests {
                 scanner_started: name != "Setup",
                 ..ScanDiagnostics::default()
             },
-            bundle: Some(identity(path, 'c')),
+            failed_scan: Some(FailedScan {
+                bundle: identity(path, 'c'),
+                tools_sha256: TOOLS.into(),
+            }),
         }
     }
 
@@ -933,6 +944,7 @@ mod tests {
             all.clone(),
             &token,
             &mut diagnostics,
+            TOOLS,
             |path| Some(identity(path, 'c')),
             |path| fake_discovery(path, &mut launches),
         )
@@ -964,8 +976,8 @@ mod tests {
             .map(|e| &e.path)
             .collect();
         assert_eq!(good_rows, [&good], "the good bundle is published");
-        assert!(published.failed_unchanged(&hanging, &identity(&hanging, 'c')));
-        assert!(published.failed_unchanged(&licensing, &identity(&licensing, 'c')));
+        assert!(published.failed_unchanged(&hanging, &identity(&hanging, 'c'), TOOLS));
+        assert!(published.failed_unchanged(&licensing, &identity(&licensing, 'c'), TOOLS));
 
         // The next scan skips both unchanged failures and reaches the rest.
         launches.clear();
@@ -974,6 +986,7 @@ mod tests {
             all.clone(),
             &token,
             &mut diagnostics,
+            TOOLS,
             |path| Some(identity(path, 'c')),
             |path| fake_discovery(path, &mut launches),
         )
@@ -985,6 +998,27 @@ mod tests {
         );
         assert!(second.stopped.is_none());
 
+        // A scanner upgrade retries an unchanged bundle.
+        launches.clear();
+        let new_tools = "b".repeat(64);
+        let retried = scan_batch(
+            &mut published,
+            vec![hanging.clone()],
+            &token,
+            &mut diagnostics,
+            &new_tools,
+            |path| Some(identity(path, 'c')),
+            |path| {
+                let mut result = fake_discovery(path, &mut launches);
+                result.failed_scan.as_mut().unwrap().tools_sha256 = new_tools.clone();
+                result
+            },
+        )
+        .unwrap();
+        assert_eq!(retried.skipped, 0);
+        assert_eq!(launches.as_slice(), std::slice::from_ref(&hanging));
+        assert!(published.failed_unchanged(&hanging, &identity(&hanging, 'c'), &new_tools));
+
         // A changed bundle identity is scanned again.
         launches.clear();
         scan_batch(
@@ -992,6 +1026,7 @@ mod tests {
             vec![hanging.clone()],
             &token,
             &mut diagnostics,
+            &new_tools,
             |path| Some(identity(path, 'f')),
             |path| fake_discovery(path, &mut launches),
         )
@@ -1012,6 +1047,7 @@ mod tests {
                 vec![setup.clone()],
                 &token,
                 &mut None,
+                TOOLS,
                 |path| Some(identity(path, 'c')),
                 |path| fake_discovery(path, &mut launches),
             )
@@ -1034,6 +1070,7 @@ mod tests {
             vec![PathBuf::from("/hex-batch-fixture/Good.vst3")],
             &token,
             &mut None,
+            TOOLS,
             |_| None,
             |path| fake_discovery(path, &mut launches),
         );
