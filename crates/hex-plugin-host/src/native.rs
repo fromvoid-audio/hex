@@ -505,6 +505,12 @@ impl Pending {
         self,
         presentation: Option<PresentationLatency>,
     ) -> Result<Prepared> {
+        self.complete_with_plan_on_control(presentation.into())
+    }
+    pub fn complete_with_plan_on_control(
+        self,
+        presentation: protocol::PresentationPlan,
+    ) -> Result<Prepared> {
         self.complete_retained_on_control(presentation)
             .map_err(PreparationFailure::finish_on_control)
     }
