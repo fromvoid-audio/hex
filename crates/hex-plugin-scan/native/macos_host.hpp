@@ -13,6 +13,9 @@ namespace hex_instance {
 inline constexpr size_t HOST_PARAMETER_COUNT=576;
 inline constexpr size_t HOST_FEEDBACK_COUNT=128;
 inline constexpr size_t HOST_RESTART_COUNT=8;
+// A single native editor event can synchronously report a group of gestures.
+// Reserve the burst on main without changing PCM handoff or receipt sizes.
+inline constexpr size_t HOST_REQUEST_COUNT=64;
 struct ParameterSnapshot {
     struct Parameter { ParameterInfo info{}; ParamValue value=0; };
     // Rich strings belong to the main SDK lane. Allocate only the validated
@@ -81,7 +84,7 @@ enum HostRefusal : uint32 { WrongThread=1, UnknownRestart=2, GraphControlRequire
 class Host final : public IHostApplication, public IComponentHandler {
     std::atomic<uint32> references{1}, refusals{0};
     std::array<HostMessage,HOST_MESSAGE_COUNT> messages{};
-    std::array<EditEvent,HOST_RESTART_COUNT> requests{};
+    std::array<EditEvent,HOST_REQUEST_COUNT> requests{};
     std::array<EditEvent,HOST_EDIT_COUNT> edits{};
     std::atomic<uint64> edits_read{0},edits_written{0};
     std::atomic<uint32> pending_edits{0};
@@ -91,7 +94,7 @@ class Host final : public IHostApplication, public IComponentHandler {
     std::atomic<uint64> pending_latency_restart{0};
     std::array<ParamID,HOST_EDIT_COUNT> active_ids{};
     std::array<uint64,HOST_EDIT_COUNT> active_tokens{};
-    size_t first=0, count=0;
+    size_t first=0, count=0, restart_count=0;
     uint64 sequence=0;
     std::atomic<bool> accepting{true};
     std::atomic<pthread_t> processing_thread{nullptr};
@@ -262,13 +265,14 @@ public:
             return kNotImplemented;
         }
         const auto refresh=flags & supported_restarts;
-        if ((refresh && count==requests.size()) || sequence==std::numeric_limits<uint64>::max()) {
+        if ((refresh && (count==requests.size() || restart_count==HOST_RESTART_COUNT)) ||
+            sequence==std::numeric_limits<uint64>::max()) {
             refuse(QueueFull); return kResultFalse;
         }
         const auto ordinal=++sequence;
         if(refresh) {
             requests[(first+count)%requests.size()]={ordinal,0,0,static_cast<ParamID>(refresh),Restart};
-            ++count;
+            ++count;++restart_count;
         }
         if(flags & kLatencyChanged) pending_latency_restart.store(ordinal,std::memory_order_release);
         return kResultOk;
@@ -297,7 +301,9 @@ public:
         }
         result.flags=static_cast<int32>(request.id);
         result=refresh_controller_on_control(controller,result);
-        if(result.disposition!=HostDisposition::Pending) { first=(first+1)%requests.size();--count; }
+        if(result.disposition!=HostDisposition::Pending) {
+            first=(first+1)%requests.size();--count;--restart_count;
+        }
         return result;
     }
     // Startup restoration must rescan actual controller values without
@@ -453,7 +459,8 @@ public:
     void complete_parameter_edit() { pending_edits.fetch_sub(1,std::memory_order_acq_rel); }
     void stop_accepting() {
         if (![NSThread isMainThread]) { refuse(WrongThread); return; }
-        accepting=false; first=0; count=0;active_tokens.fill(0);pending_edits.store(0,std::memory_order_release);
+        accepting=false;first=0;count=0;restart_count=0;
+        active_tokens.fill(0);pending_edits.store(0,std::memory_order_release);
     }
 };
 static_assert(sizeof(Host)+HOST_MESSAGE_COUNT*sizeof(HostMessage)+
