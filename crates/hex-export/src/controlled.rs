@@ -635,15 +635,44 @@ pub(super) fn prepare_bounce_runtime<'provider>(
     control: &ExportControl,
     pages: Option<&mut (dyn PreparedExportPages + 'provider)>,
 ) -> Result<SessionPlayback, ExportError> {
-    prepare_runtime_using_pages(
+    prepare_bounce_runtime_with_inputs(
         revision,
         resources,
         start,
         frames,
         control,
-        SessionPlayback::new_finite_arrangement_bounce,
+        &mut crate::bounce::RenderInputs {
+            pages,
+            foreign: None,
+        },
+        FRAMES_PER_BLOCK,
+    )
+}
+
+pub(super) fn prepare_bounce_runtime_with_inputs(
+    revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
+    start: u64,
+    frames: u64,
+    control: &ExportControl,
+    inputs: &mut crate::bounce::RenderInputs<'_, '_, '_>,
+    block_frames: usize,
+) -> Result<SessionPlayback, ExportError> {
+    let constructor: RuntimeConstructor = if inputs.foreign.is_some() {
+        SessionPlayback::new_finite_arrangement_bounce_with_foreign
+    } else {
+        SessionPlayback::new_finite_arrangement_bounce
+    };
+    prepare_runtime_with_inputs(
+        revision,
+        resources,
+        start,
+        frames,
+        control,
+        constructor,
         || {},
-        pages,
+        inputs,
+        block_frames,
     )
 }
 
@@ -683,11 +712,44 @@ fn prepare_runtime_using_pages<'provider>(
     frames: u64,
     control: &ExportControl,
     constructor: RuntimeConstructor,
+    after_block: impl FnMut(),
+    pages: Option<&mut (dyn PreparedExportPages + 'provider)>,
+) -> Result<SessionPlayback, ExportError> {
+    prepare_runtime_with_inputs(
+        revision,
+        resources,
+        start,
+        frames,
+        control,
+        constructor,
+        after_block,
+        &mut crate::bounce::RenderInputs {
+            pages,
+            foreign: None,
+        },
+        FRAMES_PER_BLOCK,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_runtime_with_inputs(
+    revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
+    start: u64,
+    frames: u64,
+    control: &ExportControl,
+    constructor: RuntimeConstructor,
     mut after_block: impl FnMut(),
-    mut pages: Option<&mut (dyn PreparedExportPages + 'provider)>,
+    inputs: &mut crate::bounce::RenderInputs<'_, '_, '_>,
+    block_frames: usize,
 ) -> Result<SessionPlayback, ExportError> {
     control.check()?;
-    let replay = start != 0 && revision.arrangement_seek_requires_preroll();
+    let replay = start != 0
+        && if inputs.foreign.is_some() {
+            revision.arrangement_bounce_requires_preroll()
+        } else {
+            revision.arrangement_seek_requires_preroll()
+        };
     if replay && start > hex_engine::MAX_ARRANGEMENT_PREROLL_FRAMES {
         return Err(ExportError::Invalid(
             "export preroll exceeds its frame budget",
@@ -715,18 +777,8 @@ fn prepare_runtime_using_pages<'provider>(
     let mut block = [[0.0; 2]; FRAMES_PER_BLOCK];
     while remaining > 0 {
         control.check()?;
-        let count = remaining.min(FRAMES_PER_BLOCK as u64) as usize;
-        if let Some(pages) = pages.as_deref_mut() {
-            pages.prepare_chunk(&playback, count, control)?;
-            playback
-                .render_with_pages(&mut block[..count], &mut crate::pages::PageView(pages))
-                .map_err(ExportError::SessionRender)?;
-            pages.complete_chunk()?;
-        } else {
-            playback
-                .render(&mut block[..count])
-                .map_err(ExportError::SessionRender)?;
-        }
+        let count = remaining.min(block_frames as u64) as usize;
+        inputs.render(&mut playback, &mut block[..count], control)?;
         remaining -= count as u64;
         control.advance(count);
         after_block();

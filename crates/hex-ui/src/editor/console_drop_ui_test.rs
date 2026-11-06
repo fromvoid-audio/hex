@@ -1378,3 +1378,120 @@ fn console_column_stale_clip_release_preserves_a_new_capture_of_the_same_source(
     history(&editor, cx, Request::Undo);
     restored(&project(&editor, cx), &before, after.next_identity());
 }
+
+#[gpui::test]
+fn recorded_take_range_drag_imports_exact_pcm_in_arrangement_and_session(cx: &mut TestAppContext) {
+    use hex_audio::sample_recording::{Source, Take};
+    use hex_project::{Project, SessionCellContent};
+    let selection =
+        |project: &Project, mode, track, scene| -> Option<(hex_project::AssetId, u64)> {
+            if mode == EditorMode::Arrangement {
+                let clip = project.track(track)?.clips().first()?;
+                Some((clip.asset(), clip.source_length()))
+            } else {
+                match project.session_cell(track, scene)? {
+                    SessionCellContent::Audio(clip) => Some((clip.asset(), clip.source_end())),
+                    _ => None,
+                }
+            }
+        };
+    for mode in [EditorMode::Arrangement, EditorMode::Session] {
+        let (handle, editor, track, scene, path) = fixture(cx);
+        let mut recorded = std::fs::read(&path).unwrap();
+        for (index, bytes) in recorded[44..].chunks_exact_mut(2).enumerate() {
+            bytes.copy_from_slice(&(8192 + index as i16).to_le_bytes());
+        }
+        std::fs::write(&path, recorded).unwrap();
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        editor.update(cx, |view, cx| {
+            view.mode = mode;
+            view.show_take_fixture(Take {
+                source: Source::Main,
+                path: path.clone(),
+                frames: 512,
+                sample_rate: 48_000,
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let take_row = visual.debug_bounds("recorded-take-0").unwrap().center();
+        visual.simulate_click(take_row, Modifiers::default());
+        visual.run_until_parked();
+        let waveform = visual.debug_bounds("take-waveform").unwrap();
+        let from = point(
+            waveform.left() + waveform.size.width * 0.25,
+            waveform.center().y,
+        );
+        let to = point(
+            waveform.left() + waveform.size.width * 0.75,
+            waveform.center().y,
+        );
+        visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+        let deadline = crate::test_wait::hang_deadline();
+        let source = loop {
+            visual.run_until_parked();
+            if let Some(source) = visual.debug_bounds("take-excerpt-drag") {
+                break source.center();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "excerpt was not ready"
+            );
+            std::thread::yield_now();
+        };
+        let target = if mode == EditorMode::Arrangement {
+            bounds(&mut visual, format!("arrangement-lane-{}", track.value())).center()
+        } else {
+            let column = bounds(&mut visual, format!("session-track-{}", track.value()));
+            let row = visual.debug_bounds("session-scene-column").unwrap();
+            point(column.center().x, row.center().y)
+        };
+        visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(source.x + px(14.0), source.y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        receive_worker(&editor, cx);
+        editor.read_with(cx, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            let (id, frames) =
+                selection(project, mode, track, scene).expect("drop created an audio clip");
+            assert_eq!(frames, 256);
+            let media = project.asset(id).unwrap().path();
+            assert_ne!(media, path);
+            let wav = hex_media::decode_wav_file(media, hex_media::Limits::new(4096, 512)).unwrap();
+            let expected: Vec<_> = (128..384)
+                .map(|index| [(8192 + index) as f32 / 32768.0; 2])
+                .collect();
+            assert_eq!(wav.audio().frames(), expected);
+        });
+        for (request, present) in [(Request::Undo, false), (Request::Redo, true)] {
+            editor.update(cx, |view, _| assert!(view.enqueue(request)));
+            receive_worker(&editor, cx);
+            editor.read_with(cx, |view, _| {
+                let project = &view.state.as_ref().unwrap().project;
+                assert_eq!(selection(project, mode, track, scene).is_some(), present);
+            });
+        }
+        let document = path.with_extension("hex");
+        for request in [
+            Request::SaveNew(document.clone()),
+            Request::Open(document.clone()),
+        ] {
+            editor.update(cx, |view, _| assert!(view.enqueue(request)));
+            receive_worker(&editor, cx);
+        }
+        editor.read_with(cx, |view, _| {
+            let state = view.state.as_ref().unwrap();
+            assert_eq!(state.document_path.as_deref(), Some(document.as_path()));
+            let (asset, frames) = selection(&state.project, mode, track, scene).unwrap();
+            assert_eq!(frames, 256);
+            assert!(state.project.asset(asset).unwrap().path().is_file());
+        });
+    }
+}

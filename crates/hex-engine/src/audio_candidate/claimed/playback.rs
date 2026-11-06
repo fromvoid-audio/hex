@@ -120,6 +120,14 @@ impl ClaimedAudioCandidateRuntime {
         self.current_playback()
             .is_some_and(|p| p.project_output_supported(tracks))
     }
+    pub fn project_sample_sources_supported(
+        &self,
+        tracks: &[u64],
+        returns: &[crate::ReturnId],
+    ) -> bool {
+        self.current_playback()
+            .is_some_and(|p| p.project_sample_sources_supported(tracks, returns))
+    }
     pub fn render_with_pages_and_post_node_observer<P: crate::MediaPages + ?Sized>(
         &mut self,
         output: &mut [crate::Frame],

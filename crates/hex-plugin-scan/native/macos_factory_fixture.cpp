@@ -4,11 +4,13 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
 #include <limits.h>
+#include <thread>
 #include <unistd.h>
 
 using namespace Steinberg;
@@ -21,7 +23,7 @@ static void crash() { std::raise(SIGSEGV); }
 // Opt-in, per-copy test signal. Both files are siblings of the copied bundle,
 // so this never modifies its signed contents. Without the request, existing
 // entry-hang fixtures retain their original behavior.
-static bool signal_entry_if_requested(CFBundleRef bundle) {
+static bool signal_entry_if_requested(CFBundleRef bundle,bool& delayed) {
     CFURLRef url=CFBundleCopyBundleURL(bundle);
     if(!url) return false;
     UInt8 path[PATH_MAX];
@@ -37,7 +39,10 @@ static bool signal_entry_if_requested(CFBundleRef bundle) {
     if(a<0 || b<0 || static_cast<size_t>(a)>=sizeof request || static_cast<size_t>(b)>=sizeof ready) return false;
     int requested=open(request,O_RDONLY|O_CLOEXEC|O_NOFOLLOW);
     if(requested<0) return errno==ENOENT;
-    if(close(requested)!=0) return false;
+    char option=0;
+    const auto count=read(requested,&option,1);
+    if(close(requested)!=0 || count<0) return false;
+    delayed=count==1 && option=='d';
     int marker=open(ready,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC|O_NOFOLLOW,0600);
     if(marker<0) return false;
     constexpr char message[]="entry-hang\n";
@@ -106,7 +111,12 @@ public:
 };
 static Factory factory;
 extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef bundle) {
-    if(HEX_FACTORY_MODE==1) { if(!signal_entry_if_requested(bundle)) return false; hang(); }
+    if(HEX_FACTORY_MODE==1) {
+        bool delayed=false;
+        if(!signal_entry_if_requested(bundle,delayed)) return false;
+        if(!delayed) hang();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    }
     if(HEX_FACTORY_MODE==2) crash();
     if(HEX_FACTORY_MODE==10) {
         char block[4096]; std::memset(block,'d',sizeof block);

@@ -67,6 +67,100 @@ pub(crate) fn original_instance_with_inputs(
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn native_instrument_keeps_note_state_after_one_late_reply() {
+    const CHILD: &str = "HEX_AUDIO_LATE_INSTRUMENT_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let test = thread::current().name().unwrap().to_owned();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &test, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "127")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let instance = original_instance_with_inputs(
+        Binding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 1,
+        },
+        0,
+    );
+    let (release, held) = std::sync::mpsc::sync_channel(1);
+    let (mut owner, mut callback) =
+        NativeWorker::start_retained_with(instance, |guard, published| {
+            let run = transport_runner(guard, published);
+            let job = move || {
+                let _ = held.recv_timeout(Duration::from_secs(3));
+                run()
+            };
+            let capture_data_bytes = std::mem::size_of_val(&job);
+            thread::Builder::new()
+                .spawn(job)
+                .map(|join| SpawnedTransport {
+                    join,
+                    capture_data_bytes,
+                })
+        })
+        .unwrap();
+    let render = |callback: &mut Callback, events: &[MidiEvent]| {
+        let mut output = [[0.0; 2]; 8];
+        let counts = allocation_counter::measure(|| {
+            callback.stage(&[[0.0; 2]; 8], events, &mut output).unwrap();
+            callback.finish(true).unwrap();
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        output
+    };
+    let on = MidiEvent {
+        frame: 0,
+        bytes: [0x90, 60, 100],
+        len: 3,
+        note_id: std::num::NonZeroU32::new(1),
+    };
+    let off = MidiEvent {
+        bytes: [0x80, 60, 0],
+        ..on
+    };
+    assert_eq!(render(&mut callback, &[on]), [[0.0; 2]; 8]);
+    assert_eq!(render(&mut callback, &[]), [[0.0; 2]; 8]);
+    assert_eq!(render(&mut callback, &[]), [[0.0; 2]; 8]);
+    release.send(()).unwrap();
+    let wait_for = |blocks| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while owner.published_blocks_on_control() < blocks {
+            assert!(std::time::Instant::now() < deadline);
+            thread::yield_now();
+        }
+    };
+    wait_for(3);
+    let resumed = render(&mut callback, &[off]);
+    assert!(resumed.iter().flatten().all(|sample| *sample > 0.0));
+    wait_for(4);
+    assert_eq!(render(&mut callback, &[]), resumed);
+    assert_eq!(render(&mut callback, &[]), [[0.0; 2]; 8]);
+    wait_for(6);
+    assert!(owner.retire_on_control().unwrap().failure.is_none());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn native_transport_scheduling_refusal_revokes_without_processing_or_losing_source() {
     let instance = original_instance();
     let child = instance.child_id_on_control().unwrap();

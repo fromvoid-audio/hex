@@ -14,7 +14,7 @@ fn sample_drag(view: &EditorView, path: std::path::PathBuf) -> BrowserAudioDrag 
     BrowserAudioDrag {
         project_generation: view.project_generation,
         revision: state.revision,
-        browser_generation: view.browser.scan_generation(),
+        browser_generation: Some(view.browser.scan_generation()),
         sample_rate: state.project.sample_rate(),
         path,
         label: "loop.wav".into(),

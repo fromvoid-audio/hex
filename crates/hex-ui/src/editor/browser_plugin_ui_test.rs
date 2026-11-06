@@ -601,7 +601,8 @@ fn browser_vst3_folder_scan(cx: &mut TestAppContext, custom: bool) {
     editor.read_with(&visual, |view, cx| {
         let rows = view.browser_visible_plugins(cx);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].status, "vst3 instrument · hosting unavailable");
+        assert!(rows[0].selection.is_some());
+        assert_eq!(rows[0].status, "vst3 instrument · drag or enter to insert");
     });
     let stored = std::fs::read(physical.join("plugin-catalog.json")).unwrap();
     editor.update(&mut visual, |view, cx| view.start_plugin_catalog(cx));

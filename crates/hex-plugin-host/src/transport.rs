@@ -9,8 +9,10 @@
 //! pipeline latency. A physical callback must contain at most Q frames. Input is
 //! staged across contiguous graph segments until the complete physical callback
 //! passes final host conversion; only then may it reach a worker.
-//! Missing/malformed output or saturation revokes the entire one-shot exchange.
-//! No stale-buffer replay, waiting, waking, allocation or DSP rollback occurs.
+//! Malformed output or saturation revokes the entire one-shot exchange.
+//! Native instruments may conceal one missing reply with silence and discard
+//! its late output. No stale-buffer replay, waiting, waking, allocation or
+//! DSP rollback occurs.
 
 type Frame = [f32; 2];
 use hex_lattice_contract::ForeignProcessorBinding as Binding;
@@ -18,7 +20,7 @@ use rtrb::{Consumer, Producer, RingBuffer};
 use std::sync::{
     Arc,
     atomic::{
-        AtomicBool, AtomicU8,
+        AtomicBool, AtomicU8, AtomicU64,
         Ordering::{AcqRel, Acquire, Relaxed, Release},
     },
 };
@@ -53,10 +55,29 @@ pub enum Fault {
     Exhausted,
 }
 
+/// Worker progress observed when the callback found a required reply absent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum DeadlineWorkerPhase {
+    AwaitingPickup = 1,
+    Processing,
+    Publishing,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeadlineMiss {
+    pub reply_sequence: u64,
+    pub worker_phase: DeadlineWorkerPhase,
+}
+
 #[derive(Default)]
 struct Revocation {
     revoked: AtomicBool,
     callback_fault: AtomicU8,
+    received_prefix: AtomicU64,
+    processed_prefix: AtomicU64,
+    missed_reply: AtomicU64,
+    missed_phase: AtomicU8,
 }
 impl Revocation {
     const REPORTED: u8 = 1 << 7;
@@ -72,8 +93,20 @@ impl Revocation {
     fn record_callback_fault(&self, fault: Fault) {
         let _ = self
             .callback_fault
-            .compare_exchange(0, fault as u8, Relaxed, Relaxed);
+            .compare_exchange(0, fault as u8, Release, Relaxed);
         self.revoke();
+    }
+
+    fn record_deadline_miss(&self, sequence: u64) {
+        let phase = if self.processed_prefix.load(Acquire) > sequence {
+            DeadlineWorkerPhase::Publishing
+        } else if self.received_prefix.load(Acquire) > sequence {
+            DeadlineWorkerPhase::Processing
+        } else {
+            DeadlineWorkerPhase::AwaitingPickup
+        };
+        self.missed_reply.store(sequence, Relaxed);
+        self.missed_phase.store(phase as u8, Release);
     }
 
     fn decode_fault(code: u8) -> Option<Fault> {
@@ -350,6 +383,19 @@ impl Control {
     pub fn is_revoked(&self) -> bool {
         self.revoked.is_revoked()
     }
+    /// Retained observation for the terminal MissingOutput of this exact pair.
+    pub fn deadline_miss(&self) -> Option<DeadlineMiss> {
+        let worker_phase = match self.revoked.missed_phase.load(Acquire) {
+            1 => DeadlineWorkerPhase::AwaitingPickup,
+            2 => DeadlineWorkerPhase::Processing,
+            3 => DeadlineWorkerPhase::Publishing,
+            _ => return None,
+        };
+        Some(DeadlineMiss {
+            reply_sequence: self.revoked.missed_reply.load(Relaxed),
+            worker_phase,
+        })
+    }
     /// The exact callback's first actionable fault, once. A control/worker
     /// revocation alone and a later callback observing it have no new cause.
     pub fn take_callback_fault(&self) -> Option<Fault> {
@@ -378,6 +424,7 @@ struct State {
     position: u64,
     input: Block,
     output: Block,
+    output_gap: bool,
 }
 #[derive(Clone, Copy)]
 struct Stage {
@@ -406,6 +453,7 @@ pub struct Callback {
     binding: Binding,
     quantum: u16,
     first_reply_sequence: u64,
+    conceal_instrument_gap: bool,
     requests: Producer<Block>,
     replies: Consumer<Block>,
     revoked: Arc<Revocation>,
@@ -440,6 +488,26 @@ pub fn channel_from_completed_prefix(
     quantum: u16,
     completed_blocks: u64,
 ) -> Result<(Control, Callback, Worker), Fault> {
+    channel_with_policy(binding, quantum, completed_blocks, false)
+}
+
+/// The native instrument wire carries PCM and parameter observations but no
+/// output MIDI. A single deadline miss can leave one quantum silent while
+/// preserving ordered input and the fixed 2Q alignment of subsequent replies.
+pub fn instrument_channel_from_completed_prefix(
+    binding: Binding,
+    quantum: u16,
+    completed_blocks: u64,
+) -> Result<(Control, Callback, Worker), Fault> {
+    channel_with_policy(binding, quantum, completed_blocks, true)
+}
+
+fn channel_with_policy(
+    binding: Binding,
+    quantum: u16,
+    completed_blocks: u64,
+    conceal_instrument_gap: bool,
+) -> Result<(Control, Callback, Worker), Fault> {
     if !binding.is_valid() || quantum == 0 || usize::from(quantum) > MAX_FRAMES {
         return Err(Fault::Configuration);
     }
@@ -459,6 +527,7 @@ pub fn channel_from_completed_prefix(
             binding,
             quantum,
             first_reply_sequence,
+            conceal_instrument_gap,
             requests: request_tx,
             replies: reply_rx,
             revoked: Arc::clone(&revoked),
@@ -466,6 +535,7 @@ pub fn channel_from_completed_prefix(
                 position,
                 input: empty,
                 output: empty,
+                output_gap: false,
             },
             staged: None,
         },
@@ -726,9 +796,15 @@ impl Callback {
                     return Err(Fault::Protocol);
                 }
                 if sequence >= self.first_reply_sequence {
-                    let reply = self.replies.pop().map_err(|_| Fault::MissingOutput)?;
-                    reply.valid_reply(self.binding, self.quantum, sequence - 2)?;
-                    stage.state.output = reply;
+                    stage_reply(
+                        &mut self.replies,
+                        &self.revoked,
+                        self.binding,
+                        self.quantum,
+                        self.conceal_instrument_gap,
+                        &mut stage.state,
+                        sequence - 2,
+                    )?;
                 }
             } else if index == 0
                 && let Some(playing) = timing.playing
@@ -835,6 +911,48 @@ impl Callback {
     }
 }
 
+fn stage_reply(
+    replies: &mut Consumer<Block>,
+    revoked: &Revocation,
+    binding: Binding,
+    quantum: u16,
+    conceal_instrument_gap: bool,
+    state: &mut State,
+    expected: u64,
+) -> Result<(), Fault> {
+    let validate = |reply: &Block, sequence| {
+        if conceal_instrument_gap && !reply.events.as_slice().is_empty() {
+            return Err(Fault::InvalidEvents);
+        }
+        reply.valid_reply(binding, quantum, sequence)
+    };
+    let mut reply = replies.pop();
+    if state.output_gap
+        && let Ok(late) = &reply
+        && expected.checked_sub(1) == Some(late.sequence)
+    {
+        // At most one concealed block may precede the sample-aligned reply.
+        validate(late, late.sequence)?;
+        reply = replies.pop();
+    }
+    match reply {
+        Ok(reply) => {
+            validate(&reply, expected)?;
+            state.output = reply;
+            state.output_gap = false;
+        }
+        Err(_) if conceal_instrument_gap && !state.output_gap => {
+            state.output = Block::empty(binding, quantum);
+            state.output_gap = true;
+        }
+        Err(_) => {
+            revoked.record_deadline_miss(expected);
+            return Err(Fault::MissingOutput);
+        }
+    }
+    Ok(())
+}
+
 impl Worker {
     /// Queue-independent revocation by the joining worker owner. Does not
     /// dispose either endpoint or grant native/canonical acceptance.
@@ -867,6 +985,9 @@ impl Worker {
         if let Err(fault) = block.valid(self.binding, self.quantum, self.sequence) {
             return self.fail(fault);
         }
+        self.revoked
+            .received_prefix
+            .store(self.sequence.saturating_add(1), Release);
         self.in_flight = true;
         Ok(Some(block))
     }
@@ -879,6 +1000,9 @@ impl Worker {
         if !self.in_flight {
             return self.fail(Fault::Protocol);
         }
+        self.revoked
+            .processed_prefix
+            .store(self.sequence.saturating_add(1), Release);
         if let Err(fault) = reply.valid_reply(self.binding, self.quantum, self.sequence) {
             return self.fail(fault);
         }
