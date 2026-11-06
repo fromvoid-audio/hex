@@ -1397,6 +1397,12 @@ pub(super) fn request(value: &Request) -> Description {
             describe!("toggle_plugin_editor"; ["project_generation" => project_generation, "device" => device.value()]; omitted="")
         }
         Request::ContinuePluginEditor => describe!("continue_plugin_editor"; []; omitted=""),
+        Request::QueryPluginParameters(query) => {
+            describe!("query_plugin_parameters"; ["device" => query.device.value(), "request_id" => query.request_id]; omitted="")
+        }
+        Request::ContinuePluginParameters => {
+            describe!("continue_plugin_parameters"; []; omitted="")
+        }
         Request::ContinuePluginStateRestore => {
             describe!("continue_plugin_state_restore"; []; omitted="")
         }

@@ -1157,6 +1157,79 @@ fn native_effect_coordinator_reorder_waits_for_original_zero_input_prefix_and_un
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
+fn parameter_inventory_reaches_session_from_the_hosted_controller() {
+    const CHILD: &str = "HEX_DESKTOP_TEST_PARAMETER_INVENTORY_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let name = std::thread::current().name().unwrap().to_owned();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "37")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let _native = native_fixture();
+    let mut h = ResidentHarness::with_plugins(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    let initial = h.next();
+    h.applied(0);
+    h.run(Request::InsertPluginEffect(request(
+        &initial.state,
+        PluginEffectDestination::Main,
+    )));
+    let accepted = terminal(&mut h);
+    assert!(accepted.error.is_none(), "{:?}", accepted.error);
+    let (_, metadata) = h.applied(1);
+    let device = accepted.state.project.main_devices()[0].id();
+    let query = hex_session::service::PluginParameterQuery {
+        context: metadata.context,
+        device,
+        output_identity: h.audio.as_ref().unwrap().control.output_identity().unwrap(),
+        request_id: 1,
+    };
+    let admitted = h.run(Request::QueryPluginParameters(query));
+    assert_eq!(admitted.state.revision, accepted.state.revision);
+    let received = h
+        .next()
+        .plugin_parameters
+        .expect("native controller inventory");
+    assert_eq!(received.query, query);
+    let rows = received.rows.expect("original controller reply");
+    assert_eq!(rows.len(), 1);
+    assert_eq!((rows[0].id, rows[0].name.as_str()), (7, "gain"));
+    assert!(!rows[0].value.is_empty());
+    let stale = hex_session::service::PluginParameterQuery {
+        context: initial
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .context(),
+        request_id: 2,
+        ..query
+    };
+    let refused = h
+        .run(Request::QueryPluginParameters(stale))
+        .plugin_parameters
+        .unwrap();
+    assert_eq!(refused.query, stale);
+    assert!(refused.rows.is_err());
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
 fn native_effect_real_work_contention_waits_then_keeps_exact_accept_or_refusal() {
     let _native = native_fixture();
     for known_presentation in [false, true] {

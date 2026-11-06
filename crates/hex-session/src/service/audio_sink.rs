@@ -356,6 +356,15 @@ pub trait WorkerAudioSink: Send {
     fn take_plugin_editor_result(&mut self, _generation: u64) -> Option<Result<bool, String>> {
         None
     }
+    fn query_plugin_parameters(&mut self, _query: PluginParameterQuery) -> Result<(), String> {
+        Err("vst3 parameters unavailable for this output".into())
+    }
+    fn plugin_parameters_ready(&self) -> bool {
+        false
+    }
+    fn take_plugin_parameters(&mut self) -> Option<PluginParameterResult> {
+        None
+    }
     /// Match the exact request control; never cancel an unrelated later source.
     /// Exact canonical terminal. Rejected requests retire only their matching native preparation;
     /// acceptance transfers display/request custody, never the native source's lifetime.
@@ -1197,6 +1206,16 @@ impl WorkerEvents {
             {
                 return Some(QueuedRequest::continuation(
                     Request::ContinuePluginEditor,
+                    document_intent,
+                ));
+            }
+            if self
+                .audio
+                .as_ref()
+                .is_some_and(|audio| audio.plugin_parameters_ready())
+            {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinuePluginParameters,
                     document_intent,
                 ));
             }
