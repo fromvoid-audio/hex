@@ -37,6 +37,8 @@ pub(super) struct Plugins {
     app: Option<PathBuf>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     cancellation: Option<hex_plugin_catalog::worker::Cancellation>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    scan_progress: Option<gpui::Task<()>>,
     #[cfg(all(
         test,
         feature = "ui-test-support",
@@ -74,6 +76,23 @@ impl Plugins {
 }
 
 impl EditorView {
+    pub(in crate::editor) fn plugin_scan_status(&self) -> Option<String> {
+        let state = &self.browser.plugins;
+        if !state.busy {
+            return None;
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if let Some(path) = state
+            .cancellation
+            .as_ref()
+            .and_then(|scan| scan.current_module())
+            && let Some(name) = path.file_stem()
+        {
+            return Some(format!("scanning vst3 · {}", name.to_string_lossy()));
+        }
+        Some("scanning vst3…".into())
+    }
+
     pub(super) fn activate_browser_plugin(
         &mut self,
         module: &std::path::Path,
@@ -432,7 +451,7 @@ impl EditorView {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn start_plugin_scan(&mut self, request: PluginScan, cx: &mut Context<Self>) {
         {
-            use hex_plugin_catalog::worker::{self, Cancellation};
+            use hex_plugin_catalog::worker::{self, Cancellation, ScanDeadline};
             if self.browser.plugins.busy
                 || self.browser.plugins.loading
                 || !self.browser.plugins.writable
@@ -446,6 +465,30 @@ impl EditorView {
             let cancellation = Cancellation::default();
             let token = cancellation.token();
             self.browser.plugins.cancellation = Some(cancellation);
+            self.browser.plugins.scan_progress = Some(cx.spawn(async move |this, cx| {
+                let mut previous = None;
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(150))
+                        .await;
+                    if !this
+                        .update(cx, |view, cx| {
+                            let Some(scan) = &view.browser.plugins.cancellation else {
+                                return false;
+                            };
+                            let current = scan.current_module();
+                            if current != previous {
+                                previous = current;
+                                cx.notify();
+                            }
+                            true
+                        })
+                        .unwrap_or(false)
+                    {
+                        break;
+                    }
+                }
+            }));
             self.browser.plugins.busy = true;
             self.browser.plugins.diagnostics = None;
             self.browser.plugins.status = "scanning vst3…".into();
@@ -457,7 +500,13 @@ impl EditorView {
                     .spawn(async move {
                         let mut update = match request {
                             #[cfg(all(test, feature = "ui-test-support"))]
-                            PluginScan::Selected(path) => worker::scan(&catalog, &app, path, token),
+                            PluginScan::Selected(path) => worker::scan_with_deadline(
+                                &catalog,
+                                &app,
+                                path,
+                                token,
+                                ScanDeadline::interactive(),
+                            ),
                             PluginScan::Configured(scan) => {
                                 let folder = scan.custom_folder.filter(|_| scan.custom_enabled);
                                 match hex_plugin_catalog::roots::macos_scan_paths(
@@ -465,9 +514,13 @@ impl EditorView {
                                     scan.user,
                                     folder,
                                 ) {
-                                    Ok(roots) => {
-                                        worker::scan_folders(&catalog, &app, &roots, token)
-                                    }
+                                    Ok(roots) => worker::scan_folders_with_deadline(
+                                        &catalog,
+                                        &app,
+                                        &roots,
+                                        token,
+                                        ScanDeadline::interactive(),
+                                    ),
                                     Err(status) => worker::Update {
                                         catalog: None,
                                         diagnostics: None,
@@ -476,9 +529,13 @@ impl EditorView {
                                 }
                             }
                             #[cfg(all(test, feature = "ui-test-support"))]
-                            PluginScan::TestFolders(roots) => {
-                                worker::scan_folders(&catalog, &app, &roots, token)
-                            }
+                            PluginScan::TestFolders(roots) => worker::scan_folders_with_deadline(
+                                &catalog,
+                                &app,
+                                &roots,
+                                token,
+                                ScanDeadline::interactive(),
+                            ),
                         };
                         if let Some(catalog) = &mut update.catalog
                             && let Err(error) = catalog.refresh_sources()
@@ -491,6 +548,7 @@ impl EditorView {
                     .await;
                 let _ = this.update(cx, |view, cx| {
                     view.browser.plugins.busy = false;
+                    view.browser.plugins.scan_progress = None;
                     view.browser.plugins.cancellation = None;
                     view.browser.plugins.diagnostics = result.diagnostics;
                     if let Some(catalog) = result.catalog {

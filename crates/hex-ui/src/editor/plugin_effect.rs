@@ -49,6 +49,7 @@ pub(crate) fn fixture_view(
 }
 
 pub(super) struct PendingPluginEffect {
+    pub(super) status: String,
     control: Arc<PluginEffectControl>,
     trace: Option<crate::diagnostics::PluginLoad>,
 }
@@ -154,13 +155,13 @@ impl EditorView {
             if let Some(trace) = &trace {
                 trace.submitted();
             }
-            self.pending_plugin_effect = Some(PendingPluginEffect { control, trace });
-            self.status = if destination.is_instrument() {
-                "loading vst3 instrument"
-            } else {
-                "loading vst3 effect"
-            }
-            .into();
+            let status = format!("loading vst3 · {}", selection.class_name);
+            self.status.clone_from(&status);
+            self.pending_plugin_effect = Some(PendingPluginEffect {
+                control,
+                trace,
+                status,
+            });
             self.error = None;
         }
     }
