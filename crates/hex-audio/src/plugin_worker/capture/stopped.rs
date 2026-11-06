@@ -54,7 +54,9 @@ impl NativeWorker {
         // Drain its original native operation before discarding late data. Do
         // not strand the SDK request or reuse it as the new Save operation.
         if slot.phase == Phase::Complete && slot.mode == Mode::Live {
-            slot.phase = Phase::Idle;
+            let obsolete = slot.take_terminal();
+            drop(slot);
+            drop(obsolete);
         }
         Ok(())
     }
