@@ -59,10 +59,10 @@ mod sampler_parameter;
 use audio_sink::WorkerEvents;
 pub use audio_sink::{
     ArrangementEditPosition, NativeSamplerInput, NativeSamplerReservationHold,
-    NativeSamplerRetryFacts, OfflineBounceSource, PluginParameterGestureError,
-    PluginParameterGestureInput, PluginParameterGestureResult, ResidentEffectPreparation,
-    ResidentFileInput, ResidentFileMetadata, ResidentFilePublication, ResidentFileSeekPreparer,
-    ResidentFileSeekRequest, ResidentFileSet, ResidentFreshRuntimeFence,
+    NativeSamplerRetryFacts, OfflineBounceSource, PluginParameterCapture,
+    PluginParameterGestureError, PluginParameterGestureInput, PluginParameterGestureResult,
+    ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata, ResidentFilePublication,
+    ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet, ResidentFreshRuntimeFence,
     ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
     ResidentPublicationReadiness, ResidentPublicationRefusal, ResidentRuntimeLoop, WorkerAudioSink,
 };

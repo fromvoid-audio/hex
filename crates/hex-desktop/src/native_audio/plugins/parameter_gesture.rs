@@ -14,7 +14,7 @@ use hex_session::{
         PluginParameterOrigin, PluginParameterValue,
     },
     service::{
-        PluginParameterGestureError as Error, PluginParameterGestureInput,
+        PluginParameterCapture, PluginParameterGestureError as Error, PluginParameterGestureInput,
         PluginParameterGestureResult as Prepared,
     },
 };
@@ -119,8 +119,8 @@ impl Plugins {
         }
         let result = gesture.apply(control, input.context(), input.operation());
         // Only an actual restore or a confirmed source loss retires the preview.
-        if !matches!(&result, Err(Error::SourceLost(_)))
-            && !(result.is_ok()
+        if !(matches!(&result, Err(Error::SourceLost(_)))
+            || result.is_ok()
                 && matches!(input.operation(), PluginGesturePreparation::Restore { .. }))
         {
             self.parameter_gesture = Some(gesture);
@@ -209,7 +209,10 @@ impl Gesture {
                 .ok_or_else(|| refused("vst3 has no original capture"))?;
             let after = self.capture(control)?;
             self.commit = Some((context, snapshot.sequence));
-            return Ok(Prepared::Captured { before, after });
+            return Ok(Prepared::Captured(Box::new(PluginParameterCapture {
+                before,
+                after,
+            })));
         }
         if value != self.last {
             if self.before.is_none() {

@@ -350,12 +350,14 @@ fn knob(
     Some(control)
 }
 
+type KnobDrag = RefCell<Option<(Option<NumericGestureId>, GestureKey)>>;
+
 fn knob_event(
     view: &mut EditorView,
     origin: PluginParameterOrigin,
     event: &NumericControlEvent,
     steps: u32,
-    drag: &RefCell<Option<(Option<NumericGestureId>, GestureKey)>>,
+    drag: &KnobDrag,
 ) -> Result<(), &'static str> {
     let normalized = if steps == 0 {
         event.value

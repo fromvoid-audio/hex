@@ -1257,8 +1257,7 @@ enum Transition {
     Command(Box<Command>),
     PluginParameter {
         device: hex_project::DeviceId,
-        before: NativeDeviceState,
-        after: NativeDeviceState,
+        capture: Box<PluginParameterCapture>,
     },
     PluginEffect {
         command: Box<Command>,
@@ -2070,19 +2069,14 @@ impl Session {
     pub(super) fn plugin_parameter_resident_snapshot(
         &mut self,
         device: hex_project::DeviceId,
-        before: NativeDeviceState,
-        after: NativeDeviceState,
+        capture: Box<PluginParameterCapture>,
         context: hex_engine::AudioSourceContext,
         sink: &mut dyn WorkerAudioSink,
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
     ) -> Result<Snapshot, SessionError> {
         self.resident_transition(
-            Transition::PluginParameter {
-                device,
-                before,
-                after,
-            },
+            Transition::PluginParameter { device, capture },
             context,
             sink,
             admission,
@@ -2373,14 +2367,12 @@ impl Session {
             Ok(snapshot)
         };
         let result = match transition {
-            Transition::PluginParameter {
-                device,
-                before,
-                after,
-            } => self
-                .editor
-                .replace_captured_device_state(device, before, after, prepare)
-                .map(|snapshot| Some((Created::None, snapshot))),
+            Transition::PluginParameter { device, capture } => {
+                let PluginParameterCapture { before, after } = *capture;
+                self.editor
+                    .replace_captured_device_state(device, before, after, prepare)
+                    .map(|snapshot| Some((Created::None, snapshot)))
+            }
             Transition::Command(command)
             | Transition::PluginEffect { command, .. }
             | Transition::SectionCommand { command, .. } => self

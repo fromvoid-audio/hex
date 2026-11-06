@@ -67,7 +67,7 @@ pub(super) fn operation(
         match (operation, result) {
             (
                 PluginGesturePreparation::Commit(_),
-                PluginParameterGestureResult::Captured { before, after },
+                PluginParameterGestureResult::Captured(mut capture),
             ) => {
                 let bind = |captured: NativeDeviceState| -> Result<_, SessionError> {
                     super::super::plugin_state_save::validate_capture(state, &captured)
@@ -76,16 +76,15 @@ pub(super) fn operation(
                         .with_host_metadata_from(state)
                         .map_err(|_| SessionError::Invalid("plugin capture changed provider"))
                 };
-                let before = bind(before)?;
-                let after = bind(after)?;
+                capture.before = bind(capture.before.clone())?;
+                capture.after = bind(capture.after.clone())?;
                 let next = context
                     .editor_revision
                     .checked_add(1)
                     .ok_or(SessionError::Invalid("preview revision exhausted"))?;
                 let snapshot = session.plugin_parameter_resident_snapshot(
                     device,
-                    before,
-                    after,
+                    capture,
                     hex_engine::AudioSourceContext {
                         editor_revision: next,
                         ..context
@@ -103,7 +102,7 @@ pub(super) fn operation(
                 "plugin commit requires an actual capture",
             )),
             (_, PluginParameterGestureResult::Applied) => Ok(None),
-            (_, PluginParameterGestureResult::Captured { .. }) => Err(SessionError::Invalid(
+            (_, PluginParameterGestureResult::Captured(_)) => Err(SessionError::Invalid(
                 "plugin preview cannot replace canonical state",
             )),
         }
