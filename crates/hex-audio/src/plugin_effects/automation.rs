@@ -238,6 +238,9 @@ impl SourceCapabilities {
     }
 
     pub(super) fn has_metadata_container(&self) -> bool {
+        // The paired callback needs this reserved path, not a mutable target
+        // list. Control definitions publish targets; the original SDK worker
+        // independently validates every delivered ID against its armed set.
         self.class.is_some()
     }
 
