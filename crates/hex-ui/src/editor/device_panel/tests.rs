@@ -12,6 +12,7 @@ mod bindings_tests;
 mod chain_window_tests;
 mod compressor_ui_tests;
 mod delay_ui_tests;
+mod device_add_ui_tests;
 mod device_comparison_tests;
 mod device_preset_ui_tests;
 mod device_reorder_tests;
@@ -6156,6 +6157,23 @@ fn clicking_a_device_meter_clears_its_held_overload_line(cx: &mut TestAppContext
     repaint(&mut visual);
     assert_eq!(visual.rendered_background(left_peak), clipping);
     assert!(visual.debug_bounds(right_peak).is_some());
+    let add = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-add-after", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    visual.simulate_click(add.center(), Modifiers::default());
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.device_panel.add_menu_open);
+        view.device_panel.add_menu_open = false;
+        cx.notify();
+    });
+    repaint(&mut visual);
+    assert_eq!(
+        visual.rendered_background(left_peak),
+        clipping,
+        "the separate add action does not acknowledge peaks"
+    );
     for clear in 0..2 {
         let bounds = visual.debug_bounds(meter_selector).expect("device meter");
         visual.simulate_click(bounds.center(), Modifiers::default());
