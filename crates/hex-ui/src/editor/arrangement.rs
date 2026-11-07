@@ -803,6 +803,7 @@ impl EditorView {
             .min_w_0()
             .h_full()
             .children([main_track_grid_layer(bands, lines, viewport, scale)])
+            .child(super::arrangement_map::view(self, viewport))
             .children(self.main_time_selection_overlay(viewport))
             .children(self.section_elements(viewport, scale, cx))
             .children([self.section_pointer_events(cx)])
