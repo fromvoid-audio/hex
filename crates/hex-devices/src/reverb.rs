@@ -19,7 +19,9 @@
 //! declared zero-input deadline (including up to 100 ms of copied smoothing).
 //! The shared Arrangement adapter supplies authored dry/wet at host rate.
 //! Other admitted controls use tank evaluations, including decay, size and
-//! decay ratios. Density is stepped; canonical edits retain their smoothing.
+//! decay ratios. Density and six filter/modulation/shaping switches are stepped;
+//! canonical edits retain their smoothing. Freeze/flat/cut and smoothing-mode
+//! automation remain unsupported.
 //! Fixed delay rings preserve history. With authored feedback controls, gains
 //! derive from effective parameter ramps; canonical-only rendering retains
 //! prepared coefficient ramps. Decay-admitted unfrozen factories reserve the
