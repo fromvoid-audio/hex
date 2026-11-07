@@ -89,6 +89,46 @@ fn trace() -> Vec<i32> {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_parameter_reservation_precedes_publication_and_refusal_keeps_the_ordinal() {
+    let name = std::thread::current().name().unwrap().to_owned();
+    if fixture_child(92, &name) {
+        return;
+    }
+    let instance = original_instance();
+    let (mut owner, mut endpoint) = NativeWorker::start_on_control(instance).unwrap();
+    let signal = Arc::clone(&owner.reaper.completed);
+    let mut refused = None;
+    let result: Result<(NativeWorkerParameterChange, ()), _> =
+        owner.parameter_change_with_before(0, 0.75, |request| {
+            assert!(!signal.parameter_change_requested.load(Acquire));
+            refused = request.delivery_identity();
+            Err("witness reservation refused")
+        });
+    assert!(matches!(result, Err("witness reservation refused")));
+    assert!(!signal.parameter_change_requested.load(Acquire));
+    let (request, reserved) = owner
+        .parameter_change_with_before(0, 0.5, |request| {
+            assert!(!signal.parameter_change_requested.load(Acquire));
+            Ok(request.delivery_identity().unwrap())
+        })
+        .unwrap();
+    assert_eq!(Some(reserved), refused);
+    assert_eq!(reserved.2, 0);
+    assert_eq!(Some(reserved), request.delivery_identity());
+    for sequence in 0..3 {
+        callback(&owner, &mut endpoint, sequence, 2.0, &[]);
+    }
+    let NativeWorkerParameterProgress::Processed(actual) = terminal(&mut owner, &request) else {
+        panic!("actual SDK point must process")
+    };
+    assert_eq!((actual.point.id, actual.point.normalized), (0, 0.5));
+    owner.revoke_on_control();
+    let retired = owner.retire_on_control().unwrap();
+    assert!(retired.failure.is_none() && retired.native.status.success());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_host_parameter_input_changes_same_sdk_source_and_captures_real_state() {
     live_change(
         "plugin_worker::capture::tests::parameter_change::actual_host_parameter_input_changes_same_sdk_source_and_captures_real_state",

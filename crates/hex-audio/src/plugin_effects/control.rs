@@ -19,6 +19,23 @@ impl NativeEffect {
     ) -> Result<NativeWorkerParameterChange, &'static str> {
         self.worker.parameter_hold_on_control(command)
     }
+    pub(crate) fn parameter_hold_with_before<T>(
+        &mut self,
+        command: NativeParameterHold<'_>,
+        before_publish: impl FnOnce(&NativeWorkerParameterChange) -> Result<T, &'static str>,
+    ) -> Result<(NativeWorkerParameterChange, T), &'static str> {
+        self.worker
+            .parameter_hold_with_before(command, before_publish)
+    }
+    pub(crate) fn parameter_change_with_before<T>(
+        &mut self,
+        id: u32,
+        normalized: f64,
+        before_publish: impl FnOnce(&NativeWorkerParameterChange) -> Result<T, &'static str>,
+    ) -> Result<(NativeWorkerParameterChange, T), &'static str> {
+        self.worker
+            .parameter_change_with_before(id, normalized, before_publish)
+    }
     pub(crate) fn begin_parameter_change(
         &mut self,
         id: u32,
@@ -114,6 +131,23 @@ impl NativeEffectControl {
         command: NativeParameterHold<'_>,
     ) -> Result<NativeWorkerParameterChange, &'static str> {
         self.worker.parameter_hold_on_control(command)
+    }
+    pub(crate) fn parameter_hold_with_before<T>(
+        &mut self,
+        command: NativeParameterHold<'_>,
+        before_publish: impl FnOnce(&NativeWorkerParameterChange) -> Result<T, &'static str>,
+    ) -> Result<(NativeWorkerParameterChange, T), &'static str> {
+        self.worker
+            .parameter_hold_with_before(command, before_publish)
+    }
+    pub(crate) fn parameter_change_with_before<T>(
+        &mut self,
+        id: u32,
+        normalized: f64,
+        before_publish: impl FnOnce(&NativeWorkerParameterChange) -> Result<T, &'static str>,
+    ) -> Result<(NativeWorkerParameterChange, T), &'static str> {
+        self.worker
+            .parameter_change_with_before(id, normalized, before_publish)
     }
     pub(crate) fn begin_parameter_change(
         &mut self,
