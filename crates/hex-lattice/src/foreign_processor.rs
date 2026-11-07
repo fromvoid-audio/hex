@@ -99,6 +99,9 @@ impl PreparedForeignProcessor {
 pub struct ForeignParameterCapability {
     pub id: u32,
     pub steps: u32,
+    /// Exact restored SDK base as finite normalized f64 bits. This is the
+    /// canonical value, independent of subsequent authored/manual DSP input.
+    pub normalized_base_bits: u64,
 }
 
 /// Control-only authored capabilities from the original worker's preparation.

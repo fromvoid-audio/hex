@@ -58,19 +58,27 @@ fn quote_devices<'a>(
 ) -> Result<(usize, usize), Error> {
     let mut rows = 0usize;
     let mut bytes = 0usize;
-    for device in devices.filter(|device| has_authored(device)) {
+    for device in devices
+        .filter(|device| device.state().type_id() == hex_lattice_contract::VST3_DEVICE_TYPE_ID)
+    {
         bytes = bytes
             .checked_add(std::mem::size_of::<Program>() + 3 * std::mem::size_of::<usize>())
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    super::MAX_POINTS * (std::mem::size_of::<Lane>() + std::mem::size_of::<Knot>()),
+                )
+            })
             .ok_or(Error::Overflow)?;
         rows = rows.checked_add(1).ok_or(Error::Overflow)?;
         for lane in lanes(device) {
             let knots = super::knot_reservation(&lane.points, project.tempo_map())
                 .ok_or(Error::Overflow)?;
             bytes = bytes
-                .checked_add(std::mem::size_of::<Lane>())
-                .and_then(|bytes| {
-                    bytes.checked_add(knots.checked_mul(std::mem::size_of::<Knot>())?)
-                })
+                .checked_add(
+                    knots
+                        .checked_mul(std::mem::size_of::<Knot>())
+                        .ok_or(Error::Overflow)?,
+                )
                 .ok_or(Error::Overflow)?;
         }
     }
@@ -85,9 +93,6 @@ pub(crate) fn prepare_device(
     tempo: &hex_project::TempoMap,
     region: Option<hex_project::LoopRegion>,
 ) -> Result<Option<hex_lattice::PreparedForeignAutomation>, Error> {
-    if lanes(device).next().is_none() {
-        return Ok(None);
-    }
     let context = DevicePreparationContext {
         sample_rate: tempo.sample_rate(),
         tuning: &hex_lattice::TuningTable::default(),
@@ -97,8 +102,14 @@ pub(crate) fn prepare_device(
         .definition(device.state().type_id())
         .ok_or(Error::UnsupportedGraph)?
         .foreign_automation_source(identity, device.state(), &context)
-        .map_err(|_| Error::UnsupportedGraph)?
-        .ok_or(Error::UnsupportedGraph)?;
+        .map_err(|_| Error::UnsupportedGraph)?;
+    let Some(source) = source else {
+        return if has_authored(device) {
+            Err(Error::UnsupportedGraph)
+        } else {
+            Ok(None)
+        };
+    };
     if source.sample_rate != tempo.sample_rate()
         || source.quantum_frames != processor.quantum_frames()
         || Some(source.binding) != processor.binding()
@@ -118,8 +129,10 @@ pub(crate) fn prepare_device(
         tempo,
         profile,
     )
-    .map_err(|_| Error::UnsupportedGraph)?
-    .ok_or(Error::SourceMismatch)?;
+    .map_err(|_| Error::UnsupportedGraph)?;
+    let Some(program) = program else {
+        return Ok(None);
+    };
     let bytes = program.backing_bytes().ok_or(Error::Overflow)?;
     hex_lattice::PreparedForeignAutomation::new(source.binding, revision, program, bytes)
         .map(Some)

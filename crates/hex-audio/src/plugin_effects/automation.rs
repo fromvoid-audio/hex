@@ -108,8 +108,11 @@ impl Default for SourceCapabilities {
     fn default() -> Self {
         Self {
             class: None,
-            parameters: [hex_lattice::ForeignParameterCapability { id: 0, steps: 0 };
-                MAX_PARAMETER_POINTS],
+            parameters: [hex_lattice::ForeignParameterCapability {
+                id: 0,
+                steps: 0,
+                normalized_base_bits: 0,
+            }; MAX_PARAMETER_POINTS],
             len: 0,
         }
     }
@@ -138,18 +141,16 @@ impl SourceCapabilities {
         };
         let mut bases = [None; MAX_PARAMETER_POINTS];
         for ((entry, base), &id) in source.parameters.iter_mut().zip(&mut bases).zip(ids) {
-            *base = Some((
-                id,
-                metadata
-                    .initial_normalized(id)
-                    .ok_or(Error::Protocol("authored canonical value missing"))?
-                    .to_bits(),
-            ));
+            let normalized = metadata
+                .initial_normalized(id)
+                .ok_or(Error::Protocol("authored canonical value missing"))?;
+            *base = Some((id, normalized.to_bits()));
             *entry = hex_lattice::ForeignParameterCapability {
                 id,
                 steps: metadata
                     .step_count(id)
                     .ok_or(Error::Protocol("authored parameter capability missing"))?,
+                normalized_base_bits: normalized.to_bits(),
             };
         }
         instance.arm_authored_parameter_metadata_on_control(metadata)?;

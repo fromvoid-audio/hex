@@ -335,9 +335,10 @@ impl ForeignProcessors for WithPrograms<'_> {
 }
 
 impl Program {
-    /// Compile the authored read selection only. A stepped SDK parameter uses
-    /// quantized holds. The control owner accounts for the complete retained
-    /// program before handing it to a callback.
+    /// Compile authored read and exact canonical bases for the armed source.
+    /// Parameters outside authored read receive constant SDK bases; stepped
+    /// authored parameters use quantized holds. Every point shares the same
+    /// physical quantum budget and origin-run admission.
     pub fn prepare(
         lanes: &[DeviceAutomation],
         class: [u8; 16],
@@ -351,6 +352,10 @@ impl Program {
             || profile.max_runs == 0
             || profile.max_runs > profile.frames
             || capabilities.windows(2).any(|pair| pair[0].id >= pair[1].id)
+            || capabilities.iter().any(|parameter| {
+                let value = f64::from_bits(parameter.normalized_base_bits);
+                !value.is_finite() || !(0.0..=1.0).contains(&value)
+            })
         {
             return Err(Invalid("invalid foreign automation admission profile"));
         }
@@ -361,28 +366,47 @@ impl Program {
             }
             _ => None,
         });
-        let lane_count = authored.clone().count();
-        if lane_count == 0 {
+        for (id, lane) in authored.clone() {
+            if lane.vst3_class != Some(class) {
+                return Err(Invalid("foreign automation differs from the loaded class"));
+            }
+            if capabilities
+                .binary_search_by_key(&id, |parameter| parameter.id)
+                .is_err()
+            {
+                return Err(Invalid("foreign automation parameter is unavailable"));
+            }
+        }
+        if capabilities.is_empty() {
             return Ok(None);
         }
-        if lane_count > MAX_POINTS {
+        if capabilities.len() > MAX_POINTS {
             return Err(Invalid(
                 "foreign automation exceeds the quantum point budget",
             ));
         }
         let mut prepared = Vec::new();
         prepared
-            .try_reserve_exact(lane_count)
+            .try_reserve_exact(capabilities.len())
             .map_err(|_| Invalid("could not reserve foreign automation lanes"))?;
         let mut point_budget = 0;
-        for (id, lane) in authored {
-            if lane.vst3_class != Some(class) {
-                return Err(Invalid("foreign automation differs from the loaded class"));
-            }
-            let index = capabilities
-                .binary_search_by_key(&id, |parameter| parameter.id)
-                .map_err(|_| Invalid("foreign automation parameter is unavailable"))?;
-            let knots = prepare_knots(&lane.points, capabilities[index].steps, tempo)?;
+        for parameter in capabilities {
+            let id = parameter.id;
+            let knots =
+                if let Some((_, lane)) = authored.clone().find(|(candidate, _)| *candidate == id) {
+                    prepare_knots(&lane.points, parameter.steps, tempo)?
+                } else {
+                    let mut knots = Vec::new();
+                    knots
+                        .try_reserve_exact(1)
+                        .map_err(|_| Invalid("could not reserve foreign canonical base"))?;
+                    knots.push(Knot {
+                        frame: 0,
+                        value: f64::from_bits(parameter.normalized_base_bits),
+                        linear: false,
+                    });
+                    knots
+                };
             point_budget += point_bound(&knots, profile);
             if point_budget > MAX_POINTS {
                 return Err(Invalid(

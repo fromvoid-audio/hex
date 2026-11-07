@@ -43,7 +43,13 @@ impl CapturedCanonicalBases {
             .iter()
             .zip(&self.steps)
             .filter_map(|(value, &steps)| {
-                value.map(|(id, _)| hex_lattice::ForeignParameterCapability { id, steps })
+                value.map(
+                    |(id, normalized_base_bits)| hex_lattice::ForeignParameterCapability {
+                        id,
+                        steps,
+                        normalized_base_bits,
+                    },
+                )
             })
     }
     pub fn source(&self) -> (AppliedAudioSource, u64, bool) {

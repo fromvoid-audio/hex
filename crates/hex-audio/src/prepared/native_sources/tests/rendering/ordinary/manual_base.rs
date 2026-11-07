@@ -262,8 +262,16 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
     assert_eq!(
         bases.parameters().collect::<Vec<_>>(),
         vec![
-            hex_lattice::ForeignParameterCapability { id: 7, steps: 0 },
-            hex_lattice::ForeignParameterCapability { id: 11, steps: 0 },
+            hex_lattice::ForeignParameterCapability {
+                id: 7,
+                steps: 0,
+                normalized_base_bits: 0.75f64.to_bits()
+            },
+            hex_lattice::ForeignParameterCapability {
+                id: 11,
+                steps: 0,
+                normalized_base_bits: 0.25f64.to_bits()
+            },
         ]
     );
     let wrong = crate::plugin_effects::AuthoredSelection::from_targets([(
