@@ -469,51 +469,75 @@ fn actual_authored_parameter_input_refuses_competing_host_point_without_replacin
         .unwrap();
     let (mut owner, mut endpoint) = NativeWorker::start_on_control(instance).unwrap();
     let request = begin_change(&mut owner, 7, 0.75);
-    let mut output = [[9.0; 2]; 8];
-    let stage = || {
-        endpoint.begin_physical_callback(8).unwrap();
-        endpoint
-            .stage_segment_with_authored_parameters(
-                0,
-                &[[0.5, -0.25]; 8],
-                &[],
-                &mut output,
-                SegmentTiming {
-                    playing: None,
-                    at: |_| None,
-                },
-                AuthoredSegment {
-                    program: &FixtureEnvelope,
-                    origin: &|frame| Some(frame as u64),
-                },
-            )
-            .unwrap();
-        endpoint.finish(true).unwrap();
-    };
-    #[cfg(feature = "allocation-probe")]
-    {
-        let counts = allocation_counter::measure(stage);
-        assert_eq!(
-            (
-                counts.count_total,
-                counts.bytes_total,
-                counts.count_current,
-                counts.bytes_current
-            ),
-            (0, 0, 0, 0)
-        );
+    // Force the first quantum to encounter the control mailbox. The native
+    // worker must defer the request, while authored audio still progresses.
+    let signal = Arc::clone(&owner.reaper.completed);
+    let held = signal.capture.lock().unwrap();
+    let mut contention = Some(held);
+    let until = Instant::now() + Duration::from_secs(3);
+    let mut sequence = 0;
+    loop {
+        let mut output = [[9.0; 2]; 8];
+        let stage = || {
+            endpoint.begin_physical_callback(8).unwrap();
+            endpoint
+                .stage_segment_with_authored_parameters(
+                    0,
+                    &[[0.5, -0.25]; 8],
+                    &[],
+                    &mut output,
+                    SegmentTiming {
+                        playing: None,
+                        at: |_| None,
+                    },
+                    AuthoredSegment {
+                        program: &FixtureEnvelope,
+                        origin: &|frame| Some(frame as u64),
+                    },
+                )
+                .unwrap();
+            endpoint.finish(true).unwrap();
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let counts = allocation_counter::measure(stage);
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            let mut stage = stage;
+            stage();
+        }
+        while owner.published_blocks_on_control() <= sequence {
+            assert!(Instant::now() < until, "authored collision quantum");
+            thread::yield_now();
+        }
+        if sequence == 0 {
+            assert_eq!(output, [[0.0; 2]; 8]);
+            drop(contention.take());
+            assert_eq!(
+                owner.poll_parameter_change_on_control(&request).unwrap(),
+                NativeWorkerParameterProgress::Pending
+            );
+        } else {
+            match owner.poll_parameter_change_on_control(&request).unwrap() {
+                NativeWorkerParameterProgress::Refused => break,
+                NativeWorkerParameterProgress::Pending => {}
+                other => panic!("authored collision terminal: {other:?}"),
+            }
+        }
+        assert!(Instant::now() < until, "authored collision terminal");
+        sequence += 1;
     }
-    #[cfg(not(feature = "allocation-probe"))]
-    {
-        let mut stage = stage;
-        stage();
-    }
-    assert_eq!(output, [[0.0; 2]; 8]);
-    assert_eq!(
-        terminal(&mut owner, &request),
-        NativeWorkerParameterProgress::Refused
-    );
-    for n in 1..4 {
+    for n in sequence + 1..sequence + 4 {
         callback(&owner, &mut endpoint, n, 2.0, &[]);
     }
     let capture = begin(&mut owner);

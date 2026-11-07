@@ -1,11 +1,12 @@
 //! Actual applied-worker hold and isolated canonical capture for one reading
-//! lane. Release drains on the ordinary control poll even after UI refusal.
+//! effect. Release drains on the ordinary control poll even after UI refusal.
 use super::*;
 
 pub(super) struct LiveOverride {
     pub(super) source: AppliedAudioSource,
     pub(super) transport_epoch: u64,
     pub(super) class: [u8; 16],
+    pub(super) reading: bool,
     pub(super) hold: Option<NativeWorkerParameterChange>,
     release: Option<NativeWorkerParameterChange>,
     scratch: Option<ManualBaseCapture>,
@@ -14,11 +15,17 @@ pub(super) struct LiveOverride {
 }
 
 impl LiveOverride {
-    pub(super) fn new(source: AppliedAudioSource, transport_epoch: u64, class: [u8; 16]) -> Self {
+    pub(super) fn new(
+        source: AppliedAudioSource,
+        transport_epoch: u64,
+        class: [u8; 16],
+        reading: bool,
+    ) -> Self {
         Self {
             source,
             transport_epoch,
             class,
+            reading,
             hold: None,
             release: None,
             scratch: None,
@@ -128,10 +135,15 @@ impl Gesture {
 
     fn poll_override_cleanup(&mut self, control: &mut PublicationControl) -> bool {
         if let Some(pending) = self.pending.as_ref() {
-            let _ = control
-                .withdraw_native_source_parameter_change_on_control(self.binding, &pending.token);
+            if pending.value != self.origin.initial {
+                let _ = control.withdraw_native_source_parameter_change_on_control(
+                    self.binding,
+                    &pending.token,
+                );
+            }
             let _ = self.poll_point(control);
         }
+        let initial = self.sdk_value(self.origin.initial);
         let Some(live) = self.live.as_mut() else {
             return true;
         };
@@ -139,6 +151,32 @@ impl Gesture {
             && scratch.poll_on_control(control, &mut || true).is_some()
         {
             live.scratch = None;
+        }
+        // A target without a reading lane uses ordinary points. Cancel restores
+        // its original effective value on the same worker before releasing UI
+        // custody. A reading target instead releases its authored hold.
+        if !live.reading
+            && !live.discard
+            && self.pending.is_none()
+            && self.last != self.origin.initial
+        {
+            match control.begin_native_source_parameter_change_on_control(
+                self.binding,
+                self.origin.parameter,
+                initial,
+            ) {
+                Ok(token) => {
+                    self.pending = Some(PendingPoint {
+                        token,
+                        value: self.origin.initial,
+                        sequence: self.sequence,
+                        opening_hold: false,
+                    })
+                }
+                Err(reason) if source_gone(reason) => live.discard = true,
+                Err(_) => {}
+            }
+            return false;
         }
         let released = self.pending.is_none() && live.poll_release(control, self.binding);
         released && live.scratch.is_none()
@@ -153,7 +191,7 @@ impl Gesture {
     ) -> Result<Prepared, Error> {
         let actual = self.sdk_value(self.last);
         let live = self.live.as_mut().ok_or_else(lost)?;
-        if live.hold.is_none() || live.invalidated {
+        if (live.reading && live.hold.is_none()) || live.invalidated {
             return Err(refused("vst3 automation hold is unavailable"));
         }
         let status = std::sync::Arc::clone(&control.status);

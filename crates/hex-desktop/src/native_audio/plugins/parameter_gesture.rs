@@ -104,16 +104,24 @@ impl Plugins {
                         && row.normalized == origin.initial.normalized()
                 })
                 .ok_or_else(|| refused("vst3 parameter metadata changed · refresh the list"))?;
-            let live = if let Some(class) = input.reading_effect_class() {
+            let live = if let Some(class) = input.isolated_effect_class() {
                 let (source, transport_epoch) = control
                     .status
                     .live_native_parameter_source()
                     .filter(|(source, _)| source.context == input.context())
-                    .filter(|_| row.automation_class == Some(class))
+                    .filter(|_| {
+                        input.reading_effect_class().is_none()
+                            || row.automation_class == Some(class)
+                    })
                     .ok_or_else(|| {
-                        refused("play the arrangement to drag a reading vst3 parameter")
+                        refused("play the arrangement to edit this automated vst3 effect")
                     })?;
-                Some(LiveOverride::new(source, transport_epoch, class))
+                Some(LiveOverride::new(
+                    source,
+                    transport_epoch,
+                    class,
+                    input.reading_effect_class().is_some(),
+                ))
             } else {
                 None
             };
@@ -236,7 +244,8 @@ impl Gesture {
             }
             let live = self.live.as_ref().ok_or_else(lost)?;
             if live.invalidated
-                || input.reading_effect_class() != Some(live.class)
+                || input.isolated_effect_class() != Some(live.class)
+                || input.reading_effect_class().is_some() != live.reading
                 || control.status.live_native_parameter_source()
                     != Some((live.source, live.transport_epoch))
             {
@@ -276,35 +285,36 @@ impl Gesture {
                 self.before = Some(self.capture(control)?);
             }
             let actual = self.sdk_value(value);
-            let (token, opening_hold) = if let Some(live) = self.live.as_ref() {
-                let command = live.hold.as_ref().map_or(
-                    NativeParameterHold::Begin {
-                        id: self.origin.parameter,
-                        normalized: actual,
-                    },
-                    |hold| NativeParameterHold::Change {
-                        hold,
-                        normalized: actual,
-                    },
-                );
-                let token = admit(control, |control| {
-                    control.native_source_parameter_hold_on_control(
-                        live.source,
-                        self.binding,
-                        command,
-                    )
-                })?;
-                (token, live.hold.is_none())
-            } else {
-                let token = admit(control, |control| {
-                    control.begin_native_source_parameter_change_on_control(
-                        self.binding,
-                        self.origin.parameter,
-                        actual,
-                    )
-                })?;
-                (token, false)
-            };
+            let (token, opening_hold) =
+                if let Some(live) = self.live.as_ref().filter(|live| live.reading) {
+                    let command = live.hold.as_ref().map_or(
+                        NativeParameterHold::Begin {
+                            id: self.origin.parameter,
+                            normalized: actual,
+                        },
+                        |hold| NativeParameterHold::Change {
+                            hold,
+                            normalized: actual,
+                        },
+                    );
+                    let token = admit(control, |control| {
+                        control.native_source_parameter_hold_on_control(
+                            live.source,
+                            self.binding,
+                            command,
+                        )
+                    })?;
+                    (token, live.hold.is_none())
+                } else {
+                    let token = admit(control, |control| {
+                        control.begin_native_source_parameter_change_on_control(
+                            self.binding,
+                            self.origin.parameter,
+                            actual,
+                        )
+                    })?;
+                    (token, false)
+                };
             self.pending = Some(PendingPoint {
                 token,
                 value,

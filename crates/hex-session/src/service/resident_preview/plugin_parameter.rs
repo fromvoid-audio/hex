@@ -66,12 +66,27 @@ pub(super) fn operation(
                     Some(*class),
                 )
             });
+        let isolated_effect_class = source
+            .automation()
+            .iter()
+            .filter(|lane| lane.is_reading())
+            .find_map(|lane| {
+                lane.vst3_class.filter(|class| {
+                    super::super::device_automation_control::accepts_lane_target(
+                        session,
+                        device,
+                        lane.target,
+                        Some(*class),
+                    )
+                })
+            });
         let result = sink
             .prepare_plugin_parameter_gesture(PluginParameterGestureInput {
                 context,
                 operation,
                 canonical_state: state,
                 reading_effect_class,
+                isolated_effect_class,
             })
             .map_err(|error| match error {
                 PluginParameterGestureError::Refused(reason) => SessionError::NativeAudio(reason),
@@ -84,9 +99,9 @@ pub(super) fn operation(
                 PluginGesturePreparation::Commit(_),
                 PluginParameterGestureResult::Captured(mut capture),
             ) => {
-                if reading_effect_class.is_some() {
+                if isolated_effect_class.is_some() {
                     return Err(SessionError::Invalid(
-                        "reading vst3 parameter requires an isolated override",
+                        "authored vst3 effect requires an isolated manual base",
                     ));
                 }
                 let bind = |captured: NativeDeviceState| bind_capture(state, captured);
@@ -174,12 +189,13 @@ fn override_command(
         .project()
         .device(device)
         .ok_or(SessionError::Invalid("plugin override target changed"))?;
-    if source
-        .automation_target(target)
-        .is_none_or(|lane| !lane.is_reading() || lane.vst3_class != class)
+    if !source
+        .automation()
+        .iter()
+        .any(|lane| lane.is_reading() && lane.vst3_class == class)
     {
         return Err(SessionError::Invalid(
-            "plugin override requires the exact reading lane",
+            "plugin override requires the exact authored effect",
         ));
     }
     Ok(Command::ManualDeviceEdit {
@@ -213,6 +229,11 @@ mod tests {
 
     #[test]
     fn isolated_override_commits_only_the_exact_lane_and_keeps_the_canonical_undo() {
+        verify_isolated_override(true);
+        verify_isolated_override(false);
+    }
+
+    fn verify_isolated_override(reading: bool) {
         use hex_project::{
             AutomationInterpolation, AutomationPoint, AutomationReadSelection as Read,
             AutomationValue, BeatTime,
@@ -234,12 +255,15 @@ mod tests {
         };
         let target = DeviceAutomationTarget::Vst3 { parameter: 0 };
         let other = DeviceAutomationTarget::Vst3 { parameter: 7 };
-        for (target, value) in [(target, 0.75), (other, 0.5)] {
+        for (lane_target, value) in [(target, 0.75), (other, 0.5)] {
+            if lane_target == target && !reading {
+                continue;
+            }
             session
                 .editor
                 .execute(Command::ReplaceDeviceAutomationTarget {
                     device,
-                    target,
+                    target: lane_target,
                     points: vec![AutomationPoint {
                         beat: BeatTime::ZERO,
                         value: AutomationValue::new(value).unwrap(),
@@ -321,9 +345,13 @@ mod tests {
             let previous = source.device(device).unwrap();
             let candidate = candidate.device(device).unwrap();
             assert_eq!(candidate.state(), &expected_base);
-            let mut lane = previous.automation_target(target).unwrap().clone();
-            lane.read_selection = Read::Base;
-            assert_eq!(candidate.automation_target(target), Some(&lane));
+            if reading {
+                let mut lane = previous.automation_target(target).unwrap().clone();
+                lane.read_selection = Read::Base;
+                assert_eq!(candidate.automation_target(target), Some(&lane));
+            } else {
+                assert!(candidate.automation_target(target).is_none());
+            }
             assert_eq!(
                 candidate.automation_target(other),
                 previous.automation_target(other)
