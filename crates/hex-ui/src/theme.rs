@@ -400,17 +400,26 @@ pub fn element_colors(identity: hex_project::ElementColor) -> ElementColors {
 }
 fn resolve_element_colors(identity: hex_project::ElementColor, surface: u32) -> ElementColors {
     use hex_project::ElementColor;
+    // Frame r188's eight hue families use the bright clip shade as the accent;
+    // the existing surface mix and contrast-bound darkening resolve the other tiers.
     let hue = match identity {
-        ElementColor::Gray => 0xa4aaa8,
-        ElementColor::Red => 0xcf7773,
-        ElementColor::Orange => 0xd58d69,
-        ElementColor::Amber => 0xc5aa70,
-        ElementColor::Olive => 0xa3ad79,
-        ElementColor::Green => 0x7eae94,
-        ElementColor::Cyan => 0x77b6bb,
+        ElementColor::Gray => 0xa4a4a4,
+        ElementColor::Red => 0xce7967,
+        ElementColor::Orange => 0xd79659,
+        ElementColor::Amber => 0xc5ae5b,
+        ElementColor::Olive => 0x95b56b,
+        ElementColor::Green => 0x6bb68b,
+        ElementColor::Cyan => 0x6bb3aa,
         ElementColor::Blue => 0x809fca,
-        ElementColor::Violet => 0xa195c3,
-        ElementColor::Rose => 0xc18fa6,
+        ElementColor::Violet => 0xb780ad,
+        ElementColor::Rose => 0xd37c94,
+    };
+    // Neutral markers stay neutral even when a custom surface is tinted.
+    let surface = if identity == ElementColor::Gray {
+        let channel = ((surface >> 16 & 255) + (surface >> 8 & 255) + (surface & 255)) / 3;
+        channel * 0x010101
+    } else {
+        surface
     };
     let muted = mix(surface, hue, 0.82);
     let accent = mix(surface, hue, 0.98);
@@ -747,10 +756,15 @@ mod tests {
                             .all(|(muted, accent)| muted < accent),
                         "muted clips must be darker for {hue:?}"
                     );
-                    assert!(
-                        saturation(regular) > saturation(accent),
-                        "muted clips must be more saturated for {hue:?}"
-                    );
+                    if hue == hex_project::ElementColor::Gray {
+                        assert_eq!(saturation(regular), 0.0);
+                        assert_eq!(saturation(accent), 0.0);
+                    } else {
+                        assert!(
+                            saturation(regular) > saturation(accent),
+                            "muted clips must be more saturated for {hue:?}"
+                        );
+                    }
                     weakest = weakest.min(separation);
                     for (fill, cell_text) in
                         [(regular, colors.muted_text), (accent, colors.accent_text)]
@@ -783,6 +797,18 @@ mod tests {
 #[cfg(test)]
 mod element_palette_tests {
     use super::*;
+    #[test]
+    fn neutral_markers_do_not_inherit_custom_surface_tint() {
+        for surface in [0x000000, 0x202020, 0xf5f0e6, 0x2a1438] {
+            let colors = resolve_element_colors(hex_project::ElementColor::Gray, surface);
+            for fill in [colors.muted, colors.accent] {
+                assert_eq!(fill >> 16 & 255, fill >> 8 & 255);
+                assert_eq!(fill >> 8 & 255, fill & 255);
+                assert!(contrast_ratio(fill, 0x000000) >= 4.5);
+            }
+        }
+    }
+
     #[test]
     fn both_flavors_keep_ink_legible_and_identities_distinct() {
         let mut hues = std::collections::BTreeSet::new();
