@@ -144,15 +144,17 @@ impl Touch {
             }
         }
         if let Some(batch) = self.retired_batch.take() {
-            let mut receipts = batch.receipts().skip(self.retired_read);
-            while self.batch.len() < EVENTS_PER_BATCH && self.terminal.is_none() {
-                let Some(receipt) = receipts.next() else {
-                    self.terminal = Some(Action::Interrupt);
-                    return;
-                };
-                self.retired_read += 1;
-                if let ScalarReceipt::NativeParameter(receipt) = receipt {
-                    self.receipt(receipt);
+            {
+                let mut receipts = batch.receipts().skip(self.retired_read);
+                while self.batch.len() < EVENTS_PER_BATCH && self.terminal.is_none() {
+                    let Some(receipt) = receipts.next() else {
+                        self.terminal = Some(Action::Interrupt);
+                        return;
+                    };
+                    self.retired_read += 1;
+                    if let ScalarReceipt::NativeParameter(receipt) = receipt {
+                        self.receipt(receipt);
+                    }
                 }
             }
             if self.terminal.is_none() {
