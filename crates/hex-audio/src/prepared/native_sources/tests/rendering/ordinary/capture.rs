@@ -259,7 +259,7 @@ fn actual_ordinary_hold_requires_the_matching_applied_output_and_restores_read()
         return;
     }
     let _serial = serial();
-    let mut f = fixture_with_authored("processing", 2, 8, &[7, 11]);
+    let mut f = fixture_with_authored("processing", 2, 8, &[7]);
     let canonical = f.editor.project().clone();
     let root = f.control.native_candidate_root();
     let playback = compile(&f, true);
@@ -337,10 +337,10 @@ fn actual_ordinary_hold_requires_the_matching_applied_output_and_restores_read()
     assert!(
         matches!(receive(&mut f, &hold), Progress::Processed(value) if value.sequence == 1 && value.point.id == 7)
     );
-    assert_eq!(block(&mut f), [[0.5, -1.0]; 8]);
+    assert_eq!(block(&mut f), [[0.25, -0.5]; 8]);
     replacement::wait_for_blocks(&root, f.binding, 3);
     let release = send(&mut f, Hold::Release { hold: &hold });
-    for (index, expected) in [(3, [1.5, -3.0]), (4, [1.5, -3.0]), (5, [0.5, -1.0])] {
+    for (index, expected) in [(3, [0.75, -1.5]), (4, [0.75, -1.5]), (5, [0.25, -0.5])] {
         assert_eq!(block(&mut f), [expected; 8]);
         replacement::wait_for_blocks(&root, f.binding, index + 1);
     }
