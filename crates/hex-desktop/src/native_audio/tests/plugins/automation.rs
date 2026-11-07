@@ -9,7 +9,10 @@ pub(super) fn edit_with_running_callback(h: &mut ResidentHarness, request: Reque
     let until = Instant::now() + Duration::from_secs(10);
     loop {
         h.pump();
-        h.render();
+        // This is a headless callback driver, not a physical device clock.
+        // Observe actual native completion before accelerating another quantum;
+        // otherwise this control loop can manufacture missed worker deadlines.
+        h.render_worker_step();
         if let Ok(event) = h.service.try_event() {
             return event;
         }

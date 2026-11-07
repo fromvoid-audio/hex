@@ -36,7 +36,6 @@ struct Entry {
     owner: ProcessorChainOwner,
     device: u64,
     expected: NativeDeviceState,
-    authored: Option<hex_audio::plugin_effects::AuthoredSelection>,
     request: Option<NativeWorkerCapture>,
     captured: Option<NativeDeviceState>,
     /// Refused-as-still-changing attempts so far.
@@ -105,7 +104,6 @@ impl Plugins {
                     owner,
                     device,
                     expected: state.clone(),
-                    authored: source.authored.clone(),
                     request: None,
                     captured: None,
                     refused: 0,
@@ -220,8 +218,8 @@ impl Plugins {
         for mut entry in wanted {
             // All tokens have reached their actual terminals. A late source
             // close/replacement still refuses data before snapshot publication.
-            control.native_source_metadata(entry.binding)?;
-            if let Some(selection) = entry.authored.as_ref() {
+            let selection = edits::armed_selection(control, entry.binding)?;
+            if let Some(selection) = selection.as_ref() {
                 let host = self
                     .host
                     .as_ref()

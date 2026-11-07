@@ -1591,40 +1591,30 @@ fn verify_instrument_takeover(
             std::thread::yield_now();
         }
     };
-    if case == "unread" {
-        let mut client = GestureClient::default();
-        client.begin_plugin(query(h, 12)).unwrap();
-        let refused = send(h, &mut client, false);
-        // Begin refusal is represented by the keyed ACK; the event contract
-        // does not require a global error string for a rejected Begin.
-        assert!(refused.active_device_gesture.is_none());
-        assert_eq!(refused.state.project.as_ref(), &before);
-        assert!((peak(h) - baseline).abs() < 0.0001);
-        println!("instrument unarmed target remains explicitly guarded");
-        return;
-    }
     let mut client = GestureClient::default();
-    client.begin_plugin(query(h, 12)).unwrap();
-    assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
-    client
-        .change_plugin(PluginParameterValue::new(0.75).unwrap())
-        .unwrap();
-    assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
-    if playing {
-        assert!(
-            (peak(h) - baseline * 3.0).abs() < 0.0001,
-            "held MIDI must continue through preview"
-        );
+    for request_id in [12, 13] {
+        client.begin_plugin(query(h, request_id)).unwrap();
+        assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
+        client
+            .change_plugin(PluginParameterValue::new(0.75).unwrap())
+            .unwrap();
+        assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
+        if playing {
+            assert!(
+                (peak(h) - baseline * 3.0).abs() < 0.0001,
+                "held MIDI must continue through preview"
+            );
+        }
+        client.cancel().unwrap();
+        assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
+        if playing {
+            assert!(
+                (peak(h) - baseline).abs() < 0.0001,
+                "cancel must resume authored input"
+            );
+        }
     }
-    client.cancel().unwrap();
-    assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
-    if playing {
-        assert!(
-            (peak(h) - baseline).abs() < 0.0001,
-            "cancel must resume authored input"
-        );
-    }
-    client.begin_plugin(query(h, 13)).unwrap();
+    client.begin_plugin(query(h, 14)).unwrap();
     send(h, &mut client, true);
     let manual = PluginParameterValue::new(0.5).unwrap();
     client.change_plugin(manual).unwrap();
@@ -1688,7 +1678,18 @@ fn verify_instrument_takeover(
         );
     }
     let redone = super::automation::edit_with_running_callback(h, Request::Redo);
-    assert!(redone.error.is_none(), "{:?}", redone.error);
+    if redone.error.is_some() {
+        let diagnostic = h.audio.as_mut().unwrap().control.take_audio_diagnostic();
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        panic!(
+            "redo: {:?}; source {:?}; render fault {:?}; audio diagnostic {:?}; preparation {:?}",
+            redone.error,
+            status.native_effect_source(),
+            status.render_fault_snapshot(),
+            diagnostic,
+            *h.plugin_progress.lock().unwrap()
+        );
+    }
     assert_eq!(redone.state.project, committed.state.project);
     applied = h.applied(applied).0;
     if playing {
@@ -1696,6 +1697,25 @@ fn verify_instrument_takeover(
             (peak(h) - baseline * 2.0).abs() < 0.0001,
             "redo must restore audible manual base"
         );
+    }
+    // A later gesture uses the privately approved current canonical state,
+    // rather than demanding the original source's frozen constructor bytes.
+    client.begin_plugin(query(h, 15)).unwrap();
+    assert_eq!(
+        send(h, &mut client, true).state.project,
+        redone.state.project
+    );
+    client
+        .change_plugin(PluginParameterValue::new(0.75).unwrap())
+        .unwrap();
+    send(h, &mut client, true);
+    client.cancel().unwrap();
+    assert_eq!(
+        send(h, &mut client, true).state.project,
+        redone.state.project
+    );
+    if playing {
+        assert!((peak(h) - baseline * 2.0).abs() < 0.0001);
     }
     let enabled = super::automation::edit_with_running_callback(
         h,
@@ -1706,11 +1726,15 @@ fn verify_instrument_takeover(
         },
     );
     assert!(enabled.error.is_none(), "{:?}", enabled.error);
-    h.applied(applied);
+    if reading {
+        h.applied(applied);
+    } else {
+        assert_eq!(enabled.state.project, redone.state.project);
+    }
     if playing {
         assert!(
-            (peak(h) - baseline).abs() < 0.0001,
-            "re-enable must release the original worker hold"
+            (peak(h) - baseline * if reading { 1.0 } else { 2.0 }).abs() < 0.0001,
+            "re-enable resumes existing lanes and preserves unlaned manual bases"
         );
     }
     let files = Files::new();

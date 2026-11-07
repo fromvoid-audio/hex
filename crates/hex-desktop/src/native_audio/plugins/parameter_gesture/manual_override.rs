@@ -1,4 +1,4 @@
-//! Actual applied-worker hold and isolated canonical capture for one reading
+//! Actual applied-worker hold and isolated canonical capture for one exact
 //! processor. Release drains on the ordinary control poll even after UI refusal.
 use super::*;
 
@@ -7,7 +7,7 @@ pub(super) struct LiveOverride {
     pub(super) transport_epoch: u64,
     pub(super) class: [u8; 16],
     pub(super) reading: bool,
-    pub(super) holds_program: bool,
+    pub(super) uses_hold: bool,
     pub(super) playing: bool,
     pub(super) hold: Option<NativeWorkerParameterChange>,
     release: Option<NativeWorkerParameterChange>,
@@ -22,7 +22,7 @@ impl LiveOverride {
         transport_epoch: u64,
         class: [u8; 16],
         reading: bool,
-        holds_program: bool,
+        uses_hold: bool,
         playing: bool,
     ) -> Self {
         Self {
@@ -30,7 +30,7 @@ impl LiveOverride {
             transport_epoch,
             class,
             reading,
-            holds_program,
+            uses_hold,
             playing,
             hold: None,
             release: None,
@@ -187,19 +187,31 @@ impl Gesture {
         {
             live.scratch = None;
         }
-        // A target without a reading lane uses ordinary points. Cancel restores
-        // its original effective value on the same worker before releasing UI
-        // custody. Idle reading targets also restore their actual Begin value.
+        // Cancel explicitly restores a target without a reading lane, including
+        // a newly armed target still absent from the actual incoming programme.
+        // Keep that restoration inside its hold. Idle targets use ordinary input.
         // A running reading target releases its authored hold.
-        if !(live.discard || live.holds_program && live.playing)
+        if !(live.discard || live.reading && live.playing)
             && self.pending.is_none()
             && self.last != self.origin.initial
         {
-            match control.begin_native_source_parameter_change_on_control(
-                self.binding,
-                self.origin.parameter,
-                initial,
-            ) {
+            let restored = if let Some(hold) = live.hold.as_ref() {
+                control.native_source_parameter_hold_on_control(
+                    live.source,
+                    self.binding,
+                    NativeParameterHold::Change {
+                        hold,
+                        normalized: initial,
+                    },
+                )
+            } else {
+                control.begin_native_source_parameter_change_on_control(
+                    self.binding,
+                    self.origin.parameter,
+                    initial,
+                )
+            };
+            match restored {
                 Ok(token) => {
                     self.pending = Some(PendingPoint {
                         token,
@@ -226,7 +238,7 @@ impl Gesture {
     ) -> Result<Prepared, Error> {
         let actual = self.sdk_value(self.last);
         let live = self.live.as_mut().ok_or_else(lost)?;
-        if (live.playing && live.holds_program && live.hold.is_none()) || live.invalidated {
+        if (live.playing && live.uses_hold && live.hold.is_none()) || live.invalidated {
             return Err(refused("vst3 automation hold is unavailable"));
         }
         let status = std::sync::Arc::clone(&control.status);
