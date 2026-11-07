@@ -1,4 +1,4 @@
-//! Actual applied-worker hold and isolated canonical capture for one reading
+//! Actual applied-worker hold and isolated canonical capture for one exact
 //! processor. Release drains on the ordinary control poll even after UI refusal.
 use super::*;
 

@@ -216,8 +216,8 @@ impl Plugins {
                 return Err(lost());
             }
             // Revalidate capability on the actual original SDK source,
-            // including after renewal. Only page zero and the target page
-            // can be queried, independently of total inventory size.
+            // including after renewal. One fresh target page is independent
+            // of PCM value revisions and the total inventory size.
             let (current_value, _) = validate_current_parameter(
                 control,
                 binding,
