@@ -628,6 +628,16 @@ fn authored_drag(reading: bool) {
         if reading { original_pcm * 2.0 } else { 1.0 }
     );
 
+    // Save after the committed worker has really processed both parameters,
+    // before history can recreate it from the canonical base.
+    let active_save = h.run(Request::SaveCurrent);
+    assert!(active_save.save_complete && active_save.error.is_none());
+    assert_eq!(
+        hex_storage::load(&fixture.path).unwrap(),
+        *committed.state.project,
+        "active authored values must not replace saved manual bases"
+    );
+
     let history = |h: &mut ResidentHarness, request| {
         h.service.submit(request).unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
