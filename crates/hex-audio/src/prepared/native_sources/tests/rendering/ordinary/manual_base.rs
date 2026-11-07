@@ -75,7 +75,14 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
     for (source, binding, point) in [
         (stale, binding, point),
         (source, wrong_binding, point),
-        (source, binding, ParameterPoint { frame: 1, ..point }),
+        (
+            source,
+            binding,
+            ParameterPoint {
+                normalized: f64::NAN,
+                ..point
+            },
+        ),
     ] {
         assert!(
             host.begin_manual_base_capture_on_control(
