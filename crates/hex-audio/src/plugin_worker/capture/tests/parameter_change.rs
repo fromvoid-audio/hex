@@ -3,6 +3,8 @@ use super::*;
 use crate::plugin_worker::{NativeWorkerParameterChange, NativeWorkerParameterProgress};
 use hex_plugin_host::transport::ParameterPoint;
 
+mod unprogrammed;
+
 const HELD_PROCESS_FIXTURE: u32 = 140;
 
 fn begin_change(owner: &mut NativeWorker, id: u32, value: f64) -> NativeWorkerParameterChange {
