@@ -349,9 +349,19 @@ fn workspace_three_returns_device_menu_from_root_or_track_focus(cx: &mut TestApp
         });
         visual.update(|window, cx| {
             editor.read_with(cx, |v, _| {
-                // GPUI's existing tracked-parent mouse-down handler focuses
-                // root when this non-focusable add button is clicked.
-                assert!(v.focus.is_focused(window));
+                assert!(!v.focus.is_focused(window));
+                assert!(
+                    window
+                        .context_stack()
+                        .iter()
+                        .any(|context| context.contains("hex_device_picker"))
+                );
+                assert!(
+                    window
+                        .context_stack()
+                        .iter()
+                        .any(|context| context.contains("hex_text_input"))
+                );
             })
         });
         visual.simulate_keystrokes("tab");
