@@ -174,6 +174,7 @@ pub(crate) fn preparation_data_bound_with_scalar_sources(
 // Observe actual worker publication/holding without exposing a production API.
 // The gate also honors Stop, so a failed test cannot strand a paused worker.
 pub(crate) struct TestWorkerHooks {
+    pub(crate) read_gate: Option<TestReadGate>,
     pub(crate) entered: SyncSender<()>,
     pub(crate) release: std::sync::mpsc::Receiver<()>,
     pub(crate) publications: SyncSender<usize>,
@@ -181,6 +182,30 @@ pub(crate) struct TestWorkerHooks {
         SyncSender<hex_engine::ScalarSourceKey>,
         std::sync::mpsc::Receiver<()>,
     )>,
+}
+
+#[cfg(test)]
+pub(crate) struct TestReadGate {
+    pub(crate) key: PageKey,
+    pub(crate) after_checks: usize,
+    pub(crate) entered: SyncSender<()>,
+    pub(crate) release: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+impl TestReadGate {
+    fn wait(&self, stop: &AtomicBool) {
+        if self.entered.try_send(()).is_err() {
+            return;
+        }
+        while !stop.load(Ordering::Acquire) {
+            match self.release.recv_timeout(Duration::from_millis(2)) {
+                Ok(()) => return,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -464,6 +489,10 @@ pub(crate) fn run_worker(
             &mut page,
             &mut source_scratch,
             &stop,
+            #[cfg(test)]
+            test_hooks
+                .as_ref()
+                .and_then(|hooks| hooks.read_gate.as_ref()),
         ) {
             Ok(()) => {
                 match queues.ready.push(page) {
@@ -944,6 +973,7 @@ fn render_page(
     page: &mut PageBuffer,
     source_scratch: &mut [[f32; 2]],
     stop: &AtomicBool,
+    #[cfg(test)] read_gate: Option<&TestReadGate>,
 ) -> Result<(), StreamFailureKind> {
     let output_start = key
         .page_index
@@ -966,9 +996,20 @@ fn render_page(
         return Err(StreamFailureKind::CapacityExhausted);
     }
     let input = &mut source_scratch[..source_count];
+    #[cfg(test)]
+    let mut checks = 0;
     source
         .reader
-        .read_frames_into_with_cancel(source_start, input, || stop.load(Ordering::Acquire))
+        .read_frames_into_with_cancel(source_start, input, || {
+            #[cfg(test)]
+            if let Some(gate) = read_gate.filter(|gate| gate.key == key) {
+                checks += 1;
+                if checks == gate.after_checks {
+                    gate.wait(stop);
+                }
+            }
+            stop.load(Ordering::Acquire)
+        })
         .map_err(map_import_error)?;
     page.frames.fill([0.0; 2]);
     source
@@ -1153,7 +1194,7 @@ pub(crate) mod tests {
         let mut scratch = vec![[0.0; 2]; 8192];
         let cancelled = AtomicBool::new(true);
         assert_eq!(
-            render_page(&mut source, key, &mut page, &mut scratch, &cancelled),
+            render_page(&mut source, key, &mut page, &mut scratch, &cancelled, None),
             Err(StreamFailureKind::Cancelled),
         );
         assert_eq!(page.key, None);
