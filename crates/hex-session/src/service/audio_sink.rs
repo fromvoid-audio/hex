@@ -28,8 +28,8 @@ pub struct PluginParameterGestureInput<'a> {
     pub(in crate::service) context: hex_engine::AudioSourceContext,
     pub(in crate::service) operation: crate::device_gesture::PluginGesturePreparation,
     pub(in crate::service) canonical_state: &'a NativeDeviceState,
-    pub(in crate::service) reading_effect_class: Option<[u8; 16]>,
-    pub(in crate::service) isolated_effect_class: Option<[u8; 16]>,
+    pub(in crate::service) reading_class: Option<[u8; 16]>,
+    pub(in crate::service) isolated_class: Option<[u8; 16]>,
 }
 impl<'a> PluginParameterGestureInput<'a> {
     pub fn context(&self) -> hex_engine::AudioSourceContext {
@@ -38,14 +38,14 @@ impl<'a> PluginParameterGestureInput<'a> {
     pub fn operation(&self) -> crate::device_gesture::PluginGesturePreparation {
         self.operation
     }
-    /// Exact class of the reading Arrangement lane, for ordinary effects.
-    pub fn reading_effect_class(&self) -> Option<[u8; 16]> {
-        self.reading_effect_class
+    /// Exact class of the reading Arrangement lane, for the ordinary processor.
+    pub fn reading_class(&self) -> Option<[u8; 16]> {
+        self.reading_class
     }
-    /// A reading lane on this exact effect requires an isolated manual base,
+    /// A reading lane on this exact processor requires an isolated manual base,
     /// including when the edited parameter has no lane of its own.
-    pub fn isolated_effect_class(&self) -> Option<[u8; 16]> {
-        self.isolated_effect_class
+    pub fn isolated_class(&self) -> Option<[u8; 16]> {
+        self.isolated_class
     }
     pub fn canonical_state(&self) -> &'a NativeDeviceState {
         self.canonical_state
