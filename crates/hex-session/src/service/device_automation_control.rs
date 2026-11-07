@@ -17,6 +17,37 @@ pub enum DeviceAutomationControlEdit {
     Reenable,
 }
 
+/// Ordinary preparation remains the authority for SDK flags, raw parameter
+/// IDs, discrete steps and quantum capacity. This preflight prevents stale
+/// class or placement from reaching that prepare-before-commit transaction.
+pub(super) fn accepts_lane_target(
+    session: &Session,
+    device: hex_project::DeviceId,
+    target: hex_lattice_contract::DeviceAutomationTarget,
+    vst3_class: Option<[u8; 16]>,
+) -> bool {
+    match target {
+        hex_lattice_contract::DeviceAutomationTarget::Vst3 { .. } => {
+            vst3_class.is_some()
+                && session.native_device_class(device).ok()
+                    == Some(hex_engine::NativeDeviceClass::Effect)
+                && session
+                    .project()
+                    .device(device)
+                    .and_then(|device| vst3_automation_class(device.state()))
+                    == vst3_class
+        }
+        _ => {
+            vst3_class.is_none()
+                && hex_engine::project_device_automation_target_supported(
+                    session.project(),
+                    device,
+                    target,
+                )
+        }
+    }
+}
+
 pub(super) fn command(
     session: &Session,
     edit: &DeviceAutomationControlEdit,
