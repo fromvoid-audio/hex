@@ -50,7 +50,7 @@ pub(super) fn button(
             .into()
         })
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_click(cx.listener(move |view, _, _, cx| {
+        .on_click(cx.listener(move |view, _, window, cx| {
             cx.stop_propagation();
             let Some(owner) = owner.filter(|owner| {
                 generation == view.project_generation
@@ -67,7 +67,6 @@ pub(super) fn button(
                 owner,
                 after: device,
             });
-            view.device_panel.add_menu_open = true;
-            cx.notify();
+            device_picker::open(view, window, cx);
         }))
 }

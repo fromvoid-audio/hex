@@ -49,6 +49,8 @@ mod limiter_panel;
 pub(super) use eq_panel::after_scroll_worker_event as eq_scroll_after_worker_event;
 pub(super) use eq_panel::reconcile_spectrum as reconcile_eq_spectrum;
 mod device_add;
+mod device_picker;
+pub(super) use device_picker::bind_keys as bind_picker_keys;
 mod device_meter;
 mod gate_panel;
 mod keyboard;
@@ -177,6 +179,7 @@ pub(super) struct DevicePanelState {
     pub(super) spectrum_scratch: Vec<hex_audio::spectrum_worker::PublishedSpectra>,
     add_menu_open: bool,
     add_menu_target: Option<device_add::Target>,
+    add_search: Option<device_picker::Search>,
     message: Option<String>,
 }
 
@@ -901,7 +904,6 @@ fn render_track(
     let Some(track) = state.project.track(track_id) else {
         return empty_panel("selected track is no longer available");
     };
-    let instrument = track.instrument().cloned();
     let identities: HashMap<_, _> = track
         .ordered_device_chain()
         .map(|node| match node {
@@ -1253,9 +1255,14 @@ fn render_track(
             .into()
         })
         .child(theme::text(if add_open { "×" } else { "+" }))
-        .on_click(cx.listener(|view, _, _, cx| {
+        .on_click(cx.listener(|view, _, window, cx| {
             view.device_panel.add_menu_target = None;
-            view.device_panel.add_menu_open = !view.device_panel.add_menu_open;
+            if view.device_panel.add_menu_open {
+                view.device_panel.add_menu_open = false;
+                view.focus.focus(window);
+            } else {
+                device_picker::open(view, window, cx);
+            }
             cx.notify();
         }));
     let title = view
@@ -1286,12 +1293,10 @@ fn render_track(
     }
     root = root.child(header).child(chain);
     if add_open {
-        root = root.child(render_add_menu(
+        root = root.child(device_picker::render(
+            view,
+            DevicePanelOwner::Track(track_id),
             cx,
-            track_id,
-            instrument.as_ref().map(|device| device.id()),
-            effect_catalog,
-            instrument_catalog,
         ));
     }
     root
@@ -2844,10 +2849,9 @@ fn instrument_actions(
             theme::DeviceActionRole::Normal,
             selected,
         )
-        .on_click(cx.listener(|view, _, _, cx| {
+        .on_click(cx.listener(|view, _, window, cx| {
             view.device_panel.add_menu_target = None;
-            view.device_panel.add_menu_open = true;
-            cx.notify();
+            device_picker::open(view, window, cx);
         })),
     );
     let actions = if presets_available {
@@ -2885,115 +2889,6 @@ fn instrument_actions(
             cx.notify();
         })),
     )
-}
-
-fn render_add_menu(
-    cx: &mut Context<EditorView>,
-    track: TrackId,
-    instrument: Option<DeviceId>,
-    effects: Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>,
-    instruments: Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>,
-) -> impl IntoElement {
-    let mut menu = div()
-        .id("device-add-menu")
-        .debug_selector(|| "device-add-menu".into())
-        .absolute()
-        .top(px(DEVICE_PANEL_HEADER_HEIGHT))
-        .left(px(4.0))
-        .right(px(4.0))
-        .max_h(px(crate::device_composition::BODY_HEIGHT))
-        .overflow_y_scroll()
-        .occlude()
-        .flex()
-        .flex_wrap()
-        .items_center()
-        .gap(px(3.0))
-        .px(px(4.0))
-        .py(px(2.0))
-        .bg(rgb(theme::color(theme::PaletteRole::Raised)));
-    let mut any_entry = false;
-    for (class, entries) in [
-        (NativeDeviceClass::Instrument, instruments),
-        (NativeDeviceClass::Effect, effects),
-    ] {
-        match entries {
-            Ok(entries) => {
-                for entry in entries {
-                    any_entry = true;
-                    let type_id = entry.type_id;
-                    let type_label = type_id.as_str().unwrap_or("invalid device").to_owned();
-                    let class_label = match class {
-                        NativeDeviceClass::Effect => "effect",
-                        NativeDeviceClass::Instrument => "instrument",
-                    };
-                    let action_id = format!("add-native-{class_label}-{type_label}");
-                    let label = if class == NativeDeviceClass::Instrument && instrument.is_some() {
-                        format!("replace · {}", entry.name)
-                    } else {
-                        format!("{class_label} · {}", entry.name)
-                    };
-                    menu = menu.child(
-                        div()
-                            .id(ElementId::Name(action_id.clone().into()))
-                            .debug_selector(move || action_id.clone())
-                            .h(px(18.0))
-                            .flex_shrink_0()
-                            .whitespace_nowrap()
-                            .px(px(5.0))
-                            .flex()
-                            .items_center()
-                            .text_xs()
-                            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
-                            .cursor(gpui::CursorStyle::PointingHand)
-                            .child(theme::text(label))
-                            .on_click(cx.listener(move |view, _, window, cx| {
-                                let Some(before) =
-                                    device_add::before(view, DevicePanelOwner::Track(track))
-                                else {
-                                    view.focus.focus(window);
-                                    view.device_panel.add_menu_open = false;
-                                    view.device_panel.message =
-                                        Some("device insertion cancelled · chain changed".into());
-                                    cx.notify();
-                                    return;
-                                };
-                                let request = match (class, instrument) {
-                                    (NativeDeviceClass::Instrument, Some(device)) => {
-                                        Request::ReplaceNativeDevice {
-                                            device,
-                                            class,
-                                            type_id: Box::new(type_id),
-                                        }
-                                    }
-                                    _ => Request::AddNativeDevice {
-                                        track,
-                                        class,
-                                        type_id: Box::new(type_id),
-                                        before,
-                                    },
-                                };
-                                if finalize_controls(view, cx)
-                                    && view.enqueue_device_barrier(request)
-                                {
-                                    view.focus.focus(window);
-                                    view.device_panel.add_menu_open = false;
-                                    view.device_panel.message = None;
-                                }
-                                cx.notify();
-                            })),
-                    );
-                }
-            }
-            Err(error) => {
-                menu = menu.child(menu_message(&format!("device catalog error · {error}")));
-            }
-        }
-    }
-    if !any_entry {
-        menu = menu.child(menu_message("no native devices available"));
-    }
-    menu
 }
 
 fn bypass_action(
