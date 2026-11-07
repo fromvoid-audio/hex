@@ -3942,6 +3942,15 @@ fn run_worker(
                             project_generation,
                         )
                     };
+                    // Begin may renew a stopped native epoch before metadata
+                    // admission. Retain the new canonical resources even if
+                    // the subsequent target validation refuses this gesture.
+                    if matches!(gesture, GestureRequest::BeginPlugin { .. })
+                        && resident_preview.is_none()
+                        && let Some(snapshot) = resident_snapshot.as_ref()
+                    {
+                        compiled = Some((revision, Arc::clone(&snapshot.prepared)));
+                    }
                     let native_terminal_accepted = events.resident_publication_enabled()
                         && session.audio_mode() == DocumentAudioMode::Resident
                         && outcome.ack.accepted

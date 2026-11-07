@@ -45,6 +45,44 @@ pub(super) fn operation(
                 "canonical plugin playback is unavailable",
             ));
         }
+        if let PluginGesturePreparation::Begin { origin, .. } = operation
+            && sink
+                .plugin_parameter_requires_stopped_restore(context, origin)
+                .map_err(SessionError::NativeAudio)?
+        {
+            let restored = (|| {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                loop {
+                    match sink
+                        .prepare_stopped_playback_restore(context)
+                        .map_err(SessionError::NativeAudio)?
+                    {
+                        Some(true) => break,
+                        Some(false) if std::time::Instant::now() < deadline => {
+                            sink.poll();
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        _ => {
+                            return Err(SessionError::Invalid(
+                                "stopped vst3 restoration unavailable",
+                            ));
+                        }
+                    }
+                }
+                let restored = session.restore_resident_snapshot(
+                    context,
+                    sink,
+                    admission,
+                    current.as_ref(),
+                )?;
+                *current = Some(restored);
+                Ok(())
+            })();
+            if restored.is_err() {
+                sink.cancel_stopped_playback_restore();
+            }
+            restored?;
+        }
         let source = session
             .project()
             .device(device)

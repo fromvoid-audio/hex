@@ -379,6 +379,17 @@ impl std::fmt::Debug for ResidentPublicationRefusal {
 /// Construction must not start device work or hold an opened output: a failed
 /// thread spawn may drop the uninitialized adapter on the constructing thread.
 pub trait WorkerAudioSink: Send {
+    /// Before Begin, request renewal only when the exact stopped source has
+    /// returned its endpoints. Session republishes its unchanged canonical
+    /// snapshot through the existing stopped-restore owner before admission.
+    /// An already owned restoration must refuse this independent request.
+    fn plugin_parameter_requires_stopped_restore(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _origin: crate::device_gesture::PluginParameterOrigin,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
     /// Use the existing actual source for one keyed plugin operation. Begin
     /// revalidates observed metadata/context. Preview/Restore must apply the
     /// real point before returning Applied; they never edit canonical state.
