@@ -26,7 +26,8 @@ use hex_lattice_contract::{
     ParameterSemantics, ParameterValue,
 };
 use hex_project::{
-    AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, Device, DeviceId, Project,
+    AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, Device, DeviceAutomation,
+    DeviceId, Project,
 };
 use hex_session::service::{Event, PluginParameterRow, Request, vst3_automation_class};
 pub(super) use paint::{overlay, rows};
@@ -51,6 +52,13 @@ pub(super) struct Entry {
     metadata: EntryMetadata,
     pub(super) base: f32,
     end: Option<BeatTime>,
+}
+
+fn automation_extent(lane: &DeviceAutomation) -> Option<BeatTime> {
+    lane.points
+        .last()
+        .map(|point| point.beat)
+        .max(lane.touch.last().map(|span| span.end))
 }
 
 #[derive(Clone, Copy)]
@@ -101,6 +109,7 @@ pub(super) enum Action {
     HidePreview(Target),
     Clear(Target),
     Reenable(Target),
+    Override(Target),
     ToggleNativeArm(Target),
     Shape(Target, AutomationInterpolation),
 }
@@ -366,10 +375,7 @@ impl Entry {
             label: format!("{} {} · {}", metadata.name, index + 1, label).into(),
             metadata: entry_metadata,
             base,
-            end: source
-                .automation_target(kind)
-                .and_then(|lane| lane.points.last())
-                .map(|point| point.beat),
+            end: source.automation_target(kind).and_then(automation_extent),
         })
     }
     fn vst3(
@@ -397,10 +403,7 @@ impl Entry {
             label: format!("vst3 · {}", hex_session::service::text::verbatim(&row.name)).into(),
             metadata: EntryMetadata::Vst3 { steps: row.steps },
             base: AutomationValue::new(row.normalized as f32).ok()?.get(),
-            end: source
-                .automation_target(kind)
-                .and_then(|lane| lane.points.last())
-                .map(|point| point.beat),
+            end: source.automation_target(kind).and_then(automation_extent),
         })
     }
 
@@ -410,8 +413,7 @@ impl Entry {
             let mut entry = self.clone();
             entry.end = source
                 .automation_target(self.target.kind)
-                .and_then(|lane| lane.points.last())
-                .map(|point| point.beat);
+                .and_then(automation_extent);
             return Some(entry);
         }
         Self::read(
@@ -739,15 +741,13 @@ impl EditorView {
         if !super::device_panel::finalize_controls(self, cx) {
             return false;
         }
-        self.open_automation_menu(
-            position,
-            vec![
-                ("show automation", Action::Show(entry.clone(), false)),
-                ("add new automation lane", Action::Show(entry, true)),
-            ],
-            window,
-            cx,
-        );
+        let target = entry.target;
+        let mut actions = vec![
+            ("show automation", Action::Show(entry.clone(), false)),
+            ("add new automation lane", Action::Show(entry, true)),
+        ];
+        actions.extend(self.device_automation_read_action(target));
+        self.open_automation_menu(position, actions, window, cx);
         true
     }
 
@@ -843,6 +843,7 @@ impl EditorView {
             | Action::HidePreview(target)
             | Action::Clear(target)
             | Action::Reenable(target)
+            | Action::Override(target)
             | Action::ToggleNativeArm(target)
             | Action::Shape(target, _) => self.state.as_ref().is_none_or(|state| {
                 target
@@ -1109,6 +1110,11 @@ impl EditorView {
                 self.track_scroll.remeasure();
             }
             Action::Reenable(target) => self.reenable_device_automation(Some(target), cx),
+            Action::Override(target) => self.select_device_automation_read(
+                Some(target),
+                hex_project::AutomationReadSelection::Base,
+                cx,
+            ),
             Action::ToggleNativeArm(target) => {
                 self.toggle_native_automation_arm(target.device, target.kind);
             }
