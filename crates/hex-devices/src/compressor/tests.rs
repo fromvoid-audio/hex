@@ -1450,7 +1450,7 @@ fn auxiliary_bypass_advances_the_same_history_across_block_partitions() {
 }
 
 #[test]
-fn auxiliary_rejects_unsupported_automation_before_processing() {
+fn auxiliary_rejects_unprepared_automation_before_processing() {
     struct ThresholdAutomation;
 
     impl NativeParameterAutomation for ThresholdAutomation {
@@ -1479,7 +1479,7 @@ fn auxiliary_rejects_unsupported_automation_before_processing() {
             false,
             &hex_lattice::EMPTY_DEVICE_RESOURCES,
         ),
-        Err(DeviceContractError::UnsupportedProcessingClass)
+        Err(DeviceContractError::UnknownParameter)
     );
     assert_eq!(main, dry);
     let mut expected = dry;
