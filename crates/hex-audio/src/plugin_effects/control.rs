@@ -281,6 +281,9 @@ pub(crate) enum NativeEffectReference<'a> {
     Loaned(&'a NativeEffectControl),
 }
 impl NativeEffectReference<'_> {
+    pub(crate) fn prepared(&self) -> PreparedForeignProcessor {
+        self.configuration().prepared
+    }
     pub(crate) fn received_program_on_control(
         &self,
     ) -> Option<crate::plugin_worker::ReceivedProgram> {

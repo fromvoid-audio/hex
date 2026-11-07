@@ -189,17 +189,8 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
     assert_eq!(approved(&history), Some(false));
     assert!(history.redo());
     assert_eq!(approved(&history), Some(true));
-    assert!(
-        host.begin_manual_base_capture_on_control(
-            &mut f.control,
-            source,
-            binding,
-            &captured,
-            point.id,
-            point.normalized
-        )
-        .is_err()
-    );
+    let mut repeated = start(&mut f, &captured, point);
+    assert!(poll(&mut f.control, &mut repeated, true).is_err());
     let captured_state = captured.clone();
     let captured = hex_plugin_state::decode(&captured).unwrap();
     let original = hex_plugin_state::decode(&initial).unwrap();
@@ -218,12 +209,71 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
     )])
     .unwrap()
     .unwrap();
+    let selected = crate::plugin_effects::AuthoredSelection::from_targets([
+        (7, Some(original.identity.class.bytes())),
+        (11, Some(original.identity.class.bytes())),
+    ])
+    .unwrap()
+    .unwrap();
+    let start_bases = |f: &mut OrdinaryFixture,
+                       state: &NativeDeviceState,
+                       selection: &crate::plugin_effects::AuthoredSelection| {
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            match host.begin_canonical_bases_capture_on_control(
+                &mut f.control,
+                source,
+                binding,
+                state,
+                selection,
+                true,
+            ) {
+                Err(error)
+                    if matches!(
+                        error.as_str(),
+                        "native preparation is busy" | "native source is busy"
+                    ) && Instant::now() < until =>
+                {
+                    std::thread::yield_now()
+                }
+                terminal => break terminal,
+            }
+        }
+    };
+    assert!(start_bases(&mut f, &independent, &selected).is_err());
+    let wrong_class = crate::plugin_effects::AuthoredSelection::from_targets([(7, Some([33; 16]))])
+        .unwrap()
+        .unwrap();
+    assert!(start_bases(&mut f, &captured_state, &wrong_class).is_err());
+    let mut abandoned_bases = start_bases(&mut f, &captured_state, &selected).unwrap();
+    assert!(poll_bases(&mut f.control, &mut abandoned_bases, true).is_err());
+    let mut bases = start_bases(&mut f, &captured_state, &selected).unwrap();
+    assert!(bases.retained_control_metadata_bytes().unwrap() > std::mem::size_of_val(&bases));
+    let bases = poll_bases(&mut f.control, &mut bases, false).unwrap();
+    assert_eq!(bases.binding(), binding);
+    assert_eq!(bases.source().0, source);
+    assert_eq!(bases.canonical_state(), &captured_state);
+    assert_eq!(bases.prepared().binding(), Some(binding));
+    assert_eq!(
+        bases.values().collect::<Vec<_>>(),
+        vec![(7, 0.75), (11, 0.25)]
+    );
+    assert_eq!(bases.sample_rate(), 48_000);
+    assert_eq!(
+        bases.parameters().collect::<Vec<_>>(),
+        vec![
+            hex_lattice::ForeignParameterCapability { id: 7, steps: 0 },
+            hex_lattice::ForeignParameterCapability { id: 11, steps: 0 },
+        ]
+    );
     let wrong = crate::plugin_effects::AuthoredSelection::from_targets([(
         63,
         Some(original.identity.class.bytes()),
     )])
     .unwrap()
     .unwrap();
+    let mut unknown_bases = start_bases(&mut f, &captured_state, &wrong).unwrap();
+    assert!(poll_bases(&mut f.control, &mut unknown_bases, false).is_err());
     let start_saved = |f: &mut OrdinaryFixture,
                        selection: &crate::plugin_effects::AuthoredSelection| {
         let until = Instant::now() + Duration::from_secs(3);
@@ -284,6 +334,14 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
     assert_eq!(block(&mut f), [[0.5, -1.0]; 8]);
     replacement::wait_for_blocks(&root, binding, 4);
     assert_eq!(f.editor.project(), &canonical);
+    let mut stopped_query = start_bases(&mut f, &captured_state, &selected).unwrap();
+    f.control.command(PlaybackCommand::Stop).unwrap();
+    assert!(poll_bases(&mut f.control, &mut stopped_query, false).is_err());
+    assert!(
+        stopped_query
+            .poll_on_control(&mut f.control, &mut || false)
+            .is_none()
+    );
     dispose(f);
 }
 
@@ -298,6 +356,24 @@ fn poll(
             return terminal;
         }
         assert!(Instant::now() < until, "scratch capture did not dispose");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn poll_bases(
+    output: &mut PublicationControl,
+    capture: &mut crate::plugin_effects::CanonicalBasesCapture,
+    cancelled: bool,
+) -> Result<crate::plugin_effects::CapturedCanonicalBases, String> {
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        if let Some(terminal) = capture.poll_on_control(output, &mut || cancelled) {
+            return terminal;
+        }
+        assert!(
+            Instant::now() < until,
+            "canonical base query did not dispose"
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
 }
