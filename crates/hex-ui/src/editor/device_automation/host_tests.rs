@@ -1379,6 +1379,9 @@ fn clearing_a_recorded_only_lane_removes_the_take_with_one_undo(cx: &mut TestApp
 #[gpui::test]
 fn host_trim_lane_controls_edit_their_exact_stage_and_offer_record_arm(cx: &mut TestAppContext) {
     let (mut visual, editor, owner, _, device) = window(cx, "hex.utility", Slot::Track);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+    assert!(visual.update(|window, _| window.is_window_active()));
     for (kind, descriptor, delta) in [
         (
             DeviceAutomationTarget::HostInputGain,
@@ -1388,7 +1391,7 @@ fn host_trim_lane_controls_edit_their_exact_stage_and_offer_record_arm(cx: &mut 
         (
             DeviceAutomationTarget::HostOutputGain,
             hex_engine::DEVICE_OUTPUT_GAIN,
-            16.0,
+            8.0,
         ),
     ] {
         visual.update(|window, cx| {
@@ -1416,7 +1419,11 @@ fn host_trim_lane_controls_edit_their_exact_stage_and_offer_record_arm(cx: &mut 
         let end = point(center.x, center.y + px(delta));
         visual.simulate_mouse_move(center, None, Modifiers::default());
         visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
+        let (captured, focused) =
+            visual.update(|window, cx| (window.is_pointer_dragging(), window.focused(cx)));
+        assert!(captured, "trim pointer capture, focus={focused:?}");
         visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+        visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
             let snapshot = view.device_gesture.snapshot();
             assert!(matches!(snapshot.map(|gesture| gesture.target),

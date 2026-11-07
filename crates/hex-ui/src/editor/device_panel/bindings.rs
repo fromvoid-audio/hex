@@ -1,5 +1,6 @@
 //! Persistent host bindings shared by specialized and descriptor-driven panels.
 //! Session gestures, canonical edits and app lifecycle remain with their owners.
+use super::super::native_automation_recording::automation_target;
 use super::gesture_adapter::{
     NumericGestureLease, dispatch_bound_numeric_gesture, owns_native_automation,
     owns_numeric_gesture,
@@ -31,8 +32,6 @@ pub(super) struct BindingPresentation {
     pub(super) policy: BindingPolicyFactory,
     pub(super) compact_toggle_width: f32,
 }
-
-use super::super::native_automation_recording::automation_target;
 
 #[derive(Clone, Copy)]
 pub(super) struct CapturedBinding {
