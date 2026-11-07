@@ -217,10 +217,13 @@ impl Plugins {
             if !edits::original_state(control, binding, cancellation)
                 .map_err(refused)?
                 .processing_eq(input.canonical_state())
-                && control.native_source_approves_captured_state_on_control(
+                && !edits::captured_state_approved(
+                    control,
                     binding,
                     input.canonical_state(),
-                ) != Some(true)
+                    cancellation,
+                )
+                .map_err(refused)?
             {
                 return Err(lost());
             }

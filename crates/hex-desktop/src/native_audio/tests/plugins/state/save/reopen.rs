@@ -308,15 +308,24 @@ fn vst3_drag_roundtrip(playing: bool, stopped: bool, changed_steps: bool) {
             .command(PlaybackCommand::Play)
             .unwrap();
     }
-    let mut blocks = h.plugin_completed.load(Acquire);
-    let mut render = |h: &ResidentHarness| {
+    let render = |h: &ResidentHarness| {
         if !playing {
             h.render_worker_step();
             return [[0.0; 2]; 256];
         }
         let samples = h.render_plugin_block();
-        blocks += 1;
-        wait(|| h.plugin_completed.load(Acquire) >= blocks);
+        // The Session worker is waiting for this gesture's PCM point. Its
+        // copied completion counter cannot advance until the request returns;
+        // wait on the actual endpoint before offering the next callback.
+        wait(|| {
+            h.callback
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .native_workers_idle_on_control()
+                == Some(true)
+        });
         samples
     };
     for _ in 0..3 {
