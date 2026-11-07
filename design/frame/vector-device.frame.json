@@ -5,18 +5,18 @@
   "archive": {
     "version": 1,
     "designId": "hex-vector-device",
-    "sourceRevisionId": "vector-device-r8",
-    "currentRevisionId": "vector-device-r8",
+    "sourceRevisionId": "vector-device-r9",
+    "currentRevisionId": "vector-device-r9",
     "revisions": [
       {
-        "revisionId": "vector-device-r8",
+        "revisionId": "vector-device-r9",
         "parentRevisionId": null,
-        "capturedAt": "2026-11-07T08:40:28.210Z",
+        "capturedAt": "2026-11-07T08:43:36.734Z",
         "document": {
           "version": 1,
           "id": "hex-vector-device",
           "name": "hex / vector",
-          "revisionId": "vector-device-r8",
+          "revisionId": "vector-device-r9",
           "width": 930,
           "height": 200,
           "background": "#242424",
@@ -579,9 +579,9 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 72,
+                "x": 56,
                 "y": 10,
-                "width": 72,
+                "width": 88,
                 "height": 13
               },
               "style": {
@@ -595,7 +595,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 75,
+                "x": 59,
                 "y": 12,
                 "width": 2,
                 "height": 9
@@ -611,7 +611,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 75,
+                "x": 59,
                 "y": 19,
                 "width": 2,
                 "height": 2
@@ -627,9 +627,9 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 80,
+                "x": 64,
                 "y": 10,
-                "width": 60,
+                "width": 76,
                 "height": 13
               },
               "style": {
@@ -649,9 +649,9 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 72,
+                "x": 56,
                 "y": 26,
-                "width": 72,
+                "width": 88,
                 "height": 12
               },
               "style": {
@@ -665,7 +665,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 75,
+                "x": 59,
                 "y": 28,
                 "width": 2,
                 "height": 8
@@ -681,7 +681,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 75,
+                "x": 59,
                 "y": 34,
                 "width": 2,
                 "height": 2
@@ -697,9 +697,9 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 80,
+                "x": 64,
                 "y": 26,
-                "width": 60,
+                "width": 76,
                 "height": 12
               },
               "style": {
@@ -721,7 +721,7 @@
               "bounds": {
                 "x": 44,
                 "y": 10,
-                "width": 24,
+                "width": 8,
                 "height": 35.75
               },
               "style": {
@@ -736,10 +736,10 @@
               "parentId": "compact-content",
               "type": "container",
               "bounds": {
-                "x": 47,
-                "y": 13,
-                "width": 2,
-                "height": 29.75
+                "x": 46,
+                "y": 12,
+                "width": 4,
+                "height": 31.75
               },
               "style": {
                 "fill": "#414141",
@@ -752,10 +752,10 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 47,
-                "y": 13,
-                "width": 2,
-                "height": 29.75
+                "x": 46,
+                "y": 12,
+                "width": 4,
+                "height": 31.75
               },
               "style": {
                 "fill": "#ca7481",
@@ -1063,9 +1063,9 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 72,
+                "x": 56,
                 "y": 57.75,
-                "width": 72,
+                "width": 88,
                 "height": 13
               },
               "style": {
@@ -1079,7 +1079,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 75,
+                "x": 59,
                 "y": 59.75,
                 "width": 2,
                 "height": 9
@@ -1095,7 +1095,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 75,
+                "x": 59,
                 "y": 66.75,
                 "width": 2,
                 "height": 2
@@ -1111,9 +1111,9 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 80,
+                "x": 64,
                 "y": 57.75,
-                "width": 60,
+                "width": 76,
                 "height": 13
               },
               "style": {
@@ -1133,9 +1133,9 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 72,
+                "x": 56,
                 "y": 73.75,
-                "width": 72,
+                "width": 88,
                 "height": 12
               },
               "style": {
@@ -1149,7 +1149,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 75,
+                "x": 59,
                 "y": 75.75,
                 "width": 2,
                 "height": 8
@@ -1165,7 +1165,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 75,
+                "x": 59,
                 "y": 81.75,
                 "width": 2,
                 "height": 2
@@ -1181,9 +1181,9 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 80,
+                "x": 64,
                 "y": 73.75,
-                "width": 60,
+                "width": 76,
                 "height": 12
               },
               "style": {
@@ -1205,7 +1205,7 @@
               "bounds": {
                 "x": 44,
                 "y": 57.75,
-                "width": 24,
+                "width": 8,
                 "height": 35.75
               },
               "style": {
@@ -1220,10 +1220,10 @@
               "parentId": "compact-content",
               "type": "container",
               "bounds": {
-                "x": 47,
-                "y": 60.75,
-                "width": 2,
-                "height": 29.75
+                "x": 46,
+                "y": 59.75,
+                "width": 4,
+                "height": 31.75
               },
               "style": {
                 "fill": "#414141",
@@ -1236,10 +1236,10 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 47,
-                "y": 60.75,
-                "width": 2,
-                "height": 29.75
+                "x": 46,
+                "y": 59.75,
+                "width": 4,
+                "height": 31.75
               },
               "style": {
                 "fill": "#cfbc77",
@@ -1547,9 +1547,9 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 72,
+                "x": 56,
                 "y": 105.5,
-                "width": 72,
+                "width": 88,
                 "height": 13
               },
               "style": {
@@ -1563,7 +1563,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 75,
+                "x": 59,
                 "y": 107.5,
                 "width": 2,
                 "height": 9
@@ -1579,7 +1579,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 75,
+                "x": 59,
                 "y": 114.5,
                 "width": 2,
                 "height": 2
@@ -1595,9 +1595,9 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 80,
+                "x": 64,
                 "y": 105.5,
-                "width": 60,
+                "width": 76,
                 "height": 13
               },
               "style": {
@@ -1617,9 +1617,9 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 72,
+                "x": 56,
                 "y": 121.5,
-                "width": 72,
+                "width": 88,
                 "height": 12
               },
               "style": {
@@ -1633,7 +1633,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 75,
+                "x": 59,
                 "y": 123.5,
                 "width": 2,
                 "height": 8
@@ -1649,7 +1649,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 75,
+                "x": 59,
                 "y": 129.5,
                 "width": 2,
                 "height": 2
@@ -1665,9 +1665,9 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 80,
+                "x": 64,
                 "y": 121.5,
-                "width": 60,
+                "width": 76,
                 "height": 12
               },
               "style": {
@@ -1689,7 +1689,7 @@
               "bounds": {
                 "x": 44,
                 "y": 105.5,
-                "width": 24,
+                "width": 8,
                 "height": 35.75
               },
               "style": {
@@ -1704,10 +1704,10 @@
               "parentId": "compact-content",
               "type": "container",
               "bounds": {
-                "x": 47,
-                "y": 108.5,
-                "width": 2,
-                "height": 29.75
+                "x": 46,
+                "y": 107.5,
+                "width": 4,
+                "height": 31.75
               },
               "style": {
                 "fill": "#414141",
@@ -1720,10 +1720,10 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 47,
+                "x": 46,
                 "y": 123.375,
-                "width": 2,
-                "height": 14.875
+                "width": 4,
+                "height": 15.875
               },
               "style": {
                 "fill": "#80b9df",
@@ -2031,9 +2031,9 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 72,
+                "x": 56,
                 "y": 153.25,
-                "width": 72,
+                "width": 88,
                 "height": 13
               },
               "style": {
@@ -2047,7 +2047,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 75,
+                "x": 59,
                 "y": 155.25,
                 "width": 2,
                 "height": 9
@@ -2063,7 +2063,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 75,
+                "x": 59,
                 "y": 162.25,
                 "width": 2,
                 "height": 2
@@ -2079,9 +2079,9 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 80,
+                "x": 64,
                 "y": 153.25,
-                "width": 60,
+                "width": 76,
                 "height": 13
               },
               "style": {
@@ -2101,9 +2101,9 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 72,
+                "x": 56,
                 "y": 169.25,
-                "width": 72,
+                "width": 88,
                 "height": 12
               },
               "style": {
@@ -2117,7 +2117,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 75,
+                "x": 59,
                 "y": 171.25,
                 "width": 2,
                 "height": 8
@@ -2133,7 +2133,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 75,
+                "x": 59,
                 "y": 177.25,
                 "width": 2,
                 "height": 2
@@ -2149,9 +2149,9 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 80,
+                "x": 64,
                 "y": 169.25,
-                "width": 60,
+                "width": 76,
                 "height": 12
               },
               "style": {
@@ -2173,7 +2173,7 @@
               "bounds": {
                 "x": 44,
                 "y": 153.25,
-                "width": 24,
+                "width": 8,
                 "height": 35.75
               },
               "style": {
@@ -2188,10 +2188,10 @@
               "parentId": "compact-content",
               "type": "container",
               "bounds": {
-                "x": 47,
-                "y": 156.25,
-                "width": 2,
-                "height": 29.75
+                "x": 46,
+                "y": 155.25,
+                "width": 4,
+                "height": 31.75
               },
               "style": {
                 "fill": "#414141",
@@ -34414,94 +34414,6 @@
                 "state": "d-64-global"
               },
               "parentId": "detail-d"
-            },
-            {
-              "id": "osc-a-keytrack-value",
-              "type": "text",
-              "parentId": "compact-content",
-              "bounds": {
-                "x": 50,
-                "y": 22,
-                "width": 17,
-                "height": 10
-              },
-              "style": {
-                "fill": "none",
-                "stroke": "none",
-                "color": "#ca7481",
-                "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 6.5,
-                "padding": 0,
-                "textAlign": "center",
-                "verticalAlign": "middle"
-              },
-              "text": "100%"
-            },
-            {
-              "id": "osc-b-keytrack-value",
-              "type": "text",
-              "parentId": "compact-content",
-              "bounds": {
-                "x": 50,
-                "y": 69.75,
-                "width": 17,
-                "height": 10
-              },
-              "style": {
-                "fill": "none",
-                "stroke": "none",
-                "color": "#cfbc77",
-                "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 6.5,
-                "padding": 0,
-                "textAlign": "center",
-                "verticalAlign": "middle"
-              },
-              "text": "100%"
-            },
-            {
-              "id": "osc-c-keytrack-value",
-              "type": "text",
-              "parentId": "compact-content",
-              "bounds": {
-                "x": 50,
-                "y": 117.5,
-                "width": 17,
-                "height": 10
-              },
-              "style": {
-                "fill": "none",
-                "stroke": "none",
-                "color": "#80b9df",
-                "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 6.5,
-                "padding": 0,
-                "textAlign": "center",
-                "verticalAlign": "middle"
-              },
-              "text": "50%"
-            },
-            {
-              "id": "osc-d-keytrack-value",
-              "type": "text",
-              "parentId": "compact-content",
-              "bounds": {
-                "x": 50,
-                "y": 165.25,
-                "width": 17,
-                "height": 10
-              },
-              "style": {
-                "fill": "none",
-                "stroke": "none",
-                "color": "#b293cf",
-                "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 6.5,
-                "padding": 0,
-                "textAlign": "center",
-                "verticalAlign": "middle"
-              },
-              "text": "0%"
             }
           ],
           "states": {
@@ -129507,7 +129419,7 @@
           "designNotes": {
             "scope": "Compact Hex Vector at the global 200-pixel device height. General modulation belongs to the Hex host.",
             "oscillators": "Four compact oscillators with ratio, frequency offset, level/modulation depth and independent keytrack sliders. Keytrack examples are 100%, 100%, 50% and 0%.",
-            "keytrack": "Vertical keytrack fields beside each on/off button use the same dark inset, gray indicator, colored fill and percentage value styling as the frequency fields.",
+            "keytrack": "Slim vertical keytrack sliders have no numeric readout. Colored fill grows upward from the bottom of each inset channel.",
             "oscillatorSwitches": "Oscillator on/off buttons are one third of their previous width, have no visible label and use their full oscillator color when enabled."
           },
           "assets": [
