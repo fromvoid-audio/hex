@@ -3,14 +3,12 @@
 ## Continue editing in Frame
 
 [hex-orbital.frame.json](hex-orbital.frame.json) is the current editable prototype,
-saved at r168. It includes the structured design, prototype actions, and orbital
+saved at r170. It includes the structured design, prototype actions, and orbital
 styleguide in one portable project.
 
 In Frame, choose **Designs → Import design**, select the file, and open the
 imported copy. If Frame already has a project with the same ID, use the separate
-copy proposed by the import preview. Turn on **Interact** to use the top-right
-Arrangement/Console switch and bottom-right Clip/Device switch.
-With **Interact** on, use the six-dot button at the foot of a device header to preview its modulator tray.
+copy proposed by the import preview. Use Frame’s **State** selector to review Arrangement/Console, editor and device-panel examples. Historical clickable previews are available through **Designs → Legacy prototype interaction**.
 Choose `group-track-selected` in the State picker to see the selected group track.
 
 To save a later design revision back to Hex, use **Designs → Download design** in
@@ -26,13 +24,13 @@ same dimensions as its host-modulator and device assembly in the workstation. Op
 import the file into another Frame session. Its left device rail, host modulator
 tray, selection border, meter, and nesting hint use the Hex concept’s visuals.
 
-The current Vector study follows the [Vector brief](../../docs/design/vector-brief.md) and [shared host brief](../../docs/design/device-host-brief.md). Ratio, fine Hz offset, level and keytrack remain in four oscillator rows. Routing presets, feedback, cutoff/resonance, mono/poly and glide remain on the main surface.
+The focused Vector study (r21) and both workstation views use the same design. The current Vector study follows the [Vector brief](../../docs/design/vector-brief.md) and [shared host brief](../../docs/design/device-host-brief.md). Ratio, fine Hz offset, level and keytrack remain in four oscillator rows. Routing presets, feedback, cutoff/resonance, mono/poly and glide remain on the main surface.
 
 Explicit selection changes the shared envelope editor. Oscillator views show ghost envelopes; filter selection shows its independent envelope. The graph uses a fixed nonlinear time axis. Loop examples demonstrate free, tempo-fit and note-pitch-fit modes with conditional timing controls. The loop-boundary reset decision remains open.
 
-The waveform editor expands to the right of the oscillators, with Curve/Harmonics and 16/32/64 partial views. Edited examples preview changes immediately with no Apply/Cancel. Phase/retrigger and device settings use optional panels. Macro/modulator examples show uniform two-, three- and four-high color-coded slots and a fifth-slot second column.
+The waveform editor expands to the right of the oscillators, with Curve/Harmonics and 16/32/64 partial views. Edited examples preview changes immediately with no Apply/Cancel. Phase/retrigger and device settings use optional panels. A full-sized nested Delay example includes its own meter and add button, with parent/child power-state previews. Macro/modulator examples show uniform two-, three- and four-high color-coded slots and a fifth-slot second column.
 
-Turn on **Interact** for selectors, menus, panel toggles, envelope point values, edited waveform examples and insertion-modal examples. Numeric inputs hold session text. Graph drawing, continuous parameter DSP, audio audition, native Undo, actual preset/default writes and device insertion are illustrative requirements rather than implemented behavior in this Frame study.
+Use **State** to review selectors, menus, panel layouts, envelope point values, edited waveform examples and insertion-modal examples. **Designs → Legacy prototype interaction** exposes the historical clickable controls. Numeric inputs hold session text. Graph drawing, continuous parameter DSP, audio audition, native Undo, actual preset/default writes and device insertion are illustrative requirements rather than implemented behavior in this Frame study.
 
 ## Earlier design and implementation reference
 
