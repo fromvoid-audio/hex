@@ -1656,7 +1656,16 @@ fn verify_instrument_takeover(
                 && ack.key == request.key()
                 && ack.phase == request.phase()
             {
-                assert_eq!(ack.accepted, accepted, "{case}: {ack:?} {:?}", event.error);
+                let status = h.audio.as_ref().unwrap().status().unwrap();
+                assert_eq!(
+                    ack.accepted,
+                    accepted,
+                    "{case}: {ack:?} {:?}; playing={} source={:?} fault={:?}",
+                    event.error,
+                    status.playing.load(Acquire),
+                    status.native_parameter_source(playing),
+                    status.render_fault_snapshot()
+                );
                 assert!(!ack.source_lost, "{case}: {ack:?}");
                 assert!(client.acknowledge_with_snapshot(ack, event.active_device_gesture));
                 return event;
