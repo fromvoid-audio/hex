@@ -105,9 +105,7 @@ impl Plugins {
                     owner,
                     device,
                     expected: state.clone(),
-                    authored: hex_audio::plugin_effects::AuthoredSelection::from_targets(
-                        input.authored_plugin_targets(device),
-                    )?,
+                    authored: source.authored.clone(),
                     request: None,
                     captured: None,
                     refused: 0,
@@ -127,7 +125,23 @@ impl Plugins {
             if !edits::original_state(control, entry.binding, Some(cancellation))?
                 .processing_eq(&entry.expected)
             {
-                return Err("vst3 save source differs from canonical device".into());
+                loop {
+                    edits::check_cancel(Some(cancellation))?;
+                    match control.native_source_approves_captured_state_on_control(
+                        entry.binding,
+                        &entry.expected,
+                    ) {
+                        Some(true) => break,
+                        Some(false) => {
+                            return Err("vst3 save source differs from canonical device".into());
+                        }
+                        None => {
+                            let _ =
+                                edits::original_state(control, entry.binding, Some(cancellation))?;
+                            edits::poll_control(control);
+                        }
+                    }
+                }
             }
         }
         let mut failure = None;
@@ -216,6 +230,21 @@ impl Plugins {
                     .captured
                     .as_ref()
                     .ok_or("vst3 capture terminal is missing")?;
+                let canonical_bases =
+                    if edits::original_state(control, entry.binding, Some(cancellation))?
+                        .processing_eq(&entry.expected)
+                    {
+                        None
+                    } else {
+                        Some(edits::canonical_bases(
+                            host,
+                            control,
+                            entry.binding,
+                            &entry.expected,
+                            selection,
+                            Some(cancellation),
+                        )?)
+                    };
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
                 let mut scratch = loop {
                     if cancellation.is_cancelled() {
@@ -227,7 +256,7 @@ impl Plugins {
                         &entry.expected,
                         state,
                         selection,
-                        None,
+                        canonical_bases.as_ref(),
                     ) {
                         Ok(scratch) => break scratch,
                         Err(error)

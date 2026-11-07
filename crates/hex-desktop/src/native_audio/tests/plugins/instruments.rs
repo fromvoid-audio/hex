@@ -370,7 +370,7 @@ fn verify_saved_instrument_automation(
             .points,
         points
     );
-    assert_instrument_takeover_refused(
+    assert_instrument_takeover_begin(
         harness,
         device,
         parameter.id,
@@ -583,16 +583,50 @@ fn second_vst3_instrument_sounds_during_the_same_playback() {
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts and optional installed catalog"]
 fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
-    instrument_entrypoint(false);
+    instrument_entrypoint(InstrumentWorkflow::Playback);
 }
 
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts and optional installed catalog"]
 fn shared_instrument_lane_authoring_undo_read_controls_and_pcm() {
-    instrument_entrypoint(true);
+    instrument_entrypoint(InstrumentWorkflow::Authoring);
 }
 
-fn instrument_entrypoint(shared_authoring: bool) {
+#[test]
+#[ignore = "requires explicit source-bound SDK receipts"]
+fn instrument_takeover_preserves_other_base_and_held_midi() {
+    const CASE: &str = "HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE";
+    if std::env::var_os(CASE).is_none() {
+        let name = std::thread::current().name().unwrap().to_owned();
+        for case in ["reading", "unread", "idle", "refused"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--ignored", "--nocapture"])
+                .env(CASE, case)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{case}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            print!("{}", String::from_utf8_lossy(&output.stdout));
+        }
+        return;
+    }
+    instrument_entrypoint(InstrumentWorkflow::Takeover);
+}
+
+#[derive(Clone, Copy)]
+enum InstrumentWorkflow {
+    Playback,
+    Authoring,
+    Takeover,
+}
+
+fn instrument_entrypoint(workflow: InstrumentWorkflow) {
+    let shared_authoring = !matches!(workflow, InstrumentWorkflow::Playback);
+    let takeover = matches!(workflow, InstrumentWorkflow::Takeover);
     let name = std::thread::current().name().unwrap().to_owned();
     const CHILD: &str = "HEX_DESKTOP_TEST_INSTRUMENT_CHILD";
     let installed = std::env::var("HEX_TEST_VST3_INSTRUMENT_BUNDLE").ok();
@@ -604,7 +638,13 @@ fn instrument_entrypoint(shared_authoring: bool) {
         if installed.is_none() {
             child.env(
                 "HEX_ORIGINAL_INSTANCE_VARIANT",
-                if shared_authoring { "145" } else { "127" },
+                if takeover {
+                    "146"
+                } else if shared_authoring {
+                    "145"
+                } else {
+                    "127"
+                },
             );
         }
         let result = child.output().unwrap();
@@ -653,7 +693,12 @@ fn instrument_entrypoint(shared_authoring: bool) {
         panic!("midi track");
     };
     (applied, _) = harness.applied(applied);
-    let (clip_length, note_duration) = if automation_parameter.is_some() {
+    let (clip_length, note_duration) = if takeover {
+        (
+            BeatTime::from_quarters(16).unwrap(),
+            BeatTime::from_quarters(16).unwrap(),
+        )
+    } else if automation_parameter.is_some() {
         (
             BeatTime::from_quarters(4).unwrap(),
             BeatTime::from_ratio(17, 16).unwrap(),
@@ -746,6 +791,15 @@ fn instrument_entrypoint(shared_authoring: bool) {
     assert!(project_track.instrument().is_some());
     assert_eq!(accepted.state.project.sample_rate(), rate);
     (applied, _) = harness.applied(applied);
+    if takeover {
+        verify_instrument_takeover(
+            &mut harness,
+            &accepted.state.project,
+            project_track.instrument().unwrap().id(),
+            applied,
+        );
+        return;
+    }
     if shared_authoring {
         verify_shared_instrument_authoring(
             &mut harness,
@@ -1266,7 +1320,7 @@ fn verify_shared_instrument_authoring(
             .automation_target(target)
             .unwrap()
     );
-    assert_instrument_takeover_refused(
+    assert_instrument_takeover_begin(
         harness,
         device,
         row.id,
@@ -1301,7 +1355,7 @@ fn verify_shared_instrument_authoring(
     );
 }
 
-fn assert_instrument_takeover_refused(
+fn assert_instrument_takeover_begin(
     harness: &mut ResidentHarness,
     device: hex_project::DeviceId,
     parameter: u32,
@@ -1342,14 +1396,331 @@ fn assert_instrument_takeover_refused(
     client.mark_submitted();
     let refused = harness.run(Request::DeviceGesture(begin));
     let ack = refused.gesture_ack.unwrap();
-    assert!(!ack.accepted && !ack.source_lost, "{ack:?}");
-    assert!(
-        ack.reason
-            .as_ref()
-            .unwrap()
-            .contains("manual vst3 automation takeover is unavailable")
-    );
+    assert!(ack.accepted && !ack.source_lost, "{ack:?}");
     assert!(client.acknowledge(&ack));
     assert_eq!(refused.state.project.as_ref(), expected);
     assert_eq!(refused.state.revision, revision);
+    client.cancel().unwrap();
+    let cancel = client.next_request().unwrap();
+    client.mark_submitted();
+    let cancelled = harness.run(Request::DeviceGesture(cancel));
+    let ack = cancelled.gesture_ack.unwrap();
+    assert!(ack.accepted, "{ack:?}");
+    assert!(client.acknowledge(&ack));
+    assert_eq!(cancelled.state.project.as_ref(), expected);
+}
+
+/// Deliberately vary callback sizes while the worker owns complete SDK quanta.
+fn render_takeover_partial(h: &ResidentHarness, frames: usize, held: bool) {
+    let mut pcm = [[0.0; 2]; 256];
+    let mut host = [0.0; 512];
+    let mut slot = h.callback.lock().unwrap();
+    let callback = slot.as_mut().unwrap();
+    let measured = allocation_counter::measure(|| {
+        callback
+            .render_native_direct(&mut pcm[..frames], &mut host[..frames * 2])
+            .unwrap();
+    });
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.bytes_total,
+            measured.count_current,
+            measured.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    if held {
+        assert!(
+            pcm[..frames]
+                .iter()
+                .flatten()
+                .all(|sample| sample.abs() > 1.0e-6),
+            "the constant signed instrument must not drop its held gate at a publication cut"
+        );
+    }
+}
+
+fn verify_instrument_takeover(
+    h: &mut ResidentHarness,
+    original: &hex_project::Project,
+    device: hex_project::DeviceId,
+    mut applied: u64,
+) {
+    use hex_project::{
+        AutomationInterpolation, AutomationPoint, AutomationValue, DeviceAutomationTarget,
+    };
+    use hex_session::device_gesture::{GestureClient, PluginParameterOrigin, PluginParameterValue};
+    use hex_session::service::{DeviceAutomationControlEdit, PluginParameterQuery};
+    let case = std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").unwrap();
+    let reading = case != "unread";
+    let playing = case != "idle";
+    let context = h.submitted.unwrap().1.context;
+    let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    h.run(Request::QueryPluginParameters(PluginParameterQuery {
+        context,
+        device,
+        output_identity: output,
+        request_id: 11,
+    }));
+    let rows = h.next().plugin_parameters.unwrap().rows.unwrap();
+    assert_eq!(rows.len(), 2);
+    let class = rows
+        .iter()
+        .find(|r| r.id == 7)
+        .unwrap()
+        .automation_class
+        .unwrap();
+    let mut before = original.clone();
+    let mut revision = context.editor_revision;
+    for (id, value) in [(7, 0.25), (11, 0.5)] {
+        if id == 7 && !reading {
+            continue;
+        }
+        let event = super::automation::edit_with_running_callback(
+            h,
+            Request::DeviceAutomation {
+                project_generation: context.project_generation,
+                revision,
+                device,
+                target: DeviceAutomationTarget::Vst3 { parameter: id },
+                vst3_class: Some(class),
+                points: vec![AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: AutomationValue::new(value).unwrap(),
+                    outgoing: AutomationInterpolation::Step,
+                }],
+            },
+        );
+        assert!(event.error.is_none(), "{:?}", event.error);
+        revision = event.state.revision;
+        before = (*event.state.project).clone();
+        applied = h.applied(applied).0;
+    }
+    let peak = |h: &ResidentHarness| {
+        (0..4)
+            .map(|_| {
+                render_completed_block(h)
+                    .into_iter()
+                    .flatten()
+                    .map(f32::abs)
+                    .fold(0.0, f32::max)
+            })
+            .last()
+            .unwrap()
+    };
+    if playing {
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+    }
+    let baseline = if playing {
+        let p = peak(h);
+        assert!(p > 0.001);
+        p
+    } else {
+        0.0
+    };
+    let query = |h: &mut ResidentHarness, request_id| {
+        let context = h.submitted.unwrap().1.context;
+        h.run(Request::QueryPluginParameters(PluginParameterQuery {
+            context,
+            device,
+            output_identity: output,
+            request_id,
+        }));
+        let row = h
+            .next()
+            .plugin_parameters
+            .unwrap()
+            .rows
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == 7)
+            .unwrap();
+        PluginParameterOrigin {
+            context,
+            device,
+            parameter: 7,
+            page_first: row.page_first,
+            metadata_revision: row.metadata_revision,
+            initial: PluginParameterValue::new(row.normalized).unwrap(),
+        }
+    };
+    let send = |h: &mut ResidentHarness, client: &mut GestureClient, accepted: bool| {
+        let request = client.next_request().unwrap();
+        client.mark_submitted();
+        h.service.submit(Request::DeviceGesture(request)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut fragment = 0usize;
+        loop {
+            h.pump();
+            if let Ok(event) = h.service.try_event()
+                && let Some(ack) = event.gesture_ack.as_ref()
+                && ack.key == request.key()
+                && ack.phase == request.phase()
+            {
+                assert_eq!(ack.accepted, accepted, "{case}: {ack:?} {:?}", event.error);
+                assert!(!ack.source_lost, "{case}: {ack:?}");
+                assert!(client.acknowledge_with_snapshot(ack, event.active_device_gesture));
+                return event;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "instrument gesture timed out: {request:?}"
+            );
+            render_takeover_partial(h, [3, 5, 117, 1, 130][fragment % 5], playing);
+            fragment += 1;
+            // The native worker is asynchronous; wait only on this test/control
+            // thread before offering the next irregular physical fragment.
+            while h
+                .callback
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .native_workers_idle_on_control()
+                != Some(true)
+            {
+                assert!(Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+            std::thread::yield_now();
+        }
+    };
+    if case == "unread" {
+        let mut client = GestureClient::default();
+        client.begin_plugin(query(h, 12)).unwrap();
+        let refused = send(h, &mut client, false);
+        // Begin refusal is represented by the keyed ACK; the event contract
+        // does not require a global error string for a rejected Begin.
+        assert!(refused.active_device_gesture.is_none());
+        assert_eq!(refused.state.project.as_ref(), &before);
+        assert!((peak(h) - baseline).abs() < 0.0001);
+        println!("instrument unarmed target remains explicitly guarded");
+        return;
+    }
+    let mut client = GestureClient::default();
+    client.begin_plugin(query(h, 12)).unwrap();
+    assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
+    client
+        .change_plugin(PluginParameterValue::new(0.75).unwrap())
+        .unwrap();
+    assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
+    if playing {
+        assert!(
+            (peak(h) - baseline * 3.0).abs() < 0.0001,
+            "held MIDI must continue through preview"
+        );
+    }
+    client.cancel().unwrap();
+    assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
+    if playing {
+        assert!(
+            (peak(h) - baseline).abs() < 0.0001,
+            "cancel must resume authored input"
+        );
+    }
+    client.begin_plugin(query(h, 13)).unwrap();
+    send(h, &mut client, true);
+    let manual = PluginParameterValue::new(0.5).unwrap();
+    client.change_plugin(manual).unwrap();
+    send(h, &mut client, true);
+    client.finish_plugin(manual).unwrap();
+    if case == "refused" {
+        h.refuse.store(true, std::sync::atomic::Ordering::Release);
+        let refused = send(h, &mut client, false);
+        h.refuse.store(false, std::sync::atomic::Ordering::Release);
+        assert_eq!(refused.state.project.as_ref(), &before);
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(
+            (peak(h) - baseline * 2.0).abs() < 0.0001,
+            "a refused commit must keep the acknowledged preview audible"
+        );
+        client.cancel().unwrap();
+        send(h, &mut client, true);
+        assert!((peak(h) - baseline).abs() < 0.0001);
+        println!("instrument commit refusal preserved preview until cancel");
+        return;
+    }
+    let committed = send(h, &mut client, true);
+    applied = h.applied(applied).0;
+    let result = committed.state.project.device(device).unwrap();
+    let target = DeviceAutomationTarget::Vst3 { parameter: 7 };
+    let other = DeviceAutomationTarget::Vst3 { parameter: 11 };
+    if reading {
+        assert!(!result.automation_target(target).unwrap().is_reading());
+    } else {
+        assert!(result.automation_target(target).is_none());
+    }
+    assert_eq!(
+        result.automation_target(other),
+        before.device(device).unwrap().automation_target(other)
+    );
+    let decoded = hex_plugin_state::decode(result.state()).unwrap();
+    let component = decoded.component.unwrap();
+    assert_eq!(
+        f32::from_le_bytes(component[8..12].try_into().unwrap()),
+        2.0
+    );
+    assert_eq!(
+        f64::from_le_bytes(component[32..40].try_into().unwrap()),
+        1.0,
+        "the other authored DSP value must not replace its canonical base"
+    );
+    if playing {
+        assert!(
+            (peak(h) - baseline * 2.0).abs() < 0.0001,
+            "commit must preserve the held MIDI gate"
+        );
+    }
+    let undone = super::automation::edit_with_running_callback(h, Request::Undo);
+    assert!(undone.error.is_none(), "{:?}", undone.error);
+    assert_eq!(undone.state.project.as_ref(), &before);
+    applied = h.applied(applied).0;
+    if playing {
+        assert!(
+            (peak(h) - baseline).abs() < 0.0001,
+            "undo must restore audible authored input"
+        );
+    }
+    let redone = super::automation::edit_with_running_callback(h, Request::Redo);
+    assert!(redone.error.is_none(), "{:?}", redone.error);
+    assert_eq!(redone.state.project, committed.state.project);
+    applied = h.applied(applied).0;
+    if playing {
+        assert!(
+            (peak(h) - baseline * 2.0).abs() < 0.0001,
+            "redo must restore audible manual base"
+        );
+    }
+    let enabled = super::automation::edit_with_running_callback(
+        h,
+        Request::DeviceAutomationControl {
+            project_generation: context.project_generation,
+            revision: redone.state.revision,
+            edit: DeviceAutomationControlEdit::Reenable,
+        },
+    );
+    assert!(enabled.error.is_none(), "{:?}", enabled.error);
+    h.applied(applied);
+    if playing {
+        assert!(
+            (peak(h) - baseline).abs() < 0.0001,
+            "re-enable must release the original worker hold"
+        );
+    }
+    let files = Files::new();
+    let path = files.0.join("instrument-takeover.hex");
+    let saved = h.run(Request::SaveNew(path.clone()));
+    assert!(
+        saved.save_complete && saved.error.is_none(),
+        "{:?}",
+        saved.error
+    );
+    assert_eq!(hex_storage::load(path).unwrap(), *saved.state.project);
+    println!("instrument takeover {case} passed");
 }

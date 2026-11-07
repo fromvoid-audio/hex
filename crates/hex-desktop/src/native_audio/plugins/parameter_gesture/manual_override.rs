@@ -1,5 +1,5 @@
 //! Actual applied-worker hold and isolated canonical capture for one reading
-//! effect. Release drains on the ordinary control poll even after UI refusal.
+//! processor. Release drains on the ordinary control poll even after UI refusal.
 use super::*;
 
 pub(super) struct LiveOverride {
@@ -7,6 +7,7 @@ pub(super) struct LiveOverride {
     pub(super) transport_epoch: u64,
     pub(super) class: [u8; 16],
     pub(super) reading: bool,
+    pub(super) holds_program: bool,
     pub(super) playing: bool,
     pub(super) hold: Option<NativeWorkerParameterChange>,
     release: Option<NativeWorkerParameterChange>,
@@ -21,6 +22,7 @@ impl LiveOverride {
         transport_epoch: u64,
         class: [u8; 16],
         reading: bool,
+        holds_program: bool,
         playing: bool,
     ) -> Self {
         Self {
@@ -28,6 +30,7 @@ impl LiveOverride {
             transport_epoch,
             class,
             reading,
+            holds_program,
             playing,
             hold: None,
             release: None,
@@ -85,7 +88,7 @@ impl Plugins {
     pub(in crate::native_audio::plugins) fn parameter_override_cleanup_pending(&self) -> bool {
         self.parameter_gesture.as_ref().is_some_and(|gesture| {
             gesture.live.as_ref().is_some_and(|live| {
-                live.invalidated
+                (live.invalidated || gesture.commit_accepted)
                     && (gesture.pending.is_some() || live.hold.is_some() || live.scratch.is_some())
             })
         })
@@ -102,6 +105,29 @@ impl Plugins {
         let Some(live) = gesture.live.as_mut() else {
             return;
         };
+        if gesture.commit_accepted {
+            let processed = gesture.next_program.is_some_and(|expected| {
+                control
+                    .native_source_processed_program_on_control(gesture.binding)
+                    .filter(|received| received.binding == gesture.binding)
+                    .and_then(|received| received.program)
+                    .is_some_and(|actual| actual >= expected)
+            });
+            let quiescent = control
+                .native_source_endpoint_status(gesture.binding)
+                .is_some_and(|(_, live)| !live);
+            if (processed || quiescent) && live.poll_release(control, gesture.binding) {
+                self.parameter_gesture = None;
+            }
+            return;
+        }
+        if gesture.commit.is_none()
+            && let Some(scratch) = live.scratch.as_mut()
+            && scratch.poll_on_control(control, &mut || true).is_some()
+        {
+            // Capture cleanup is independent of the retained audible hold.
+            live.scratch = None;
+        }
         if gesture.commit.is_none() {
             let source_changed = context != Some(live.source.context)
                 || control.status.recording_source() != Some(live.source);
@@ -165,7 +191,7 @@ impl Gesture {
         // its original effective value on the same worker before releasing UI
         // custody. Idle reading targets also restore their actual Begin value.
         // A running reading target releases its authored hold.
-        if !(live.discard || live.reading && live.playing)
+        if !(live.discard || live.holds_program && live.playing)
             && self.pending.is_none()
             && self.last != self.origin.initial
         {
@@ -200,7 +226,7 @@ impl Gesture {
     ) -> Result<Prepared, Error> {
         let actual = self.sdk_value(self.last);
         let live = self.live.as_mut().ok_or_else(lost)?;
-        if (live.playing && live.reading && live.hold.is_none()) || live.invalidated {
+        if (live.playing && live.holds_program && live.hold.is_none()) || live.invalidated {
             return Err(refused("vst3 automation hold is unavailable"));
         }
         let status = std::sync::Arc::clone(&control.status);

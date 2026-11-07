@@ -101,10 +101,11 @@ const TUID restore_controller_id={0x48,0x45,0x58,0x43,1,2,3,4,5,6,7,8,9,10,11,12
 // Original one-parameter SDK fixtures preserve the same opaque state shape.
 // Distinct variants exercise actual metadata and processing, not host guesses.
 static ParamID parameter_id(int variant) { return variant==80 || variant==89 || variant==92?0u:7u; }
-constexpr int authored_instrument_variant=145;
+constexpr int authored_instrument_variant=145, held_instrument_variant=146;
+static bool held_parameter_input(int variant) { return variant==144 || variant==held_instrument_variant; }
 constexpr ParamID drag_axis_id=11;
-constexpr int mixed_input_fixture=143, held_input_fixture=144;
-static bool mixed_parameter_input(int variant) { return variant==mixed_input_fixture || variant==held_input_fixture; }
+constexpr int mixed_input_fixture=143;
+static bool mixed_parameter_input(int variant) { return variant==mixed_input_fixture || held_parameter_input(variant); }
 static bool saturated_editor_drag(int variant) { return variant==87 || variant==131; }
 static int32 parameter_inventory_size() {
     const auto* shape=std::getenv("HEX_ORIGINAL_PARAMETER_INVENTORY");
@@ -247,7 +248,7 @@ public:
         if (restoration.component_set && restoration.phase!=1) {++observed.violations;return kResultFalse;}
         std::memcpy(&component_gain,data.data()+8,4);
         if(!std::isfinite(component_gain) || component_gain<0 || component_gain>4)return kResultFalse;
-        if(fault==144) {
+        if(held_parameter_input(fault)) {
             double restored_manual=1.0;
             const auto result=stream->read(&restored_manual,8,&read);
             if(read && (result!=kResultOk || read!=8 || !std::isfinite(restored_manual) || restored_manual<0 || restored_manual>4)) return kResultFalse;
@@ -290,7 +291,7 @@ public:
         // Original opaque editor state changes only after real processing.
         // A stopped scratch restored from that capture must preserve it.
         const auto* live_scroll=std::getenv("HEX_ORIGINAL_CAPTURE_SCROLL_WHILE_PLAYING");
-        if(fault==held_input_fixture && live_scroll && !std::strcmp(live_scroll,"1") && observed.blocks.load()>0) scroll=123;
+        if(held_parameter_input(fault) && live_scroll && !std::strcmp(live_scroll,"1") && observed.blocks.load()>0) scroll=123;
         std::array<unsigned char,8> data{};std::memcpy(data.data(),"HXCT",4);std::memcpy(data.data()+4,&scroll,4);
         int32 written=0;const auto result=stream->write(data.data(),data.size(),&written);
         trace(20);return result==kResultOk && written==8?kResultOk:kResultFalse;
@@ -304,7 +305,7 @@ public:
         if(inventory_size>1 && index<inventory_size-1) {
             if(saturated_editor_drag(fault) || mixed_parameter_input(fault)) {
                 info.id=drag_axis_id;
-                if(fault==held_input_fixture) info.flags=ParameterInfo::kCanAutomate;
+                if(held_parameter_input(fault)) info.flags=ParameterInfo::kCanAutomate;
                 return kResultOk;
             }
             const auto* shape=std::getenv("HEX_ORIGINAL_PARAMETER_INVENTORY");
@@ -315,7 +316,7 @@ public:
             std::memcpy(info.title,name,sizeof(name));std::memcpy(info.shortTitle,name,sizeof(name));
             return kResultOk;
         }
-        if(fault==80 || fault==81 || fault==82 || fault==91 || fault==92 || mixed_parameter_input(fault) || fault==authored_instrument_variant) info.flags=ParameterInfo::kCanAutomate;
+        if(fault==80 || fault==81 || fault==82 || fault==91 || fault==92 || mixed_parameter_input(fault) || (fault==authored_instrument_variant || fault==held_instrument_variant)) info.flags=ParameterInfo::kCanAutomate;
         if(fault==91 || fault==92) {const char16_t unit[]=u"ratio";std::memcpy(info.units,unit,sizeof(unit));}
         if(fault==81) info.stepCount=3;
         if(fault==141 || (fault==142 && !edits_sent)) info.flags=ParameterInfo::kCanAutomate;
@@ -397,7 +398,7 @@ class ProcessingProcessor final : public Processor,public IAudioPresentationLate
     const int fault=next_fault;
     const bool multiple_outputs=fault>=128 && fault<=130;
     const bool silent_input=fault==120 || fault==136;
-    const bool midi_instrument=fault==115 || silent_input || fault==127 || multiple_outputs || fault==authored_instrument_variant;
+    const bool midi_instrument=fault==115 || silent_input || fault==127 || multiple_outputs || (fault==authored_instrument_variant || fault==held_instrument_variant);
     const int mode=midi_instrument?1:next_mode;
     bool initialized=false, arranged=false, setup=false, active=false;
     std::atomic<bool> processing{false};
@@ -499,7 +500,7 @@ public:
         }
         float restored_gain=0;std::memcpy(&restored_gain,data.data()+8,4);std::memcpy(&restored_latency,data.data()+4,4);
         if(!std::isfinite(restored_gain) || restored_gain<0 || restored_gain>4 || restored_latency>32 || (fault<37 && restored_latency))return kResultFalse;
-        if(fault==144) {
+        if(held_parameter_input(fault)) {
             double restored_manual=1.0;
             const auto result=stream->read(&restored_manual,8,&read);
             if(read && (result!=kResultOk || read!=8 || !std::isfinite(restored_manual) || restored_manual<0 || restored_manual>4)) return kResultFalse;
@@ -559,13 +560,13 @@ public:
         ISizeableStream* sized=nullptr;
         if (stream->queryInterface(INLINE_UID_OF(ISizeableStream),reinterpret_cast<void**>(&sized))!=kResultOk || !sized)
             return kResultFalse;
-        const bool sized_ok=sized->setStreamSize(fault==144?40:32)==kResultOk;sized->release();
+        const bool sized_ok=sized->setStreamSize(held_parameter_input(fault)?40:32)==kResultOk;sized->release();
         int32 written=0;
         const bool ok=sized_ok && stream->seek(4,IBStream::kIBSeekSet,nullptr)==kResultOk &&
             stream->write(bytes.data()+4,28,&written)==kResultOk && written==28 &&
             stream->seek(0,IBStream::kIBSeekSet,nullptr)==kResultOk && stream->write(bytes.data(),4,&written)==kResultOk && written==4;
         auto captured_manual_gain=manual_gain.load();
-        if(ok && fault==144 && (stream->seek(32,IBStream::kIBSeekSet,nullptr)!=kResultOk ||
+        if(ok && held_parameter_input(fault) && (stream->seek(32,IBStream::kIBSeekSet,nullptr)!=kResultOk ||
             stream->write(&captured_manual_gain,8,&written)!=kResultOk || written!=8)) return kResultFalse;
         if(ok && fault==121) {
             unsigned char marker=0x37;
@@ -727,7 +728,7 @@ public:
         if (pthread_main_np() || !same_worker() || !active || !std::isfinite(sample_rate) || data.processMode!=process_mode ||
             data.symbolicSampleSize!=precision) { ++observed.violations;return kResultFalse; }
         if (!data.numSamples && !data.numInputs && !data.numOutputs && !data.inputs && !data.outputs) {
-            if((saturated_editor_drag(fault) || fault==held_input_fixture) && data.inputParameterChanges) {
+            if((saturated_editor_drag(fault) || held_parameter_input(fault)) && data.inputParameterChanges) {
                 const auto count=data.inputParameterChanges->getParameterCount();
                 if(count<1 || count>2) return kInvalidArgument;
                 for(int32 n=0;n<count;++n) {
@@ -737,7 +738,7 @@ public:
                         offset || !std::isfinite(value) || value<0 || value>1) return kInvalidArgument;
                     if(queue->getParameterId()==parameter_id(fault)) gain=static_cast<float>(value*4.0);
                     else if(queue->getParameterId()==drag_axis_id) {
-                        if(fault==held_input_fixture) manual_gain.store(value*4.0);
+                        if(held_parameter_input(fault)) manual_gain.store(value*4.0);
                     } else return kInvalidArgument;
                 }
                 ++observed.flushes;
@@ -866,7 +867,7 @@ public:
         if (fault==28) fault_hang(9);
         if (fault==31) fault_crash(9);
         if (fault==10) return kResultFalse;
-        const float scale=(fault==127 || fault==held_input_fixture)?1.0f:0.5f+static_cast<float>(block)*0.125f;
+        const float scale=(fault==127 || held_parameter_input(fault))?1.0f:0.5f+static_cast<float>(block)*0.125f;
         const auto point_count=primary.count;
         double current_gain=gain.load();
         bool silent=true;
@@ -1021,7 +1022,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>authored_instrument_variant) return false;next_fault=value;
+        if (value>held_instrument_variant) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

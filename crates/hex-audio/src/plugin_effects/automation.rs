@@ -90,6 +90,20 @@ impl AuthoredSelection {
         Ok(Some(selected))
     }
 
+    /// Selection membership only; actual SDK/source admission stays with Root.
+    pub fn contains(&self, class: [u8; 16], id: u32) -> bool {
+        self.class.bytes() == class && self.ids[..self.len].binary_search(&id).is_ok()
+    }
+    /// Keep already armed targets when a canonical lane stops reading or is cleared.
+    pub fn covers(&self, requested: Option<&Self>) -> bool {
+        requested.is_none_or(|requested| {
+            self.class == requested.class
+                && requested.ids[..requested.len]
+                    .iter()
+                    .all(|id| self.ids[..self.len].binary_search(id).is_ok())
+        })
+    }
+
     pub(crate) fn parameters(&self) -> (hex_plugin_state::ClassId, &[u32]) {
         (self.class, &self.ids[..self.len])
     }
@@ -273,6 +287,25 @@ mod tests {
             .unwrap();
         assert_eq!(selection.parameters().0.bytes(), [3; 16]);
         assert_eq!(selection.parameters().1, &[0, 2, 17]);
+        assert!(selection.contains([3; 16], 0));
+        assert!(!selection.contains([4; 16], 0));
+        assert!(selection.covers(None));
+        let subset = AuthoredSelection::from_targets([(0, class), (2, class)]).unwrap();
+        assert!(selection.covers(subset.as_ref()));
+        assert!(
+            !selection.covers(
+                AuthoredSelection::from_targets([(99, class)])
+                    .unwrap()
+                    .as_ref()
+            )
+        );
+        assert!(
+            !selection.covers(
+                AuthoredSelection::from_targets([(0, Some([4; 16]))])
+                    .unwrap()
+                    .as_ref()
+            )
+        );
         assert!(AuthoredSelection::from_targets([]).unwrap().is_none());
         assert!(AuthoredSelection::from_targets([(0, class), (0, class)]).is_err());
         assert!(AuthoredSelection::from_targets([(0, class), (1, Some([4; 16]))]).is_err());

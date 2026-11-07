@@ -35,7 +35,7 @@ struct PendingPoint {
 pub(super) struct Gesture {
     key: GestureKey,
     origin: PluginParameterOrigin,
-    binding: Binding,
+    pub(super) binding: Binding,
     output: u64,
     steps: u32,
     last: PluginParameterValue,
@@ -44,7 +44,9 @@ pub(super) struct Gesture {
     live: Option<LiveOverride>,
     capture: Option<NativeWorkerCapture>,
     before: Option<NativeDeviceState>,
-    commit: Option<(AudioSourceContext, u64)>,
+    pub(super) commit: Option<(AudioSourceContext, u64)>,
+    pub(super) next_program: Option<std::num::NonZeroU64>,
+    commit_accepted: bool,
 }
 
 fn refused(reason: impl Into<String>) -> Error {
@@ -214,24 +216,38 @@ impl Plugins {
                 binding,
                 origin,
                 steps,
-                input.reading_effect_class().is_some(),
+                input.reading_class().is_some(),
             )?;
-            let live = if let Some(class) = input.isolated_effect_class() {
+            let holds_program = self
+                .sources
+                .iter()
+                .find(|source| source.binding == binding)
+                .and_then(|source| source.authored.as_ref())
+                .is_some_and(|armed| {
+                    row.automation_class
+                        .is_some_and(|class| armed.contains(class, origin.parameter))
+                });
+            if input.is_instrument() && control.status.playing.load(Acquire) && !holds_program {
+                return Err(refused(
+                    "create an automation lane for this parameter before editing during playback",
+                ));
+            }
+            let live = if let Some(class) = input.isolated_class() {
                 let playing = control.status.playing.load(Acquire);
                 let (source, transport_epoch) = control
                     .status
                     .native_parameter_source(playing)
                     .filter(|(source, _)| source.context == input.context())
                     .filter(|_| {
-                        input.reading_effect_class().is_none()
-                            || row.automation_class == Some(class)
+                        input.reading_class().is_none() || row.automation_class == Some(class)
                     })
                     .ok_or_else(|| refused("vst3 parameter source is not ready"))?;
                 Some(LiveOverride::new(
                     source,
                     transport_epoch,
                     class,
-                    input.reading_effect_class().is_some(),
+                    input.reading_class().is_some(),
+                    holds_program,
                     playing,
                 ))
             } else {
@@ -260,6 +276,8 @@ impl Plugins {
                 capture: None,
                 before: None,
                 commit: None,
+                next_program: None,
+                commit_accepted: false,
             };
             if !gesture.current(self, control, input.context()) {
                 return Err(lost());
@@ -300,13 +318,22 @@ impl Plugins {
             && gesture.commit == Some((context, sequence))
         {
             if accepted {
-                self.parameter_gesture = None;
                 self.observed_parameters = None;
-            } else {
-                gesture.commit = None;
-                if let Some(live) = gesture.live.as_mut() {
-                    live.invalidated = true;
+                if gesture.next_program.is_some()
+                    && gesture
+                        .live
+                        .as_ref()
+                        .is_some_and(|live| live.hold.is_some())
+                {
+                    gesture.commit_accepted = true;
+                } else {
+                    self.parameter_gesture = None;
                 }
+            } else {
+                // A retained refusal still owns its acknowledged preview.
+                // Cancel/source loss releases it; rejected publication does not.
+                gesture.commit = None;
+                gesture.next_program = None;
             }
         }
     }
@@ -366,8 +393,8 @@ impl Gesture {
             }
             let live = self.live.as_ref().ok_or_else(lost)?;
             if live.invalidated
-                || input.isolated_effect_class() != Some(live.class)
-                || input.reading_effect_class().is_some() != live.reading
+                || input.isolated_class() != Some(live.class)
+                || input.reading_class().is_some() != live.reading
                 || control.status.native_parameter_source(live.playing)
                     != Some((live.source, live.transport_epoch))
             {
@@ -410,7 +437,7 @@ impl Gesture {
             let (token, opening_hold) = if let Some(live) = self
                 .live
                 .as_ref()
-                .filter(|live| live.reading && live.playing)
+                .filter(|live| live.holds_program && live.playing)
             {
                 let command = live.hold.as_ref().map_or(
                     NativeParameterHold::Begin {

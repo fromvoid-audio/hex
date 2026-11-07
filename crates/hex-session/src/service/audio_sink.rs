@@ -28,8 +28,9 @@ pub struct PluginParameterGestureInput<'a> {
     pub(in crate::service) context: hex_engine::AudioSourceContext,
     pub(in crate::service) operation: crate::device_gesture::PluginGesturePreparation,
     pub(in crate::service) canonical_state: &'a NativeDeviceState,
-    pub(in crate::service) reading_effect_class: Option<[u8; 16]>,
-    pub(in crate::service) isolated_effect_class: Option<[u8; 16]>,
+    pub(in crate::service) reading_class: Option<[u8; 16]>,
+    pub(in crate::service) isolated_class: Option<[u8; 16]>,
+    pub(in crate::service) instrument: bool,
 }
 impl<'a> PluginParameterGestureInput<'a> {
     pub fn context(&self) -> hex_engine::AudioSourceContext {
@@ -38,14 +39,18 @@ impl<'a> PluginParameterGestureInput<'a> {
     pub fn operation(&self) -> crate::device_gesture::PluginGesturePreparation {
         self.operation
     }
-    /// Exact class of the reading Arrangement lane, for ordinary effects.
-    pub fn reading_effect_class(&self) -> Option<[u8; 16]> {
-        self.reading_effect_class
+    /// Exact class of the reading Arrangement lane, for the ordinary processor.
+    pub fn reading_class(&self) -> Option<[u8; 16]> {
+        self.reading_class
     }
-    /// A reading lane on this exact effect requires an isolated manual base,
+    /// A retained lane on this exact processor requires an isolated manual base,
     /// including when the edited parameter has no lane of its own.
-    pub fn isolated_effect_class(&self) -> Option<[u8; 16]> {
-        self.isolated_effect_class
+    pub fn isolated_class(&self) -> Option<[u8; 16]> {
+        self.isolated_class
+    }
+    /// Canonical slot role only; the host validates its actual SDK profile.
+    pub fn is_instrument(&self) -> bool {
+        self.instrument
     }
     pub fn canonical_state(&self) -> &'a NativeDeviceState {
         self.canonical_state
@@ -101,7 +106,7 @@ impl<'a> ResidentEffectPreparation<'a> {
     pub fn requires_plugin_profile(&self) -> bool {
         requires_plugin_profile(self.project)
     }
-    /// Borrow the active authored raw targets of one canonical device. The
+    /// Borrow all saved raw targets, including lanes currently set to Base. The
     /// native source owner still validates the class and exact SDK capabilities.
     pub fn authored_plugin_targets(
         &self,
@@ -111,7 +116,7 @@ impl<'a> ResidentEffectPreparation<'a> {
             .automation_devices()
             .find(|candidate| candidate.id().value() == device && is_plugin_effect(candidate))
             .into_iter()
-            .flat_map(hex_project::Device::reading_automation)
+            .flat_map(|device| device.automation().iter())
             .filter_map(|lane| match lane.target {
                 hex_lattice_contract::DeviceAutomationTarget::Vst3 { parameter } => {
                     Some((parameter, lane.vst3_class))
@@ -558,6 +563,16 @@ pub trait WorkerAudioSink: Send {
     ) -> Result<Option<hex_engine::PreparedRevision>, String> {
         Ok(None)
     }
+    /// Actual original-worker pickup only, for bounded immutable program
+    /// retention. None conservatively retains history; never synthesize this
+    /// from a queued graph key or final Main publication.
+    fn received_foreign_program_on_control(
+        &mut self,
+        _binding: hex_lattice_contract::ForeignProcessorBinding,
+    ) -> Option<std::num::NonZeroU64> {
+        None
+    }
+
     /// A host with no private offline capability must refuse foreign bounce
     /// instead of using its live source or publishing unprocessed audio.
     fn prepare_offline_bounce(
@@ -1524,6 +1539,72 @@ mod tests {
             crate::test_wait::pause();
         }
     }
+    #[test]
+    fn plugin_source_selection_retains_base_lanes_as_well_as_reading_lanes() {
+        use hex_project::{
+            AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
+            BeatTime, Command, Created, DeviceAutomationTarget, Editor,
+        };
+        let class = [1; 16];
+        let state = hex_plugin_state::encode(hex_plugin_state::State {
+            identity: hex_plugin_state::Identity {
+                class: hex_plugin_state::ClassId::new(class).unwrap(),
+                binary: hex_plugin_state::BinaryIdentity {
+                    executable_sha256: [2; 32],
+                    info_sha256: [3; 32],
+                },
+            },
+            component: Some(&[4]),
+            controller: None,
+        })
+        .unwrap();
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state,
+            })
+            .unwrap()
+        else {
+            panic!("plugin fixture");
+        };
+        for parameter in [7, 11] {
+            editor
+                .execute(Command::ReplaceDeviceAutomationTarget {
+                    device,
+                    target: DeviceAutomationTarget::Vst3 { parameter },
+                    points: vec![AutomationPoint {
+                        beat: BeatTime::ZERO,
+                        value: AutomationValue::new(0.5).unwrap(),
+                        outgoing: AutomationInterpolation::Step,
+                    }],
+                })
+                .unwrap();
+        }
+        editor
+            .execute(Command::SetDeviceAutomationReadSelection {
+                device,
+                target: DeviceAutomationTarget::Vst3 { parameter: 7 },
+                selection: AutomationReadSelection::Base,
+            })
+            .unwrap();
+        let input = ResidentEffectPreparation {
+            project: editor.project(),
+            context: hex_engine::AudioSourceContext {
+                project_generation: 1,
+                editor_revision: 1,
+            },
+            restoring_plugin_state: false,
+            preparing_edit: true,
+        };
+        assert_eq!(
+            input
+                .authored_plugin_targets(device.value())
+                .collect::<Vec<_>>(),
+            vec![(7, Some(class)), (11, Some(class))]
+        );
+    }
+
     #[test]
     fn worker_uses_negotiated_rate_and_keeps_cleanup_live_under_event_backpressure_and_close() {
         let observed = Arc::new(Observation::default());

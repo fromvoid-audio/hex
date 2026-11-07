@@ -803,7 +803,7 @@ impl Plugins {
                 Some(control) => self.matching_edit_source(
                     control,
                     &input,
-                    owner,
+                    destination,
                     device,
                     state,
                     desired,
@@ -857,8 +857,65 @@ impl Plugins {
         let control = output
             .and_then(|output| output.publication.control())
             .ok_or("native output closed")?;
+        let mut canonical = Vec::new();
+        canonical
+            .try_reserve_exact(bindings.len())
+            .map_err(|_| "vst3 canonical facts capacity unavailable")?;
+        input.visit_plugin_devices(|destination, device, state| {
+            let Some(source) = self.sources.iter().rev().find(|source| {
+                bindings.contains(&source.binding)
+                    && source.owner == destination.owner()
+                    && source.device == device
+            }) else {
+                return Ok(());
+            };
+            if !edits::original_state(control, source.binding, cancellation)?.processing_eq(state) {
+                let selection = source
+                    .authored
+                    .as_ref()
+                    .ok_or("vst3 canonical program selection unavailable")?;
+                canonical.push(edits::canonical_bases(
+                    self.host
+                        .as_ref()
+                        .ok_or("qualified vst3 helper unavailable")?,
+                    control,
+                    source.binding,
+                    state,
+                    selection,
+                    cancellation,
+                )?);
+            }
+            Ok(())
+        })?;
+        for &binding in &bindings {
+            let revision = loop {
+                edits::check_cancel(cancellation)?;
+                match control.reserve_native_source_program_revision_on_control(binding) {
+                    Err(reason)
+                        if reason == "native preparation is busy"
+                            || reason == "native source is busy" =>
+                    {
+                        edits::poll_control(control)
+                    }
+                    result => break result?,
+                }
+            };
+            if let Some(gesture) = self
+                .parameter_gesture
+                .as_mut()
+                .filter(|gesture| gesture.binding == binding && gesture.commit.is_some())
+            {
+                gesture.next_program = Some(revision);
+            }
+        }
         loop {
-            match Hosting::prepare_on_control(control, &bindings, &unavailable, prepare) {
+            match Hosting::prepare_with_canonical_bases_on_control(
+                control,
+                &bindings,
+                &unavailable,
+                &canonical,
+                prepare,
+            ) {
                 Err(error)
                     if input.preparing_edit()
                         && matches!(

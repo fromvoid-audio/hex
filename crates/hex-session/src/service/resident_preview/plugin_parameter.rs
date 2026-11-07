@@ -92,14 +92,9 @@ pub(super) fn operation(
             })?;
         let state = source.state();
         let target = DeviceAutomationTarget::Vst3 { parameter };
-        // Lane/read admission includes instruments. The current opaque
-        // takeover protocol owns ordinary effects, with an explicit Begin
-        // refusal below for a reading instrument until its path is qualified.
-        let isolates_effect =
-            session.native_device_class(device).ok() == Some(hex_engine::NativeDeviceClass::Effect);
-        let reading_effect_class = source
+        let reading_class = source
             .automation_target(target)
-            .filter(|lane| isolates_effect && lane.is_reading())
+            .filter(|lane| lane.is_reading())
             .and_then(|lane| lane.vst3_class)
             .filter(|class| {
                 super::super::device_automation_control::accepts_lane_target(
@@ -109,22 +104,18 @@ pub(super) fn operation(
                     Some(*class),
                 )
             });
-        let isolated_effect_class = source
-            .automation()
-            .iter()
-            .filter(|lane| isolates_effect && lane.is_reading())
-            .find_map(|lane| {
-                lane.vst3_class.filter(|class| {
-                    super::super::device_automation_control::accepts_lane_target(
-                        session,
-                        device,
-                        lane.target,
-                        Some(*class),
-                    )
-                })
-            });
+        let isolated_class = source.automation().iter().find_map(|lane| {
+            lane.vst3_class.filter(|class| {
+                super::super::device_automation_control::accepts_lane_target(
+                    session,
+                    device,
+                    lane.target,
+                    Some(*class),
+                )
+            })
+        });
         if matches!(operation, PluginGesturePreparation::Begin { .. })
-            && isolated_effect_class.is_none()
+            && isolated_class.is_none()
             && source
                 .reading_automation()
                 .any(|lane| matches!(lane.target, DeviceAutomationTarget::Vst3 { .. }))
@@ -138,8 +129,13 @@ pub(super) fn operation(
                 context,
                 operation,
                 canonical_state: state,
-                reading_effect_class,
-                isolated_effect_class,
+                reading_class,
+                isolated_class,
+                instrument: session
+                    .project()
+                    .native_sources()
+                    .iter()
+                    .any(|source| source.instrument().id() == device),
             })
             .map_err(|error| match error {
                 PluginParameterGestureError::Refused(reason) => SessionError::NativeAudio(reason),
@@ -152,9 +148,9 @@ pub(super) fn operation(
                 PluginGesturePreparation::Commit(_),
                 PluginParameterGestureResult::Captured(mut capture),
             ) => {
-                if isolated_effect_class.is_some() {
+                if isolated_class.is_some() {
                     return Err(SessionError::Invalid(
-                        "authored vst3 effect requires an isolated manual base",
+                        "authored vst3 processor requires an isolated manual base",
                     ));
                 }
                 let bind = |captured: NativeDeviceState| bind_capture(state, captured);
@@ -248,7 +244,7 @@ fn override_command(
         .any(|lane| lane.is_reading() && lane.vst3_class == class)
     {
         return Err(SessionError::Invalid(
-            "plugin override requires the exact authored effect",
+            "plugin override requires the exact authored processor",
         ));
     }
     Ok(Command::ManualDeviceEdit {
@@ -282,11 +278,14 @@ mod tests {
 
     #[test]
     fn isolated_override_commits_only_the_exact_lane_and_keeps_the_canonical_undo() {
-        verify_isolated_override(true);
-        verify_isolated_override(false);
+        for reading in [false, true] {
+            for instrument in [false, true] {
+                verify_isolated_override(reading, instrument);
+            }
+        }
     }
 
-    fn verify_isolated_override(reading: bool) {
+    fn verify_isolated_override(reading: bool, instrument: bool) {
         use hex_project::{
             AutomationInterpolation, AutomationPoint, AutomationReadSelection as Read,
             AutomationValue, BeatTime,
@@ -296,15 +295,29 @@ mod tests {
             .with_input_gain_millidb(-3000)
             .unwrap();
         let mut session = Session::new(48_000, 8, 0).unwrap();
-        let hex_project::Created::Device(device) = session
-            .editor
-            .execute(Command::InsertMainDevice {
+        let insertion = if instrument {
+            let hex_project::Created::Track(track) = session
+                .editor
+                .execute(Command::AddMidiTrack {
+                    name: "synth".into(),
+                })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            Command::InsertInstrument {
+                track,
+                state: original.clone(),
+            }
+        } else {
+            Command::InsertMainDevice {
                 before: None,
                 state: original.clone(),
-            })
-            .unwrap()
+            }
+        };
+        let hex_project::Created::Device(device) = session.editor.execute(insertion).unwrap()
         else {
-            panic!("effect")
+            panic!("device")
         };
         let target = DeviceAutomationTarget::Vst3 { parameter: 0 };
         let other = DeviceAutomationTarget::Vst3 { parameter: 7 };
