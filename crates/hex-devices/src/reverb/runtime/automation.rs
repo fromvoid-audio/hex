@@ -870,6 +870,20 @@ mod tests {
                     }
                 }
                 assert!(output.iter().flatten().any(|v| v.abs() > 1e-6));
+                // Empty canonical calls do not install a new audible control
+                // state; a subsequent tail still freezes the last delivery.
+                let mut empty = prepared.runtime();
+                empty.copy_history_from(&source);
+                let mut empty_reference = prepared.runtime();
+                empty_reference.copy_history_from(&source);
+                empty.process_block(&mut [], &R);
+                empty.begin_output_tail();
+                empty_reference.begin_output_tail();
+                let mut empty_output = [[0.0; 2]; 17];
+                let mut empty_expected = empty_output;
+                empty.process_block(&mut empty_output, &R);
+                empty_reference.process_block(&mut empty_expected, &R);
+                assert_eq!(empty_output, empty_expected);
                 // A new active graph inherits DSP history, not tail admission or
                 // the detached graph's override mode after lane removal.
                 let mut canonical = prepared.runtime();
@@ -992,11 +1006,22 @@ mod benchmark {
             runtime.frame(frame, wet);
         }
     }
+    // The pre-fix ordinary process_block body, paired with the repaired path
+    // in one run to reduce machine-load differences between source revisions.
+    fn previous_canonical(runtime: &mut ReverbRuntime, frames: &mut [StereoFrame]) {
+        for frame in frames {
+            if runtime.tail_controls_frozen {
+                runtime.frame_outputs(frame, runtime.automated_values);
+            } else {
+                runtime.frame(frame, None);
+            }
+        }
+    }
     #[test]
     #[ignore = "release-only targeted delivery microbenchmark"]
     fn output_delivery_cost_against_legacy_scalar_loop() {
         assert!(!black_box(cfg!(debug_assertions)), "run with --release");
-        for mode in 0..5 {
+        for mode in 0..6 {
             let source = Source {
                 ids: if mode < 2 {
                     vec![p::DRY_WET]
