@@ -68,7 +68,18 @@ fn reverb_output_automation_callback_publication_history_and_save_reopen()
         .project()
         .tempo_map()
         .frame_to_beat((BLOCK * 3) as u64)?;
-    for parameter in [p::STEREO, p::REFLECT, p::DIFFUSE] {
+    for parameter in [
+        p::PREDELAY,
+        p::SPIN_AMOUNT,
+        p::SPIN_RATE,
+        p::SHAPE,
+        p::SCALE,
+        p::CHORUS_AMOUNT,
+        p::CHORUS_RATE,
+        p::STEREO,
+        p::REFLECT,
+        p::DIFFUSE,
+    ] {
         editor.execute(Command::ReplaceDeviceAutomation {
             device,
             parameter,

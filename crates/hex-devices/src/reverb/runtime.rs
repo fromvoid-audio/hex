@@ -1,13 +1,13 @@
 //! Bounded FDN history; preparation owns allocation and tank/filter coefficients.
-//! Authored output gains use bounded conversion in output_automation.
-pub(super) mod output_automation;
+//! Authored output gains use bounded conversion in automation.
+pub(super) mod automation;
 use super::{PARAMETER_COUNT, Settings, parameter as p};
+use automation::{AutomatedSettings, AutomatedValues};
 use hex_lattice::{
     DeviceResources, NativeInstrumentClock, NativeParameterAutomation, NativeProcessorRuntime,
     OutputTail, PreparedNativeProcessor, StereoFrame,
 };
 use hex_lattice_contract::{DeviceContractError, ParameterDescriptor, ParameterId};
-use output_automation::{OutputSettings, OutputValues};
 use std::any::Any;
 const TIMES: [f32; 8] = [
     0.0233, 0.0297, 0.0311, 0.0371, 0.0411, 0.0437, 0.0479, 0.0539,
@@ -152,11 +152,11 @@ impl PreparedReverb {
     }
     fn runtime(&self) -> ReverbRuntime {
         ReverbRuntime {
-            output_controls: crate::parameter_binding::Controls::new(
-                OutputSettings::new(self.settings),
-                [true; 4],
+            automation_controls: crate::parameter_binding::Controls::new(
+                AutomatedSettings::new(self.settings),
+                [true; 11],
             ),
-            output_values: OutputValues::default(),
+            automated_values: AutomatedValues::default(),
             tail_controls_frozen: false,
             rate: self.rate,
             factor: self.factor,
@@ -192,7 +192,7 @@ impl PreparedNativeProcessor for PreparedReverb {
         &self,
         parameter: ParameterId,
     ) -> Option<ParameterDescriptor> {
-        if !output_automation::supports(parameter) {
+        if !automation::supports(parameter) {
             return None;
         }
         super::DESCRIPTORS
@@ -201,7 +201,7 @@ impl PreparedNativeProcessor for PreparedReverb {
             .copied()
     }
     fn supports_parameter_automation(&self, parameter: ParameterId) -> bool {
-        output_automation::supports(parameter)
+        automation::supports(parameter)
     }
 
     fn supports_smoothed_bypass(&self) -> bool {
@@ -340,8 +340,8 @@ pub struct ReverbRuntimeStorage {
 }
 pub const RUNTIME_HEAP_ALLOCATIONS: usize = 14;
 pub struct ReverbRuntime {
-    output_controls: crate::parameter_binding::Controls<OutputSettings, 4>,
-    output_values: OutputValues,
+    automation_controls: crate::parameter_binding::Controls<AutomatedSettings, 11>,
+    automated_values: AutomatedValues,
     tail_controls_frozen: bool,
     rate: u32,
     factor: u32,
@@ -375,8 +375,8 @@ impl ReverbRuntime {
     /// Exhaustive destructuring forces an owning-field audit when this changes.
     pub fn control_storage(&self) -> Option<ReverbRuntimeStorage> {
         let Self {
-            output_controls,
-            output_values,
+            automation_controls,
+            automated_values,
             tail_controls_frozen,
             rate,
             factor,
@@ -404,8 +404,8 @@ impl ReverbRuntime {
             chorus_phase,
         } = self;
         fn inline<T: Copy>(_: &T) {}
-        output_controls.check_inline(OutputSettings::check_inline);
-        output_values.check_inline();
+        automation_controls.check_inline(AutomatedSettings::check_inline);
+        automated_values.check_inline();
         inline(tail_controls_frozen);
         inline(rate);
         inline(factor);
@@ -482,9 +482,18 @@ impl ReverbRuntime {
         self.silent_frames = 0;
         self.active = false;
     }
-    fn tank(&mut self, input: StereoFrame, output: OutputValues) {
+    fn tank(&mut self, input: StereoFrame, output: AutomatedValues) {
+        let predelay = output.predelay.unwrap_or_else(|| self.v(p::PREDELAY));
+        let spin_amount = output.spin_amount.unwrap_or_else(|| self.v(p::SPIN_AMOUNT));
+        let spin_rate = output.spin_rate.unwrap_or_else(|| self.v(p::SPIN_RATE));
+        let shape = output.shape.unwrap_or_else(|| self.v(p::SHAPE));
+        let scale = output.scale.unwrap_or_else(|| self.v(p::SCALE));
+        let chorus_amount = output
+            .chorus_amount
+            .unwrap_or_else(|| self.v(p::CHORUS_AMOUNT));
+        let chorus_rate = output.chorus_rate.unwrap_or_else(|| self.v(p::CHORUS_RATE));
         let size = (self.v(p::SIZE) / 100.0).sqrt();
-        let predelay = self.v(p::PREDELAY) * 0.001 * self.tank_rate;
+        let predelay = predelay * 0.001 * self.tank_rate;
         let excitation = 1.0 - self.v(p::FREEZE) * self.v(p::CUT);
         let settled = self.tank_ramp_remaining == 0;
         let [high_filter, low_filter] = if settled {
@@ -509,24 +518,20 @@ impl ReverbRuntime {
                 let phase = self.spin_phase + c as f32 * 0.25 + i as f32 * 0.137;
                 let spin = (std::f32::consts::TAU * phase).sin()
                     * self.v(p::SPIN)
-                    * self.v(p::SPIN_AMOUNT)
+                    * spin_amount
                     * 0.000025
                     * self.tank_rate;
                 let delay = predelay
-                    + (seconds * size * (0.75 + 0.5 * self.v(p::SHAPE)) * self.tank_rate + spin)
-                        .max(0.0)
+                    + (seconds * size * (0.75 + 0.5 * shape) * self.tank_rate + spin).max(0.0)
                     + 1.0;
-                let weight = (1.0 - self.v(p::SHAPE) + self.v(p::SHAPE) * (i as f32 / 7.0)) * 0.125;
+                let weight = (1.0 - shape + shape * (i as f32 / 7.0)) * 0.125;
                 early[c] +=
                     self.inputs[c].read(delay) * weight * if i % 3 == 2 { -1.0 } else { 1.0 };
             }
             late_input[c] += early[c] * 0.25;
         }
-        let depth = self.v(p::CHORUS)
-            * self.v(p::CHORUS_AMOUNT)
-            * 0.001
-            * self.tank_rate
-            * (1.0 - self.v(p::FREEZE));
+        let depth =
+            self.v(p::CHORUS) * chorus_amount * 0.001 * self.tank_rate * (1.0 - self.v(p::FREEZE));
         let delayed = std::array::from_fn(|i| {
             let modulation =
                 (std::f32::consts::TAU * (self.chorus_phase + i as f32 * 0.173)).sin() * depth;
@@ -578,7 +583,7 @@ impl ReverbRuntime {
             for (i, seconds) in [0.005, 0.0017].into_iter().enumerate() {
                 let a = self.v(p::DIFFUSION) * 0.006;
                 let old = self.allpasses[c][i]
-                    .read(seconds * (0.5 + 1.5 * self.v(p::SCALE) * 0.01) * self.tank_rate);
+                    .read(seconds * (0.5 + 1.5 * scale * 0.01) * self.tank_rate);
                 let output = old - a * diffuse;
                 self.allpasses[c][i].push(diffuse + a * output);
                 diffuse = output;
@@ -592,19 +597,19 @@ impl ReverbRuntime {
             * output.stereo.unwrap_or_else(|| self.v(p::STEREO))
             * 0.01;
         self.next = [mid + side, mid - side];
-        self.spin_phase = (self.spin_phase + self.v(p::SPIN_RATE) / self.tank_rate).fract();
-        self.chorus_phase = (self.chorus_phase + self.v(p::CHORUS_RATE) / self.tank_rate).fract();
+        self.spin_phase = (self.spin_phase + spin_rate / self.tank_rate).fract();
+        self.chorus_phase = (self.chorus_phase + chorus_rate / self.tank_rate).fract();
     }
     fn frame(&mut self, frame: &mut StereoFrame, dry_wet: Option<f32>) {
         self.frame_outputs(
             frame,
-            OutputValues {
+            AutomatedValues {
                 dry_wet,
-                ..OutputValues::default()
+                ..AutomatedValues::default()
             },
         );
     }
-    fn frame_outputs(&mut self, frame: &mut StereoFrame, output: OutputValues) {
+    fn frame_outputs(&mut self, frame: &mut StereoFrame, output: AutomatedValues) {
         if self.tank_ramp_remaining != 0 {
             for ramp in &mut self.parameters {
                 ramp.advance();
@@ -686,7 +691,7 @@ impl NativeProcessorRuntime for ReverbRuntime {
     fn process_block(&mut self, frames: &mut [StereoFrame], _: &dyn hex_lattice::DeviceResources) {
         for frame in frames {
             if self.tail_controls_frozen {
-                self.frame_outputs(frame, self.output_values);
+                self.frame_outputs(frame, self.automated_values);
             } else {
                 self.frame(frame, None);
             }
@@ -696,7 +701,7 @@ impl NativeProcessorRuntime for ReverbRuntime {
         self.tail_controls_frozen = true;
     }
     fn supports_parameter_automation(&self, parameter: ParameterId) -> bool {
-        output_automation::supports(parameter)
+        automation::supports(parameter)
     }
     fn process_block_with_automation(
         &mut self,
@@ -705,12 +710,12 @@ impl NativeProcessorRuntime for ReverbRuntime {
         automation: &dyn NativeParameterAutomation,
         _: &dyn DeviceResources,
     ) -> Result<(), DeviceContractError> {
-        self.process_output_automation(frames, automation)
+        self.process_automation(frames, automation)
     }
 
     fn reset(&mut self) {
-        self.output_controls.reset();
-        self.output_values = OutputValues::default();
+        self.automation_controls.reset();
+        self.automated_values = AutomatedValues::default();
         self.tail_controls_frozen = false;
         self.clear();
         for v in &mut self.parameters {
@@ -741,8 +746,8 @@ impl NativeProcessorRuntime for ReverbRuntime {
         else {
             return;
         };
-        self.output_controls.inherit(&old.output_controls);
-        self.output_values = old.output_values;
+        self.automation_controls.inherit(&old.automation_controls);
+        self.automated_values = old.automated_values;
         // Tail admission belongs to the host, not inherited DSP history. Fresh
         // canonical successors must ignore overrides from removed lanes.
         for (to, from) in self
