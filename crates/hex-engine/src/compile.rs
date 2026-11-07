@@ -1226,13 +1226,8 @@ fn compile_effect_devices(
         // An explicitly admitted unavailable effect has no factory. Keep its
         // canonical lanes through document staging; the restored foreign
         // worker must still prove its exact metadata before any playback.
-        if crate::foreign_automation::candidate::has_authored(device)
-            && let Some(factory) = processor.as_ref()
-        {
-            let hex_lattice::PreparedProcessorFactory::Foreign(facts) = factory else {
-                return Err(Invalid("authored vst3 source metadata is unavailable"));
-            };
-            let program = crate::foreign_automation::candidate::prepare_device(
+        if let Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) = processor.as_ref() {
+            if let Some(program) = crate::foreign_automation::candidate::prepare_device(
                 device,
                 identity,
                 registry,
@@ -1241,13 +1236,17 @@ fn compile_effect_devices(
                 arrangement.loop_region(),
             )
             .map_err(|_| Invalid("authored vst3 program or source could not be prepared"))?
-            .ok_or(Invalid("authored vst3 program is missing"))?;
-            if !automation.is_empty() {
-                return Err(Invalid(
-                    "vst3 playback does not support native parameter automation",
-                ));
+            {
+                if !automation.is_empty() {
+                    return Err(Invalid(
+                        "vst3 playback does not support native parameter automation",
+                    ));
+                }
+                automation = hex_lattice::PreparedParameterAutomation::for_foreign(program);
             }
-            automation = hex_lattice::PreparedParameterAutomation::for_foreign(program);
+        } else if processor.is_some() && crate::foreign_automation::candidate::has_authored(device)
+        {
+            return Err(Invalid("authored vst3 source metadata is unavailable"));
         }
 
         let prepared = if device.bypassed() {

@@ -1184,7 +1184,7 @@ fn compiled_saved_vst3_lane_reaches_the_signed_worker_without_callback_allocatio
     let binding = instance.configuration().binding;
     let identity =
         ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, binding.instance).unwrap();
-    let effect = NativeEffect::prepare_retained_with_authored_selection_on_control(
+    let mut effect = NativeEffect::prepare_retained_with_authored_selection_on_control(
         identity,
         instance,
         usize::MAX,
@@ -1205,7 +1205,11 @@ fn compiled_saved_vst3_lane_reaches_the_signed_worker_without_callback_allocatio
     assert_eq!(source.binding, binding);
     assert_eq!(
         source.parameters,
-        [hex_lattice::ForeignParameterCapability { id: 7, steps: 0 }]
+        [hex_lattice::ForeignParameterCapability {
+            id: 7,
+            steps: 0,
+            normalized_base_bits: 0.25f64.to_bits()
+        }]
     );
     assert!(
         definition
@@ -1231,6 +1235,18 @@ fn compiled_saved_vst3_lane_reaches_the_signed_worker_without_callback_allocatio
     )
     .unwrap()
     .unwrap();
+    drop(definition);
+    let baseline_revision = effect.reserve_program_revision_on_control().unwrap();
+    let definition = NativeEffectDefinition::new(std::slice::from_ref(&effect)).unwrap();
+    context.sample_rate = 48_000;
+    let base_source = definition
+        .foreign_automation_source(identity, &state, &context)
+        .unwrap()
+        .unwrap();
+    assert_eq!(base_source.revision, baseline_revision);
+    let baseline = BoundProgram::prepare(&[], base_source, reopened.tempo_map(), 2)
+        .unwrap()
+        .unwrap();
     let node = ForeignProcessorNode {
         owner: identity.owner(),
         device_id: identity.device_id(),
@@ -1247,7 +1263,15 @@ fn compiled_saved_vst3_lane_reaches_the_signed_worker_without_callback_allocatio
         NativeEffectCallbacks::from_effects_on_control(vec![effect]).unwrap();
     let owner = &mut workers[0];
     let origins = [45, 46, 47, 48, 49, 0, 1, 2];
-    for sequence in 0..4 {
+    for sequence in 0..8 {
+        let node = ForeignProcessorNode {
+            automation: Some(if sequence < 4 {
+                program.borrow()
+            } else {
+                baseline.borrow()
+            }),
+            ..node
+        };
         let mut pcm = [[0.5, -0.25]; 8];
         let render = || {
             // Split one actual PCM quantum across two physical callbacks.
@@ -1291,10 +1315,16 @@ fn compiled_saved_vst3_lane_reaches_the_signed_worker_without_callback_allocatio
             thread::yield_now();
         }
         for (index, &actual) in pcm.iter().enumerate() {
-            let gain = match index {
-                3 => 2.0,
-                4 => 2.25,
-                _ => 1.0,
+            // The first canonical-base request follows four authored quanta;
+            // its actual PCM reaches this endpoint two quanta later.
+            let gain = if sequence >= 6 {
+                1.0
+            } else {
+                match index {
+                    3 => 2.0,
+                    4 => 2.25,
+                    _ => 1.0,
+                }
             };
             let scale = if sequence < 2 {
                 0.0

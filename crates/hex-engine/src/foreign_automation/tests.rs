@@ -67,7 +67,11 @@ fn projects_the_ramp_at_each_tempo_boundary_then_chases_after_wrap() {
             point(BeatTime::from_quarters(2).unwrap(), 0.75, Step),
         ],
     );
-    let capability = ParameterCapability { id: 0, steps: 0 };
+    let capability = ParameterCapability {
+        id: 0,
+        steps: 0,
+        normalized_base_bits: 0,
+    };
     let program = Program::prepare(
         &[lane],
         CLASS,
@@ -118,8 +122,16 @@ fn steps_stay_adjacent_and_each_sdk_slice_gets_a_chase() {
         ),
     ];
     let capabilities = [
-        ParameterCapability { id: 0, steps: 0 },
-        ParameterCapability { id: 7, steps: 4 },
+        ParameterCapability {
+            id: 0,
+            steps: 0,
+            normalized_base_bits: 0,
+        },
+        ParameterCapability {
+            id: 7,
+            steps: 4,
+            normalized_base_bits: 0,
+        },
     ];
     let program = Program::prepare(
         &lanes,
@@ -193,8 +205,16 @@ fn coincident_frames_keep_the_later_point_and_one_point_holds_across_its_origin(
         ),
     ];
     let capabilities = [
-        ParameterCapability { id: 0, steps: 0 },
-        ParameterCapability { id: 7, steps: 0 },
+        ParameterCapability {
+            id: 0,
+            steps: 0,
+            normalized_base_bits: 0,
+        },
+        ParameterCapability {
+            id: 7,
+            steps: 0,
+            normalized_base_bits: 0,
+        },
     ];
     let program = Program::prepare(
         &lanes,
@@ -226,7 +246,11 @@ fn refuses_dense_or_mismatched_programs_and_checks_admitted_runs() {
         .map(|id| lane(id, vec![point(BeatTime::ZERO, 0.25, Step)]))
         .collect();
     let capabilities: Vec<_> = (0..17)
-        .map(|id| ParameterCapability { id, steps: 0 })
+        .map(|id| ParameterCapability {
+            id,
+            steps: 0,
+            normalized_base_bits: 0,
+        })
         .collect();
     let profile = QuantumProfile {
         frames: 8,
@@ -235,8 +259,11 @@ fn refuses_dense_or_mismatched_programs_and_checks_admitted_runs() {
     assert!(Program::prepare(&lanes, CLASS, &capabilities, &tempo(), profile).is_err());
     assert!(Program::prepare(&lanes[..1], [2; 16], &capabilities, &tempo(), profile).is_err());
     assert!(Program::prepare(&lanes[..1], CLASS, &capabilities[1..], &tempo(), profile).is_err());
+    // The seventeenth armed parameter still needs its canonical base even
+    // when its authored lane is absent; it cannot evade the shared budget.
+    assert!(Program::prepare(&lanes[..16], CLASS, &capabilities, &tempo(), profile).is_err());
 
-    let program = Program::prepare(&lanes[..16], CLASS, &capabilities, &tempo(), profile)
+    let program = Program::prepare(&lanes[..16], CLASS, &capabilities[..16], &tempo(), profile)
         .unwrap()
         .unwrap();
     assert_eq!(program.point_budget(), MAX_POINTS);
@@ -255,6 +282,137 @@ fn refuses_dense_or_mismatched_programs_and_checks_admitted_runs() {
 }
 
 #[test]
+fn base_and_cleared_targets_restore_exact_sdk_values_beside_a_reading_ramp() {
+    let precise = f64::from_bits(0x3fe0000000000001);
+    let capabilities = [
+        ParameterCapability {
+            id: 0,
+            steps: 0,
+            normalized_base_bits: precise.to_bits(),
+        },
+        ParameterCapability {
+            id: 7,
+            steps: 0,
+            normalized_base_bits: 0.625f64.to_bits(),
+        },
+    ];
+    let mut base = lane(
+        0,
+        vec![point(BeatTime::ZERO, 0.25, AutomationInterpolation::Step)],
+    );
+    base.read_selection = AutomationReadSelection::Base;
+    let reading = lane(
+        7,
+        vec![
+            point(BeatTime::ZERO, 0.25, AutomationInterpolation::Linear),
+            point(
+                BeatTime::from_quarters(2).unwrap(),
+                0.75,
+                AutomationInterpolation::Step,
+            ),
+        ],
+    );
+    let profile = QuantumProfile {
+        frames: 8,
+        max_runs: 4,
+    };
+    let program = Program::prepare(&[base, reading], CLASS, &capabilities, &tempo(), profile)
+        .unwrap()
+        .unwrap();
+    let origins = [
+        Some(3999),
+        Some(4000),
+        None,
+        Some(0),
+        Some(1),
+        Some(80),
+        Some(81),
+        Some(82),
+    ];
+    let points = render(&program, &origins, &[1, 3]);
+    assert!(points.iter().any(|point| point.id == 0));
+    assert!(
+        points
+            .iter()
+            .filter(|point| point.id == 0)
+            .all(|point| point.normalized.to_bits() == precise.to_bits())
+    );
+    assert!(
+        points
+            .iter()
+            .any(|point| point.id == 7 && point.normalized != 0.625)
+    );
+    let cleared = Program::prepare(&[], CLASS, &capabilities, &tempo(), profile)
+        .unwrap()
+        .unwrap();
+    let points = render(&cleared, &origins, &[1, 3]);
+    assert!(!points.is_empty());
+    for point in points {
+        let expected = if point.id == 0 { precise } else { 0.625 };
+        assert_eq!(point.normalized.to_bits(), expected.to_bits());
+    }
+    for invalid in [f64::NAN, f64::INFINITY, -0.25, 1.25] {
+        let invalid = [ParameterCapability {
+            normalized_base_bits: invalid.to_bits(),
+            ..capabilities[0]
+        }];
+        assert!(Program::prepare(&[], CLASS, &invalid, &tempo(), profile).is_err());
+    }
+}
+
+#[test]
+fn canonical_base_metadata_is_reserved_without_any_authored_lane() {
+    let mut editor = hex_project::Editor::new(hex_project::Project::new(8000).unwrap(), 8).unwrap();
+    editor
+        .execute(hex_project::Command::InsertMainDevice {
+            before: None,
+            state: hex_lattice_contract::NativeDeviceState::new(
+                hex_lattice_contract::VST3_DEVICE_TYPE_ID,
+                1,
+                vec![1],
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    let (bytes, rows) = candidate::quote_ordinary(editor.project()).unwrap();
+    let capabilities = (0..MAX_POINTS as u32)
+        .map(|id| ParameterCapability {
+            id,
+            steps: 0,
+            normalized_base_bits: 0.5f64.to_bits(),
+        })
+        .collect::<Vec<_>>();
+    let program = Program::prepare(
+        &[],
+        CLASS,
+        &capabilities,
+        &tempo(),
+        QuantumProfile {
+            frames: 8,
+            max_runs: 1,
+        },
+    );
+    assert!(
+        program.is_err(),
+        "the physical event budget still refuses sixty-four simultaneous base holds"
+    );
+    let program = Program::prepare(
+        &[],
+        CLASS,
+        &capabilities[..16],
+        &tempo(),
+        QuantumProfile {
+            frames: 8,
+            max_runs: 2,
+        },
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(rows, 1);
+    assert!(bytes >= std::mem::size_of::<Program>() + program.backing_bytes().unwrap());
+}
+
+#[test]
 fn bound_program_requires_the_source_rate_and_preserves_the_worker_revision() {
     let lane = lane(
         0,
@@ -266,7 +424,11 @@ fn bound_program_requires_the_source_rate_and_preserves_the_worker_revision() {
         graph: 3,
         epoch: 4,
     };
-    let capabilities = [ParameterCapability { id: 0, steps: 0 }];
+    let capabilities = [ParameterCapability {
+        id: 0,
+        steps: 0,
+        normalized_base_bits: 0,
+    }];
     let revision = std::num::NonZeroU64::new(7).unwrap();
     let source = hex_lattice::ForeignAutomationSource {
         binding,
@@ -297,7 +459,11 @@ fn revision_program_storage_accounts_for_the_table_and_each_lane_backing() {
             vec![point(BeatTime::ZERO, 0.25, AutomationInterpolation::Step)],
         )],
         CLASS,
-        &[ParameterCapability { id: 0, steps: 0 }],
+        &[ParameterCapability {
+            id: 0,
+            steps: 0,
+            normalized_base_bits: 0,
+        }],
         &tempo(),
         QuantumProfile {
             frames: 8,
