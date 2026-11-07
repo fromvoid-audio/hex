@@ -498,7 +498,10 @@ mod tests {
         for rate in [8000, 96000] {
             for mode in 0..3 {
                 let all = all_bands(mode);
-                for bank in selected(decode(&all).unwrap().mode) {
+                for bank in 0..5 {
+                    if !selected(decode(&all).unwrap().mode).contains(&bank) {
+                        continue;
+                    }
                     for band in 0..BAND_COUNT {
                         let id = parameter::enabled(bank, band);
                         let binding = &BINDINGS[slot(id).unwrap()];
@@ -537,7 +540,13 @@ mod tests {
     #[test]
     fn enable_handoffs_are_precise_and_audition_cancellation_keeps_its_fade() {
         for rate in [8000, 96000] {
-            let base = state(0, false);
+            let base = EQ8_DEFINITION
+                .patch_parameter(
+                    &state(0, false),
+                    parameter::gain(0, 1),
+                    ParameterValue::Float(6.0),
+                )
+                .unwrap();
             let id = parameter::enabled(0, 1);
             let held = Values {
                 ids: vec![id],
@@ -603,6 +612,7 @@ mod tests {
             live.process_automation(&mut reference, &held, false)
                 .unwrap();
             assert_eq!(out, reference);
+            assert!(out.iter().flatten().any(|v| v.abs() > 1e-20));
             copied.reset();
             assert!(!copied.selection_is_enabled(selection));
             assert_eq!(copied.audition_selection, None);
