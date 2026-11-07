@@ -109,6 +109,133 @@ fn actual_callback_finishes_before_dispatch_and_stop_discards_late_worker_comple
 }
 
 #[test]
+fn late_plugin_reply_after_audible_output_silences_host_and_cannot_resume() {
+    let (control, mut callback, transport, mut worker) = profile();
+    for _ in 0..2 {
+        assert!(
+            render(&mut callback, 8, 2, false)
+                .iter()
+                .all(|sample| *sample == 0.0)
+        );
+        let block = worker.receive().unwrap().unwrap();
+        worker.complete(block).unwrap();
+    }
+    let audible = render(&mut callback, 8, 2, false);
+    assert!(audible.chunks_exact(2).all(|frame| frame == [0.75, -0.5]));
+    let late = worker.receive().unwrap().unwrap();
+    assert_eq!(late.sequence, 2);
+    let still_buffered = render(&mut callback, 8, 2, false);
+    assert!(
+        still_buffered
+            .chunks_exact(2)
+            .all(|frame| frame == [0.75, -0.5])
+    );
+    assert!(
+        render(&mut callback, 8, 2, false)
+            .iter()
+            .all(|sample| *sample == 0.0)
+    );
+    assert!(transport.is_revoked());
+    assert!(control.status.render_fault.load(Acquire));
+    assert_eq!(
+        callback.output_transport_error(),
+        Some(hex_engine::Invalid(Fault::MissingOutput.message()))
+    );
+    let fault = control
+        .status
+        .render_fault_snapshot()
+        .expect("missing-output fault");
+    assert_eq!(fault.message, Fault::MissingOutput.message());
+    assert_eq!(worker.complete(late), Err(Fault::Revoked));
+    assert!(
+        render(&mut callback, 8, 2, false)
+            .iter()
+            .all(|sample| *sample == 0.0)
+    );
+    control.stop();
+    assert!(
+        render(&mut callback, 8, 2, false)
+            .iter()
+            .all(|sample| *sample == 0.0)
+    );
+    assert!(!control.status.playing.load(Acquire));
+    assert_eq!(control.status.render_fault_snapshot(), Some(fault));
+    drop(worker);
+    drop(callback);
+    drop(transport);
+    drop(control);
+}
+
+#[test]
+fn worker_failure_after_audible_pcm_silences_and_retires_on_control() {
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    struct ProcessorOwner(Arc<Mutex<Option<std::thread::ThreadId>>>);
+    impl Drop for ProcessorOwner {
+        fn drop(&mut self) {
+            *self.0.lock().unwrap() = Some(std::thread::current().id());
+        }
+    }
+    let dropped = Arc::new(Mutex::new(None));
+    let owner = ProcessorOwner(Arc::clone(&dropped));
+    let (control, mut callback, transport, worker) = profile();
+    let mut reaper = crate::plugin_worker::spawn(transport, worker, move |mut block| {
+        let _owner = &owner;
+        if block.sequence == 2 {
+            return Err(Fault::Protocol);
+        }
+        for frame in &mut block.pcm[..usize::from(block.frames)] {
+            frame[0] *= 0.5;
+            frame[1] *= 0.5;
+        }
+        Ok(block)
+    })
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    for block in 0..3 {
+        let host = render(&mut callback, 8, 2, false);
+        let expected = if block < 2 {
+            [0.0, 0.0]
+        } else {
+            [0.375, -0.25]
+        };
+        assert!(host.chunks_exact(2).all(|frame| frame == expected));
+        if block < 2 {
+            while reaper.completed_blocks() < block + 1 {
+                assert!(Instant::now() < deadline, "worker did not publish PCM");
+                std::thread::yield_now();
+            }
+        }
+    }
+    while !reaper.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "worker failure did not terminate"
+        );
+        std::thread::yield_now();
+    }
+    assert!(
+        render(&mut callback, 8, 2, false)
+            .iter()
+            .all(|sample| *sample == 0.0)
+    );
+    assert!(control.status.render_fault.load(Acquire));
+    control.stop();
+    assert!(
+        render(&mut callback, 8, 2, false)
+            .iter()
+            .all(|sample| *sample == 0.0)
+    );
+    assert!(!control.status.playing.load(Acquire));
+    assert_eq!(reaper.join_on_control(), Err(Fault::Protocol));
+    assert_eq!(*dropped.lock().unwrap(), None);
+    drop(callback);
+    drop(reaper);
+    assert_eq!(*dropped.lock().unwrap(), Some(std::thread::current().id()));
+}
+
+#[test]
 fn real_final_host_refusal_and_graph_replacement_never_dispatch_a_pending_block() {
     for graph_change in [false, true] {
         let (mut control, mut callback, transport, mut worker) = profile();
@@ -308,14 +435,35 @@ fn discontinuity_discards_previous_epoch(action: hex_engine::PlaybackCommand) {
     let first = worker.receive().unwrap().unwrap();
     worker.complete(first).unwrap();
     render(&mut callback, 8, 2, false);
-    let pending = worker.receive().unwrap().unwrap();
+    let mut pending = worker.receive().unwrap();
     control.command(action).unwrap();
+    // A queued Pause or Seek while playing renders its fade through the live
+    // transport; the discontinuity is its audible end (#4151, #4140).
+    for _ in 0..32 {
+        if transport.is_revoked() {
+            break;
+        }
+        worker.complete(pending.take().unwrap()).unwrap();
+        render(&mut callback, 8, 2, false);
+        pending = worker.receive().ok().flatten();
+    }
+    if action == hex_engine::PlaybackCommand::Pause {
+        assert!(!control.status.playing.load(Acquire));
+    }
     assert!(
         render(&mut callback, 8, 2, false).iter().all(|x| *x == 0.0),
         "old PCM cannot cross an actual seek/pause discontinuity"
     );
     assert!(transport.is_revoked());
-    assert_eq!(worker.complete(pending), Err(Fault::Revoked));
+    if let Some(pending) = pending {
+        assert_eq!(worker.complete(pending), Err(Fault::Revoked));
+    }
+    if action == hex_engine::PlaybackCommand::Pause {
+        assert!(
+            !control.status.render_fault.load(Acquire),
+            "the fade end is a terminal cancellation, not a render fault"
+        );
+    }
 }
 
 #[test]

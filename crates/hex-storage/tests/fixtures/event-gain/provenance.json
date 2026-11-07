@@ -1,0 +1,9 @@
+{
+  "source": "379d7fbc247fa6ea3375bf86b96a5ba878597063",
+  "fixture_sha256": "774f3381442278c81c3c46fd4cfcf8e839c8c5a61f4eb8b81eb4bca97b05cdc2",
+  "writer_source_sha256": "d60e2c8497d467ab96e3f1ce7a219a13ced2ba06ac6a10556b2648249ca052f2",
+  "writer_binary_sha256": "f959ea717497e9d6e815b0710951d2df2129ea8405977ba0af4f69d997c70b56",
+  "toolchain": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+  "platform": "macOS arm64",
+  "description": "Public schema60 writer: inactive event, duplicate shared alias, deterministic track color; generated and round-tripped at the listed source."
+}

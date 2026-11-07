@@ -6,10 +6,31 @@ use hex_session::service::NativeDeviceState;
 mod edits;
 mod save;
 
+/// Tests that hold a fresh callback before its first graph use the real
+/// playing-output fallback, independently of the retained-output regressions.
+fn play_outgoing_before_open(h: &mut ResidentHarness) {
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    h.render();
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(Acquire)
+    );
+}
+
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
 fn native_effect_save_captures_processed_state_without_mutating_history() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let (mut h, files, before) = fixture(Start::Saved);
     let path = files.0.join("effect.hex");
     let original = fs::read(&path).unwrap();
@@ -48,7 +69,10 @@ struct SavedEffectFixture {
     old_output: u64,
 }
 fn nondefault_fixture() -> SavedEffectFixture {
-    let (old, files, saved) = fixture(Start::Saved);
+    nondefault_fixture_with_frames(2048)
+}
+fn nondefault_fixture_with_frames(frames: u32) -> SavedEffectFixture {
+    let (old, files, saved) = fixture_with_frames(Start::Saved, frames);
     let device = &saved.project.main_devices()[0];
     let captured = hex_plugin_state::decode(device.state()).unwrap();
     let mut component = captured.component.unwrap().to_vec();
@@ -102,9 +126,137 @@ fn nondefault_fixture() -> SavedEffectFixture {
 }
 
 #[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn retained_output_restores_saved_vst3_before_retiring_the_previous_generation() {
+    let _native = native_fixture();
+    let saved = nondefault_fixture();
+    let device = saved.project.main_devices()[0].id();
+    let original = fs::read(&saved.path).unwrap();
+    let mut h = ResidentHarness::with_plugins_and_catalog(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        saved.catalog.clone(),
+    );
+    assert!(h.next().error.is_none());
+    let (mut revision, _) = h.applied(0);
+    let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let mut previous = None;
+    for _ in 0..2 {
+        let opened = h.run(Request::Open(saved.path.clone()));
+        assert_eq!(opened.state.project.as_ref(), &saved.project);
+        assert_eq!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_revision
+                .load(Acquire),
+            revision,
+            "a saved replacement cannot apply before the callback's stopped witness"
+        );
+        let applied = super::super::resident_lifecycle::finish_replacement(&mut h, &opened, output);
+        assert_eq!(
+            h.audio.as_ref().unwrap().control.output_identity(),
+            Some(output)
+        );
+        assert!(applied > revision);
+        revision = applied;
+        assert_eq!(
+            h.submitted_observation()
+                .unwrap()
+                .foreign_processor(device.value(), saved.expected.type_id()),
+            Some(true),
+            "the first applied successor already owns the actual restored source"
+        );
+        let restored = h.next();
+        assert!(restored.error.is_none() && !restored.request_complete);
+        assert_eq!(restored.state.project, opened.state.project);
+        wait(|| {
+            h.render_plugin_block();
+            let progress = *h.plugin_progress.lock().unwrap();
+            h.plugin_records.load(Acquire) == 1
+                && progress.accepted
+                && progress
+                    .binding
+                    .is_some_and(|binding| Some(binding) != previous)
+        });
+        previous = h.plugin_progress.lock().unwrap().binding;
+    }
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for block in 0..3 {
+        let pcm = h.render_plugin_block();
+        wait(|| h.plugin_completed.load(Acquire) > block);
+        assert_eq!(pcm, [[if block == 2 { 0.09375 } else { 0.0 }; 2]; 256]);
+    }
+    assert_eq!(fs::read(saved.path).unwrap(), original);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn priority_stop_reopens_after_a_retained_vst3_endpoint_was_staged() {
+    let _native = native_fixture();
+    let saved = nondefault_fixture();
+    let mut h = ResidentHarness::with_plugins_and_catalog(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        saved.catalog.clone(),
+    );
+    assert!(h.next().error.is_none());
+    h.applied(0);
+    let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let opened = h.run(Request::Open(saved.path.clone()));
+    // Advance only the outgoing stopped witness. The successor's actual
+    // queued endpoint stays unpublished to the callback until after Stop.
+    h.render();
+    wait(|| h.plugin_queued.load(Acquire));
+    h.audio.as_ref().unwrap().control.stop();
+
+    super::super::resident_lifecycle::finish_replacement(&mut h, &opened, output);
+    assert_ne!(
+        h.audio.as_ref().unwrap().control.output_identity(),
+        Some(output)
+    );
+    let restored = h.next();
+    assert!(restored.error.is_none());
+    assert_eq!(restored.state.project.as_ref(), &saved.project);
+    assert!(
+        !h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(Acquire)
+    );
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for block in 0..3 {
+        let pcm = h.render_plugin_block();
+        wait(|| h.plugin_completed.load(Acquire) > block);
+        assert_eq!(pcm, [[if block == 2 { 0.09375 } else { 0.0 }; 2]; 256]);
+    }
+}
+
+#[test]
 #[ignore = "explicit original SDK helper/source receipts; variant37 additionally exercises controller state"]
 fn native_effect_saved_state_restores_fresh_instance_and_nondefault_pcm() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let SavedEffectFixture {
         files,
         path,
@@ -134,6 +286,7 @@ fn native_effect_saved_state_restores_fresh_instance_and_nondefault_pcm() {
     h.applied(0);
     let initial_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
     assert_ne!(initial_output, old_output);
+    play_outgoing_before_open(&mut h);
     let opened = h.run(Request::Open(path.clone()));
     assert!(
         opened.error.is_none() && opened.project_replaced,
@@ -239,6 +392,64 @@ fn native_effect_saved_state_restores_fresh_instance_and_nondefault_pcm() {
             "restored source sample {index}"
         );
     }
+    // Restart audio inside the same document, as the editor does after a
+    // degraded worker. The replacement must run the saved sound again.
+    let old = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let restarted = h.run(Request::RestartAudio {
+        project_generation: metadata.context.project_generation,
+        request_id: 1,
+    });
+    assert!(restarted.error.is_none(), "{:?}", restarted.error);
+    assert_eq!(restarted.state.revision, restored.state.revision);
+    assert_eq!(restarted.state.project, restored.state.project);
+    h.release_relinquished_output();
+    h.wait_fresh_output(old);
+    let requested = h.run(Request::RestorePlayback { generation: 1 });
+    assert_eq!(requested.restore_complete, Some(1));
+    let (recovered_revision, recovered) = h.applied(0);
+    assert_eq!(recovered.context, metadata.context);
+    assert_eq!(
+        h.submitted_observation()
+            .unwrap()
+            .foreign_processor(device_id.value(), expected.type_id()),
+        Some(true)
+    );
+    // A loop selection is a canonical edit after recovery, including for the
+    // newly restored native source. Compare the same PCM before the first wrap.
+    let loop_region = hex_project::LoopRegion::new(0, 2048, true).unwrap();
+    h.service
+        .submit(Request::Edit(Command::SetLoopRegion {
+            start: loop_region.start(),
+            end: loop_region.end(),
+            enabled: true,
+        }))
+        .unwrap();
+    let loop_edit = edits::ordinary_terminal(&mut h);
+    assert!(loop_edit.error.is_none(), "{:?}", loop_edit.error);
+    assert_eq!(loop_edit.state.revision, restored.state.revision + 1);
+    assert_eq!(loop_edit.state.project.loop_region(), Some(loop_region));
+    assert_eq!(loop_edit.state.project.main_devices()[0].state(), &expected);
+    h.applied(recovered_revision);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let mut restarted_pcm = Vec::new();
+    for block in 0..6 {
+        restarted_pcm.extend(h.render_plugin_block());
+        wait(|| h.plugin_completed.load(Acquire) > block);
+    }
+    assert_eq!(restarted_pcm, pcm);
+    for _ in 0..4 {
+        let before = h.plugin_completed.load(Acquire);
+        h.render_plugin_block();
+        wait(|| h.plugin_completed.load(Acquire) > before);
+    }
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(status.playing.load(Acquire));
+    assert_eq!(status.position.load(Acquire), 512);
     assert_eq!(fs::read(path).unwrap(), original_saved);
     assert_eq!(
         fs::read(files.0.join("mixed-rate.wav")).unwrap(),
@@ -250,7 +461,7 @@ fn native_effect_saved_state_restores_fresh_instance_and_nondefault_pcm() {
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
 fn native_effect_reopen_source_refusals_preserve_state_without_defaults() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for failure in 0..5 {
         let mut saved = nondefault_fixture();
         let module = saved.files.0.canonicalize().unwrap().join("original.vst3");
@@ -314,9 +525,11 @@ fn native_effect_reopen_source_refusals_preserve_state_without_defaults() {
         let old = h.audio.as_ref().unwrap().control.output_identity().unwrap();
         let opened = h.run(Request::Open(saved.path.clone()));
         assert_eq!(opened.state.project.as_ref(), &saved.project);
-        h.release_relinquished_output();
-        h.wait_fresh_output(old);
-        h.applied(0);
+        super::super::resident_lifecycle::finish_replacement(&mut h, &opened, old);
+        assert_eq!(
+            h.audio.as_ref().unwrap().control.output_identity(),
+            Some(old)
+        );
         let device = &saved.project.main_devices()[0];
         assert_eq!(
             h.submitted_observation()
@@ -355,7 +568,7 @@ fn native_effect_reopen_source_refusals_preserve_state_without_defaults() {
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
 fn native_effect_reopen_preserves_sealed_same_audio_authoring_alias() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let saved = nondefault_fixture();
     let mut editor = hex_project::Editor::new(saved.project.clone(), 16).unwrap();
     let class = hex_engine::NativeDeviceClass::Effect;
@@ -388,6 +601,7 @@ fn native_effect_reopen_preserves_sealed_same_audio_authoring_alias() {
     assert!(h.next().error.is_none());
     h.applied(0);
     let old = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    play_outgoing_before_open(&mut h);
     let opened = h.run(Request::Open(path.clone()));
     let source = opened
         .state
@@ -445,7 +659,7 @@ fn native_effect_reopen_preserves_sealed_same_audio_authoring_alias() {
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
 fn native_effect_reopen_document_replacement_retires_exact_unacknowledged_source() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let saved = nondefault_fixture();
     let before = fs::read(&saved.path).unwrap();
     let mut h = ResidentHarness::with_plugins_and_catalog(
@@ -459,6 +673,7 @@ fn native_effect_reopen_document_replacement_retires_exact_unacknowledged_source
     assert!(h.next().error.is_none());
     h.applied(0);
     let old = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    play_outgoing_before_open(&mut h);
     let opened = h.run(Request::Open(saved.path.clone()));
     h.release_relinquished_output();
     h.wait_fresh_output(old);
@@ -496,7 +711,7 @@ fn native_effect_reopen_document_replacement_retires_exact_unacknowledged_source
 fn native_effect_reopen_paints_pending_until_real_ack_then_restored_canonical(
     cx: &mut gpui::TestAppContext,
 ) {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let saved = nondefault_fixture();
     let mut h = ResidentHarness::with_plugins_and_catalog(
         host(),
@@ -508,6 +723,7 @@ fn native_effect_reopen_paints_pending_until_real_ack_then_restored_canonical(
     );
     assert!(h.next().error.is_none());
     h.applied(0);
+    play_outgoing_before_open(&mut h);
     let callback = Arc::clone(&h.callback);
     let queued = Arc::clone(&h.plugin_queued);
     h.service.submit(Request::Open(saved.path.clone())).unwrap();
@@ -529,12 +745,12 @@ fn native_effect_reopen_paints_pending_until_real_ack_then_restored_canonical(
             {
                 slot.take().unwrap().close();
                 old_closed = true;
-            } else if release || !old_closed {
-                if let Some(backend) = slot.as_mut() {
-                    backend
-                        .render_native_direct(&mut [[0.0; 2]; 64], &mut [0.0; 128])
-                        .unwrap();
-                }
+            } else if (release || !old_closed)
+                && let Some(backend) = slot.as_mut()
+            {
+                backend
+                    .render_native_direct(&mut [[0.0; 2]; 64], &mut [0.0; 128])
+                    .unwrap();
             }
             drop(slot);
             ui::repaint(cx, visual);
@@ -605,14 +821,19 @@ fn native_effect_reopen_paints_pending_until_real_ack_then_restored_canonical(
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn native_effect_saved_project_without_resolved_source_retains_opaque_state() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for start in [Start::Reopened, Start::EmptyThenReopened] {
         let (h, files, state) = fixture(start);
         drop(h);
         // Opening recoverable state must not require an available output or
         // helper. Offline custody remains distinct from callback application.
         let mut offline = ResidentHarness::with_open_gate(8192, Arc::new(AtomicBool::new(false)));
-        assert!(offline.next().error.is_some());
+        // Authoring starts before the asynchronous output result.
+        offline.next();
+        wait(|| {
+            offline.pump();
+            !offline.unavailable.is_empty()
+        });
         let opened = offline.run(Request::Open(files.0.join("effect.hex")));
         assert!(opened.error.is_none(), "{:?}", opened.error);
         assert!(opened.open_complete && opened.project_replaced);
@@ -630,8 +851,15 @@ enum Start {
 }
 
 fn fixture(start: Start) -> (ResidentHarness, Files, Arc<hex_session::service::ViewState>) {
+    fixture_with_frames(start, 2048)
+}
+
+fn fixture_with_frames(
+    start: Start,
+    frames: u32,
+) -> (ResidentHarness, Files, Arc<hex_session::service::ViewState>) {
     let files = Files::new();
-    let wave = files.wav(48_000, 2048);
+    let wave = files.wav(48_000, frames);
     let wave_bytes = fs::read(&wave).unwrap();
     let mut h = ResidentHarness::with_plugins(
         host(),
@@ -677,10 +905,11 @@ fn fixture(start: Start) -> (ResidentHarness, Files, Arc<hex_session::service::V
             reservation: None,
         });
         assert!(empty.project_replaced);
-        h.release_relinquished_output();
-        h.wait_fresh_output(old_output);
-        h.applied(0);
-        assert_eq!(h.plugin_records.load(Acquire), 0);
+        super::super::resident_lifecycle::finish_replacement(&mut h, &empty, old_output);
+        wait(|| {
+            h.render();
+            h.plugin_records.load(Acquire) == 0
+        });
     }
     let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
 
@@ -726,7 +955,7 @@ fn fixture(start: Start) -> (ResidentHarness, Files, Arc<hex_session::service::V
 fn native_effect_reopened_unavailable_status_follows_actual_applied_graph(
     cx: &mut gpui::TestAppContext,
 ) {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let (h, files, state) = fixture(Start::Saved);
     let device = state.project.main_devices()[0].id();
     // Real read-only request delivers the current canonical snapshot to the

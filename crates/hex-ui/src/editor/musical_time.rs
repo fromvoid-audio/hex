@@ -2,13 +2,12 @@
 
 #[path = "adaptive_grid_density.rs"]
 mod density;
+#[path = "signed_musical_time.rs"]
+pub(super) mod signed;
 pub(super) use density::AdaptiveGridDensity;
 
 use super::viewport::Viewport;
-use crate::theme;
-use gpui::{Context, Div, Window, div, prelude::*, px};
-use hex_project::{BeatTime, Command, Meter, MeterPosition, Project};
-use hex_session::service::Request;
+use hex_project::{BeatTime, MeterPosition, Project};
 
 const MAX_RULER_TICKS: usize = 64;
 const MAX_METER_MAP_POINTS: usize = 1_024;
@@ -62,9 +61,11 @@ pub(super) struct GridBand {
     pub(super) alternate: bool,
 }
 
-/// Build alternating background bands spanning four adaptive grid units.
-/// Band indices are anchored to each meter segment's musical origin, so panning
-/// changes the visible subset without moving the pattern.
+/// Build alternating background bands spanning at least four adaptive grid
+/// units, widened to the next musical level (see [`stable_band_span`]) so the
+/// zebra changes only every few zoom steps. Band indices are anchored to each
+/// meter segment's musical origin, so panning changes the visible subset
+/// without moving the pattern.
 #[cfg(test)]
 pub(super) fn adaptive_grid_bands(
     project: &Project,
@@ -121,7 +122,13 @@ pub(super) fn adaptive_grid_bands_for_grid(
         }
         let beat_length = (4_u64 * BeatTime::ONE.raw()) / u64::from(point.meter().denominator());
         let step = resolution.step(point.beat(), beat_length);
-        let Some(band_span) = step.checked_mul(4).filter(|span| *span > 0) else {
+        let Some(band_span) = step
+            .checked_mul(4)
+            .and_then(|span| {
+                stable_band_span(span, beat_length, u64::from(point.meter().numerator()))
+            })
+            .filter(|span| *span > 0)
+        else {
             continue;
         };
         let first = first_visible_beat.raw().max(origin).saturating_sub(origin) / band_span;
@@ -169,6 +176,25 @@ pub(super) fn adaptive_grid_bands_for_grid(
         }
     }
     bands
+}
+
+/// Quantize a zebra band to the smallest musical level that holds `span`:
+/// one beat (the minimum, even at extreme zoom), one bar, then four times the
+/// previous level (4, 16, 64 … bars). In 4/4 each level is four times the
+/// last, so the pattern holds through two adaptive-grid doublings before it
+/// changes, instead of changing at every grid step.
+fn stable_band_span(span: u64, beat_length: u64, beats_per_bar: u64) -> Option<u64> {
+    if beat_length == 0 {
+        return None;
+    }
+    if span <= beat_length {
+        return Some(beat_length);
+    }
+    let mut level = beat_length.checked_mul(beats_per_bar.max(1))?;
+    while level < span {
+        level = level.checked_mul(4)?;
+    }
+    Some(level)
 }
 
 fn bounded_band_indices(first: u64, last: u64, budget: usize) -> impl Iterator<Item = u64> {
@@ -296,7 +322,7 @@ pub(super) fn ruler_ticks(
         start_beat,
         last_beat,
         target_count,
-        LandmarkDensity::Adaptive(&resolution),
+        LandmarkDensity::Ruler(&resolution),
     );
     let mut candidates = ruler_candidates.ticks;
     candidates.sort_by_key(|tick| tick.frame);
@@ -353,6 +379,7 @@ struct MeterSection {
     beat_length: u64,
     first_landmark: u64,
     landmark_count: u64,
+    regular_demand: u64,
 }
 
 struct RulerCandidates {
@@ -367,6 +394,7 @@ struct RulerCandidates {
 enum LandmarkDensity<'a> {
     Meter,
     Adaptive(&'a AdaptiveGridResolution<'a>),
+    Ruler(&'a AdaptiveGridResolution<'a>),
     #[cfg(test)]
     Fixed(u64),
 }
@@ -430,7 +458,7 @@ fn ruler_candidates(
                 let meter_beat_length =
                     (4_u64 * BeatTime::ONE.raw()) / u64::from(point.meter().denominator());
                 let beat_length = match target_grid {
-                    LandmarkDensity::Adaptive(resolution) => {
+                    LandmarkDensity::Adaptive(resolution) | LandmarkDensity::Ruler(resolution) => {
                         resolution.step(point.beat(), meter_beat_length)
                     }
                     #[cfg(test)]
@@ -448,6 +476,10 @@ fn ruler_candidates(
                             beat_length,
                             first_landmark,
                             landmark_count: last_landmark - first_landmark + 1,
+                            // Count conservatively across any viewport phase so
+                            // crossing a candidate edge does not change stride.
+                            regular_demand: ((effective_end - effective_start) / beat_length)
+                                .saturating_add(1),
                         });
                     }
                 }
@@ -487,9 +519,12 @@ fn ruler_candidates(
     // deterministic order as adaptive coarsening. Over-budget section sampling
     // below retains its existing evenly spaced section identities.
     let demand = |index: usize| {
-        sections[index]
-            .landmark_count
-            .min((target_count.min(MAX_GRID_LINES) + 1) as u64) as usize
+        let count = if matches!(target_grid, LandmarkDensity::Ruler(_)) {
+            sections[index].regular_demand
+        } else {
+            sections[index].landmark_count
+        };
+        count.min((target_count.min(MAX_GRID_LINES) + 1) as u64) as usize
     };
     let (level, mut remainder) = if section_count <= target_count {
         capped_fair_share(section_count, target_count, demand)
@@ -521,21 +556,59 @@ fn ruler_candidates(
                 target_count / sampled_sections
                     + usize::from(sampled_index < target_count % sampled_sections)
             };
-            let quota = (quota as u64).min(section.landmark_count);
+            let regular = matches!(target_grid, LandmarkDensity::Ruler(_));
+            let quota = if regular {
+                quota as u64
+            } else {
+                (quota as u64).min(section.landmark_count)
+            };
+            if quota == 0 {
+                continue;
+            }
+            // Only the ruler thins to an origin-anchored stride. Grid and snap
+            // consumers retain their existing visible-candidate sampling.
+            let stride = section
+                .regular_demand
+                .div_ceil(quota)
+                .checked_next_power_of_two()
+                .unwrap_or(u64::MAX);
+            let last = section
+                .first_landmark
+                .saturating_add(section.landmark_count - 1);
+            let first = section
+                .first_landmark
+                .div_ceil(stride)
+                .checked_mul(stride)
+                .filter(|first| *first <= last)
+                .unwrap_or(section.first_landmark);
             for sample in 0..quota {
-                let offset = if quota <= 1 {
-                    0
+                let landmark_index = if regular {
+                    let Some(index) = sample
+                        .checked_mul(stride)
+                        .and_then(|offset| first.checked_add(offset))
+                    else {
+                        break;
+                    };
+                    if index > last {
+                        break;
+                    }
+                    index
                 } else {
-                    let Ok(offset) = u64::try_from(
-                        u128::from(sample) * u128::from(section.landmark_count - 1)
-                            / u128::from(quota - 1),
-                    ) else {
+                    let offset = if quota <= 1 {
+                        0
+                    } else {
+                        let Ok(offset) = u64::try_from(
+                            u128::from(sample) * u128::from(section.landmark_count - 1)
+                                / u128::from(quota - 1),
+                        ) else {
+                            continue;
+                        };
+                        offset
+                    };
+                    let Some(index) = section.first_landmark.checked_add(offset) else {
                         continue;
                     };
-                    offset
-                };
-                let Some(landmark_index) = section.first_landmark.checked_add(offset) else {
-                    continue;
+                    index
                 };
                 let raw_beat = u128::from(section.point_beat.raw())
                     + u128::from(landmark_index) * u128::from(section.beat_length);
@@ -1222,133 +1295,13 @@ impl SnapGrid {
     }
 }
 
-impl super::EditorView {
-    /// Context-menu and keyboard density share the arranger resolver. Piano-roll
-    /// MidiGrid remains its independent fixed-note policy. No captured edit is changed.
-    pub(super) fn set_adaptive_grid_density(&mut self, density: AdaptiveGridDensity) {
-        self.snap_grid = self.snap_grid.with_density(density);
-        self.status = format!("arranger · {}", density.label());
-    }
-
-    pub(super) fn step_adaptive_grid_density(&mut self, coarser: bool) {
-        if self.mode == super::EditorMode::Arrangement {
-            self.set_adaptive_grid_density(self.snap_grid.density().stepped(coarser));
-        }
-    }
-
-    pub(super) fn toggle_snap_grid(&mut self) {
-        self.snap_grid = self.snap_grid.toggled();
-        self.status = format!("arranger · snap {}", self.snap_grid.label());
-    }
-
-    pub(super) fn cursor_beat(&self) -> Option<BeatTime> {
-        let state = self.state.as_ref()?;
-        let beat = state
-            .project
-            .tempo_map()
-            .frame_to_beat(self.cursor_position())
-            .ok()?;
-        beat.snap_to(BeatTime::ONE).ok()
-    }
-
-    fn time_edit_admitted(&self) -> bool {
-        !self.opening_project
-            && !self.close_prompt_open
-            && self.worker_requests_pending == 0
-            && self.pending_requests.is_empty()
-    }
-
-    pub(super) fn cycle_meter(&mut self) {
-        if !self.time_edit_admitted() {
-            self.error = Some("meter edit waits for pending project work".into());
-            return;
-        }
-        let Some(state) = self.state.as_ref() else {
-            return;
-        };
-        let Some(beat) = self.cursor_beat() else {
-            self.error = Some("meter point unavailable at this cursor position".into());
-            return;
-        };
-        let current = state.project.meter_map().meter_at(beat);
-        let signature = match (current.numerator(), current.denominator()) {
-            (4, 4) => (3, 4),
-            (3, 4) => (6, 8),
-            (6, 8) => (5, 4),
-            _ => (4, 4),
-        };
-        let Ok(meter) = Meter::new(signature.0, signature.1) else {
-            self.error = Some("meter point unavailable".into());
-            return;
-        };
-        self.enqueue(Request::Edit(Command::SetMeterPoint { beat, meter }));
-    }
-
-    pub(super) fn time_controls(&self, cx: &mut Context<Self>) -> Div {
-        let Some(state) = self.state.as_ref() else {
-            return div().w(px(self.track_header_width())).flex_shrink_0();
-        };
-        let beat = self.cursor_beat();
-        let meter_label = beat.map_or_else(
-            || "—".into(),
-            |beat| {
-                let meter = state.project.meter_map().meter_at(beat);
-                format!("{}/{}", meter.numerator(), meter.denominator())
-            },
-        );
-        let enabled = self.time_edit_admitted() && beat.is_some();
-        div()
-            .w(px(self.track_header_width()))
-            .h_full()
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap(px(2.0))
-            .children([self.time_button(
-                &meter_label,
-                "cycle meter at cursor snapped quarter · 4/4, 3/4, 6/8, 5/4",
-                enabled,
-                |view, _, _| view.cycle_meter(),
-                cx,
-            )])
-    }
-
-    fn time_button(
-        &self,
-        label: &str,
-        description: &'static str,
-        enabled: bool,
-        handler: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
-        cx: &mut Context<Self>,
-    ) -> gpui::Stateful<Div> {
-        hex_widgets::action(theme::text(label), theme::action_style())
-            .id(description)
-            .w(px(20.0))
-            .h(px(19.0))
-            .text_xs()
-            .opacity(if enabled { 1.0 } else { 0.45 })
-            .tooltip(move |_, cx| {
-                cx.new(|_| super::transport::MiniTooltip {
-                    kind: crate::tooltips::Kind::control("cycle meter at cursor"),
-                    description: description.into(),
-                })
-                .into()
-            })
-            .on_click(cx.listener(move |view, _, window, cx| {
-                handler(view, window, cx);
-                cx.notify();
-            }))
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use super::Viewport;
     use super::{
         LandmarkDensity, MAX_GRID_BANDS, MAX_GRID_LINES, MAX_METER_MAP_POINTS, MAX_RULER_TICKS,
         SnapGrid, adaptive_grid_bands, grid_lines, ruler_candidates, ruler_ticks,
     };
-    use crate::editor::viewport::Viewport;
     use hex_project::{BeatTime, Command, Editor, Meter, Project, Tempo};
 
     #[test]
@@ -1614,6 +1567,116 @@ mod tests {
                 .any(|tick| tick.frame == 63_000 && tick.label == "1.3.6")
         );
         assert!(fine.iter().all(|tick| !tick.label.contains('+')));
+    }
+
+    #[test]
+    fn ruler_landmarks_remain_even_and_anchored_while_panning_in_common_time() {
+        let project = Project::new(48_000).unwrap();
+        let viewport = Viewport {
+            start: 576_000,
+            length: 384_000,
+        };
+        let ticks = ruler_ticks(&project, viewport, 600.0);
+        let frames: Vec<_> = ticks.iter().map(|tick| tick.frame).collect();
+        let grid = grid_lines(&project, viewport, 600.0, SnapGrid::Adaptive);
+        assert!(
+            frames
+                .iter()
+                .all(|frame| grid.iter().any(|line| line.frame == *frame))
+        );
+        let gaps: Vec<_> = frames.windows(2).map(|pair| pair[1] - pair[0]).collect();
+        assert!(!gaps.is_empty());
+        assert!(
+            gaps.iter().all(|gap| *gap == gaps[0]),
+            "uneven ruler gaps: {frames:?}"
+        );
+        let panned = ruler_ticks(
+            &project,
+            Viewport {
+                start: viewport.start + 1_000,
+                ..viewport
+            },
+            600.0,
+        );
+        let overlap_end = viewport.end().unwrap();
+        let before: Vec<_> = ticks
+            .iter()
+            .filter(|tick| tick.frame >= viewport.start + 1_000 && tick.frame < overlap_end)
+            .map(|tick| tick.frame)
+            .collect();
+        let after: Vec<_> = panned
+            .iter()
+            .filter(|tick| tick.frame < overlap_end)
+            .map(|tick| tick.frame)
+            .collect();
+        assert_eq!(
+            before, after,
+            "panning changed landmarks in the shared range"
+        );
+    }
+
+    #[test]
+    fn ruler_stride_does_not_change_at_visible_count_threshold() {
+        let project = Project::new(48_000).unwrap();
+        for length in [295_200, 319_200] {
+            let viewport = Viewport { start: 0, length };
+            let panned = Viewport {
+                start: 12_000,
+                ..viewport
+            };
+            let before = ruler_ticks(&project, viewport, 600.0);
+            let after = ruler_ticks(&project, panned, 600.0);
+            let overlapping_before: Vec<_> = before
+                .iter()
+                .filter(|tick| tick.frame >= panned.start)
+                .map(|tick| tick.frame)
+                .collect();
+            let overlapping_after: Vec<_> = after
+                .iter()
+                .filter(|tick| tick.frame < viewport.end().unwrap())
+                .map(|tick| tick.frame)
+                .collect();
+            assert_eq!(
+                overlapping_before, overlapping_after,
+                "viewport length {length}"
+            );
+        }
+    }
+
+    #[test]
+    fn ruler_and_adaptive_grid_share_landmarks_across_zoom_pan_and_meter_changes() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::from_quarters(8).unwrap(),
+                tempo: Tempo::new(90_000_000).unwrap(),
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetMeterPoint {
+                beat: BeatTime::from_quarters(12).unwrap(),
+                meter: Meter::new(3, 4).unwrap(),
+            })
+            .unwrap();
+        let project = editor.project();
+        for (start, length, width) in [
+            (0, 96_000, 640.0),
+            (12_000, 192_000, 640.0),
+            (120_000, 384_000, 640.0),
+            (240_000, 768_000, 1_200.0),
+        ] {
+            let viewport = Viewport { start, length };
+            let grid = grid_lines(project, viewport, width, SnapGrid::Adaptive);
+            let ruler = ruler_ticks(project, viewport, width);
+            assert!(!ruler.is_empty() && !grid.is_empty());
+            for tick in ruler {
+                assert!(
+                    grid.iter().any(|line| line.frame == tick.frame),
+                    "ruler landmark {} is absent from grid at {viewport:?}",
+                    tick.frame
+                );
+            }
+        }
     }
 
     #[test]
@@ -1982,20 +2045,34 @@ mod tests {
             })
             .expect("panning retains at least one shared anchored band");
         assert_eq!(shared.0.alternate, shared.1.alternate);
-        let zoomed = adaptive_grid_bands(
-            &project,
-            Viewport {
-                start: 0,
-                length: 192_000,
-            },
-            640.0,
+    }
+
+    #[test]
+    fn zebra_bands_hold_musical_levels_across_zoom_with_a_one_beat_minimum() {
+        // 120 bpm at 48 kHz: one quarter-note beat is 24 000 frames.
+        let project = Project::new(48_000).expect("project");
+        let beat = 24_000;
+        let width = |length: u64| {
+            let bands = adaptive_grid_bands(&project, Viewport { start: 0, length }, 640.0);
+            assert_eq!(bands.first().map(|band| band.start_frame), Some(0));
+            bands[0].end_frame - bands[0].start_frame
+        };
+        assert_eq!(width(100), beat, "extreme zoom keeps a one-beat minimum");
+        assert_eq!(width(beat / 4), beat);
+        let widths: Vec<_> = (0..12).map(|doubling| width(12_000 << doubling)).collect();
+        let mut changes = 0;
+        for pair in widths.windows(2) {
+            assert!(
+                pair[1] == pair[0] || pair[1] == pair[0] * 4,
+                "levels step beat, bar, 4 bars, 16 bars…: {widths:?}"
+            );
+            changes += usize::from(pair[1] != pair[0]);
+        }
+        assert!(
+            (1..=6).contains(&changes),
+            "eleven zoom doublings change the zebra at most every other step: {widths:?}"
         );
-        assert_eq!(zoomed.first().map(|band| band.start_frame), Some(0));
-        assert_ne!(
-            zoomed.first().map(|band| band.end_frame),
-            first.first().map(|band| band.end_frame),
-            "zoom changes the four adaptive-grid-unit band width"
-        );
+        assert!(widths.iter().all(|w| *w == beat || *w % (4 * beat) == 0));
     }
 
     #[test]

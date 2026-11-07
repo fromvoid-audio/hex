@@ -46,7 +46,7 @@ fn submit(service: &Service, request: Request) -> Result<(), Box<dyn Error>> {
     service.submit(request).map_err(|error| match error {
         SubmitError::Full(_) => "service request queue is full".into(),
         SubmitError::Closed(_) => "service request queue is closed".into(),
-        SubmitError::Busy(_) => "service is busy".into(),
+        SubmitError::Busy(..) => "service is busy".into(),
     })
 }
 

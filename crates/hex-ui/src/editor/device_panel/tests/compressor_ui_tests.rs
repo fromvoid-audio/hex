@@ -61,7 +61,7 @@ fn compressor_shared_panel_fits_and_drag_commits_one_undoable_edit(cx: &mut Test
         .expect("transfer plot");
     assert_eq!(
         card.size.width,
-        px(compressor_panel::FRAME_WIDTH + gain_meters::WIDTH)
+        px(compressor_panel::FRAME_WIDTH + device_meter::WIDTH)
     );
     assert_eq!(card.size.height, px(DEVICE_FRAME_HEIGHT));
     assert!(graph.size.height >= px(50.0));
@@ -641,4 +641,126 @@ fn compressor_mode_menu_track_return_cancel_commit_preview_history_and_reopen(
         );
     }
     std::fs::remove_file(path).unwrap();
+}
+
+#[gpui::test]
+fn compressor_sidechain_dropdown_and_track_drop_share_one_undoable_route(cx: &mut TestAppContext) {
+    let service = Service::new(48_000, 16, 8_000_000).unwrap();
+    receive_service_event(&service);
+    let add = |name: &str| {
+        service
+            .submit(Request::Edit(Command::AddTrack { name: name.into() }))
+            .unwrap();
+        let Some(Created::Track(track)) = receive_service_event(&service).created else {
+            panic!("track")
+        };
+        track
+    };
+    let receiver = add("Receiver");
+    let first = add("First Key");
+    let second = add("Second Key");
+    let blocked = add("Cyclic Key");
+    service
+        .submit(Request::Edit(Command::SetAudioFeed {
+            source: hex_project::RoutingOwner::Track(receiver),
+            destination: blocked,
+            gain: 1.0,
+        }))
+        .unwrap();
+    assert!(receive_service_event(&service).error.is_none());
+    service
+        .submit(Request::AddNativeDevice {
+            track: receiver,
+            class: NativeDeviceClass::Effect,
+            type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static(
+                "hex.compressor",
+            )),
+            before: None,
+        })
+        .unwrap();
+    let state = receive_service_event(&service).state;
+    let device = state.project.track(receiver).unwrap().devices()[0].id();
+    let (handle, editor) = actor_editor_window(cx, service, state, receiver);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1280.0), px(800.0)));
+    visual.run_until_parked();
+    let id = format!("compressor-sidechain-{}", device.value());
+    let field: &'static str = Box::leak(id.clone().into_boxed_str());
+    let option = |i| -> &'static str { Box::leak(format!("{id}-option-{i}").into_boxed_str()) };
+    let source = |view: &EditorView| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .sidechains()
+            .first()
+            .map(|route| route.source)
+    };
+
+    let anchor = visual
+        .debug_bounds(field)
+        .expect("sidechain field")
+        .center();
+    visual.simulate_click(anchor, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(option(2)).is_some());
+    assert!(
+        visual.debug_bounds(option(3)).is_none(),
+        "cyclic source must be excluded"
+    );
+    let first_option = visual.debug_bounds(option(1)).unwrap().center();
+    visual.simulate_click(first_option, Modifiers::default());
+    pump_until(&editor, cx, |view| source(view) == Some(first));
+    visual.run_until_parked();
+
+    let drag = |visual: &mut VisualTestContext, track: TrackId| {
+        let header = Box::leak(format!("session-track-{}", track.value()).into_boxed_str());
+        let from = visual
+            .debug_bounds(header)
+            .expect("visible source track")
+            .center();
+        let to = visual
+            .debug_bounds(field)
+            .expect("visible drop target")
+            .center();
+        visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(to, Some(MouseButton::Left), Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    };
+    drag(&mut visual, second);
+    pump_until(&editor, cx, |view| source(view) == Some(second));
+    visual.run_until_parked();
+    drag(&mut visual, blocked);
+    assert_eq!(editor.read_with(cx, |view, _| source(view)), Some(second));
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.error.as_deref(),
+            Some("track cannot feed this compressor sidechain")
+        );
+    });
+    assert_eq!(
+        editor.read_with(cx, |view, _| view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .tracks()
+            .iter()
+            .map(hex_project::Track::id)
+            .collect::<Vec<_>>()),
+        [receiver, first, second, blocked],
+    );
+
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::Undo));
+    });
+    pump_until(&editor, cx, |view| source(view) == Some(first));
+    visual.run_until_parked();
+    let anchor = visual.debug_bounds(field).unwrap().center();
+    visual.simulate_click(anchor, Modifiers::default());
+    visual.run_until_parked();
+    let internal = visual.debug_bounds(option(0)).unwrap().center();
+    visual.simulate_click(internal, Modifiers::default());
+    pump_until(&editor, cx, |view| source(view).is_none());
 }

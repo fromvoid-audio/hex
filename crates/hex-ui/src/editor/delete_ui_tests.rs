@@ -1,4 +1,4 @@
-//! Whole-selection Backspace through rendered headers and actual Service history.
+//! Whole-selection deletion through rendered headers and actual Service history.
 use super::*;
 use crate::editor::drag::group_drag_ui_test::{click, fixture, pump};
 use gpui::{Modifiers, TestAppContext, VisualTestContext};
@@ -8,6 +8,15 @@ use hex_project::{BeatTime, ClipEdit, Command};
 fn backspace_deletes_shift_selected_mixed_clips_with_either_primary_and_one_history_edge(
     cx: &mut TestAppContext,
 ) {
+    delete_mixed_clips(cx, "backspace");
+}
+
+#[gpui::test]
+fn x_deletes_shift_selected_mixed_clips_and_cmd_z_restores_them(cx: &mut TestAppContext) {
+    delete_mixed_clips(cx, "x");
+}
+
+fn delete_mixed_clips(cx: &mut TestAppContext, key: &str) {
     for midi_primary in [false, true] {
         let (_files, handle, editor, audio) = fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
@@ -75,7 +84,7 @@ fn backspace_deletes_shift_selected_mixed_clips_with_either_primary_and_one_hist
             (p.snapshot(), p.clip(audio[2]).unwrap().clone())
         });
         visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
-        visual.simulate_keystrokes("backspace");
+        visual.simulate_keystrokes(key);
         editor.read_with(&visual, |v, _| {
             assert!(
                 matches!(
@@ -107,12 +116,12 @@ fn backspace_deletes_shift_selected_mixed_clips_with_either_primary_and_one_hist
             );
             p.snapshot()
         });
-        editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+        visual.simulate_keystrokes("cmd-z");
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
         });
-        editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
+        visual.simulate_keystrokes("cmd-shift-z");
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)

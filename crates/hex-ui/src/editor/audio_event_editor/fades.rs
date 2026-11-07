@@ -8,9 +8,12 @@ use crate::{
 };
 use gpui::{
     Context, IntoElement, MouseButton, PathBuilder, Point, Window, canvas, div, point, prelude::*,
-    px, relative, rgb,
+    px, rgb,
 };
 use hex_project::{AudioEventFade, ClipFade, TempoMap};
+use std::ops::Range;
+
+pub(super) const CONTENT_TOP: f32 = 16.0;
 
 #[derive(Clone, Copy)]
 pub(super) struct FadeGesture {
@@ -19,6 +22,8 @@ pub(super) struct FadeGesture {
     original: ClipFade,
     source_frame_start: u64,
     pointer_source_frame: f64,
+    // Source-frame displacement between the authored knot and its shown handle.
+    source_adjustment: i128,
     origin_y: f32,
     pub(super) last_y: f32,
 }
@@ -256,13 +261,9 @@ impl EditorView {
         if !x.is_finite() || !width.is_finite() || width <= 0.0 {
             return None;
         }
-        let local = self.event_viewport(root);
+        let local = self.event_root_window(root)?;
         let tempo = self.state.as_ref()?.project.tempo_map();
-        let first = root
-            .root_frame_at(editor_bounds(root).0, tempo)
-            .ok()?
-            .checked_add(local.start)?;
-        let frame = first as f64
+        let frame = local.start as f64
             + (f64::from(x) - f64::from(f32::from(bounds.left()))) / width * local.length as f64;
         let raw = clock_coordinate(root, frame, tempo)?
             + (i128::from(event.source_start) - i128::from(event.start)) as f64;
@@ -323,6 +324,7 @@ impl EditorView {
                     return;
                 };
                 let frame = (i128::from(fade.source_frame_start) + i128::from(relative))
+                    .saturating_add(fade.source_adjustment)
                     .saturating_add(delta.round() as i128)
                     .clamp(0, i128::from(last_frame)) as u64;
                 let Some(raw) = root
@@ -357,6 +359,11 @@ impl EditorView {
                 )
             }
         } else {
+            let delta = if delta.round() != 0.0 {
+                delta + fade.source_adjustment as f64
+            } else {
+                delta
+            };
             let next = fade_handles::edited_fade(fade.original, fade.handle, delta, bend);
             next.filter(|next| *next != fade.original).and_then(|next| {
                 let tempo = state.project.tempo_map();
@@ -460,8 +467,8 @@ impl EditorView {
         &self,
         root: &AudioClipEdit,
         event: AudioEvent,
-        visible_start: u64,
-        visible_end: u64,
+        event_frames: Range<u64>,
+        visible: Range<u64>,
         viewport_length: u64,
         cx: &mut Context<Self>,
     ) -> Vec<gpui::AnyElement> {
@@ -471,7 +478,8 @@ impl EditorView {
             .gesture
             .as_ref()
             .is_some_and(|g| matches!(g.kind,Kind::Fade(f) if f.event.id==event.id));
-        if !held && !active && event.fade.is_none_or(|fade| fade.shape().is_neutral()) {
+        let hovered = self.audio_event_editor.fade_hover == Some(event.id);
+        if !held && !active && !hovered && event.fade.is_none_or(|fade| fade.shape().is_neutral()) {
             return Vec::new();
         }
         let Some(state) = self.state.as_ref() else {
@@ -488,6 +496,8 @@ impl EditorView {
         else {
             return Vec::new();
         };
+        let visible_start = visible.start;
+        let visible_end = visible.end;
         let width = f32::from(bounds.size.width) * (visible_end - visible_start) as f32
             / viewport_length.max(1) as f32;
         let height = f32::from(bounds.size.height) - 28.0;
@@ -545,65 +555,85 @@ impl EditorView {
                 },
             )
             .absolute()
-            .top(px(16.0))
+            .top(px(CONTENT_TOP))
             .bottom_0()
             .left_0()
             .right_0()
             .into_any_element(),
         ];
-        for (handle, (position, subframe), gain) in fade_handles::knots(controls) {
-            if matches!(handle, Handle::InCurve) && controls.fade_in() < 3
-                || matches!(handle, Handle::OutCurve) && controls.fade_out() < 3
-            {
-                continue;
-            }
-            let Some(source) = origin.checked_add(position) else {
-                continue;
+        // The event has a one-pixel border. Fit hit boxes to its inner width,
+        // even when a short event is zoomed out.
+        let inner_width = (width - 2.0).max(0.0);
+        let size = inner_width.min(8.0);
+        if size == 0.0 {
+            return elements;
+        }
+        let inset = size / 2.0;
+        let tempo = state.project.tempo_map();
+        let placed = fade_handles::knots(controls).map(|(handle, (position, subframe), gain)| {
+            let source = origin.checked_add(position)?;
+            let (displayed_source, frame) = match handle {
+                Handle::InBottom => (source_start, event_frames.start),
+                Handle::OutBottom => (source_end - 1, event_frames.end - 1),
+                Handle::InTop if controls.fade_in() == 0 || source < source_start => {
+                    (source_start, event_frames.start)
+                }
+                Handle::OutTop if controls.fade_out() == 0 || source >= source_end => {
+                    (source_end - 1, event_frames.end - 1)
+                }
+                Handle::InTop if source >= source_end => (source_end - 1, event_frames.end - 1),
+                Handle::OutTop if source < source_start => (source_start, event_frames.start),
+                _ => {
+                    if source < source_start
+                        || source >= source_end
+                        || matches!(handle, Handle::InCurve) && controls.fade_in() < 3
+                        || matches!(handle, Handle::OutCurve) && controls.fade_out() < 3
+                    {
+                        return None;
+                    }
+                    let frame = destination_frame(root, event, tempo, source, subframe)?;
+                    (
+                        source,
+                        frame.clamp(event_frames.start, event_frames.end - 1),
+                    )
+                }
             };
-            if source < source_start || source >= source_end {
-                continue;
+            if !visible.contains(&frame) {
+                return None;
             }
-            let Some(frame) =
-                destination_frame(root, event, state.project.tempo_map(), source, subframe)
-            else {
-                continue;
-            };
-            if frame < visible_start || frame >= visible_end {
-                continue;
-            }
-            let inset = 4.0_f32.min(width / 2.0);
             let x = (((frame - visible_start) as f32
                 / (visible_end - visible_start).saturating_sub(1).max(1) as f32)
-                * width)
-                .clamp(inset, width - inset)
-                / width;
-            let narrow = width < 16.0 || controls.span() == 1;
+                * inner_width)
+                .clamp(inset, inner_width - inset);
+            let adjustment = i128::from(displayed_source) - i128::from(source);
+            Some((handle, x, gain, adjustment))
+        });
+        let [in_top, _, _, out_top, _, _] = placed;
+        let top_overlap = in_top
+            .zip(out_top)
+            .is_some_and(|((_, in_x, _, _), (_, out_x, _, _))| (in_x - out_x).abs() < size);
+        let narrow = width < 16.0 || controls.span() == 1;
+        for (handle, x, gain, source_adjustment) in placed.into_iter().flatten() {
             let y = match handle {
                 Handle::InTop => 20.0,
-                Handle::OutTop => {
-                    if narrow {
-                        28.0
-                    } else {
-                        20.0
-                    }
-                }
-                Handle::InBottom => height - 4.0,
-                Handle::OutBottom => height - if narrow { 12.0 } else { 4.0 },
+                Handle::OutTop if top_overlap => 28.0,
+                Handle::OutTop => 20.0,
+                Handle::InBottom => height - inset - 2.0,
+                Handle::OutBottom if narrow => height - inset - 10.0,
+                Handle::OutBottom => height - inset - 2.0,
                 _ => 16.0 + (height - 16.0) * (1.0 - gain).clamp(0.1, 0.9),
             }
-            .clamp(4.0, height - 4.0);
+            .clamp(inset, height - inset - 2.0);
             let selector = format!("audio-event-{}-{}", handle.name(), event.id);
             elements.push(
                 div()
                     .id((handle.name(), event.id))
                     .debug_selector(move || selector.clone())
                     .absolute()
-                    .left(relative(x))
-                    .top(px(y))
-                    .ml(px(-4.0))
-                    .mt(px(-4.0))
-                    .w(px(8.0))
-                    .h(px(8.0))
+                    .left(px(x - inset))
+                    .top(px(y - inset))
+                    .w(px(size))
+                    .h(px(size))
                     .children([fade_handles::handle_shape(
                         matches!(handle, Handle::InCurve | Handle::OutCurve),
                         active,
@@ -654,6 +684,7 @@ impl EditorView {
                                         original: controls,
                                         source_frame_start: origin,
                                         pointer_source_frame: anchor,
+                                        source_adjustment,
                                         origin_y: f32::from(e.position.y),
                                         last_y: f32::from(e.position.y),
                                     };
@@ -661,12 +692,14 @@ impl EditorView {
                                     {
                                         return;
                                     }
+                                    v.audio_event_editor.fade_hover = None;
                                     v.audio_event_editor.gesture = Some(Gesture {
                                         anchor: 0,
                                         pointer_x: f32::from(e.position.x),
                                         origin_x: f32::from(e.position.x),
                                         moved: false,
                                         kind: Kind::Fade(fade),
+                                        placement: None,
                                         operation: None,
                                     });
                                 }

@@ -13,12 +13,9 @@ fn cancel_eq8_audition(view: &mut EditorView) {
 }
 
 impl EditorView {
-    pub(super) fn detail_clip_id(&self) -> Option<hex_project::ClipId> {
-        self.selected_clip
-    }
-
-    /// Selected Arrangement clip and start/duration/source offset/length
-    /// in project frames. Workspace selection remains a separate query.
+    /// Clip editor Arrangement audio subject (`detail_clip_id`) and
+    /// start/duration/source offset/length in project frames. Workspace
+    /// selection remains a separate query.
     pub(super) fn detail_audio_clip_data(
         &self,
     ) -> Option<(
@@ -29,7 +26,22 @@ impl EditorView {
         u64,
         u64,
     )> {
-        self.selected_clip_data()
+        if self.selected_clip.is_some() {
+            return self.selected_clip_data();
+        }
+        let clip_id = self.detail_clip_id()?;
+        let state = self.state.as_ref()?;
+        state.project.tracks().iter().find_map(|track| {
+            let clip = track.clips().iter().find(|clip| clip.id() == clip_id)?;
+            Some((
+                track.id(),
+                clip_id,
+                clip.start(),
+                clip.duration(),
+                clip.source_offset(),
+                clip.source_length(),
+            ))
+        })
     }
 
     /// Change the detail content in response to explicit clip focus. Pane
@@ -57,6 +69,7 @@ impl EditorView {
         cancel_eq8_audition(self);
         self.focused_return = None;
         self.device_panel_active = true;
+        self.detail_context = None;
         if self.midi_focus.is_focused(window) || self.audio_event_focus.is_focused(window) {
             self.focus.focus(window);
         }
@@ -101,6 +114,7 @@ impl EditorView {
         window: &gpui::Window,
         cx: &mut Context<Self>,
     ) -> Div {
+        self.device_panel.compressor_sidechains.clear_visible();
         self.reconcile_clip_detail_resize(window, cx);
         self.reconcile_velocity_size(window, cx);
         self.reconcile_piano_pitch_zoom(window, cx);
@@ -191,7 +205,7 @@ impl EditorView {
             "session audio"
         } else if selected_midi {
             "midi clip"
-        } else if self.mode == EditorMode::Arrangement && self.selected_clip.is_some() {
+        } else if self.mode == EditorMode::Arrangement && self.detail_clip_id().is_some() {
             "audio clip"
         } else {
             "clip view · no clip selected"

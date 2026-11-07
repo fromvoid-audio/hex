@@ -189,17 +189,21 @@ pub fn control_storage_allowance(signal: Option<&ExportSignal>) -> Result<usize,
                 std::mem::size_of::<super::Stem>() + 4096 + std::mem::size_of::<OutputCaptureId>(),
             )
             .ok_or_else(overflow)?;
-        // One encoded PCM16 block reused for each stem; the full frame transaction is above.
+        // One encoded block (sized for the widest format) reused for each stem;
+        // the full frame transaction is above.
         bytes = bytes
             .checked_add(ordered)
-            .and_then(|bytes| bytes.checked_add(FRAMES_PER_BLOCK * 4))
+            .and_then(|bytes| bytes.checked_add(FRAMES_PER_BLOCK * super::format::MAX_FRAME_BYTES))
             .ok_or_else(overflow)?;
     }
     Ok(bytes)
 }
 
-/// Resolve an optional range for the causal controlled renderer. Explicit
-/// spans and pre-Main capture/stem defaults retain their own source semantics.
+/// Resolve an optional range for the controlled renderer. Explicit spans remain
+/// exact. Automatic ranges include declared finite residual tails on the
+/// relevant signal paths and refuse unbounded or excessive drain. Main output is
+/// latency-compensated (see [`render_prepared_with_policy`]), so its automatic
+/// end is the causal Main end less Main latency, in timeline frames.
 pub fn controlled_frame_count(
     project: &Project,
     start: u64,
@@ -210,13 +214,39 @@ pub fn controlled_frame_count(
         Some(frames) => frames,
         None => {
             let end = match signal {
-                ExportSignal::Main => project.untrimmed_main_end_frame().map_err(|_| {
-                    ExportError::Invalid(
-                        "automatic main range is unbounded or invalid; choose an explicit range",
-                    )
-                })?,
-                ExportSignal::CapturedMix(_) | ExportSignal::Stems(_) => {
-                    project.audible_end_frame()
+                ExportSignal::Main => project
+                    .untrimmed_main_end_frame()
+                    .map_err(|_| {
+                        ExportError::Invalid(
+                            "automatic main range is unbounded or invalid; choose an explicit range",
+                        )
+                    })?
+                    .map(|end| end.saturating_sub(u64::from(project.main_latency_frames()))),
+                ExportSignal::CapturedMix(ids) => {
+                    if ids.len() > hex_engine::MAX_OUTPUT_CAPTURES {
+                        return Err(ExportError::Invalid(
+                            "invalid export output selection count",
+                        ));
+                    }
+                    project.untrimmed_capture_end_frame(ids).map_err(|_| {
+                        ExportError::Invalid(
+                            "automatic capture range is unbounded or invalid; choose an explicit range",
+                        )
+                    })?
+                }
+                ExportSignal::Stems(stems) => {
+                    if stems.len() > hex_engine::MAX_OUTPUT_CAPTURES {
+                        return Err(ExportError::Invalid("invalid stem selection count"));
+                    }
+                    let mut ids = Vec::new();
+                    ids.try_reserve_exact(stems.len())
+                        .map_err(|_| ExportError::Invalid("could not reserve stem selection"))?;
+                    ids.extend(stems.iter().map(|stem| stem.id));
+                    project.untrimmed_capture_end_frame(&ids).map_err(|_| {
+                        ExportError::Invalid(
+                            "automatic stem range is unbounded or invalid; choose an explicit range",
+                        )
+                    })?
                 }
             };
             end.unwrap_or(0).saturating_sub(start)
@@ -228,7 +258,7 @@ pub fn controlled_frame_count(
     Ok(frames)
 }
 
-/// Render a selected half-open frame range to a new PCM16 WAV. Stateful history
+/// Render a selected half-open frame range to a new dithered PCM16 WAV. Stateful history
 /// is reconstructed from zero without Seek, in cancellable 256-frame blocks.
 /// Preroll has the existing bounded engine work ceiling; transport loop metadata
 /// is ignored by the canonical linear export owner. Source-loop restrictions
@@ -247,17 +277,29 @@ pub fn render_prepared_controlled(
         start,
         frames,
         signal,
+        ExportFormat::Pcm16,
         control,
         &Publication::CreateNew,
     )
 }
 
+/// Controlled range export under an explicit publication policy.
+///
+/// Main output is latency-compensated, as in Live: file frame 0 is timeline
+/// frame `start` and the file holds exactly `frames` frames. History is
+/// reconstructed causally, then `frames + main latency` frames render and the
+/// first `main latency` output frames are discarded, so compensation consumes
+/// preroll rather than audio. Captured mixes and stems keep their causal
+/// pre-Main capture timing. `format` selects the WAV sample format of the file
+/// or of every stem file in a batch.
+#[allow(clippy::too_many_arguments)] // Range, scope, format, control and publication.
 pub fn render_prepared_with_policy(
     path: &Path,
     revision: Arc<PreparedRevision>,
     start: u64,
     frames: u64,
     signal: ExportSignal,
+    format: ExportFormat,
     control: &ExportControl,
     publication: &Publication,
 ) -> Result<ExportReport, ExportError> {
@@ -268,6 +310,7 @@ pub fn render_prepared_with_policy(
         start,
         frames,
         signal,
+        format,
         control,
         publication,
     )
@@ -292,6 +335,7 @@ pub fn render_prepared_controlled_with_device_resources(
         start,
         frames,
         signal,
+        ExportFormat::Pcm16,
         control,
         &Publication::CreateNew,
     )
@@ -306,6 +350,7 @@ pub fn render_prepared_with_device_resources_and_policy(
     start: u64,
     frames: u64,
     signal: ExportSignal,
+    format: ExportFormat,
     control: &ExportControl,
     publication: &Publication,
 ) -> Result<ExportReport, ExportError> {
@@ -316,6 +361,7 @@ pub fn render_prepared_with_device_resources_and_policy(
         start,
         frames,
         signal,
+        format,
         control,
         publication,
     )
@@ -329,6 +375,7 @@ fn render_prepared_using(
     start: u64,
     frames: u64,
     signal: ExportSignal,
+    format: ExportFormat,
     control: &ExportControl,
     publication: &Publication,
 ) -> Result<ExportReport, ExportError> {
@@ -339,6 +386,7 @@ fn render_prepared_using(
         start,
         frames,
         signal,
+        format,
         control,
         publication,
         None,
@@ -358,6 +406,7 @@ pub fn render_prepared_with_pages_and_policy(
     start: u64,
     frames: u64,
     signal: ExportSignal,
+    format: ExportFormat,
     control: &ExportControl,
     publication: &Publication,
     pages: &mut dyn PreparedExportPages,
@@ -369,6 +418,7 @@ pub fn render_prepared_with_pages_and_policy(
         start,
         frames,
         signal,
+        format,
         control,
         publication,
         Some(pages),
@@ -383,6 +433,7 @@ fn render_prepared_using_pages(
     start: u64,
     frames: u64,
     signal: ExportSignal,
+    format: ExportFormat,
     control: &ExportControl,
     publication: &Publication,
     mut pages: Option<&mut dyn PreparedExportPages>,
@@ -392,17 +443,19 @@ fn render_prepared_using_pages(
             return Err(ExportError::Invalid("stem batches require a new directory"));
         }
         return super::stems::render_stems_using_pages(
-            path, revision, resources, start, frames, stems, control, pages,
+            path, revision, resources, start, frames, stems, format, control, pages,
         );
     }
     control.claim()?;
     let sample_rate = revision.arrangement().sample_rate();
-    publish(path, sample_rate, start, frames, publication, || {
+    let latency = main_compensation(&revision, &signal, frames);
+    let rendered_frames = compensated_frames(start, frames, latency)?;
+    let prepare_renderer = || {
         let playback = prepare_runtime_with_pages(
             revision,
             resources,
             start,
-            frames,
+            rendered_frames,
             control,
             pages.as_deref_mut(),
         )?;
@@ -428,15 +481,46 @@ fn render_prepared_using_pages(
                 return Err(ExportError::Invalid("stem batches require batch rendering"));
             }
         };
-        Ok(ControlledRenderer {
+        let mut renderer = ControlledRenderer {
             playback,
             sources: None,
             pages,
             plan,
             buffers,
             control: control.clone(),
-        })
-    })
+        };
+        discard_latency(&mut renderer, latency)?;
+        Ok(renderer)
+    };
+    publish_encoded(
+        path,
+        sample_rate,
+        start,
+        frames,
+        publication,
+        format,
+        prepare_renderer,
+    )
+}
+
+/// Main latency to discard after causal preroll; captures keep causal timing.
+fn main_compensation(revision: &PreparedRevision, signal: &ExportSignal, frames: u64) -> u32 {
+    if frames == 0 || !matches!(signal, ExportSignal::Main) {
+        0
+    } else {
+        revision.arrangement().main_latency_frames()
+    }
+}
+
+/// Frames rendered after preroll: the published span plus discarded latency.
+fn compensated_frames(start: u64, frames: u64, latency: u32) -> Result<u64, ExportError> {
+    let rendered = frames
+        .checked_add(u64::from(latency))
+        .ok_or(ExportError::Invalid("compensated render range overflows"))?;
+    start
+        .checked_add(rendered)
+        .ok_or(ExportError::Invalid("compensated render range overflows"))?;
+    Ok(rendered)
 }
 
 /// Explicit private-control source capability. Same publication, cancellation,
@@ -449,6 +533,7 @@ pub fn render_control_sampler_with_policy(
     start: u64,
     frames: u64,
     signal: ExportSignal,
+    format: ExportFormat,
     control: &ExportControl,
     publication: &Publication,
 ) -> Result<ExportReport, ExportError> {
@@ -458,23 +543,28 @@ pub fn render_control_sampler_with_policy(
         ));
     }
     control.claim()?;
-    control.total.store(frames, Ordering::Release);
+    let latency = main_compensation(&revision, &signal, frames);
+    control
+        .total
+        .store(compensated_frames(0, frames, latency)?, Ordering::Release);
     let sample_rate = revision.arrangement().sample_rate();
-    publish(path, sample_rate, 0, frames, publication, || {
+    publish_encoded(path, sample_rate, 0, frames, publication, format, || {
         control.check()?;
         let mut playback = SessionPlayback::new_control_sampler_export(revision, &sources)
             .map_err(ExportError::SessionRender)?;
         playback
             .apply(SessionPlaybackCommand::Play)
             .map_err(ExportError::SessionRender)?;
-        Ok(ControlledRenderer {
+        let mut renderer = ControlledRenderer {
             playback,
             sources: Some(sources),
             pages: None,
             plan: None,
             buffers: Vec::new(),
             control: control.clone(),
-        })
+        };
+        discard_latency(&mut renderer, latency)?;
+        Ok(renderer)
     })
 }
 
@@ -537,21 +627,52 @@ fn prepare_runtime_observed(
     )
 }
 
-pub(super) fn prepare_bounce_runtime(
+pub(super) fn prepare_bounce_runtime<'provider>(
     revision: Arc<PreparedRevision>,
     resources: Option<&PreparedDeviceResources>,
     start: u64,
     frames: u64,
     control: &ExportControl,
+    pages: Option<&mut (dyn PreparedExportPages + 'provider)>,
 ) -> Result<SessionPlayback, ExportError> {
-    prepare_runtime_using(
+    prepare_bounce_runtime_with_inputs(
         revision,
         resources,
         start,
         frames,
         control,
-        SessionPlayback::new_finite_arrangement_bounce,
+        &mut crate::bounce::RenderInputs {
+            pages,
+            foreign: None,
+        },
+        FRAMES_PER_BLOCK,
+    )
+}
+
+pub(super) fn prepare_bounce_runtime_with_inputs(
+    revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
+    start: u64,
+    frames: u64,
+    control: &ExportControl,
+    inputs: &mut crate::bounce::RenderInputs<'_, '_, '_>,
+    block_frames: usize,
+) -> Result<SessionPlayback, ExportError> {
+    let constructor: RuntimeConstructor = if inputs.foreign.is_some() {
+        SessionPlayback::new_finite_arrangement_bounce_with_foreign
+    } else {
+        SessionPlayback::new_finite_arrangement_bounce
+    };
+    prepare_runtime_with_inputs(
+        revision,
+        resources,
+        start,
+        frames,
+        control,
+        constructor,
         || {},
+        inputs,
+        block_frames,
     )
 }
 
@@ -591,11 +712,44 @@ fn prepare_runtime_using_pages<'provider>(
     frames: u64,
     control: &ExportControl,
     constructor: RuntimeConstructor,
+    after_block: impl FnMut(),
+    pages: Option<&mut (dyn PreparedExportPages + 'provider)>,
+) -> Result<SessionPlayback, ExportError> {
+    prepare_runtime_with_inputs(
+        revision,
+        resources,
+        start,
+        frames,
+        control,
+        constructor,
+        after_block,
+        &mut crate::bounce::RenderInputs {
+            pages,
+            foreign: None,
+        },
+        FRAMES_PER_BLOCK,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_runtime_with_inputs(
+    revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
+    start: u64,
+    frames: u64,
+    control: &ExportControl,
+    constructor: RuntimeConstructor,
     mut after_block: impl FnMut(),
-    mut pages: Option<&mut (dyn PreparedExportPages + 'provider)>,
+    inputs: &mut crate::bounce::RenderInputs<'_, '_, '_>,
+    block_frames: usize,
 ) -> Result<SessionPlayback, ExportError> {
     control.check()?;
-    let replay = start != 0 && revision.arrangement_seek_requires_preroll();
+    let replay = start != 0
+        && if inputs.foreign.is_some() {
+            revision.arrangement_bounce_requires_preroll()
+        } else {
+            revision.arrangement_seek_requires_preroll()
+        };
     if replay && start > hex_engine::MAX_ARRANGEMENT_PREROLL_FRAMES {
         return Err(ExportError::Invalid(
             "export preroll exceeds its frame budget",
@@ -623,18 +777,8 @@ fn prepare_runtime_using_pages<'provider>(
     let mut block = [[0.0; 2]; FRAMES_PER_BLOCK];
     while remaining > 0 {
         control.check()?;
-        let count = remaining.min(FRAMES_PER_BLOCK as u64) as usize;
-        if let Some(pages) = pages.as_deref_mut() {
-            pages.prepare_chunk(&playback, count, control)?;
-            playback
-                .render_with_pages(&mut block[..count], &mut crate::pages::PageView(pages))
-                .map_err(ExportError::SessionRender)?;
-            pages.complete_chunk()?;
-        } else {
-            playback
-                .render(&mut block[..count])
-                .map_err(ExportError::SessionRender)?;
-        }
+        let count = remaining.min(block_frames as u64) as usize;
+        inputs.render(&mut playback, &mut block[..count], control)?;
         remaining -= count as u64;
         control.advance(count);
         after_block();

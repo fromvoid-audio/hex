@@ -57,6 +57,28 @@ fn field(line: &str, name: &str) -> u128 {
 }
 
 #[test]
+fn typed_and_legacy_events_keep_classification_in_written_records() {
+    let (handle, receiver) = pair();
+    handle
+        .record_typed(Level::Error, Category::Audio, "device failed")
+        .unwrap();
+    handle.record("old producer").unwrap();
+    let output = Arc::new(Mutex::new(String::new()));
+    let mut log = memory_worker(&handle, receiver, MemoryWriter(Arc::clone(&output)));
+    log.shutdown().unwrap();
+    let text = output.lock().unwrap();
+    let events: Vec<_> = text
+        .lines()
+        .filter(|line| line.starts_with("event "))
+        .collect();
+    assert_eq!(events.len(), 2);
+    assert!(events[0].contains("level=error category=audio "));
+    assert!(events[0].ends_with("message=\"device failed\""));
+    assert!(events[1].contains("level=info category=uncategorised "));
+    assert!(events[1].ends_with("message=\"old producer\""));
+}
+
+#[test]
 fn delayed_writer_preserves_producer_time_sequence_and_reports_lost_attempts() {
     let (handle, receiver) = pair();
     handle.record("earlier").unwrap();
@@ -106,15 +128,22 @@ fn queue_pressure_has_exact_sequence_gap_and_recovers_without_capacity_wait() {
 }
 
 #[test]
-fn producer_contention_is_nonwaiting_visible_and_does_not_change_queued_events() {
+fn contended_producer_waits_for_the_gate_and_loses_nothing() {
     let (handle, receiver) = pair();
     let gate = handle.shared.admission.lock().unwrap();
-    assert_eq!(handle.record("contended"), Err(PublishError::Busy));
+    let contended = {
+        let handle = handle.clone();
+        thread::spawn(move || handle.record("contended"))
+    };
+    // A held gate admits nothing; the contended producer is still pending.
+    assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
     drop(gate);
+    assert_eq!(contended.join().unwrap(), Ok(()));
     handle.record("after contention").unwrap();
-    assert_eq!(handle.statistics().producer_busy, 1);
-    assert_eq!(handle.overflow_count(), 1);
+    let first = receiver.recv().unwrap();
+    assert_eq!((first.sequence, first.message.as_str()), (1, "contended"));
     assert_eq!(receiver.recv().unwrap().sequence, 2);
+    assert_eq!(handle.overflow_count(), 0);
 }
 
 #[test]
@@ -177,6 +206,8 @@ fn closing_waits_for_previously_admitted_producer_before_final_drain() {
         producer
             .sender
             .try_send(Record {
+                level: Level::Info,
+                category: Category::Uncategorised,
                 sequence: 1,
                 unix_nanos: 123,
                 elapsed_nanos: 456,
@@ -290,7 +321,7 @@ fn sequence_exhaustion_refuses_without_reusing_an_event_identity() {
 }
 
 #[test]
-fn concurrent_producers_have_unique_ordered_records_and_account_for_backpressure() {
+fn concurrent_producers_within_capacity_lose_no_records() {
     let (handle, receiver) = pair();
     let output = Arc::new(Mutex::new(String::new()));
     let mut log = memory_worker(&handle, receiver, MemoryWriter(Arc::clone(&output)));
@@ -301,8 +332,11 @@ fn concurrent_producers_have_unique_ordered_records_and_account_for_backpressure
         let start = Arc::clone(&start);
         producers.push(thread::spawn(move || {
             start.wait();
-            for step in 0..100 {
-                let _ = handle.record(&format!("producer={producer} step={step}"));
+            // 4 x 16 fills at most the 64-record queue, so every record must land.
+            for step in 0..16 {
+                handle
+                    .record(&format!("producer={producer} step={step}"))
+                    .unwrap();
             }
         }));
     }
@@ -319,10 +353,9 @@ fn concurrent_producers_have_unique_ordered_records_and_account_for_backpressure
         .collect();
     assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]));
     let stats = handle.statistics();
-    assert_eq!(stats.last_sequence, 400);
-    assert_eq!(stats.written as usize, sequences.len());
-    assert_eq!(stats.written + stats.queue_full + stats.producer_busy, 400);
-    assert_eq!(stats.closed, 0);
+    assert_eq!(stats.last_sequence, 64);
+    assert_eq!(sequences.len(), 64);
+    assert_eq!((stats.written, stats.queue_full, stats.closed), (64, 0, 0));
     assert!(contents.contains("session_finished"));
 }
 

@@ -1,5 +1,12 @@
 use super::*;
 
+#[gpui::test]
+fn editor_asset_source_refuses_missing_catalog(cx: &mut TestAppContext) {
+    cx.update(|app| assert!(crate::assets::validate(app).is_err()));
+    cx.update(|app| app.use_test_assets(crate::assets::HexAssets));
+    cx.update(|app| assert!(crate::assets::validate(app).is_ok()));
+}
+
 // This owning fixture binds its actual caller files and catalog jobs to one root.
 struct PreferencesTestDirectory(
     std::path::PathBuf,
@@ -69,10 +76,16 @@ fn place_icon_preferences_window(
 fn browser_builtin_source_actual_right_click_has_icon_grid(cx: &mut TestAppContext) {
     let directory = PreferencesTestDirectory::new();
     let config = directory.0.join("builtin-browser.json");
-    let (handle, _) =
+    let (handle, editor) =
         place_icon_preferences_window(cx, &directory, &config, &directory.0.join("recent.json"));
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
+    assert!(
+        !visual
+            .rendered_monochrome_colors("browser-picker-glyph-place-0")
+            .is_empty(),
+        "the place row paints an embedded vector"
+    );
     let row = visual.debug_bounds("browser-place-0").unwrap();
     visual.simulate_mouse_down(row.center(), MouseButton::Right, Modifiers::default());
     visual.simulate_mouse_up(row.center(), MouseButton::Right, Modifiers::default());
@@ -80,6 +93,41 @@ fn browser_builtin_source_actual_right_click_has_icon_grid(cx: &mut TestAppConte
         visual.debug_bounds("context-menu-icon-grid").is_some(),
         "Music right-click must open existing bundled icon grid"
     );
+    visual.run_until_parked();
+    assert!(
+        !visual
+            .rendered_monochrome_colors("context-menu-choice-1")
+            .is_empty(),
+        "the icon grid paints an embedded vector"
+    );
+
+    struct RestoreTheme(hex_preferences::ThemePreferences);
+    impl Drop for RestoreTheme {
+        fn drop(&mut self) {
+            crate::theme::apply_preferences(self.0);
+        }
+    }
+    let original = crate::theme::preferences();
+    let _restore = RestoreTheme(original);
+    for (background, text) in [(0x20, 0xe0), (0xe0, 0x20)] {
+        let mut preferences = original;
+        preferences.background = hex_preferences::RgbColor::new(background, background, background);
+        preferences.text = hex_preferences::RgbColor::new(text, text, text);
+        crate::theme::apply_preferences(preferences);
+        editor.update(visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        let expected = gpui::Hsla::from(gpui::rgb(crate::theme::color(
+            crate::theme::PaletteRole::Text,
+        )));
+        for selector in ["browser-picker-glyph-place-0", "context-menu-choice-1"] {
+            assert!(
+                visual
+                    .rendered_monochrome_colors(selector)
+                    .contains(&expected),
+                "{selector} must use the current text color"
+            );
+        }
+    }
 }
 
 fn right_click(visual: &mut VisualTestContext, selector: &'static str) {
@@ -111,7 +159,10 @@ fn browser_builtin_source_icons_persist_target_reset_and_compact_geometry(cx: &m
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     editor.read_with(visual, |view, _| {
-        assert_eq!(view.browser_place_glyph(&view.browser.home), "□")
+        assert_eq!(
+            view.browser_place_icon_path(&view.browser.home),
+            "icons/browser-place/folder.svg"
+        )
     });
     assert_eq!(
         hex_preferences::load(&config)
@@ -202,8 +253,14 @@ fn browser_builtin_source_icons_persist_target_reset_and_compact_geometry(cx: &m
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     reopened.read_with(visual, |view, _| {
-        assert_eq!(view.browser_place_glyph(&view.browser.home), "≋");
-        assert_eq!(view.browser_place_glyph(&view.browser.music), "□");
+        assert_eq!(
+            view.browser_place_icon_path(&view.browser.home),
+            "icons/browser-place/waveform.svg"
+        );
+        assert_eq!(
+            view.browser_place_icon_path(&view.browser.music),
+            "icons/browser-place/folder.svg"
+        );
     });
 }
 
@@ -476,12 +533,15 @@ fn browser_hidden_source_picker_restores_same_path_visibility_and_preferences(
             );
             assert_eq!(view.browser.section, BrowserSection::Place(path.clone()));
             assert_eq!(view.sample_roots(), roots);
-            assert_eq!(view.browser_place_glyph(&custom), "≋");
+            assert_eq!(
+                view.browser_place_icon_path(&custom),
+                "icons/browser-place/waveform.svg"
+            );
             assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
         });
         assert!(visual.debug_bounds(row).is_some());
         assert_eq!(std::fs::read(&wav).unwrap(), bytes);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             visual.run_until_parked();
             let saved = hex_preferences::load(&config).unwrap();
@@ -510,7 +570,10 @@ fn browser_hidden_source_picker_restores_same_path_visibility_and_preferences(
         reopened.read_with(reopened_visual, |view, _| {
             assert!(view.browser_place_visible(&path));
             assert_eq!(view.sample_roots(), roots);
-            assert_eq!(view.browser_place_glyph(&custom), "≋");
+            assert_eq!(
+                view.browser_place_icon_path(&custom),
+                "icons/browser-place/waveform.svg"
+            );
         });
         assert!(reopened_visual.debug_bounds(row).is_some());
         eprintln!("ACTUAL_HIDDEN_PICKER_RESTORED {row}");
@@ -540,7 +603,7 @@ fn browser_hidden_source_picker_cancel_and_refusal_keep_visible_selection(cx: &m
     visual.simulate_click(custom_row.center(), Modifiers::default());
     right_click(visual, "browser-place-2");
     choose(visual, 8);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         visual.run_until_parked();
         let ready = editor.update(visual, |view, cx| {
