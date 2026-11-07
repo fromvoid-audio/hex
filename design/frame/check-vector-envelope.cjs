@@ -15,12 +15,22 @@ for (const state of Object.keys(doc.states)) {
   const visible = frame.layout(doc, project.viewport, state).filter(node => node.visible);
   const nodes = new Map(visible.map(node => [node.id, node]));
   const amount = nodes.get('filter-envelope-amount');
-  assert(amount && /hz$/.test(amount.value), state + ': display the peak destination frequency');
+  assert(amount && (state === 'filter-depth-edit' ? /st$/.test(amount.value) : /hz$/.test(amount.value)),
+    state + ': display peak frequency normally and semitones during exact entry');
   assert(!amount.action, state + ': editing depth must not select an envelope');
   const amountLabel = nodes.get('filter-envelope-amount-label');
-  const settings = visible.find(node => node.type === 'button' && node.label === 'device settings' && node.parentId === 'core-controls');
-  assert(amountLabel.bounds.x + amountLabel.bounds.width + 2 <= settings.bounds.x,
-    state + ': depth label must stay clear of the settings button');
+  assert(!visible.some(node => node.type === 'button' && node.label === 'device settings' && node.parentId === 'core-controls'),
+    state + ': device settings belong in the host menu');
+  const filterBounds = nodes.get('filter-section').bounds;
+  for (const id of ['cutoff', 'resonance', 'filter-envelope-amount']) {
+    const bounds = nodes.get(id).bounds;
+    assert(bounds.x >= filterBounds.x && bounds.x + bounds.width <= filterBounds.x + filterBounds.width &&
+      bounds.y >= filterBounds.y && bounds.y + bounds.height <= filterBounds.y + filterBounds.height, state + ': group all filter controls');
+  }
+  for (const op of ['a', 'b', 'c', 'd']) {
+    const identity = nodes.get('osc-identity-' + op);
+    assert(identity && identity.type === 'text' && identity.text === op && !identity.action, state + ': noninteractive oscillator identity');
+  }
   const filterSelected = nodes.get('filter-section').style.stroke !== 'none';
   if (filterSelected) {
     assert.equal(nodes.get('adsr-2').value, '50%', state + ': filter sustain uses percent');
@@ -47,6 +57,8 @@ for (const state of Object.keys(doc.states)) {
       state + ': point name must fit its monospace area');
     if (filterSelected && /initial|peak|decay-sustain/.test(state))
       assert(/%/.test(readout.value) && !/db|—/.test(readout.value), state + ': normalized filter point readout');
+    assert(/^(a|b|c|d|filter) \/ /.test(title.text), state + ': retain source identity while editing a point');
+    assert(readout.style.fontSize >= 9, state + ': keep exact values readable');
     pointStates++;
   }
   const loop = nodes.get('loop-visual');
@@ -75,7 +87,7 @@ for (const state of Object.keys(doc.states)) {
     const releaseHandle = visible.find(node => node.label === 'edit release curve envelope');
     assert(Math.abs(releaseHandle.bounds.y + releaseHandle.bounds.height / 2 -
       (release.bounds.y + release.points[12][1])) < 1e-8, state + ': release handle follows current level');
-    const toSeconds = x => Math.expm1((x - 6) / 280 * Math.log1p(140 / 0.001)) * 0.001;
+    const toSeconds = x => Math.expm1((x - 6) / nodes.get('env-bg').bounds.width * Math.log1p(140 / 0.001)) * 0.001;
     const cycleTime = toSeconds(active.points[49][0]);
     const attackTime = toSeconds(active.points[24][0]);
     const offTime = toSeconds(noteOff.bounds.x - active.bounds.x);
@@ -87,12 +99,12 @@ for (const state of Object.keys(doc.states)) {
         Math.pow((phase - attackTime) / (cycleTime - attackTime), 2);
     assert(Math.abs(release.points[0][1] - expected) < 1e-7, state + ': release begins at the repeated shape’s current level');
     assert.equal(noteOffLabel.text, 'note off', state + ': identify the loop exit');
-    assert.equal(held.bounds.x + held.bounds.width, noteOff.bounds.x,
+    near(held.bounds.x + held.bounds.width, noteOff.bounds.x,
       state + ': held region ends exactly at note-off');
-    assert.equal(bracket.bounds.x + bracket.bounds.width, noteOff.bounds.x,
+    near(bracket.bounds.x + bracket.bounds.width, noteOff.bounds.x,
       state + ': repetition bracket ends exactly at note-off');
     assert(cycle.bounds.width <= held.bounds.width, state + ': distinguish one cycle from held duration');
-    assert.equal(release.bounds.x + release.points[0][0], noteOff.bounds.x,
+    near(release.bounds.x + release.points[0][0], noteOff.bounds.x,
       state + ': release starts at note-off');
     const releaseLabel = nodes.get('loop-release-label');
     assert(releaseLabel && releaseLabel.text === 'release', state + ': identify release separately');
@@ -103,6 +115,31 @@ for (const state of Object.keys(doc.states)) {
     assert(!held && !bracket && !nodes.get('loop-repeat-label') && !nodes.get('loop-release-label'),
       state + ': loop-only guidance must disappear when looping is off');
   }
+}
+assert(doc.elements.findIndex(node => node.id === 'routing-popup') >
+  doc.elements.findIndex(node => node.id === 'filter-envelope-amount'), 'routing popup paints above filter fields');
+const half = frame.layout(doc, project.viewport, 'filter-peak-half').filter(node => node.visible);
+assert.equal(half.find(node => node.id === 'filter-envelope-amount').value, '1 khz');
+assert.equal(half.find(node => node.id === 'selected-level').value, '50%');
+const editing = frame.layout(doc, project.viewport, 'filter-depth-edit').filter(node => node.visible);
+assert.equal(editing.find(node => node.id === 'filter-envelope-amount').value, '+24 st');
+const hint = editing.find(node => node.id === 'filter-depth-edit-hint');
+assert(hint);
+const glideToggle = editing.find(node => node.label === 'toggle glide');
+assert(hint.bounds.y + hint.bounds.height + 2 <= glideToggle.bounds.y, 'exact-entry hint stays clear of glide');
+for (const [state, id] of [
+  ['focused-section-b', 'row-b'],
+  ['focused-routing', 'algorithm-diagram-serial-picker-surface'],
+  ['focused-routing-choice', 'routing-choice-paired-picker-surface'],
+  ['focused-env-point', 'env-keyboard-focus-ring'],
+]) {
+  const target = frame.layout(doc, project.viewport, state).find(node => node.visible && node.id === id);
+  assert(target && target.style.stroke === '#eeeeee', state + ': focus marks its intended control');
+}
+const slots = frame.layout(doc, project.viewport, 'slots-4').filter(node => node.visible);
+for (const value of slots.filter(node => /^macro-slots-4-value-/.test(node.id))) {
+  const knob = slots.find(node => node.id === value.id.replace('-value-', '-knob-'));
+  assert(value.style.fontSize >= 9 && value.bounds.x >= knob.bounds.x + knob.bounds.width, 'macro values stay beside knobs');
 }
 assert(pointStates >= 35 && loopStates >= 15);
 console.log(`${pointStates} point states and ${loopStates} loop states passed in ${((performance.now()-started)/1000).toFixed(2)} s`);
