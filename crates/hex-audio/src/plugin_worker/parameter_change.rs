@@ -64,6 +64,30 @@ pub struct NativeWorkerParameterChange {
     ordinal: u64,
     hold_id: Option<u32>,
 }
+#[cfg(test)]
+impl NativeWorkerParameterChange {
+    pub(crate) fn original_worker_released_on_control(&self) -> bool {
+        self.source.upgrade().is_none()
+    }
+}
+
+/// A live hold command always refers to the exact original worker. The
+/// opening operation token doubles as the hold identity after SDK acceptance.
+#[derive(Clone, Copy)]
+pub enum NativeParameterHold<'a> {
+    Begin {
+        id: u32,
+        normalized: f64,
+    },
+    Change {
+        hold: &'a NativeWorkerParameterChange,
+        normalized: f64,
+    },
+    Release {
+        hold: &'a NativeWorkerParameterChange,
+    },
+}
+
 /// The requested point travelled in this successful SDK input/reply exchange.
 /// This is not controller readback, final host delivery, captured state or a
 /// canonical acknowledgement. Plugin output may supersede the requested value.
@@ -253,6 +277,21 @@ impl NativeWorker {
             .hold_id
             .ok_or("native parameter token does not own a hold")?;
         self.queue_parameter_change(id, 0.0, Intent::Release(hold.ordinal))
+    }
+
+    pub(crate) fn parameter_hold_on_control(
+        &mut self,
+        command: NativeParameterHold<'_>,
+    ) -> Result<NativeWorkerParameterChange, &'static str> {
+        match command {
+            NativeParameterHold::Begin { id, normalized } => {
+                self.hold_parameter_on_control(id, normalized)
+            }
+            NativeParameterHold::Change { hold, normalized } => {
+                self.update_held_parameter_on_control(hold, normalized)
+            }
+            NativeParameterHold::Release { hold } => self.release_held_parameter_on_control(hold),
+        }
     }
 
     fn queue_parameter_change(

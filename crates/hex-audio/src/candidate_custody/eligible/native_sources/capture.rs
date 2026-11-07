@@ -2,8 +2,8 @@
 //! A copied envelope grants no resume, endpoint or graph publication authority.
 use super::*;
 use crate::plugin_worker::{
-    NativeWorkerCapture, NativeWorkerCaptureProgress, NativeWorkerControllerProgress,
-    NativeWorkerControllerQuery,
+    NativeParameterHold, NativeWorkerCapture, NativeWorkerCaptureProgress,
+    NativeWorkerControllerProgress, NativeWorkerControllerQuery, NativeWorkerParameterChange,
 };
 #[cfg(test)]
 mod tests;
@@ -88,6 +88,53 @@ impl Custody {
         }
         Ok(result)
     }
+    // Once an input is admitted, return its token even if the bank closes
+    // during the final live-source check. The caller owns the exact terminal.
+    fn admit_live_operation<R>(
+        &self,
+        binding: Binding,
+        run: impl FnOnce(&mut Owner) -> Result<R, &'static str>,
+        after_admission: impl FnOnce(),
+        refused: &'static str,
+    ) -> Result<R, &'static str> {
+        let mut admitted = None;
+        let result = self.with_live_capture(binding, |owner| {
+            admitted = Some(run(owner)?);
+            after_admission();
+            Ok(())
+        });
+        match admitted {
+            Some(token) => Ok(token),
+            None => result.and(Err(refused)),
+        }
+    }
+
+    pub(in crate::candidate_custody) fn native_parameter_hold(
+        &self,
+        binding: Binding,
+        command: NativeParameterHold<'_>,
+    ) -> Result<NativeWorkerParameterChange, &'static str> {
+        self.parameter_hold_admission(binding, command, || {})
+    }
+
+    fn parameter_hold_admission(
+        &self,
+        binding: Binding,
+        command: NativeParameterHold<'_>,
+        after_admission: impl FnOnce(),
+    ) -> Result<NativeWorkerParameterChange, &'static str> {
+        self.admit_live_operation(
+            binding,
+            |owner| match owner {
+                Owner::Effect(owner) => owner.parameter_hold(command),
+                Owner::Loaned(owner) => owner.parameter_hold(command),
+                _ => Err("native parameter input owner differs"),
+            },
+            after_admission,
+            "native parameter hold was not admitted",
+        )
+    }
+
     pub(in crate::candidate_custody) fn native_parameter_edits(
         &self,
         binding: Binding,
@@ -179,20 +226,16 @@ impl Custody {
         after_admission: impl FnOnce(),
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
         let query = query.into();
-        let mut admitted = None;
-        let result = self.with_live_capture(binding, |owner| {
-            admitted = Some(match owner {
+        self.admit_live_operation(
+            binding,
+            |owner| match owner {
                 Owner::Effect(owner) => owner.begin_controller_query(query),
                 Owner::Loaned(owner) => owner.begin_controller_query(query),
                 _ => Err("native controller owner differs"),
-            }?);
-            after_admission();
-            Ok(())
-        });
-        match admitted {
-            Some(token) => Ok(token),
-            None => result.and(Err("native controller query was not admitted")),
-        }
+            },
+            after_admission,
+            "native controller query was not admitted",
+        )
     }
     pub(in crate::candidate_custody) fn poll_native_controller_query(
         &self,
@@ -431,6 +474,15 @@ impl CandidateRoot {
         self.require_native_source_control_open()?;
         Ok(result)
     }
+    pub(crate) fn native_parameter_hold(
+        &self,
+        binding: Binding,
+        command: NativeParameterHold<'_>,
+    ) -> Result<NativeWorkerParameterChange, &'static str> {
+        self.require_native_source_control_open()?;
+        self.0.eligible.native_parameter_hold(binding, command)
+    }
+
     pub(crate) fn begin_native_parameter_change(
         &self,
         binding: Binding,
