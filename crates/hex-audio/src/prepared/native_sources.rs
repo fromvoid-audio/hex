@@ -1011,3 +1011,42 @@ impl Callback {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod parameter_source_tests {
+    use super::*;
+
+    #[test]
+    fn parameter_source_requires_exact_transport_mode_and_current_ordinary_graph() {
+        let status = Status::default();
+        let source = AppliedAudioSource {
+            context: hex_engine::AudioSourceContext {
+                project_generation: 3,
+                editor_revision: 7,
+            },
+            audio_revision: 9,
+            output_identity: 11,
+        };
+        status.recording_source.publish(Some(source));
+        status.applied_revision.store(9, Release);
+        status.transport_epoch.store(5, Release);
+        assert_eq!(status.native_parameter_source(false), Some((source, 5)));
+        assert_eq!(status.live_native_parameter_source(), None);
+        status.pending_stop_marker.store(1, Release);
+        assert_eq!(status.native_parameter_source(false), None);
+        status.pending_stop_marker.store(0, Release);
+        status.playing.store(true, Release);
+        status.ordinary_native_revision.store(9, Release);
+        assert_eq!(status.native_parameter_source(false), None);
+        assert_eq!(status.live_native_parameter_source(), Some((source, 5)));
+        status.closing.store(true, Release);
+        assert_eq!(status.live_native_parameter_source(), None);
+        status.closing.store(false, Release);
+        status.playing.store(false, Release);
+        status.applied_source.publish(Some(source));
+        assert_eq!(status.native_parameter_source(false), None);
+        status.applied_source.publish(None);
+        status.applied_revision.store(10, Release);
+        assert_eq!(status.native_parameter_source(false), None);
+    }
+}
