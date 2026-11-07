@@ -121,7 +121,7 @@ mod tests {
     fn all_controls_match_established_state_handoff_pcm_and_fallback() {
         let base = COMPRESSOR_DEFINITION.default_state().unwrap();
         for (id, value) in [
-            (parameter::THRESHOLD, -30.0),
+            (parameter::THRESHOLD, ParameterValue::Float(-30.0)),
             (parameter::RATIO, ParameterValue::Float(10.0)),
             (parameter::ATTACK, ParameterValue::Float(1.0)),
             (parameter::RELEASE, ParameterValue::Float(10.0)),
