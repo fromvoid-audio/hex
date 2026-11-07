@@ -652,8 +652,12 @@ fn actual_manual_input_coexists_with_another_authored_parameter() {
         stage();
     }
     assert_eq!(output, [[0.0; 2]; 8]);
-    let NativeWorkerParameterProgress::Processed(receipt) = terminal(&mut owner, &request) else {
-        panic!("manual input did not reach the original PCM worker");
+    let progress = terminal(&mut owner, &request);
+    let NativeWorkerParameterProgress::Processed(receipt) = progress else {
+        panic!(
+            "manual input did not reach the original PCM worker: {progress:?}, {:?}",
+            owner.take_failure_diagnostic_on_control()
+        );
     };
     assert_eq!(
         receipt.point,
