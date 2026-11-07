@@ -462,7 +462,37 @@ pub struct WorkerRequest {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ManualParameterInput {
     pub operation: NonZeroU64,
-    pub point: ParameterPoint,
+    pub action: ManualParameterAction,
+}
+
+/// Host input applied at the successful SDK quantum's first frame. A release
+/// restores the authored target and has no invented normalized point value.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ManualParameterAction {
+    Point(ParameterPoint),
+    Release { parameter: u32 },
+}
+impl ManualParameterInput {
+    pub fn parameter(self) -> u32 {
+        match self.action {
+            ManualParameterAction::Point(point) => point.id,
+            ManualParameterAction::Release { parameter } => parameter,
+        }
+    }
+    pub fn point(self) -> Option<ParameterPoint> {
+        match self.action {
+            ManualParameterAction::Point(point) => Some(point),
+            ManualParameterAction::Release { .. } => None,
+        }
+    }
+    fn valid(self, quantum: u16) -> bool {
+        match self.action {
+            ManualParameterAction::Point(point) => {
+                point.frame == 0 && parameters::valid(point, usize::from(quantum))
+            }
+            ManualParameterAction::Release { parameter } => parameters::valid_id(parameter),
+        }
+    }
 }
 
 /// Manual input carried by a sample in the accepted physical endpoint
@@ -492,10 +522,10 @@ struct OutputReply {
 impl OutputReply {
     fn valid(&self, binding: Binding, quantum: u16, sequence: u64) -> Result<(), Fault> {
         self.block.valid_reply(binding, quantum, sequence)?;
-        if self.manual.is_some_and(|manual| {
-            manual.input.point.frame != 0
-                || !parameters::valid(manual.input.point, usize::from(quantum))
-        }) {
+        if self
+            .manual
+            .is_some_and(|manual| !manual.input.valid(quantum))
+        {
             return Err(Fault::InvalidParameters);
         }
         Ok(())

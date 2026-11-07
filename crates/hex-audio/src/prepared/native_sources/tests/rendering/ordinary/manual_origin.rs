@@ -193,19 +193,6 @@ fn verify_location(location: usize, held: bool) {
     );
     assert_eq!(hold.delivery_identity().unwrap().1, target.operation);
     assert_eq!(target.parameter, id);
-    if held {
-        // Release cannot produce a point witness. Refusal must retain the
-        // original hold and leave its next operation ordinal untouched.
-        assert!(
-            f.control
-                .native_source_parameter_hold_with_delivery_on_control(
-                    expected,
-                    f.binding,
-                    NativeParameterHold::Release { hold: &hold },
-                )
-                .is_err()
-        );
-    }
     let until = Instant::now() + Duration::from_secs(3);
     let (update, next) = loop {
         let result = if held {
@@ -234,10 +221,14 @@ fn verify_location(location: usize, held: bool) {
     assert_eq!(next.operation, target.operation + 1);
     assert_eq!(update.delivery_identity().unwrap().1, next.operation);
     let mut cursor = 44;
+    let mut native_blocks = 5;
     let mut delivered = false;
-    for quantum in 0..8 {
+    for _ in 0..8 {
+        let start = cursor;
         let output = physical_block::<8>(&mut f);
-        replacement::wait_for_blocks(&root, f.binding, 6 + quantum);
+        cursor += 8;
+        native_blocks += 1;
+        replacement::wait_for_blocks(&root, f.binding, native_blocks);
         if let Some(receipt) = f.control.try_native_source_parameter_delivery_on_control() {
             let crate::foreign_parameter_delivery::Receipt::Delivered {
                 target,
@@ -252,19 +243,100 @@ fn verify_location(location: usize, held: bool) {
             assert_eq!(normalized, 0.5);
             assert_eq!(origin.arrangement_frame, origin.performance_frame);
             assert_eq!(delivery_performance_frame, origin.performance_frame + 38);
-            let offset = usize::try_from(delivery_performance_frame - cursor).unwrap();
+            let offset = usize::try_from(delivery_performance_frame - start).unwrap();
             assert!(offset < output.len());
             assert_eq!(output[offset], [0.5 + dry, -1.0 - 2.0 * dry]);
             delivered = true;
             break;
         }
-        cursor += 8;
     }
     assert!(
         delivered,
         "actual update must produce its bounded output witness"
     );
     processed(&mut f, &update);
+    if held {
+        let until = Instant::now() + Duration::from_secs(3);
+        let (release, end) = loop {
+            match f
+                .control
+                .native_source_parameter_hold_with_delivery_on_control(
+                    expected,
+                    f.binding,
+                    NativeParameterHold::Release { hold: &hold },
+                ) {
+                Ok(pair) => break pair,
+                Err("native preparation is busy" | "native parameter mailbox is busy") => {}
+                Err(error) => panic!("observed release: {error}"),
+            }
+            assert!(Instant::now() < until);
+        };
+        assert_eq!(end.operation, next.operation + 1);
+        assert_eq!(release.delivery_identity().unwrap().1, end.operation);
+        let mut released = false;
+        for _ in 0..8 {
+            let start = cursor;
+            let output = physical_block::<8>(&mut f);
+            cursor += 8;
+            native_blocks += 1;
+            replacement::wait_for_blocks(&root, f.binding, native_blocks);
+            if let Some(receipt) = f.control.try_native_source_parameter_delivery_on_control() {
+                let crate::foreign_parameter_delivery::Receipt::Released {
+                    target,
+                    origin,
+                    delivery_performance_frame,
+                } = receipt
+                else {
+                    panic!("actual release must reach final Main: {receipt:?}")
+                };
+                assert_eq!(target, end);
+                assert_eq!(origin.arrangement_frame, origin.performance_frame);
+                assert_eq!(delivery_performance_frame, origin.performance_frame + 38);
+                let offset = usize::try_from(delivery_performance_frame - start).unwrap();
+                assert!(offset < output.len());
+                assert!(
+                    output[..offset]
+                        .iter()
+                        .all(|frame| *frame == [0.5 + dry, -1.0 - 2.0 * dry])
+                );
+                assert!(
+                    output[offset..].iter().all(|frame| *frame == base),
+                    "authored PCM resumes exactly at the exclusive end"
+                );
+                let until = Instant::now() + Duration::from_secs(3);
+                loop {
+                    match f
+                        .control
+                        .poll_native_source_parameter_change_on_control(f.binding, &release)
+                    {
+                        Ok(crate::plugin_worker::NativeWorkerParameterProgress::Released {
+                            sequence,
+                            first_frame,
+                        }) => {
+                            assert_eq!(first_frame, sequence * 8);
+                            assert_eq!(first_frame, origin.performance_frame + 11);
+                            break;
+                        }
+                        Ok(crate::plugin_worker::NativeWorkerParameterProgress::Pending)
+                        | Err("native preparation is busy") => {}
+                        result => panic!("actual SDK release terminal: {result:?}"),
+                    }
+                    assert!(Instant::now() < until);
+                }
+                released = true;
+                break;
+            }
+            assert!(
+                output
+                    .iter()
+                    .all(|frame| *frame == [0.5 + dry, -1.0 - 2.0 * dry])
+            );
+        }
+        assert!(
+            released,
+            "actual release must produce its bounded end witness"
+        );
+    }
     dispose(f);
 }
 

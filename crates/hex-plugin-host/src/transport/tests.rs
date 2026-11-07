@@ -326,11 +326,11 @@ fn consumer_rejects_each_identity_field_and_nonfinite_or_invalid_events() {
                 manual: Some(ManualExchange {
                     input: ManualParameterInput {
                         operation: NonZeroU64::MIN,
-                        point: ParameterPoint {
+                        action: ManualParameterAction::Point(ParameterPoint {
                             id: 0,
                             frame: 0,
                             normalized: 0.5,
-                        },
+                        }),
                     },
                     origin: None,
                 }),
@@ -1003,99 +1003,104 @@ fn graph_fragment_staging_final_acceptance_and_refusal_allocate_and_free_nothing
 
 #[test]
 fn manual_marker_requires_the_aligned_accepted_physical_callback() {
-    let input = ManualParameterInput {
-        operation: NonZeroU64::MIN,
-        point: ParameterPoint {
+    for action in [
+        ManualParameterAction::Point(ParameterPoint {
             id: 0,
             frame: 0,
             normalized: 0.75,
-        },
-    };
-    for host_accepts in [false, true] {
-        let (control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
-        let mut position = 0;
-        let mut delivered = false;
-        for size in [3, 4, 6, 2, 4, 5, 8] {
-            let mut output = [[0.0; 2]; 8];
-            callback.begin_physical_callback(size).unwrap();
-            // The transport's first marked output is at position 16, which
-            // falls in the second render segment of a physical callback.
-            let split = size.min(1);
-            let mut stage = |offset, input: &[Frame], output: &mut [Frame]| {
-                let origin = |index| {
-                    let frame = (position + offset + index) as u64;
-                    Some(ManualParameterOrigin {
-                        arrangement_frame: 127 + frame,
-                        performance_frame: 301 + frame,
-                        loop_pass: 2,
-                    })
-                };
-                callback
-                    .stage_effect_segment(
-                        offset,
-                        input,
-                        &[],
-                        &[],
-                        output,
-                        SegmentTiming {
-                            playing: None,
-                            at: |_| None,
-                        },
-                        EffectSegmentOrigins {
-                            authored: None,
-                            manual: Some(&origin),
-                        },
-                    )
-                    .unwrap();
-            };
-            stage(0, &[[1.0; 2]; 1][..split], &mut output[..split]);
-            if split < size {
-                stage(split, &[[1.0; 2]; 8][split..size], &mut output[split..size]);
-            }
-            assert_eq!(callback.take_accepted_manual_parameter(), None);
-            let includes_marker = (position..position + size).contains(&16);
-            if includes_marker && !host_accepts {
-                assert_eq!(callback.finish(false), Err(Fault::Protocol));
-                assert_eq!(callback.take_accepted_manual_parameter(), None);
-                assert!(control.is_revoked());
-                break;
-            }
-            callback.finish(true).unwrap();
-            let accepted = callback.take_accepted_manual_parameter();
-            if includes_marker {
-                assert_eq!(
-                    accepted,
-                    Some(AcceptedManualParameter {
-                        binding: BINDING,
-                        sequence: 0,
-                        first_frame: 0,
-                        callback_offset: (16 - position) as u16,
-                        input,
-                        origin: Some(ManualParameterOrigin {
-                            arrangement_frame: 127,
-                            performance_frame: 301,
+        }),
+        ManualParameterAction::Release { parameter: 0 },
+    ] {
+        let input = ManualParameterInput {
+            operation: NonZeroU64::MIN,
+            action,
+        };
+        for host_accepts in [false, true] {
+            let (control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
+            let mut position = 0;
+            let mut delivered = false;
+            for size in [3, 4, 6, 2, 4, 5, 8] {
+                let mut output = [[0.0; 2]; 8];
+                callback.begin_physical_callback(size).unwrap();
+                // The transport's first marked output is at position 16, which
+                // falls in the second render segment of a physical callback.
+                let split = size.min(1);
+                let mut stage = |offset, input: &[Frame], output: &mut [Frame]| {
+                    let origin = |index| {
+                        let frame = (position + offset + index) as u64;
+                        Some(ManualParameterOrigin {
+                            arrangement_frame: 127 + frame,
+                            performance_frame: 301 + frame,
                             loop_pass: 2,
-                        }),
-                    })
-                );
-                assert_eq!(output[16 - position], [3.0; 2]);
-                delivered = true;
-            } else {
-                assert_eq!(accepted, None);
-            }
-            assert_eq!(callback.take_accepted_manual_parameter(), None);
-            if let Some(mut block) = worker.receive().unwrap() {
-                let marker = (block.sequence == 0).then_some(input);
-                if marker.is_some() {
-                    block.pcm[..8].fill([3.0; 2]);
+                        })
+                    };
+                    callback
+                        .stage_effect_segment(
+                            offset,
+                            input,
+                            &[],
+                            &[],
+                            output,
+                            SegmentTiming {
+                                playing: None,
+                                at: |_| None,
+                            },
+                            EffectSegmentOrigins {
+                                authored: None,
+                                manual: Some(&origin),
+                            },
+                        )
+                        .unwrap();
+                };
+                stage(0, &[[1.0; 2]; 1][..split], &mut output[..split]);
+                if split < size {
+                    stage(split, &[[1.0; 2]; 8][split..size], &mut output[split..size]);
                 }
-                worker
-                    .complete_with_manual_parameter(block, marker)
-                    .unwrap();
+                assert_eq!(callback.take_accepted_manual_parameter(), None);
+                let includes_marker = (position..position + size).contains(&16);
+                if includes_marker && !host_accepts {
+                    assert_eq!(callback.finish(false), Err(Fault::Protocol));
+                    assert_eq!(callback.take_accepted_manual_parameter(), None);
+                    assert!(control.is_revoked());
+                    break;
+                }
+                callback.finish(true).unwrap();
+                let accepted = callback.take_accepted_manual_parameter();
+                if includes_marker {
+                    assert_eq!(
+                        accepted,
+                        Some(AcceptedManualParameter {
+                            binding: BINDING,
+                            sequence: 0,
+                            first_frame: 0,
+                            callback_offset: (16 - position) as u16,
+                            input,
+                            origin: Some(ManualParameterOrigin {
+                                arrangement_frame: 127,
+                                performance_frame: 301,
+                                loop_pass: 2,
+                            }),
+                        })
+                    );
+                    assert_eq!(output[16 - position], [3.0; 2]);
+                    delivered = true;
+                } else {
+                    assert_eq!(accepted, None);
+                }
+                assert_eq!(callback.take_accepted_manual_parameter(), None);
+                if let Some(mut block) = worker.receive().unwrap() {
+                    let marker = (block.sequence == 0).then_some(input);
+                    if marker.is_some() {
+                        block.pcm[..8].fill([3.0; 2]);
+                    }
+                    worker
+                        .complete_with_manual_parameter(block, marker)
+                        .unwrap();
+                }
+                position += size;
             }
-            position += size;
+            assert_eq!(delivered, host_accepts);
         }
-        assert_eq!(delivered, host_accepts);
     }
 }
 
@@ -1103,20 +1108,23 @@ fn manual_marker_requires_the_aligned_accepted_physical_callback() {
 fn malformed_or_late_manual_marker_cannot_escape_its_reply() {
     let marker = ManualParameterInput {
         operation: NonZeroU64::MIN,
-        point: ParameterPoint {
+        action: ManualParameterAction::Point(ParameterPoint {
             id: 7,
             frame: 0,
             normalized: 0.5,
-        },
+        }),
     };
-    for bad_point in [
-        ParameterPoint {
+    for action in [
+        ManualParameterAction::Point(ParameterPoint {
             frame: 1,
-            ..marker.point
-        },
-        ParameterPoint {
+            ..marker.point().unwrap()
+        }),
+        ManualParameterAction::Point(ParameterPoint {
             normalized: f64::NAN,
-            ..marker.point
+            ..marker.point().unwrap()
+        }),
+        ManualParameterAction::Release {
+            parameter: u32::MAX,
         },
     ] {
         let (_control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
@@ -1128,10 +1136,7 @@ fn malformed_or_late_manual_marker_cannot_escape_its_reply() {
         assert_eq!(
             worker.complete_with_manual_parameter(
                 block,
-                Some(ManualParameterInput {
-                    point: bad_point,
-                    ..marker
-                })
+                Some(ManualParameterInput { action, ..marker })
             ),
             Err(Fault::InvalidParameters)
         );
