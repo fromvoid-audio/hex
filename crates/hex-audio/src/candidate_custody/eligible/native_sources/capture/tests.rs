@@ -6,12 +6,25 @@ use std::time::{Duration, Instant};
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn admitted_parameter_hold_survives_close_during_admission() {
+    parameter_close_admission(true);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn admitted_parameter_point_survives_close_during_admission() {
+    parameter_close_admission(false);
+}
+
+fn parameter_close_admission(hold: bool) {
     if std::env::var_os("HEX_HOLD_CLOSE_ADMISSION_DRIVER").is_none() {
         let name = std::thread::current().name().unwrap().to_owned();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", &name, "--ignored", "--test-threads=1"])
             .env("HEX_HOLD_CLOSE_ADMISSION_DRIVER", "1")
-            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "144")
+            .env(
+                "HEX_ORIGINAL_INSTANCE_VARIANT",
+                if hold { "144" } else { "92" },
+            )
             .output()
             .unwrap();
         assert!(
@@ -38,22 +51,35 @@ fn admitted_parameter_hold_survives_close_during_admission() {
     root.start_native_effect(binding).unwrap();
     let until = Instant::now() + Duration::from_secs(3);
     let token = loop {
-        match root.parameter_hold_admission(
-            binding,
-            NativeParameterHold::Begin {
-                id: 7,
-                normalized: 0.75,
-            },
-            || root.close(),
-        ) {
+        let result = if hold {
+            root.parameter_hold_admission(
+                binding,
+                NativeParameterHold::Begin {
+                    id: 7,
+                    normalized: 0.75,
+                },
+                || root.close(),
+            )
+        } else {
+            root.parameter_change_admission(binding, 0, 0.75, false, || root.close())
+        };
+        match result {
             Ok(token) => break token,
             Err("native preparation is busy" | "native parameter mailbox is busy") => {}
-            Err(reason) => panic!("admitted hold token was lost: {reason}"),
+            Err(reason) => panic!("admitted parameter token was lost: {reason}"),
         }
         assert!(Instant::now() < until);
         std::thread::yield_now();
     };
+    let (source, operation, parameter) = token.delivery_identity().unwrap();
+    assert_eq!(source, binding);
+    assert_ne!(operation, 0);
+    assert_eq!(parameter, if hold { 7 } else { 0 });
     assert!(!token.original_worker_released_on_control());
+    assert!(
+        root.begin_native_parameter_change(binding, parameter, 0.25, false)
+            .is_err()
+    );
     assert!(root.poll_native_parameter_change(binding, &token).is_err());
     dispose(&root, binding);
     let returned = root.recover_native_source(binding).unwrap();

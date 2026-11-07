@@ -160,7 +160,10 @@ impl PublicationControl {
     /// serialized source flushes the point and acknowledges controller readback
     /// without advancing PCM. After revocation, admission observes its healthy
     /// worker join and the exact stopped-input drain performs that SDK exchange.
-    /// Validate current metadata/writability at the caller.
+    /// Validate current metadata/writability at the caller. Once admitted, the
+    /// caller receives the exact operation token even if output closure races
+    /// admission. Retain it through its actual terminal or original worker
+    /// release; a returned token does not establish continued source liveness.
     /// Processing progress below grants no canonical/state installation.
     pub fn begin_native_source_parameter_change_on_control(
         &mut self,
@@ -171,16 +174,12 @@ impl PublicationControl {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native parameter output is closing");
         }
-        let result = self.candidate_root.begin_native_parameter_change(
+        self.candidate_root.begin_native_parameter_change(
             binding,
             id,
             normalized,
             !self.status.playing.load(Acquire),
-        )?;
-        if self.status.closing.load(Acquire) {
-            return Err("native parameter output is closing");
-        }
-        Ok(result)
+        )
     }
     /// True only if the exact queued input was withdrawn before processing.
     /// An in-flight operation must reach its real terminal; this does not roll
