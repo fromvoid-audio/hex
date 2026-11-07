@@ -334,7 +334,7 @@ mod benchmark {
     #[test]
     #[ignore = "release-only targeted delivery microbenchmark"]
     fn output_delivery_cost_against_legacy_scalar_loop() {
-        assert!(!cfg!(debug_assertions), "run with --release");
+        assert!(!black_box(cfg!(debug_assertions)), "run with --release");
         for mode in 0..4 {
             let source = Source {
                 ids: if mode < 2 {
