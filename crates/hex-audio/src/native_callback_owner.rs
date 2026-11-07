@@ -68,7 +68,7 @@ impl ErrorCallbackOwner {
     pub(crate) fn report(&self) {
         self.status
             .device_fault
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 }
 enum GuardState<T> {
@@ -518,9 +518,12 @@ impl NativeRetirement {
         Ok(())
     }
     /// Independent from possibly poisoned endpoint/callback owners. First publication wins.
-    pub(crate) fn fail_scalar_receipts(&self) {
+    pub(crate) fn fail_retained_receipts(&self) {
         if let Some(endpoints) = self.terminals.as_ref().and_then(|t| t.endpoints.as_ref()) {
             endpoints.receipts.fail();
+            if let Some(signal) = endpoints.action_failure.as_ref() {
+                signal.retirement_unavailable();
+            }
         }
     }
     fn dispose_endpoints(&mut self) {
@@ -582,6 +585,31 @@ impl NativeRetirement {
                 .ok_or(())?
                 .receipts
                 .collect(client);
+        }
+        let action_outcomes = self
+            .client
+            .as_ref()
+            .is_some_and(|c| c.has_action_admission())
+            || self
+                .data
+                .as_ref()
+                .is_some_and(|data| data.callback.has_action_writer());
+        if action_outcomes {
+            if !self.completed_stream_handle
+                || self.scalar_release_status.is_none()
+                || self.client.is_none()
+                || self.data.is_none()
+            {
+                return Ok(false);
+            }
+            let client = self.client.as_mut().ok_or(())?;
+            let data = self.data.as_mut().ok_or(())?;
+            data.callback.retire_action_outcomes_on_control(
+                client,
+                &FinalReleaseAuthority {
+                    root: self.root.root_id(),
+                },
+            )?;
         }
         self.dispose_endpoints();
         if self.states[0] == Disposal::Unreceived {
@@ -682,16 +710,16 @@ impl NativeRetirement {
         }
         // The constructor owner stays here through both actual carrier
         // destructors. A failure before this point cannot publish READY/reuse.
-        if let Some(returned) = self.final_active.take() {
-            if let Err(returned) = self.root.ingest_final(returned) {
-                self.final_active = Some(returned);
-                return Err(());
-            }
+        if let Some(returned) = self.final_active.take()
+            && let Err(returned) = self.root.ingest_final(returned)
+        {
+            self.final_active = Some(returned);
+            return Err(());
         }
         // Graph/domain work progresses even while the UI client remains live.
         // Only complete normal endpoint destruction can release the whole
         // native resource extent and its exclusive device lease.
-        let graphs_complete = self.root.finish_on_control();
+        let graphs_complete = crate::lifecycle::finish_retirement_cleanup(&self.root);
         let endpoints_complete = self.endpoint_states == [Disposal::Complete; 2];
         if endpoints_complete {
             self.terminals = None;

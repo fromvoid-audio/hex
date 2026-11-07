@@ -272,6 +272,10 @@ impl Queued {
     }
 }
 impl Bank {
+    pub(super) fn cleanup_failed(&self) -> bool {
+        self.slots.iter().any(|s| s.phase == Phase::Failed)
+    }
+
     pub(in crate::candidate_custody) fn backing_quote(
         reservation: AudioCandidatePublicationReservation,
     ) -> Result<usize, &'static str> {
@@ -832,15 +836,14 @@ impl super::Custody {
                 .position(|slot| slot.phase == Phase::Vacant)
                 .ok_or("constructor runtime cells are full")?
         };
-        if let Some(pending) = bank.publication.slots[index].preparation_reservation {
-            if summary.member_rows > pending.member_rows
+        if let Some(pending) = bank.publication.slots[index].preparation_reservation
+            && (summary.member_rows > pending.member_rows
                 || summary.transfer_rows > pending.transfer_rows
                 || summary.shared_resource_handles > pending.handle_rows
                 || retained > bank.publication.slots[index].retained
-                || peak > bank.publication.slots[index].peak
-            {
-                return Err("candidate exceeded its construction reservation");
-            }
+                || peak > bank.publication.slots[index].peak)
+        {
+            return Err("candidate exceeded its construction reservation");
         }
         let runtime_storage = bank.publication.slots[index]
             .streaming

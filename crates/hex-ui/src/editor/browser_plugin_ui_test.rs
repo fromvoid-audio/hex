@@ -3,7 +3,7 @@ use super::*;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn wait_for_plugin_scan(visual: &mut VisualTestContext, editor: &gpui::Entity<EditorView>) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         visual.run_until_parked();
         if editor.read_with(visual, |view, _| {
@@ -38,6 +38,103 @@ fn original_plugin_catalog(path: std::path::PathBuf) -> hex_plugin_catalog::Cata
         .record(path, Ok((report, "e".repeat(40))))
         .expect("validated original catalog");
     catalog
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[gpui::test]
+fn vst3_groups_are_visible_without_becoming_keyboard_items(cx: &mut TestAppContext) {
+    use crate::editor::browser::BrowserItemKey;
+    cx.update(crate::editor::bind_editor_keys);
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+    let physical = directory.0.canonicalize().unwrap();
+    let mut catalog = hex_plugin_catalog::Catalog::default();
+    for (module, name, role) in [
+        ("A-delay.vst3", "Space Delay", Some("Fx")),
+        ("Z-synth.vst3", "Zebra Synth", Some("Instrument")),
+        ("other.vst3", "Unknown Processor", None),
+    ] {
+        let mut entry = original_plugin_catalog(physical.join(module))
+            .entries
+            .remove(0);
+        let class = &mut entry
+            .last_good
+            .as_mut()
+            .unwrap()
+            .discovery
+            .as_mut()
+            .unwrap()
+            .classes[0];
+        class.name = name.into();
+        if let Some(role) = role {
+            class.class_flags = Some(0);
+            class.subcategories = Some(role.into());
+            class.class_vendor = Some("Original Vendor".into());
+            class.class_version = Some("1".into());
+            class.class_sdk_version = Some("3.8".into());
+        }
+        catalog.entries.push(entry);
+    }
+    catalog.validate().unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    wait_for_plugin_scan(&mut visual, &editor);
+    editor.update(&mut visual, |view, cx| {
+        view.select_browser_source(BrowserSection::Plugins, cx);
+        view.apply_plugin_catalog(catalog, cx);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let instruments = visual
+        .debug_bounds("browser-vst3-group-instruments")
+        .unwrap();
+    let effects = visual.debug_bounds("browser-vst3-group-effects").unwrap();
+    let first = visual.debug_bounds("browser-vst3-row-0").unwrap();
+    let second = visual.debug_bounds("browser-vst3-row-1").unwrap();
+    assert!(instruments.origin.y < first.origin.y && first.origin.y < effects.origin.y);
+    assert!(effects.origin.y < second.origin.y);
+    assert!(
+        visual
+            .debug_bounds("browser-vst3-group-other vst3")
+            .is_some()
+    );
+    visual.simulate_click(first.center(), Modifiers::default());
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(
+            view.browser_selected_item(cx),
+            Some(BrowserItemKey::Plugin(
+                physical.join("Z-synth.vst3"),
+                Some([1; 16])
+            ))
+        );
+    });
+    visual.simulate_keystrokes("down");
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(
+            view.browser_selected_item(cx),
+            Some(BrowserItemKey::Plugin(
+                physical.join("A-delay.vst3"),
+                Some([1; 16])
+            ))
+        );
+    });
+    editor.update(&mut visual, |view, cx| {
+        view.browser
+            .search
+            .update(cx, |input, cx| input.set_text("space", cx));
+        view.sync_browser_query(cx);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("browser-vst3-group-effects").is_some());
+    assert!(
+        visual
+            .debug_bounds("browser-vst3-group-instruments")
+            .is_none()
+    );
+    assert!(
+        visual
+            .debug_bounds("browser-vst3-group-other vst3")
+            .is_none()
+    );
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -112,6 +209,14 @@ fn browser_vst3_effect_double_click_reaches_worker_and_unavailable_terminal_reti
 fn unavailable_effect_activation(cx: &mut TestAppContext, pointer: bool) {
     cx.update(crate::editor::bind_editor_keys);
     let (handle, editor, track, directory, _) = browser_drag_fixture(cx);
+    let mut log = pointer.then(|| {
+        let log = hex_diagnostics::SessionLog::start(directory.0.join("vst3-diagnostics")).unwrap();
+        cx.update(|cx| {
+            crate::diagnostics::install_session_log(cx, Ok(log.handle()));
+            crate::diagnostics::install_action_diagnostics(cx, true);
+        });
+        log
+    });
     let module = directory.0.canonicalize().unwrap().join("Original.vst3");
     let mut catalog = original_plugin_catalog(module);
     let class = &mut catalog.entries[0]
@@ -136,7 +241,7 @@ fn unavailable_effect_activation(cx: &mut TestAppContext, pointer: bool) {
         view.selected_track = Some(track);
         view.select_browser_source(BrowserSection::Plugins, cx);
     });
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         visual.run_until_parked();
         if editor.read_with(&visual, |view, _| !view.browser.plugins.loading) {
@@ -173,7 +278,7 @@ fn unavailable_effect_activation(cx: &mut TestAppContext, pointer: bool) {
             view.error, view.status, view.selected_track, view.state.as_ref().map(|s| (s.revision, s.project.tracks().len()))
         );
     });
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         cx.background_executor
             .advance_clock(std::time::Duration::from_millis(16));
@@ -203,6 +308,21 @@ fn unavailable_effect_activation(cx: &mut TestAppContext, pointer: bool) {
         );
         assert_eq!(view.worker_requests_pending, 0);
     });
+    if let Some(log) = log.as_mut() {
+        log.shutdown().unwrap();
+        let trace = std::fs::read_to_string(log.path()).unwrap();
+        let records: Vec<_> = trace
+            .lines()
+            .filter(|line| line.contains("vst3_load"))
+            .collect();
+        assert_eq!(records.len(), 2);
+        assert!(records[0].contains("stage=submitted"));
+        assert!(records[1].contains("stage=refused"));
+        for record in records {
+            assert!(record.contains("Original Processor") && record.contains("rate_hz=48000"));
+            assert!(!record.contains("Original.vst3"));
+        }
+    }
 }
 
 #[gpui::test]
@@ -227,7 +347,7 @@ fn browser_vst3_restores_searchable_typed_rows_and_enter_refuses_unavailable_inv
         view.select_browser_source(BrowserSection::Plugins, cx);
         view.start_plugin_catalog(cx);
     });
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         visual.run_until_parked();
         if editor.read_with(&visual, |view, _| !view.browser.plugins.loading) {
@@ -443,7 +563,7 @@ fn browser_vst3_selected_native_worker_persists_real_row_and_reload_without_fore
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn wait_plugin_browser(visual: &mut VisualTestContext, editor: &gpui::Entity<EditorView>) -> bool {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         visual.run_until_parked();
         if editor.read_with(visual, |view, _| {
@@ -524,24 +644,29 @@ fn browser_vst3_folder_scan(cx: &mut TestAppContext, custom: bool) {
         cx.notify();
     });
     visual.run_until_parked();
-    let button = visual
-        .debug_bounds(if custom {
-            "browser-vst3-scan-custom"
-        } else {
-            "browser-vst3-scan-standard"
-        })
-        .expect("rendered folder action");
-    visual.simulate_mouse_down(button.center(), MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(button.center(), MouseButton::Left, Modifiers::default());
     if custom {
+        let gear = visual.debug_bounds("browser-control-⚙").unwrap();
+        visual.simulate_click(gear.center(), Modifiers::default());
+        visual.run_until_parked();
+        for source in ["browser-vst3-source-system", "browser-vst3-source-user"] {
+            let flag = visual.debug_bounds(source).unwrap();
+            visual.simulate_click(flag.center(), Modifiers::default());
+            visual.run_until_parked();
+        }
+        editor.read_with(&visual, |view, _| {
+            let sources = &view.browser.source_preferences.vst3_scan_sources;
+            assert!(!sources.system && !sources.user);
+        });
+        let choose = visual.debug_bounds("browser-vst3-choose-folder").unwrap();
+        visual.simulate_click(choose.center(), Modifiers::default());
         visual.run_until_parked();
         assert!(visual.did_prompt_for_paths());
-        assert!(
-            !editor.read_with(&visual, |view, _| view.browser.plugins.busy),
-            "picker alone must not execute foreign code"
-        );
         visual.simulate_paths_selection(Some(vec![roots]));
+        visual.run_until_parked();
+        assert!(!editor.read_with(&visual, |view, _| view.browser.plugins.busy));
     }
+    let scan = visual.debug_bounds("browser-vst3-scan").unwrap();
+    visual.simulate_click(scan.center(), Modifiers::default());
     if !wait_plugin_browser(&mut visual, &editor) {
         std::mem::forget(directory);
         panic!(
@@ -563,6 +688,7 @@ fn browser_vst3_folder_scan(cx: &mut TestAppContext, custom: bool) {
         assert_eq!(rows[0].cid, rows[1].cid);
     });
     assert!(visual.debug_bounds("browser-vst3-row-1").is_some());
+    assert!(visual.debug_bounds("browser-vst3-scan-activity").is_none());
     editor.update(&mut visual, |view, cx| {
         view.browser
             .search
@@ -572,7 +698,8 @@ fn browser_vst3_folder_scan(cx: &mut TestAppContext, custom: bool) {
     editor.read_with(&visual, |view, cx| {
         let rows = view.browser_visible_plugins(cx);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].status, "vst3 instrument · hosting unavailable");
+        assert!(rows[0].selection.is_some());
+        assert_eq!(rows[0].status, "vst3 instrument · drag or enter to insert");
     });
     let stored = std::fs::read(physical.join("plugin-catalog.json")).unwrap();
     editor.update(&mut visual, |view, cx| view.start_plugin_catalog(cx));
@@ -605,9 +732,12 @@ fn browser_vst3_custom_picker_cancel_and_error_preserve_catalog_without_scanner(
         view.select_browser_source(BrowserSection::Plugins, cx);
         cx.notify();
     });
+    visual.run_until_parked();
+    let gear = visual.debug_bounds("browser-control-⚙").unwrap();
+    visual.simulate_click(gear.center(), Modifiers::default());
     for error in [false, true] {
         visual.run_until_parked();
-        let bounds = visual.debug_bounds("browser-vst3-scan-custom").unwrap();
+        let bounds = visual.debug_bounds("browser-vst3-choose-folder").unwrap();
         visual.simulate_click(bounds.center(), Modifiers::default());
         visual.run_until_parked();
         assert!(visual.did_prompt_for_paths());
@@ -636,7 +766,7 @@ fn browser_vst3_sidebar_visibility_selects_real_source_and_preserves_search_hist
     cx.update(crate::editor::bind_editor_keys);
     let (handle, editor, _track, directory, _wave) = browser_drag_fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         visual.run_until_parked();
         if editor.read_with(&visual, |view, _| !view.browser.plugins.loading) {

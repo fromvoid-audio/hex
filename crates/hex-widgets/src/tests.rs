@@ -4,8 +4,8 @@ use crate::{
 };
 use gpui::{
     AppContext, Context, Empty, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    Modifiers, MouseButton, MouseDownEvent, ParentElement, Render, Styled, TestAppContext,
-    VisualTestContext, Window, div, point, px, size,
+    Modifiers, MouseButton, MouseDownEvent, ParentElement, Render, StatefulInteractiveElement,
+    Styled, TestAppContext, VisualTestContext, Window, div, point, px, size,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -27,6 +27,8 @@ pub(super) const STYLE: ControlStyle = ControlStyle {
     focus_marker: 0xaaaaaa,
     dial_rail: 0x000000,
     hover: 0x404040,
+    selection: 0x3350a0,
+    invalid: 0xff554c,
     font_size: 10.0,
     text_case: crate::TextCase::Preserve,
 };
@@ -231,7 +233,7 @@ impl Render for TestRoot {
     }
 }
 
-fn open_numeric_control(
+pub(crate) fn open_numeric_control(
     cx: &mut TestAppContext,
     kind: NumericControlKind,
 ) -> (gpui::AnyWindowHandle, Entity<NumericControl>) {
@@ -754,6 +756,39 @@ fn shift_changes_adjustment_sensitivity_without_jumping(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
+fn invalid_value_border_paints_the_injected_style_color(cx: &mut TestAppContext) {
+    const INVALID: u32 = 0x00ff7f;
+    let (handle, control) = open_numeric_control(cx, NumericControlKind::Knob);
+    control.update(cx, |control, cx| {
+        control
+            .set_external_style(
+                ControlStyle {
+                    invalid: INVALID,
+                    ..STYLE
+                },
+                cx,
+            )
+            .expect("valid style");
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let value = visual
+        .debug_bounds("test-control-value")
+        .expect("numeric value field")
+        .center();
+    visual.simulate_click(value, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("invalid");
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    control.read_with(cx, |control, _| assert!(control.invalid_text));
+    let (border, _, _) = visual
+        .rendered_border("test-control-value")
+        .expect("value field border");
+    assert_eq!(border, gpui::Hsla::from(gpui::rgb(INVALID)));
+}
+
+#[gpui::test]
 fn rendered_knob_reset_emits_one_complete_default_gesture(cx: &mut TestAppContext) {
     let (handle, control) = open_numeric_control(cx, NumericControlKind::Knob);
     let phases = Rc::new(RefCell::new(Vec::new()));
@@ -1041,7 +1076,6 @@ fn numeric_arrow_keys_step_idle_and_typed_values_across_presentations(cx: &mut T
         NumericControlPresentation::FilledSlider,
         NumericControlPresentation::InlineValue,
         NumericControlPresentation::VerticalSlider,
-        NumericControlPresentation::DeviceMeters,
     ] {
         let spec =
             NumericSpec::new(-100.0, 100.0, 0.0, NumericScale::Linear, 2, None::<&str>).unwrap();
@@ -1049,13 +1083,10 @@ fn numeric_arrow_keys_step_idle_and_typed_values_across_presentations(cx: &mut T
             open_numeric_control_appearance(cx, presentation.kind(), spec, 0.0, presentation);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
-        let value = visual.debug_bounds("test-control-value");
-        let target = value.unwrap_or_else(|| {
-            visual
-                .debug_bounds("test-control")
-                .expect("numeric control")
-        });
-        visual.simulate_click(target.center(), Modifiers::default());
+        let value = visual
+            .debug_bounds("test-control-value")
+            .expect("numeric text input");
+        visual.simulate_click(value.center(), Modifiers::default());
         visual.simulate_keystrokes("escape up");
         assert_eq!(
             control.read_with(cx, |c, _| c.value()),
@@ -1068,14 +1099,6 @@ fn numeric_arrow_keys_step_idle_and_typed_values_across_presentations(cx: &mut T
             0.9,
             "{presentation:?}: fine step"
         );
-        let Some(value) = value else {
-            assert_eq!(
-                presentation,
-                NumericControlPresentation::DeviceMeters,
-                "only the bare meter lacks a text input"
-            );
-            continue;
-        };
 
         let events = Rc::new(RefCell::new(Vec::new()));
         let observed = events.clone();
@@ -1591,7 +1614,7 @@ fn selector_popup_flips_above_near_window_bottom(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn selector_popup_caps_many_choices_to_window_height(cx: &mut TestAppContext) {
-    let (handle, selector, _) = open_clipped_selector(cx, 0.0, 128);
+    let (handle, selector, _) = open_clipped_selector(cx, 0.0, 257);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(240.0), px(80.0)));
     visual.run_until_parked();
@@ -1966,252 +1989,93 @@ fn pan_marker_resets_to_neutral_without_starting_drag(cx: &mut TestAppContext) {
     assert_eq!(phases.borrow().len(), 3);
 }
 
-#[gpui::test]
-fn both_meter_gain_controls_reset_and_accept_readouts_during_a_press(cx: &mut TestAppContext) {
-    for index in 0..2 {
-        let spec = NumericSpec::new(-60.0, 24.0, 0.0, NumericScale::Linear, 2, Some("db")).unwrap();
-        let (handle, control) = open_numeric_control_appearance(
-            cx,
-            NumericControlKind::VerticalSlider,
-            spec,
-            -12.0,
-            NumericControlPresentation::DeviceMeters,
-        );
-        control.update(cx, |control, cx| {
-            control.set_meter_readout(
-                crate::DeviceMeterReadout {
-                    index,
-                    height: 184.0,
-                    ..Default::default()
-                },
-                cx,
-            )
-        });
-        let mut visual = VisualTestContext::from_window(handle, cx);
-        visual.run_until_parked();
-        let selector = if index == 0 {
-            "test-control-input-meter"
-        } else {
-            "test-control-output-meter"
-        };
-        let bounds = visual.debug_bounds(selector).unwrap();
-        let position = point(
-            bounds.origin.x + bounds.size.width / 2.0,
-            bounds.origin.y + bounds.size.height / 2.0,
-        );
-        visual.simulate_event(MouseDownEvent {
-            position,
-            modifiers: Modifiers::default(),
-            button: MouseButton::Left,
-            click_count: 1,
-            first_mouse: false,
-        });
-        control.update(cx, |control, cx| {
-            assert!(control.is_interacting());
-            control.set_meter_readout(
-                crate::DeviceMeterReadout {
-                    index,
-                    height: 184.0,
-                    levels: [0.5, 0.25],
-                    ..Default::default()
-                },
-                cx,
-            );
-            assert!(control.is_interacting());
-        });
-        visual.run_until_parked();
-        let fill = visual
-            .debug_bounds(if index == 0 {
-                "test-control-input-meter-fill"
-            } else {
-                "test-control-output-meter-fill"
-            })
-            .unwrap();
-        assert!(fill.size.height > px(100.0));
-        // A native double click has a matching release between its downs.
-        visual.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
-        visual.simulate_event(MouseDownEvent {
-            position,
-            modifiers: Modifiers::default(),
-            button: MouseButton::Left,
-            click_count: 2,
-            first_mouse: false,
-        });
-        control.read_with(cx, |control, _| assert_eq!(control.value(), 0.0));
+struct StereoMeterFixture {
+    meter: crate::StereoPeakMeter,
+    clicks: usize,
+}
+impl Render for StereoMeterFixture {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("stereo-host")
+            .h(px(120.0))
+            .flex()
+            .on_click(cx.listener(|fixture, _, _, _| fixture.clicks += 1))
+            .child(crate::stereo_peak_meter(
+                "meter".into(),
+                self.meter.clone(),
+                STYLE,
+            ))
     }
 }
 
 #[gpui::test]
-fn device_meter_colors_follow_samples_and_held_evidence_not_gain_position(cx: &mut TestAppContext) {
-    let spec = NumericSpec::new(-60.0, 24.0, 0.0, NumericScale::Linear, 2, Some("db")).unwrap();
-    let (handle, control) = open_numeric_control_appearance(
-        cx,
-        NumericControlKind::VerticalSlider,
-        spec,
-        24.0,
-        NumericControlPresentation::DeviceMeters,
+fn stereo_peak_meter_draws_independent_channels_and_passes_clicks_to_its_host(
+    cx: &mut TestAppContext,
+) {
+    let colors = crate::MeterColors {
+        signal: 0x33bb77,
+        near_peak: 0xffcc33,
+        clipping: 0xee3344,
+    };
+    let reading = |levels, held| crate::StereoPeakMeter {
+        levels,
+        held,
+        tooltip: "output".into(),
+        colors,
+    };
+    let handle = cx.add_window(|_, _| StereoMeterFixture {
+        meter: reading([0.001, 1.0], [0.5, 1.2]),
+        clicks: 0,
+    });
+    let view = handle.root(cx).unwrap();
+    let mut visual = VisualTestContext::from_window(*handle, cx);
+    visual.simulate_resize(size(px(80.0), px(160.0)));
+    visual.run_until_parked();
+    let left = visual.debug_bounds("meter-left").unwrap();
+    let right = visual.debug_bounds("meter-right").unwrap();
+    assert_eq!(left.size.width, px(crate::STEREO_PEAK_BAR_WIDTH));
+    assert_eq!(right.size.width, px(crate::STEREO_PEAK_BAR_WIDTH));
+    assert_eq!(right.left() - left.right(), px(crate::STEREO_PEAK_BAR_GAP));
+    assert_eq!(left.size.height, right.size.height);
+    // -60 dBFS is the empty floor; unity fills the bar without implying clipping.
+    assert_eq!(
+        visual.debug_bounds("meter-left-fill").unwrap().size.height,
+        px(0.0)
     );
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    for index in 0..2 {
-        let side = if index == 0 { "input" } else { "output" };
-        let fill = Box::leak(format!("test-control-{side}-meter-fill").into_boxed_str());
-        let peak = Box::leak(format!("test-control-{side}-meter-peak").into_boxed_str());
-        let above = Box::leak(format!("test-control-{side}-meter-above").into_boxed_str());
-        let well = Box::leak(format!("test-control-{side}-meter").into_boxed_str());
-        for (level, held, color, overload) in [
-            (0.1, 0.2, 0x33bb77, false),
-            (crate::METER_NEAR_PEAK_AMPLITUDE, 0.75, 0xffcc33, false),
-            (1.0, 1.0, 0xffcc33, false),
-            (0.1, 1.2, 0x33bb77, true),
-            (1.01, 1.01, 0xee3344, true),
-            (0.1, 1.2, 0x33bb77, true),
-        ] {
-            control.update(cx, |control, cx| {
-                control.set_meter_readout(
-                    crate::DeviceMeterReadout {
-                        index,
-                        height: 184.0,
-                        gain_db: 24.0,
-                        levels: [level; 2],
-                        held: [held; 2],
-                        signal: 0x33bb77,
-                        warning: 0xffcc33,
-                        clipping: 0xee3344,
-                        ..Default::default()
-                    },
-                    cx,
-                )
-            });
-            visual.run_until_parked();
-            assert_eq!(
-                visual.rendered_background(fill),
-                Some(gpui::rgb(color).into())
-            );
-            assert_eq!(visual.debug_bounds(above).is_some(), overload);
-            let peak_bounds = visual.debug_bounds(peak).unwrap();
-            let well_bounds = visual.debug_bounds(well).unwrap();
-            assert!(
-                peak_bounds.top() >= well_bounds.top()
-                    && peak_bounds.bottom() <= well_bounds.bottom()
-            );
-            if held > 1.0 {
-                assert_eq!(
-                    visual.rendered_background(peak),
-                    Some(gpui::rgb(0xee3344).into())
-                );
-            }
-        }
-        let cap = visual.debug_bounds(above).expect("held clipping cap");
-        visual.simulate_click(cap.center(), Modifiers::default());
-        visual.run_until_parked();
-        assert_eq!(
-            control.read_with(cx, |control, _| control.value()),
-            24.0,
-            "clearing clipping must not edit gain"
-        );
-        control.update(cx, |control, cx| {
-            control.set_meter_readout(
-                crate::DeviceMeterReadout {
-                    index,
-                    height: 184.0,
-                    levels: [f32::NAN; 2],
-                    held: [f32::INFINITY; 2],
-                    ..Default::default()
-                },
-                cx,
-            )
-        });
-        visual.run_until_parked();
-        assert_eq!(visual.debug_bounds(fill).unwrap().size.height, px(0.0));
-        assert!(visual.debug_bounds(above).is_none() && visual.debug_bounds(peak).is_none());
-    }
-}
+    assert_eq!(
+        visual.debug_bounds("meter-right-fill").unwrap().size.height,
+        right.size.height
+    );
+    assert_eq!(
+        visual.rendered_background("meter-right-fill"),
+        Some(gpui::rgb(colors.near_peak).into())
+    );
+    assert_eq!(
+        visual.rendered_background("meter-left-peak"),
+        Some(gpui::rgb(STYLE.text).into())
+    );
+    assert_eq!(
+        visual.rendered_background("meter-right-peak"),
+        Some(gpui::rgb(colors.clipping).into())
+    );
 
-#[gpui::test]
-fn meter_gain_handle_protrudes_without_losing_endpoints_or_pointer_input(cx: &mut TestAppContext) {
-    for index in 0..2 {
-        let spec = NumericSpec::new(-60.0, 24.0, 0.0, NumericScale::Linear, 2, Some("db")).unwrap();
-        let (handle, control) = open_numeric_control_appearance(
-            cx,
-            NumericControlKind::VerticalSlider,
-            spec,
-            -12.0,
-            NumericControlPresentation::DeviceMeters,
-        );
-        let events = Rc::new(RefCell::new(Vec::new()));
-        let captured = events.clone();
-        let _subscription = cx.update(|app| {
-            app.subscribe(&control, move |_, event, _| {
-                captured.borrow_mut().push(*event)
-            })
-        });
-        let mut visual = VisualTestContext::from_window(handle, cx);
-        let well_selector = if index == 0 {
-            "test-control-input-meter"
-        } else {
-            "test-control-output-meter"
-        };
-        let handle_selector = if index == 0 {
-            "test-control-input-meter-gain-handle"
-        } else {
-            "test-control-output-meter-gain-handle"
-        };
-        for gain in [-60.0, 24.0, -12.0] {
-            control.update(cx, |control, cx| {
-                control.set_external_value(gain, cx).unwrap();
-                control.set_meter_readout(
-                    crate::DeviceMeterReadout {
-                        index,
-                        height: 184.0,
-                        gain_db: gain as f32,
-                        warning: STYLE.accent,
-                        ..Default::default()
-                    },
-                    cx,
-                );
-            });
-            visual.run_until_parked();
-            let well = visual.debug_bounds(well_selector).unwrap();
-            let handle = visual
-                .debug_bounds(handle_selector)
-                .expect("visible gain handle");
-            assert_eq!(well.size.width, px(8.0));
-            assert_eq!(handle.size.width, px(10.0));
-            assert_eq!(handle.size.height, px(2.0));
-            assert_eq!(handle.left(), well.left());
-            assert_eq!(handle.right(), well.right() + px(2.0));
-            assert!(handle.top() >= well.top() && handle.bottom() <= well.bottom());
-            if gain == -60.0 {
-                assert_eq!(handle.bottom(), well.bottom());
-            }
-            if gain == 24.0 {
-                assert_eq!(handle.top(), well.top());
-            }
-        }
-        let well = visual.debug_bounds(well_selector).unwrap();
-        let handle = visual.debug_bounds(handle_selector).unwrap();
-        // Start on the protruding portion, outside the signal well.
-        let start = point(well.right() + px(1.0), handle.center().y);
-        let moved = point(start.x, start.y - px(24.0));
-        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-        visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
-        visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
-        control.read_with(cx, |control, _| {
-            assert!(control.value() > -12.0);
-            assert!(!control.is_interacting());
-        });
-        let phases: Vec<_> = events.borrow().iter().map(|event| event.phase).collect();
-        assert_eq!(phases.first(), Some(&crate::NumericEventPhase::Begin));
-        assert!(phases.contains(&crate::NumericEventPhase::Change));
-        assert_eq!(phases.last(), Some(&crate::NumericEventPhase::Commit));
-        let count = events.borrow().len();
-        control.update(cx, |control, cx| control.set_enabled(false, cx));
-        visual.run_until_parked();
-        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-        visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
-        visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
-        assert_eq!(events.borrow().len(), count);
-    }
+    visual.simulate_click(right.center(), Modifiers::default());
+    view.read_with(cx, |fixture, _| assert_eq!(fixture.clicks, 1));
+    view.update(cx, |fixture, cx| {
+        fixture.meter = reading([f32::NAN, 2.0], [f32::INFINITY, 0.0]);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        visual.debug_bounds("meter-left-fill").unwrap().size.height,
+        px(0.0)
+    );
+    assert_eq!(
+        visual.rendered_background("meter-right-fill"),
+        Some(gpui::rgb(colors.clipping).into())
+    );
+    assert!(visual.debug_bounds("meter-left-peak").is_none());
+    assert!(visual.debug_bounds("meter-right-peak").is_none());
 }
 
 #[gpui::test]
@@ -3019,10 +2883,9 @@ fn meter_fader_input_fill_and_ceiling_triangle_share_calibrated_bounds(cx: &mut 
     control.update(cx, |control, cx| {
         control.set_meter_readout(
             crate::DeviceMeterReadout {
-                levels: [10.0_f32.powf(-6.0 / 20.0), 0.0],
+                level: 10.0_f32.powf(-6.0 / 20.0),
                 signal: 0x00ff00,
                 clipping: 0xff0000,
-                ..Default::default()
             },
             cx,
         )

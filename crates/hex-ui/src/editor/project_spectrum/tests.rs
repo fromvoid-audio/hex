@@ -42,11 +42,9 @@ fn result(view: &EditorView, now: Instant) -> PublishedProjectSpectrum {
             .map(|i| hex_audio::spectrum::SpectrumFrame {
                 sample_rate_hz: 48_000,
                 bins_dbfs: [-6.0 - i as f32 * 0.25; hex_audio::spectrum::SPECTRUM_BANDS],
+                peak_dbfs: [-6.0 - i as f32 * 0.25; hex_audio::spectrum::SPECTRUM_BANDS],
             })
-            .collect::<Vec<_>>()
-            .into_boxed_slice()
-            .try_into()
-            .unwrap(),
+            .collect(),
     }
 }
 #[gpui::test]

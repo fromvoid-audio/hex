@@ -4,7 +4,7 @@ use super::creation_tests::{fixture, pump};
 use gpui::{Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
 use hex_project::{BeatTime, ClipId, Command, MidiNoteInsert};
 use hex_session::service::{Event, Request};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 fn beat(value: f64) -> BeatTime {
     BeatTime::from_raw((value * BeatTime::ONE.raw() as f64) as u64)
@@ -21,7 +21,7 @@ fn position(
             roll.origin.x
                 + px(1.0)
                 + (roll.size.width - px(2.0))
-                    * ((beat * BeatTime::ONE.raw() as f64 - v.piano_beat_start.raw() as f64)
+                    * ((beat * BeatTime::ONE.raw() as f64 - v.piano_beat_start as f64)
                         / v.piano_beat_span.raw() as f64) as f32,
             roll.origin.y
                 + px(1.0)
@@ -60,7 +60,7 @@ fn bodies(editor: &Entity<EditorView>, visual: &mut VisualTestContext) -> Vec<[i
     result
 }
 fn terminal(editor: &Entity<EditorView>, visual: &mut VisualTestContext) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = editor.read_with(&*visual, |v, _| v.service.try_event()) {
             if event.request_complete {
@@ -116,13 +116,18 @@ fn released_note_move_copy_and_both_resize_edges_keep_geometry_through_real_term
         (true, false, 1, 0.5),
         (false, true, 0, 2.0),
         (true, true, 0, 1.5),
+        (false, false, 0, 4.5),
+        (true, false, 0, 4.5),
     ]
     .into_iter()
     .enumerate()
     {
         let (mut visual, editor, _environment, clip) = fixture(cx);
         seed(&editor, &mut visual, clip);
+        let beyond_source = delta > 4.0;
+        let span = if beyond_source { 8.0 } else { 4.0 };
         let before = editor.update(&mut visual, |v, cx| {
+            v.piano_beat_span = beat(span);
             let source = v
                 .state
                 .as_ref()
@@ -160,7 +165,7 @@ fn released_note_move_copy_and_both_resize_edges_keep_geometry_through_real_term
             down.x -= px(1.0);
         }
         let roll = visual.debug_bounds("midi-note-roll").unwrap();
-        let end = down + point((roll.size.width - px(2.0)) * (delta / 4.0) as f32, px(0.0));
+        let end = down + point((roll.size.width - px(2.0)) * (delta / span) as f32, px(0.0));
         let modifiers = Modifiers {
             alt: copy,
             ..Default::default()
@@ -174,7 +179,7 @@ fn released_note_move_copy_and_both_resize_edges_keep_geometry_through_real_term
             held, baseline,
             "case {index} must actually move/resize/copy"
         );
-        if index == 0 {
+        if index == 0 || beyond_source {
             editor.update(&mut visual, |v, _| {
                 let tuning = v.state.as_ref().unwrap().project.tuning();
                 v.tuning.client.begin(v.project_generation, tuning).unwrap();
@@ -200,7 +205,7 @@ fn released_note_move_copy_and_both_resize_edges_keep_geometry_through_real_term
                 "UI has not received the canonical terminal"
             );
         });
-        if index == 0 {
+        if index == 0 || beyond_source {
             editor.read_with(&visual, |v, _| {
                 assert_eq!(
                     v.pending_requests.len(),
@@ -210,6 +215,18 @@ fn released_note_move_copy_and_both_resize_edges_keep_geometry_through_real_term
                 let command = v.last_enqueued_edit.clone().unwrap();
                 assert!(v.pending_midi_drag_matches(&Request::Edit(command.clone())));
                 assert!(!v.pending_midi_drag_matches(&Request::Undo));
+                if beyond_source {
+                    let Command::UpdateMidiNotesWithSourceExtent { clip, mut notes } = command
+                    else {
+                        panic!("out-of-source move must grow canonical source extent");
+                    };
+                    assert!(notes.iter().all(|note| note.start >= beat(5.0)));
+                    notes[0].velocity -= 1;
+                    assert!(!v.pending_midi_drag_matches(&Request::Edit(
+                        Command::UpdateMidiNotesWithSourceExtent { clip, notes }
+                    )));
+                    return;
+                }
                 let Command::UpdateMidiNote {
                     note,
                     start,
@@ -232,7 +249,7 @@ fn released_note_move_copy_and_both_resize_edges_keep_geometry_through_real_term
                     }))
                 );
             });
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = crate::test_wait::hang_deadline();
             while editor.read_with(&visual, |v, _| !v.pending_requests.is_empty()) {
                 editor.update(&mut visual, |v, cx| {
                     v.tick(cx);
@@ -244,7 +261,10 @@ fn released_note_move_copy_and_both_resize_edges_keep_geometry_through_real_term
                     held,
                     "earlier tuning completion cannot retire note display"
                 );
-                assert!(Instant::now() < deadline);
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "released_note_move_copy_and_both_resize_edges_keep_geometry_through_real_terminal: hang guard expired"
+                );
                 std::thread::yield_now();
             }
         }
@@ -273,6 +293,31 @@ fn released_note_move_copy_and_both_resize_edges_keep_geometry_through_real_term
         }
         let accepted = editor.read_with(&visual, |v, _| {
             assert!(v.pending_midi_drag.is_none());
+            let project = &v.state.as_ref().unwrap().project;
+            let source = project.midi_source(clip).unwrap();
+            if beyond_source {
+                let window = project.midi_clip(clip).unwrap();
+                assert_eq!((window.start(), window.length()), (beat(0.0), beat(4.0)));
+                assert_eq!(source.source_start(), before.source_start());
+                assert_eq!(source.loop_start(), before.loop_start());
+                assert_eq!(source.loop_end(), before.loop_end());
+                assert_eq!(source.source_length(), beat(if group { 6.5 } else { 5.5 }));
+                for original in before.notes().iter().take(if group { 2 } else { 1 }) {
+                    let moved = source
+                        .notes()
+                        .iter()
+                        .find(|n| n.id() == original.id())
+                        .unwrap();
+                    assert_eq!(
+                        moved.start().raw(),
+                        original.start().raw() + beat(delta).raw()
+                    );
+                    assert_eq!(
+                        (moved.duration(), moved.velocity(), moved.channel()),
+                        (original.duration(), original.velocity(), original.channel())
+                    );
+                }
+            }
             v.state
                 .as_ref()
                 .unwrap()
@@ -360,6 +405,11 @@ fn held_note_cancel_creates_no_released_custody_or_history(cx: &mut TestAppConte
     for blur in [false, true] {
         let (mut visual, editor, _environment, clip) = fixture(cx);
         seed(&editor, &mut visual, clip);
+        editor.update(&mut visual, |v, cx| {
+            v.piano_beat_span = beat(8.0);
+            cx.notify();
+        });
+        visual.run_until_parked();
         let before = editor.read_with(&visual, |v, _| {
             v.state
                 .as_ref()
@@ -370,7 +420,7 @@ fn held_note_cancel_creates_no_released_custody_or_history(cx: &mut TestAppConte
                 .clone()
         });
         let down = position(&editor, &mut visual, 0.75, 60);
-        let end = position(&editor, &mut visual, 2.75, 60);
+        let end = position(&editor, &mut visual, 5.25, 60);
         let baseline = bodies(&editor, &mut visual);
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
@@ -497,7 +547,7 @@ fn new_note_creation_keeps_released_geometry_until_its_real_terminal(cx: &mut Te
         let (mut visual, editor, _environment, clip) = fixture(cx);
         if grows {
             editor.update(&mut visual, |v, cx| {
-                v.piano_beat_start = beat(3.0);
+                v.piano_beat_start = i128::from(beat(3.0).raw());
                 cx.notify();
             });
             repaint(&editor, &mut visual);
@@ -600,3 +650,6 @@ mod note_capture_tests;
 
 #[path = "midi_draw_preview_ui_tests.rs"]
 mod stroke_preview_tests;
+
+#[path = "midi_source_prefix_ui_tests.rs"]
+mod source_prefix_tests;

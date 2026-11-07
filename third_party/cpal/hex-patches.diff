@@ -1,0 +1,353 @@
+--- cpal-0.17.3/src/host/coreaudio/macos/device.rs
++++ hex-patched/src/host/coreaudio/macos/device.rs
+@@ -14,7 +14,7 @@
+ use coreaudio::audio_unit::{AudioUnit, Element, Scope};
+ use objc2_audio_toolbox::{
+     kAudioOutputUnitProperty_CurrentDevice, kAudioOutputUnitProperty_EnableIO,
+-    kAudioUnitProperty_StreamFormat,
++    kAudioUnitProperty_MaximumFramesPerSlice, kAudioUnitProperty_StreamFormat,
+ };
+ use objc2_core_audio::kAudioDevicePropertyDeviceUID;
+ use objc2_core_audio::kAudioObjectPropertyElementMain;
+@@ -203,8 +203,23 @@
+     Ok(())
+ }
+ 
++#[cfg(test)]
++thread_local! {
++    static AUDIO_UNIT_CONSTRUCTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
++}
++
+ fn audio_unit_from_device(device: &Device, input: bool) -> Result<AudioUnit, coreaudio::Error> {
+-    let output_type = if !input && is_default_output_device(device) {
++    audio_unit_on_device(device, input, false)
++}
++
++fn audio_unit_on_device(
++    device: &Device,
++    input: bool,
++    pin_output: bool,
++) -> Result<AudioUnit, coreaudio::Error> {
++    #[cfg(test)]
++    AUDIO_UNIT_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
++    let output_type = if !pin_output && !input && is_default_output_device(device) {
+         coreaudio::audio_unit::IOType::DefaultOutput
+     } else {
+         coreaudio::audio_unit::IOType::HalOutput
+@@ -240,6 +255,41 @@
+     )?;
+ 
+     Ok(audio_unit)
++}
++
++#[cfg(test)]
++mod route_probe_regression {
++    use super::*;
++
++    #[test]
++    fn repeated_default_output_config_does_not_construct_audio_units() {
++        let device =
++            default_output_device().expect("this native regression needs a default output");
++        let before = AUDIO_UNIT_CONSTRUCTIONS.with(|count| count.get());
++        for _ in 0..4 {
++            let config = device
++                .default_output_config()
++                .expect("default output config");
++            assert!(config.sample_rate() > 0);
++        }
++        let after = AUDIO_UNIT_CONSTRUCTIONS.with(|count| count.get());
++        assert_eq!(
++            before, after,
++            "route polling must not construct Audio Units"
++        );
++    }
++
++    #[test]
++    fn direct_default_buffer_range_matches_existing_audio_unit_query() {
++        let device =
++            default_output_device().expect("this native regression needs a default output");
++        let config = device
++            .default_output_config()
++            .expect("default output config");
++        let unit = audio_unit_from_device(&device, false).expect("output Audio Unit");
++        let previous = get_io_buffer_frame_size_range(&unit).expect("Audio Unit buffer range");
++        assert_eq!(*config.buffer_size(), previous);
++    }
+ }
+ 
+ fn get_io_buffer_frame_size_range(
+@@ -320,19 +370,18 @@
+         sample_format: SampleFormat,
+         data_callback: D,
+         error_callback: E,
+-        timeout: Option<Duration>,
++        _timeout: Option<Duration>,
+     ) -> Result<Self::Stream, BuildStreamError>
+     where
+         D: FnMut(&mut Data, &OutputCallbackInfo) + Send + 'static,
+         E: FnMut(StreamError) + Send + 'static,
+     {
+-        Device::build_output_stream_raw(
+-            self,
++        self.build_output_stream_with_limit(
+             config,
+             sample_format,
+             data_callback,
+             error_callback,
+-            timeout,
++            None,
+         )
+     }
+ }
+@@ -688,8 +737,45 @@
+                     description: format!("unexpected scope (neither input nor output): {scope:?}"),
+                 }),
+             }?;
+-            let audio_unit = audio_unit_from_device(self, input)?;
+-            let buffer_size = get_io_buffer_frame_size_range(&audio_unit)?;
++            let buffer_size = if input {
++                let audio_unit = audio_unit_from_device(self, true)?;
++                get_io_buffer_frame_size_range(&audio_unit)?
++            } else {
++                // The range is a device property; querying it directly avoids
++                // constructing a temporary Audio Unit on each output config read.
++                let range_address = AudioObjectPropertyAddress {
++                    mSelector: kAudioDevicePropertyBufferFrameSizeRange,
++                    mScope: kAudioObjectPropertyScopeGlobal,
++                    mElement: kAudioObjectPropertyElementMain,
++                };
++                let mut range = AudioValueRange {
++                    mMinimum: 0.0,
++                    mMaximum: 0.0,
++                };
++                let mut range_size = mem::size_of::<AudioValueRange>() as u32;
++                // SAFETY: Core Audio receives the exact size and a valid pointer to
++                // one AudioValueRange. Check both status and returned size before use.
++                let status = AudioObjectGetPropertyData(
++                    self.audio_device_id,
++                    NonNull::from(&range_address),
++                    0,
++                    null(),
++                    NonNull::from(&mut range_size),
++                    NonNull::from(&mut range).cast(),
++                );
++                default_config_error_from_os_status(status)?;
++                if range_size as usize != mem::size_of::<AudioValueRange>() {
++                    return Err(DefaultStreamConfigError::BackendSpecific {
++                        err: BackendSpecificError {
++                            description: "invalid device buffer range size".to_string(),
++                        },
++                    });
++                }
++                SupportedBufferSize::Range {
++                    min: range.mMinimum as u32,
++                    max: range.mMaximum as u32,
++                }
++            };
+ 
+             let config = SupportedStreamConfig {
+                 sample_rate: asbd.mSampleRate as _,
+@@ -843,19 +929,65 @@
+         Ok(stream)
+     }
+ 
+-    fn build_output_stream_raw<D, E>(
++    /// Construct a fixed-buffer stream with a verified client-frame ceiling.
++    /// The hardware rate is observed separately from the client rate.
++    pub fn build_bounded_output_stream<T, D, E>(
++        &self,
++        config: &StreamConfig,
++        device_rate: SampleRate,
++        client_limit: u16,
++        mut data_callback: D,
++        error_callback: E,
++    ) -> Result<Stream, BuildStreamError>
++    where
++        T: crate::SizedSample,
++        D: FnMut(&mut [T], &OutputCallbackInfo) + Send + 'static,
++        E: FnMut(StreamError) + Send + 'static,
++    {
++        self.build_output_stream_with_limit(
++            config,
++            T::FORMAT,
++            move |data, info| {
++                if let Some(samples) = data.as_slice_mut::<T>() {
++                    data_callback(samples, info);
++                }
++            },
++            error_callback,
++            Some((device_rate, client_limit)),
++        )
++    }
++
++    fn build_output_stream_with_limit<D, E>(
+         &self,
+         config: &StreamConfig,
+         sample_format: SampleFormat,
+         mut data_callback: D,
+         error_callback: E,
+-        _timeout: Option<Duration>,
++        bounds: Option<(SampleRate, u16)>,
+     ) -> Result<Stream, BuildStreamError>
+     where
+         D: FnMut(&mut Data, &OutputCallbackInfo) + Send + 'static,
+         E: FnMut(StreamError) + Send + 'static,
+     {
+-        let mut audio_unit = audio_unit_from_device(self, false)?;
++        let mut rollback = if bounds.is_some() {
++            let BufferSize::Fixed(requested) = config.buffer_size else {
++                return Err(bounded_output_error("a fixed hardware buffer is required"));
++            };
++            Some(OutputBufferRollback {
++                device: self.audio_device_id,
++                original: device_buffer_frames(self.audio_device_id)?,
++                requested,
++            })
++        } else {
++            None
++        };
++        // Pin the verified stream to the device just negotiated. The host
++        // lifecycle owns reopening it after a default route change.
++        let mut audio_unit = audio_unit_on_device(self, false, bounds.is_some())?;
++        if bounds.is_some() {
++            // CoreAudio derives the converted client limit when initialized.
++            audio_unit.uninitialize()?;
++        }
+ 
+         // The scope and element for working with a device's output stream.
+         let scope = Scope::Input;
+@@ -863,6 +995,26 @@
+ 
+         // Configure device buffer (see comprehensive documentation in input stream above)
+         configure_stream_format_and_buffer(&mut audio_unit, config, sample_format, scope, element)?;
++        if let Some(((device_rate, _), buffer)) = bounds.zip(rollback.as_ref()) {
++            let hardware_frames = buffer.requested;
++            if self
++                .default_output_config()
++                .map_err(|error| bounded_output_error(&error.to_string()))?
++                .sample_rate()
++                != device_rate
++                || device_buffer_frames(self.audio_device_id)? != hardware_frames
++            {
++                return Err(bounded_output_error(
++                    "device rate or hardware buffer changed during output setup",
++                ));
++            }
++            audio_unit.set_property(
++                kAudioUnitProperty_MaximumFramesPerSlice,
++                Scope::Global,
++                Element::Output,
++                Some(&hardware_frames),
++            )?;
++        }
+ 
+         let error_callback = Arc::new(Mutex::new(error_callback));
+         let error_callback_disconnect = error_callback.clone();
+@@ -901,7 +1053,10 @@
+                 // (may overestimate latency for BufferSize::Default)
+                 buffer_frames,
+             );
+-            let delay = frames_to_duration(latency_frames, sample_rate);
++            let latency_rate = bounds
++                .filter(|_| device_buffer_frames.is_some())
++                .map_or(sample_rate, |(device_rate, _)| device_rate);
++            let delay = frames_to_duration(latency_frames, latency_rate);
+             let playback = callback
+                 .add(delay)
+                 .expect("`playback` occurs beyond representation supported by `StreamInstant`");
+@@ -911,6 +1066,20 @@
+             data_callback(&mut data, &info);
+             Ok(())
+         })?;
++
++        if let Some((_, client_limit)) = bounds {
++            audio_unit.initialize()?;
++            let maximum: u32 = audio_unit.get_property(
++                kAudioUnitProperty_MaximumFramesPerSlice,
++                Scope::Global,
++                Element::Output,
++            )?;
++            if maximum == 0 || maximum > u32::from(client_limit) {
++                return Err(bounded_output_error(
++                    "coreaudio client callback limit exceeds the plugin bridge quantum; reduce the hardware buffer",
++                ));
++            }
++        }
+ 
+         // Create error callback for stream - either dummy or real based on device type
+         let error_callback_for_stream: super::ErrorCallback = if is_default_output_device(self) {
+@@ -943,8 +1112,74 @@
+             .audio_unit
+             .start()?;
+ 
++        if let Some(rollback) = &mut rollback {
++            rollback.original = rollback.requested;
++        }
+         Ok(stream)
+     }
++}
++
++fn bounded_output_error(description: &str) -> BuildStreamError {
++    BackendSpecificError {
++        description: description.into(),
++    }
++    .into()
++}
++
++const DEVICE_BUFFER_ADDRESS: AudioObjectPropertyAddress = AudioObjectPropertyAddress {
++    mSelector: kAudioDevicePropertyBufferFrameSize,
++    mScope: kAudioObjectPropertyScopeGlobal,
++    mElement: kAudioObjectPropertyElementMain,
++};
++
++/// Roll back only a failed construction whose hardware setting still matches
++/// our request. An accepted stream uses the existing fixed-buffer lifecycle.
++struct OutputBufferRollback {
++    device: AudioDeviceID,
++    original: u32,
++    requested: u32,
++}
++
++impl Drop for OutputBufferRollback {
++    fn drop(&mut self) {
++        if self.original != self.requested
++            && device_buffer_frames(self.device).is_ok_and(|size| size == self.requested)
++        {
++            // SAFETY: The supplied value is one initialized u32, read
++            // synchronously by the device buffer frame-size property.
++            unsafe {
++                AudioObjectSetPropertyData(
++                    self.device,
++                    NonNull::from(&DEVICE_BUFFER_ADDRESS),
++                    0,
++                    null(),
++                    size_of::<u32>() as u32,
++                    NonNull::from(&self.original).cast(),
++                );
++            }
++        }
++    }
++}
++
++fn device_buffer_frames(device: AudioDeviceID) -> Result<u32, BuildStreamError> {
++    let mut frames = 0_u32;
++    let mut size = size_of::<u32>() as u32;
++    // SAFETY: Both output pointers are writable for the synchronous property read.
++    let status = unsafe {
++        AudioObjectGetPropertyData(
++            device,
++            NonNull::from(&DEVICE_BUFFER_ADDRESS),
++            0,
++            null(),
++            NonNull::from(&mut size),
++            NonNull::from(&mut frames).cast(),
++        )
++    };
++    coreaudio::Error::from_os_status(status)?;
++    if size != size_of::<u32>() as u32 || frames == 0 {
++        return Err(bounded_output_error("invalid coreaudio device buffer size"));
++    }
++    Ok(frames)
+ }
+ 
+ /// Configure stream format and buffer size for CoreAudio stream.

@@ -65,7 +65,8 @@ fn midi_shift_stretch_both_edges_projects_notes_through_release_ack_and_one_undo
             let desired = preview(&editor, &visual);
             assert_ne!(desired.length(), original.length());
             let held = visual.debug_bounds("midi-trim-live-preview").unwrap();
-            let held_note = visual.debug_bounds("midi-trim-preview-note-64").unwrap();
+            let held_note = trim_notes(&mut visual);
+            assert_eq!(held_note.len(), 1, "the stretched note is painted");
             let projected_duration = desired
                 .scale(BeatTime::from_quarters(2).unwrap())
                 .unwrap()
@@ -87,6 +88,7 @@ fn midi_shift_stretch_both_edges_projects_notes_through_release_ack_and_one_undo
                     super::MidiEdgePreview::Stretch(desired),
                     0,
                     384_000,
+                    0,
                 );
                 assert_eq!(shapes.len(), 1);
                 let expected_frame_duration =
@@ -101,10 +103,7 @@ fn midi_shift_stretch_both_edges_projects_notes_through_release_ack_and_one_undo
             for _ in 0..3 {
                 visual.run_until_parked();
                 assert_eq!(visual.debug_bounds("midi-trim-live-preview"), Some(held));
-                assert_eq!(
-                    visual.debug_bounds("midi-trim-preview-note-64"),
-                    Some(held_note)
-                );
+                assert_eq!(trim_notes(&mut visual), held_note);
             }
             editor.read_with(&visual, |v, _| {
                 assert!(v.active_midi_trim_drag.is_none());
@@ -346,13 +345,16 @@ fn midi_shift_stretch_escape_focus_and_real_document_replacement_retire_without_
 }
 
 fn next(service: &hex_session::service::Service) -> hex_session::service::Event {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
             return event;
         }
-        assert!(std::time::Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "next: hang guard expired"
+        );
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
 }
@@ -436,12 +438,23 @@ fn midi_shift_stretch_pending_receipt_ignores_earlier_ack_and_retires_real_worke
     assert!(visual.debug_bounds("midi-trim-live-preview").is_none());
 }
 fn event(service: &hex_session::service::Service) -> hex_session::service::Event {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             return event;
         }
-        assert!(std::time::Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "event: hang guard expired"
+        );
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
+}
+
+/// Painted trim-preview note rectangles, in logical pixels.
+fn trim_notes(visual: &mut gpui::VisualTestContext) -> Vec<gpui::Bounds<gpui::Pixels>> {
+    crate::editor::midi_thumbnail::rendered_note_layer(visual, "midi-trim-preview-notes")
+        .into_iter()
+        .map(|(bounds, _)| bounds)
+        .collect()
 }

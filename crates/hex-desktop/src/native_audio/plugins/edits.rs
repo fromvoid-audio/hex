@@ -59,25 +59,36 @@ impl Plugins {
         &self,
         control: &mut PublicationControl,
         input: &ResidentEffectPreparation<'_>,
-        owner: ProcessorChainOwner,
+        destination: PluginEffectDestination,
         device: u64,
         state: &NativeDeviceState,
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&RequestCancellation>,
     ) -> Result<Option<Binding>, String> {
+        let owner = destination.owner();
+        let retain_instrument = destination.is_instrument()
+            && control
+                .status
+                .playing
+                .load(std::sync::atomic::Ordering::Acquire);
+        let authored = AuthoredSelection::from_targets(input.authored_plugin_targets(device))?;
         let mut changed_state = false;
         if input.preparing_edit()
             && let Some(desired) = desired.filter(|source| {
                 source.context().project_generation == input.context().project_generation
             })
         {
-            desired
-                .effect_preparation()
-                .visit_plugin_effects(|old_owner, old_device, old| {
-                    changed_state |=
-                        old_device == device && (old_owner != owner || !old.processing_eq(state));
-                    Ok(())
-                })?;
+            let previous = desired.effect_preparation();
+            changed_state = !input.same_authored_plugin_program(
+                &previous,
+                device,
+                control.plugin_callback_quantum_on_control(),
+            );
+            previous.visit_plugin_devices(|old_owner, old_device, old| {
+                changed_state |= old_device == device
+                    && (old_owner.owner() != owner || !old.processing_eq(state));
+                Ok(())
+            })?;
         }
         // The latest accepted preparation for an equal state is the current
         // device's source; older matching instances can still own old tails.
@@ -85,6 +96,10 @@ impl Plugins {
             if source.project_generation != input.context().project_generation
                 || source.owner != owner
                 || source.device != device
+                || !match &source.authored {
+                    Some(armed) => armed.covers(authored.as_ref()),
+                    None => authored.is_none(),
+                }
                 || source.retiring
                 || (input.preparing_edit()
                     && !source.accepted
@@ -93,6 +108,7 @@ impl Plugins {
                 continue;
             }
             if changed_state
+                && !retain_instrument
                 && !matches!(source.operation, SourceOperation::Edit(context) if context == input.context())
             {
                 // A historical matching payload does not free its physical
@@ -100,7 +116,11 @@ impl Plugins {
                 // own source instead of introducing a current/tail alias.
                 continue;
             }
-            if original_state(control, source.binding, cancellation)?.processing_eq(state) {
+            if (retain_instrument
+                && control.native_source_approves_captured_state_on_control(source.binding, state)
+                    == Some(true))
+                || original_state(control, source.binding, cancellation)?.processing_eq(state)
+            {
                 return Ok(Some(source.binding));
             }
         }
@@ -111,20 +131,30 @@ impl Plugins {
         &mut self,
         output: &mut WorkerPreparedOutput,
         input: &ResidentEffectPreparation<'_>,
-        owner: ProcessorChainOwner,
+        destination: PluginEffectDestination,
         device: u64,
         state: &NativeDeviceState,
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&RequestCancellation>,
     ) -> Result<(), String> {
         let context = input.context();
+        let owner = destination.owner();
         let control = output.publication.control().ok_or("native output closed")?;
         if self
-            .matching_edit_source(control, input, owner, device, state, desired, cancellation)?
+            .matching_edit_source(
+                control,
+                input,
+                destination,
+                device,
+                state,
+                desired,
+                cancellation,
+            )?
             .is_some()
         {
             return Ok(());
         }
+        let authored = AuthoredSelection::from_targets(input.authored_plugin_targets(device))?;
         let identity = Hosting::saved_identity_on_control(state)?;
         // Resolve code only: provider identity is class + binary hashes, not a
         // path or another device's instance (hex-plugin-state owns that contract).
@@ -154,7 +184,7 @@ impl Plugins {
             {
                 desired
                     .effect_preparation()
-                    .visit_plugin_effects(|_, _, old| {
+                    .visit_plugin_devices(|_, _, old| {
                         preserved |= old.processing_eq(state);
                         Ok(())
                     })?;
@@ -203,6 +233,7 @@ impl Plugins {
                     device,
                     context.editor_revision.max(1),
                     output.sample_rate,
+                    hosting_profile(destination),
                     Some(state.clone()),
                 ) {
                 Ok(binding) => break binding,
@@ -217,9 +248,15 @@ impl Plugins {
             device,
             project_generation: context.project_generation,
             operation: SourceOperation::Edit(context),
+            authored,
             accepted: false,
             retiring: false,
             queued: false,
+            observes_latency: false,
+            editor_open: false,
+            edit_backlog: false,
+            #[cfg(all(test, feature = "allocation-probe"))]
+            observed_latency_receipt: false,
             #[cfg(all(test, feature = "allocation-probe"))]
             attempts: 0,
         });
@@ -295,6 +332,57 @@ pub(super) fn original_state(
                     "native preparation is busy" | "native source is busy"
                 ) => {}
             Err(error) => return Err(error),
+        }
+        poll_control(control);
+    }
+}
+
+/// Root's complete validated target set, including live metadata extensions.
+pub(super) fn armed_selection(
+    control: &mut PublicationControl,
+    binding: Binding,
+) -> Result<Option<AuthoredSelection>, String> {
+    let metadata = control.native_source_metadata(binding)?;
+    let class = metadata.selection().cid;
+    AuthoredSelection::from_targets(
+        metadata
+            .authored_base_values()
+            .map(|(id, _)| (id, Some(class))),
+    )
+    .map_err(str::to_owned)
+}
+
+/// Consume the private query through disposal even after cancellation.
+pub(super) fn canonical_bases(
+    host: &Hosting,
+    control: &mut PublicationControl,
+    binding: Binding,
+    state: &NativeDeviceState,
+    selection: &AuthoredSelection,
+    cancellation: Option<&RequestCancellation>,
+) -> Result<hex_audio::plugin_effects::CapturedCanonicalBases, String> {
+    let playing = control
+        .status
+        .playing
+        .load(std::sync::atomic::Ordering::Acquire);
+    let source = control
+        .status
+        .native_parameter_source(playing)
+        .ok_or("vst3 canonical source is not ready")?
+        .0;
+    let mut query = loop {
+        check_cancel(cancellation)?;
+        match host.begin_canonical_bases_capture_on_control(
+            control, source, binding, state, selection, playing,
+        ) {
+            Err(error) if error == "native preparation is busy" => poll_control(control),
+            result => break result?,
+        }
+    };
+    loop {
+        let mut cancelled = || cancellation.is_some_and(RequestCancellation::is_cancelled);
+        if let Some(result) = query.poll_on_control(control, &mut cancelled) {
+            return result;
         }
         poll_control(control);
     }

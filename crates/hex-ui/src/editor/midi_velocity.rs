@@ -10,13 +10,14 @@ pub(super) struct SceneKey {
     pub(super) generation: u64,
     pub(super) revision: u64,
     pub(super) clip: ClipId,
-    pub(super) start: u64,
+    pub(super) start: i128,
     pub(super) span: u64,
 }
 impl SceneKey {
-    fn end(self) -> Option<u64> {
-        (self.span > 0).then_some(())?;
-        self.start.checked_add(self.span)
+    fn end(self) -> Option<i128> {
+        (self.span > 0 && self.start == super::midi_scene::clamp_start(self.start, self.span))
+            .then_some(())?;
+        self.start.checked_add(i128::from(self.span))
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -34,7 +35,7 @@ impl Scene {
         if notes.len() > hex_project::MAX_NOTES {
             return Err("velocity lane exceeds the note limit");
         }
-        let visible = |note: &&MidiNote| (key.start..end).contains(&note.start().raw());
+        let visible = |note: &&MidiNote| (key.start..end).contains(&i128::from(note.start().raw()));
         let mut points = Vec::new();
         points
             .try_reserve_exact(notes.iter().filter(visible).count())
@@ -50,7 +51,7 @@ impl Scene {
                     channel: note.channel(),
                     velocity: note.velocity(),
                 },
-                x: ((note.start().raw() - key.start) as f64 / key.span as f64) as f32,
+                x: ((i128::from(note.start().raw()) - key.start) as f64 / key.span as f64) as f32,
             });
         }
         points.sort_unstable_by_key(|point| (point.note.start, point.note.id));
@@ -396,11 +397,11 @@ mod tests {
         );
         assert_eq!(scene.hit([210.0, y], [400.0, 64.0], None), None);
         let mut zoomed = key(clip);
-        zoomed.start = BeatTime::ONE.raw();
+        zoomed.start = i128::from(BeatTime::ONE.raw());
         zoomed.span = BeatTime::ONE.raw();
         let scene = Scene::build(zoomed, source.notes()).unwrap();
         assert!(scene.points().iter().all(|point| point.x == 0.0));
-        zoomed.start += BeatTime::ONE.raw() / 2;
+        zoomed.start += i128::from(BeatTime::ONE.raw() / 2);
         assert!(
             Scene::build(zoomed, source.notes())
                 .unwrap()

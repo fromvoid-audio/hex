@@ -5,8 +5,10 @@ use std::time::Instant;
 #[derive(Default)]
 struct Probe {
     blocked: AtomicBool,
+    ipc: AtomicBool,
     bad_clients: AtomicBool,
     acquisitions: AtomicUsize,
+    recoveries: AtomicUsize,
     releases: AtomicUsize,
     publications: Mutex<Vec<TuningPublication>>,
 }
@@ -15,10 +17,19 @@ struct Mock {
     owned: bool,
 }
 impl Transport for Mock {
-    fn acquire(&mut self) -> Result<(), NativeError> {
+    fn acquire(&mut self, recover: bool) -> Result<(), NativeError> {
         self.probe.acquisitions.fetch_add(1, Ordering::SeqCst);
+        if recover {
+            assert!(self.probe.ipc.load(Ordering::SeqCst));
+            self.probe.recoveries.fetch_add(1, Ordering::SeqCst);
+            self.probe.blocked.store(false, Ordering::SeqCst);
+        }
         if self.probe.blocked.load(Ordering::SeqCst) {
-            return Err(NativeError::ExistingMaster);
+            return Err(if self.probe.ipc.load(Ordering::SeqCst) {
+                NativeError::ExistingMasterWithIpc
+            } else {
+                NativeError::ExistingMaster
+            });
         }
         assert!(!self.owned);
         self.owned = true;
@@ -130,7 +141,13 @@ fn existing_master_is_never_taken_over_and_updates_do_not_retry() {
     let (mut worker, handle, probe, owner) = fixture();
     probe.blocked.store(true, Ordering::SeqCst);
     handle.enable(publication(owner, 1)).unwrap();
-    wait(&handle, |s| s.state == State::Blocked);
+    wait(&handle, |s| {
+        s.state
+            == State::Blocked {
+                recovery_available: false,
+            }
+    });
+    assert_eq!(handle.recover(owner), Err(ControlError::Stale));
     handle.publish(publication(owner, 2)).unwrap();
     // Synchronize against the worker's poll without requesting reacquisition.
     thread::sleep(Duration::from_millis(150));
@@ -143,6 +160,47 @@ fn existing_master_is_never_taken_over_and_updates_do_not_retry() {
         s.state == State::Active && s.published == Some(publication(owner, 2).revision)
     });
     worker.shutdown();
+    assert_eq!(probe.releases.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn ipc_recovery_requires_current_blocked_owner_and_publishes_latest_tuning() {
+    let (mut worker, handle, probe, owner) = fixture();
+    probe.blocked.store(true, Ordering::SeqCst);
+    probe.ipc.store(true, Ordering::SeqCst);
+    handle.enable(publication(owner, 1)).unwrap();
+    let is_blocked = |s: Snapshot| {
+        s.state
+            == State::Blocked {
+                recovery_available: true,
+            }
+    };
+    wait(&handle, is_blocked);
+
+    let foreign = Owner {
+        client: handle.new_client().unwrap(),
+        ..owner
+    };
+    assert_eq!(handle.recover(foreign), Err(ControlError::Stale));
+    handle.retry(owner).unwrap();
+    wait(&handle, is_blocked);
+    assert_eq!(probe.acquisitions.load(Ordering::SeqCst), 2);
+    assert_eq!(probe.recoveries.load(Ordering::SeqCst), 0);
+    assert!(probe.publications.lock().unwrap().is_empty());
+
+    let latest = publication(owner, 2);
+    handle.publish(latest).unwrap();
+    handle.recover(owner).unwrap();
+    assert_eq!(handle.recover(owner), Err(ControlError::Stale));
+    wait(&handle, |s| {
+        s.state == State::Active && s.published == Some(latest.revision)
+    });
+    worker.shutdown();
+    assert_eq!(probe.recoveries.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        probe.publications.lock().unwrap().as_slice(),
+        &[latest.payload]
+    );
     assert_eq!(probe.releases.load(Ordering::SeqCst), 1);
 }
 
@@ -190,12 +248,12 @@ fn project_switch_during_native_acquisition_cannot_publish_old_receipt() {
         resume: Option<mpsc::Receiver<()>>,
     }
     impl Transport for Gated {
-        fn acquire(&mut self) -> Result<(), NativeError> {
+        fn acquire(&mut self, recover: bool) -> Result<(), NativeError> {
             if let Some(resume) = self.resume.take() {
                 self.entered.send(()).unwrap();
                 resume.recv().unwrap();
             }
-            self.mock.acquire()
+            self.mock.acquire(recover)
         }
         fn release(&mut self) {
             self.mock.release();

@@ -2,6 +2,12 @@
 //! materialized through the canonical MIDI playback law, never by adding raw
 //! authored onsets. Unselected occupancy in the outer span is a refusal: grouping
 //! must not invoke the placement owner's destructive overlap replacement.
+//!
+//! Activation policy: the grouped container is always active, and each
+//! source's deactivation moves into its material (inactive MIDI notes, inactive
+//! audio events). Grouping therefore never makes a deactivated clip audible, and
+//! the container stays editable as one active clip. The container takes its name
+//! and flavor from the earliest selected clip.
 use crate::{
     BeatTime, ClipId, Created, Invalid, MAX_CLIPS, MAX_NOTES, MidiClip, MidiClipGain,
     MidiClipVolume, MidiClipVolumePoint, MidiSource, NoteId, Project,
@@ -77,6 +83,12 @@ fn group(
         .collect();
     clips.sort_by_key(|c| (c.start(), c.id()));
     let first = clips.first().ok_or(Invalid("no midi clips selected"))?;
+    // Use the largest scalar, keeping each scaled curve within its 0..=4 domain.
+    let merged_gain = clips
+        .iter()
+        .map(|clip| clip.volume().clip_gain())
+        .max_by_key(|gain| gain.millidb())
+        .ok_or(Invalid("no midi clips selected"))?;
     let start = match range {
         Some(range) => project.tempo_map().frame_to_beat(range.start())?.raw(),
         None => first.start().raw(),
@@ -117,7 +129,9 @@ fn group(
         .try_reserve_exact(count)
         .map_err(|_| Invalid("could not reserve grouped midi notes"))?;
     let mut points = Vec::new();
-    let has_volume = clips.iter().any(|clip| !clip.volume().points().is_empty());
+    let has_volume = clips
+        .iter()
+        .any(|clip| !clip.volume().points().is_empty() || clip.volume().clip_gain() != merged_gain);
     for clip in &clips {
         let offset = clip.start().raw() - start;
         let playback = clip.source_playback()?;
@@ -153,7 +167,15 @@ fn group(
                 MidiClipVolumePoint::linear(clip.length(), MidiClipGain::UNITY),
             ]);
         }
-        for mut point in local {
+        let scale = f64::from(clip.volume().clip_gain().linear()) / f64::from(merged_gain.linear());
+        let last = local.len() - 1;
+        for (index, mut point) in local.into_iter().enumerate() {
+            point.incoming = MidiClipGain::new(point.incoming.linear() * scale)?;
+            point.value = MidiClipGain::new(point.value.linear() * scale)?;
+            // The right side of the source's exclusive end is inaudible.
+            if index == last {
+                point.value = point.incoming;
+            }
             point.beat = BeatTime::from_raw(
                 offset
                     .checked_add(point.beat.raw())
@@ -164,6 +186,10 @@ fn group(
                 if previous.beat == point.beat {
                     previous.value = point.value;
                     continue;
+                }
+                // Hold the outgoing level across silence and jump at the next start.
+                if index == 0 {
+                    point.incoming = previous.value;
                 }
             }
             if points.len() == crate::MAX_MIDI_VOLUME_POINTS_PER_CLIP {
@@ -184,7 +210,7 @@ fn group(
         id: ClipId(0),
         start: BeatTime::from_raw(start),
         length,
-        volume: MidiClipVolume::new(points, length)?,
+        volume: MidiClipVolume::new(points, length)?.with_clip_gain(merged_gain),
         source: Arc::new(MidiSource::defaults(length)),
     };
     // Preserve unrelated material exactly; the canonical occupancy validator
@@ -310,6 +336,7 @@ fn audio(
                     .map_err(|_| Invalid("could not reserve grouped audio events"))?;
                 events.push(AudioEvent {
                     active: event.active && clip.active(),
+                    gain: event.gain,
                     fade: event.fade,
                     source,
                     id: events.len() as u64 + 1,
@@ -342,6 +369,7 @@ fn audio(
                 .map_err(|_| Invalid("could not reserve grouped audio events"))?;
             events.push(AudioEvent {
                 active: clip.active(),
+                gain: crate::ClipGain::UNITY,
                 fade: None,
                 source: id,
                 id: events.len() as u64 + 1,

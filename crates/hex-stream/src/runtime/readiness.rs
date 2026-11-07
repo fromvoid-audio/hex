@@ -6,6 +6,8 @@
 //! prevalidates every affected role before the nonfallible commit. Stale epochs/windows and
 //! capacity refusal leave active protection intact. Native callers buffer only the uncommitted
 //! remainder on missing readiness; already committed chunks and their clocks remain authoritative.
+//! Complete pages for a pending intent are held separately from installed-role protection until
+//! its atomic receipt or cancellation; a partially arrived set is never exposed as ready.
 use super::*;
 use crate::{StreamPageExtent, StreamResourceExtent};
 use hex_engine::StreamResourceKey;
@@ -55,6 +57,9 @@ impl ProtectionRole {
     }
     fn mask(self) -> u8 {
         1 << self.index()
+    }
+    fn pending_mask(self) -> u8 {
+        1 << (self.index() + 4)
     }
 }
 /// Nonowning identity for page-intent correlation. Neither variant grants graph,
@@ -326,11 +331,48 @@ impl PreparedReadiness {
         if !pages.matches_catalog(&self.catalog) {
             return Err(ReadinessRefusal::WrongPair);
         }
-        let slot = &mut self.roles[role.index()];
-        if slot.pending != Some(stamp) {
+        if self.roles[role.index()].pending != Some(stamp) {
             return Err(ReadinessRefusal::StaleWindow);
         }
-        pages.pump_ready(pump_limit);
+        // Pending pins protect only complete extents already present. They do
+        // not publish a receipt or replace any installed role. Mark new pages
+        // during the same bounded pump, before a later insertion can evict them.
+        let roles = [
+            ProtectionRole::Active,
+            ProtectionRole::Candidate,
+            ProtectionRole::Transition,
+        ];
+        for current in roles {
+            let slot = &self.roles[current.index()];
+            if slot.pending.is_some() {
+                pages
+                    .endpoint
+                    .protect_present(current.pending_mask(), &slot.wanted);
+            }
+        }
+        let pending = roles.map(|current| {
+            let slot = &self.roles[current.index()];
+            (
+                current.pending_mask(),
+                if slot.pending.is_some() {
+                    slot.wanted.as_slice()
+                } else {
+                    &[]
+                },
+            )
+        });
+        pages
+            .endpoint
+            .pump_ready_for_pending(pump_limit.min(pages.max_ready_pages_per_pump), &pending);
+        let slot = &mut self.roles[role.index()];
+        let missing = slot
+            .wanted
+            .iter()
+            .filter(|extent| !pages.endpoint.has_extent(**extent))
+            .count();
+        // A full cache otherwise feeds the worker one returned page per pump.
+        // Release only stale, unprotected victims before submitting demand.
+        pages.endpoint.reclaim_for_missing(missing, request_limit);
         let mut requests = 0;
         let mut complete = true;
         for extent in &slot.wanted {
@@ -353,6 +395,7 @@ impl PreparedReadiness {
         // All validation precedes the role mask/backing/stamp commit. Other role
         // protections survive this replacement, including overlapping pages.
         pages.endpoint.replace_protection(role.mask(), &slot.wanted);
+        pages.endpoint.replace_protection(role.pending_mask(), &[]);
         slot.protected.clear();
         slot.protected.extend_from_slice(&slot.wanted);
         slot.installed = Some(stamp);
@@ -409,6 +452,7 @@ impl PreparedReadiness {
         slot.wanted.clear();
         slot.protected.clear();
         pages.endpoint.replace_protection(role.mask(), &[]);
+        pages.endpoint.replace_protection(role.pending_mask(), &[]);
         true
     }
 }
@@ -458,6 +502,12 @@ impl MediaPages for ProtectedStreamPages<'_> {
     fn request_page(&mut self, _key: StreamSourceKey, _index: u64) {
         // This borrow contains already protected pages only. Actual missing
         // demand must return to readiness service, never schedule from render.
+    }
+    fn prefetch_page(&mut self, key: StreamSourceKey, index: u64) {
+        // Bounded speculative lookahead only (`Endpoint::prefetch`): it never
+        // pins, never satisfies or changes readiness, and the page it may
+        // load stays evictable, so readiness keeps sole custody of demand.
+        self.pages.prefetch_page(key, index);
     }
 }
 /// Exclusive borrowed promotion prepared against exact held protection. It
@@ -625,6 +675,11 @@ impl ConstructorPageLoan {
     ) -> Result<ReadinessProgress, ReadinessRefusal> {
         self.readiness
             .service(&mut self.pages, role, stamp, pump_limit, request_limit)
+    }
+    /// Test-only observation of a resident extent; it does not grant protection.
+    #[cfg(feature = "test-support")]
+    pub fn test_has_resource_extent(&self, extent: StreamResourceExtent) -> bool {
+        self.pages.endpoint.has_extent(extent)
     }
     fn acknowledge_view(
         &mut self,

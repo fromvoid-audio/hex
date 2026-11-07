@@ -8,7 +8,7 @@ use std::{
         Barrier,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -156,12 +156,12 @@ fn repeated_write_read_turnovers_reuse_the_same_three_capture_buffers() {
         .flatten()
         .map(|batch| batch.as_ref() as *const Batch as usize)
         .collect::<std::collections::BTreeSet<_>>();
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
     for batch_index in 0..80 {
         while input.free.iter().all(Option::is_none) {
             while input.poll().is_some() {}
             assert!(Instant::now() < deadline);
-            std::thread::yield_now();
+            crate::test_wait::pause();
         }
         let mut batch = input.reserve_batch().unwrap().unwrap();
         assert!(
@@ -268,13 +268,19 @@ fn recovery_reuses_source_preparation_without_saved_association_and_save_as_pres
     assert!(worker.join_on_control().unwrap().failure.is_none());
     let original = fs::read(&path).unwrap();
     let service = Service::with_recovery(48000, 8, 0, files.path("untitled.hex-journal")).unwrap();
-    service.events.recv_timeout(Duration::from_secs(5)).unwrap();
+    service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap();
     service
         .submit(Request::Edit(Command::AddTrack {
             name: "later journal".into(),
         }))
         .unwrap();
-    service.events.recv_timeout(Duration::from_secs(5)).unwrap();
+    service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap();
     service
         .submit(Request::OpenWith {
             source: ProjectSource::AutomationDraft {
@@ -286,7 +292,10 @@ fn recovery_reuses_source_preparation_without_saved_association_and_save_as_pres
             relinks: Default::default(),
         })
         .unwrap();
-    let recovered = service.events.recv_timeout(Duration::from_secs(5)).unwrap();
+    let recovered = service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap();
     assert!(recovered.error.is_none(), "{:?}", recovered.error);
     assert!(recovered.project_replaced);
     assert_eq!(recovered.state.project.as_ref(), &project);
@@ -294,7 +303,10 @@ fn recovery_reuses_source_preparation_without_saved_association_and_save_as_pres
     assert!(recovered.state.unsaved);
     let saved = files.path("recovered-copy.hex");
     service.submit(Request::SaveNew(saved.clone())).unwrap();
-    let saved_event = service.events.recv_timeout(Duration::from_secs(5)).unwrap();
+    let saved_event = service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap();
     assert!(saved_event.error.is_none(), "{:?}", saved_event.error);
     assert_eq!(fs::read(&path).unwrap(), original);
     assert_eq!(hex_storage::load(saved).unwrap(), project);
@@ -395,4 +407,189 @@ fn unexpected_worker_failure_is_visible_after_join_and_leaves_the_source_file() 
     assert!(input.progress().finished);
     assert_eq!(input.progress().terminal_durable, None);
     assert_eq!(reader(&path).outcome(), DraftOutcome::Interrupted);
+}
+
+#[test]
+fn native_deliveries_seal_only_the_exact_target_values_and_restoration() {
+    use hex_engine::{
+        NativeParameterApplication, NativeTransientOperation, NativeTransientValue,
+        default_native_device_state, native_parameter_input_target,
+    };
+    use hex_lattice_contract::{DeviceTypeId, HostGain, ParameterKind, ParameterValue};
+    use hex_project::DeviceAutomationTarget;
+    use hex_storage::automation_draft::{CaptureClock, CompletedAutomationTake};
+
+    let files = Files::new();
+    let mut session = Session::new(48_000, 8, 4096).unwrap();
+    let state = default_native_device_state(DeviceTypeId::from_static("hex.utility")).unwrap();
+    let view = hex_engine::native_device_view(&state).unwrap();
+    let mute = view
+        .parameters
+        .iter()
+        .find(|p| p.descriptor.label == "mute")
+        .unwrap()
+        .descriptor
+        .id;
+    let gain = view
+        .parameters
+        .iter()
+        .find(|p| p.descriptor.label == "gain")
+        .unwrap()
+        .descriptor;
+    let ParameterKind::Float { max, .. } = gain.kind else {
+        panic!("utility gain domain");
+    };
+    let Created::Device(device) = session
+        .command(Command::InsertMainDevice {
+            before: None,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("main effect");
+    };
+    let (_, _, stamp) = fixture();
+    let clock = CaptureClock {
+        sample_rate: 48_000,
+        loop_region: None,
+    };
+    for (index, (target, value, normalized)) in [
+        (
+            DeviceAutomationTarget::Parameter(mute),
+            NativeTransientValue::Parameter {
+                id: mute,
+                value: ParameterValue::Bool(true),
+            },
+            1.0,
+        ),
+        (
+            DeviceAutomationTarget::Parameter(gain.id),
+            NativeTransientValue::Parameter {
+                id: gain.id,
+                value: ParameterValue::Float(max * 0.5),
+            },
+            0.5,
+        ),
+        (
+            DeviceAutomationTarget::HostOutputGain,
+            NativeTransientValue::HostOutputGain(HostGain::from_normalized(0.25).unwrap()),
+            0.25,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let path = files.path(&format!("native-{index}.hex-automation-draft"));
+        let typed = native_parameter_input_target(session.project(), device, target).unwrap();
+        let (mut input, worker) =
+            DeviceDraftInput::start_on_control(&session, None, path.clone(), typed, stamp, clock)
+                .unwrap();
+        let application = NativeParameterApplication {
+            identity: typed.identity(),
+            operation: NativeTransientOperation::Set(value),
+            arrangement_frame: 8,
+            loop_pass: 0,
+            performance_frame: 16,
+            remaining_latency_frames: 4,
+        };
+        let stale = DraftProvenance {
+            audio_revision: stamp.audio_revision + 1,
+            ..stamp
+        };
+        assert!(
+            input
+                .append_delivered(typed, stale, &[(1, application)])
+                .is_err()
+        );
+        assert!(
+            input
+                .append_delivered(typed, stamp, &[(1, application), (1, application)])
+                .is_err()
+        );
+        let wrong_target = NativeParameterApplication {
+            operation: NativeTransientOperation::Set(NativeTransientValue::HostInputGain(
+                HostGain::ZERO,
+            )),
+            ..application
+        };
+        assert!(
+            input
+                .append_delivered(typed, stamp, &[(1, wrong_target)])
+                .is_err()
+        );
+        assert_eq!(input.progress().accepted_events, 0);
+        assert!(input.finish_delivered(typed, stamp, application).is_err());
+        assert_eq!(
+            input
+                .append_delivered(typed, stamp, &[(2, application)])
+                .unwrap(),
+            Some(3)
+        );
+        let restoration = NativeParameterApplication {
+            operation: NativeTransientOperation::Clear(target),
+            arrangement_frame: 12,
+            performance_frame: 20,
+            ..application
+        };
+        input.finish_delivered(typed, stamp, restoration).unwrap();
+        let outcome = worker.join_on_control().unwrap();
+        assert_eq!(outcome.progress.durable_events, 1);
+        assert!(outcome.failure.is_none());
+        let mut take = CompletedAutomationTake::open_on_control(
+            &path,
+            DraftReadLimits {
+                max_source_bytes: 64 * 1024,
+            },
+        )
+        .unwrap();
+        assert_eq!(take.target(), DraftTarget::Device { device, target });
+        assert_eq!(
+            take.end_clock(),
+            DraftClock {
+                content_frame: 12,
+                performance_frame: 20,
+                loop_pass: 0
+            }
+        );
+        let mut file = reader(&path);
+        let mut records = [None; 2];
+        assert_eq!(file.read_events(0, &mut records).unwrap(), 1);
+        assert_eq!(
+            records[0],
+            Some(AppliedEvent {
+                sequence: 2,
+                performance_frame: 16,
+                content_frame: 8,
+                loop_pass: 0,
+                value: AutomationValue::new(normalized).unwrap(),
+            })
+        );
+        if index == 2 {
+            let prepare = super::super::automation_take::prepare_native_take_adoption_on_control;
+            assert!(prepare(&session, None, &mut take, stale).is_err());
+            let before = session.project().clone();
+            let command = prepare(&session, None, &mut take, stamp).unwrap();
+            session.command(command).unwrap();
+            let lane = session
+                .project()
+                .device(device)
+                .unwrap()
+                .automation_target(target)
+                .unwrap();
+            let beat = |frame| session.project().tempo_map().frame_to_beat(frame).unwrap();
+            assert_eq!(lane.value_at(beat(7)), None);
+            assert_eq!(
+                lane.value_at(beat(8)),
+                Some(AutomationValue::new(normalized).unwrap())
+            );
+            assert_eq!(lane.value_at(beat(12)), None);
+            assert!(prepare(&session, None, &mut take, stamp).is_err());
+            let recorded = session.project().clone();
+            assert!(session.undo());
+            assert_eq!(session.project(), &before);
+            assert!(session.redo());
+            assert_eq!(session.project(), &recorded);
+            assert!(path.exists(), "the sealed source remains available");
+        }
+    }
 }

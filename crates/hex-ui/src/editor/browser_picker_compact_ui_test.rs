@@ -286,7 +286,7 @@ fn help_toggle_preserves_collapsed_source_identification_query_focus_and_changel
     visual.run_until_parked();
     let minimum = f32::from(visual.debug_bounds("browser-control-⚙").unwrap().size.width) + 1.0;
     resize(visual, minimum);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     while editor.read_with(visual, |view, _| view.state.is_none()) {
         editor.update(visual, |view, cx| {
             view.tick(cx);
