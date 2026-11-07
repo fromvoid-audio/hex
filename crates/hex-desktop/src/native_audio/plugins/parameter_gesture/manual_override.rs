@@ -218,6 +218,8 @@ impl Gesture {
                         value: self.origin.initial,
                         sequence: self.sequence,
                         opening_hold: false,
+                        delivery: None,
+                        processed: false,
                     })
                 }
                 Err(reason) if source_gone(reason) => live.discard = true,

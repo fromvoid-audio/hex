@@ -131,6 +131,7 @@ pub(super) fn operation(
                 canonical_state: state,
                 reading_class,
                 isolated_class,
+                confirm_delivery: false,
                 instrument: session
                     .project()
                     .native_sources()
@@ -170,6 +171,9 @@ pub(super) fn operation(
                 ));
             }
             (_, PluginParameterGestureResult::Applied) => return Ok(None),
+            (_, PluginParameterGestureResult::Delivered(_)) => {
+                return Err(SessionError::Invalid("delivery-confirmed gesture requires a recording consumer"));
+            }
             (_, _) => {
                 return Err(SessionError::Invalid(
                     "plugin preview cannot replace canonical state",

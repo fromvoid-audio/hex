@@ -31,8 +31,17 @@ pub struct PluginParameterGestureInput<'a> {
     pub(in crate::service) reading_class: Option<[u8; 16]>,
     pub(in crate::service) isolated_class: Option<[u8; 16]>,
     pub(in crate::service) instrument: bool,
+    pub(in crate::service) confirm_delivery: bool,
 }
 impl<'a> PluginParameterGestureInput<'a> {
+    /// Request actual final-output point receipts. This copied request grants
+    /// no source/SDK authority; the adapter must admit its exact loaded worker.
+    pub fn with_delivery_confirmation(mut self) -> Self {
+        self.confirm_delivery = true;
+        self
+    }
+    pub fn requires_delivery_confirmation(&self) -> bool { self.confirm_delivery }
+
     pub fn context(&self) -> hex_engine::AudioSourceContext {
         self.context
     }
@@ -56,7 +65,20 @@ impl<'a> PluginParameterGestureInput<'a> {
         self.canonical_state
     }
 }
+/// Control-side observation copied only after matching the complete private
+/// final-output receipt. Persist `application.origin`, not the later delivery
+/// processing frame. A caller requesting these records owns their retention.
+pub struct PluginParameterDelivery {
+    pub target: super::automation_draft::Vst3CaptureTarget,
+    pub source: super::DeviceAutomationSource,
+    pub sequence: u64,
+    pub application: super::automation_draft::Vst3ParameterApplication,
+    pub delivery_performance_frame: u64,
+}
 pub enum PluginParameterGestureResult {
+    /// At most two points: a previously pending point and this request's point.
+    /// SDK acknowledgements alone never produce these observations.
+    Delivered(Box<[PluginParameterDelivery]>),
     /// Validated Begin or completed Preview/Restore, not physical delivery or
     /// an assertion that a plugin returned the exact requested normalized value.
     /// SDK readback remains separate from the client's lossless intent.
