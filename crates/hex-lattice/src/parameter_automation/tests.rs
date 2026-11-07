@@ -1501,6 +1501,23 @@ fn foreign_history_updates_preserve_native_and_host_envelopes_and_reject_key_ali
             .borrow()
             .contains_revision(std::num::NonZeroU64::new(1).unwrap())
     );
+    let mut same_metadata = current.clone();
+    same_metadata.foreign = previous.foreign.clone();
+    assert!(current.shares_foreign_program_history_with(&same_metadata, binding));
+    assert!(!current.shares_foreign_program_history_with(
+        &same_metadata,
+        ForeignProcessorBinding {
+            epoch: 5,
+            ..binding
+        }
+    ));
+    same_metadata.points[0].point.beat_raw += 1;
+    assert!(!current.shares_foreign_program_history_with(&same_metadata, binding));
+    same_metadata.points = current.points.clone();
+    same_metadata
+        .prepare_external_host(DeviceAutomationTarget::HostInputGain)
+        .unwrap();
+    assert!(!current.shares_foreign_program_history_with(&same_metadata, binding));
     let same_owner = current.clone();
     current
         .retain_foreign_history_on_control(&same_owner, None)

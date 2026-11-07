@@ -1478,7 +1478,10 @@ impl NativeRuntimeChain {
     /// Native processors explicitly supporting a compatible smoothed bypass
     /// may differ in bypass state; their history stays with the live chain. The
     /// same rule applies to memoryless matrix entries. Foreign sources retain
-    /// their separate aligned-bypass identity contract.
+    /// their separate aligned-bypass identity contract. Different foreign
+    /// program revisions can match only through exact retained program-owner
+    /// correspondence, with unchanged native/host envelope metadata. The host
+    /// still validates the current frozen quantum and actual source custody.
     /// Revision handoff can call this on the audio callback; it can inspect up to
     /// `range.len() * MAX_NATIVE_DEVICE_STATE_BYTES` payload bytes in the
     /// worst case. Larger VST3 state must share its immutable payload allocation.
@@ -1512,7 +1515,13 @@ impl NativeRuntimeChain {
                         || matches!((&left.runtime, &right.runtime),
                             (RuntimeOwnership::Foreign(left), RuntimeOwnership::Foreign(right))
                                 if left.prepared == right.prepared))
-                    && left.automation == right.automation
+                    && (left.automation == right.automation
+                        || match (&left.runtime, &right.runtime) {
+                            (RuntimeOwnership::Foreign(a), RuntimeOwnership::Foreign(b))
+                                if a.prepared == b.prepared => a.prepared.binding().is_some_and(|binding|
+                                    left.automation.shares_foreign_program_history_with(&right.automation, binding)),
+                            _ => false,
+                        })
                     && left.matrix == right.matrix
                     && match (&left.configuration, &right.configuration) {
                         (Some(left), Some(right)) => {

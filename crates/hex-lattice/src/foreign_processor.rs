@@ -364,6 +364,26 @@ impl PreparedForeignAutomation {
         )
     }
 
+    /// Bounded correspondence of graph views on one source. One view must
+    /// own the other's exact current program, either current or retained.
+    /// Revision numbers alone never establish this cross-revision relation.
+    pub(crate) fn shares_current_program_history_with(&self, other: &Self) -> bool {
+        fn contains(
+            owner: &PreparedForeignAutomation,
+            current: &PreparedForeignAutomation,
+        ) -> bool {
+            (owner.revision == current.revision
+                && owner.program_bytes == current.program_bytes
+                && Arc::ptr_eq(&owner.program, &current.program))
+                || owner.retained.iter().flatten().any(|entry| {
+                    entry.revision == current.revision
+                        && entry.bytes == current.program_bytes
+                        && Arc::ptr_eq(&entry.program, &current.program)
+                })
+        }
+        self.binding == other.binding && (contains(self, other) || contains(other, self))
+    }
+
     /// Exact handle correspondence between prepared and runtime copies.
     pub fn shares_storage_with(&self, other: &Self) -> bool {
         self.binding == other.binding

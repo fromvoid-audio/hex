@@ -158,3 +158,99 @@ fn pruning_existing_candidate_is_atomic_and_keeps_allocation_keys_exact() {
     assert!(next.retain_received_on_control(&malformed, key(5)).is_err());
     assert_eq!(next.storage_owners().count(), 1);
 }
+
+#[test]
+fn chain_matching_recognizes_exact_retained_programs_without_relaxing_source_or_state() {
+    for owner in [
+        ProcessorChainOwner::Track(1),
+        ProcessorChainOwner::Return(2),
+        ProcessorChainOwner::Main,
+    ] {
+        let old_program = program(1);
+        let mut current = program(2);
+        current.retain_previous_on_control(&old_program).unwrap();
+        let make = |program| {
+            let mut entry = declaration(owner, false);
+            entry.definition = Some(PreparedProcessorFactory::Foreign(
+                PreparedForeignProcessor::new(8, 3, 16)
+                    .unwrap()
+                    .with_binding(BINDING)
+                    .unwrap(),
+            ));
+            entry.automation = crate::PreparedParameterAutomation::for_foreign(program);
+            entry
+        };
+        let old_entry = make(old_program.clone());
+        let new_entry = make(current.clone());
+        let previous = NativeRuntimeChain::new_prepared(vec![old_entry]).unwrap();
+        let candidate = NativeRuntimeChain::new_prepared(vec![new_entry.clone()]).unwrap();
+        assert!(candidate.configuration_matches_range(&previous, 0..1));
+        assert!(previous.configuration_matches_range(&candidate, 0..1));
+        assert!(candidate.can_inherit_from(&previous));
+        for fault in 0..7 {
+            let mut entry = new_entry.clone();
+            match fault {
+                0 => entry.automation = crate::PreparedParameterAutomation::for_foreign(program(2)),
+                1 => {
+                    let mut wrong_owner = program(3);
+                    wrong_owner.retain_previous_on_control(&program(1)).unwrap();
+                    entry.automation = crate::PreparedParameterAutomation::for_foreign(wrong_owner);
+                }
+                2 => {
+                    entry.definition = Some(PreparedProcessorFactory::Foreign(
+                        PreparedForeignProcessor::new(8, 3, 16)
+                            .unwrap()
+                            .with_binding(ForeignProcessorBinding {
+                                epoch: 5,
+                                ..BINDING
+                            })
+                            .unwrap(),
+                    ))
+                }
+                3 => {
+                    entry.definition = Some(PreparedProcessorFactory::Foreign(
+                        PreparedForeignProcessor::new(16, 3, 16)
+                            .unwrap()
+                            .with_binding(BINDING)
+                            .unwrap(),
+                    ))
+                }
+                4 => {
+                    entry.configuration =
+                        Some(Arc::new(NativeDeviceState::new(TYPE, 1, vec![9]).unwrap()))
+                }
+                5 => entry
+                    .automation
+                    .prepare_external_host(
+                        hex_lattice_contract::DeviceAutomationTarget::HostInputGain,
+                    )
+                    .unwrap(),
+                _ => entry.device_id += 1,
+            }
+            let prepared = NativeRuntimeChain::new_prepared(vec![entry]);
+            if fault == 2 {
+                assert!(matches!(
+                    prepared,
+                    Err(DeviceContractError::ForeignProcessingUnavailable)
+                ));
+                continue;
+            }
+            if fault == 5 {
+                assert!(matches!(
+                    prepared,
+                    Err(DeviceContractError::UnsupportedProcessingClass)
+                ));
+                continue;
+            }
+            let refused = prepared.unwrap();
+            assert!(
+                !refused.configuration_matches_range(&previous, 0..1),
+                "fault {fault}"
+            );
+            assert!(
+                !previous.configuration_matches_range(&refused, 0..1),
+                "fault {fault}"
+            );
+        }
+    }
+}
