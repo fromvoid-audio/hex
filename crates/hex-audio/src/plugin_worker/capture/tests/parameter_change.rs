@@ -844,7 +844,12 @@ fn actual_parameter_hold_replaces_one_lane_until_matching_release() {
         terminal(&mut owner, &stale),
         NativeWorkerParameterProgress::Refused
     );
+    let stale_release = owner.release_held_parameter_on_control(&hold).unwrap();
     render(&owner, 7, 1.0);
+    assert_eq!(
+        terminal(&mut owner, &stale_release),
+        NativeWorkerParameterProgress::Refused
+    );
     render(&owner, 8, 1.0);
 
     let stopped = owner.hold_parameter_on_control(7, 0.75).unwrap();
