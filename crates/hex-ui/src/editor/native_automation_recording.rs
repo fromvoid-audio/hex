@@ -65,6 +65,8 @@ struct Touch {
     pending: Option<NativeTransientValue>,
     end: Option<End>,
     end_sent: Option<End>,
+    issued_sequence: u64,
+    delivered_sequence: u64,
     in_flight: Option<(u64, Submission)>,
     batch: Vec<(u64, NativeParameterApplication)>,
     terminal: Option<Action>,
@@ -90,7 +92,10 @@ impl Touch {
                 sequence,
                 application,
                 ..
-            } => self.batch.push((sequence, application)),
+            } => {
+                self.delivered_sequence = self.delivered_sequence.max(sequence);
+                self.batch.push((sequence, application));
+            }
             Receipt::Superseded { .. } => {}
             Receipt::Finished { application, .. } => {
                 self.terminal = Some(Action::Finish(application))
@@ -179,6 +184,13 @@ impl Touch {
         }
     }
 
+    fn release_ready(&self) -> bool {
+        self.end == Some(End::Release)
+            && self.end_sent.is_none()
+            && self.issued_sequence != 0
+            && self.delivered_sequence == self.issued_sequence
+    }
+
     fn drive_audio(&mut self, client: &mut Client) -> Result<(), &'static str> {
         if self.terminal.is_some() {
             return Ok(());
@@ -192,7 +204,13 @@ impl Touch {
         }
         if let Some(value) = self.pending {
             match client.native_parameter_change(value) {
-                Ok(()) => self.pending = None,
+                Ok(()) => {
+                    self.issued_sequence = self
+                        .issued_sequence
+                        .checked_add(1)
+                        .ok_or("automation input sequence limit reached")?;
+                    self.pending = None;
+                }
                 Err(
                     "native parameter input is applying; retry the value"
                     | "native parameter input command queue is full",
@@ -200,7 +218,9 @@ impl Touch {
                 Err(error) => return Err(error),
             }
         }
-        if self.end == Some(End::Release) && self.end_sent.is_none() {
+        // A Clear admitted in the same callback as the final Set would
+        // supersede it before the processor ever hears the intended value.
+        if self.release_ready() {
             client.native_parameter_release()?;
             self.end_sent = Some(End::Release);
         }
@@ -430,6 +450,8 @@ impl EditorView {
             pending: Some(pending),
             end: None,
             end_sent: None,
+            issued_sequence: 0,
+            delivered_sequence: 0,
             in_flight: Some((request, Submission::Begin)),
             batch: Vec::with_capacity(EVENTS_PER_BATCH),
             terminal: None,
@@ -525,7 +547,9 @@ impl EditorView {
                                 .is_ok()
                         })
                     });
-                if !accepted {
+                if accepted {
+                    touch.issued_sequence = 1;
+                } else {
                     if touch.end != Some(End::Cancel) {
                         self.error = Some("the armed audio source did not admit this touch".into());
                     }
@@ -674,6 +698,8 @@ mod tests {
             pending: None,
             end: None,
             end_sent: None,
+            issued_sequence: 0,
+            delivered_sequence: 0,
             in_flight: Some((1, Submission::Begin)),
             batch: Vec::with_capacity(EVENTS_PER_BATCH),
             terminal: None,
@@ -705,15 +731,27 @@ mod tests {
         };
         touch.phase = Phase::Delivering;
         touch.in_flight = None;
+        touch.end = Some(End::Release);
+        touch.issued_sequence = 2;
+        assert!(!touch.release_ready());
         touch.receipt(Receipt::Applied {
             target: touch.audio,
             sequence: 1,
             application,
         });
+        assert!(!touch.release_ready());
         touch.receipt(Receipt::Superseded {
             target: touch.audio,
             sequence: 2,
         });
+        assert!(!touch.release_ready());
+        touch.issued_sequence = 3;
+        touch.receipt(Receipt::Applied {
+            target: touch.audio,
+            sequence: 3,
+            application,
+        });
+        assert!(touch.release_ready());
         touch.receipt(Receipt::Finished {
             target: touch.audio,
             application: restored,
@@ -721,7 +759,7 @@ mod tests {
         let Some((Submission::Append, Action::Append(batch))) = touch.next_submission() else {
             panic!("delivery must be sent before the restoration");
         };
-        assert_eq!(&*batch, &[(1, application)]);
+        assert_eq!(&*batch, &[(1, application), (3, application)]);
         touch.in_flight = Some((2, Submission::Append));
         assert!(touch.next_submission().is_none());
         touch.in_flight = None;
