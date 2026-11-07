@@ -462,8 +462,9 @@ mod tests {
                     Some(ParameterValue::Float(-12.0)),
                 ],
             };
+            // Fill beyond the authored 50ms predelay even at 96kHz.
             source
-                .process_automation(&mut signal(4097), &values)
+                .process_automation(&mut signal(8193), &values)
                 .unwrap();
             let mut reference = prepared.runtime();
             reference.copy_history_from(&source);
