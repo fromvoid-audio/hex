@@ -3,7 +3,7 @@
 ## Continue editing in Frame
 
 [hex-orbital.frame.json](hex-orbital.frame.json) is the current editable prototype,
-saved at r159. It includes the structured design, prototype actions, and orbital
+saved at r160. It includes the structured design, prototype actions, and orbital
 styleguide in one portable project.
 
 In Frame, choose **Designs → Import design**, select the file, and open the
@@ -26,8 +26,8 @@ same dimensions as its host-modulator and device assembly in the workstation. Op
 import the file into another Frame session. Its left device rail, host modulator
 tray, selection border, meter, and nesting hint use the Hex concept’s visuals.
 
-Four FM operators have compact rows with ratio, frequency offset,
-level/modulation depth, and independent vertical keytrack sliders beside the
+Four FM operators have compact rows with left-to-right ratio/frequency fills,
+Hex-style level/modulation knobs, and independent vertical keytrack sliders beside the
 slim unlabeled on/off buttons. Enabled buttons use the oscillator color; vertical
 keytrack fields share the frequency fields’ inset style, with slim bottom-up
 fill channels and no percentage readout. The keytrack examples
