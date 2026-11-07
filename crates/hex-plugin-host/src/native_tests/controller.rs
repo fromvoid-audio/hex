@@ -821,7 +821,7 @@ fn authored_quantum_partition_preserves_signed_pcm_after_pipeline_latency() {
             assert!(worker.receive_request().unwrap().is_none());
             callback.finish(true).unwrap();
             if let Some(request) = worker.receive_request().unwrap() {
-                assert!(request.authored);
+                assert!(request.authored_program.is_some());
                 worker
                     .complete(
                         instance
