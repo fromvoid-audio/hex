@@ -66,10 +66,10 @@ impl EditorView {
             && self.active_native_device_drag.is_none()
             && self.active_trim_drag.is_none()
             && self.active_midi_trim_drag.is_none()
-            && !self
+            && self
                 .clip_paint_gesture
                 .as_ref()
-                .is_some_and(|g| g.receipt.is_some())
+                .is_none_or(|g| g.receipt.is_none())
     }
 
     fn clip_paint_is_current(&self, paint: Paint) -> bool {
@@ -301,10 +301,10 @@ impl EditorView {
         }
     }
     pub(super) fn retire_pending_clip_paint(&mut self) -> bool {
-        if !self
+        if self
             .clip_paint_gesture
             .as_ref()
-            .is_some_and(|g| g.receipt.is_some())
+            .is_none_or(|g| g.receipt.is_none())
         {
             return false;
         }
