@@ -48,6 +48,17 @@ pub enum PluginParameterGestureResult {
     /// Actual host capture. The host retains its private matching receipt and
     /// staged compiler permission until finish_plugin_parameter_commit.
     Captured(Box<PluginParameterCapture>),
+    /// A manual base prepared from the exact canonical plug-in state in
+    /// isolation from the live authored processor. This does not authorize
+    /// changing another parameter's read selection or using live DSP state
+    /// as the Undo preimage.
+    OverrideCaptured(Box<PluginParameterOverride>),
+}
+pub struct PluginParameterOverride {
+    pub source: hex_engine::AudioSourceContext,
+    pub class: [u8; 16],
+    pub parameter: u32,
+    pub base: NativeDeviceState,
 }
 pub struct PluginParameterCapture {
     pub before: NativeDeviceState,
