@@ -247,10 +247,60 @@ impl PreparedForeignAutomation {
         &mut self,
         previous: &Self,
     ) -> Result<(), DeviceContractError> {
+        self.retain_previous_since_on_control(previous, None)
+    }
+
+    /// Carry a source-monotonic history from its known received frontier.
+    /// The caller must obtain `received` from the exact original worker, not
+    /// from a current compiler key or a queued candidate. The received quantum
+    /// may still be unfinished: retain that revision and every newer one.
+    /// Native admission and observation validation remain the host's job.
+    /// No existing graph is modified, and refusal leaves this owner unchanged.
+    pub fn retain_received_on_control(
+        &mut self,
+        previous: &Self,
+        received: NonZeroU64,
+    ) -> Result<(), DeviceContractError> {
+        if self.revision <= previous.revision
+            || !previous.borrow().contains_revision(received)
+            || previous
+                .retained
+                .iter()
+                .flatten()
+                .any(|entry| entry.revision >= previous.revision)
+            || self
+                .retained
+                .iter()
+                .flatten()
+                .any(|entry| entry.revision >= self.revision)
+        {
+            return Err(DeviceContractError::ForeignProcessingFailed);
+        }
+        self.retain_previous_since_on_control(previous, Some(received))
+    }
+
+    fn retain_previous_since_on_control(
+        &mut self,
+        previous: &Self,
+        received: Option<NonZeroU64>,
+    ) -> Result<(), DeviceContractError> {
         if self.binding != previous.binding {
             return Err(DeviceContractError::ForeignProcessingFailed);
         }
         let mut candidate = self.clone();
+        for slot in &mut candidate.retained {
+            if slot
+                .as_ref()
+                .is_some_and(|entry| received.is_some_and(|received| entry.revision < received))
+            {
+                let bytes = slot.as_ref().map_or(0, |entry| entry.bytes);
+                candidate.storage_bytes = candidate
+                    .storage_bytes
+                    .checked_sub(bytes)
+                    .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
+                *slot = None;
+            }
+        }
         let versions =
             std::iter::once((previous.revision, &previous.program, previous.program_bytes)).chain(
                 previous
@@ -260,6 +310,9 @@ impl PreparedForeignAutomation {
                     .map(|entry| (entry.revision, &entry.program, entry.bytes)),
             );
         for (revision, program, bytes) in versions {
+            if received.is_some_and(|received| revision < received) {
+                continue;
+            }
             let existing = if revision == candidate.revision {
                 Some((&candidate.program, candidate.program_bytes))
             } else {
