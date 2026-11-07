@@ -1181,7 +1181,15 @@ fn unused_lower_header_space_selects_tracks_with_modifiers_in_both_audio_modes(
             let mute = bounds(&mut visual, "track-mute", first);
             let sample_arm = bounds(&mut visual, "sample-arm-track", first);
             visual.simulate_click(sample_arm.center(), Modifiers::default());
+            visual.simulate_mouse_move(point(px(0.0), px(0.0)), None, Modifiers::default());
             visual.run_until_parked();
+            assert_eq!(
+                visual.rendered_background(Box::leak(
+                    format!("sample-arm-track-{}", first.value()).into_boxed_str()
+                )),
+                Some(gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Recording)).into()),
+                "armed recording stays red when interaction highlights are blue"
+            );
             editor.read_with(&visual, |view, _| {
                 assert_eq!(
                     view.selected_track_ids(),
