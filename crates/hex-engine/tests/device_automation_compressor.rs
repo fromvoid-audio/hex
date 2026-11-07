@@ -1,5 +1,5 @@
 //! Compressor controls reach Track/Return/Main through the ordinary shared lane.
-use hex_devices::compressor::{COMPRESSOR_DEFINITION as D, COMPRESSOR_TYPE_ID, parameter as p};
+use hex_devices::compressor::{COMPRESSOR_DEFINITION as D, parameter as p};
 use hex_engine::{
     Audio, PreparedRevision, Renderer, SessionPlayback, SessionPlaybackCommand, SineTable, compile,
 };
