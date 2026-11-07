@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[path = "completed_tests.rs"]
 mod completed_tests;
+#[path = "vst3_tests.rs"]
+mod vst3_tests;
 
 static NEXT_TEST: AtomicU64 = AtomicU64::new(0);
 
