@@ -9,6 +9,7 @@ use hex_lattice_contract::{DeviceContractError, ForeignProcessorBinding};
 use hex_project::{AutomationInterpolation, AutomationPoint, DeviceAutomation, TempoMap};
 
 pub(crate) mod candidate;
+mod touch;
 
 const MAX_QUANTUM_FRAMES: u16 = 256;
 const MAX_POINTS: usize = 64;
@@ -77,6 +78,7 @@ pub struct Program {
 struct Lane {
     id: u32,
     knots: Vec<Knot>,
+    overlay: Option<touch::Overlay>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -392,28 +394,37 @@ impl Program {
         let mut point_budget = 0;
         for parameter in capabilities {
             let id = parameter.id;
-            let knots =
-                if let Some((_, lane)) = authored.clone().find(|(candidate, _)| *candidate == id) {
-                    prepare_knots(&lane.points, parameter.steps, tempo)?
-                } else {
-                    let mut knots = Vec::new();
-                    knots
-                        .try_reserve_exact(1)
-                        .map_err(|_| Invalid("could not reserve foreign canonical base"))?;
-                    knots.push(Knot {
-                        frame: 0,
-                        value: f64::from_bits(parameter.normalized_base_bits),
-                        linear: false,
-                    });
-                    knots
-                };
-            point_budget += point_bound(&knots, profile);
+            let authored_lane = authored
+                .clone()
+                .find_map(|(candidate, lane)| (candidate == id).then_some(lane));
+            let knots = if let Some(lane) = authored_lane.filter(|lane| !lane.points.is_empty()) {
+                prepare_knots(&lane.points, parameter.steps, tempo)?
+            } else {
+                let mut knots = Vec::new();
+                knots
+                    .try_reserve_exact(1)
+                    .map_err(|_| Invalid("could not reserve foreign canonical base"))?;
+                knots.push(Knot {
+                    frame: 0,
+                    value: f64::from_bits(parameter.normalized_base_bits),
+                    linear: false,
+                });
+                knots
+            };
+            let overlay = authored_lane
+                .map(|lane| touch::Overlay::prepare(&lane.touch, &knots, parameter.steps, tempo))
+                .transpose()?
+                .flatten();
+            point_budget += overlay.as_ref().map_or_else(
+                || point_bound(&knots, profile),
+                |overlay| overlay.point_bound(profile),
+            );
             if point_budget > MAX_POINTS {
                 return Err(Invalid(
                     "foreign automation exceeds the quantum point budget",
                 ));
             }
-            prepared.push(Lane { id, knots });
+            prepared.push(Lane { id, knots, overlay });
         }
         Ok(Some(Self {
             lanes: prepared,
@@ -426,7 +437,7 @@ impl Program {
         self.point_budget
     }
 
-    /// Retained lane and knot allocation bytes. The outer owner accounts for
+    /// Retained lane, knot and touch-overlay allocation bytes. The outer owner accounts for
     /// its own inline or boxed storage separately.
     pub fn backing_bytes(&self) -> Option<usize> {
         self.lanes.iter().try_fold(
@@ -438,6 +449,11 @@ impl Program {
                     lane.knots
                         .capacity()
                         .checked_mul(std::mem::size_of::<Knot>())?,
+                )?
+                .checked_add(
+                    lane.overlay
+                        .as_ref()
+                        .map_or(Some(0), touch::Overlay::backing_bytes)?,
                 )
             },
         )
@@ -597,18 +613,32 @@ fn prepare_knots(
 }
 
 fn point_bound(knots: &[Knot], profile: QuantumProfile) -> usize {
+    point_bound_frames(knots.iter().map(|knot| knot.frame), profile)
+}
+
+fn point_bound_frames(
+    frames: impl ExactSizeIterator<Item = u64> + Clone,
+    profile: QuantumProfile,
+) -> usize {
     // Each run starts with a chase and has at most two points per section.
     // A sliding window bounds the number of additional sections visited by
     // any contiguous run of this quantum size, regardless of timeline start.
-    let mut start = 0;
+    let length = frames.len();
+    let mut first = frames.clone().peekable();
+    let mut window = 0usize;
     let mut most_knots = 0;
-    for (end, knot) in knots.iter().enumerate() {
-        while knot.frame - knots[start].frame >= u64::from(profile.frames) {
-            start += 1;
+    for frame in frames {
+        window += 1;
+        while first
+            .peek()
+            .is_some_and(|&start| frame - start >= u64::from(profile.frames))
+        {
+            first.next();
+            window -= 1;
         }
-        most_knots = most_knots.max(end - start + 1);
+        most_knots = most_knots.max(window);
     }
-    let sections = if knots.len() == 1 { 1 } else { most_knots + 1 };
+    let sections = if length == 1 { 1 } else { most_knots + 1 };
     usize::from(profile.frames).min(2 * sections * usize::from(profile.max_runs))
 }
 
@@ -621,6 +651,9 @@ impl Lane {
         output: &mut [ForeignParameterPoint],
         count: &mut usize,
     ) -> Result<(), Invalid> {
+        if let Some(overlay) = self.overlay.as_ref() {
+            return overlay.render_run(self, start, end, origin, output, count);
+        }
         let mut offset = start;
         let mut frame = origin;
         let mut next = if self.knots.len() == 1 {
