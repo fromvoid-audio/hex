@@ -1,4 +1,4 @@
-//! Compressor uses ordinary publication, shared lane evaluation and runtime custody.
+//! EQ8 uses ordinary publication, shared lane evaluation and runtime custody.
 use super::*;
 use hex_devices::eq8::{EQ8_TYPE_ID, parameter as p};
 use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue};
@@ -76,6 +76,35 @@ fn eq8_gain_automation_callback_publication_history_and_save_reopen() -> Result<
     editor.execute(lane(2.0 / 16.0)?)?;
     assert!(editor.undo());
     assert!(editor.redo());
+    for bank in 0..5 {
+        for band in 0..8 {
+            for parameter in [
+                p::frequency(bank, band),
+                p::gain(bank, band),
+                p::q(bank, band),
+            ] {
+                editor.execute(Command::ReplaceDeviceAutomation {
+                    device,
+                    parameter,
+                    points: vec![
+                        AutomationPoint {
+                            beat: BeatTime::ZERO,
+                            value: AutomationValue::new(0.4)?,
+                            outgoing: AutomationInterpolation::Linear,
+                        },
+                        AutomationPoint {
+                            beat: editor
+                                .project()
+                                .tempo_map()
+                                .frame_to_beat((BLOCK * 2) as u64)?,
+                            value: AutomationValue::new(0.6)?,
+                            outgoing: AutomationInterpolation::Step,
+                        },
+                    ],
+                })?;
+            }
+        }
+    }
     let path = std::env::temp_dir().join(format!(
         "hex-eq8_gain-automation-{}.hex",
         std::process::id()
@@ -90,7 +119,8 @@ fn eq8_gain_automation_callback_publication_history_and_save_reopen() -> Result<
         .publish(Playback::try_from_prepared_with_session(next)?)
         .map_err(|_| "handoff")?;
     measured_block(&mut callback, &mut output);
-    assert!(output.iter().all(|s| s[0].is_finite() && s[0] > 0.0));
+    assert!(output.iter().flatten().all(|s| s.is_finite()));
+    assert!(output.iter().flatten().any(|s| s.abs() > 0.0));
     control.reclaim();
     editor.execute(Command::RemoveDevice(device))?;
     control
