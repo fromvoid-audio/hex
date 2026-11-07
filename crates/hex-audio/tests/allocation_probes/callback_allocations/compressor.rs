@@ -63,6 +63,53 @@ fn compressor_automation_callback_publication_history_and_save_reopen() -> Resul
     editor.execute(lane(0.5)?)?;
     assert!(editor.undo());
     assert!(editor.redo());
+    for parameter in [
+        p::THRESHOLD,
+        p::RATIO,
+        p::ATTACK,
+        p::RELEASE,
+        p::KNEE,
+        p::MAKEUP,
+    ] {
+        editor.execute(Command::ReplaceDeviceAutomation {
+            device,
+            parameter,
+            points: vec![
+                AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: AutomationValue::new(0.1)?,
+                    outgoing: AutomationInterpolation::Linear,
+                },
+                AutomationPoint {
+                    beat: editor
+                        .project()
+                        .tempo_map()
+                        .frame_to_beat((BLOCK * 2) as u64)?,
+                    value: AutomationValue::new(0.9)?,
+                    outgoing: AutomationInterpolation::Step,
+                },
+            ],
+        })?;
+    }
+    editor.execute(Command::ReplaceDeviceAutomation {
+        device,
+        parameter: p::DETECTOR,
+        points: vec![
+            AutomationPoint {
+                beat: BeatTime::ZERO,
+                value: AutomationValue::new(0.0)?,
+                outgoing: AutomationInterpolation::Linear,
+            },
+            AutomationPoint {
+                beat: editor
+                    .project()
+                    .tempo_map()
+                    .frame_to_beat((BLOCK * 2) as u64)?,
+                value: AutomationValue::new(1.0)?,
+                outgoing: AutomationInterpolation::Step,
+            },
+        ],
+    })?;
     let path = std::env::temp_dir().join(format!(
         "hex-compressor-automation-{}.hex",
         std::process::id()

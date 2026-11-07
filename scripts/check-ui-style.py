@@ -18,6 +18,7 @@ widgets = (
     'super::arrangement_map::view(',
     # Meter insertion action normalizes its caption in the owning component.
     'device_add::button(',
+    'device_picker::render(',
     # Query clear-slot composition contains a themed action and native input semantics.
     'self.clear_search_slot(',
     # Pinned browser collections compose themed heading, labels and icons.
@@ -274,6 +275,11 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
                 'crates/hex-ui/src/editor/device_panel/return_drag.rs',
             )
             and suffix.startswith('insertion_gap(')
+        )
+        # Catalog list rows normalize their labels inside the shared picker.
+        device_insertion_component = device_insertion_component or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/device_picker.rs'
+            and suffix.startswith('list)')
         )
         # The rotated title paints the already themed label in the inherited font.
         device_insertion_component = device_insertion_component or (

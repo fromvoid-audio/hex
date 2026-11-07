@@ -263,3 +263,95 @@ fn over_budget_recorded_density_retains_exact_source_and_draft_without_truncatio
     assert_eq!(fs::read(&path).unwrap(), original);
     assert_eq!(take.event_count(), events.len() as u64);
 }
+
+#[test]
+fn looped_vst3_take_keeps_last_pass_overlap_and_older_uncovered_tail_in_one_history_edge() {
+    let files = Files::new();
+    let path = files.path();
+    let (mut session, device, stamp) = fixture(AutomationInterpolation::Linear);
+    let before = session.project().clone();
+    let target = DeviceAutomationTarget::Vst3 { parameter: 0 };
+    let capture = CaptureClock {
+        sample_rate: 48_000,
+        loop_region: Some(hex_project::LoopRegion::new(8, 16, true).unwrap()),
+    };
+    let mut writer = DraftWriter::create_with_clock(
+        &path,
+        &before,
+        DraftTarget::Device { device, target },
+        stamp,
+        capture,
+    )
+    .unwrap();
+    // First pass writes12..16. The partial newer pass overwrites8..14;
+    // the first pass's14..16 survives rather than extending the final value.
+    writer
+        .append(&[
+            AppliedEvent {
+                content_frame: 12,
+                ..event(0, 0.25)
+            },
+            AppliedEvent {
+                content_frame: 8,
+                loop_pass: 1,
+                ..event(4, 0.75)
+            },
+            AppliedEvent {
+                content_frame: 10,
+                loop_pass: 1,
+                ..event(6, 0.5)
+            },
+        ])
+        .unwrap();
+    writer
+        .finish(DraftTerminal::Finished(DraftClock {
+            performance_frame: 10,
+            content_frame: 14,
+            loop_pass: 1,
+        }))
+        .unwrap();
+    drop(writer);
+    let original = fs::read(&path).unwrap();
+    let mut take = CompletedAutomationTake::open_on_control(
+        &path,
+        DraftReadLimits {
+            max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
+        },
+    )
+    .unwrap();
+    let command =
+        prepare_device_take_adoption_on_control(&session, None, &mut take, stamp).unwrap();
+    session.editor.execute(command).unwrap();
+    let recorded = session.project().clone();
+    let lane = recorded
+        .device(device)
+        .unwrap()
+        .automation_target(target)
+        .unwrap();
+    let base = before
+        .device(device)
+        .unwrap()
+        .automation_target(target)
+        .unwrap();
+    assert_eq!(lane.vst3_class, Some([9; 16]));
+    assert_eq!(lane.points, base.points);
+    for frame in 0..24 {
+        let beat = before.tempo_map().frame_to_beat(frame).unwrap();
+        let expected = match frame {
+            8..10 => Some(AutomationValue::new(0.75).unwrap()),
+            10..14 => Some(AutomationValue::new(0.5).unwrap()),
+            14..16 => Some(AutomationValue::new(0.25).unwrap()),
+            _ => base.value_at(beat),
+        };
+        assert_eq!(lane.value_at(beat), expected, "frame{frame}");
+    }
+    assert_eq!(
+        hex_storage::decode(&hex_storage::encode(&recorded).unwrap()).unwrap(),
+        recorded
+    );
+    assert!(session.editor.undo());
+    assert_eq!(session.project(), &before);
+    assert!(session.editor.redo());
+    assert_eq!(session.project(), &recorded);
+    assert_eq!(fs::read(&path).unwrap(), original);
+}

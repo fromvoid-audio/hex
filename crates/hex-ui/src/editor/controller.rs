@@ -1290,6 +1290,7 @@ impl EditorView {
                     visible_change |= self.clear_pending_bypass();
                     visible_change |= self.cancel_audio_loop_gesture();
                     visible_change |= self.retire_pending_clip_move();
+                    visible_change |= self.retire_pending_clip_paint();
                     visible_change |= self.retire_pending_section();
                     visible_change |= self.retire_pending_track_reorder();
                     visible_change |= self.retire_pending_midi_drag();
@@ -2366,6 +2367,7 @@ impl EditorView {
         self.clip_loop_request_complete(&event);
         self.bypass_request_complete(&event);
         self.clip_move_request_complete(&event);
+        self.clip_paint_request_complete(&event);
         self.truncated_import
             .observe(self.project_generation, &event);
         self.section_request_complete(&event);
@@ -3575,6 +3577,14 @@ impl EditorView {
         | Request::MoveExistingClips { command, .. } = &request
         {
             self.last_enqueued_edit = Some(command.clone());
+        }
+        #[cfg(test)]
+        if let Request::PaintMidiClip(intent) = &request {
+            self.last_enqueued_edit = Some(hex_project::Command::PlaceMidiClipWithOverwrite {
+                track: intent.track,
+                start: intent.start,
+                length: intent.length,
+            });
         }
         #[cfg(test)]
         if let Request::AddNativeDevice {
