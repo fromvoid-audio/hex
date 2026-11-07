@@ -668,7 +668,10 @@ fn actual_manual_input_coexists_with_another_authored_parameter() {
     assert_eq!((receipt.sequence, receipt.first_frame), (0, 0));
 
     for sequence in 1..=2 {
-        endpoint.stage(&input, &[], &mut output).unwrap();
+        endpoint.begin_physical_callback(input.len()).unwrap();
+        endpoint
+            .stage_segment_with_parameters(0, &input, &[], &[], &mut output)
+            .unwrap();
         endpoint.finish(true).unwrap();
         let until = Instant::now() + Duration::from_secs(3);
         while owner.published_blocks_on_control() <= sequence {
