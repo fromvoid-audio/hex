@@ -86,8 +86,9 @@ impl Status {
     }
 
     /// Current ordinary source at the requested transport state. Idle uses the
-    /// installed canonical graph observation, including after native runtime
-    /// return. Root must independently match the exact native binding and state.
+    /// installed canonical graph observation. After ordinary graph return,
+    /// canonical preparation instead requires its held restore fence. Root
+    /// independently matches the exact native binding and state in either case.
     pub fn native_parameter_source(&self, playing: bool) -> Option<(AppliedAudioSource, u64)> {
         let epoch = self.transport_epoch.load(Acquire);
         let source = if playing {
