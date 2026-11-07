@@ -234,15 +234,17 @@ fn first_programme_preserves_the_open_empty_quantum_and_starts_at_the_next_bound
                     .unwrap();
                 callback.finish(true).unwrap();
                 callback.begin_physical_callback(7).unwrap();
-                assert_eq!(
-                    callback.stage_segment_with_parameters(
-                        0,
-                        &input[1..],
-                        &[],
-                        &[],
-                        &mut output[1..],
+                assert!(
+                    matches!(
+                        callback.stage_segment_with_parameters(
+                            0,
+                            &input[1..],
+                            &[],
+                            &[],
+                            &mut output[1..],
+                        ),
+                        Err(Fault::InvalidParameters)
                     ),
-                    Err(Fault::InvalidParameters),
                     "a keyed quantum still requires its retained programme"
                 );
             });
