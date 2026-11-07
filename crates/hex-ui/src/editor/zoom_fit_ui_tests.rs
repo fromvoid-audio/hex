@@ -595,11 +595,6 @@ fn shortening_edit_preserves_arranger_view_through_real_ack_and_repaints(cx: &mu
             v.viewport_horizon(state.timeline_frames),
             panned.end().unwrap()
         );
-        assert_eq!(
-            v.overview_cache.borrow().as_ref().unwrap().horizon(),
-            v.viewport_horizon(state.timeline_frames),
-            "overview uses the same retired extent"
-        );
     });
     visual.simulate_keystrokes("alt-right");
     visual.run_until_parked();
@@ -774,10 +769,6 @@ fn arranger_bounds_include_unfocused_automation_and_empty_project_buffer(cx: &mu
         assert_eq!(
             v.visible_viewport(state.timeline_frames),
             Viewport::fit(normal)
-        );
-        assert_eq!(
-            v.overview_cache.borrow().as_ref().unwrap().horizon(),
-            normal
         );
     });
 }

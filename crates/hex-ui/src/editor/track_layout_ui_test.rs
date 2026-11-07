@@ -135,7 +135,7 @@ fn header_width_edges_align_every_timeline_layer_and_preserve_frame_coordinates(
     assert_eq!(lane.origin.x + lane.size.width, header.origin.x);
     for selector in [
         "arrangement-grid",
-        "arrangement-overview-map",
+        "main-arrangement-map",
         "timeline-ruler",
         "main-track-lane",
     ] {
