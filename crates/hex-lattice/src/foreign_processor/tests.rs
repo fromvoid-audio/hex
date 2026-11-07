@@ -137,7 +137,8 @@ fn graph_owns_one_program_for_the_exact_effect_binding() {
         ) -> Result<(), DeviceContractError> {
             let program = node.automation.unwrap();
             assert_eq!(program.binding, self.0);
-            assert_eq!(program.revision, NonZeroU64::MIN);
+            assert_eq!(program.revision, NonZeroU64::new(2).unwrap());
+            assert!(program.contains_revision(NonZeroU64::MIN));
             let mut points = [ForeignParameterPoint::default()];
             assert_eq!(
                 program
