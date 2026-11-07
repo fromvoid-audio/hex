@@ -1,5 +1,10 @@
 //! One bounded measured-spectrum geometry and painter for every plot owner.
 //! Domain mapping, freshness and signal processing remain caller responsibilities.
+//!
+//! Owners paint three passes in order: a vertical-gradient [`Pass::Fill`] under
+//! each curve, then (after their grid) a thin translucent [`Pass::Peak`] line for
+//! any held-peak curve, then the crisp [`Pass::Trace`] line. Geometry is in
+//! normalized plot coordinates, so curves stay stable at any plot size.
 use gpui::{
     Bounds, ContentMask, Hsla, PathBuilder, Pixels, Point, Window, linear_color_stop,
     linear_gradient, point, px, rgb,
@@ -7,16 +12,25 @@ use gpui::{
 
 pub(super) const MAX_POINTS: usize = 256;
 const MAX_LAYERS: usize = 257;
+/// Stroke for the most prominent spectrum (EQ output, project master).
+pub(super) const PRIMARY_TRACE_WIDTH: Pixels = px(1.25);
+/// Stroke for supporting spectra (EQ input, project track layers).
+pub(super) const SECONDARY_TRACE_WIDTH: Pixels = px(1.0);
+const PEAK_WIDTH: Pixels = px(1.0);
+const PEAK_OPACITY: f32 = 0.45;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Pass {
     Fill,
+    Peak,
     Trace,
 }
 
 #[derive(Clone, Copy)]
 pub(super) struct Layer<'a> {
     pub points: &'a [[f32; 2]],
+    /// Optional held-peak curve, painted only by [`Pass::Peak`].
+    pub peak: Option<&'a [[f32; 2]]>,
     pub color: u32,
     pub stroke_width: Pixels,
 }
@@ -64,8 +78,16 @@ fn valid_points(points: &[[f32; 2]]) -> bool {
         && points.windows(2).all(|p| p[0][0] <= p[1][0])
 }
 
+/// The curve a pass strokes or fills for one layer.
+fn pass_points<'a>(layer: &Layer<'a>, pass: Pass) -> Option<&'a [[f32; 2]]> {
+    match pass {
+        Pass::Fill | Pass::Trace => Some(layer.points),
+        Pass::Peak => layer.peak,
+    }
+}
+
 fn paintable(layer: &Layer<'_>, pass: Pass) -> bool {
-    valid_points(layer.points)
+    pass_points(layer, pass).is_some_and(valid_points)
         && layer.color <= 0xffffff
         && f32::from(layer.stroke_width).is_finite()
         && (0.0..=4.0).contains(&f32::from(layer.stroke_width))
@@ -122,7 +144,7 @@ fn segment(points: &[[f32; 2]], i: usize) -> Segment {
 fn fill_alpha(layers: usize) -> f32 {
     // A bounded combined ink budget keeps even 257 overlapping layers subtle.
     // Float alpha retains small nonzero contributions without u8 quantization.
-    (0.24 / layers.max(1) as f32).min(0.14)
+    (0.32 / layers.max(1) as f32).min(0.2)
 }
 
 pub(super) fn paint<'a, I>(plot: Bounds<Pixels>, layers: I, pass: Pass, window: &mut Window)
@@ -158,16 +180,17 @@ where
     });
     window.with_content_mask(Some(ContentMask { bounds: plot }), |window| {
         for layer in layers {
-            if !paintable(&layer, pass) {
+            let Some(points) = pass_points(&layer, pass).filter(|_| paintable(&layer, pass)) else {
                 continue;
-            }
+            };
             let mut path = match pass {
                 Pass::Fill => PathBuilder::fill(),
+                Pass::Peak => PathBuilder::stroke(PEAK_WIDTH),
                 Pass::Trace => PathBuilder::stroke(layer.stroke_width),
             };
             #[cfg(test)]
             let mut submitted = Vec::new();
-            commands(layer.points, pass, |command| {
+            commands(points, pass, |command| {
                 #[cfg(test)]
                 submitted.push(command);
                 match command {
@@ -201,6 +224,7 @@ where
                             linear_color_stop(color.opacity(0.0), 1.0),
                         ),
                     ),
+                    Pass::Peak => window.paint_path(path, color.opacity(PEAK_OPACITY)),
                     Pass::Trace => window.paint_path(path, color),
                 }
             }

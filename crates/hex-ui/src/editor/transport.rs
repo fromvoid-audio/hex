@@ -78,10 +78,6 @@ impl EditorView {
                 cx,
             ))
             .child(self.icon("↓", "import audio · cmd+i", ImportAudio, cx))
-            .child(
-                self.icon("▤", "toggle browser · cmd+alt+b", ToggleBrowser, cx)
-                    .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
-            )
             .child(self.control_icon(
                 "↑",
                 "export wav · cmd+shift+e",
@@ -118,7 +114,7 @@ impl EditorView {
                 .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
                 .text_color(rgb(theme::color(
                     if self.midi_recorder.blocks_edits() {
-                        theme::PaletteRole::Primary
+                        theme::PaletteRole::Recording
                     } else {
                         theme::PaletteRole::Muted
                     },
@@ -289,6 +285,7 @@ impl EditorView {
             }))
             .children([self.snap_control(cx)])
             .children([self.section_focus_toggle(cx)])
+            .children([self.track_tag_filter_control(cx)])
             .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx))
             .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, true, cx));
         let mut status = div()
@@ -296,45 +293,6 @@ impl EditorView {
             .items_center()
             .min_w_0()
             .flex_1()
-            .child(
-                self.control_icon(
-                    "▤",
-                    "show arrange view · tab",
-                    |view, _, _| view.set_mode(EditorMode::Arrangement),
-                    cx,
-                )
-                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
-                .text_color(rgb(if self.mode == EditorMode::Arrangement {
-                    theme::color(theme::PaletteRole::SecondaryText)
-                } else {
-                    theme::color(theme::PaletteRole::Muted)
-                })),
-            )
-            .child(
-                self.control_icon(
-                    "▦",
-                    "show console view · tab",
-                    |view, _, _| view.set_mode(EditorMode::Session),
-                    cx,
-                )
-                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
-                .text_color(rgb(if self.mode == EditorMode::Session {
-                    theme::color(theme::PaletteRole::SecondaryText)
-                } else {
-                    theme::color(theme::PaletteRole::Muted)
-                })),
-            )
-            .child(
-                div()
-                    .debug_selector({
-                        let name = self.workspace_view_name();
-                        move || name.to_owned()
-                    })
-                    .flex_shrink_0()
-                    .whitespace_nowrap()
-                    .text_xs()
-                    .child(theme::text(self.workspace_view_name())),
-            )
             .child(
                 div()
                     .debug_selector(|| "project position".into())
@@ -382,7 +340,7 @@ impl EditorView {
                     })
                     .child(theme::text(&output_label)),
             );
-        if self.state().is_none() {
+        if self.state().is_none() && self.service.startup_failure().is_none() {
             status = status.child(
                 div()
                     .debug_selector(|| "project loading".into())
@@ -392,6 +350,7 @@ impl EditorView {
                     .child(theme::text("loading")),
             );
         }
+        status = status.child(self.workspace_view_toggle(cx));
         let narrow = f32::from(window.viewport_size().width) < header::WIDE_TOOLBAR_MIN_WIDTH;
         let row = header::toolbar_row().h(px(header::toolbar_height(f32::from(
             window.viewport_size().width,
@@ -409,12 +368,93 @@ impl EditorView {
         }
     }
 
+    pub(super) fn browser_toggle_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        self.icon("▤", "toggle browser · cmd+alt+b", ToggleBrowser, cx)
+            .size(px(18.0))
+            .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+            .text_color(rgb(theme::color(if self.browser.open {
+                theme::PaletteRole::Primary
+            } else {
+                theme::PaletteRole::Muted
+            })))
+    }
+
+    fn workspace_view_toggle(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let (glyph, next, next_name) = match self.mode {
+            EditorMode::Arrangement => ("▤", EditorMode::Session, "console view"),
+            EditorMode::Session => ("▦", EditorMode::Arrangement, "arrange view"),
+        };
+        self.control_icon_description(
+            glyph,
+            "workspace-view-toggle",
+            theme::text(format!(
+                "{} · switch to {next_name} · tab",
+                self.workspace_view_name()
+            )),
+            theme::action_style(),
+            move |view, _, _| view.set_mode(next),
+            cx,
+        )
+        .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+    }
+
     pub(super) fn title_bar(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let title = header::project_title(
             self.state()
                 .and_then(|state| state.document_path.as_deref()),
         );
-        header::title_bar(title, |control| match control {
+        let description = theme::text(self.cpu_meter.description());
+        let cpu_meter = div()
+            .id("editor-cpu-meter")
+            .debug_selector(|| "editor-cpu-meter".into())
+            .w(px(68.0))
+            .h_full()
+            .relative()
+            .flex()
+            .items_center()
+            .justify_end()
+            .flex_shrink_0()
+            .text_xs()
+            .text_right()
+            .cursor_pointer()
+            .text_color(rgb(theme::color(if self.cpu_meter.warning() {
+                theme::PaletteRole::Primary
+            } else {
+                theme::PaletteRole::Muted
+            })))
+            .tooltip(move |_, cx| {
+                cx.new(|_| MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
+                    description: description.clone(),
+                })
+                .into()
+            })
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|view, _, _, cx| {
+                let misses = view.audio_status().map_or(0, |status| {
+                    status.cpu_meter.reset_peak();
+                    status
+                        .deadline_misses
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                });
+                view.cpu_meter.reset(misses);
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .h(px(2.0))
+                    .w(px(68.0 * self.cpu_meter.fraction()))
+                    .bg(rgb(theme::color(if self.cpu_meter.warning() {
+                        theme::PaletteRole::Primary
+                    } else {
+                        theme::PaletteRole::Secondary
+                    }))),
+            )
+            .child(theme::text(self.cpu_meter.label()));
+        header::title_bar(title, cpu_meter, |control| match control {
             header::TitlebarControl::Close => Box::new(cx.listener(|view, _, window, cx| {
                 if view.request_window_close(window, cx) {
                     window.remove_window();

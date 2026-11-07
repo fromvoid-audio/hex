@@ -1,6 +1,9 @@
 //! Actual no-editor SDK controller data; no native Hex application is started.
 use super::*;
 
+#[path = "controller/extension.rs"]
+mod extension;
+
 fn wait_controller_held(case: &Case) {
     let until = Instant::now() + Duration::from_secs(2);
     while case.observation().is_none_or(|values| values[0] != 26) {
@@ -79,7 +82,9 @@ fn held_controller_query_keeps_pcm_running_and_cancels_without_sdk_teardown() {
                     }
                     ParameterPageProgress::Pending => {}
                     ParameterPageProgress::Changed { .. } => panic!("unversioned first query"),
-                    ParameterPageProgress::Conversion(_) => panic!("expected metadata page"),
+                    ParameterPageProgress::Conversion(_) | ParameterPageProgress::Editor(_) => {
+                        panic!("expected metadata page")
+                    }
                 }
                 assert!(Instant::now() < until);
                 thread::sleep(Duration::from_millis(1));
@@ -305,10 +310,100 @@ fn page(instance: &mut Prepared, query: ParameterPageQuery) -> Box<ParameterPage
             ParameterPageProgress::Page(page) => return page,
             ParameterPageProgress::Pending => {}
             ParameterPageProgress::Changed { .. } => panic!("unchanged fixture metadata"),
-            ParameterPageProgress::Conversion(_) => panic!("expected metadata page"),
+            ParameterPageProgress::Conversion(_) | ParameterPageProgress::Editor(_) => {
+                panic!("expected metadata page")
+            }
         }
         assert!(Instant::now() < until);
         thread::yield_now();
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn large_controller_inventory_pages_pcm_and_saved_state_remain_bounded() {
+    const INVENTORY: u16 = 2_593;
+    let start = |case: &Case, inventory: &'static str, state| {
+        let setup = case.setup_restore(37);
+        Pending::prepare_with_restore(
+            &build(),
+            source(),
+            options().preparation,
+            state,
+            PreparationCancellation::new_on_control().unwrap(),
+            move |command| {
+                setup(command);
+                command.env("HEX_ORIGINAL_PARAMETER_INVENTORY", inventory);
+            },
+        )
+        .and_then(|pending| pending.complete_on_control(Some(options().presentation)))
+    };
+    let case = Case::new();
+    let mut instance = start(&case, "2593", None).unwrap();
+    let first = page(&mut instance, ParameterPageQuery::default());
+    assert_eq!((first.total, first.as_slice()[0].id), (INVENTORY, 1001));
+    let last_page = |instance: &mut Prepared, revision| {
+        page(
+            instance,
+            ParameterPageQuery {
+                first: INVENTORY - 4,
+                revision,
+                conversion: None,
+            },
+        )
+    };
+    let last = last_page(&mut instance, first.revision);
+    assert_eq!(
+        last.as_slice()
+            .iter()
+            .map(|parameter| parameter.id)
+            .collect::<Vec<_>>(),
+        [3590, 3591, 3592, 7]
+    );
+    let mut input = request(instance.configuration(), 0);
+    input
+        .parameters
+        .push(crate::transport::ParameterPoint {
+            frame: 0,
+            id: 7,
+            normalized: 0.5,
+        })
+        .unwrap();
+    let output = instance.exchange_on_worker(input).unwrap();
+    assert_eq!(&output.pcm[..8], &input.pcm[..8]);
+    let updated = page(&mut instance, ParameterPageQuery::default());
+    let updated_gain = last_page(&mut instance, updated.revision);
+    assert_eq!(
+        (updated.total, updated_gain.as_slice()[3].normalized),
+        (INVENTORY, 0.5)
+    );
+    let stopped = instance.quiesce_retained_on_control().unwrap();
+    let (stopped, captured) = stopped.capture_state_retained_on_control().unwrap();
+    assert!(stopped.retire_on_control().unwrap().status.success());
+    let independent = Case::new();
+    let mut restored = start(&independent, "2593", Some(captured)).unwrap();
+    let values = page(&mut restored, ParameterPageQuery::default());
+    let restored_gain = last_page(&mut restored, values.revision);
+    assert_eq!(
+        (values.total, restored_gain.as_slice()[3].normalized),
+        (INVENTORY, 0.5)
+    );
+    assert!(
+        restored
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+    for (malformed, diagnostic) in [
+        ("2625", "inventory exceeds the host capacity"),
+        ("duplicate", "invalid controller parameter inventory"),
+    ] {
+        let case = Case::new();
+        let error = start(&case, malformed, None)
+            .err()
+            .expect("inventory must refuse");
+        assert!(error.to_string().contains(diagnostic), "{error}");
     }
 }
 
@@ -401,7 +496,9 @@ fn actual_controller_pages_use_sdk_conversions_without_processing_or_replacing_s
                     assert_eq!((revision, total), (current.revision, 1));
                     break;
                 }
-                ParameterPageProgress::Page(_) | ParameterPageProgress::Conversion(_) => {
+                ParameterPageProgress::Page(_)
+                | ParameterPageProgress::Conversion(_)
+                | ParameterPageProgress::Editor(_) => {
                     panic!("stale metadata must invalidate enumeration")
                 }
             }
@@ -416,7 +513,9 @@ fn actual_controller_pages_use_sdk_conversions_without_processing_or_replacing_s
                 ParameterPageProgress::Page(page) => break page,
                 ParameterPageProgress::Pending => {}
                 ParameterPageProgress::Changed { .. } => panic!("same stopped metadata"),
-                ParameterPageProgress::Conversion(_) => panic!("expected stopped metadata page"),
+                ParameterPageProgress::Conversion(_) | ParameterPageProgress::Editor(_) => {
+                    panic!("expected stopped metadata page")
+                }
             }
             assert!(Instant::now() < until);
             thread::yield_now();
@@ -437,5 +536,329 @@ fn actual_controller_pages_use_sdk_conversions_without_processing_or_replacing_s
         );
         assert!(stopped.retire_on_control().unwrap().status.success());
         assert_eq!(case.observation().unwrap()[1], 0);
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn authored_parameter_metadata_uses_loaded_class_and_sdk_flags() {
+    let build = build();
+    for (variant, id, steps) in [
+        (80, 0, Some(0)),
+        (81, 7, Some(3)),
+        (83, 7, None),
+        (84, 7, None),
+    ] {
+        let case = Case::new();
+        let setup = case.setup(variant);
+        let mut instance = Prepared::prepare(
+            &build,
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            move |command| {
+                setup(command);
+                command.env("HEX_ORIGINAL_PARAMETER_INVENTORY", "9");
+            },
+        )
+        .unwrap();
+        let binding = instance.configuration().binding;
+        let class = instance.configuration().identity.class;
+        let wrong_class = ClassId::new([0xff; 16]).unwrap();
+        assert!(
+            instance
+                .read_authored_parameter_metadata_on_control(wrong_class, &[id])
+                .is_err()
+        );
+        assert!(
+            instance
+                .read_authored_parameter_metadata_on_control(class, &[id, 99])
+                .is_err()
+        );
+        assert!(
+            instance
+                .read_authored_parameter_metadata_on_control(class, &[1001])
+                .is_err()
+        );
+        let result = instance.read_authored_parameter_metadata_on_control(class, &[id]);
+        if let Some(steps) = steps {
+            let facts = result.unwrap();
+            assert_eq!(facts.class(), class);
+            assert_eq!(facts.binding(), binding);
+            assert!(facts.revision() > 0);
+            assert_eq!(facts.step_count(id), Some(steps));
+        } else {
+            assert!(result.is_err());
+        }
+        assert_eq!(instance.completed_blocks_on_control(), 0);
+        assert!(
+            instance
+                .stop_and_reap_on_control()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn authored_pcm_rechecks_processing_capability_after_controller_refresh() {
+    use crate::transport::{ParameterPoint, ProcessTiming};
+
+    let build = build();
+    for variant in [141, 142] {
+        let case = Case::new();
+        let prepare = |case: &Case| {
+            Prepared::prepare(
+                &build,
+                source(),
+                options(),
+                PreparationCancellation::new_on_control().unwrap(),
+                case.setup(variant),
+            )
+            .unwrap()
+        };
+        let mut instance = prepare(&case);
+        let class = instance.configuration().identity.class;
+        let metadata = instance
+            .read_authored_parameter_metadata_on_control(class, &[7])
+            .unwrap();
+        assert_eq!(metadata.step_count(7), Some(0));
+        let input = |instance: &Prepared, sequence| {
+            let mut block = request(instance.configuration(), sequence);
+            block.timing = Some(ProcessTiming {
+                playing: true,
+                arrangement_frame: block.first_frame as i64,
+                arrangement_beat_raw: None,
+                tempo_micro_bpm: None,
+                meter: Some((4, 4)),
+                cycle_beats_raw: None,
+            });
+            for (frame, normalized) in [(0, 0.25), (7, 0.75)] {
+                block
+                    .parameters
+                    .push(ParameterPoint {
+                        frame,
+                        id: 7,
+                        normalized,
+                    })
+                    .unwrap();
+            }
+            block
+        };
+
+        let other_case = Case::new();
+        let mut other = prepare(&other_case);
+        assert_eq!(
+            other.configuration().binding,
+            instance.configuration().binding
+        );
+        assert!(matches!(
+            other.exchange_authored_on_worker(input(&other, 0), &metadata),
+            Err(Error::Protocol("authored parameter source differs"))
+        ));
+        assert_eq!(other.completed_blocks_on_control(), 0);
+        assert!(other.stop_and_reap_on_control().unwrap().status.success());
+
+        for sequence in 0..2 {
+            let block = input(&instance, sequence);
+            let reply = instance
+                .exchange_authored_on_worker(block, &metadata)
+                .unwrap();
+            for (frame, (input, output)) in block.pcm[..8].iter().zip(&reply.pcm[..8]).enumerate() {
+                let normalized = 0.25 + 0.5 * frame as f64 / 7.0;
+                let gain = (normalized * 4.0 * (0.5 + sequence as f64 * 0.125)) as f32;
+                for channel in 0..2 {
+                    assert!((output[channel] - input[channel] * gain).abs() < 1e-6);
+                }
+            }
+            let current = page(&mut instance, ParameterPageQuery::default());
+            assert!(current.revision > metadata.revision());
+        }
+
+        fs::write(case.release(), b"change authored parameter capability").unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        loop {
+            let current = page(&mut instance, ParameterPageQuery::default());
+            let gain = &current.as_slice()[0];
+            if gain.step_count != 0 || !gain.supports_authored_automation() {
+                break;
+            }
+            assert!(Instant::now() < until, "SDK metadata did not refresh");
+            thread::yield_now();
+        }
+        assert!(matches!(
+            instance.exchange_authored_on_worker(input(&instance, 2), &metadata),
+            Err(Error::Worker(8))
+        ));
+        assert_eq!(instance.completed_blocks_on_control(), 2);
+        assert!(
+            !instance
+                .cancel_and_reap_on_control()
+                .unwrap()
+                .status
+                .success()
+        );
+        assert_eq!(
+            case.observation().unwrap()[10],
+            2,
+            "stale input entered SDK DSP"
+        );
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn authored_quantum_partition_preserves_signed_pcm_after_pipeline_latency() {
+    use crate::transport::{
+        AuthoredParameterProgram, AuthoredSegment, Fault, ParameterPoint, Parameters,
+        ProcessTiming, SegmentTiming, TimingChanges, channel,
+    };
+    use std::num::NonZeroU64;
+
+    struct FixtureEnvelope;
+    impl FixtureEnvelope {
+        fn normalized(frame: u64) -> f64 {
+            if frame < 8 {
+                0.25 + frame as f64 / 16.0
+            } else {
+                0.75
+            }
+        }
+    }
+    impl AuthoredParameterProgram for FixtureEnvelope {
+        fn quantum_program_key(&self) -> NonZeroU64 {
+            NonZeroU64::MIN
+        }
+
+        fn render_quantum(
+            &self,
+            origins: &[Option<u64>],
+            _: &TimingChanges,
+            output: &mut Parameters,
+        ) -> std::result::Result<(), Fault> {
+            for (frame, &origin) in origins.iter().enumerate() {
+                if let Some(origin) = origin {
+                    output.push(ParameterPoint {
+                        frame: frame as u16,
+                        id: 0,
+                        normalized: Self::normalized(origin),
+                    })?;
+                }
+            }
+            Ok(())
+        }
+    }
+
+    let build = build();
+    let origins = [
+        Some(0),
+        Some(1),
+        Some(2),
+        Some(3),
+        Some(4),
+        Some(5),
+        Some(6),
+        Some(7),
+        None,
+        None,
+        None,
+        None,
+        Some(20),
+        Some(21),
+        Some(0),
+        Some(1),
+    ];
+    for partitions in [[8, 8, 8, 8, 0], [3, 6, 8, 7, 8]] {
+        let case = Case::new();
+        let mut instance = Prepared::prepare(
+            &build,
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup(80),
+        )
+        .unwrap();
+        let class = instance.configuration().identity.class;
+        let metadata = instance
+            .read_authored_parameter_metadata_on_control(class, &[0])
+            .unwrap();
+        let (_control, mut callback, mut worker) = channel(metadata.binding(), 8).unwrap();
+        instance
+            .arm_authored_parameter_metadata_on_control(metadata)
+            .unwrap();
+        let mut position = 0;
+        let mut pcm = [[0.0; 2]; 32];
+        for frames in partitions.into_iter().filter(|&frames| frames != 0) {
+            callback.begin_physical_callback(frames).unwrap();
+            let cut = frames / 2;
+            for (offset, len) in [(0, cut), (cut, frames - cut)] {
+                let origin = |index| origins[(position + offset + index) % origins.len()];
+                callback
+                    .stage_segment_with_authored_parameters(
+                        offset,
+                        &[[0.25, -0.125]; 8][..len],
+                        &[],
+                        &mut pcm[position + offset..position + offset + len],
+                        SegmentTiming {
+                            playing: None,
+                            at: |index| {
+                                Some(ProcessTiming {
+                                    arrangement_frame: origin(index)? as i64,
+                                    playing: true,
+                                    arrangement_beat_raw: None,
+                                    tempo_micro_bpm: None,
+                                    meter: None,
+                                    cycle_beats_raw: None,
+                                })
+                            },
+                        },
+                        AuthoredSegment {
+                            program: &FixtureEnvelope,
+                            origin: &origin,
+                        },
+                    )
+                    .unwrap();
+            }
+            assert!(worker.receive_request().unwrap().is_none());
+            callback.finish(true).unwrap();
+            if let Some(request) = worker.receive_request().unwrap() {
+                assert!(request.authored_program.is_some());
+                worker
+                    .complete(
+                        instance
+                            .exchange_armed_authored_on_worker(request.block)
+                            .unwrap(),
+                    )
+                    .unwrap();
+            }
+            position += frames;
+        }
+        assert_eq!(position, pcm.len());
+        assert!(pcm[..16].iter().all(|frame| *frame == [0.0; 2]));
+        for (index, (&origin, actual)) in origins.iter().zip(&pcm[16..]).enumerate() {
+            // Compensation had no origin for frames 8–11. The first SDK
+            // slice holds the previous quantum's last value, even though a
+            // new authored value arrives at offset four of the same request.
+            let sdk_slice = if index < 8 {
+                0
+            } else if index < 12 {
+                1
+            } else {
+                2
+            };
+            let gain = (FixtureEnvelope::normalized(origin.unwrap_or(7))
+                * 4.0
+                * (0.5 + sdk_slice as f64 * 0.125)) as f32;
+            assert_eq!(*actual, [0.25 * gain, -0.125 * gain], "frame {index}");
+        }
+        assert!(
+            instance
+                .stop_and_reap_on_control()
+                .unwrap()
+                .status
+                .success()
+        );
     }
 }

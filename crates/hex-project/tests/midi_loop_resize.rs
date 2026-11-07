@@ -436,3 +436,94 @@ fn directed_repeat_boundaries_follow_reflected_seams_before_the_introduction_tai
         (Some(beat(2).raw()), Some(beat(7).raw()), None)
     );
 }
+
+/// Source beat audible at a song beat, or None outside the clip.
+fn source_at(clip: &hex_project::MidiClip, song: u64) -> Option<BeatTime> {
+    let elapsed = song.checked_sub(clip.start().raw())?;
+    (elapsed < clip.length().raw()).then_some(())?;
+    clip.source_playback()
+        .unwrap()
+        .source_phase_at_elapsed(BeatTime::from_raw(elapsed))
+}
+
+#[test]
+fn one_shot_play_start_moves_the_region_and_keeps_notes_at_their_song_beats() {
+    for trimmed in [false, true] {
+        // Plays source beats 2..10 from song beat 10, or 3..10 from 11 after a left trim.
+        let (mut e, _, clip) = fixture(false, 2, 8);
+        if trimmed {
+            e.execute(Command::TrimMidiClipEdge {
+                clip,
+                edge: hex_project::TrimEdge::Left,
+                beat: beat(11),
+            })
+            .unwrap();
+        }
+        for (target, start, length) in [(4, 12, 6), (1, 9, 9)] {
+            let before = e.project().snapshot();
+            let old = e.project().midi_clip(clip).unwrap().clone();
+            resize(
+                &mut e,
+                clip,
+                Resize::PlayStart {
+                    source_start: beat(target),
+                },
+            );
+            let next = e.project().midi_clip(clip).unwrap().clone();
+            let shift = u64::from(trimmed);
+            assert_eq!(
+                (next.start(), next.length(), next.source_start()),
+                (beat(start + shift), beat(length - shift), beat(target)),
+                "{trimmed}"
+            );
+            assert_eq!(next.notes(), old.notes(), "notes are not rewritten");
+            assert_eq!(
+                source_at(&next, next.start().raw()),
+                Some(beat(target + shift)),
+                "playback begins at the marker"
+            );
+            for song in (9..18).flat_map(|q| [beat(q).raw(), beat(q).raw() + beat(1).raw() / 3]) {
+                if source_at(&next, song).is_some() && source_at(&old, song).is_some() {
+                    assert_eq!(source_at(&next, song), source_at(&old, song), "{song}");
+                }
+            }
+            let after = e.project().snapshot();
+            assert!(e.undo());
+            assert_eq!(e.project().snapshot(), before);
+            assert!(e.redo());
+            assert_eq!(e.project().snapshot(), after);
+        }
+    }
+}
+
+#[test]
+fn play_start_refuses_loops_the_clip_end_and_song_start_without_changes() {
+    let (looped, _, looped_clip) = fixture(true, 2, 8);
+    let (at_end, _, end_clip) = fixture(false, 2, 8);
+    let (mut at_zero, track, zero_clip) = fixture(false, 2, 8);
+    at_zero
+        .execute(Command::MoveMidiClip {
+            clip: zero_clip,
+            track,
+            start: BeatTime::ZERO,
+        })
+        .unwrap();
+    for (mut e, clip, target) in [
+        (looped, looped_clip, 3),
+        (at_end, end_clip, 10),
+        (at_zero, zero_clip, 1),
+    ] {
+        let before = e.project().snapshot();
+        assert!(
+            e.execute(Command::ResizeMidiClipView {
+                clip,
+                operation: Resize::PlayStart {
+                    source_start: beat(target),
+                },
+            })
+            .is_err(),
+            "{target}"
+        );
+        assert_eq!(e.project().snapshot(), before);
+    }
+}

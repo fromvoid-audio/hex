@@ -37,9 +37,10 @@ impl RenderOnce for Housing {
         let style = self.style.controls;
         let mut controls = div()
             .flex()
+            .flex_col()
+            .flex_shrink_0()
             .items_center()
-            .gap(px(crate::DEVICE_FRAME_HEADER_GAP))
-            .child(self.leading);
+            .gap(px(crate::DEVICE_FRAME_HEADER_GAP));
         for (index, (id, glyph, label)) in [
             ("device-macro-toggle", "m", "macro edit panel · placeholder"),
             (
@@ -119,15 +120,13 @@ impl RenderOnce for Housing {
         let body = panel_body(self.body, style, visible);
         div()
             .flex()
-            .flex_col()
             .flex_1()
+            .min_w_0()
             .min_h_0()
-            .child(crate::device_header(
-                self.title,
-                self.style,
-                controls,
-                self.actions,
-            ))
+            .child(
+                crate::device_header(self.title, self.style, self.leading, self.actions)
+                    .child(controls),
+            )
             .child(body)
     }
 }
@@ -137,6 +136,7 @@ fn panel_body(body: AnyElement, style: ControlStyle, visible: [bool; 2]) -> AnyE
         .flex()
         .flex_col()
         .flex_1()
+        .min_w_0()
         .min_h_0()
         .overflow_y_scroll();
     for (index, (id, title, detail)) in [

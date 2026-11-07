@@ -89,7 +89,7 @@ fn retiring_numeric_control_does_not_cancel_an_unowned_same_parameter_gesture(
 
 #[gpui::test]
 fn numeric_binding_lease_cannot_adopt_a_newer_same_parameter_gesture(cx: &mut TestAppContext) {
-    use super::super::gesture_adapter::dispatch_bound_numeric_gesture;
+    use super::super::gesture_adapter::{NumericGestureKey, dispatch_bound_numeric_gesture};
     let (service, state, track, device, _, _) = actor_utility_fixture();
     let metadata =
         hex_engine::native_device_view(state.project.device(device).unwrap().state()).unwrap();
@@ -118,7 +118,10 @@ fn numeric_binding_lease_cannot_adopt_a_newer_same_parameter_gesture(cx: &mut Te
         // control beginning the same parameter in the same project generation.
         view.device_gesture.reset();
         view.begin_device_gesture(target, parameter.value).unwrap();
-        assert_ne!(view.device_gesture.snapshot().unwrap().key, old_key);
+        assert_ne!(
+            NumericGestureKey::Canonical(view.device_gesture.snapshot().unwrap().key),
+            old_key
+        );
         let before = view.device_gesture.snapshot();
         for phase in [
             NumericEventPhase::Change,
@@ -189,6 +192,7 @@ fn retired_numeric_emitter_cannot_address_a_replacement_binding(cx: &mut TestApp
         cx.emit(NumericControlEvent {
             phase: NumericEventPhase::Begin,
             value: 0.0,
+            gesture: None,
         })
     });
     let before = editor.read_with(cx, |view, _| view.device_gesture.snapshot().unwrap());
@@ -199,7 +203,11 @@ fn retired_numeric_emitter_cannot_address_a_replacement_binding(cx: &mut TestApp
         NumericEventPhase::Cancel,
     ] {
         old_entity.update(cx, |_, cx| {
-            cx.emit(NumericControlEvent { phase, value: 0.25 })
+            cx.emit(NumericControlEvent {
+                phase,
+                value: 0.25,
+                gesture: None,
+            })
         });
         editor.read_with(cx, |view, _| {
             assert_eq!(view.device_gesture.snapshot(), Some(before));

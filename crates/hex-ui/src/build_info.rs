@@ -98,7 +98,7 @@ impl gpui::Render for LogTooltip {
     ) -> impl IntoElement {
         crate::tooltips::view(
             &crate::tooltips::Kind::control("debug log"),
-            "debug · open latest log in text editor",
+            "debug · open session log",
             _cx,
         )
     }

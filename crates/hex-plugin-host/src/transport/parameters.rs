@@ -10,11 +10,12 @@ pub const MAX_PARAMETER_POINTS: usize = 64;
 
 pub use hex_lattice_contract::ForeignParameterPoint as ParameterPoint;
 
-fn valid_value(point: ParameterPoint) -> bool {
+pub(super) fn valid_id(id: u32) -> bool {
     // The upper half of the SDK ParamID range is reserved for the host.
-    point.id <= i32::MAX as u32
-        && point.normalized.is_finite()
-        && (0.0..=1.0).contains(&point.normalized)
+    id <= i32::MAX as u32
+}
+fn valid_value(point: ParameterPoint) -> bool {
+    valid_id(point.id) && point.normalized.is_finite() && (0.0..=1.0).contains(&point.normalized)
 }
 pub(super) fn valid(point: ParameterPoint, frames: usize) -> bool {
     usize::from(point.frame) < frames && valid_value(point)

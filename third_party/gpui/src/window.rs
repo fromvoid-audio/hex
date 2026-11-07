@@ -3184,6 +3184,31 @@ impl Window {
         font_size: Pixels,
         color: Hsla,
     ) -> Result<()> {
+        self.paint_oriented_glyph(origin, font_id, glyph_id, font_size, color, false)
+    }
+
+    /// Paint a shaped monochrome glyph with its advance running bottom to top.
+    /// The origin is the rotated glyph's baseline anchor in window coordinates.
+    pub fn paint_vertical_glyph(
+        &mut self,
+        origin: Point<Pixels>,
+        font_id: FontId,
+        glyph_id: GlyphId,
+        font_size: Pixels,
+        color: Hsla,
+    ) -> Result<()> {
+        self.paint_oriented_glyph(origin, font_id, glyph_id, font_size, color, true)
+    }
+
+    fn paint_oriented_glyph(
+        &mut self,
+        origin: Point<Pixels>,
+        font_id: FontId,
+        glyph_id: GlyphId,
+        font_size: Pixels,
+        color: Hsla,
+        vertical: bool,
+    ) -> Result<()> {
         self.invalidator.debug_assert_paint();
 
         let element_opacity = self.element_opacity();
@@ -3217,6 +3242,15 @@ impl Window {
                 size: tile.bounds.size.map(Into::into),
             };
             let content_mask = self.content_mask().scale(scale_factor);
+            let transformation = if vertical {
+                let Point { x, y } = glyph_origin;
+                TransformationMatrix {
+                    rotation_scale: [[0.0, 1.0], [-1.0, 0.0]],
+                    translation: [x.0 - y.0, y.0 + x.0],
+                }
+            } else {
+                TransformationMatrix::unit()
+            };
             self.next_frame.scene.insert_primitive(MonochromeSprite {
                 order: 0,
                 pad: 0,
@@ -3224,7 +3258,7 @@ impl Window {
                 content_mask,
                 color: color.opacity(element_opacity),
                 tile,
-                transformation: TransformationMatrix::unit(),
+                transformation,
             });
         }
         Ok(())

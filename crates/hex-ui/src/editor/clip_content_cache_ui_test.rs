@@ -811,10 +811,11 @@ fn cold_main_selection_reuses_clip_scene_with_current_geometry(cx: &mut TestAppC
     );
     assert_eq!(content.read_with(cx, |content, _| content.builds), builds);
     // The first scene's cached handle still captures an ordinary trim drag.
-    let down = visual
-        .debug_bounds(trim_selector)
-        .expect("reused trim handle")
-        .center();
+    let down = crate::editor::clip_drag_ui_test::trim_grab_point(
+        visual
+            .debug_bounds(trim_selector)
+            .expect("reused trim handle"),
+    );
     visual.simulate_mouse_move(down, None, Modifiers::default());
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(

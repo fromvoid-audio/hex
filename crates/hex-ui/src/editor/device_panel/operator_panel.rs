@@ -80,15 +80,6 @@ const fn id(value: u32) -> ParameterId {
     ParameterId::from_static(value)
 }
 
-pub(super) fn shell_operator_for_numeric_parameter(parameter: ParameterId) -> Option<usize> {
-    let value = parameter.value();
-    match value {
-        1..=12 if value % 3 != 0 => Some(((value - 1) / 3) as usize),
-        63..=73 if (value - 63) % 3 != 2 => Some(((value - 63) / 3) as usize),
-        _ => None,
-    }
-}
-
 pub(super) fn render_body(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
@@ -169,7 +160,6 @@ pub(super) fn render_body(
     let preview = preview::render(view, cx, device, device_view);
     crate::device_composition::three_pane(shell, detail, preview)
         .tab_group()
-        .on_children_prepainted(context::focus_listener(view, cx, device))
         .id(ElementId::Name(
             format!("operator-body-{}", device.value()).into(),
         ))
@@ -266,21 +256,20 @@ fn operator_row(
         device,
         identity,
         parameters,
-        operator,
         id(primary_id),
-        ControlPresentation::MicroDial,
+        ControlPresentation::FilledSlider,
         Some(if fixed { "freq" } else { "coarse" }),
     );
-    let fine = preview::control(
+    let fine = compact_control_with_codec(
         view,
         cx,
         device,
-        [
-            preview::Field::FineA,
-            preview::Field::FineB,
-            preview::Field::FineC,
-            preview::Field::FineD,
-        ][operator],
+        identity,
+        parameters,
+        id(609 + operator as u32),
+        ControlPresentation::FilledSlider,
+        Some("fine"),
+        Some(super::numeric_display::NumericDisplayCodec::HertzOffset),
     );
     let level = shell_control(
         view,
@@ -288,13 +277,14 @@ fn operator_row(
         device,
         identity,
         parameters,
-        operator,
         id(base + 1),
-        ControlPresentation::MicroDial,
+        ControlPresentation::FilledSlider,
         Some("level"),
     );
     let (section_focus, focused) =
         context::section_focus(view, cx, device, Section::Oscillator(operator));
+    let owner = context::Owner::capture(view, device);
+    let background_focus = section_focus.clone();
     let mut row = hex_widgets::device_grouped_row(super::device_layout_style(), focused)
         .on_children_prepainted(context::section_listener(
             view,
@@ -312,9 +302,20 @@ fn operator_row(
         .items_center()
         .justify_between()
         .gap(px(2.0))
-        .pr(px(14.0))
+        .pr(px(18.0))
         .relative()
         .track_focus(&section_focus)
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |view, _, window, cx| {
+                if let Some(owner) = owner
+                    && context::select_oscillator(view, cx, owner, operator)
+                {
+                    background_focus.focus(window);
+                }
+                cx.stop_propagation();
+            }),
+        )
         .child(primary);
     row = row.child(fine);
     let fixed_control = shell_control(
@@ -323,23 +324,30 @@ fn operator_row(
         device,
         identity,
         parameters,
-        operator,
         id(fixed_id),
         ControlPresentation::CompactButton,
         Some(""),
     );
     row = row.child(
         div()
-            .w(px(30.0))
+            .w(px(60.0))
             .h(px(40.0))
             .flex()
             .flex_col()
             .items_center()
-            .gap(px(5.0))
-            .child(section_title("fixed"))
-            .child(fixed_control),
+            .justify_center()
+            .gap(px(2.0))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(section_title("fixed"))
+                    .child(fixed_control),
+            )
+            .child(level),
     );
-    row = row.child(level).child(
+    row = row.child(
         operator_label(view, cx, device, parameters, operator, selected)
             .absolute()
             .right(px(4.0))
@@ -1019,12 +1027,11 @@ fn shell_control(
     device: DeviceId,
     identity: DeviceControlIdentity,
     parameters: &[NativeDeviceParameterView],
-    operator: usize,
     parameter_id: ParameterId,
     presentation: ControlPresentation,
     label: Option<&'static str>,
 ) -> Div {
-    let control = compact_control_with_codec(
+    compact_control_with_codec(
         view,
         cx,
         device,
@@ -1036,21 +1043,9 @@ fn shell_control(
         match label {
             Some("level") => Some(super::numeric_display::NumericDisplayCodec::AmplitudeDb),
             Some("coarse") => Some(super::numeric_display::NumericDisplayCodec::Number),
+            Some("freq") => Some(super::numeric_display::NumericDisplayCodec::Hertz),
             _ => None,
         },
-    );
-    let key = ParameterKey {
-        device,
-        parameter: parameter_id,
-    };
-    let owner = context::Owner::capture(view, device);
-    control.on_mouse_down(
-        gpui::MouseButton::Left,
-        cx.listener(move |view, _, _, cx| {
-            if let Some(owner) = owner {
-                context::select_oscillator(view, cx, owner, operator, &[key]);
-            }
-        }),
     )
 }
 
@@ -1086,6 +1081,7 @@ fn compact_control_with_codec(
         presentation,
         super::ControlText { label, codec },
     )
+    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
 }
 
 fn value(
@@ -1222,6 +1218,8 @@ pub(super) fn lfo_summary(
     );
     let section = Section::Preview("lfo");
     let (focus, focused) = context::section_focus(view, cx, device, section);
+    let owner = context::Owner::capture(view, device);
+    let background_focus = focus.clone();
     let mut row = hex_widgets::device_grouped_row(super::device_layout_style(), focused)
         .on_children_prepainted(context::section_listener(view, cx, device, section))
         .id(ElementId::Name(
@@ -1230,6 +1228,17 @@ pub(super) fn lfo_summary(
         .debug_selector(move || format!("operator-preview-row-{}-lfo", device.value()))
         .w_full()
         .track_focus(&focus)
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |view, _, window, cx| {
+                if let Some(owner) = owner
+                    && context::select_page(view, cx, owner, OperatorPage::Lfo)
+                {
+                    background_focus.focus(window);
+                }
+                cx.stop_propagation();
+            }),
+        )
         .h(px(40.0))
         .flex()
         .items_center()
@@ -1361,6 +1370,8 @@ pub(super) fn filter_summary(
     };
     let section = Section::Preview("filter");
     let (focus, focused) = context::section_focus(view, cx, device, section);
+    let owner = context::Owner::capture(view, device);
+    let background_focus = focus.clone();
     let mut row = hex_widgets::device_grouped_row(super::device_layout_style(), focused)
         .on_children_prepainted(context::section_listener(view, cx, device, section))
         .id(ElementId::Name(
@@ -1368,6 +1379,17 @@ pub(super) fn filter_summary(
         ))
         .debug_selector(move || format!("operator-preview-row-{}-filter", device.value()))
         .track_focus(&focus)
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |view, _, window, cx| {
+                if let Some(owner) = owner
+                    && context::select_page(view, cx, owner, OperatorPage::Filter)
+                {
+                    background_focus.focus(window);
+                }
+                cx.stop_propagation();
+            }),
+        )
         .w_full()
         .h(px(40.0))
         .flex()
@@ -1419,7 +1441,7 @@ mod tests {
             exposed.extend([74 + operator, 78 + operator]);
         }
         exposed.extend([61]);
-        exposed.extend(600..=608);
+        exposed.extend(600..=612);
         exposed.extend(620..=639);
         exposed.extend(82..=388);
         exposed.extend(20_001..=20_007);
@@ -1449,7 +1471,7 @@ mod tests {
             exposed, actual,
             "panel inventory matches registered metadata"
         );
-        assert_eq!(exposed.len(), 424);
+        assert_eq!(exposed.len(), 428);
         assert_eq!(exposed.first(), Some(&1));
         assert_eq!(exposed.last(), Some(&20_007));
         for diagonal in [13, 18, 23, 28] {
