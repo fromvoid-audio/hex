@@ -91,6 +91,7 @@ fn reverb_output_case(retain_frozen: bool) -> Result<(), Box<dyn Error>> {
         p::HIGH,
         p::LOW,
         p::CHORUS,
+        p::SMOOTH,
         p::FREEZE,
         p::FLAT,
         p::CUT,

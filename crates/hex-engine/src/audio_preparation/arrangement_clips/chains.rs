@@ -724,7 +724,7 @@ mod tests {
         let track = &project.tracks()[0];
         let device = &track.devices()[0];
         let registry = hex_devices::native_registry().unwrap();
-        for target in [None, Some(p::DECAY), Some(p::FREEZE)] {
+        for target in [None, Some(p::DECAY), Some(p::FREEZE), Some(p::SMOOTH)] {
             let input = target.map(|parameter| {
                 crate::device_automation::native_parameter_input_target(
                     &project,
@@ -757,6 +757,10 @@ mod tests {
             assert_eq!(
                 factory.supports_parameter_automation(p::FREEZE),
                 target == Some(p::FREEZE)
+            );
+            assert_eq!(
+                factory.supports_parameter_automation(p::SMOOTH),
+                target == Some(p::SMOOTH)
             );
             assert_eq!(
                 factory.output_tail(),
