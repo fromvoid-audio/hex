@@ -17,9 +17,11 @@
 //! policy: removed frozen tails persist until Stop, using bounded tail banks
 //! and explicit admission backpressure. Unfrozen rooms hard-clear at their
 //! declared zero-input deadline (including up to 100 ms of copied smoothing).
-//! The shared Arrangement dry/wet curve supplies each sample's blend. The
-//! base setting retains its configured smoothing. Neither changes tank
-//! history or the declared tail. No device-specific host lifecycle is introduced.
+//! The shared Arrangement adapter supplies authored dry/wet at host rate and
+//! output, predelay, reflection shape, diffusion scale and spin/chorus controls
+//! at the existing tank evaluations. Canonical edits retain their smoothing.
+//! Delay capacities, feedback and tail bounds stay unchanged. Detached tails
+//! retain the last validated values after the host freezes their clock.
 mod runtime;
 mod state;
 use hex_lattice::{NativeDeviceDefinition, StereoMatrix};
@@ -118,7 +120,7 @@ impl NativeDeviceMetadata for ReverbDefinition {
         };
         decode(state)?;
         let i = index(id)?;
-        if let Some(semantics) = runtime::output_automation::semantics(id) {
+        if let Some(semantics) = runtime::automation::semantics(id) {
             return Ok(Some(semantics));
         }
         let (normalization, stepping) = match DESCRIPTORS[i].kind {
@@ -157,7 +159,7 @@ impl NativeDeviceDefinition for ReverbDefinition {
         parameter: ParameterId,
     ) -> Result<bool, DeviceContractError> {
         decode(state)?;
-        Ok(runtime::output_automation::supports(parameter))
+        Ok(runtime::automation::supports(parameter))
     }
 
     fn prepare_automated_runtime_instance(
@@ -167,7 +169,7 @@ impl NativeDeviceDefinition for ReverbDefinition {
         context: &hex_lattice::DevicePreparationContext<'_>,
         parameters: &[ParameterId],
     ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
-        runtime::output_automation::validate_ids(parameters)?;
+        runtime::automation::validate_ids(parameters)?;
         Ok(hex_lattice::PreparedRuntimeDevice {
             matrix: StereoMatrix::identity(),
             processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(

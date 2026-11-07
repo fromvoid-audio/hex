@@ -107,6 +107,66 @@ fn reverb_outputs_match_independent_gain_and_width_oracles_on_all_effect_owners(
             renderer.render(&mut out).unwrap();
             out
         };
+        // Held authored controls must reproduce a separately prepared room,
+        // including delay positions and oscillator phase at each effect owner.
+        let settings = [
+            (p::PREDELAY, 50.0),
+            (p::SPIN_AMOUNT, 80.0),
+            (p::SPIN_RATE, 2.0),
+            (p::SHAPE, 0.1),
+            (p::SCALE, 90.0),
+            (p::CHORUS_AMOUNT, 3.0),
+            (p::CHORUS_RATE, 5.0),
+        ];
+        let mut authored = Editor::new(editor.project().clone(), 32).unwrap();
+        let mut changed = base.clone();
+        for (id, value) in settings {
+            changed = D
+                .patch_parameter(&changed, id, ParameterValue::Float(value))
+                .unwrap();
+            authored
+                .execute(Command::ReplaceDeviceAutomation {
+                    device,
+                    parameter: id,
+                    points: vec![point(id, 0, value, Shape::Step, &base)],
+                })
+                .unwrap();
+        }
+        let mut canonical = Editor::new(editor.project().clone(), 4).unwrap();
+        canonical
+            .execute(Command::ReplaceDeviceState {
+                device,
+                state: changed,
+            })
+            .unwrap();
+        let reference = render(canonical.project());
+        let automated = render(authored.project());
+        assert!(
+            reference
+                .iter()
+                .zip(&render(editor.project()))
+                .any(|(a, b)| (a[0] - b[0]).abs() > 1e-5)
+        );
+        for (a, b) in automated.iter().zip(&reference) {
+            assert!(
+                (a[0] - b[0]).abs() < 2e-6 && (a[1] - b[1]).abs() < 2e-6,
+                "owner {owner}: {a:?} != {b:?}"
+            );
+        }
+        let revision = Arc::new(
+            PreparedRevision::prepare(authored.project(), &media, Arc::new(SineTable::new()), None)
+                .unwrap(),
+        );
+        let mut playback = SessionPlayback::new(revision).unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut chunked = vec![[0.0; 2]; FRAMES];
+        for block in chunked.chunks_mut(257) {
+            playback.render(block).unwrap();
+        }
+        assert_eq!(chunked, automated);
+        playback.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+        playback.render(&mut chunked).unwrap();
+        assert_eq!(chunked, automated);
         let unity = render(editor.project());
         editor
             .execute(Command::ReplaceDeviceState {
