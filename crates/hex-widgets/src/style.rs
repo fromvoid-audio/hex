@@ -71,15 +71,14 @@ pub struct ControlStyle {
 }
 
 impl ControlStyle {
-    /// Resolve header selection without changing the neutral frame/control palette.
+    /// Resolve border-only selection without changing the neutral header/control palette.
     /// The owner retains selection, focus, bypass and drag/drop state separately.
     pub fn with_device_selection(self, selected: bool) -> DeviceFrameStyle {
-        let frame = DeviceFrameStyle::from(self);
+        let mut frame = DeviceFrameStyle::from(self);
         if selected {
-            frame.with_header_colors(self.accent, self.background)
-        } else {
-            frame
+            frame.border = self.accent;
         }
+        frame
     }
 
     pub fn validate(self) -> Result<Self, &'static str> {
@@ -91,11 +90,12 @@ impl ControlStyle {
     }
 }
 
-/// Neutral shell colors and independently resolved header paint. A selected
-/// header must never recolor the surround, outer border or caller-owned body.
+/// Neutral shell colors and independently resolved header paint. Selection uses
+/// the reserved outer border; the surround, header and caller-owned body stay neutral.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DeviceFrameStyle {
     pub(crate) controls: ControlStyle,
+    pub(crate) border: u32,
     pub(crate) header_background: u32,
     pub(crate) header_text: u32,
 }
@@ -103,6 +103,7 @@ pub struct DeviceFrameStyle {
 impl From<ControlStyle> for DeviceFrameStyle {
     fn from(controls: ControlStyle) -> Self {
         Self {
+            border: controls.border,
             header_background: controls.surface,
             header_text: controls.text,
             controls,

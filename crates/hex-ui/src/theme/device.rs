@@ -73,18 +73,12 @@ pub(crate) fn device_style(role: DeviceStyleRole) -> ControlStyle {
     style
 }
 
-/// One selected-header policy for every instrument, effect and return shell.
-/// Header paint is isolated from the neutral body and uses a readable foreground.
-/// The reserved shell stroke stays neutral and visible in every selection state.
+/// One border-only selection policy for every instrument, effect and return shell.
+/// The header and body keep their neutral surfaces and readable foregrounds.
 pub(crate) fn device_frame_style(selected: bool) -> DeviceFrameStyle {
     let mut style = device_style(DeviceStyleRole::Layout);
     style.border = color(PaletteRole::Border);
-    let frame = style.with_device_selection(selected);
-    if selected {
-        frame.with_header_colors(style.accent, readable_text(style.accent, style.text))
-    } else {
-        frame
-    }
+    style.with_device_selection(selected)
 }
 
 /// Stable musical identities a/b/c/d, shared by badges and routing diagrams.
@@ -160,14 +154,13 @@ pub(crate) enum DeviceActionRole {
     Bypassed,
 }
 
-pub(crate) fn device_header_action_style(selected: bool, role: DeviceActionRole) -> ActionStyle {
+pub(crate) fn device_header_action_style(_selected: bool, role: DeviceActionRole) -> ActionStyle {
     // Power is a canonical device state, independent of the selected header.
     // Keep the accent on hover too, so focus/hover cannot suggest a bypass edit.
     let layout = device_style(DeviceStyleRole::Layout);
     let background = match role {
         DeviceActionRole::Enabled => color(PaletteRole::Primary),
         DeviceActionRole::Bypassed => color(PaletteRole::Border),
-        _ if selected => layout.accent,
         _ => layout.surface,
     };
     let preferred = color(match role {
@@ -277,6 +270,7 @@ mod action_tests {
                     DeviceActionRole::Bypassed,
                 ] {
                     let style = device_header_action_style(selected, role);
+                    assert_eq!(style, device_header_action_style(!selected, role));
                     assert!(super::super::contrast_ratio(style.background, style.text) >= 4.5);
                     assert!(
                         super::super::contrast_ratio(
