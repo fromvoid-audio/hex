@@ -248,6 +248,7 @@ impl NativeDeviceDefinition for NativeEffectDefinition<'_> {
                     effect.binding,
                     effect.sample_rate,
                     effect.prepared.quantum_frames(),
+                    effect.program_revision,
                 )
             }))
     }

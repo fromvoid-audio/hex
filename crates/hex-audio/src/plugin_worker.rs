@@ -3,6 +3,7 @@
 //! This is not installed-plugin process admission or crash recovery authority.
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 use hex_lattice_contract::ForeignProcessorBinding as Binding;
+pub use hex_plugin_host::transport::ReceivedProgram;
 use hex_plugin_host::transport::*;
 use std::{
     sync::atomic::Ordering::{Acquire, Release},

@@ -11,7 +11,7 @@ mod tests;
 impl Custody {
     // Work excludes source replacement/return; bank is held only for admission
     // and terminal context checks, never copied-state allocation or worker I/O.
-    fn with_live_capture<R>(
+    pub(super) fn with_live_capture<R>(
         &self,
         binding: Binding,
         run: impl FnOnce(&mut Owner) -> Result<R, &'static str>,

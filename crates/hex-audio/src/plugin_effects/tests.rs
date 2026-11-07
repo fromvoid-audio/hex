@@ -1859,3 +1859,43 @@ fn ordinary_resident_compiler_drives_signed_vst3_automation() {
     assert_eq!(retired.completed_blocks(), 8);
     assert!(retired.retire_on_control().unwrap().status.success());
 }
+
+#[test]
+fn program_revision_reservation_never_wraps_or_changes_processing_state() {
+    let binding = Binding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    };
+    let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 2).unwrap();
+    let state = NativeDeviceState::new(
+        hex_lattice_contract::DeviceTypeId::from_static("test.revision"),
+        1,
+        vec![1],
+    )
+    .unwrap();
+    let (_control, transport, _worker) = hex_plugin_host::transport::channel(binding, 8).unwrap();
+    let mut callback = NativeEffectCallback::for_test(identity, binding, state.clone(), transport);
+    assert_eq!(
+        callback
+            .configuration
+            .reserve_program_revision_on_control()
+            .unwrap()
+            .get(),
+        5
+    );
+    assert_eq!(callback.configuration.state, state);
+    callback.configuration.program_revision = std::num::NonZeroU64::MAX;
+    assert!(
+        callback
+            .configuration
+            .reserve_program_revision_on_control()
+            .is_err()
+    );
+    assert_eq!(
+        callback.configuration.program_revision,
+        std::num::NonZeroU64::MAX
+    );
+    assert_eq!(callback.configuration.state, state);
+}

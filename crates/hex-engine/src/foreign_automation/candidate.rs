@@ -105,7 +105,7 @@ pub(crate) fn prepare_device(
     {
         return Err(Error::SourceMismatch);
     }
-    let revision = std::num::NonZeroU64::new(source.binding.epoch).ok_or(Error::SourceMismatch)?;
+    let revision = source.revision;
     let profile = if processor.is_instrument_profile() {
         QuantumProfile::for_arrangement_instrument(source.quantum_frames, region)
     } else {

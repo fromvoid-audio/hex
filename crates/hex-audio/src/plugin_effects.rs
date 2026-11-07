@@ -49,6 +49,22 @@ struct Configuration {
     state: NativeDeviceState,
     prepared: PreparedForeignProcessor,
     authored: automation::SourceCapabilities,
+    program_revision: std::num::NonZeroU64,
+}
+
+impl Configuration {
+    fn reserve_program_revision_on_control(
+        &mut self,
+    ) -> Result<std::num::NonZeroU64, &'static str> {
+        let next = self
+            .program_revision
+            .get()
+            .checked_add(1)
+            .and_then(std::num::NonZeroU64::new)
+            .ok_or("native automation program revisions exhausted")?;
+        self.program_revision = next;
+        Ok(next)
+    }
 }
 
 /// One actually prepared native source and its exact constructor-paired queues.
@@ -300,7 +316,16 @@ impl NativeEffect {
             state,
             prepared,
             authored: automation::SourceCapabilities::default(),
+            program_revision: std::num::NonZeroU64::new(config.binding.epoch)
+                .ok_or(Error::Protocol("native automation source epoch is invalid"))?,
         })
+    }
+    pub(crate) fn reserve_program_revision_on_control(
+        &mut self,
+    ) -> Result<std::num::NonZeroU64, &'static str> {
+        self.callback
+            .configuration
+            .reserve_program_revision_on_control()
     }
     pub(crate) fn retire_on_control(
         &mut self,
@@ -492,6 +517,7 @@ impl NativeEffectCallback {
                 state,
                 prepared,
                 authored: automation::SourceCapabilities::default(),
+                program_revision: std::num::NonZeroU64::new(binding.epoch).unwrap(),
             },
             transport,
             input: [[0.0; 2]; MAX_FRAMES],

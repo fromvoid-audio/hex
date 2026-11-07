@@ -98,13 +98,12 @@ pub struct BoundProgram {
 impl BoundProgram {
     /// The graph owner supplies its proven origin-run bound. Source facts
     /// supply the class, rate, quantum extent and admissible SDK parameter
-    /// IDs. The graph owner must use a fresh revision when the program changes.
+    /// IDs and a fresh source-issued revision when the program changes.
     pub fn prepare(
         lanes: &[DeviceAutomation],
         source: hex_lattice::ForeignAutomationSource<'_>,
         tempo: &TempoMap,
         max_runs: u16,
-        revision: std::num::NonZeroU64,
     ) -> Result<Option<Self>, Invalid> {
         if !source.binding.is_valid() {
             return Err(Invalid("invalid foreign automation source binding"));
@@ -112,6 +111,7 @@ impl BoundProgram {
         if source.sample_rate != tempo.sample_rate() {
             return Err(Invalid("foreign automation source and tempo rates differ"));
         }
+        let revision = source.revision;
         Ok(Program::prepare(
             lanes,
             source.class,
