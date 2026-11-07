@@ -1091,7 +1091,7 @@ fn malformed_or_late_manual_marker_cannot_escape_its_reply() {
             ..marker.point
         },
     ] {
-        let (_, mut callback, mut worker) = channel(BINDING, 8).unwrap();
+        let (_control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
         callback
             .stage(&[[0.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
             .unwrap();
@@ -1110,7 +1110,7 @@ fn malformed_or_late_manual_marker_cannot_escape_its_reply() {
         assert!(callback.is_revoked());
         assert_eq!(callback.take_accepted_manual_parameter(), None);
     }
-    let (_, mut callback, mut worker) =
+    let (_control, mut callback, mut worker) =
         instrument_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
     let stage = |callback: &mut Callback| {
         let mut output = [[9.0; 2]; 8];
