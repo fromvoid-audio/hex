@@ -323,13 +323,16 @@ fn consumer_rejects_each_identity_field_and_nonfinite_or_invalid_events() {
             .replies
             .push(OutputReply {
                 block: reply,
-                manual: Some(ManualParameterInput {
-                    operation: NonZeroU64::MIN,
-                    point: ParameterPoint {
-                        id: 0,
-                        frame: 0,
-                        normalized: 0.5,
+                manual: Some(ManualExchange {
+                    input: ManualParameterInput {
+                        operation: NonZeroU64::MIN,
+                        point: ParameterPoint {
+                            id: 0,
+                            frame: 0,
+                            normalized: 0.5,
+                        },
                     },
+                    origin: None,
                 }),
             })
             .unwrap();
@@ -435,6 +438,7 @@ fn bounded_input_validation_and_queue_independent_stop() {
                             block: Block::empty(BINDING, 8),
                             parameter_capacity: MAX_PARAMETER_POINTS,
                             authored: false,
+                            manual_origin: None,
                         })
                         .unwrap();
                 }
@@ -449,6 +453,7 @@ fn bounded_input_validation_and_queue_independent_stop() {
                             block: Block::empty(BINDING, 8),
                             parameter_capacity: MAX_PARAMETER_POINTS,
                             authored: false,
+                            manual_origin: None,
                         })
                         .unwrap();
                 }
@@ -1016,18 +1021,36 @@ fn manual_marker_requires_the_aligned_accepted_physical_callback() {
             // The transport's first marked output is at position 16, which
             // falls in the second render segment of a physical callback.
             let split = size.min(1);
-            callback
-                .stage_segment(0, &[[1.0; 2]; 1][..split], &[], &mut output[..split])
-                .unwrap();
-            if split < size {
+            let mut stage = |offset, input: &[Frame], output: &mut [Frame]| {
+                let origin = |index| {
+                    let frame = (position + offset + index) as u64;
+                    Some(ManualParameterOrigin {
+                        arrangement_frame: 127 + frame,
+                        performance_frame: 301 + frame,
+                        loop_pass: 2,
+                    })
+                };
                 callback
-                    .stage_segment(
-                        split,
-                        &[[1.0; 2]; 8][split..size],
+                    .stage_effect_segment(
+                        offset,
+                        input,
                         &[],
-                        &mut output[split..size],
+                        &[],
+                        output,
+                        SegmentTiming {
+                            playing: None,
+                            at: |_| None,
+                        },
+                        EffectSegmentOrigins {
+                            authored: None,
+                            manual: Some(&origin),
+                        },
                     )
                     .unwrap();
+            };
+            stage(0, &[[1.0; 2]; 1][..split], &mut output[..split]);
+            if split < size {
+                stage(split, &[[1.0; 2]; 8][split..size], &mut output[split..size]);
             }
             assert_eq!(callback.take_accepted_manual_parameter(), None);
             let includes_marker = (position..position + size).contains(&16);
@@ -1048,6 +1071,11 @@ fn manual_marker_requires_the_aligned_accepted_physical_callback() {
                         first_frame: 0,
                         callback_offset: (16 - position) as u16,
                         input,
+                        origin: Some(ManualParameterOrigin {
+                            arrangement_frame: 127,
+                            performance_frame: 301,
+                            loop_pass: 2,
+                        }),
                     })
                 );
                 assert_eq!(output[16 - position], [3.0; 2]);

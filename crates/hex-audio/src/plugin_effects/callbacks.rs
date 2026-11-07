@@ -87,6 +87,12 @@ impl NativeEffectEntry {
         }
         Ok(())
     }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn take_accepted_manual_parameter_for_test(
+        &mut self,
+    ) -> Option<hex_plugin_host::transport::AcceptedManualParameter> {
+        self.callback.take_accepted_manual_parameter()
+    }
     pub(crate) fn end_staging_at_pause(&mut self, frame: usize) {
         self.callback.end_staging_at_pause(frame);
     }

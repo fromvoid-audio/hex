@@ -805,6 +805,7 @@ fn actual_parameter_hold_replaces_one_lane_until_matching_release() {
                 assert_eq!(receipt.sequence, sequence - 2);
                 assert_eq!(receipt.first_frame, (sequence - 2) * 8);
                 assert_eq!(receipt.callback_offset, 0);
+                assert_eq!(receipt.origin, None);
                 assert_eq!((receipt.input.point.frame, receipt.input.point.id), (0, 7));
                 (
                     receipt.input.operation.get(),

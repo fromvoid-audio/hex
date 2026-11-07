@@ -423,6 +423,23 @@ impl Drop for Control {
     }
 }
 
+/// Input content at the exact physical quantum start. This stays inside
+/// the copied transport and has no meaning when the stage clock is absent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ManualParameterOrigin {
+    pub arrangement_frame: u64,
+    pub performance_frame: u64,
+    pub loop_pass: u64,
+}
+
+/// Borrow the compensated graph origins for one segment. Authored playback
+/// needs the per-sample view. Manual correlation only reads the quantum start.
+#[derive(Default)]
+pub struct EffectSegmentOrigins<'a> {
+    pub authored: Option<AuthoredSegment<'a>>,
+    pub manual: Option<&'a dyn Fn(usize) -> Option<ManualParameterOrigin>>,
+}
+
 #[derive(Clone, Copy)]
 struct InputRequest {
     block: Block,
@@ -430,6 +447,7 @@ struct InputRequest {
     // quantum. Control-originated input may consume it only after acceptance.
     parameter_capacity: usize,
     authored: bool,
+    manual_origin: Option<ManualParameterOrigin>,
 }
 
 pub struct WorkerRequest {
@@ -456,19 +474,27 @@ pub struct AcceptedManualParameter {
     pub first_frame: u64,
     pub callback_offset: u16,
     pub input: ManualParameterInput,
+    pub origin: Option<ManualParameterOrigin>,
+}
+
+#[derive(Clone, Copy)]
+struct ManualExchange {
+    input: ManualParameterInput,
+    origin: Option<ManualParameterOrigin>,
 }
 
 #[derive(Clone, Copy)]
 struct OutputReply {
     block: Block,
-    manual: Option<ManualParameterInput>,
+    manual: Option<ManualExchange>,
 }
 
 impl OutputReply {
     fn valid(&self, binding: Binding, quantum: u16, sequence: u64) -> Result<(), Fault> {
         self.block.valid_reply(binding, quantum, sequence)?;
         if self.manual.is_some_and(|manual| {
-            manual.point.frame != 0 || !parameters::valid(manual.point, usize::from(quantum))
+            manual.input.point.frame != 0
+                || !parameters::valid(manual.input.point, usize::from(quantum))
         }) {
             return Err(Fault::InvalidParameters);
         }
@@ -480,6 +506,7 @@ impl OutputReply {
 struct State {
     position: u64,
     input: Block,
+    input_manual_origin: Option<ManualParameterOrigin>,
     output: OutputReply,
     output_gap: bool,
     parameter_capacity: usize,
@@ -533,7 +560,11 @@ pub struct Worker {
     replies: Producer<OutputReply>,
     revoked: Arc<Revocation>,
     sequence: u64,
-    in_flight: bool,
+    in_flight: Option<InFlight>,
+}
+
+struct InFlight {
+    manual_origin: Option<ManualParameterOrigin>,
 }
 
 /// Allocate only on control. The two rings have eight fixed inline slots each.
@@ -597,6 +628,7 @@ fn channel_with_policy(
             state: State {
                 position,
                 input: empty,
+                input_manual_origin: None,
                 output: OutputReply {
                     block: empty,
                     manual: None,
@@ -615,7 +647,7 @@ fn channel_with_policy(
             replies: reply_tx,
             revoked,
             sequence: completed_blocks,
-            in_flight: false,
+            in_flight: None,
         },
     ))
 }
@@ -791,14 +823,14 @@ impl Callback {
         output: &mut [Frame],
         timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
     ) -> Result<SegmentReply, Fault> {
-        self.stage_segment_input(
+        self.stage_effect_segment(
             frame_offset,
             input,
             events,
             parameters,
             output,
             timing,
-            None,
+            EffectSegmentOrigins::default(),
         )
     }
 
@@ -814,19 +846,24 @@ impl Callback {
         timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
         authored: AuthoredSegment<'_>,
     ) -> Result<SegmentReply, Fault> {
-        self.stage_segment_input(
+        self.stage_effect_segment(
             frame_offset,
             input,
             events,
             &[],
             output,
             timing,
-            Some(authored),
+            EffectSegmentOrigins {
+                authored: Some(authored),
+                manual: None,
+            },
         )
     }
 
-    #[allow(clippy::too_many_arguments)] // Parallel borrowed PCM, events and origin windows.
-    fn stage_segment_input(
+    /// Stage the actual effect's compensated clock alongside the normal
+    /// parameter and PCM input. The copied marker is never sent to the SDK.
+    #[allow(clippy::too_many_arguments)] // Borrowed PCM, events and exact clock views.
+    pub fn stage_effect_segment(
         &mut self,
         frame_offset: usize,
         input: &[Frame],
@@ -834,7 +871,7 @@ impl Callback {
         parameters: &[ParameterPoint],
         output: &mut [Frame],
         timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
-        authored: Option<AuthoredSegment<'_>>,
+        origins: EffectSegmentOrigins<'_>,
     ) -> Result<SegmentReply, Fault> {
         output.fill([0.0; 2]);
         let result = self.stage_segment_inner(
@@ -844,7 +881,7 @@ impl Callback {
             parameters,
             output,
             timing,
-            authored,
+            origins,
         );
         if let Err(fault) = result {
             output.fill([0.0; 2]);
@@ -862,7 +899,7 @@ impl Callback {
         parameters: &[ParameterPoint],
         output: &mut [Frame],
         mut timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
-        authored: Option<AuthoredSegment<'_>>,
+        origins: EffectSegmentOrigins<'_>,
     ) -> Result<SegmentReply, Fault> {
         if self.revoked.is_revoked() {
             return Err(Fault::Revoked);
@@ -905,6 +942,10 @@ impl Callback {
             return Err(Fault::InvalidParameters);
         }
         let q = u64::from(self.quantum);
+        let EffectSegmentOrigins { authored, manual } = origins;
+        if authored.is_some() && !parameters.is_empty() {
+            return Err(Fault::InvalidParameters);
+        }
         let program = authored
             .as_ref()
             .map(|segment| segment.program.quantum_program_key());
@@ -929,6 +970,7 @@ impl Callback {
                 stage.state.input = Block::empty(self.binding, self.quantum);
                 stage.state.input.sequence = sequence;
                 stage.state.input.first_frame = position;
+                stage.state.input_manual_origin = manual.and_then(|origin| origin(index));
                 stage.state.parameter_capacity = MAX_PARAMETER_POINTS;
                 self.authored_origins.program = program;
                 stage.state.input.timing = (timing.at)(index);
@@ -950,7 +992,7 @@ impl Callback {
                         &mut stage.state,
                         sequence - 2,
                     )?;
-                    if let Some(input) = stage.state.output.manual {
+                    if let Some(manual) = stage.state.output.manual {
                         // Extent is at most one quantum, so only one reply
                         // start can fall in the complete physical callback.
                         stage.manual = Some(AcceptedManualParameter {
@@ -958,7 +1000,8 @@ impl Callback {
                             sequence: stage.state.output.block.sequence,
                             first_frame: stage.state.output.block.first_frame,
                             callback_offset: (frame_offset + index) as u16,
-                            input,
+                            input: manual.input,
+                            origin: manual.origin,
                         });
                     }
                 }
@@ -1054,6 +1097,7 @@ impl Callback {
                     block: stage.state.input,
                     parameter_capacity: stage.state.parameter_capacity,
                     authored: authored.is_some(),
+                    manual_origin: stage.state.input_manual_origin,
                 });
             }
         }
@@ -1199,7 +1243,7 @@ impl Worker {
         if self.revoked.is_revoked() {
             return Err(Fault::Revoked);
         }
-        if self.in_flight {
+        if self.in_flight.is_some() {
             return self.fail(Fault::Protocol);
         }
         let Ok(request) = self.requests.pop() else {
@@ -1215,7 +1259,9 @@ impl Worker {
         self.revoked
             .received_prefix
             .store(self.sequence.saturating_add(1), Release);
-        self.in_flight = true;
+        self.in_flight = Some(InFlight {
+            manual_origin: request.manual_origin,
+        });
         Ok(Some(WorkerRequest {
             block,
             parameter_capacity: request.parameter_capacity,
@@ -1238,15 +1284,18 @@ impl Worker {
         if self.revoked.is_revoked() {
             return Err(Fault::Revoked);
         }
-        if !self.in_flight {
+        let Some(in_flight) = self.in_flight.take() else {
             return self.fail(Fault::Protocol);
-        }
+        };
         self.revoked
             .processed_prefix
             .store(self.sequence.saturating_add(1), Release);
         let reply = OutputReply {
             block: reply,
-            manual,
+            manual: manual.map(|input| ManualExchange {
+                input,
+                origin: in_flight.manual_origin,
+            }),
         };
         if let Err(fault) = reply.valid(self.binding, self.quantum, self.sequence) {
             return self.fail(fault);
@@ -1258,7 +1307,6 @@ impl Worker {
             return self.fail(Fault::Saturated);
         }
         self.sequence = next;
-        self.in_flight = false;
         Ok(())
     }
 }
