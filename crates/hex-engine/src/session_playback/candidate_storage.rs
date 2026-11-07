@@ -234,19 +234,11 @@ fn chain_storage<'a>(
     }
     for (index, (entry, prepared)) in view.entries().zip(prepared).enumerate() {
         if let Some(program) = entry.automation().foreign() {
-            let owner = program.storage_owner();
-            if !prepared
+            let expected = prepared
                 .automation
                 .foreign()
-                .is_some_and(|expected| std::sync::Arc::ptr_eq(owner, expected.storage_owner()))
-            {
-                return Err(AudioStorageError::SourceMismatch);
-            }
-            l.existing_shared(
-                owner,
-                Owner::exclusive(owner),
-                Location("foreign-automation-runtime", 0),
-            )?;
+                .ok_or(AudioStorageError::SourceMismatch)?;
+            crate::foreign_automation::storage::runtime(program, expected, l)?;
         }
         let (ids, lanes, points) = entry.automation().storage_vectors();
         l.vec(ids)?;

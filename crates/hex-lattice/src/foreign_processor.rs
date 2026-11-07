@@ -133,6 +133,65 @@ pub struct ForeignAutomation<'a> {
     pub binding: ForeignProcessorBinding,
     pub revision: std::num::NonZeroU64,
     pub program: &'a dyn ForeignAutomationProgram,
+    retained: &'a [Option<RetainedProgram>],
+}
+
+impl<'a> ForeignAutomation<'a> {
+    /// Borrow one current program without retained versions.
+    pub fn new(
+        binding: ForeignProcessorBinding,
+        revision: NonZeroU64,
+        program: &'a dyn ForeignAutomationProgram,
+    ) -> Self {
+        Self {
+            binding,
+            revision,
+            program,
+            retained: &[],
+        }
+    }
+
+    pub fn contains_revision(self, revision: NonZeroU64) -> bool {
+        revision == self.revision
+            || self
+                .retained
+                .iter()
+                .flatten()
+                .any(|entry| entry.revision == revision)
+    }
+
+    /// Resolve a complete quantum without cloning or releasing an owner.
+    pub fn render_revision(
+        self,
+        revision: NonZeroU64,
+        origins: &[Option<u64>],
+        cuts: &[u16],
+        output: &mut [ForeignParameterPoint],
+    ) -> Result<usize, DeviceContractError> {
+        let program = if revision == self.revision {
+            self.program
+        } else {
+            self.retained
+                .iter()
+                .flatten()
+                .find(|entry| entry.revision == revision)
+                .map(|entry| entry.program.as_ref())
+                .ok_or(DeviceContractError::ForeignProcessingFailed)?
+        };
+        program.render_quantum(origins, cuts, output)
+    }
+}
+
+/// Maximum historical programs retained beside a graph's current version.
+/// A full set refuses on control; publication progress must permit pruning
+/// before further versions can be admitted. This grants no native custody.
+pub const MAX_RETAINED_FOREIGN_PROGRAMS: usize = 8;
+
+#[derive(Clone)]
+struct RetainedProgram {
+    revision: NonZeroU64,
+    program: Arc<dyn ForeignAutomationProgram + Send>,
+    bytes: usize,
 }
 
 /// Immutable graph data. Prepared and runtime entries share the allocation
@@ -142,7 +201,9 @@ pub struct PreparedForeignAutomation {
     binding: ForeignProcessorBinding,
     revision: NonZeroU64,
     program: Arc<dyn ForeignAutomationProgram + Send>,
+    program_bytes: usize,
     storage_bytes: usize,
+    retained: [Option<RetainedProgram>; MAX_RETAINED_FOREIGN_PROGRAMS],
 }
 
 impl PreparedForeignAutomation {
@@ -170,17 +231,104 @@ impl PreparedForeignAutomation {
             binding,
             revision,
             program: Arc::new(program),
+            program_bytes: storage_bytes,
             storage_bytes,
+            retained: std::array::from_fn(|_| None),
         })
+    }
+
+    /// Retain immutable versions from the exact previous binding. Call only
+    /// while constructing a new graph on control. Keys may alias only the
+    /// same actual allocation. Refusal leaves this owner unchanged. Retained
+    /// fields use fixed inline storage; all Arc releases remain on control.
+    pub fn retain_previous_on_control(
+        &mut self,
+        previous: &Self,
+    ) -> Result<(), DeviceContractError> {
+        if self.binding != previous.binding {
+            return Err(DeviceContractError::ForeignProcessingFailed);
+        }
+        let mut candidate = self.clone();
+        let versions =
+            std::iter::once((previous.revision, &previous.program, previous.program_bytes)).chain(
+                previous
+                    .retained
+                    .iter()
+                    .flatten()
+                    .map(|entry| (entry.revision, &entry.program, entry.bytes)),
+            );
+        for (revision, program, bytes) in versions {
+            let existing = if revision == candidate.revision {
+                Some((&candidate.program, candidate.program_bytes))
+            } else {
+                candidate
+                    .retained
+                    .iter()
+                    .flatten()
+                    .find(|entry| entry.revision == revision)
+                    .map(|entry| (&entry.program, entry.bytes))
+            };
+            if let Some((existing, existing_bytes)) = existing {
+                if !Arc::ptr_eq(existing, program) || existing_bytes != bytes {
+                    return Err(DeviceContractError::ForeignProcessingFailed);
+                }
+                continue;
+            }
+            let slot = candidate
+                .retained
+                .iter_mut()
+                .find(|entry| entry.is_none())
+                .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
+            candidate.storage_bytes = candidate
+                .storage_bytes
+                .checked_add(bytes)
+                .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
+            *slot = Some(RetainedProgram {
+                revision,
+                program: Arc::clone(program),
+                bytes,
+            });
+        }
+        *self = candidate;
+        Ok(())
+    }
+
+    /// Every actual owning field and its immutable allocation declaration.
+    /// Inline retained slots are already included in the runtime entry stride.
+    pub fn storage_owners(
+        &self,
+    ) -> impl Iterator<Item = (&Arc<dyn ForeignAutomationProgram + Send>, usize)> {
+        std::iter::once((&self.program, self.program_bytes)).chain(
+            self.retained
+                .iter()
+                .flatten()
+                .map(|entry| (&entry.program, entry.bytes)),
+        )
+    }
+
+    /// Exact handle correspondence between prepared and runtime copies.
+    pub fn shares_storage_with(&self, other: &Self) -> bool {
+        self.binding == other.binding
+            && self.revision == other.revision
+            && self.program_bytes == other.program_bytes
+            && Arc::ptr_eq(&self.program, &other.program)
+            && self
+                .retained
+                .iter()
+                .zip(&other.retained)
+                .all(|(a, b)| match (a, b) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => {
+                        a.revision == b.revision
+                            && a.bytes == b.bytes
+                            && Arc::ptr_eq(&a.program, &b.program)
+                    }
+                    _ => false,
+                })
     }
 
     pub fn storage_bytes(&self) -> usize {
         self.storage_bytes
-    }
-
-    /// Exact shared allocation identity for control-side storage inventory.
-    pub fn storage_owner(&self) -> &Arc<dyn ForeignAutomationProgram + Send> {
-        &self.program
     }
 
     pub fn borrow(&self) -> ForeignAutomation<'_> {
@@ -188,6 +336,7 @@ impl PreparedForeignAutomation {
             binding: self.binding,
             revision: self.revision,
             program: self.program.as_ref(),
+            retained: &self.retained,
         }
     }
 }

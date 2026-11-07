@@ -164,7 +164,11 @@ fn graph_owns_one_program_for_the_exact_effect_binding() {
         std::slice::from_ref(&instance),
     )
     .unwrap();
-    let program = PreparedForeignAutomation::new(binding, NonZeroU64::MIN, Program, 0).unwrap();
+    let previous = PreparedForeignAutomation::new(binding, NonZeroU64::MIN, Program, 0).unwrap();
+    let mut program =
+        PreparedForeignAutomation::new(binding, NonZeroU64::new(2).unwrap(), Program, 0).unwrap();
+    program.retain_previous_on_control(&previous).unwrap();
+    drop(previous);
     let bytes = program.storage_bytes();
     instance.automation = crate::PreparedParameterAutomation::for_foreign(program);
     assert!(matches!(
@@ -544,4 +548,125 @@ fn parameter_capability_default_refuses_nonempty_without_silent_loss_and_preserv
     assert_eq!(frames, [[0.0; 2]; 2]);
     assert_eq!(endpoint.segments, 1);
     assert_eq!(endpoint.rejections, 1);
+}
+
+#[test]
+fn retained_programs_keep_exact_allocations_and_refuse_alias_or_capacity_without_mutation() {
+    use std::{
+        num::NonZeroU64,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+    static DROPS: AtomicUsize = AtomicUsize::new(0);
+    struct Value(f64);
+    impl Drop for Value {
+        fn drop(&mut self) {
+            DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    impl ForeignAutomationProgram for Value {
+        fn render_quantum(
+            &self,
+            _: &[Option<u64>],
+            _: &[u16],
+            output: &mut [ForeignParameterPoint],
+        ) -> Result<usize, DeviceContractError> {
+            output[0] = ForeignParameterPoint {
+                id: 0,
+                frame: 0,
+                normalized: self.0,
+            };
+            Ok(1)
+        }
+    }
+    let binding = ForeignProcessorBinding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    };
+    let make = |binding, key, value| {
+        PreparedForeignAutomation::new(binding, NonZeroU64::new(key).unwrap(), Value(value), 0)
+            .unwrap()
+    };
+    let old = make(binding, 1, 0.25);
+    let old_bytes = old.storage_bytes();
+    let mut next = make(binding, 2, 0.5);
+    let current_bytes = next.storage_bytes();
+    next.retain_previous_on_control(&old).unwrap();
+    assert_eq!(next.storage_bytes(), old_bytes + current_bytes);
+    drop(old);
+    assert_eq!(DROPS.load(Ordering::SeqCst), 0);
+    let runtime = next.clone();
+    assert!(runtime.shares_storage_with(&next));
+    assert_eq!(runtime.storage_owners().count(), 2);
+    for (owner, bytes) in runtime.storage_owners() {
+        assert_eq!(Arc::strong_count(owner), 2);
+        assert_eq!(bytes, current_bytes);
+    }
+    let mut points = [ForeignParameterPoint::default(); 1];
+    for (key, expected) in [(1, 0.25), (2, 0.5)] {
+        runtime
+            .borrow()
+            .render_revision(NonZeroU64::new(key).unwrap(), &[Some(0)], &[], &mut points)
+            .unwrap();
+        assert_eq!(points[0].normalized, expected);
+    }
+    assert!(
+        !runtime
+            .borrow()
+            .contains_revision(NonZeroU64::new(3).unwrap())
+    );
+    assert!(
+        runtime
+            .borrow()
+            .render_revision(NonZeroU64::new(3).unwrap(), &[Some(0)], &[], &mut points)
+            .is_err()
+    );
+    drop(runtime);
+    for key in 3..=9 {
+        let mut current = make(binding, key, 0.75);
+        current.retain_previous_on_control(&next).unwrap();
+        next = current;
+    }
+    assert_eq!(
+        next.storage_owners().count(),
+        1 + MAX_RETAINED_FOREIGN_PROGRAMS
+    );
+    for (other_binding, key) in [
+        (binding, 10),
+        (binding, 9),
+        (
+            ForeignProcessorBinding {
+                epoch: 5,
+                ..binding
+            },
+            10,
+        ),
+    ] {
+        let mut refused = make(other_binding, key, 0.875);
+        let bytes = refused.storage_bytes();
+        assert!(refused.retain_previous_on_control(&next).is_err());
+        assert_eq!(refused.storage_owners().count(), 1);
+        assert_eq!(refused.storage_bytes(), bytes);
+        assert!(!refused.shares_storage_with(&next));
+    }
+    assert_eq!(next.storage_owners().count(), 9);
+    next.borrow()
+        .render_revision(NonZeroU64::MIN, &[Some(0)], &[], &mut points)
+        .unwrap();
+    assert_eq!(points[0].normalized, 0.25);
+    let huge = usize::MAX / 2;
+    let previous =
+        PreparedForeignAutomation::new(binding, NonZeroU64::new(20).unwrap(), Value(0.25), huge)
+            .unwrap();
+    let mut refused =
+        PreparedForeignAutomation::new(binding, NonZeroU64::new(21).unwrap(), Value(0.5), huge)
+            .unwrap();
+    let bytes = refused.storage_bytes();
+    assert_eq!(
+        refused.retain_previous_on_control(&previous),
+        Err(DeviceContractError::RuntimeBudgetExceeded)
+    );
+    assert_eq!(refused.storage_bytes(), bytes);
+    assert_eq!(refused.storage_owners().count(), 1);
 }
