@@ -27,7 +27,13 @@ fn actual_manual_parameter_waits_for_final_main_delivery_across_compensated_cuts
     }
 
     let _serial = serial();
-    let mut f = fixture_with_authored("processing", 2, 8, &[7]);
+    for location in 0..3 {
+        verify_location(location);
+    }
+}
+
+fn verify_location(location: usize) {
+    let mut f = fixture_with_authored("processing", location, 8, &[7]);
     let upstream = &hex_devices::overdrive::OVERDRIVE_DEFINITION;
     let state = upstream
         .patch_parameter(
@@ -36,19 +42,31 @@ fn actual_manual_parameter_waits_for_final_main_delivery_across_compensated_cuts
             ParameterValue::Float(0.0),
         )
         .unwrap();
-    let device = f.editor.project().main_devices()[0].id();
-    f.editor
-        .execute(Command::InsertMainDevice {
-            before: Some(device),
-            state: state.clone(),
-        })
-        .unwrap();
-    f.editor
-        .execute(Command::InsertMainDevice {
-            before: None,
-            state,
-        })
-        .unwrap();
+    let device = f
+        .editor
+        .project()
+        .automation_devices()
+        .find(|device| device.id().value() == f.binding.instance)
+        .unwrap()
+        .id();
+    let insert = |editor: &mut Editor, before, state| {
+        let command = match location {
+            0 => Command::InsertDevice {
+                track: editor.project().tracks()[0].id(),
+                before,
+                state,
+            },
+            1 => Command::InsertReturnDevice {
+                return_track: editor.project().return_tracks()[0].id(),
+                before,
+                state,
+            },
+            _ => Command::InsertMainDevice { before, state },
+        };
+        editor.execute(command).unwrap();
+    };
+    insert(&mut f.editor, Some(device), state.clone());
+    insert(&mut f.editor, None, state);
     let playback = compile(&f, true);
     assert_eq!(playback.main_output_latency_frames(), 11 + 16 + 11);
     publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
@@ -108,15 +126,18 @@ fn actual_manual_parameter_waits_for_final_main_delivery_across_compensated_cuts
     );
     let leading = physical_block::<5>(&mut f);
     assert_eq!(&leading[..3], &[[0.0; 2]; 3]);
-    assert_eq!(&leading[3..], &[[0.25, -0.5]; 2]);
+    let dry = if location == 1 { 0.25 } else { 0.0 };
+    let base = [0.25 + dry, -0.5 - 2.0 * dry];
+    let manual = [0.75 + dry, -1.5 - 2.0 * dry];
+    assert_eq!(&leading[3..], &[base; 2]);
     replacement::wait_for_blocks(&root, f.binding, 5);
-    assert_eq!(physical_block::<3>(&mut f), [[0.25, -0.5]; 3]);
+    assert_eq!(physical_block::<3>(&mut f), [base; 3]);
     assert!(
         f.control
             .try_native_source_parameter_delivery_on_control()
             .is_none()
     );
-    assert_eq!(physical_block::<1>(&mut f), [[0.75, -1.5]; 1]);
+    assert_eq!(physical_block::<1>(&mut f), [manual; 1]);
     assert_eq!(
         f.control.try_native_source_parameter_delivery_on_control(),
         Some(crate::foreign_parameter_delivery::Receipt::Delivered {
