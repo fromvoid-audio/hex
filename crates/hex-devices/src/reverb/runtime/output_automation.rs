@@ -281,3 +281,100 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod benchmark {
+    use super::*;
+    use std::{hint::black_box, time::Instant};
+    struct Source {
+        ids: Vec<ParameterId>,
+        dense: bool,
+    }
+    impl NativeParameterAutomation for Source {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            &self.ids
+        }
+        fn value_at(
+            &self,
+            id: ParameterId,
+            offset: usize,
+        ) -> Option<hex_lattice_contract::ParameterValue> {
+            let t = if self.dense {
+                offset as f32 / 128.0
+            } else {
+                0.5
+            };
+            Some(hex_lattice_contract::ParameterValue::Float(match id {
+                p::DRY_WET => 25.0 + 50.0 * t,
+                p::STEREO => 120.0 * t,
+                p::REFLECT => -12.0 + 12.0 * t,
+                p::DIFFUSE => -6.0 * t,
+                _ => return None,
+            }))
+        }
+    }
+    // The pre-adapter scalar delivery body, measured against the same current
+    // DSP/ring implementation. This is a loop baseline, not an old-binary run.
+    fn legacy(runtime: &mut ReverbRuntime, frames: &mut [StereoFrame], source: &Source) {
+        for (offset, frame) in frames.iter_mut().enumerate() {
+            let mut values = [None];
+            source.values_at(offset, &mut values).unwrap();
+            let wet = match values[0] {
+                Some(hex_lattice_contract::ParameterValue::Float(v))
+                    if (0.0..=100.0).contains(&v) =>
+                {
+                    Some(v)
+                }
+                None => None,
+                _ => panic!("bounded benchmark source"),
+            };
+            runtime.frame(frame, wet);
+        }
+    }
+    #[test]
+    #[ignore = "release-only targeted delivery microbenchmark"]
+    fn output_delivery_cost_against_legacy_scalar_loop() {
+        assert!(!cfg!(debug_assertions), "run with --release");
+        for mode in 0..4 {
+            let source = Source {
+                ids: if mode < 2 {
+                    vec![p::DRY_WET]
+                } else {
+                    vec![p::DRY_WET, p::STEREO, p::REFLECT, p::DIFFUSE]
+                },
+                dense: mode == 3,
+            };
+            let mut runtime = PreparedReverb::new(48000, Settings::default_values())
+                .unwrap()
+                .runtime();
+            let mut block = [[0.125, -0.25]; 128];
+            let mut run = || {
+                for _ in 0..128 {
+                    block.fill([0.125, -0.25]);
+                    if mode == 0 {
+                        legacy(&mut runtime, &mut block, &source);
+                    } else {
+                        runtime
+                            .process_output_automation(&mut block, &source)
+                            .unwrap();
+                    }
+                    black_box(&block);
+                }
+            };
+            for _ in 0..4 {
+                run();
+            }
+            let mut timings = Vec::with_capacity(7);
+            for _ in 0..7 {
+                let start = Instant::now();
+                run();
+                timings.push(start.elapsed().as_nanos());
+            }
+            timings.sort_unstable();
+            println!(
+                "mode={mode} rate=48000 block=128 frames=16384 warmup=4 repeats=7 median_ns_per_frame={:.3}",
+                timings[3] as f64 / 16384.0
+            );
+        }
+    }
+}
