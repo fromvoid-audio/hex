@@ -830,48 +830,62 @@ mod tests {
     #[test]
     fn clock_free_tail_holds_last_validated_automation_controls() {
         for rate in [8000, 96000] {
-            let prepared = PreparedReverb::new(rate, enabled_settings()).unwrap();
-            let mut source = prepared.runtime();
-            let values = held_values();
-            // Fill beyond the authored 50ms predelay even at 96kHz.
-            source
-                .process_automation(&mut signal(8193), &values)
-                .unwrap();
-            let mut reference = prepared.runtime();
-            reference.copy_history_from(&source);
-            source.begin_output_tail();
-            let mut output = vec![[0.0; 2]; 513];
-            let mut expected = output.clone();
-            for block in output.chunks_mut(13) {
-                source.process_block(block, &R);
-            }
-            reference
-                .process_automation(&mut expected, &values)
-                .unwrap();
-            for (index, (a, b)) in output.iter().zip(&expected).enumerate() {
-                for ch in 0..2 {
-                    assert!(
-                        (a[ch] - b[ch]).abs() < 1e-7,
-                        "clock-free tail rate {rate} frame {index}: {a:?} != {b:?}"
-                    );
+            for frozen in [false, true] {
+                let mut prepared = PreparedReverb::new(rate, enabled_settings()).unwrap();
+                let mut source = prepared.runtime();
+                let values = held_values();
+                // Fill beyond the authored 50ms predelay even at 96kHz.
+                source
+                    .process_automation(&mut signal(8193), &values)
+                    .unwrap();
+                if frozen {
+                    let mut settings = enabled_settings();
+                    for id in [p::FREEZE, p::FLAT, p::CUT] {
+                        settings.0[crate::reverb::index(id).unwrap()] = 1.0;
+                    }
+                    settings.0[crate::reverb::index(p::SMOOTH).unwrap()] = 0.0;
+                    prepared = PreparedReverb::new(rate, settings).unwrap();
+                    let mut next = prepared.runtime();
+                    next.copy_history_from(&source);
+                    source = next;
+                    source.process_automation(&mut [[0.0; 2]], &values).unwrap();
                 }
+                let mut reference = prepared.runtime();
+                reference.copy_history_from(&source);
+                source.begin_output_tail();
+                let mut output = vec![[0.0; 2]; 513];
+                let mut expected = output.clone();
+                for block in output.chunks_mut(13) {
+                    source.process_block(block, &R);
+                }
+                reference
+                    .process_automation(&mut expected, &values)
+                    .unwrap();
+                for (index, (a, b)) in output.iter().zip(&expected).enumerate() {
+                    for ch in 0..2 {
+                        assert!(
+                            (a[ch] - b[ch]).abs() < 1e-7,
+                            "clock-free tail rate {rate} frame {index}: {a:?} != {b:?}"
+                        );
+                    }
+                }
+                assert!(output.iter().flatten().any(|v| v.abs() > 1e-6));
+                // A new active graph inherits DSP history, not tail admission or
+                // the detached graph's override mode after lane removal.
+                let mut canonical = prepared.runtime();
+                canonical.copy_history_from(&source);
+                let mut canonical_reference = prepared.runtime();
+                canonical_reference.copy_history_from(&reference);
+                output.fill([0.0; 2]);
+                expected.fill([0.0; 2]);
+                canonical.process_block(&mut output, &R);
+                canonical_reference.process_block(&mut expected, &R);
+                assert_eq!(output, expected);
+                source.reset();
+                output.fill([0.0; 2]);
+                source.process_block(&mut output, &R);
+                assert!(output.iter().all(|frame| *frame == [0.0; 2]));
             }
-            assert!(output.iter().flatten().any(|v| v.abs() > 1e-6));
-            // A new active graph inherits DSP history, not tail admission or
-            // the detached graph's override mode after lane removal.
-            let mut canonical = prepared.runtime();
-            canonical.copy_history_from(&source);
-            let mut canonical_reference = prepared.runtime();
-            canonical_reference.copy_history_from(&reference);
-            output.fill([0.0; 2]);
-            expected.fill([0.0; 2]);
-            canonical.process_block(&mut output, &R);
-            canonical_reference.process_block(&mut expected, &R);
-            assert_eq!(output, expected);
-            source.reset();
-            output.fill([0.0; 2]);
-            source.process_block(&mut output, &R);
-            assert!(output.iter().all(|frame| *frame == [0.0; 2]));
         }
     }
 }
