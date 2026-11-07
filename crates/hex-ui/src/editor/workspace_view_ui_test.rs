@@ -284,7 +284,7 @@ fn workspace_review_tab_preserves_held_clip_paint_until_release_or_escape(cx: &m
         }
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         editor.read_with(&visual, |v, _| {
-            assert!(v.clip_paint_gesture.is_none());
+            assert!(!v.clip_paint_held());
             if cancel {
                 assert!(v.last_enqueued_edit.is_none());
                 assert_eq!(v.worker_requests_pending, 0);
@@ -308,7 +308,7 @@ fn workspace_review_tab_preserves_held_clip_paint_until_release_or_escape(cx: &m
             }
         });
         visual.run_until_parked();
-        assert!(visual.debug_bounds("clip-paint-preview").is_none());
+        assert_eq!(visual.debug_bounds("clip-paint-preview").is_none(), cancel);
         visual.simulate_keystrokes("tab");
         editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Session));
     }

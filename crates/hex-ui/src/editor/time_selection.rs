@@ -417,7 +417,7 @@ impl EditorView {
             return false;
         };
         let (ordinary_handle, priority_control, _) =
-            self.clip_pointer_handles(track, x, y, viewport, self.option_held);
+            self.clip_pointer_handles(track, x, y, viewport, self.option_held, true);
         if !self.time_selection_key_held
             && (priority_control || ((extend || !inside_selection) && ordinary_handle))
         {
@@ -1120,16 +1120,17 @@ impl EditorView {
         Some((*track, *lane))
     }
 
-    /// Reserve clip headers and visible edge trims; bodies share empty-lane input.
+    /// Explicit controls win; ordinary headers yield only to double-press painting.
     pub(super) fn clip_handle_at_pointer(
         &self,
         track: TrackId,
         x: f32,
         y: f32,
         viewport: super::viewport::Viewport,
+        painting: bool,
     ) -> bool {
         let (ordinary, priority, _) =
-            self.clip_pointer_handles(track, x, y, viewport, self.option_held);
+            self.clip_pointer_handles(track, x, y, viewport, self.option_held, !painting);
         ordinary || priority
     }
     pub(super) fn pointer_hits_priority_clip_control(&self, x: f32, y: f32, option: bool) -> bool {
@@ -1145,6 +1146,7 @@ impl EditorView {
             y,
             self.visible_viewport(state.timeline_frames),
             option,
+            true,
         )
         .1
     }
@@ -1164,6 +1166,7 @@ impl EditorView {
             y,
             self.visible_viewport(state.timeline_frames),
             true,
+            true,
         )
         .2
     }
@@ -1177,6 +1180,7 @@ impl EditorView {
         y: f32,
         viewport: super::viewport::Viewport,
         option: bool,
+        include_header: bool,
     ) -> (bool, bool, bool) {
         let Some(state) = self.state.as_ref() else {
             return (true, false, false);
@@ -1212,7 +1216,8 @@ impl EditorView {
             let in_edge_rail = y < lane.top + super::trim::edge_trim_height(lane.height);
             let right_edge = visible_end == end && x >= left + width - edge && in_edge_rail;
             Some((
-                y < lane.top + header_hit_height(lane.height) || (on_edge && in_edge_rail),
+                (include_header && y < lane.top + header_hit_height(lane.height))
+                    || (on_edge && in_edge_rail),
                 right_edge,
             ))
         };

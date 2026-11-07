@@ -328,7 +328,10 @@ impl EditorView {
             canvas(
                 |_, _, _| (),
                 move |bounds, _, window, cx| {
-                    measure_entity.update(cx, |view, _| {
+                    measure_entity.update(cx, |view, cx| {
+                        if view.clip_paint_held() && view.focus.is_focused(window) {
+                            window.renew_pointer_capture(cx.entity_id(), gpui::CursorStyle::Arrow);
+                        }
                         view.arrangement_bounds = Some(super::drag::LaneBounds {
                             left: f32::from(bounds.origin.x),
                             width: f32::from(bounds.size.width),
@@ -482,6 +485,9 @@ impl EditorView {
                                 && view.begin_clip_paint(x, y, event.modifiers.platform)
                             {
                                 view.focus.focus(window);
+                                if !view.capture_clip_paint(window, cx) {
+                                    view.cancel_clip_paint();
+                                }
                                 cx.notify();
                                 return (true, false);
                             }
