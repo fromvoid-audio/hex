@@ -210,13 +210,13 @@ impl CanonicalBasesCapture {
                 .map(|()| self.phase = Phase::Retire(Ok(()))),
             _ => return None,
         };
-        if let Err(error) = next {
-            if !matches!(
+        if let Err(error) = next
+            && !matches!(
                 error,
                 "native preparation is busy" | "native source is busy"
-            ) {
-                self.phase = Phase::Retire(Err(error.into()));
-            }
+            )
+        {
+            self.phase = Phase::Retire(Err(error.into()));
         }
         None
     }
