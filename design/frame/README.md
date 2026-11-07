@@ -3,7 +3,7 @@
 ## Continue editing in Frame
 
 [hex-orbital.frame.json](hex-orbital.frame.json) is the current editable prototype,
-saved at r176. It includes the structured design, prototype actions, and orbital
+saved at r177. It includes the structured design, prototype actions, and orbital
 styleguide in one portable project.
 
 In Frame, choose **Designs → Import design**, select the file, and open the
@@ -24,7 +24,7 @@ same dimensions as its host-modulator and device assembly in the workstation. Op
 import the file into another Frame session. Its left device rail, host modulator
 tray, selection border, meter, and nesting hint use the Hex concept’s visuals.
 
-The focused Vector study (r27) and both workstation views use the same design. The current Vector study follows the [Vector brief](../../docs/design/vector-brief.md) and [shared host brief](../../docs/design/device-host-brief.md). Ratio, fine Hz offset, level and keytrack remain in four oscillator rows. Routing presets, feedback, cutoff/resonance and envelope depth, mono/poly and glide remain on the main surface.
+The focused Vector study (r28) and both workstation views use the same design. The current Vector study follows the [Vector brief](../../docs/design/vector-brief.md) and [shared host brief](../../docs/design/device-host-brief.md). Ratio, fine Hz offset, level and keytrack remain in four oscillator rows. Routing presets, feedback, cutoff/resonance and envelope depth, mono/poly and glide remain on the main surface.
 
 Click an oscillator or filter section background to select its shared envelope editor. The left colored oscillator rectangle only toggles power; parameter edits retain selection. The routing diagram itself opens visual preset choices, replacing the separate label and text picker. Oscillator views show ghost envelopes; filter selection shows its independent envelope. The graph uses a fixed nonlinear time axis, an active curve above the ghosts, point/curvature handles and a focus preview. Selected point names and exact values have separate reserved header areas. Loop examples demonstrate free, tempo-fit and note-pitch-fit modes with conditional timing controls. Free readouts and loop highlights follow the selected envelope. Synced A/D readouts show shape proportions beside effective cycle/rate captions. First-cycle shading, a faint held region, a repeat bracket and separate note-off/release markers explain looping on that same time scale. Filter levels use 0–100%, with a bipolar envelope amount of −96 to +96 semitones (default 0 st). The `filter-depth-positive` and `filter-depth-negative` states show ±24 st examples at a 500 Hz cutoff. The loop-boundary reset decision remains open.
 

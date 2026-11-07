@@ -5,18 +5,18 @@
   "archive": {
     "version": 1,
     "designId": "hex-vector-device",
-    "sourceRevisionId": "vector-device-r27",
-    "currentRevisionId": "vector-device-r27",
+    "sourceRevisionId": "vector-device-r28",
+    "currentRevisionId": "vector-device-r28",
     "revisions": [
       {
-        "revisionId": "vector-device-r27",
+        "revisionId": "vector-device-r28",
         "parentRevisionId": null,
         "capturedAt": "2026-11-07T13:04:20.992Z",
         "document": {
           "version": 1,
           "id": "hex-vector-device",
           "name": "hex / vector",
-          "revisionId": "vector-device-r27",
+          "revisionId": "vector-device-r28",
           "width": 1148,
           "height": 200,
           "background": "#151515",
@@ -1014,7 +1014,7 @@
             {"id":"menu-1-v258","type":"button","bounds":{"x":10,"y":58,"width":206,"height":23},"style":{"fill":"#202020","stroke":"none","fontFamily":"Ioskeley Mono, SFMono-Regular, Menlo, monospace","fontSize":9,"color":"#d2d2d2","padding":0,"verticalAlign":"middle","radius":6,"textAlign":"center"},"parentId":"device-popup","text":"save preset","label":"save preset","action":{"type":"set-state","state":"default"}},
             {"id":"menu-2-v259","type":"button","bounds":{"x":10,"y":85,"width":206,"height":23},"style":{"fill":"#202020","stroke":"none","fontFamily":"Ioskeley Mono, SFMono-Regular, Menlo, monospace","fontSize":9,"color":"#d2d2d2","padding":0,"verticalAlign":"middle","radius":6,"textAlign":"center"},"parentId":"device-popup","text":"save as default","label":"save as default","action":{"type":"set-state","state":"default"}},
             {"id":"menu-3-v260","type":"button","bounds":{"x":10,"y":112,"width":206,"height":23},"style":{"fill":"#202020","stroke":"none","fontFamily":"Ioskeley Mono, SFMono-Regular, Menlo, monospace","fontSize":9,"color":"#d2d2d2","padding":0,"verticalAlign":"middle","radius":6,"textAlign":"center"},"parentId":"device-popup","text":"restore default","label":"restore default","action":{"type":"set-state","state":"default"}},
-            {"id":"menu-4-v261","type":"button","bounds":{"x":132,"y":60,"width":14,"height":14},"style":{"fill":"#202020","stroke":"none","fontFamily":"Ioskeley Mono, SFMono-Regular, Menlo, monospace","fontSize":11,"color":"#d2d2d2","padding":0,"verticalAlign":"middle","radius":6,"textAlign":"center"},"parentId":"device-popup","text":"device settings","label":"device settings","action":{"type":"set-state","state":"settings"}},
+            {"id":"menu-4-v261","type":"button","bounds":{"x":10,"y":139,"width":206,"height":23},"style":{"fill":"#202020","stroke":"none","fontFamily":"Ioskeley Mono, SFMono-Regular, Menlo, monospace","fontSize":9,"color":"#d2d2d2","padding":0,"verticalAlign":"middle","radius":6,"textAlign":"center"},"parentId":"device-popup","text":"device settings","label":"device settings","action":{"type":"set-state","state":"settings"}},
             {"id":"pick-vector-v265","type":"button","bounds":{"x":20,"y":70,"width":310,"height":20},"style":{"fill":"#202020","stroke":"none","fontFamily":"Ioskeley Mono, SFMono-Regular, Menlo, monospace","fontSize":9,"color":"#d2d2d2","padding":0,"verticalAlign":"middle","radius":6,"textAlign":"center"},"parentId":"device-picker","text":"vector","label":"insert vector","action":{"type":"set-state","state":"default"}},
             {"id":"pick-adjust-v266","type":"button","bounds":{"x":20,"y":95,"width":310,"height":20},"style":{"fill":"#202020","stroke":"none","fontFamily":"Ioskeley Mono, SFMono-Regular, Menlo, monospace","fontSize":9,"color":"#d2d2d2","padding":0,"verticalAlign":"middle","radius":6,"textAlign":"center"},"parentId":"device-picker","text":"adjust","label":"insert adjust","action":{"type":"set-state","state":"default"}},
             {"id":"pick-delay-v267","type":"button","bounds":{"x":20,"y":120,"width":310,"height":20},"style":{"fill":"#202020","stroke":"none","fontFamily":"Ioskeley Mono, SFMono-Regular, Menlo, monospace","fontSize":9,"color":"#d2d2d2","padding":0,"verticalAlign":"middle","radius":6,"textAlign":"center"},"parentId":"device-picker","text":"delay","label":"insert delay","action":{"type":"set-state","state":"default"}},
