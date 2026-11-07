@@ -26,18 +26,20 @@ same dimensions as its host-modulator and device assembly in the workstation. Op
 import the file into another Frame session. Its left device rail, host modulator
 tray, selection border, meter, and nesting hint use the Hex concept’s visuals.
 
-Four FM operators have compact rows with left-to-right ratio/frequency fills,
-Hex-style level/modulation knobs, and independent vertical keytrack sliders beside the
-slim unlabeled on/off buttons. Enabled buttons use the oscillator color; vertical
-keytrack fields use 12-pixel insets with bottom-up fill, a keyboard icon beneath
-each slider, and no percentage readout. The envelope/harmonics panel sits 4 pixels
-from the oscillator rows. The keytrack examples
-are 100%, 100%, 50%, and 0%. They share an amplitude-envelope editor and harmonic painter.
-The context panel covers oscillator response, filter, pitch, FM routing, and
-global voice/output settings. General modulation uses the host’s modulator tray.
-With **Interact** enabled, select operators A–D, switch harmonic ranges, and
-open the context panels. Numeric editing, modulation assignments, and harmonic
-painting remain illustrative design proposals.
+Four FM operators have compact ratio/Hz fields, Hex level knobs, and vertical
+keytrack sliders with keyboard icons. Each oscillator has its own waveform menu
+with Sine, Triangle, Saw, Square, and Edit. The menu and preset choices have
+explicit preview states, including `vector-osc-a-menu` on the focused page.
+
+Edit expands a collapsible waveform section beneath the amplitude envelope,
+inside the device. It has **Curve** and **Harmonics** tabs, including 16/32/64
+partial views. The chevron collapses it back to the full envelope layout. The
+workstation has the same menus and inline editor in both Arrangement and Console.
+
+Turn on **Interact** to open pickers, preview presets, expand/collapse the editor, switch tabs and partial ranges,
+edit the waveform name, and use Apply/Cancel. Curve drawing,
+harmonic painting, synthesis, and persistent preset editing remain illustrative
+proposals. The preview states demonstrate individual choices.
 
 ## Earlier design and implementation reference
 
