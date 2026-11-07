@@ -5,13 +5,17 @@ use super::*;
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_root_effect_cannot_spend_beyond_its_native_pool_cell() {
     let root = root();
-    let limit = 32 * 1024;
+    let (build, source, _) = input();
+    let limit = source
+        .preparation_storage_bound_on_control(&build, None)
+        .unwrap()
+        .max_retained_data_bytes();
     root.configure_native_sources(
         1,
         NativeSourceDataReservation {
             max_retained_data_bytes: limit,
-            // Startup buffers have a separate peak allowance; retain32KiB to
-            // exercise refusal of the later worker/queues, not startup.
+            // Admit the checked startup bound, then refuse the larger actual
+            // worker/queue construction at this same retained allowance.
             max_construction_peak_data_bytes: source_reservation().max_construction_peak_data_bytes,
         },
     )
