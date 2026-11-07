@@ -1050,6 +1050,20 @@ impl NativeAudioSink {
 }
 impl WorkerAudioSink for NativeAudioSink {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn plugin_parameter_requires_stopped_restore(
+        &mut self,
+        context: AudioSourceContext,
+        origin: hex_session::device_gesture::PluginParameterOrigin,
+    ) -> Result<bool, String> {
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .ok_or("vst3 output is unavailable")?;
+        self.plugins
+            .parameter_requires_restore(control, context, origin.device.value())
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn prepare_plugin_parameter_gesture(
         &mut self,
         input: hex_session::service::PluginParameterGestureInput<'_>,

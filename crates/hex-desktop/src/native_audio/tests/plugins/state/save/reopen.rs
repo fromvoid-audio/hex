@@ -179,13 +179,13 @@ fn native_effect_save_reopens_component_and_controller_into_independent_instance
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
 fn live_vst3_drag_changes_original_pcm_once_and_survives_undo_save_reopen() {
-    vst3_drag_roundtrip(true);
+    vst3_drag_roundtrip(true, false, false);
 }
 
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
 fn idle_vst3_drag_survives_undo_save_reopen() {
-    vst3_drag_roundtrip(false);
+    vst3_drag_roundtrip(false, false, false);
 }
 
 fn gesture_fixture() -> SavedEffectFixture {
@@ -214,7 +214,19 @@ fn gesture_fixture() -> SavedEffectFixture {
     fixture
 }
 
-fn vst3_drag_roundtrip(playing: bool) {
+#[test]
+#[ignore = "explicit original SDK helper/source receipts required"]
+fn stopped_vst3_drag_restores_sources_without_play_or_history() {
+    vst3_drag_roundtrip(false, true, false);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper/source receipts required"]
+fn stopped_vst3_source_renewal_refuses_changed_sdk_steps_and_keeps_saveable_resources() {
+    vst3_drag_roundtrip(false, true, true);
+}
+
+fn vst3_drag_roundtrip(playing: bool, stopped: bool, changed_steps: bool) {
     use hex_session::device_gesture::{
         GestureClient, GestureRequest, PluginParameterOrigin, PluginParameterValue,
     };
@@ -226,7 +238,14 @@ fn vst3_drag_roundtrip(playing: bool) {
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", &name, "--ignored", "--nocapture"])
             .env(CHILD, "1")
-            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "37")
+            .env(
+                "HEX_ORIGINAL_INSTANCE_VARIANT",
+                if changed_steps { "141" } else { "37" },
+            )
+            .env(
+                "HEX_ORIGINAL_INSTANCE_RELEASE",
+                files.0.join("metadata-release"),
+            )
             .env("HEX_ORIGINAL_RESTORE_TRACE", files.0.join("restore-trace"))
             .output()
             .unwrap();
@@ -256,6 +275,32 @@ fn vst3_drag_roundtrip(playing: bool) {
     let gain = &result[0];
     assert!(gain.editable);
     assert_eq!(gain.normalized, 0.75 / 4.0);
+    if changed_steps {
+        fs::write(
+            std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+            b"release",
+        )
+        .unwrap();
+    }
+    if stopped {
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        for block in 0..3 {
+            h.render_plugin_block();
+            wait(|| h.plugin_completed.load(Acquire) > block);
+        }
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Stop)
+            .unwrap();
+        h.render_worker_step();
+    }
     if playing {
         h.audio
             .as_mut()
@@ -292,10 +337,42 @@ fn vst3_drag_roundtrip(playing: bool) {
         .unwrap();
     let begin = client.next_request().unwrap();
     client.mark_submitted();
-    let event = h.run(Request::DeviceGesture(begin));
+    let event = if stopped {
+        h.service.submit(Request::DeviceGesture(begin)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            h.pump();
+            if let Ok(event) = h.service.try_event() {
+                break event;
+            }
+            assert!(Instant::now() < deadline, "stopped Begin did not complete");
+            h.render_worker_step();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    } else {
+        h.run(Request::DeviceGesture(begin))
+    };
     let ack = event.gesture_ack.unwrap();
+    if changed_steps {
+        assert!(!ack.accepted && !ack.source_lost, "{ack:?}");
+        assert!(ack.reason.unwrap().contains("metadata changed"));
+        assert_eq!(event.state.project.as_ref(), &fixture.project);
+        assert!(!event.state.can_undo && !event.state.can_redo);
+        let saved = h.run(Request::SaveCurrent);
+        assert!(saved.save_complete && !saved.state.unsaved);
+        assert_eq!(hex_storage::load(&fixture.path).unwrap(), fixture.project);
+        h.run(Request::QueryPluginParameters(PluginParameterQuery {
+            request_id: 2,
+            ..query
+        }));
+        let current = h.next().plugin_parameters.unwrap().rows.unwrap();
+        assert_eq!(current[0].steps, 3);
+        return;
+    }
     assert!(ack.accepted, "{ack:?}");
     assert!(client.acknowledge(&ack));
+    assert_eq!(event.state.project.as_ref(), &fixture.project);
+    assert!(!event.state.can_undo && !event.state.can_redo);
 
     let drive = |h: &mut ResidentHarness,
                  request: GestureRequest,
@@ -317,6 +394,43 @@ fn vst3_drag_roundtrip(playing: bool) {
             render_live(h);
         }
     };
+    if stopped {
+        client
+            .change_plugin(PluginParameterValue::new(0.9).unwrap())
+            .unwrap();
+        let change = client.next_request().unwrap();
+        client.mark_submitted();
+        let changed = drive(&mut h, change, &mut ResidentHarness::render_worker_step);
+        let ack = changed.gesture_ack.unwrap();
+        assert!(ack.accepted, "{ack:?}");
+        assert!(client.acknowledge(&ack));
+        client.cancel().unwrap();
+        let cancel = client.next_request().unwrap();
+        client.mark_submitted();
+        let cancelled = drive(&mut h, cancel, &mut ResidentHarness::render_worker_step);
+        let ack = cancelled.gesture_ack.unwrap();
+        assert!(ack.accepted, "{ack:?}");
+        assert!(client.acknowledge(&ack));
+        assert_eq!(cancelled.state.project.as_ref(), &fixture.project);
+        assert!(!cancelled.state.can_undo && !cancelled.state.can_redo);
+        client
+            .begin_plugin(PluginParameterOrigin {
+                context: metadata.context,
+                device,
+                parameter: gain.id,
+                page_first: gain.page_first,
+                metadata_revision: gain.metadata_revision,
+                initial: PluginParameterValue::new(gain.normalized).unwrap(),
+            })
+            .unwrap();
+        let begin = client.next_request().unwrap();
+        client.mark_submitted();
+        let begun = drive(&mut h, begin, &mut ResidentHarness::render_worker_step);
+        let ack = begun.gesture_ack.unwrap();
+        assert!(ack.accepted, "{ack:?}");
+        assert!(client.acknowledge(&ack));
+    }
+    let completed_before_preview = h.plugin_completed.load(Acquire);
     client
         .change_plugin(PluginParameterValue::new(0.5).unwrap())
         .unwrap();
@@ -334,7 +448,7 @@ fn vst3_drag_roundtrip(playing: bool) {
         let pcm = (0..3).map(|_| render(&h)).last().unwrap();
         assert!(pcm.iter().any(|frame| frame[0] > 0.25), "live preview PCM");
     } else {
-        assert_eq!(h.plugin_completed.load(Acquire), 0);
+        assert_eq!(h.plugin_completed.load(Acquire), completed_before_preview);
         assert!(
             !h.audio
                 .as_ref()

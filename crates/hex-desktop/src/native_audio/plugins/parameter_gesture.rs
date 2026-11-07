@@ -63,7 +63,9 @@ fn admit<T>(
             Err(
                 "native preparation is busy"
                 | "native parameter mailbox is busy"
-                | "native capture mailbox is busy",
+                | "native capture mailbox is busy"
+                | "native controller mailbox is busy"
+                | "native controller query is already pending",
             ) if Instant::now() < deadline => edits::poll_control(control),
             result => return result.map_err(refused),
         }
@@ -71,6 +73,51 @@ fn admit<T>(
 }
 
 impl Plugins {
+    pub(in crate::native_audio) fn parameter_requires_restore(
+        &mut self,
+        control: &mut PublicationControl,
+        context: AudioSourceContext,
+        device: u64,
+    ) -> Result<bool, String> {
+        if self
+            .restore
+            .as_ref()
+            .is_some_and(super::restore::Restore::submitted)
+        {
+            self.poll_restore(control, Some(context));
+        }
+        if self.restore.is_some() {
+            return Err("wait for stopped vst3 restoration".into());
+        }
+        if control
+            .status
+            .playing
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Ok(false);
+        }
+        let source = self
+            .sources
+            .iter()
+            .rev()
+            .find(|source| {
+                source.accepted
+                    && !source.retiring
+                    && source.project_generation == context.project_generation
+                    && source.device == device
+            })
+            .ok_or("vst3 parameter source changed")?;
+        if control
+            .status
+            .recording_source()
+            .is_none_or(|source| source.context != context)
+        {
+            return Err("vst3 parameter source changed".into());
+        }
+        Ok(control
+            .native_source_endpoint_status(source.binding)
+            .is_some_and(|(_, live)| !live))
+    }
     pub(in crate::native_audio) fn parameter_gesture(
         &mut self,
         control: &mut PublicationControl,
@@ -78,6 +125,34 @@ impl Plugins {
         cancellation: Option<&RequestCancellation>,
     ) -> Result<Prepared, Error> {
         if let PluginGesturePreparation::Begin { origin, snapshot } = input.operation() {
+            let restored_revision = self
+                .restore
+                .as_ref()
+                .and_then(super::restore::Restore::submitted_revision);
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while self
+                .restore
+                .as_ref()
+                .is_some_and(super::restore::Restore::submitted)
+            {
+                self.poll_restore(control, Some(input.context()));
+                if self.restore.is_none() {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    return Err(refused("stopped vst3 restoration has not been installed"));
+                }
+                edits::poll_control(control);
+            }
+            if restored_revision.is_some_and(|revision| {
+                control
+                    .status
+                    .applied_revision
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    != revision
+            }) {
+                return Err(refused("stopped vst3 restoration was refused"));
+            }
             if self.parameter_gesture.is_some()
                 || self.parameters.is_some()
                 || self.restore.is_some()
@@ -104,6 +179,42 @@ impl Plugins {
                         && row.normalized == origin.initial.normalized()
                 })
                 .ok_or_else(|| refused("vst3 parameter metadata changed · refresh the list"))?;
+            let binding = self
+                .sources
+                .iter()
+                .rev()
+                .find(|source| {
+                    source.accepted
+                        && !source.retiring
+                        && source.project_generation == origin.context.project_generation
+                        && source.device == origin.device.value()
+                })
+                .ok_or_else(lost)?
+                .binding;
+            if !edits::original_state(control, binding, cancellation)
+                .map_err(refused)?
+                .processing_eq(input.canonical_state())
+            {
+                return Err(lost());
+            }
+            let steps = row.steps;
+            let output = inventory.query.output_identity;
+            if binding.root != inventory.binding.root
+                || binding.instance != inventory.binding.instance
+                || binding.graph != inventory.binding.graph
+            {
+                return Err(lost());
+            }
+            // Revalidate capability on the actual original SDK source,
+            // including after renewal. Only page zero and the target page
+            // can be queried, independently of total inventory size.
+            validate_current_parameter(
+                control,
+                binding,
+                origin,
+                steps,
+                input.reading_effect_class().is_some(),
+            )?;
             let live = if let Some(class) = input.isolated_effect_class() {
                 let (source, transport_epoch) = control
                     .status
@@ -128,9 +239,9 @@ impl Plugins {
             let gesture = Gesture {
                 key: snapshot.key,
                 origin,
-                binding: inventory.binding,
-                output: inventory.query.output_identity,
-                steps: row.steps,
+                binding,
+                output,
+                steps,
                 last: origin.initial,
                 sequence: 0,
                 pending: None,
@@ -470,4 +581,67 @@ fn source_gone(reason: &str) -> bool {
             | "native capture source is closing"
             | "native source differs"
     )
+}
+
+/// Revalidate only the bounded target page on the actual original source. The
+/// native worker owns query deadlines and every admitted token is drained.
+fn validate_current_parameter(
+    control: &mut PublicationControl,
+    binding: Binding,
+    origin: PluginParameterOrigin,
+    steps: u32,
+    reading: bool,
+) -> Result<(), Error> {
+    use hex_audio::plugin_worker::{NativeWorkerControllerProgress, ParameterPageQuery};
+    let mut first = 0;
+    let mut revision = 0;
+    loop {
+        let token = admit(control, |control| {
+            control.begin_native_source_controller_query_on_control(
+                binding,
+                ParameterPageQuery {
+                    first,
+                    revision,
+                    conversion: None,
+                },
+            )
+        })?;
+        let page = loop {
+            match control.poll_native_source_controller_query_on_control(binding, &token) {
+                Ok(NativeWorkerControllerProgress::Pending) | Err("native preparation is busy") => {
+                    edits::poll_control(control)
+                }
+                Ok(NativeWorkerControllerProgress::Page(page)) => break page,
+                _ => {
+                    return Err(refused(
+                        "vst3 parameter metadata changed · refresh the list",
+                    ));
+                }
+            }
+        };
+        if page.first != first || (revision != 0 && page.revision != revision) {
+            return Err(refused(
+                "vst3 parameter metadata changed · refresh the list",
+            ));
+        }
+        if first == origin.page_first {
+            let parameter = page
+                .as_slice()
+                .iter()
+                .find(|parameter| parameter.id == origin.parameter)
+                .ok_or_else(|| refused("vst3 parameter metadata changed · refresh the list"))?;
+            if !parameter.is_editable()
+                || parameter.step_count != steps
+                || (reading && !parameter.supports_authored_automation())
+                || (!reading && parameter.normalized != origin.initial.normalized())
+            {
+                return Err(refused(
+                    "vst3 parameter metadata changed · refresh the list",
+                ));
+            }
+            return Ok(());
+        }
+        first = origin.page_first;
+        revision = page.revision;
+    }
 }

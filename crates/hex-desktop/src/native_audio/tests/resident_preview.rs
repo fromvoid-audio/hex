@@ -192,6 +192,14 @@ impl WorkerAudioSink for ResidentSink {
     fn finish_plugin_state_restore(&mut self, context: AudioSourceContext, accepted: bool) {
         self.inner.finish_plugin_state_restore(context, accepted);
     }
+    fn plugin_parameter_requires_stopped_restore(
+        &mut self,
+        context: AudioSourceContext,
+        origin: hex_session::device_gesture::PluginParameterOrigin,
+    ) -> Result<bool, String> {
+        self.inner
+            .plugin_parameter_requires_stopped_restore(context, origin)
+    }
     fn prepare_stopped_playback_restore(
         &mut self,
         context: AudioSourceContext,

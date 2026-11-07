@@ -22,6 +22,9 @@ enum Stage {
     Ready,
 }
 impl Restore {
+    pub(super) fn submitted_revision(&self) -> Option<u64> {
+        self.submitted
+    }
     pub(super) fn submitted(&self) -> bool {
         self.submitted.is_some()
     }
