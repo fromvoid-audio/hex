@@ -26,21 +26,13 @@ same dimensions as its host-modulator and device assembly in the workstation. Op
 import the file into another Frame session. Its left device rail, host modulator
 tray, selection border, meter, and nesting hint use the Hex concept’s visuals.
 
-Four FM operators have compact ratio/Hz fields, Hex level knobs, and vertical
-keytrack sliders with keyboard icons. Each oscillator has its own waveform menu
-with Sine, Triangle, Saw, Square, and Edit. The menu and preset choices have
-explicit preview states, including `vector-osc-a-menu` on the focused page.
+The current Vector study follows the [Vector brief](../../docs/design/vector-brief.md) and [shared host brief](../../docs/design/device-host-brief.md). Ratio, fine Hz offset, level and keytrack remain in four oscillator rows. Routing presets, feedback, cutoff/resonance, mono/poly and glide remain on the main surface.
 
-Edit expands a 300-pixel waveform section immediately to the right of the
-oscillators. The full amplitude envelope and remaining device panels shift right,
-keeping the shared 200-pixel device height. It has **Curve** and **Harmonics** tabs, including 16/32/64
-partial views. The chevron collapses it back to the compact device layout. The
-workstation has the same menus and inline editor in both Arrangement and Console.
+Explicit selection changes the shared envelope editor. Oscillator views show ghost envelopes; filter selection shows its independent envelope. The graph uses a fixed nonlinear time axis. Loop examples demonstrate free, tempo-fit and note-pitch-fit modes with conditional timing controls. The loop-boundary reset decision remains open.
 
-Turn on **Interact** to open pickers, preview presets, expand/collapse the editor, switch tabs and partial ranges,
-edit the waveform name, and use Apply/Cancel. Curve drawing,
-harmonic painting, synthesis, and persistent preset editing remain illustrative
-proposals. The preview states demonstrate individual choices.
+The waveform editor expands to the right of the oscillators, with Curve/Harmonics and 16/32/64 partial views. Edited examples preview changes immediately with no Apply/Cancel. Phase/retrigger and device settings use optional panels. Macro/modulator examples show uniform two-, three- and four-high color-coded slots and a fifth-slot second column.
+
+Turn on **Interact** for selectors, menus, panel toggles, envelope point values, edited waveform examples and insertion-modal examples. Numeric inputs hold session text. Graph drawing, continuous parameter DSP, audio audition, native Undo, actual preset/default writes and device insertion are illustrative requirements rather than implemented behavior in this Frame study.
 
 ## Earlier design and implementation reference
 
