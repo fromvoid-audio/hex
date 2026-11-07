@@ -21,7 +21,10 @@
 //! Other admitted controls use tank evaluations, including decay, size and
 //! decay ratios. Density and six filter/modulation/shaping switches are stepped;
 //! canonical edits retain their smoothing. Freeze/flat/cut use the same typed
-//! delivery; smoothing-mode automation remains unsupported.
+//! delivery. Smoothing-mode automation retimes active canonical ramps to none
+//! (one sample), fast (20ms) or slow (100ms). Authored curves stay direct. Live
+//! handoff inherits the effective mode only when the incoming factory admits
+//! that program; lane removal restores canonical smoothing without DSP reset.
 //! Fixed delay rings preserve history. With authored feedback controls, gains
 //! derive from effective parameter ramps; canonical-only rendering retains
 //! prepared coefficient ramps. Decay-admitted unfrozen factories reserve the
@@ -57,7 +60,8 @@ impl ReverbDefinition {
     }
     /// Exact admitted provider targets, including live base-only input slots.
     /// Decay admission expands the finite tail promise; freeze admission makes
-    /// it unbounded. Both promises are established before publication.
+    /// it unbounded. Both promises are established before publication. Smoothing
+    /// admission permits effective-mode inheritance across live canonical edits.
     pub fn prepare_owned_room_for_parameters(
         state: &NativeDeviceState,
         rate: u32,

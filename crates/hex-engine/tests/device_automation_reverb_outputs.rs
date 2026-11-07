@@ -195,6 +195,17 @@ fn reverb_outputs_match_independent_gain_and_width_oracles_on_all_effect_owners(
                 })
                 .unwrap();
         }
+        authored
+            .execute(Command::ReplaceDeviceAutomation {
+                device,
+                parameter: p::SMOOTH,
+                points: vec![AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: AutomationValue::new(0.5).unwrap(),
+                    outgoing: Shape::Step,
+                }],
+            })
+            .unwrap();
         let mut canonical = Editor::new(editor.project().clone(), 4).unwrap();
         canonical
             .execute(Command::ReplaceDeviceState {

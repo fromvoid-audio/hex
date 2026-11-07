@@ -87,6 +87,14 @@ impl FeedbackCache {
         let _: &[(f32, f32, f32, f32); 8] = gains;
     }
 }
+// Validated none/fast/slow choice; each supported rate gives a nonzero duration.
+fn smoothing_frames(rate: u32, mode: u32) -> u32 {
+    match mode {
+        0 => 1,
+        2 => (rate / 10).max(1),
+        _ => (rate / 50).max(1),
+    }
+}
 // Inputs are validated: decay0.1..60s and rate8..192kHz. The largest
 // product is34,752,000frames, safely representable before this cast.
 fn silence_deadline_frames(rate: u32, decay: f32) -> u64 {
@@ -137,6 +145,7 @@ pub struct PreparedReverb {
     silence_limit: u64,
     decay_admitted: bool,
     freeze_admitted: bool,
+    smoothing_admitted: bool,
 }
 // Topology-preserving state-variable section. Positive g and damping remain
 // stable throughout bounded parameter ramps; no arbitrary biquad interpolation.
@@ -224,11 +233,13 @@ impl PreparedReverb {
             silence_limit: silence_deadline_frames(rate, settings.get(p::DECAY)),
             decay_admitted: false,
             freeze_admitted: false,
+            smoothing_admitted: false,
         })
     }
     pub(super) fn with_automation(mut self, parameters: &[ParameterId]) -> Self {
         self.decay_admitted = parameters.contains(&p::DECAY);
         self.freeze_admitted = parameters.contains(&p::FREEZE);
+        self.smoothing_admitted = parameters.contains(&p::SMOOTH);
         self
     }
     fn runtime(&self) -> ReverbRuntime {
@@ -238,6 +249,7 @@ impl PreparedReverb {
                 std::array::from_fn(|i| {
                     (i != 0 || self.decay_admitted)
                         && (i != automation::FREEZE_INDEX || self.freeze_admitted)
+                        && (i != automation::SMOOTH_INDEX || self.smoothing_admitted)
                 }),
             ),
             automated_values: AutomatedValues::default(),
@@ -290,6 +302,7 @@ impl PreparedNativeProcessor for PreparedReverb {
         automation::supports(parameter)
             && (parameter != p::DECAY || self.decay_admitted)
             && (parameter != p::FREEZE || self.freeze_admitted)
+            && (parameter != p::SMOOTH || self.smoothing_admitted)
     }
 
     fn supports_smoothed_bypass(&self) -> bool {
@@ -432,7 +445,7 @@ pub struct ReverbRuntimeStorage {
 }
 pub const RUNTIME_HEAP_ALLOCATIONS: usize = 14;
 pub struct ReverbRuntime {
-    automation_controls: crate::parameter_binding::Controls<AutomatedSettings, 32>,
+    automation_controls: crate::parameter_binding::Controls<AutomatedSettings, 33>,
     automated_values: AutomatedValues,
     tail_controls_frozen: bool,
     scatter_cache: ScatterCache,
@@ -553,6 +566,24 @@ impl ReverbRuntime {
             .heap_bytes
             .into_iter()
             .try_fold(storage.inline_bytes, usize::checked_add)
+    }
+    fn retime_canonical_ramps(&mut self, mode: u32) {
+        if self.tank_ramp_remaining == 0 {
+            return;
+        }
+        let frames = smoothing_frames(self.rate, mode);
+        let mut remaining = 0;
+        for ramp in self
+            .parameters
+            .iter_mut()
+            .chain(self.coefficients.iter_mut())
+        {
+            if ramp.remaining != 0 {
+                ramp.retarget(ramp.target, frames);
+                remaining = frames;
+            }
+        }
+        self.tank_ramp_remaining = remaining;
     }
     fn v(&self, id: hex_lattice_contract::ParameterId) -> f32 {
         self.parameters[(id.value() - 1) as usize].current
@@ -845,6 +876,14 @@ impl NativeProcessorRuntime for ReverbRuntime {
             // inherited delivery state without resetting the room; a later
             // tail must freeze canonical controls, and resumed identical
             // authored values must be sampled into a fresh cache.
+            let canonical_mode = self.settings.get(p::SMOOTH) as u32;
+            if self
+                .automated_values
+                .smooth
+                .is_some_and(|mode| mode != canonical_mode)
+            {
+                self.retime_canonical_ramps(canonical_mode);
+            }
             self.automation_controls.reset();
             self.automated_values = AutomatedValues::default();
             self.silence_limit = silence_deadline_frames(self.rate, self.settings.get(p::DECAY));
@@ -865,6 +904,8 @@ impl NativeProcessorRuntime for ReverbRuntime {
             && (parameter != p::DECAY || self.automation_controls.admitted(0))
             && (parameter != p::FREEZE
                 || self.automation_controls.admitted(automation::FREEZE_INDEX))
+            && (parameter != p::SMOOTH
+                || self.automation_controls.admitted(automation::SMOOTH_INDEX))
     }
     fn process_block_with_automation(
         &mut self,
@@ -940,11 +981,13 @@ impl NativeProcessorRuntime for ReverbRuntime {
         {
             to.copy(from);
         }
-        let frames = match self.settings.get(p::SMOOTH) as u32 {
-            0 => 1,
-            2 => (self.rate / 10).max(1),
-            _ => (self.rate / 50).max(1),
+        let canonical_mode = self.settings.get(p::SMOOTH) as u32;
+        let mode = if self.automation_controls.admitted(automation::SMOOTH_INDEX) {
+            old.automated_values.smooth.unwrap_or(canonical_mode)
+        } else {
+            canonical_mode
         };
+        let frames = smoothing_frames(self.rate, mode);
         let mut ramp_remaining = 0;
         for (v, p) in self.parameters.iter_mut().zip(old.parameters) {
             v.inherit(p, frames);

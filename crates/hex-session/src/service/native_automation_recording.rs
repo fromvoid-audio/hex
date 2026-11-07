@@ -3,7 +3,7 @@
 //! The disk worker seals the file independently of callback and UI lifetimes.
 use super::Session;
 use super::automation_draft::{DeviceDraftInput, DraftProvenance, DraftWorker, DraftWorkerOutcome};
-use super::automation_take::{CompletedAutomationTake, prepare_native_take_adoption_on_control};
+use super::automation_take::{CompletedAutomationTake, prepare_device_take_adoption_on_control};
 use hex_engine::{AudioSourceContext, NativeParameterApplication, NativeParameterInputTarget};
 use hex_storage::automation_draft::{
     CaptureClock, DraftAbortReason, DraftReadLimits, DraftTerminal,
@@ -256,7 +256,7 @@ impl Lane {
         )
         .map_err(|error| retained_error(&outcome.path, &error.to_string()))?;
         let command =
-            prepare_native_take_adoption_on_control(session, document_base, &mut take, scope.stamp)
+            prepare_device_take_adoption_on_control(session, document_base, &mut take, scope.stamp)
                 .map_err(|error| retained_error(&outcome.path, &error))?;
         Ok(Step::Commit(Box::new(command), outcome.path))
     }

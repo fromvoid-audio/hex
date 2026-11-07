@@ -48,6 +48,7 @@ mod eq_panel;
 mod limiter_panel;
 pub(super) use eq_panel::after_scroll_worker_event as eq_scroll_after_worker_event;
 pub(super) use eq_panel::reconcile_spectrum as reconcile_eq_spectrum;
+mod device_add;
 mod device_meter;
 mod gate_panel;
 mod keyboard;
@@ -175,6 +176,7 @@ pub(super) struct DevicePanelState {
     /// Retained per-tick read buffer for the latest spectrum pairs.
     pub(super) spectrum_scratch: Vec<hex_audio::spectrum_worker::PublishedSpectra>,
     add_menu_open: bool,
+    add_menu_target: Option<device_add::Target>,
     message: Option<String>,
 }
 
@@ -1252,6 +1254,7 @@ fn render_track(
         })
         .child(theme::text(if add_open { "×" } else { "+" }))
         .on_click(cx.listener(|view, _, _, cx| {
+            view.device_panel.add_menu_target = None;
             view.device_panel.add_menu_open = !view.device_panel.add_menu_open;
             cx.notify();
         }));
@@ -2842,6 +2845,7 @@ fn instrument_actions(
             selected,
         )
         .on_click(cx.listener(|view, _, _, cx| {
+            view.device_panel.add_menu_target = None;
             view.device_panel.add_menu_open = true;
             cx.notify();
         })),
@@ -2943,7 +2947,17 @@ fn render_add_menu(
                             .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
                             .cursor(gpui::CursorStyle::PointingHand)
                             .child(theme::text(label))
-                            .on_click(cx.listener(move |view, _, _, cx| {
+                            .on_click(cx.listener(move |view, _, window, cx| {
+                                let Some(before) =
+                                    device_add::before(view, DevicePanelOwner::Track(track))
+                                else {
+                                    view.focus.focus(window);
+                                    view.device_panel.add_menu_open = false;
+                                    view.device_panel.message =
+                                        Some("device insertion cancelled · chain changed".into());
+                                    cx.notify();
+                                    return;
+                                };
                                 let request = match (class, instrument) {
                                     (NativeDeviceClass::Instrument, Some(device)) => {
                                         Request::ReplaceNativeDevice {
@@ -2956,12 +2970,13 @@ fn render_add_menu(
                                         track,
                                         class,
                                         type_id: Box::new(type_id),
-                                        before: None,
+                                        before,
                                     },
                                 };
                                 if finalize_controls(view, cx)
                                     && view.enqueue_device_barrier(request)
                                 {
+                                    view.focus.focus(window);
                                     view.device_panel.add_menu_open = false;
                                     view.device_panel.message = None;
                                 }
