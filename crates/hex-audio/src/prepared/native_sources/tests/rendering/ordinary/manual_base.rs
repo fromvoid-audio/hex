@@ -149,6 +149,11 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
     let captured = poll(&mut f.control, &mut scratch, false).unwrap();
     assert_eq!(
         f.control
+            .native_source_approves_processing_state_on_control(binding, &captured),
+        Some(false)
+    );
+    assert_eq!(
+        f.control
             .native_source_approves_captured_state_on_control(binding, &captured),
         Some(true)
     );
@@ -249,7 +254,89 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
     assert!(poll_bases(&mut f.control, &mut abandoned_bases, true).is_err());
     let mut bases = start_bases(&mut f, &captured_state, &selected).unwrap();
     assert!(bases.retained_control_metadata_bytes().unwrap() > std::mem::size_of_val(&bases));
+    let until = Instant::now() + Duration::from_secs(3);
+    while !bases.awaiting_processing_approval() {
+        assert!(
+            bases
+                .poll_on_control(&mut f.control, &mut || false)
+                .is_none()
+        );
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    #[cfg(feature = "allocation-probe")]
+    root.with_native_source_work_held_on_control(|| {
+        assert!(
+            bases
+                .poll_on_control(&mut f.control, &mut || false)
+                .is_none()
+        );
+        assert!(bases.awaiting_processing_approval());
+    })
+    .unwrap();
     let bases = poll_bases(&mut f.control, &mut bases, false).unwrap();
+    let qualified = bases.canonical_state();
+    assert_eq!(
+        f.control
+            .native_source_approves_processing_state_on_control(binding, qualified),
+        Some(true)
+    );
+    assert_eq!(
+        f.control
+            .native_source_approves_processing_state_on_control(binding, &captured_state),
+        Some(false)
+    );
+    assert_eq!(
+        f.control
+            .native_source_approves_processing_state_on_control(wrong_binding, qualified),
+        None
+    );
+    let reconstructed = NativeDeviceState::new(
+        qualified.type_id(),
+        qualified.state_version(),
+        qualified.payload().to_vec(),
+    )
+    .unwrap()
+    .with_host_metadata_from(qualified)
+    .unwrap();
+    assert_eq!(
+        f.control
+            .native_source_approves_processing_state_on_control(binding, &reconstructed),
+        Some(false)
+    );
+    let mut qualified_history = Editor::new(f.editor.project().clone(), 8).unwrap();
+    qualified_history
+        .execute(Command::ReplaceDeviceState {
+            device,
+            state: qualified.clone(),
+        })
+        .unwrap();
+    assert_eq!(
+        f.control
+            .native_source_approves_processing_state_on_control(
+                binding,
+                qualified_history.project().device(device).unwrap().state()
+            ),
+        Some(true)
+    );
+    assert!(qualified_history.undo());
+    assert_eq!(
+        f.control
+            .native_source_approves_processing_state_on_control(
+                binding,
+                qualified_history.project().device(device).unwrap().state()
+            ),
+        Some(false)
+    );
+    assert!(qualified_history.redo());
+    assert_eq!(
+        f.control
+            .native_source_approves_processing_state_on_control(
+                binding,
+                qualified_history.project().device(device).unwrap().state()
+            ),
+        Some(true)
+    );
     assert_eq!(bases.binding(), binding);
     assert_eq!(bases.source().0, source);
     assert_eq!(bases.canonical_state(), &captured_state);

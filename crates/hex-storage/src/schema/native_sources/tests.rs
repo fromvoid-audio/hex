@@ -12,7 +12,7 @@ fn larger_unbound_vst3_instrument_round_trips_without_group_mutes() {
     .unwrap();
     let authority = hex_lattice_contract::Vst3StateAuthority::new_on_control().unwrap();
     let verifier = authority.verifier();
-    let state = authority.approve_on_control(state).unwrap();
+    let state = authority.approve_processing_on_control(state).unwrap();
     let mut editor = Editor::new(Project::new(44_100).unwrap(), 8).unwrap();
     editor
         .execute(Command::CreateNativeSource {
@@ -28,7 +28,9 @@ fn larger_unbound_vst3_instrument_round_trips_without_group_mutes() {
     assert_eq!(reopened.snapshot(), project.snapshot());
     let reopened_state = reopened.native_sources()[0].instrument().state();
     assert!(verifier.approves(&state));
+    assert!(verifier.approves_processing(&state));
     assert!(!verifier.approves(reopened_state));
+    assert!(!verifier.approves_processing(reopened_state));
     assert_eq!(encode(&reopened).unwrap(), saved);
 }
 

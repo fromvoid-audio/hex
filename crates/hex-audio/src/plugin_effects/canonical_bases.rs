@@ -10,6 +10,7 @@ use crate::{
 enum Phase {
     Prepare,
     Retire(Result<(), String>),
+    Verify,
     Finished,
 }
 
@@ -128,6 +129,10 @@ impl Hosting {
 }
 
 impl CanonicalBasesCapture {
+    #[cfg(test)]
+    pub(crate) fn awaiting_processing_approval(&self) -> bool {
+        matches!(self.phase, Phase::Verify)
+    }
     pub fn retained_control_metadata_bytes(&self) -> Option<usize> {
         std::mem::size_of::<Self>().checked_add(
             self.canonical
@@ -153,6 +158,9 @@ impl CanonicalBasesCapture {
             || output.output_identity() != Some(self.source.0.output_identity)
         {
             return None;
+        }
+        if matches!(self.phase, Phase::Verify) {
+            return self.qualify_processing(output, is_cancelled);
         }
         if !matches!(self.phase, Phase::Retire(Err(_)))
             && (is_cancelled() || !self.source_matches(output))
@@ -189,21 +197,8 @@ impl CanonicalBasesCapture {
             if is_cancelled() || !self.source_matches(output) {
                 return Some(Err("native canonical base query cancelled".into()));
             }
-            let Some(canonical) = self.canonical.take() else {
-                return Some(Err("native canonical base state is unavailable".into()));
-            };
-            return Some(Ok(CapturedCanonicalBases {
-                binding: self.original,
-                source: self.source,
-                canonical,
-                prepared: self.prepared,
-                sample_rate: self.sample_rate,
-                steps: self.steps,
-                values: std::mem::replace(
-                    &mut self.values,
-                    [None; hex_plugin_host::transport::MAX_PARAMETER_POINTS],
-                ),
-            }));
+            self.phase = Phase::Verify;
+            return None;
         }
         let next = match progress {
             Some(Progress::Facts(_)) => {
@@ -225,6 +220,45 @@ impl CanonicalBasesCapture {
             self.phase = Phase::Retire(Err(error.into()));
         }
         None
+    }
+
+    fn qualify_processing(
+        &mut self,
+        output: &PublicationControl,
+        is_cancelled: &mut dyn FnMut() -> bool,
+    ) -> Option<Result<CapturedCanonicalBases, String>> {
+        if is_cancelled() || !self.source_matches(output) {
+            self.phase = Phase::Finished;
+            return Some(Err("native canonical base query cancelled".into()));
+        }
+        let Some(canonical) = self.canonical.as_ref() else {
+            self.phase = Phase::Finished;
+            return Some(Err("native canonical base state is unavailable".into()));
+        };
+        let mut facts = CapturedCanonicalBases {
+            binding: self.original,
+            source: self.source,
+            canonical: canonical.clone(),
+            prepared: self.prepared,
+            sample_rate: self.sample_rate,
+            steps: self.steps,
+            values: self.values,
+        };
+        match output.approve_native_canonical_processing_on_control(&facts) {
+            Err("native preparation is busy") => None,
+            result => {
+                self.phase = Phase::Finished;
+                let result = result.map_err(str::to_owned).and_then(|state| {
+                    if is_cancelled() || !self.source_matches(output) {
+                        return Err("native canonical base query cancelled".into());
+                    }
+                    facts.canonical = state;
+                    self.canonical = None;
+                    Ok(facts)
+                });
+                Some(result)
+            }
+        }
     }
 
     fn read_bases(

@@ -38,7 +38,8 @@ impl Vst3StateAuthority {
     }
 
     /// The source owner must independently validate capture identity, source
-    /// epoch, processing metadata and completion before granting this marker.
+    /// epoch and capture completion before granting this correspondence marker.
+    /// This does not qualify a changed processing profile for worker reuse.
     /// Reconstructing an opaque state never copies approval. Clone/history and
     /// independent host trim changes preserve the exact immutable payload.
     pub fn approve_on_control(
@@ -50,6 +51,20 @@ impl Vst3StateAuthority {
         }
         state.require_asset_free_processing()?;
         state.source_approval = Some(self.0);
+        state.processing_approval = None;
+        Ok(state)
+    }
+
+    /// Qualify an isolated restoration whose processing profile matches the
+    /// original worker. Only that control owner may issue this after checking
+    /// actual restored quantum, latency, bus role/tail metadata and disposal.
+    /// Parameter metadata and native graph admission remain separate checks.
+    pub fn approve_processing_on_control(
+        &self,
+        state: NativeDeviceState,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        let mut state = self.approve_on_control(state)?;
+        state.processing_approval = Some(self.0);
         Ok(state)
     }
 }
@@ -57,6 +72,9 @@ impl Vst3StateAuthority {
 impl Vst3StateVerifier {
     pub fn approves(self, state: &NativeDeviceState) -> bool {
         state.source_approval == Some(self.0)
+    }
+    pub fn approves_processing(self, state: &NativeDeviceState) -> bool {
+        self.approves(state) && state.processing_approval == Some(self.0)
     }
 }
 
@@ -141,5 +159,48 @@ mod tests {
         let zero = AtomicU64::new(0);
         assert!(Vst3StateAuthority::reserve(&zero).is_err());
         assert_eq!(zero.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn processing_qualification_is_distinct_and_cannot_survive_reconstruction_or_downgrade() {
+        let authority = Vst3StateAuthority::new_on_control().unwrap();
+        let verifier = authority.verifier();
+        let captured = authority.approve_on_control(state()).unwrap();
+        assert!(verifier.approves(&captured));
+        assert!(!verifier.approves_processing(&captured));
+        let qualified = authority
+            .approve_processing_on_control(captured.clone())
+            .unwrap();
+        assert_eq!(qualified, captured);
+        assert!(qualified.shares_payload_storage_with(&captured));
+        assert!(verifier.approves_processing(&qualified.clone()));
+        let trimmed = qualified
+            .clone()
+            .with_input_gain_db(-3.0)
+            .unwrap()
+            .with_output_gain_db(6.0)
+            .unwrap();
+        assert!(verifier.approves_processing(&trimmed.without_host_gains()));
+        assert!(
+            verifier.approves_processing(
+                &qualified
+                    .clone()
+                    .with_host_metadata_from(&captured)
+                    .unwrap()
+            )
+        );
+        assert!(
+            !verifier
+                .approves_processing(&authority.approve_on_control(qualified.clone()).unwrap())
+        );
+        assert!(
+            !verifier
+                .approves_processing(&qualified.clone().with_asset_references(vec![]).unwrap())
+        );
+        assert!(
+            !verifier.approves_processing(&state().with_host_metadata_from(&qualified).unwrap())
+        );
+        let other = Vst3StateAuthority::new_on_control().unwrap();
+        assert!(!other.verifier().approves_processing(&qualified));
     }
 }
