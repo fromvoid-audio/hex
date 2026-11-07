@@ -777,9 +777,8 @@ mod tests {
                         ParameterValue::Choice(((offset / 17) % labels.len()) as u32),
                     ),
                     hex_lattice_contract::ParameterKind::Bool => {
-                        Some(ParameterValue::Bool((offset / 17) % 2 == 0))
+                        Some(ParameterValue::Bool((offset / 17).is_multiple_of(2)))
                     }
-                    _ => None,
                 }
             }
         }
@@ -1277,7 +1276,7 @@ mod benchmark {
             };
             if [p::LO_CUT, p::HI_CUT, p::SPIN, p::HIGH, p::LOW, p::CHORUS].contains(&id) {
                 return Some(hex_lattice_contract::ParameterValue::Bool(
-                    !self.dense || (offset / 17) % 2 == 0,
+                    !self.dense || (offset / 17).is_multiple_of(2),
                 ));
             }
             if id == p::DENSITY {
