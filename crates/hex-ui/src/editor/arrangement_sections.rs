@@ -13,7 +13,8 @@
 //! Shift-click selects the song-order range from the last plain-clicked anchor;
 //! Command+Shift-click toggles membership and moves the anchor. Header drags own
 //! section edits; ordinary lower-body drags use Main's all-track range owner,
-//! including tracks hidden by section focus.
+//! including tracks hidden by section focus. A double press in empty lane space
+//! paints a section at every height; existing sections retain their input owner.
 use super::{
     EditorMode, EditorView, ViewState,
     musical_time::SnapGrid,
@@ -718,6 +719,7 @@ impl EditorView {
         };
         let Some(time_range) = section_input::routes_to_time_range(
             edge.is_some(),
+            double && id.is_none(),
             y,
             top,
             height,
@@ -2787,6 +2789,98 @@ mod tests {
                 assert!(view.sections.pending.is_none());
                 assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
             });
+        }
+    }
+
+    #[gpui::test]
+    fn paint_empty_section_lane_at_every_height(cx: &mut TestAppContext) {
+        for (fraction, reverse) in [(0.1, false), (0.5, true), (0.9, false)] {
+            let (handle, editor, _) = fixture(cx);
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            visual.run_until_parked();
+            let before = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.snapshot());
+            let (from, to) = editor.read_with(cx, |v, _| {
+                let [_, top, _, height] = v.section_layout().unwrap();
+                let mut from = position(v, if reverse { 7 } else { 5 });
+                let mut to = position(v, if reverse { 5 } else { 7 });
+                from.y = px(top + height * fraction);
+                to.y = from.y;
+                (from, to)
+            });
+            visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(from, MouseButton::Left, Modifiers::default());
+            visual.simulate_event(MouseDownEvent {
+                position: from,
+                button: MouseButton::Left,
+                click_count: 2,
+                modifiers: Modifiers::default(),
+                first_mouse: false,
+            });
+            visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            editor.read_with(cx, |v, _| {
+                assert!(
+                    matches!(v.sections.gesture.as_ref().and_then(|g| g.command.as_ref()),
+                    Some(Command::AddArrangementSection { start, end, .. })
+                    if *start == BeatTime::from_quarters(5).unwrap()
+                        && *end == BeatTime::from_quarters(7).unwrap()),
+                    "height {fraction}"
+                );
+                assert!(v.time_selection_gesture.is_none());
+            });
+            let preview = bounds(&mut visual, 2);
+            visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+            let terminal = editor.update(cx, |v, _| next(&v.service));
+            assert!(terminal.error.is_none(), "{:?}", terminal.error);
+            for _ in 0..2 {
+                visual.update(|window, _| window.refresh());
+                visual.run_until_parked();
+                assert_eq!(bounds(&mut visual, 2), preview);
+            }
+            editor.update(cx, |v, cx| {
+                v.receive(terminal);
+                assert_eq!(
+                    v.state
+                        .as_ref()
+                        .unwrap()
+                        .project
+                        .arrangement_sections()
+                        .len(),
+                    3
+                );
+                v.service.submit(Request::Undo).unwrap();
+                let terminal = next(&v.service);
+                assert!(terminal.error.is_none());
+                v.receive(terminal);
+                let restored = v.state.as_ref().unwrap().project.snapshot();
+                let mut expected = before.clone();
+                assert!(restored.next_id >= expected.next_id);
+                expected.next_id = restored.next_id;
+                assert_eq!(restored, expected, "one undo restores all content");
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let first = bounds(&mut visual, 0);
+            let occupied = point(first.center().x, first.top() + first.size.height * fraction);
+            visual.simulate_event(MouseDownEvent {
+                position: occupied,
+                button: MouseButton::Left,
+                click_count: 2,
+                modifiers: Modifiers::default(),
+                first_mouse: false,
+            });
+            editor.read_with(cx, |v, _| {
+                if fraction < 0.3 {
+                    assert!(matches!(
+                        v.sections.gesture.as_ref().map(|g| g.mode),
+                        Some(Mode::Reorder(_))
+                    ));
+                } else {
+                    assert!(v.sections.gesture.is_none());
+                    assert!(v.time_selection_gesture.is_some());
+                }
+            });
+            visual.simulate_keystrokes("escape");
         }
     }
 

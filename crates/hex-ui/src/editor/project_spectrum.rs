@@ -73,9 +73,9 @@ impl EditorView {
             .state
             .as_ref()
             .map_or(0, |s| s.project.return_tracks().len());
-        // Title22, responsive transport, status22, overview24, arrangement header42,
+        // Title22, responsive transport, status22, arrangement header42,
         // main track44 and mixer26. Routing owns its own height.
-        180.0
+        156.0
             + super::header::toolbar_height(f32::from(window.viewport_size().width))
             + if self.clip_view_open && !self.device_panel_active {
                 4.0

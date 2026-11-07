@@ -258,6 +258,7 @@ impl RectangleDemo {
         let time_range = if self.kind == Kind::Section {
             let Some(time_range) = crate::section_input::routes_to_time_range(
                 hit.is_some_and(|(_, part)| part != RectanglePart::Body),
+                double && hit.is_none(),
                 y,
                 f32::from(bounds.top()),
                 f32::from(bounds.size.height),
@@ -2447,7 +2448,12 @@ mod tests {
         visual.update(|window, _| window.activate_window());
         visual.run_until_parked();
         let area = visual.debug_bounds("section-paint-area").unwrap();
-        let at = |x: f32| point(area.left() + area.size.width * x, area.top() + px(5.0));
+        let at = |x: f32| {
+            point(
+                area.left() + area.size.width * x,
+                area.top() + area.size.height * 0.9,
+            )
+        };
         let outside = point(area.right() + px(20.0), area.top() - px(10.0));
         let double_down = |visual: &mut VisualTestContext| {
             visual.simulate_event(gpui::MouseDownEvent {
