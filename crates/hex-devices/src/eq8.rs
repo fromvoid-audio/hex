@@ -1,11 +1,12 @@
 //! Original zero-latency eight-band parametric equalizer.
 //!
-//! Coefficients are prepared on the control side from the RBJ audio-EQ
-//! cookbook equations. The callback owns only a fixed coefficient bank and
-//! transposed-direct-form-II histories. Shared gain, frequency and Q automation uses the
-//! existing rate-scaled coefficient/gain smoother and fixed inline targets. Band
-//! enable/type and routing automation remain unsupported. Compatible copies retain admitted gain trajectories,
-//! missing views restore canonical gain, and detached tails freeze their target.
+//! Canonical coefficients are prepared on control from the RBJ audio-EQ
+//! cookbook equations. The callback retains fixed coefficient banks and
+//! transposed-direct-form-II histories. Shared gain, frequency and Q automation
+//! designs active-bank targets in fixed inline storage and reuses the rate-scaled
+//! coefficient/gain smoother. Band enable/type and routing automation remain
+//! unsupported. Compatible copies retain admitted trajectories; missing views
+//! restore canonical controls, and detached tails freeze their targets.
 mod automation;
 use hex_lattice::{
     NativeDeviceDefinition, NativeProcessorAudition, NativeProcessorRuntime, OutputTail,
