@@ -154,7 +154,6 @@ impl Sample {
             subscriptions.push(
                 cx.subscribe(&number, move |s, _, e: &NumericControlEvent, cx| {
                     s.status = format!("value {} · {:?} · {:.4}", i + 1, e.phase, e.value);
-                    s.refresh_meters(cx);
                     cx.notify();
                 }),
             );
@@ -180,6 +179,7 @@ impl Sample {
             g.set_creation_drag_enabled(true);
             g.set_backspace_removal(true);
             g.set_tab_navigation(true, cx);
+            g.set_marquee_enabled(true, cx);
             g.set_axes(
                 Some(ResponseGraphAxes {
                     horizontal: [
@@ -207,6 +207,20 @@ impl Sample {
         subscriptions.push(cx.subscribe(&graph, |s, _, e: &ResponseGraphEvent, cx| {
             s.graph_event(e, cx)
         }));
+        subscriptions.push(
+            cx.subscribe(&graph, |s, _, e: &ResponseGraphMarqueeEvent, cx| {
+                if !s.enabled && e.phase != ResponseGraphMarqueePhase::Cancel {
+                    return;
+                }
+                s.response.marquee(e);
+                if let Err(error) = s.graph.update(cx, |g, cx| {
+                    g.set_model(s.response.model.clone(), theme::control_style(), cx)
+                }) {
+                    s.status = error.into();
+                }
+                cx.notify();
+            }),
+        );
         let values = std::array::from_fn(|i| 0.25 + (i % 8) as f32 * 0.08);
         let bars = cx.new(|cx| BarEditor::new(cx, format!("{prefix}sandbox-bars"), style));
         if let Err(e) = bars.update(cx, |b, cx| b.set_values(values, 32, cx)) {
@@ -231,7 +245,7 @@ impl Sample {
                 cx,
             )
         });
-        let mut s = Self {
+        Self {
             item,
             prefix,
             numbers,
@@ -253,43 +267,10 @@ impl Sample {
             narrow: false,
             actions: 0,
             workspace: workspace.map(|p| cx.new(|cx| Workspace::new(p, cx))),
-        };
-        s.refresh_meters(cx);
-        s
+        }
     }
     fn id(&self, name: &str) -> String {
         format!("{}{name}", self.prefix)
-    }
-    fn refresh_meters(&mut self, cx: &mut Context<Self>) {
-        if !matches!(
-            self.item.demo,
-            Demo::Numeric(NumericControlPresentation::DeviceMeters, _, _)
-        ) {
-            return;
-        }
-        for n in &self.numbers {
-            n.update(cx, |n, cx| {
-                let gain = n.value() as f32;
-                n.set_meter_readout(
-                    DeviceMeterReadout {
-                        height: 110.0,
-                        index: 0,
-                        gain_db: if gain > 0.0 {
-                            20.0 * gain.log10()
-                        } else {
-                            -120.0
-                        },
-                        levels: [gain * 0.5, gain * 0.4],
-                        held: [gain * 0.6, gain * 0.5],
-                        tooltips: [theme::text("input fixture"), theme::text("output fixture")],
-                        signal: 0x55aa88,
-                        warning: 0xd9ab55,
-                        clipping: 0xdd5566,
-                    },
-                    cx,
-                );
-            });
-        }
     }
     fn bar_event(&mut self, e: &BarEditorEvent, cx: &mut Context<Self>) {
         match e.phase {
@@ -377,12 +358,12 @@ impl Sample {
         self.bars.update(cx, |b, cx| b.cancel(cx));
         // Restore synchronously before replacing entities/subscriptions on theme
         // changes. Cancel notifications may arrive after that replacement.
-        if self.response.cancel() {
-            if let Err(e) = self.graph.update(cx, |g, cx| {
+        if self.response.cancel()
+            && let Err(e) = self.graph.update(cx, |g, cx| {
                 g.set_model(self.response.model.clone(), theme::control_style(), cx)
-            }) {
-                self.status = e.into();
-            }
+            })
+        {
+            self.status = e.into();
         }
         let can_create = self.enabled && self.response.can_create();
         self.graph
@@ -648,10 +629,12 @@ impl Sample {
                     _ => SpectrumPlotLayers::new(vec![
                         SpectrumPlotLayer {
                             points: points.to_vec(),
+                            peak: None,
                             color: s.accent,
                         },
                         SpectrumPlotLayer {
                             points: points.map(|[x, y]| [x, 1.0 - y]).to_vec(),
+                            peak: None,
                             color: s.muted,
                         },
                     ])
@@ -695,14 +678,14 @@ impl Sample {
                 "device rail" => device_rail(s).child(self.controls()),
                 "device display" => device_display(s).child(self.controls()),
                 "device frame" => device_frame(
-                    theme::text("fixture frame"),
+                    vertical_device_name(theme::text("fixture frame")),
                     s,
                     self.toggle.clone(),
                     self.header_action(cx),
                     device_body(s).child(self.controls()),
                 ),
                 _ => device_header(
-                    theme::text("fixture header"),
+                    vertical_device_name(theme::text("fixture header")),
                     s,
                     self.toggle.clone(),
                     self.header_action(cx),
@@ -863,6 +846,86 @@ mod tests {
             "inline value must not silently render the standard knob fallback"
         );
     }
+    #[gpui::test]
+    fn graph_fixture_marquee_replaces_toggles_and_cancels_selection(cx: &mut TestAppContext) {
+        cx.update(hex_widgets::bind_response_graph_keys);
+        let item = Item {
+            name: "response graph",
+            category: "graphics",
+            demo: Demo::Graph,
+        };
+        let prepared = Sample::prepare(item).unwrap();
+        let handle = cx.add_window(|_, cx| Sample::new(prepared, cx));
+        handle
+            .update(cx, |_, window, _| window.activate_window())
+            .unwrap();
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.run_until_parked();
+        let plot = view.read_with(cx, |s, cx| s.graph.read(cx).plot_bounds().unwrap());
+        let at = |x, y| {
+            point(
+                plot.left() + plot.size.width * x,
+                plot.bottom() - plot.size.height * y,
+            )
+        };
+        visual.simulate_click(at(0.25, 0.3), Modifiers::default());
+        visual.simulate_click(at(0.8, 0.5), Modifiers::default());
+        visual.run_until_parked();
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        let toggle = Modifiers {
+            shift: true,
+            platform: true,
+            ..Modifiers::default()
+        };
+        let selected = |visual: &mut VisualTestContext| {
+            view.read_with(visual, |s, _| {
+                s.response
+                    .model
+                    .nodes
+                    .iter()
+                    .filter(|n| n.selected)
+                    .map(|n| n.id)
+                    .collect::<Vec<_>>()
+            })
+        };
+        visual.simulate_mouse_down(at(0.2, 0.15), MouseButton::Left, shift);
+        visual.simulate_mouse_move(at(0.58, 0.82), Some(MouseButton::Left), shift);
+        visual.simulate_mouse_up(at(0.58, 0.82), MouseButton::Left, shift);
+        visual.run_until_parked();
+        assert_eq!(selected(&mut visual), vec![1, 2]);
+        visual.simulate_mouse_down(at(0.7, 0.35), MouseButton::Left, toggle);
+        visual.simulate_mouse_move(at(0.9, 0.65), Some(MouseButton::Left), toggle);
+        visual.simulate_mouse_up(at(0.9, 0.65), MouseButton::Left, toggle);
+        visual.run_until_parked();
+        assert_eq!(selected(&mut visual), vec![1, 2, 3]);
+        visual.simulate_mouse_down(at(0.15, 0.15), MouseButton::Left, shift);
+        visual.simulate_mouse_move(at(0.3, 0.4), Some(MouseButton::Left), shift);
+        visual.run_until_parked();
+        assert_eq!(selected(&mut visual), vec![2]);
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        assert_eq!(selected(&mut visual), vec![1, 2, 3]);
+        visual.simulate_mouse_up(at(0.3, 0.4), MouseButton::Left, shift);
+        visual.simulate_click(at(0.5, 0.7), Modifiers::default());
+        visual.simulate_click(at(0.25, 0.3), shift);
+        visual.run_until_parked();
+        assert_eq!(selected(&mut visual), vec![1, 2]);
+        visual.simulate_click(at(0.95, 0.1), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(selected(&mut visual), vec![4]);
+        visual.simulate_mouse_down(at(0.2, 0.15), MouseButton::Left, shift);
+        visual.simulate_mouse_move(at(0.58, 0.82), Some(MouseButton::Left), shift);
+        visual.run_until_parked();
+        assert_eq!(selected(&mut visual), vec![1, 2]);
+        view.update(&mut visual, |s, cx| s.set_enabled(false, cx));
+        visual.run_until_parked();
+        assert_eq!(selected(&mut visual), vec![4]);
+    }
+
     #[gpui::test]
     fn graph_fixture_line_follows_pointer_edits_and_cancel(cx: &mut TestAppContext) {
         cx.update(hex_widgets::bind_response_graph_keys);

@@ -47,6 +47,7 @@ mod live_notes;
 mod live_runtime;
 pub(crate) mod ordered_keys;
 mod source_input;
+pub(crate) use live_notes::LiveNoteBatch;
 pub use live_notes::{LiveNoteActivation, LiveNoteEvent, LiveNoteInput, LiveNotePublishError};
 pub use ordered_keys::MidiKeyActivation;
 /// Full exact-velocity hardware banks are prepared only for opted-in roots.
@@ -332,7 +333,7 @@ mod current_sampler;
 
 /// Native CURRENT has no UI input owner. Its copied desired words arrive only
 /// through the already-rooted output mailbox; ordinary playback keeps its lease.
-enum NoteSnapshot {
+pub(crate) enum NoteSnapshot {
     Active(u64, [u64; COMPUTER_KEY_COUNT]),
     Inactive,
     Deferred(u64),
@@ -1265,62 +1266,61 @@ impl ComputerKeyboardRuntime {
                 }
             }
         }
-        if let Some(capture) = &mut self.capture {
-            if capture
+        if let Some(capture) = &mut self.capture
+            && capture
                 .key_batch
                 .as_ref()
                 .is_some_and(|batch| Some(batch.output_epoch) != self.activation_epoch)
-            {
-                if !deferred {
-                    if let Some((queue, batch)) = self
-                        .input
-                        .lease()
-                        .and_then(|input| input.ordered_keys.as_ref())
-                        .zip(capture.key_batch.as_ref())
-                    {
-                        queue.fault(batch.activation);
-                    }
-                    if capture.active {
-                        capture.fail(crate::midi_capture::MidiCaptureFault::InputChanged);
-                    }
-                }
-                capture.key_batch = None;
-            }
-        }
-        if let Some(capture) = self.capture.as_mut().filter(|capture| capture.is_active()) {
-            if let Some(binding) = capture.binding {
-                let key_changed = self
+        {
+            if !deferred {
+                if let Some((queue, batch)) = self
                     .input
                     .lease()
                     .and_then(|input| input.ordered_keys.as_ref())
-                    .is_none_or(|queue| !queue.active(binding.keys))
-                    || capture
-                        .key_batch
-                        .as_ref()
-                        .is_some_and(|batch| batch.activation != binding.keys);
-                let hardware_changed = match binding.hardware {
-                    Some(token) => self
-                        .live_batch
-                        .as_ref()
-                        .is_none_or(|batch| batch.activation != token),
-                    None => self.live_batch.is_some(),
-                };
-                if key_changed || hardware_changed {
-                    let overflow = self.input.lease().is_some_and(|input| {
-                        !input.is_cancelled()
-                            && (input.ordered_keys_faulted(binding.keys)
-                                || binding.hardware.is_some_and(|token| {
-                                    input
-                                        .live_notes()
-                                        .is_some_and(|live| live.activation_rejected(token))
-                                }))
-                    });
-                    capture.fail(if overflow {
-                        crate::midi_capture::MidiCaptureFault::Capacity
-                    } else {
-                        crate::midi_capture::MidiCaptureFault::InputChanged
-                    });
+                    .zip(capture.key_batch.as_ref())
+                {
+                    queue.fault(batch.activation);
                 }
+                if capture.active {
+                    capture.fail(crate::midi_capture::MidiCaptureFault::InputChanged);
+                }
+            }
+            capture.key_batch = None;
+        }
+        if let Some(capture) = self.capture.as_mut().filter(|capture| capture.is_active())
+            && let Some(binding) = capture.binding
+        {
+            let key_changed = self
+                .input
+                .lease()
+                .and_then(|input| input.ordered_keys.as_ref())
+                .is_none_or(|queue| !queue.active(binding.keys))
+                || capture
+                    .key_batch
+                    .as_ref()
+                    .is_some_and(|batch| batch.activation != binding.keys);
+            let hardware_changed = match binding.hardware {
+                Some(token) => self
+                    .live_batch
+                    .as_ref()
+                    .is_none_or(|batch| batch.activation != token),
+                None => self.live_batch.is_some(),
+            };
+            if key_changed || hardware_changed {
+                let overflow = self.input.lease().is_some_and(|input| {
+                    !input.is_cancelled()
+                        && (input.ordered_keys_faulted(binding.keys)
+                            || binding.hardware.is_some_and(|token| {
+                                input
+                                    .live_notes()
+                                    .is_some_and(|live| live.activation_rejected(token))
+                            }))
+                });
+                capture.fail(if overflow {
+                    crate::midi_capture::MidiCaptureFault::Capacity
+                } else {
+                    crate::midi_capture::MidiCaptureFault::InputChanged
+                });
             }
         }
         // Expiration is audio-owned and overrides even a control writer stalled
@@ -2540,7 +2540,7 @@ mod pitch_domain_tests {
     }
 
     #[test]
-    fn computer_keyboard_mutable_nyquist_refusal_keeps_audio_render_usable() {
+    fn computer_keyboard_mutable_nyquist_note_is_silenced_and_audio_stays_usable() {
         let (source, track) = super::tests::fixture();
         let mut snapshot = source.snapshot();
         snapshot.sample_rate = 8000;
@@ -2582,7 +2582,8 @@ mod pitch_domain_tests {
             .unwrap();
         let mut frames = [[1.0; 2]; 256];
         playback.render(&mut frames).unwrap();
-        assert!(input.rejected());
+        // Every operator is above 4 kHz nyquist: silenced, not refused (Pulse #3957).
+        assert!(!input.rejected());
         assert_eq!(frames, [[0.0; 2]; 256]);
         input.set_key(0, Some((60, 100, 2))).unwrap();
         playback.render(&mut frames).unwrap();

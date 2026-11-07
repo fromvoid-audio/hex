@@ -282,6 +282,7 @@ fn route_snapshot_tracks_launch_pending_cancel_stop_and_revision_capability() {
         track_id: 0,
         owner: prepared::SessionRouteOwner::Silence,
         active_origin: None,
+        audio_launch_frame: None,
         pending: None,
     }; 2];
     let initial = control.status.session_routes(&mut entries).unwrap();
@@ -477,6 +478,7 @@ fn launch_and_play_is_atomic_for_unknown_clip_and_nonlaunch_payloads() {
         track_id: 0,
         owner: prepared::SessionRouteOwner::Silence,
         active_origin: None,
+        audio_launch_frame: None,
         pending: None,
     }; 2];
     let snapshot = control.status.session_routes(&mut routes).unwrap();
@@ -535,6 +537,7 @@ fn accepted_reorder_publishes_route_entries_in_new_project_order_by_stable_id() 
         track_id: 0,
         owner: prepared::SessionRouteOwner::Silence,
         active_origin: None,
+        audio_launch_frame: None,
         pending: None,
     }; 2];
     let routes = control.status.session_routes(&mut entries).unwrap();

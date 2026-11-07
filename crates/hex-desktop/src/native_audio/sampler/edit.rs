@@ -112,8 +112,10 @@ impl NativeAudioSink {
         match control.stopped_edit_fence_state(pending.fence) {
             StoppedEditFenceState::Pending => None,
             StoppedEditFenceState::Ready => Some(Ok(())),
+            // The editor stops before a streamed sampler edit and resumes
+            // after it, so a refusal means playback changed meanwhile.
             StoppedEditFenceState::Refused => {
-                Some(Err("stop playback before editing sampler edit".into()))
+                Some(Err("sampler edit audio changed · try again".into()))
             }
         }
     }

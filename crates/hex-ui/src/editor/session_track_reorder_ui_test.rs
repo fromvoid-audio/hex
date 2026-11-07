@@ -58,6 +58,99 @@ fn group(visual: &mut VisualTestContext, editor: &Entity<EditorView>, ids: &[Tra
 }
 
 #[gpui::test]
+fn nested_session_headers_show_ordered_ancestor_bands(cx: &mut TestAppContext) {
+    let (mut visual, editor, ids) = live_tracks(cx, 3, false);
+    let inner = group(&mut visual, &editor, &ids[..1]);
+    let outer = group(&mut visual, &editor, &[inner, ids[1]]);
+    switch(&mut visual, &editor);
+    let band = |visual: &mut VisualTestContext, track: TrackId, ancestor: TrackId| {
+        visual.debug_bounds(Box::leak(
+            format!("session-group-band-{}-{}", track.value(), ancestor.value()).into_boxed_str(),
+        ))
+    };
+    let outer_band = band(&mut visual, ids[0], outer).expect("outer band");
+    let inner_band = band(&mut visual, ids[0], inner).expect("inner band");
+    let h = header(&mut visual, ids[0]);
+    assert!(f32::from(outer_band.size.width) >= f32::from(h.size.width) - 2.0);
+    assert_eq!(f32::from(outer_band.size.height), 1.0);
+    assert_eq!(
+        inner_band.origin.y,
+        outer_band.origin.y + outer_band.size.height
+    );
+    let own_strip =
+        Box::leak(format!("session-track-color-strip-{}", ids[0].value()).into_boxed_str());
+    let label = Box::leak(format!("session-track-label-{}", ids[0].value()).into_boxed_str());
+    let strip = visual.debug_bounds(own_strip).unwrap();
+    let label = visual.debug_bounds(label).unwrap();
+    assert!(label.origin.y >= strip.origin.y + strip.size.height);
+    assert!(band(&mut visual, ids[1], outer).is_some());
+    assert!(band(&mut visual, ids[1], inner).is_none());
+    assert!(band(&mut visual, ids[2], outer).is_none());
+    let fold = Box::leak(format!("console-group-fold-{}", outer.value()).into_boxed_str());
+    let point = visual.debug_bounds(fold).unwrap().center();
+    visual.simulate_click(point, Modifiers::default());
+    visual.run_until_parked();
+    assert!(band(&mut visual, ids[0], outer).is_none());
+    visual.simulate_click(point, Modifiers::default());
+    visual.run_until_parked();
+    assert!(band(&mut visual, ids[0], outer).is_some());
+}
+
+#[gpui::test]
+fn session_group_band_survives_paging_past_its_parent(cx: &mut TestAppContext) {
+    let (mut visual, editor, ids) = live_tracks(cx, 12, false);
+    let parent = group(&mut visual, &editor, &ids[5..7]);
+    switch(&mut visual, &editor);
+    editor.update(&mut visual, |view, cx| {
+        let project = &view.state.as_ref().unwrap().project;
+        let index = view
+            .arrangement_focus
+            .projection
+            .console_indices
+            .iter()
+            .position(|&index| project.tracks()[index].id() == ids[5])
+            .unwrap();
+        view.session_track_start = index;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let band = Box::leak(
+        format!("session-group-band-{}-{}", ids[5].value(), parent.value()).into_boxed_str(),
+    );
+    assert!(visual.debug_bounds(band).is_some());
+    let parent_header = Box::leak(format!("session-track-{}", parent.value()).into_boxed_str());
+    assert!(visual.debug_bounds(parent_header).is_none());
+}
+
+#[gpui::test]
+fn deepest_session_group_keeps_label_below_colour_bands(cx: &mut TestAppContext) {
+    let (mut visual, editor, ids) = live_tracks(cx, 8, false);
+    let mut node = ids[0];
+    for _ in 0..hex_project::MAX_GROUP_DEPTH {
+        node = group(&mut visual, &editor, &[node]);
+    }
+    switch(&mut visual, &editor);
+    editor.update(&mut visual, |view, cx| {
+        let project = &view.state.as_ref().unwrap().project;
+        view.session_track_start = view
+            .arrangement_focus
+            .projection
+            .console_indices
+            .iter()
+            .position(|&index| project.tracks()[index].id() == ids[0])
+            .unwrap();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let strip = Box::leak(format!("session-track-color-strip-{}", ids[0].value()).into_boxed_str());
+    let label = Box::leak(format!("session-track-label-{}", ids[0].value()).into_boxed_str());
+    let strip = visual.debug_bounds(strip).unwrap();
+    let label = visual.debug_bounds(label).unwrap();
+    assert!(label.origin.y >= strip.origin.y + strip.size.height);
+    assert!(f32::from(label.size.height) >= 12.0);
+}
+
+#[gpui::test]
 fn console_group_drop_keeps_target_until_ack_and_undo(cx: &mut TestAppContext) {
     let (mut visual, editor, ids) = live_tracks(cx, 3, false);
     let group = group(&mut visual, &editor, &ids[..1]);

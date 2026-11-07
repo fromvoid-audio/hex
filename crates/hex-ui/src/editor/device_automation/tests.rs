@@ -659,7 +659,12 @@ mod native {
         visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         entity.update(&mut visual, |view, _| {
-            assert!(view.automation_view.devices.draft.is_some())
+            assert!(
+                view.automation_view.devices.draft.is_some()
+                    && view.automation_view.devices.marquee.is_none()
+                    && view.automation_view.devices.pending.is_none(),
+                "a plain blank press holds the new point; release commits it"
+            )
         });
         visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();

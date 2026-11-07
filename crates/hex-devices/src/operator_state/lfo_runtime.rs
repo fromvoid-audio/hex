@@ -919,6 +919,7 @@ fn export<const N: usize>(runtime: &Runtime<N>) -> Option<super::harmonic_runtim
     }
     let spectrum = builtin_spectrum(&base)?;
     Some(Legacy {
+        fine_offsets: runtime.factory.configuration.fine_offsets_hz(),
         tuning: None,
         rate: runtime.factory.rate,
         companion: super::companion::Settings::default(),
@@ -1339,7 +1340,7 @@ mod tests {
         assert!(
             edited
                 .preflight_events(&high, 1, &hex_lattice::EMPTY_DEVICE_RESOURCES)
-                .is_err()
+                .is_ok()
         );
     }
 }

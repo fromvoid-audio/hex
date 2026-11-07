@@ -67,7 +67,7 @@ impl SessionPlayback {
             visit,
             window: None,
         };
-        self.inherit_state_planned(previous, None, Some(&mut demand))?;
+        self.inherit_state_planned(previous, None, Some(&mut demand), true, false)?;
         demand
             .window
             .ok_or(SessionPlaybackError::ArithmeticOverflow)
@@ -77,13 +77,16 @@ impl SessionPlayback {
     /// Visitors borrow metadata only and must use preallocated storage on audio.
     /// A visitor refusal leaves this runtime unchanged; partial visitor storage
     /// is speculative and must be discarded. Paused/empty demand has width zero.
+    /// Linear offline runtimes include compensated paths; interactive closed
+    /// demand retains its existing restricted admission.
     pub fn visit_next_stream_chunk(
         &self,
         maximum_frames: usize,
         playing: Option<bool>,
         visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
-        self.visit_stream_chunk_at(
+        self.visit_stream_chunk_in_scope(
+            self.linear_arrangement_export,
             &self.routes,
             self.performance_frame,
             self.arrangement_frame,
@@ -95,30 +98,6 @@ impl SessionPlayback {
         )
     }
 
-    #[allow(clippy::too_many_arguments)] // Borrowed applied/planned clocks, no ownership snapshot.
-    pub(super) fn visit_stream_chunk_at(
-        &self,
-        routes: &[TrackRoute],
-        performance_frame: u64,
-        arrangement_frame: u64,
-        route_generation: u64,
-        loop_pass: u64,
-        playing: bool,
-        maximum_frames: usize,
-        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
-    ) -> Result<StreamChunkWindow, Invalid> {
-        self.visit_stream_chunk_in_scope(
-            false,
-            routes,
-            performance_frame,
-            arrangement_frame,
-            route_generation,
-            loop_pass,
-            playing,
-            maximum_frames,
-            visit,
-        )
-    }
     #[allow(clippy::too_many_arguments)]
     pub(super) fn visit_stream_chunk_in_scope(
         &self,
@@ -246,10 +225,9 @@ impl SessionPlayback {
         }
         let region = self.active_loop_region_at(arrangement_frame);
         if let Some(region) = region {
-            window.arrangement_frame =
+            (window.arrangement_frame, _) =
                 render::normalize_loop_cursor(window.arrangement_frame, region, loop_pass)
-                    .map_err(|error| Invalid(error.diagnostic_message()))?
-                    .0;
+                    .map_err(|error| Invalid(error.diagnostic_message()))?;
             let until = if window.arrangement_frame < region.start() {
                 region.start() - window.arrangement_frame
             } else {
@@ -299,11 +277,40 @@ impl SessionPlayback {
                 .pending
                 .filter(|pending| pending.frame <= performance_frame)
             {
-                self.owner_for_target(pending.target, pending.beat, performance_frame)
-                    .map_err(|error| Invalid(error.diagnostic_message()))?
+                let next = self
+                    .owner_for_target(pending.target, pending.beat, performance_frame)
+                    .map_err(|error| Invalid(error.diagnostic_message()))?;
+                // The owner left at this frame fades out over the window.
+                if let RouteOwner::SessionAudio { clip, launch_frame } = route.owner
+                    && next != route.owner
+                {
+                    let fade = usize::try_from(self.audio_release_fade()).unwrap_or(usize::MAX);
+                    self.visit_session_audio_demand(
+                        clip,
+                        launch_frame,
+                        performance_frame,
+                        window.frames.min(fade),
+                        visit,
+                    )?;
+                }
+                next
             } else {
                 route.owner
             };
+            if let Some(release) = route
+                .audio_release
+                .filter(|release| release.active_at(performance_frame))
+            {
+                let remaining =
+                    usize::try_from(release.end_frame() - performance_frame).unwrap_or(usize::MAX);
+                self.visit_session_audio_demand(
+                    release.clip,
+                    release.launch_frame,
+                    performance_frame,
+                    window.frames.min(remaining),
+                    visit,
+                )?;
+            }
             match owner {
                 RouteOwner::Arrangement => {
                     let track = self
@@ -338,71 +345,32 @@ impl SessionPlayback {
                     }
                 }
                 RouteOwner::SessionAudio { clip, launch_frame } => {
-                    let clip = self
-                        .revision
-                        .session()
-                        .audio_clip(clip)
-                        .ok_or(Invalid("stream demand clip missing"))?;
-                    if !clip.active {
-                        continue;
-                    }
-                    if let PreparedAudioSource::Streamed(source) = clip.source() {
-                        if let Some(elapsed) = performance_frame.checked_sub(launch_frame) {
-                            if let Some(start) = clip.source_frame(elapsed) {
-                                let count = window.frames.min(
-                                    usize::try_from(clip.playback_end() - start)
-                                        .unwrap_or(usize::MAX),
-                                );
-                                crate::stream_demand::visit_page_range(
-                                    source,
-                                    start,
-                                    count,
-                                    &mut |extent| visit(extent.into()),
-                                )?;
-                                // Later complete cycles demand the same pages.
-                                // One suffix and one cycle prefix cover the union,
-                                // independent of block length or cycle density.
-                                if let Some(range) = clip.loop_range {
-                                    let rest = (window.frames - count).min(
-                                        usize::try_from(range.end() - range.start())
-                                            .unwrap_or(usize::MAX),
-                                    );
-                                    if rest > 0 {
-                                        crate::stream_demand::visit_page_range(
-                                            source,
-                                            range.start(),
-                                            rest,
-                                            &mut |extent| visit(extent.into()),
-                                        )?;
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    self.visit_session_audio_demand(
+                        clip,
+                        launch_frame,
+                        performance_frame,
+                        window.frames,
+                        visit,
+                    )?;
                 }
                 RouteOwner::Session { .. } | RouteOwner::Silence => {}
             }
         }
-        if let Some(binding) = self.revision.scalar_automation.as_ref() {
-            let input = self
-                .revision
-                .native_parameter_input_target()
-                .ok_or(Invalid("scalar parameter target is unavailable"))?;
-            let delay = self
-                .revision
-                .arrangement()
-                .signal_graph
-                .as_ref()
-                .ok_or(Invalid("scalar signal graph is unavailable"))?
-                .parameter_arrival(input)?;
+        for binding in self
+            .revision
+            .scalar_automation
+            .as_deref()
+            .unwrap_or_default()
+        {
+            let delay = binding.arrival_frames;
             if delay == 0 {
                 crate::stream_demand::visit_scalar_page_range(
-                    &binding.source,
+                    &binding.request.source,
                     window.arrangement_frame,
                     window.frames,
-                    visit,
+                    &mut *visit,
                 )?;
-                return Ok(window);
+                continue;
             }
             let (owner, lead) = match history {
                 ScalarOriginHistory::Current(owner) => (
@@ -446,7 +414,7 @@ impl SessionPlayback {
                 },
                 |_, frame, len| {
                     crate::stream_demand::visit_scalar_page_range(
-                        &binding.source,
+                        &binding.request.source,
                         frame,
                         len,
                         &mut *visit,
@@ -455,5 +423,55 @@ impl SessionPlayback {
             )?;
         }
         Ok(window)
+    }
+
+    /// Pages one streamed Session audio clip reads for `frames` frames from
+    /// `performance_frame` on its launch clock. Resident and inactive clips
+    /// demand nothing.
+    fn visit_session_audio_demand(
+        &self,
+        clip: ClipId,
+        launch_frame: u64,
+        performance_frame: u64,
+        frames: usize,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<(), Invalid> {
+        let clip = self
+            .revision
+            .session()
+            .audio_clip(clip)
+            .ok_or(Invalid("stream demand clip missing"))?;
+        if !clip.active {
+            return Ok(());
+        }
+        let PreparedAudioSource::Streamed(source) = clip.source() else {
+            return Ok(());
+        };
+        let Some(elapsed) = performance_frame.checked_sub(launch_frame) else {
+            return Ok(());
+        };
+        let Some(start) = clip.source_frame(elapsed) else {
+            return Ok(());
+        };
+        let count = frames.min(usize::try_from(clip.playback_end() - start).unwrap_or(usize::MAX));
+        crate::stream_demand::visit_page_range(source, start, count, &mut |extent| {
+            visit(extent.into())
+        })?;
+        // Later complete cycles demand the same pages. One suffix and one
+        // cycle prefix cover the union, independent of block length or cycle
+        // density.
+        if let Some(range) = clip.loop_range {
+            let rest = (frames - count)
+                .min(usize::try_from(range.end() - range.start()).unwrap_or(usize::MAX));
+            if rest > 0 {
+                crate::stream_demand::visit_page_range(
+                    source,
+                    range.start(),
+                    rest,
+                    &mut |extent| visit(extent.into()),
+                )?;
+            }
+        }
+        Ok(())
     }
 }

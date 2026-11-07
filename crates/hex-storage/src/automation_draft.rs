@@ -19,7 +19,9 @@
 //! checkpoints/tokens remain reader-owned, with no native footprint claim.
 //! Version 1 retains its original unknown-clock header for recovery. Version 2
 //! additionally retains an explicit configured capture clock; it does not infer
-//! that clock from the saved loop marker. Neither format proves live admission.
+//! that clock from the saved loop marker. Version3 adds raw VST3 targets to
+//! that clocked header, retaining their exact class in the embedded source.
+//! Historical1/2 reject the new target kind. No format proves live admission.
 use crate::{FileToken, StorageError, decode, encode, files, replacement};
 use hex_project::{AutomationValue, DeviceAutomationTarget, DeviceId, Project, TrackId};
 use serde::{Deserialize, Serialize};
@@ -34,6 +36,13 @@ use std::{
 const MAGIC: &[u8; 8] = b"HEXADFT\0";
 const VERSION: u32 = 1;
 const CLOCK_VERSION: u32 = 2;
+// Version3 adds raw VST3 target kind4 to the explicit-clock header. The exact
+// class remains in the integrity-checked embedded source; versions1/2 never
+// reinterpret this kind. Native/track writers retain their historical format.
+const VST3_CLOCK_VERSION: u32 = 3;
+
+mod target;
+use target::{metadata, resolve_target};
 const PREFIX_BYTES: usize = 32;
 const RECORD_BYTES: usize = 96;
 const PAYLOAD_BYTES: usize = 64;
@@ -46,7 +55,7 @@ mod take;
 pub use take::{
     AutomationSharedData, CompletedAutomationTake, MAX_PREVIEW_QUERIES, MAX_SCALAR_RANGE_FRAMES,
     MAX_SPANS_PER_STEP, PreparedAutomationTake, PreparedAutomationTakeDataLayout,
-    ProjectedAutomationSpan, ProjectedSpanCursor, SpanReadProgress, SpanReadState,
+    ProjectedAutomationSpan, ProjectedSpanCursor, SpanReadProgress, SpanReadState, TakeOpenError,
     automation_projection_fingerprint,
 };
 
@@ -165,7 +174,7 @@ impl fmt::Display for DraftError {
         write!(
             f,
             "automation draft at {}: {} ({} durable events)",
-            self.path.display(),
+            crate::text::verbatim(self.path.display()),
             self.source,
             self.progress.durable_events
         )
@@ -275,10 +284,19 @@ impl DraftWriter {
             validate_source(source)?;
             validate_provenance(provenance)?;
             let metadata = metadata(source, target, provenance)?;
+            if metadata.target_kind == 4 && capture_clock.is_none() {
+                return Err(StorageError::Invalid(
+                    "vst3 automation draft requires an explicit capture clock",
+                ));
+            }
             let (version, meta) = if let Some(clock) = capture_clock {
                 validate_capture_clock(source, provenance, clock)?;
                 (
-                    CLOCK_VERSION,
+                    if metadata.target_kind == 4 {
+                        VST3_CLOCK_VERSION
+                    } else {
+                        CLOCK_VERSION
+                    },
                     serde_json::to_vec(&ClockedMetadata {
                         metadata,
                         capture_clock: ClockMetadata::from(clock),
@@ -327,7 +345,9 @@ impl DraftWriter {
                 .open(&temporary.path)?;
             fs2::FileExt::try_lock_exclusive(&file)?;
             file.seek(SeekFrom::End(0))?;
-            fs::hard_link(&temporary.path, path)?;
+            // The open locked handle must stay bound to the published draft,
+            // so a non-atomic copy is not an acceptable fallback here.
+            crate::publication::publish_new_atomic(&temporary.path, path)?;
             published = true;
             finish(&temporary.path, path).map_err(|(operation, source)| {
                 StorageError::PublishedButNotDurable {
@@ -531,14 +551,22 @@ impl DraftReader {
             ));
         }
         let mut file = File::open(path)?;
-        fs2::FileExt::try_lock_shared(&file)?;
+        fs2::FileExt::try_lock_shared(&file).map_err(|error| {
+            if error.raw_os_error().is_some()
+                && error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+            {
+                StorageError::AutomationDraftBusy(error)
+            } else {
+                StorageError::Io(error)
+            }
+        })?;
         let mut prefix = [0; PREFIX_BYTES];
         file.read_exact(&mut prefix)?;
         if &prefix[..8] != MAGIC || prefix[12..16] != [0; 4] {
             return Err(StorageError::Invalid("invalid automation draft header"));
         }
         let version = u32_at(&prefix, 8);
-        if !matches!(version, VERSION | CLOCK_VERSION) {
+        if !matches!(version, VERSION | CLOCK_VERSION | VST3_CLOCK_VERSION) {
             return Err(StorageError::Invalid(
                 "unsupported automation draft version; preserve original file and open it with a compatible hex build",
             ));
@@ -586,7 +614,7 @@ impl DraftReader {
             (clocked.metadata, Some(clock))
         };
         validate_provenance(meta.provenance)?;
-        let target = resolve_target(&source, &meta)?;
+        let target = resolve_target(&source, &meta, version)?;
         // Keep the source file bytes untouched. Identity uses the owning codec's
         // canonical current representation after any explicitly supported
         // migration, so a later project schema need not strand an older draft.
@@ -862,69 +890,6 @@ fn validate_provenance(p: DraftProvenance) -> Result<(), StorageError> {
     }
     Ok(())
 }
-fn metadata(
-    source: &Project,
-    target: DraftTarget,
-    provenance: DraftProvenance,
-) -> Result<Metadata, StorageError> {
-    let (target_kind, owner, parameter) = match target {
-        DraftTarget::TrackGain { track } if source.track(track).is_some() => (0, track.value(), 0),
-        DraftTarget::Device { device, target } if source.device(device).is_some() => {
-            target
-                .validate()
-                .map_err(|_| StorageError::Invalid("invalid automation draft target"))?;
-            match target {
-                DeviceAutomationTarget::Parameter(p) => (1, device.value(), p.value()),
-                DeviceAutomationTarget::HostInputGain => (2, device.value(), 0),
-                DeviceAutomationTarget::HostOutputGain => (3, device.value(), 0),
-            }
-        }
-        _ => {
-            return Err(StorageError::Invalid(
-                "automation draft target is absent from source",
-            ));
-        }
-    };
-    Ok(Metadata {
-        target_kind,
-        owner,
-        parameter,
-        provenance,
-    })
-}
-fn resolve_target(source: &Project, meta: &Metadata) -> Result<DraftTarget, StorageError> {
-    let target = if meta.target_kind == 0 && meta.parameter == 0 {
-        source
-            .tracks()
-            .iter()
-            .find(|t| t.id().value() == meta.owner)
-            .map(|t| DraftTarget::TrackGain { track: t.id() })
-    } else {
-        let device = source
-            .tracks()
-            .iter()
-            .flat_map(|t| t.devices())
-            .chain(source.return_tracks().iter().flat_map(|t| t.devices()))
-            .chain(source.main_devices())
-            .chain(source.native_sources().iter().flat_map(|s| s.devices()))
-            .find(|d| d.id().value() == meta.owner);
-        let target = match (meta.target_kind, meta.parameter) {
-            (1, p) => hex_lattice_contract::ParameterId::new(p)
-                .ok()
-                .map(DeviceAutomationTarget::Parameter),
-            (2, 0) => Some(DeviceAutomationTarget::HostInputGain),
-            (3, 0) => Some(DeviceAutomationTarget::HostOutputGain),
-            _ => None,
-        };
-        device.zip(target).map(|(d, target)| DraftTarget::Device {
-            device: d.id(),
-            target,
-        })
-    };
-    target.ok_or(StorageError::Invalid(
-        "automation draft target is absent or invalid",
-    ))
-}
 fn validate_event(previous: Option<AppliedEvent>, event: AppliedEvent) -> Result<(), StorageError> {
     if event.sequence == 0 {
         return Err(StorageError::Invalid(
@@ -933,12 +898,12 @@ fn validate_event(previous: Option<AppliedEvent>, event: AppliedEvent) -> Result
     }
     AutomationValue::new(event.value.get())
         .map_err(|_| StorageError::Invalid("invalid automation draft value"))?;
-    if let Some(previous) = previous {
-        if event.sequence <= previous.sequence || !clock_follows(clock(previous), clock(event)) {
-            return Err(StorageError::Invalid(
-                "automation draft sequence or clocks are out of order",
-            ));
-        }
+    if let Some(previous) = previous
+        && (event.sequence <= previous.sequence || !clock_follows(clock(previous), clock(event)))
+    {
+        return Err(StorageError::Invalid(
+            "automation draft sequence or clocks are out of order",
+        ));
     }
     Ok(())
 }
@@ -958,12 +923,12 @@ fn validate_terminal(
     previous: Option<AppliedEvent>,
     terminal: DraftTerminal,
 ) -> Result<(), StorageError> {
-    if let (Some(previous), DraftTerminal::Finished(next)) = (previous, terminal) {
-        if !clock_follows(clock(previous), next) {
-            return Err(StorageError::Invalid(
-                "automation draft terminal clocks are out of order",
-            ));
-        }
+    if let (Some(previous), DraftTerminal::Finished(next)) = (previous, terminal)
+        && !clock_follows(clock(previous), next)
+    {
+        return Err(StorageError::Invalid(
+            "automation draft terminal clocks are out of order",
+        ));
     }
     Ok(())
 }

@@ -76,10 +76,10 @@ pub(super) fn render_body(
         .min(2);
     let lane_count = if mode == 0 { 1 } else { 2 };
     let lane = panel.selected_lane.min(lane_count - 1);
-    if lane != panel.selected_lane {
-        if let Some(panel) = view.device_panel.eq8_panels.get_mut(&device) {
-            panel.selected_lane = lane;
-        }
+    if lane != panel.selected_lane
+        && let Some(panel) = view.device_panel.eq8_panels.get_mut(&device)
+    {
+        panel.selected_lane = lane;
     }
     let bank = match mode {
         1 => 1 + lane,

@@ -207,7 +207,7 @@ fn device_chain_bottom_toggle_preserves_return_owner_and_short_chain_is_safe(
     .expect("focus return");
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    visual.simulate_resize(size(px(2100.0), px(760.0)));
+    visual.simulate_resize(size(px(2400.0), px(760.0)));
     visual.run_until_parked();
     let toggle = visual
         .debug_bounds("device-panel-bottom-toggle")
@@ -349,9 +349,19 @@ fn workspace_three_returns_device_menu_from_root_or_track_focus(cx: &mut TestApp
         });
         visual.update(|window, cx| {
             editor.read_with(cx, |v, _| {
-                // GPUI's existing tracked-parent mouse-down handler focuses
-                // root when this non-focusable add button is clicked.
-                assert!(v.focus.is_focused(window));
+                assert!(!v.focus.is_focused(window));
+                assert!(
+                    window
+                        .context_stack()
+                        .iter()
+                        .any(|context| context.contains("hex_device_picker"))
+                );
+                assert!(
+                    window
+                        .context_stack()
+                        .iter()
+                        .any(|context| context.contains("hex_text_input"))
+                );
             })
         });
         visual.simulate_keystrokes("tab");

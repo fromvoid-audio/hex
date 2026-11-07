@@ -14,6 +14,59 @@ use std::{
     sync::{Arc, atomic::Ordering},
 };
 
+/// Independent model of the host's static matrix ramp (owner:
+/// `hex_lattice::matrix_ramp`) for Utility's linear gain. A changed matrix
+/// across a compatible handoff ramps linearly from the old effective gain over
+/// 5 ms rounded up; frame k of a ramp applies elapsed k + 1 and the final frame
+/// applies the target exactly. An unchanged matrix continues its trajectory.
+#[derive(Clone, Copy)]
+struct GainRamp {
+    target: f32,
+    from: f32,
+    elapsed: u32,
+    total: u32,
+}
+impl GainRamp {
+    const TOTAL: u32 = 48_000_u32.div_ceil(200);
+    fn at(self, elapsed: u32) -> f32 {
+        let position = f64::from(elapsed) / f64::from(self.total);
+        let (from, to) = (f64::from(self.from), f64::from(self.target));
+        (from + (to - from) * position) as f32
+    }
+    fn current(self) -> f32 {
+        if self.elapsed < self.total {
+            self.at(self.elapsed)
+        } else {
+            self.target
+        }
+    }
+    fn handoff(self, target: f32) -> Self {
+        if target == self.target {
+            return self;
+        }
+        let from = self.current();
+        let total = if from == target { 0 } else { Self::TOTAL };
+        Self {
+            target,
+            from,
+            elapsed: 0,
+            total,
+        }
+    }
+    /// Gain for the next frame; the second value marks the exact final frame.
+    fn next(&mut self) -> (f32, bool) {
+        if self.elapsed >= self.total {
+            return (self.target, false);
+        }
+        self.elapsed += 1;
+        if self.elapsed < self.total {
+            (self.at(self.elapsed), false)
+        } else {
+            (self.target, true)
+        }
+    }
+}
+
 fn prepare(
     editor: &Editor,
     table: &Arc<SineTable>,
@@ -137,6 +190,13 @@ fn callback_comparison(on_return: bool) -> Result<(), Box<dyn Error>> {
     assert_eq!(actual, expected);
     assert!(actual.iter().flatten().any(|sample| sample.abs() > 1e-5));
     control.reclaim();
+    let mut ramp = GainRamp {
+        target: 1.0,
+        from: 1.0,
+        elapsed: 0,
+        total: 0,
+    };
+    let mut completed = 0;
     // None is an ordinary active parameter edit to author a different A again.
     // Copy has the same expected amplitude before/after: it must not change sound.
     for (index, (action, gain)) in [
@@ -206,8 +266,25 @@ fn callback_comparison(on_return: bool) -> Result<(), Box<dyn Error>> {
             control.status.position.load(Ordering::Acquire),
             u64::try_from((index + 2) * 128)?
         );
-        let factor = if on_return { (1.0 + gain) * 0.5 } else { gain };
+        // Only the effect path ramps; the return variant's dry track path
+        // stays at unity beside it.
+        let changed = gain != ramp.target;
+        ramp = ramp.handoff(gain);
+        assert_eq!(GainRamp::TOTAL, 240);
         for (frame, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+            let (current, last) = ramp.next();
+            if changed && frame == 0 {
+                assert_ne!(current, gain, "a changed gain must ramp at step={index}");
+            }
+            if last {
+                assert_eq!(current, gain, "the ramp lands exactly on its target");
+                completed += 1;
+            }
+            let factor = if on_return {
+                (1.0 + current) * 0.5
+            } else {
+                current
+            };
             for channel in 0..2 {
                 assert!(
                     (actual[channel] - expected[channel] * factor).abs() < 1e-6,
@@ -219,5 +296,8 @@ fn callback_comparison(on_return: bool) -> Result<(), Box<dyn Error>> {
         }
         control.reclaim();
     }
+    // Step 0's ramp completes inside step 1 (a copy keeps the trajectory),
+    // as does step 3's within step 4's handoff window only if uninterrupted.
+    assert!(completed >= 1, "at least one ramp must land on its target");
     Ok(())
 }
