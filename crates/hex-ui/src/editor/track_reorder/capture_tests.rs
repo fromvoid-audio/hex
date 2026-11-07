@@ -177,89 +177,123 @@ fn reorder_receipt_keeps_painted_gap_without_retaining_input(cx: &mut TestAppCon
         );
     });
 }
+#[derive(Clone, Copy, Debug)]
+enum Loss {
+    Button,
+    Focus,
+    Invalid,
+    Escape,
+    Generation,
+    Mode,
+    Window,
+}
+
 #[gpui::test]
-fn active_reorder_loss_cannot_commit_or_leak_late_up(cx: &mut TestAppContext) {
-    for loss in [
-        "button",
-        "focus",
-        "invalid",
-        "escape",
-        "generation",
-        "mode",
-        "window",
-    ] {
-        let cx = &mut cx.new_app();
-        let Fixture {
-            mut visual,
-            editor,
-            actions,
-            from,
-            to,
-            ..
-        } = open(cx, 4);
-        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
-        activate(&mut visual, from, to);
-        let outside = point(px(640.), px(10.));
-        match loss {
-            "button" => visual.simulate_mouse_move(outside, None, Modifiers::default()),
-            "escape" => visual.simulate_keystrokes("escape"),
-            "generation" => editor.update(&mut visual, |v, cx| {
-                v.project_generation += 1;
-                cx.notify();
-            }),
-            "mode" => editor.update(&mut visual, |v, cx| {
-                v.mode = super::super::EditorMode::Session;
-                cx.notify();
-            }),
-            "window" => visual.deactivate_window(),
-            "focus" => visual.update(|w, cx| {
-                editor.update(cx, |v, cx| v.search_browser(w, cx));
-                w.dispatch_input(
-                    gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
-                        position: to,
-                        button: MouseButton::Left,
-                        modifiers: Modifiers::default(),
-                        click_count: 1,
-                    }),
-                    cx,
-                );
-            }),
-            "invalid" => visual.update(|w, cx| {
-                w.dispatch_input(
-                    gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
-                        position: point(px(f32::NAN), px(f32::NAN)),
-                        pressed_button: Some(MouseButton::Left),
-                        modifiers: Modifiers::default(),
-                    }),
-                    cx,
-                );
-                w.dispatch_input(
-                    gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
-                        position: to,
-                        button: MouseButton::Left,
-                        modifiers: Modifiers::default(),
-                        click_count: 1,
-                    }),
-                    cx,
-                );
-            }),
-            _ => unreachable!(),
-        }
-        visual.run_until_parked();
-        if !matches!(loss, "focus" | "invalid") {
-            visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
-        }
-        visual.run_until_parked();
-        assert_eq!(actions.get(), 0, "loss={loss}");
-        assert!(visual.debug_bounds("track-insertion-line").is_none());
-        editor.read_with(&visual, |v, _| {
-            assert!(!v.track_reorder_active(), "loss={loss}");
-            assert!(!v.edit_pending(), "loss={loss}");
-            assert_eq!(v.worker_requests_pending, 0);
-            assert!(v.pending_requests.is_empty());
-            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
-        });
+fn active_reorder_button_loss_cannot_commit_or_leak_late_up(cx: &mut TestAppContext) {
+    assert_reorder_loss(cx, Loss::Button);
+}
+
+#[gpui::test]
+fn active_reorder_focus_loss_cannot_commit_or_leak_late_up(cx: &mut TestAppContext) {
+    assert_reorder_loss(cx, Loss::Focus);
+}
+
+#[gpui::test]
+fn active_reorder_invalid_input_loss_cannot_commit_or_leak_late_up(cx: &mut TestAppContext) {
+    assert_reorder_loss(cx, Loss::Invalid);
+}
+
+#[gpui::test]
+fn active_reorder_escape_loss_cannot_commit_or_leak_late_up(cx: &mut TestAppContext) {
+    assert_reorder_loss(cx, Loss::Escape);
+}
+
+#[gpui::test]
+fn active_reorder_generation_loss_cannot_commit_or_leak_late_up(cx: &mut TestAppContext) {
+    assert_reorder_loss(cx, Loss::Generation);
+}
+
+#[gpui::test]
+fn active_reorder_mode_loss_cannot_commit_or_leak_late_up(cx: &mut TestAppContext) {
+    assert_reorder_loss(cx, Loss::Mode);
+}
+
+#[gpui::test]
+fn active_reorder_window_loss_cannot_commit_or_leak_late_up(cx: &mut TestAppContext) {
+    assert_reorder_loss(cx, Loss::Window);
+}
+
+fn assert_reorder_loss(cx: &mut TestAppContext, loss: Loss) {
+    let cx = &mut cx.new_app();
+    let Fixture {
+        mut visual,
+        editor,
+        actions,
+        from,
+        to,
+        ..
+    } = open(cx, 4);
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    activate(&mut visual, from, to);
+    let outside = point(px(640.), px(10.));
+    match loss {
+        Loss::Button => visual.simulate_mouse_move(outside, None, Modifiers::default()),
+        Loss::Escape => visual.simulate_keystrokes("escape"),
+        Loss::Generation => editor.update(&mut visual, |v, cx| {
+            v.project_generation += 1;
+            cx.notify();
+        }),
+        Loss::Mode => editor.update(&mut visual, |v, cx| {
+            v.mode = super::super::EditorMode::Session;
+            cx.notify();
+        }),
+        Loss::Window => visual.deactivate_window(),
+        Loss::Focus => visual.update(|w, cx| {
+            editor.update(cx, |v, cx| v.search_browser(w, cx));
+            w.dispatch_input(
+                gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                    position: to,
+                    button: MouseButton::Left,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                }),
+                cx,
+            );
+        }),
+        Loss::Invalid => visual.update(|w, cx| {
+            w.dispatch_input(
+                gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                    position: point(px(f32::NAN), px(f32::NAN)),
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::default(),
+                }),
+                cx,
+            );
+            w.dispatch_input(
+                gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                    position: to,
+                    button: MouseButton::Left,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                }),
+                cx,
+            );
+        }),
     }
+    visual.run_until_parked();
+    if !matches!(loss, Loss::Focus | Loss::Invalid) {
+        visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
+    }
+    visual.run_until_parked();
+    assert_eq!(actions.get(), 0, "loss={loss:?}");
+    assert!(visual.debug_bounds("track-insertion-line").is_none());
+    editor.read_with(&visual, |v, _| {
+        assert!(!v.track_reorder_active(), "loss={loss:?}");
+        assert!(!v.edit_pending(), "loss={loss:?}");
+        assert_eq!(v.worker_requests_pending, 0);
+        assert!(v.pending_requests.is_empty());
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+    });
 }
 
 #[gpui::test]

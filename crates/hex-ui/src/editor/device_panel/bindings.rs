@@ -1,7 +1,9 @@
 //! Persistent host bindings shared by specialized and descriptor-driven panels.
 //! Session gestures, canonical edits and app lifecycle remain with their owners.
+use super::super::native_automation_recording::automation_target;
 use super::gesture_adapter::{
-    NumericGestureLease, dispatch_bound_numeric_gesture, owns_numeric_gesture,
+    NumericGestureLease, dispatch_bound_numeric_gesture, owns_native_automation,
+    owns_numeric_gesture,
 };
 use super::*;
 use std::{cell::Cell, rc::Rc};
@@ -29,22 +31,6 @@ pub(super) struct BindingPresentation {
     pub(super) text: ControlText,
     pub(super) policy: BindingPolicyFactory,
     pub(super) compact_toggle_width: f32,
-}
-
-// Translate view-only host control keys into neutral lane targets. The Session
-// adapter also normalizes legacy parameter-gesture keys before canonical edits;
-// reserved widget IDs never enter provider/model persistence.
-fn automation_target(
-    parameter: hex_lattice_contract::ParameterId,
-) -> hex_lattice_contract::DeviceAutomationTarget {
-    use hex_lattice_contract::DeviceAutomationTarget as Target;
-    if parameter == hex_engine::DEVICE_INPUT_GAIN.id {
-        Target::HostInputGain
-    } else if parameter == hex_engine::DEVICE_OUTPUT_GAIN.id {
-        Target::HostOutputGain
-    } else {
-        Target::Parameter(parameter)
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -102,11 +88,20 @@ impl CapturedBinding {
         if device.state().type_id() != self.identity.type_id {
             return false;
         }
-        if self.key.parameter == hex_engine::DEVICE_INPUT_GAIN.id {
-            return self.descriptor == hex_engine::DEVICE_INPUT_GAIN;
-        }
-        if self.key.parameter == hex_engine::DEVICE_OUTPUT_GAIN.id {
-            return self.descriptor == hex_engine::DEVICE_OUTPUT_GAIN;
+        // Reserved trims are owned by the host and are absent from the
+        // provider descriptor inventory.
+        let kind = automation_target(self.key.parameter);
+        if matches!(
+            kind,
+            hex_lattice_contract::DeviceAutomationTarget::HostInputGain
+                | hex_lattice_contract::DeviceAutomationTarget::HostOutputGain
+        ) {
+            return hex_engine::native_parameter_input_target(
+                &state.project,
+                self.key.device,
+                kind,
+            )
+            .is_ok();
         }
         if let Some((class, cached_state, cached_view)) =
             view.device_panel.views.get(&self.key.device)
@@ -201,7 +196,6 @@ pub(super) enum ControlPresentation {
     CompactDial,
     MicroDial,
     InlineValue,
-    DeviceMeters,
     MeterFader,
     ChoiceDial,
     CompactButton,
@@ -221,6 +215,24 @@ pub(crate) fn effective_parameter_value(
     key: ParameterKey,
     canonical_value: ParameterValue,
 ) -> ParameterValue {
+    parameter_display_override(view, key).unwrap_or(canonical_value)
+}
+
+/// The in-flight gesture value, else the admitted manual value awaiting its
+/// barrier. Bound controls and automation lanes share this display source.
+pub(crate) fn parameter_display_override(
+    view: &mut EditorView,
+    key: ParameterKey,
+) -> Option<ParameterValue> {
+    if let Some(value) = view
+        .native_automation_recorder
+        .value(GestureTarget::DeviceParameter {
+            device: key.device,
+            parameter: key.parameter,
+        })
+    {
+        return Some(value);
+    }
     let gesture_value = view
         .device_gesture
         .snapshot()
@@ -262,13 +274,7 @@ pub(crate) fn effective_parameter_value(
     {
         view.device_panel.pending_values.remove(&key);
     }
-    gesture_value.unwrap_or_else(|| {
-        view.device_panel
-            .pending_values
-            .get(&key)
-            .copied()
-            .unwrap_or(canonical_value)
-    })
+    gesture_value.or_else(|| view.device_panel.pending_values.get(&key).copied())
 }
 
 pub(super) fn render_parameter(
@@ -360,19 +366,19 @@ pub(super) fn render_parameter(
             if let ParameterValue::Float(value) = value {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
-                    if let ParameterValue::Float(canonical) = parameter.value {
-                        if let Ok(value) = control.accessibility_value(f64::from(canonical)) {
-                            control.set_accessibility_binding(
-                                gpui::AccessibilityBinding {
-                                    name: theme::text(descriptor.label),
-                                    revision,
-                                    value,
-                                    pending,
-                                    guard: guard.clone(),
-                                },
-                                cx,
-                            );
-                        }
+                    if let ParameterValue::Float(canonical) = parameter.value
+                        && let Ok(value) = control.accessibility_value(f64::from(canonical))
+                    {
+                        control.set_accessibility_binding(
+                            gpui::AccessibilityBinding {
+                                name: theme::text(descriptor.label),
+                                revision,
+                                value,
+                                pending,
+                                guard: guard.clone(),
+                            },
+                            cx,
+                        );
                     }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(tab_navigation, cx);
@@ -381,19 +387,19 @@ pub(super) fn render_parameter(
             } else {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
-                    if let ParameterValue::Float(canonical) = parameter.value {
-                        if let Ok(value) = control.accessibility_value(f64::from(canonical)) {
-                            control.set_accessibility_binding(
-                                gpui::AccessibilityBinding {
-                                    name: theme::text(descriptor.label),
-                                    revision,
-                                    value,
-                                    pending,
-                                    guard: guard.clone(),
-                                },
-                                cx,
-                            );
-                        }
+                    if let ParameterValue::Float(canonical) = parameter.value
+                        && let Ok(value) = control.accessibility_value(f64::from(canonical))
+                    {
+                        control.set_accessibility_binding(
+                            gpui::AccessibilityBinding {
+                                name: theme::text(descriptor.label),
+                                revision,
+                                value,
+                                pending,
+                                guard: guard.clone(),
+                            },
+                            cx,
+                        );
                     }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(tab_navigation, cx);
@@ -412,7 +418,6 @@ pub(super) fn render_parameter(
                     hex_widgets::INLINE_VALUE_WIDTH,
                     hex_widgets::INLINE_VALUE_HEIGHT,
                 ),
-                ControlPresentation::DeviceMeters => (10.0, DEVICE_FRAME_HEIGHT),
                 ControlPresentation::MeterFader => (60.0, 154.0),
                 _ => (136.0, 26.0),
             };
@@ -628,7 +633,6 @@ fn create_parameter_control(
                 ControlPresentation::CompactDial => NumericControlPresentation::CompactDial,
                 ControlPresentation::MicroDial => NumericControlPresentation::MicroDial,
                 ControlPresentation::InlineValue => NumericControlPresentation::InlineValue,
-                ControlPresentation::DeviceMeters => NumericControlPresentation::DeviceMeters,
                 ControlPresentation::MeterFader => NumericControlPresentation::MeterFader,
                 _ => NumericControlPresentation::HorizontalSlider,
             };
@@ -918,12 +922,15 @@ pub(super) fn cancel_control(
             device: key.device,
             parameter: key.parameter,
         };
+        let owns_native = owns_native_automation(view, target, lease);
         let owns = owns_numeric_gesture(view, target, lease);
         // Revoke before local cancellation can enqueue a subscription event.
         lease.set(None);
         delivery_fence.set(delivery_fence.get().wrapping_add(1).max(1));
         entity.update(cx, |control, cx| control.cancel(cx));
-        if owns {
+        if owns_native {
+            view.cancel_native_automation_touch();
+        } else if owns {
             let _ = view.cancel_device_gesture();
         }
     }

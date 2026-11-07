@@ -37,6 +37,7 @@ pub enum Error {
     MissingSymbol(&'static str),
     IncompatibleVersion { found: i32, minimum: i32 },
     ExistingMaster,
+    ExistingMasterWithIpc,
     LocalMasterAlreadyRegistered,
     InvalidFrequency,
     InvalidName,
@@ -62,8 +63,8 @@ impl core::fmt::Display for Error {
                     "MTS-ESP library version {found:#x} is older than {minimum:#x}"
                 )
             }
-            Self::ExistingMaster => {
-                formatter.write_str("another MTS-ESP master is already registered")
+            Self::ExistingMaster | Self::ExistingMasterWithIpc => {
+                formatter.write_str("MTS-ESP reports an existing master registration")
             }
             Self::LocalMasterAlreadyRegistered => {
                 formatter.write_str("this process already owns an MTS-ESP master")
@@ -188,23 +189,34 @@ impl Master {
     /// Load the fixed system library, refuse an existing master, and register
     /// this owner on the current control thread.
     pub fn register() -> Result<Self, Error> {
+        Self::acquire(false)
+    }
+
+    /// Register after the user explicitly requests replacing the shared registration.
+    /// If the library still reports a master with IPC enabled, reset shared
+    /// MTS state, including tuning tables, filters and the client count.
+    /// An external process that is still running can continue writing to the table.
+    pub fn recover() -> Result<Self, Error> {
+        Self::acquire(true)
+    }
+
+    fn acquire(recover: bool) -> Result<Self, Error> {
         #[cfg(target_os = "macos")]
         {
-            Self::register_path(std::path::Path::new(SYSTEM_LIBRARY_PATH))
+            Self::register_path(std::path::Path::new(SYSTEM_LIBRARY_PATH), recover)
         }
         #[cfg(not(target_os = "macos"))]
         {
+            let _ = recover;
             Err(Error::UnsupportedPlatform)
         }
     }
 
     #[cfg(any(target_os = "macos", test))]
-    fn register_path(path: &std::path::Path) -> Result<Self, Error> {
+    fn register_path(path: &std::path::Path, recover: bool) -> Result<Self, Error> {
         let gate = LocalGate::acquire()?;
         let api = abi::Api::load(path)?;
-        if api.has_master() {
-            return Err(Error::ExistingMaster);
-        }
+        api.check_registration(recover)?;
         api.register();
         Ok(Self {
             api,
@@ -283,7 +295,7 @@ mod tests {
     }
 
     impl Fixture {
-        fn build(initial_master: bool, version: i32, omit_table: bool) -> Self {
+        fn build(initial_master: bool, version: i32, omit_table: bool, ipc: Option<bool>) -> Self {
             let unique = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
             let timestamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -302,6 +314,7 @@ mod tests {
                 .replace('\\', "\\\\")
                 .replace('"', "\\\"");
             let initial = i32::from(initial_master);
+            let has_ipc = ipc.map_or(-1, i32::from);
             let omit_table = i32::from(omit_table);
             let code = format!(
                 r#"
@@ -322,6 +335,10 @@ mod tests {
                 }}
                 void MTS_DeregisterMaster(void) {{ record("deregister\n"); master = 0; }}
                 bool MTS_HasMaster(void) {{ return master != 0; }}
+                #if {has_ipc} >= 0
+                bool MTS_HasIPC(void) {{ return {has_ipc} != 0; }}
+                void MTS_Reinitialize(void) {{ record("reset\n"); master = 0; }}
+                #endif
                 int MTS_GetVersionNumber(void) {{ return {version}; }}
                 int MTS_GetNumClients(void) {{ return clients; }}
                 void MTS_TestSetClients(int value) {{ clients = value; }}
@@ -414,21 +431,21 @@ mod tests {
         let _guard = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let fixture = Fixture::build(false, MINIMUM_LIBRARY_VERSION, false);
+        let fixture = Fixture::build(false, MINIMUM_LIBRARY_VERSION, false, None);
         {
-            let master = Master::register_path(&fixture.library).unwrap();
+            let master = Master::register_path(&fixture.library, false).unwrap();
             assert_eq!(master.client_count().unwrap().get(), 3);
             assert_eq!(
-                Master::register_path(&fixture.library).err(),
+                Master::register_path(&fixture.library, false).err(),
                 Some(Error::LocalMasterAlreadyRegistered)
             );
             assert_eq!(fixture.calls(), "register:null\n");
         }
         assert_eq!(fixture.calls(), "register:null\nderegister\nunload\n");
 
-        let foreign = Fixture::build(true, MINIMUM_LIBRARY_VERSION, false);
+        let foreign = Fixture::build(true, MINIMUM_LIBRARY_VERSION, false, None);
         assert_eq!(
-            Master::register_path(&foreign.library).err(),
+            Master::register_path(&foreign.library, false).err(),
             Some(Error::ExistingMaster)
         );
         assert_eq!(foreign.calls(), "unload\n");
@@ -443,7 +460,7 @@ mod tests {
         let _guard = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let fixture = Fixture::build(false, MINIMUM_LIBRARY_VERSION, false);
+        let fixture = Fixture::build(false, MINIMUM_LIBRARY_VERSION, false, None);
         let barrier = std::sync::Arc::new(Barrier::new(3));
         let (sender, receiver) = mpsc::channel();
         let mut workers = Vec::new();
@@ -453,7 +470,7 @@ mod tests {
             let sender = sender.clone();
             workers.push(std::thread::spawn(move || {
                 barrier.wait();
-                let attempt = Master::register_path(&path);
+                let attempt = Master::register_path(&path, false);
                 let error = attempt.as_ref().err().copied();
                 sender.send(error).expect("send gate result");
                 barrier.wait();
@@ -480,12 +497,48 @@ mod tests {
     }
 
     #[test]
+    fn ipc_recovery_resets_only_a_reported_master_after_explicit_request() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let stale = Fixture::build(true, MINIMUM_LIBRARY_VERSION, false, Some(true));
+        assert_eq!(
+            Master::register_path(&stale.library, false).err(),
+            Some(Error::ExistingMasterWithIpc)
+        );
+        assert_eq!(stale.calls(), "unload\n");
+        let master = Master::register_path(&stale.library, true).unwrap();
+        assert_eq!(
+            Master::register_path(&stale.library, true).err(),
+            Some(Error::LocalMasterAlreadyRegistered)
+        );
+        drop(master);
+        assert_eq!(
+            stale.calls(),
+            "unload\nreset\nregister:null\nderegister\nunload\n"
+        );
+
+        let vacant = Fixture::build(false, MINIMUM_LIBRARY_VERSION, false, Some(true));
+        drop(Master::register_path(&vacant.library, true).unwrap());
+        assert_eq!(vacant.calls(), "register:null\nderegister\nunload\n");
+
+        for ipc in [None, Some(false)] {
+            let occupied = Fixture::build(true, MINIMUM_LIBRARY_VERSION, false, ipc);
+            assert_eq!(
+                Master::register_path(&occupied.library, true).err(),
+                Some(Error::ExistingMaster)
+            );
+            assert_eq!(occupied.calls(), "unload\n");
+        }
+    }
+
+    #[test]
     fn publication_is_validated_before_calls_and_covers_table_and_signed_metadata() {
         let _guard = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let fixture = Fixture::build(false, MINIMUM_LIBRARY_VERSION, false);
-        let master = Master::register_path(&fixture.library).unwrap();
+        let fixture = Fixture::build(false, MINIMUM_LIBRARY_VERSION, false, None);
+        let master = Master::register_path(&fixture.library, false).unwrap();
         let mut frequencies = test_frequencies();
         frequencies[127] = 12_000.0;
         let publication =
@@ -519,8 +572,8 @@ mod tests {
 
         let negative_start = ScaleMetadata::from_root(1.5, 7, 2, 3).unwrap();
         assert_eq!(negative_start.map_start_key, None);
-        let negative_fixture = Fixture::build(false, MINIMUM_LIBRARY_VERSION, false);
-        let master = Master::register_path(&negative_fixture.library).unwrap();
+        let negative_fixture = Fixture::build(false, MINIMUM_LIBRARY_VERSION, false, None);
+        let master = Master::register_path(&negative_fixture.library, false).unwrap();
         let publication =
             TuningPublication::new(test_frequencies(), "negative-root", negative_start).unwrap();
         master.publish(&publication);
@@ -533,16 +586,16 @@ mod tests {
         let _guard = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let missing = Fixture::build(false, MINIMUM_LIBRARY_VERSION, true);
+        let missing = Fixture::build(false, MINIMUM_LIBRARY_VERSION, true, None);
         assert_eq!(
-            Master::register_path(&missing.library).err(),
+            Master::register_path(&missing.library, false).err(),
             Some(Error::MissingSymbol("MTS_SetNoteTunings"))
         );
         assert_eq!(missing.calls(), "unload\n");
 
-        let old = Fixture::build(false, MINIMUM_LIBRARY_VERSION - 1, false);
+        let old = Fixture::build(false, MINIMUM_LIBRARY_VERSION - 1, false, None);
         assert_eq!(
-            Master::register_path(&old.library).err(),
+            Master::register_path(&old.library, false).err(),
             Some(Error::IncompatibleVersion {
                 found: MINIMUM_LIBRARY_VERSION - 1,
                 minimum: MINIMUM_LIBRARY_VERSION,
@@ -576,8 +629,8 @@ mod tests {
         let _guard = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let fixture = Fixture::build(false, MINIMUM_LIBRARY_VERSION, false);
-        let master = Master::register_path(&fixture.library).unwrap();
+        let fixture = Fixture::build(false, MINIMUM_LIBRARY_VERSION, false, None);
+        let master = Master::register_path(&fixture.library, false).unwrap();
         assert_eq!(master.client_count().unwrap().get(), 3);
         let library = unsafe { Library::new(&fixture.library).unwrap() };
         let set_clients: unsafe extern "C" fn(i32) = test_symbol(&library, b"MTS_TestSetClients\0");

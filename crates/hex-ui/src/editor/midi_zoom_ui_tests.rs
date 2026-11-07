@@ -4,6 +4,14 @@ use gpui::{ScrollDelta, ScrollWheelEvent, TestAppContext, point, px};
 use hex_project::{BeatTime, Command};
 use hex_session::service::Request;
 
+/// Cmd zooms time; a plain wheel scrolls (see `midi_wheel`).
+fn cmd() -> gpui::Modifiers {
+    gpui::Modifiers {
+        platform: true,
+        ..Default::default()
+    }
+}
+
 #[gpui::test]
 fn wheel_zoom_anchors_pointer_and_does_not_mutate_project(cx: &mut TestAppContext) {
     let (mut visual, editor, _environment, _clip) = fixture(cx);
@@ -13,6 +21,7 @@ fn wheel_zoom_anchors_pointer_and_does_not_mutate_project(cx: &mut TestAppContex
     visual.simulate_event(ScrollWheelEvent {
         position: at,
         delta: ScrollDelta::Pixels(point(px(0.0), px(80.0))),
+        modifiers: cmd(),
         ..Default::default()
     });
     visual.run_until_parked();
@@ -21,7 +30,7 @@ fn wheel_zoom_anchors_pointer_and_does_not_mutate_project(cx: &mut TestAppContex
             v.piano_beat_span.raw() < 4 * BeatTime::ONE.raw(),
             "real piano wheel must zoom"
         );
-        let anchor = v.piano_beat_start.raw() as f64 + 0.75 * v.piano_beat_span.raw() as f64;
+        let anchor = v.piano_beat_start as f64 + 0.75 * v.piano_beat_span.raw() as f64;
         assert!((anchor / BeatTime::ONE.raw() as f64 - 3.0).abs() < 0.01);
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
@@ -40,7 +49,7 @@ fn newly_selected_clip_fits_once_and_worker_ack_keeps_manual_zoom(cx: &mut TestA
     pump(&editor, &mut visual);
     let selected = editor.read_with(&visual, |v, _| {
         assert_ne!(v.selected_clip, Some(original));
-        assert_eq!(v.piano_beat_start, BeatTime::ZERO);
+        assert_eq!(v.piano_beat_start, 0);
         assert_eq!(
             v.piano_beat_span,
             BeatTime::from_quarters(32).unwrap(),
@@ -52,6 +61,7 @@ fn newly_selected_clip_fits_once_and_worker_ack_keeps_manual_zoom(cx: &mut TestA
     visual.simulate_event(ScrollWheelEvent {
         position: roll.center(),
         delta: ScrollDelta::Pixels(point(px(0.0), px(80.0))),
+        modifiers: cmd(),
         ..Default::default()
     });
     visual.run_until_parked();
@@ -112,6 +122,7 @@ fn wheel_accumulates_precise_motion_and_creation_hits_after_zoom(cx: &mut TestAp
         visual.simulate_event(ScrollWheelEvent {
             position: at(0.75),
             delta: ScrollDelta::Pixels(point(px(0.0), px(20.0))),
+            modifiers: cmd(),
             ..Default::default()
         });
         visual.run_until_parked();
@@ -122,13 +133,15 @@ fn wheel_accumulates_precise_motion_and_creation_hits_after_zoom(cx: &mut TestAp
     visual.simulate_event(ScrollWheelEvent {
         position: at(0.75),
         delta: ScrollDelta::Pixels(point(px(0.0), px(20.0))),
+        modifiers: cmd(),
         ..Default::default()
     });
     visual.run_until_parked();
     let viewport = editor.read_with(&visual, |v, _| (v.piano_beat_start, v.piano_beat_span));
     double_down(&mut visual, at(0.25), Modifiers::default());
-    visual.simulate_mouse_move(at(0.5), Some(MouseButton::Left), Modifiers::default());
-    visual.simulate_mouse_up(at(0.5), MouseButton::Left, Modifiers::default());
+    // Held cmd snaps the new note's end; it is free by default.
+    visual.simulate_mouse_move(at(0.5), Some(MouseButton::Left), Modifiers::command());
+    visual.simulate_mouse_up(at(0.5), MouseButton::Left, Modifiers::command());
     pump(&editor, &mut visual);
     let (note_center, after) = editor.read_with(&visual, |v, _| {
         assert_eq!((v.piano_beat_start, v.piano_beat_span), viewport);
@@ -142,7 +155,7 @@ fn wheel_accumulates_precise_motion_and_creation_hits_after_zoom(cx: &mut TestAp
         assert_eq!(notes[0].duration(), BeatTime::ONE);
         let middle = notes[0].start().raw() + notes[0].duration().raw() / 2;
         (
-            ((middle - viewport.0.raw()) as f64 / viewport.1.raw() as f64) as f32,
+            ((i128::from(middle) - viewport.0) as f64 / viewport.1.raw() as f64) as f32,
             state.project.snapshot(),
         )
     });
@@ -191,6 +204,7 @@ fn wheel_can_zoom_out_past_source_and_ack_keeps_view(cx: &mut TestAppContext) {
     visual.simulate_event(ScrollWheelEvent {
         position: roll.center(),
         delta: ScrollDelta::Pixels(point(px(0.0), px(-80.0))),
+        modifiers: cmd(),
         ..Default::default()
     });
     visual.run_until_parked();
@@ -243,6 +257,7 @@ fn piano_key_drag_zooms_pitch_and_preserves_note_editing(cx: &mut TestAppContext
     visual.simulate_event(ScrollWheelEvent {
         position: roll.center(),
         delta: ScrollDelta::Pixels(point(px(0.0), px(80.0))),
+        modifiers: cmd(),
         ..Default::default()
     });
     visual.run_until_parked();
@@ -282,7 +297,8 @@ fn piano_key_drag_zooms_pitch_and_preserves_note_editing(cx: &mut TestAppContext
             .midi_source(clip)
             .unwrap()
             .notes()[0];
-        let x = (note.start().raw() + note.duration().raw() / 2 - v.piano_beat_start.raw()) as f64
+        let x = (i128::from(note.start().raw() + note.duration().raw() / 2) - v.piano_beat_start)
+            as f64
             / v.piano_beat_span.raw() as f64;
         point(roll.origin.x + roll.size.width * x as f32, at.y)
     });
@@ -365,7 +381,7 @@ fn short_source_long_arrangement_notes_visibly_shrink_when_zooming_out(cx: &mut 
                 generation: v.project_generation,
                 revision: state.revision,
                 clip,
-                beat_start: v.piano_beat_start.raw(),
+                beat_start: v.piano_beat_start,
                 beat_span: v.piano_beat_span.raw(),
                 pitch_low: v.piano_pitch_low,
                 pitch_rows: v.piano_pitch_rows,
@@ -389,6 +405,7 @@ fn short_source_long_arrangement_notes_visibly_shrink_when_zooming_out(cx: &mut 
     visual.simulate_event(ScrollWheelEvent {
         position: roll.center(),
         delta: ScrollDelta::Pixels(point(px(0.0), px(-80.0))),
+        modifiers: cmd(),
         ..Default::default()
     });
     visual.run_until_parked();
@@ -473,12 +490,13 @@ fn option_wheel_zooms_pitch_under_pointer_and_preserves_time_and_history(cx: &mu
         visual.simulate_event(ScrollWheelEvent {
             position: roll.center(),
             delta: ScrollDelta::Pixels(point(px(0.0), px(80.0))),
+            modifiers: cmd(),
             ..Default::default()
         });
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
             assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), pitch_view);
-            assert!(v.piano_beat_span < before.3, "plain wheel still zooms time");
+            assert!(v.piano_beat_span < before.3, "cmd-wheel zooms time");
         });
     }
 }
@@ -503,6 +521,7 @@ fn option_wheel_accumulates_independently_clamps_and_respects_held_marquee(
             delta: ScrollDelta::Pixels(point(px(0.0), px(delta))),
             modifiers: Modifiers {
                 alt,
+                platform: !alt,
                 ..Default::default()
             },
             ..Default::default()

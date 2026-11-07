@@ -226,18 +226,16 @@ pub(super) fn palette(view: &EditorView, cx: &mut Context<EditorView>) -> Statef
                 if let Some((i, _)) = positions.iter().enumerate().min_by(|(_, a), (_, b)| {
                     ((a.0 - x).powi(2) + (a.1 - y).powi(2))
                         .total_cmp(&((b.0 - x).powi(2) + (b.1 - y).powi(2)))
-                }) {
-                    if let Some(scale) = choices.get(i) {
-                        if let Ok(next) = ProjectTuning::new(
-                            view.tuning.value.enabled(),
-                            *scale,
-                            view.tuning.value.audition(),
-                        ) {
-                            view.tuning_change(next, NumericEventPhase::Commit);
-                            view.refresh_tuning_variations(cx);
-                            cx.notify();
-                        }
-                    }
+                }) && let Some(scale) = choices.get(i)
+                    && let Ok(next) = ProjectTuning::new(
+                        view.tuning.value.enabled(),
+                        *scale,
+                        view.tuning.value.audition(),
+                    )
+                {
+                    view.tuning_change(next, NumericEventPhase::Commit);
+                    view.refresh_tuning_variations(cx);
+                    cx.notify();
                 }
             }),
         )

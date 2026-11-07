@@ -189,6 +189,56 @@ fn shutdown(control: &mut prepared::Control, callback: &mut prepared::Callback) 
     control.reclaim();
 }
 #[test]
+fn output_trim_clear_receipt_does_not_end_ramp_and_seek_discards_it() {
+    let (mut control, mut callback, target) =
+        fixture_with_target(false, DeviceAutomationTarget::HostOutputGain, false, |_| {});
+    let gain = HostGain::from_db(-6.0).unwrap();
+    control
+        .native_parameter_input
+        .begin(target, NativeTransientValue::HostOutputGain(gain))
+        .unwrap();
+    let mut pcm = [[0.0; 2]; 64];
+    for block in 0..4 {
+        let rendered = render(&mut callback, &mut pcm);
+        if block == 0 {
+            assert!(pcm[0][0] < 0.25 && pcm[0][0] > 0.249);
+        }
+        assert!(control.native_parameter_input.try_receipt().is_none());
+        assert!(write(&mut callback, &mut pcm, &rendered, 2));
+        if block == 0 {
+            assert!(matches!(
+                control.native_parameter_input.try_receipt(),
+                Some(Receipt::Applied { sequence: 1, .. })
+            ));
+        }
+    }
+    assert_eq!(pcm[63], [0.25 * gain.linear(), -0.5 * gain.linear()]);
+    control.native_parameter_input.release().unwrap();
+    let rendered = render(&mut callback, &mut pcm[..1]);
+    let first = pcm[0];
+    assert!(first[0] > 0.25 * gain.linear() && first[0] < 0.25);
+    assert!(control.native_parameter_input.try_receipt().is_none());
+    assert!(write(&mut callback, &mut pcm[..1], &rendered, 2));
+    assert!(matches!(
+        control.native_parameter_input.try_receipt(),
+        Some(Receipt::Finished { .. })
+    ));
+    let rendered = render(&mut callback, &mut pcm);
+    assert!(pcm[0][0] > first[0] && pcm[63][0] < 0.25);
+    assert!(write(&mut callback, &mut pcm, &rendered, 2));
+    control
+        .command(hex_engine::PlaybackCommand::Seek(1024))
+        .unwrap();
+    for _ in 0..4 {
+        let rendered = render(&mut callback, &mut pcm);
+        assert!(write(&mut callback, &mut pcm, &rendered, 2));
+    }
+    assert_eq!(pcm[63], [0.25, -0.5]);
+    assert!(control.native_parameter_input.try_receipt().is_none());
+    shutdown(&mut control, &mut callback);
+}
+
+#[test]
 fn native_input_receipt_waits_for_actual_delayed_pcm_and_clear_waits_for_sink() {
     let (mut control, mut callback, target) = fixture(true);
     control
@@ -353,6 +403,59 @@ fn native_input_reserves_cancel_under_full_normal_pressure_and_retires_each_cred
 }
 
 #[test]
+fn render_fault_aborts_a_racing_native_parameter_gesture() {
+    let (mut control, mut callback, target) = fixture(false);
+    control
+        .native_parameter_input
+        .begin(target, value(0.5))
+        .unwrap();
+    control
+        .status
+        .render_fault
+        .store(true, std::sync::atomic::Ordering::Release);
+    let mut source = [[0.0; 2]; 8];
+    let _ = render(&mut callback, &mut source);
+    assert!(matches!(
+        control.native_parameter_input.try_receipt(),
+        Some(Receipt::Superseded { .. })
+    ));
+    assert!(matches!(
+        control.native_parameter_input.try_receipt(),
+        Some(Receipt::Aborted {
+            reason: AbortReason::OutputFailed,
+            ..
+        })
+    ));
+    shutdown(&mut control, &mut callback);
+}
+
+#[test]
+fn device_error_aborts_a_queued_native_parameter_gesture() {
+    let (mut control, mut callback, target) = fixture(false);
+    control
+        .native_parameter_input
+        .begin(target, value(0.5))
+        .unwrap();
+    control
+        .status
+        .device_fault
+        .store(true, std::sync::atomic::Ordering::Release);
+    counted(|| callback.begin_block());
+    assert!(matches!(
+        control.native_parameter_input.try_receipt(),
+        Some(Receipt::Superseded { .. })
+    ));
+    assert!(matches!(
+        control.native_parameter_input.try_receipt(),
+        Some(Receipt::Aborted {
+            reason: AbortReason::OutputFailed,
+            ..
+        })
+    ));
+    shutdown(&mut control, &mut callback);
+}
+
+#[test]
 fn native_input_successful_release_observes_actual_restoration_and_failure_never_applies() {
     let (mut control, mut callback, target) = fixture(false);
     control
@@ -497,9 +600,15 @@ fn stopped_native_begin_release_aborts_once_and_releases_publication_admission()
     let (mut control, mut callback, mut target) = fixture(false);
     control.command(hex_engine::PlaybackCommand::Stop).unwrap();
     let mut source = [[0.0; 2]; 1];
-    let rendered = render(&mut callback, &mut source);
-    assert!(rendered.is_ok());
-    assert!(write(&mut callback, &mut source, &rendered, 2));
+    // A queued Stop renders its 128-frame fade before it stops (#4151).
+    for _ in 0..256 {
+        let rendered = render(&mut callback, &mut source);
+        assert!(rendered.is_ok());
+        assert!(write(&mut callback, &mut source, &rendered, 2));
+        if !control.status.playing.load(Acquire) {
+            break;
+        }
+    }
     assert!(!control.status.playing.load(Acquire));
     target.transport_epoch = control.status.transport_epoch.load(Acquire);
     control

@@ -1,6 +1,10 @@
 //! Real closed Utility construction reused by native handoff/pressure controls.
 use hex_project::{Command, Created, Editor};
 pub(super) fn project() -> (hex_project::Project, hex_project::TrackId) {
+    project_with_loop(8)
+}
+
+pub(super) fn project_with_loop(duration: u64) -> (hex_project::Project, hex_project::TrackId) {
     let mut editor = Editor::new(hex_project::Project::new(48_000).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
         .execute(Command::InsertTrackWithDevice {
@@ -29,10 +33,10 @@ pub(super) fn project() -> (hex_project::Project, hex_project::TrackId) {
             track,
             asset,
             start: 0,
-            duration: 8,
+            duration,
             source_offset: 0,
             source_length: 8,
-            looping: false,
+            looping: duration > 8,
         })
         .unwrap();
     let state = hex_engine::default_native_device_state(

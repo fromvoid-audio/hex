@@ -9,6 +9,21 @@
 //! # Does not own
 //! Does not construct devices, edit projects, perform DSP, own audio queues or access files. Local
 //! previews do not become authored state until the owner accepts a validated event.
+//!
+//! # Shared UI and standalone development
+//! `hex-widgets` is the current shared home for native controls and their local
+//! interaction policies. Hex uses these same controls; a standalone UI simulator
+//! can supply fixture values and handle their typed events without starting audio or
+//! project services. Rendering, sizing and interaction belong in shared UI owners;
+//! application owners remain responsible for validating and committing edits.
+//!
+//! The intended direction is to expose additional production views through similarly
+//! cohesive UI boundaries, with lightweight data and service hooks for the simulator.
+//! This extraction is incomplete: many editor views and their behavior still live in
+//! `hex-ui`, and existing sandbox fixtures do not all mount production views. Do not
+//! maintain separate lookalike implementations as substitutes for shared UI code.
+//! Keep dependencies and per-frame work bounded, and measure iteration and runtime
+//! performance instead of assuming that an extracted boundary is faster.
 mod action;
 pub use action::{
     ActionPressStyle, ROUND_ACTION_SIZE, action, action_surface, pressed_action_surface,
@@ -30,7 +45,10 @@ mod dial;
 mod discrete;
 mod focus_marker;
 mod frame;
-pub use device_meters::DeviceMeterReadout;
+pub use device_meters::{
+    DeviceMeterReadout, STEREO_PEAK_BAR_GAP, STEREO_PEAK_BAR_WIDTH, StereoPeakMeter,
+    stereo_peak_meter,
+};
 mod numeric;
 mod numeric_control;
 mod numeric_text;
@@ -68,23 +86,25 @@ pub use discrete::{
 };
 pub use frame::{
     DEVICE_BODY_INSET, DEVICE_FRAME_BORDER_WIDTH, DEVICE_FRAME_HEADER_GAP,
-    DEVICE_FRAME_HEADER_HEIGHT, DEVICE_FRAME_HEADER_PADDING, DEVICE_LAYOUT_GUTTER,
-    DEVICE_ROW_GUTTER, DEVICE_SECTION_INSET, DEVICE_SECTION_RADIUS, DeviceLayout,
-    DeviceSectionSurface, device_body, device_compact_row, device_compact_section,
+    DEVICE_FRAME_HEADER_HEIGHT, DEVICE_FRAME_HEADER_PADDING, DEVICE_FRAME_HEADER_WIDTH,
+    DEVICE_LAYOUT_GUTTER, DEVICE_ROW_GUTTER, DEVICE_SECTION_INSET, DEVICE_SECTION_RADIUS,
+    DeviceLayout, DeviceSectionSurface, device_body, device_compact_row, device_compact_section,
     device_dense_section, device_display, device_frame, device_grouped_row, device_header,
     device_layout, device_rail, device_section, device_split, device_windowed_body,
+    vertical_device_name,
 };
 pub use numeric::{NumericError, NumericScale, NumericSpec};
 pub use numeric_control::{
     COMPACT_DIAL_HEIGHT, COMPACT_DIAL_WIDTH, INLINE_VALUE_HEIGHT, INLINE_VALUE_WIDTH,
     NumericControl, NumericControlConfig, NumericControlEvent, NumericControlFinalValue,
-    NumericControlKind, NumericControlPresentation, NumericEscape, NumericEventPhase,
-    bind_numeric_control_keys,
+    NumericControlKind, NumericControlPresentation, NumericEditState, NumericEscape,
+    NumericEventPhase, NumericGestureId, bind_numeric_control_keys,
 };
 pub use response_graph::{
     ResponseGraph, ResponseGraphAnalyzerStyle, ResponseGraphAxes, ResponseGraphCreationHint,
-    ResponseGraphEvent, ResponseGraphModel, ResponseGraphNode, ResponseGraphPhase,
-    ResponseGraphScrollEvent, ResponseGraphScrollPhase, bind_response_graph_keys,
+    ResponseGraphEvent, ResponseGraphMarqueeEvent, ResponseGraphMarqueePhase, ResponseGraphModel,
+    ResponseGraphNode, ResponseGraphPhase, ResponseGraphScrollEvent, ResponseGraphScrollPhase,
+    bind_response_graph_keys,
 };
 pub use style::{
     ActionStyle, CONTROL_CORNER_RADIUS, ControlAvailability, ControlStyle, DEVICE_CORNER_RADIUS,
@@ -103,6 +123,9 @@ pub use text_input::{
     TextInputConfig, TextInputKind, TextLeft, TextPaste, TextRight, TextSelectAll, TextSelectLeft,
     TextSelectRight, bind_text_input_keys,
 };
+
+mod marquee;
+pub use marquee::{MARQUEE_DRAG_THRESHOLD, Marquee, MarqueeMode};
 
 mod level_meter;
 mod meter_clip;

@@ -3,13 +3,10 @@ use super::*;
 use crate::editor::{bind_editor_keys, test_environment::Environment};
 use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext, size};
 use hex_session::service::Service;
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Instant};
 
 fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(&mut *visual, |view, cx| {
             if view.tick(cx) {
