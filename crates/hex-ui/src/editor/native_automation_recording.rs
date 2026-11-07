@@ -40,6 +40,7 @@ enum Phase {
     Starting,
     Delivering,
     Sealing,
+    Orphaned,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -165,7 +166,7 @@ impl Touch {
             return None;
         }
         match self.phase {
-            Phase::Starting => None,
+            Phase::Starting | Phase::Orphaned => None,
             Phase::Delivering if !self.batch.is_empty() => Some((
                 Submission::Append,
                 Action::Append(Arc::from(self.batch.as_slice())),
@@ -591,12 +592,36 @@ impl EditorView {
         self.native_automation_recorder.touch = Some(touch);
     }
 
+    pub(super) fn native_automation_request_not_submitted(&mut self, request: &Request) {
+        let Request::NativeAutomationTake { request_id, .. } = request else {
+            return;
+        };
+        let Some(touch) = self
+            .native_automation_recorder
+            .touch
+            .as_mut()
+            .filter(|touch| touch.in_flight.is_some_and(|(id, _)| id == *request_id))
+        else {
+            return;
+        };
+        if matches!(touch.phase, Phase::Starting | Phase::Sealing) || touch.terminal.is_some() {
+            self.native_automation_recorder.touch = None;
+        } else {
+            // No worker terminal will arrive. Release the audio endpoint's
+            // real credit and preserve the draft prefix already in Session.
+            touch.phase = Phase::Orphaned;
+            touch.end = Some(End::Cancel);
+            touch.in_flight = None;
+            touch.batch.clear();
+        }
+    }
+
     pub(super) fn tick_native_automation_recording(&mut self) -> bool {
         let Some(mut touch) = self.native_automation_recorder.touch.take() else {
             return false;
         };
         let mut changed = false;
-        if touch.phase == Phase::Delivering {
+        if matches!(touch.phase, Phase::Delivering | Phase::Orphaned) {
             let client = self
                 .audio
                 .as_mut()
@@ -620,19 +645,29 @@ impl EditorView {
                 touch.drain(None);
             }
         }
-        if let Some((kind, action)) = touch.next_submission()
-            && let Some(id) = self.native_automation_recorder.request.checked_add(1)
-            && self.enqueue(Request::NativeAutomationTake {
-                request_id: id,
-                scope: touch.scope,
-                action,
-            })
-        {
-            self.native_automation_recorder.request = id;
-            touch.in_flight = Some((id, kind));
-            changed = true;
+        if touch.phase == Phase::Orphaned && touch.terminal.is_some() {
+            return true;
         }
+        let proposal = touch.next_submission();
+        let scope = touch.scope;
         self.native_automation_recorder.touch = Some(touch);
+        if let Some((kind, action)) = proposal
+            && let Some(id) = self.native_automation_recorder.request.checked_add(1)
+        {
+            if let Some(touch) = self.native_automation_recorder.touch.as_mut() {
+                touch.in_flight = Some((id, kind));
+            }
+            self.native_automation_recorder.request = id;
+            if self.enqueue(Request::NativeAutomationTake {
+                request_id: id,
+                scope,
+                action,
+            }) {
+                changed = true;
+            } else if let Some(touch) = self.native_automation_recorder.touch.as_mut() {
+                touch.in_flight = None;
+            }
+        }
         changed
     }
 }
