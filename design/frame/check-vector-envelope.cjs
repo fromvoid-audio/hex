@@ -57,7 +57,7 @@ for (const state of Object.keys(doc.states)) {
       state + ': point name must fit its monospace area');
     if (filterSelected && /initial|peak|decay-sustain/.test(state))
       assert(/%/.test(readout.value) && !/db|—/.test(readout.value), state + ': normalized filter point readout');
-    assert(/^(a|b|c|d|filter) \/ /.test(title.text), state + ': retain source identity while editing a point');
+    assert(/^(a|b|c|d|f) \/ /.test(title.text), state + ': retain source identity while editing a point');
     assert(readout.style.fontSize >= 9, state + ': keep exact values readable');
     pointStates++;
   }
@@ -116,6 +116,7 @@ for (const state of Object.keys(doc.states)) {
       state + ': loop-only guidance must disappear when looping is off');
   }
 }
+assert(!doc.elements.some(node => /^(algorithm-diagram|routing-choice)-(serial|paired|parallel)-node-[abcd]$/.test(node.id)), 'routing uses letters and paths instead of colored blocks');
 assert(doc.elements.findIndex(node => node.id === 'routing-popup') >
   doc.elements.findIndex(node => node.id === 'filter-envelope-amount'), 'routing popup paints above filter fields');
 const half = frame.layout(doc, project.viewport, 'filter-peak-half').filter(node => node.visible);
@@ -141,7 +142,7 @@ for (const value of slots.filter(node => /^macro-slots-4-value-/.test(node.id)))
   const knob = slots.find(node => node.id === value.id.replace('-value-', '-knob-'));
   assert(value.style.fontSize >= 9 && value.bounds.x >= knob.bounds.x + knob.bounds.width, 'macro values stay beside knobs');
 }
-for (const [state, expectedWidth] of [['default', 708], ['settings', 876], ['a-options', 876], ['a-harmonics', 972]]) {
+for (const [state, expectedWidth] of [['default', 640], ['settings', 808], ['a-options', 808], ['a-harmonics', 904]]) {
   const nodes = frame.layout(doc, project.viewport, state).filter(node => node.visible);
   const meter = nodes.find(node => node.id === 'output-meter');
   near(meter.bounds.x + meter.bounds.width, expectedWidth, state + ': content-sized device width');
@@ -153,6 +154,12 @@ for (const [state, expectedWidth] of [['default', 708], ['settings', 876], ['a-o
     assert(nodes.some(node => node.parentId === 'compact-pane' && node.label === 'close optional panel'));
     assert(doc.elements.findIndex(node => node.id === 'skin-compact-options') < doc.elements.findIndex(node => node.id === 'row-a'), 'host skin stays behind controls');
   }
+}
+const pointWidth = doc.elements.find(node => node.id === 'selected-level');
+assert('999ms/-35.55db'.length * pointWidth.style.fontSize * 0.6 + 2 * pointWidth.style.padding <= pointWidth.bounds.width, 'compact readout fits fine sustain and time');
+for (const id of ['cutoff', 'filter-envelope-amount']) {
+  const field = doc.elements.find(node => node.id === id);
+  assert('19.99 khz'.length * field.style.fontSize * 0.6 + 2 * field.style.padding <= field.bounds.width, 'frequency field fits its formatted range');
 }
 assert(pointStates >= 35 && loopStates >= 15);
 console.log(`${pointStates} point states and ${loopStates} loop states passed in ${((performance.now()-started)/1000).toFixed(2)} s`);
