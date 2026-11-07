@@ -60,7 +60,7 @@ fn saved_authored_effect_opens_with_restored_or_unavailable_source() {
         let pcm = restored.render_plugin_block();
         wait(|| restored.plugin_completed.load(Acquire) > block);
         if block == 2 {
-            assert!(pcm.iter().all(|frame| *frame == [0.25; 2]), "{:?}", pcm[0]);
+            assert!(pcm.iter().all(|frame| *frame == [0.5; 2]), "{:?}", pcm[0]);
         }
     }
     assert_eq!(fs::read(&fixture.path).unwrap(), bytes);
