@@ -72,7 +72,7 @@ impl OwnedShared<crate::Project> {
         previous: &Self,
         received: &mut dyn FnMut(
             hex_lattice_contract::ForeignProcessorBinding,
-        ) -> Option<std::num::NonZeroU64>,
+        ) -> crate::ForeignProgramFrontier,
     ) -> Result<(), crate::Invalid> {
         if self.parts().is_none() || previous.parts().is_none() {
             return Err(crate::Invalid(

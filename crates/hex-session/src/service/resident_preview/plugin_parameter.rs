@@ -541,6 +541,17 @@ mod tests {
             plugin_value: Some(PluginParameterValue::new(0.75).unwrap()),
         };
         let mut sink = MissingOutput::default();
+        assert_eq!(
+            sink.received_foreign_program_on_control(
+                hex_lattice_contract::ForeignProcessorBinding {
+                    root: 1,
+                    instance: device.value(),
+                    graph: 1,
+                    epoch: 1,
+                },
+            ),
+            hex_engine::ForeignProgramFrontier::Unknown
+        );
         let result = operation(
             &mut session,
             PluginGesturePreparation::Commit(draft),

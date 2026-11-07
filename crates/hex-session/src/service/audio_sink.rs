@@ -564,13 +564,14 @@ pub trait WorkerAudioSink: Send {
         Ok(None)
     }
     /// Actual original-worker pickup only, for bounded immutable program
-    /// retention. None conservatively retains history; never synthesize this
-    /// from a queued graph key or final Main publication.
+    /// retention. Unknown/Empty retain existing history; only an actual empty
+    /// worker receipt can qualify a first programme. Never synthesize this from
+    /// a queued graph key or final Main publication.
     fn received_foreign_program_on_control(
         &mut self,
         _binding: hex_lattice_contract::ForeignProcessorBinding,
-    ) -> Option<std::num::NonZeroU64> {
-        None
+    ) -> hex_engine::ForeignProgramFrontier {
+        hex_engine::ForeignProgramFrontier::Unknown
     }
 
     /// A host with no private offline capability must refuse foreign bounce
