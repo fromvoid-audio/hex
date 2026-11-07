@@ -196,7 +196,10 @@ mod tests {
             assert_eq!(program.calls.get(), 1);
             let request = worker.receive_request().unwrap().unwrap();
             assert!(request.authored);
-            assert_eq!(request.parameter_capacity, 0);
+            assert_eq!(
+                request.parameter_capacity,
+                super::super::MAX_PARAMETER_POINTS - request.block.parameters.as_slice().len()
+            );
             let mut packet = Vec::new();
             super::super::wire::write(&mut packet, &request.block).unwrap();
             assert_eq!(&packet[12..14], &[1, 1]);

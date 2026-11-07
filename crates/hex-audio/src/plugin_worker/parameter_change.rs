@@ -371,22 +371,22 @@ impl State {
         signal: &Signal,
         block: &mut Block,
         parameter_capacity: usize,
-    ) -> Result<(), Fault> {
+    ) -> Result<Option<ParameterPoint>, Fault> {
         if self.parameter_change.ordinal.is_some()
             || !signal.parameter_change_requested.load(Acquire)
         {
-            return Ok(());
+            return Ok(None);
         }
         let mut mailbox = match signal.capture.try_lock() {
             Ok(slot) => slot,
-            Err(TryLockError::WouldBlock) => return Ok(()),
+            Err(TryLockError::WouldBlock) => return Ok(None),
             Err(TryLockError::Poisoned(_)) => return Err(Fault::Protocol),
         };
         let slot = &mut mailbox.parameter_change;
         // Withdrawal may win after the worker's atomic observation and before
         // this lock. It must not become a source fault or a late mutation.
         if slot.phase != Phase::Queued || slot.idle {
-            return Ok(());
+            return Ok(None);
         }
         self.parameter_change.ordinal = Some(slot.ordinal);
         self.parameter_change.point = slot.point;
@@ -397,11 +397,11 @@ impl State {
         let Some(merged) = merge_parameter_input(&block.parameters, point, parameter_capacity)?
         else {
             self.parameter_change.result = Some(Terminal::Refused);
-            return Ok(());
+            return Ok(None);
         };
         block.parameters = merged;
         self.parameter_change.input = Some((block.sequence, block.first_frame));
-        Ok(())
+        Ok(Some(point))
     }
     pub(super) fn complete_parameter_change(&mut self, reply: &Block) -> Result<(), Fault> {
         if let Some((sequence, first_frame)) = self.parameter_change.input {

@@ -627,6 +627,26 @@ class NativeInstanceTests(unittest.TestCase):
                 self.terminal(session, 8)
                 self.assertEqual(self.observation()[10], 0)
 
+    def test_mixed_parameter_wire_rejects_invalid_provenance_before_dsp(self):
+        cases = [
+            (143, [(0, 1, 11, .5, 0), (0, 0, 7, .25, 3)]),
+            (143, [(0, 1, 11, .5, 0), (0, 1, 7, .25, 0)]),
+            (143, [(0, 1, 11, .5, 0), (1, 0, 11, .25, 0)]),
+            (143, [(1, 1, 11, .5, 0)]),
+            (83, [(0, 1, 7, .5, 0)]),
+        ]
+        for variant, points in cases:
+            with self.subTest(variant=variant, points=points):
+                session = self.session(variant=variant)
+                self.ready(session, controller=True)
+                header = struct.pack("<4sHHHH4x6Q", b"HXVB", 0x8002, 8, 0, len(points),
+                                     *BINDING, 0, 0)
+                payload = b"".join(struct.pack("<HHIdI", *point) for point in points)
+                session.socket.sendall(header + bytes(8 * 8) + payload)
+                self.error(session, 8)
+                self.terminal(session, 8)
+                self.assertEqual(self.observation()[10], 0)
+
     def terminal(self, session, expected, *, closed=True, unloaded=True, message=None):
         magic, body = message or session.message()
         self.assertEqual(magic, b"HXVITR01")

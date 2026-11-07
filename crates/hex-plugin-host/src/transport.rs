@@ -990,11 +990,7 @@ impl Callback {
                 }
                 stage.request = Some(InputRequest {
                     block: stage.state.input,
-                    parameter_capacity: if authored.is_some() {
-                        0
-                    } else {
-                        stage.state.parameter_capacity
-                    },
+                    parameter_capacity: stage.state.parameter_capacity,
                     authored: authored.is_some(),
                 });
             }
