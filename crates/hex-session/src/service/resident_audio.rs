@@ -2086,22 +2086,51 @@ impl Session {
     pub(super) fn command_resident_snapshot(
         &mut self,
         command: Command,
-        native_take: Option<hex_engine::NativeParameterInputTarget>,
         context: hex_engine::AudioSourceContext,
         sink: &mut dyn WorkerAudioSink,
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
     ) -> Result<(Created, Snapshot), SessionError> {
-        let command = Box::new(command);
-        let transition = match native_take {
-            Some(target) => Transition::NativeAutomationTake { command, target },
-            None => Transition::Command(command),
-        };
-        self.resident_transition(transition, context, sink, admission, current, None)?
-            .ok_or(SessionError::Invalid(
-                "resident command produced no transition",
-            ))
+        self.resident_transition(
+            Transition::Command(Box::new(command)),
+            context,
+            sink,
+            admission,
+            current,
+            None,
+        )?
+        .ok_or(SessionError::Invalid(
+            "resident command produced no transition",
+        ))
     }
+
+    /// Keep the same input only across adoption of its delivered take. A
+    /// replacement output must publish the exact target at its new revision.
+    pub(super) fn native_take_resident_snapshot(
+        &mut self,
+        command: Command,
+        target: hex_engine::NativeParameterInputTarget,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+    ) -> Result<(Created, Snapshot), SessionError> {
+        self.resident_transition(
+            Transition::NativeAutomationTake {
+                command: Box::new(command),
+                target,
+            },
+            context,
+            sink,
+            admission,
+            current,
+            None,
+        )?
+        .ok_or(SessionError::Invalid(
+            "native automation take produced no transition",
+        ))
+    }
+
     #[allow(clippy::too_many_arguments)] // Exact native capture plus the existing publication owners.
     pub(super) fn plugin_parameter_resident_snapshot(
         &mut self,

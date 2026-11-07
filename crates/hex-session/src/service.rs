@@ -4833,14 +4833,24 @@ fn run_worker(
                         .resident_audio()
                         .ok_or(SessionError::Invalid("native worker unavailable"))
                         .and_then(|sink| {
-                            session.command_resident_snapshot(
-                                command,
-                                adopted_native_draft.as_ref().map(|(_, target)| *target),
-                                context,
-                                sink,
-                                admission,
-                                resident_snapshot.as_ref(),
-                            )
+                            if let Some((_, target)) = adopted_native_draft.as_ref() {
+                                session.native_take_resident_snapshot(
+                                    command,
+                                    *target,
+                                    context,
+                                    sink,
+                                    admission,
+                                    resident_snapshot.as_ref(),
+                                )
+                            } else {
+                                session.command_resident_snapshot(
+                                    command,
+                                    context,
+                                    sink,
+                                    admission,
+                                    resident_snapshot.as_ref(),
+                                )
+                            }
                         });
                     match result {
                         Ok((new, snapshot)) => {
