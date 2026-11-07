@@ -23,16 +23,14 @@ fn target_class(
     device: DeviceId,
     target: DeviceAutomationTarget,
 ) -> Result<[u8; 16], StorageError> {
-    target
-        .validate()
-        .map_err(|_| StorageError::Invalid("invalid vst3 automation draft target"))?;
-    let state = source
+    source
         .device(device)
         .ok_or(StorageError::Invalid("vst3 draft device is absent"))?
-        .state();
-    hex_plugin_state::decode(state)
-        .map(|plugin| plugin.identity.class.bytes())
-        .map_err(|_| StorageError::Invalid("vst3 draft target requires a valid vst3 source"))
+        .automation_target_class(target)
+        .map_err(|error| StorageError::Invalid(error.0))?
+        .ok_or(StorageError::Invalid(
+            "vst3 draft target requires a valid vst3 source",
+        ))
 }
 
 pub(super) fn metadata(
