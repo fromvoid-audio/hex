@@ -163,7 +163,8 @@ impl Gesture {
         }
         // A target without a reading lane uses ordinary points. Cancel restores
         // its original effective value on the same worker before releasing UI
-        // custody. A reading target instead releases its authored hold.
+        // custody. Idle reading targets also restore their actual Begin value.
+        // A running reading target releases its authored hold.
         if !(live.reading && live.playing)
             && !live.discard
             && self.pending.is_none()

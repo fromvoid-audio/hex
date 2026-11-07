@@ -209,7 +209,7 @@ impl Plugins {
             // Revalidate capability on the actual original SDK source,
             // including after renewal. Only page zero and the target page
             // can be queried, independently of total inventory size.
-            validate_current_parameter(
+            let current_value = validate_current_parameter(
                 control,
                 binding,
                 origin,
@@ -237,6 +237,16 @@ impl Plugins {
             } else {
                 None
             };
+            let mut origin = origin;
+            if live
+                .as_ref()
+                .is_some_and(|live| live.reading && !live.playing)
+            {
+                // A list can predate playback. Cancel must restore the actual
+                // stopped worker value observed at Begin, including after a
+                // moving authored envelope changed it beneath that list.
+                origin.initial = current_value;
+            }
             let gesture = Gesture {
                 key: snapshot.key,
                 origin,
@@ -595,7 +605,7 @@ fn validate_current_parameter(
     origin: PluginParameterOrigin,
     steps: u32,
     reading: bool,
-) -> Result<(), Error> {
+) -> Result<PluginParameterValue, Error> {
     use hex_audio::plugin_worker::{NativeWorkerControllerProgress, ParameterPageQuery};
     let mut first = 0;
     let mut revision = 0;
@@ -643,7 +653,7 @@ fn validate_current_parameter(
                     "vst3 parameter metadata changed · refresh the list",
                 ));
             }
-            return Ok(());
+            return PluginParameterValue::new(parameter.normalized).map_err(refused);
         }
         first = origin.page_first;
         revision = page.revision;

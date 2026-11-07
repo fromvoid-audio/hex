@@ -55,7 +55,7 @@ impl PublicationControl {
                 self.native_custody && self.output_identity() == Some(expected.output_identity)
             })
             .filter(|_| binding.root == expected.output_identity)
-            .ok_or("native base capture requires the applied ordinary effect")?;
+            .ok_or("native base capture requires the current ordinary effect")?;
         let source = self
             .candidate_root
             .native_source_for_base_capture(binding, canonical, playing)?;
@@ -159,7 +159,8 @@ impl PublicationControl {
     /// While playing, an actual PCM quantum consumes it. While idle, the same
     /// serialized source flushes the point and acknowledges controller readback
     /// without advancing PCM. After revocation, admission observes its healthy
-    /// worker join and the exact stopped-input drain performs that SDK exchange. Validate current metadata/writability at the caller.
+    /// worker join and the exact stopped-input drain performs that SDK exchange.
+    /// Validate current metadata/writability at the caller.
     /// Processing progress below grants no canonical/state installation.
     pub fn begin_native_source_parameter_change_on_control(
         &mut self,
