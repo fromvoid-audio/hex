@@ -133,6 +133,7 @@ fn manual_read_reenable_global_and_stale_request_keep_points_and_one_undo() {
             Edit::ReadSelection {
                 device,
                 target,
+                vst3_class: None,
                 selection: Read::Authored,
             },
         ),

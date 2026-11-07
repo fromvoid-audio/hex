@@ -500,11 +500,7 @@ impl EditorView {
                 Action::Shape(target, AutomationInterpolation::Step),
             ));
         }
-        if self.device_automation_read_selection(target)
-            == Some(hex_project::AutomationReadSelection::Base)
-        {
-            actions.push(("re-enable automation", Action::Reenable(target)));
-        }
+        actions.extend(self.device_automation_read_action(target));
         actions.push(("clear automation", Action::Clear(target)));
         actions.push((
             "hide lane",

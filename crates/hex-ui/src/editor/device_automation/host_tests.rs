@@ -721,6 +721,7 @@ fn stale_reenable_keeps_pending_selection_until_its_terminal_then_restores_canon
         let edit = Edit::ReadSelection {
             device,
             target,
+            vst3_class: None,
             selection: Read::Authored,
         };
         view.automation_view.devices.read_pending = Some(super::read_selection::PendingRead {

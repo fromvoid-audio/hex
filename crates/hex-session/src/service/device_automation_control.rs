@@ -12,6 +12,7 @@ pub enum DeviceAutomationControlEdit {
     ReadSelection {
         device: hex_project::DeviceId,
         target: hex_lattice_contract::DeviceAutomationTarget,
+        vst3_class: Option<[u8; 16]>,
         selection: hex_project::AutomationReadSelection,
     },
     Reenable,
@@ -83,17 +84,15 @@ pub(super) fn command(
         DeviceAutomationControlEdit::ReadSelection {
             device,
             target,
+            vst3_class,
             selection,
         } => {
-            if !hex_engine::project_device_automation_target_supported(
-                session.project(),
-                device,
-                target,
-            ) || session
-                .project()
-                .device(device)
-                .and_then(|device| device.automation_target(target))
-                .is_none()
+            if !accepts_lane_target(session, device, target, vst3_class)
+                || session
+                    .project()
+                    .device(device)
+                    .and_then(|device| device.automation_target(target))
+                    .is_none()
             {
                 return Err("automation edit refused · target no longer available".into());
             }
