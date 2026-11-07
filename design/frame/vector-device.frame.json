@@ -5,18 +5,18 @@
   "archive": {
     "version": 1,
     "designId": "hex-vector-device",
-    "sourceRevisionId": "vector-device-r6",
-    "currentRevisionId": "vector-device-r6",
+    "sourceRevisionId": "vector-device-r7",
+    "currentRevisionId": "vector-device-r7",
     "revisions": [
       {
-        "revisionId": "vector-device-r6",
+        "revisionId": "vector-device-r7",
         "parentRevisionId": null,
-        "capturedAt": "2026-11-07T08:28:40.990Z",
+        "capturedAt": "2026-11-07T08:34:37.929Z",
         "document": {
           "version": 1,
           "id": "hex-vector-device",
           "name": "hex / vector",
-          "revisionId": "vector-device-r6",
+          "revisionId": "vector-device-r7",
           "width": 930,
           "height": 200,
           "background": "#242424",
@@ -715,36 +715,14 @@
               "text": "0.00 hz"
             },
             {
-              "id": "osc-a-keytrack-label",
-              "type": "text",
-              "parentId": "compact-content",
-              "bounds": {
-                "x": 60,
-                "y": 40,
-                "width": 18,
-                "height": 8
-              },
-              "style": {
-                "fill": "none",
-                "stroke": "none",
-                "color": "#a0a0a0",
-                "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 6.5,
-                "padding": 0,
-                "textAlign": "left",
-                "verticalAlign": "middle"
-              },
-              "text": "key"
-            },
-            {
               "id": "osc-a-keytrack",
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 80,
-                "y": 42,
-                "width": 37,
-                "height": 4
+                "x": 56.5,
+                "y": 12,
+                "width": 2.5,
+                "height": 31.75
               },
               "style": {
                 "fill": "#111111",
@@ -758,10 +736,10 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 81,
-                "y": 43,
-                "width": 35,
-                "height": 2
+                "x": 57,
+                "y": 13,
+                "width": 1.5,
+                "height": 29.75
               },
               "style": {
                 "fill": "#ca7481",
@@ -774,38 +752,16 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 115,
-                "y": 41,
-                "width": 2,
-                "height": 6
+                "x": 55.75,
+                "y": 12,
+                "width": 4,
+                "height": 2
               },
               "style": {
                 "fill": "#c4c4c4",
                 "stroke": "none",
                 "radius": 0.5
               }
-            },
-            {
-              "id": "osc-a-keytrack-value",
-              "type": "text",
-              "parentId": "compact-content",
-              "bounds": {
-                "x": 120,
-                "y": 40,
-                "width": 24,
-                "height": 8
-              },
-              "style": {
-                "fill": "none",
-                "stroke": "none",
-                "color": "#a0a0a0",
-                "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 6.5,
-                "padding": 0,
-                "textAlign": "right",
-                "verticalAlign": "middle"
-              },
-              "text": "100%"
             },
             {
               "id": "osc-a-level-knob",
@@ -1243,36 +1199,14 @@
               "text": "0.75 hz"
             },
             {
-              "id": "osc-b-keytrack-label",
-              "type": "text",
-              "parentId": "compact-content",
-              "bounds": {
-                "x": 60,
-                "y": 87.75,
-                "width": 18,
-                "height": 8
-              },
-              "style": {
-                "fill": "none",
-                "stroke": "none",
-                "color": "#a0a0a0",
-                "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 6.5,
-                "padding": 0,
-                "textAlign": "left",
-                "verticalAlign": "middle"
-              },
-              "text": "key"
-            },
-            {
               "id": "osc-b-keytrack",
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 80,
-                "y": 89.75,
-                "width": 37,
-                "height": 4
+                "x": 56.5,
+                "y": 59.75,
+                "width": 2.5,
+                "height": 31.75
               },
               "style": {
                 "fill": "#111111",
@@ -1286,10 +1220,10 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 81,
-                "y": 90.75,
-                "width": 35,
-                "height": 2
+                "x": 57,
+                "y": 60.75,
+                "width": 1.5,
+                "height": 29.75
               },
               "style": {
                 "fill": "#cfbc77",
@@ -1302,38 +1236,16 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 115,
-                "y": 88.75,
-                "width": 2,
-                "height": 6
+                "x": 55.75,
+                "y": 59.75,
+                "width": 4,
+                "height": 2
               },
               "style": {
                 "fill": "#c4c4c4",
                 "stroke": "none",
                 "radius": 0.5
               }
-            },
-            {
-              "id": "osc-b-keytrack-value",
-              "type": "text",
-              "parentId": "compact-content",
-              "bounds": {
-                "x": 120,
-                "y": 87.75,
-                "width": 24,
-                "height": 8
-              },
-              "style": {
-                "fill": "none",
-                "stroke": "none",
-                "color": "#a0a0a0",
-                "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 6.5,
-                "padding": 0,
-                "textAlign": "right",
-                "verticalAlign": "middle"
-              },
-              "text": "100%"
             },
             {
               "id": "osc-b-level-knob",
@@ -1771,36 +1683,14 @@
               "text": "0.00 hz"
             },
             {
-              "id": "osc-c-keytrack-label",
-              "type": "text",
-              "parentId": "compact-content",
-              "bounds": {
-                "x": 60,
-                "y": 135.5,
-                "width": 18,
-                "height": 8
-              },
-              "style": {
-                "fill": "none",
-                "stroke": "none",
-                "color": "#a0a0a0",
-                "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 6.5,
-                "padding": 0,
-                "textAlign": "left",
-                "verticalAlign": "middle"
-              },
-              "text": "key"
-            },
-            {
               "id": "osc-c-keytrack",
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 80,
-                "y": 137.5,
-                "width": 37,
-                "height": 4
+                "x": 56.5,
+                "y": 107.5,
+                "width": 2.5,
+                "height": 31.75
               },
               "style": {
                 "fill": "#111111",
@@ -1814,10 +1704,10 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 81,
-                "y": 138.5,
-                "width": 17.5,
-                "height": 2
+                "x": 57,
+                "y": 123.375,
+                "width": 1.5,
+                "height": 14.875
               },
               "style": {
                 "fill": "#80b9df",
@@ -1830,38 +1720,16 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 97.5,
-                "y": 136.5,
-                "width": 2,
-                "height": 6
+                "x": 55.75,
+                "y": 122.375,
+                "width": 4,
+                "height": 2
               },
               "style": {
                 "fill": "#c4c4c4",
                 "stroke": "none",
                 "radius": 0.5
               }
-            },
-            {
-              "id": "osc-c-keytrack-value",
-              "type": "text",
-              "parentId": "compact-content",
-              "bounds": {
-                "x": 120,
-                "y": 135.5,
-                "width": 24,
-                "height": 8
-              },
-              "style": {
-                "fill": "none",
-                "stroke": "none",
-                "color": "#a0a0a0",
-                "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 6.5,
-                "padding": 0,
-                "textAlign": "right",
-                "verticalAlign": "middle"
-              },
-              "text": "50%"
             },
             {
               "id": "osc-c-level-knob",
@@ -2299,36 +2167,14 @@
               "text": "0.00 hz"
             },
             {
-              "id": "osc-d-keytrack-label",
-              "type": "text",
-              "parentId": "compact-content",
-              "bounds": {
-                "x": 60,
-                "y": 183.25,
-                "width": 18,
-                "height": 8
-              },
-              "style": {
-                "fill": "none",
-                "stroke": "none",
-                "color": "#a0a0a0",
-                "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 6.5,
-                "padding": 0,
-                "textAlign": "left",
-                "verticalAlign": "middle"
-              },
-              "text": "key"
-            },
-            {
               "id": "osc-d-keytrack",
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 80,
-                "y": 185.25,
-                "width": 37,
-                "height": 4
+                "x": 56.5,
+                "y": 155.25,
+                "width": 2.5,
+                "height": 31.75
               },
               "style": {
                 "fill": "#111111",
@@ -2342,38 +2188,16 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 80,
-                "y": 184.25,
-                "width": 2,
-                "height": 6
+                "x": 55.75,
+                "y": 185,
+                "width": 4,
+                "height": 2
               },
               "style": {
                 "fill": "#c4c4c4",
                 "stroke": "none",
                 "radius": 0.5
               }
-            },
-            {
-              "id": "osc-d-keytrack-value",
-              "type": "text",
-              "parentId": "compact-content",
-              "bounds": {
-                "x": 120,
-                "y": 183.25,
-                "width": 24,
-                "height": 8
-              },
-              "style": {
-                "fill": "none",
-                "stroke": "none",
-                "color": "#a0a0a0",
-                "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 6.5,
-                "padding": 0,
-                "textAlign": "right",
-                "verticalAlign": "middle"
-              },
-              "text": "0%"
             },
             {
               "id": "osc-d-level-knob",
@@ -129594,7 +129418,8 @@
           },
           "designNotes": {
             "scope": "Compact Hex Vector at the global 200-pixel device height. General modulation belongs to the Hex host.",
-            "oscillators": "Four compact numbered oscillators with ratio, frequency offset, level/modulation depth and independent keytrack sliders. Keytrack examples are 100%, 100%, 50% and 0%."
+            "oscillators": "Four compact numbered oscillators with ratio, frequency offset, level/modulation depth and independent keytrack sliders. Keytrack examples are 100%, 100%, 50% and 0%.",
+            "keytrack": "Each oscillator keytrack slider is vertical, immediately beside the right edge of its numbered on/off button."
           },
           "assets": [
             {
