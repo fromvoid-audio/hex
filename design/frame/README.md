@@ -3,7 +3,7 @@
 ## Continue editing in Frame
 
 [hex-orbital.frame.json](hex-orbital.frame.json) is the current editable prototype,
-saved at r153. It includes the structured design, prototype actions, and orbital
+saved at r155. It includes the structured design, prototype actions, and orbital
 styleguide in one portable project.
 
 In Frame, choose **Designs → Import design**, select the file, and open the
@@ -20,7 +20,9 @@ below document earlier iterations.
 ## Vector device design
 
 [vector-device.frame.json](vector-device.frame.json) is the focused design page
-for Hex’s native Vector instrument. Open **hex / vector** from **Designs**, or
+for Hex’s native Vector instrument. Every device host uses a shared height of
+**200 pixels**, including Vector, Delay, and Adjust. The Vector page uses the
+same dimensions as its host-modulator and device assembly in the workstation. Open **hex / vector** from **Designs**, or
 import the file into another Frame session. Its left device rail, host modulator
 tray, selection border, meter, and nesting hint use the Hex concept’s visuals.
 
