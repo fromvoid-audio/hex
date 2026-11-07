@@ -12,8 +12,13 @@ impl AuthoredParameterProgram for TransportProgram<'_> {
         self.0.revision
     }
 
-    fn render_quantum(
+    fn contains_quantum_program(&self, key: std::num::NonZeroU64) -> bool {
+        self.0.contains_revision(key)
+    }
+
+    fn render_quantum_program(
         &self,
+        key: std::num::NonZeroU64,
         origins: &[Option<u64>],
         timing: &TimingChanges,
         output: &mut Parameters,
@@ -26,13 +31,21 @@ impl AuthoredParameterProgram for TransportProgram<'_> {
         let mut points = [ParameterPoint::default(); MAX_PARAMETER_POINTS];
         let len = self
             .0
-            .program
-            .render_quantum(origins, &cuts[..changes.len()], &mut points)
+            .render_revision(key, origins, &cuts[..changes.len()], &mut points)
             .map_err(|_| Fault::InvalidParameters)?;
         for &point in points.get(..len).ok_or(Fault::InvalidParameters)? {
             output.push(point)?;
         }
         Ok(())
+    }
+
+    fn render_quantum(
+        &self,
+        origins: &[Option<u64>],
+        timing: &TimingChanges,
+        output: &mut Parameters,
+    ) -> Result<(), Fault> {
+        self.render_quantum_program(self.0.revision, origins, timing, output)
     }
 }
 
@@ -186,5 +199,121 @@ mod tests {
             )
             .is_err()
         );
+    }
+}
+
+#[cfg(all(test, feature = "allocation-probe"))]
+mod retained_tests {
+    use super::*;
+    use hex_lattice::{ForeignAutomationProgram, PreparedForeignAutomation};
+    use hex_lattice_contract::ForeignProcessorBinding;
+    use hex_plugin_host::transport::{AuthoredSegment, Callback, SegmentTiming, channel};
+    use std::num::NonZeroU64;
+    struct Value(f64);
+    impl ForeignAutomationProgram for Value {
+        fn render_quantum(
+            &self,
+            origins: &[Option<u64>],
+            _: &[u16],
+            output: &mut [ParameterPoint],
+        ) -> Result<usize, hex_lattice_contract::DeviceContractError> {
+            output[0] = ParameterPoint {
+                id: 0,
+                frame: 0,
+                normalized: self.0,
+            };
+            output[1] = ParameterPoint {
+                id: 0,
+                frame: (origins.len() - 1) as u16,
+                normalized: self.0,
+            };
+            Ok(2)
+        }
+    }
+    fn stage(
+        callback: &mut Callback,
+        frames: usize,
+        start: u64,
+        program: &PreparedForeignAutomation,
+    ) {
+        let transport = TransportProgram(program.borrow());
+        let mut output = [[0.0; 2]; 8];
+        let measured = allocation_counter::measure(|| {
+            callback.begin_physical_callback(frames).unwrap();
+            callback
+                .stage_segment_with_authored_parameters(
+                    0,
+                    &[[0.0; 2]; 8][..frames],
+                    &[],
+                    &mut output[..frames],
+                    SegmentTiming {
+                        playing: None,
+                        at: |_| None,
+                    },
+                    AuthoredSegment {
+                        program: &transport,
+                        origin: &|offset| Some(start + offset as u64),
+                    },
+                )
+                .unwrap();
+            callback.finish(true).unwrap();
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    #[test]
+    fn borrowed_versions_finish_the_old_quantum_after_original_graph_owners_drop() {
+        let binding = ForeignProcessorBinding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 4,
+        };
+        let make = |key, value| {
+            PreparedForeignAutomation::new(binding, NonZeroU64::new(key).unwrap(), Value(value), 0)
+                .unwrap()
+        };
+        let (_control, mut callback, mut worker) = channel(binding, 8).unwrap();
+        let first = make(1, 0.25);
+        stage(&mut callback, 2, 0, &first);
+        let mut second = make(2, 0.5);
+        second.retain_previous_on_control(&first).unwrap();
+        drop(first);
+        stage(&mut callback, 3, 2, &second);
+        let mut third = make(3, 0.75);
+        third.retain_previous_on_control(&second).unwrap();
+        drop(second);
+        stage(&mut callback, 3, 5, &third);
+        for expected in [0.25, 0.75] {
+            let request = worker.receive_request().unwrap().unwrap();
+            assert!(request.authored);
+            assert_eq!(request.parameter_capacity, 62);
+            assert_eq!(
+                request.block.parameters.as_slice(),
+                &[
+                    ParameterPoint {
+                        id: 0,
+                        frame: 0,
+                        normalized: expected
+                    },
+                    ParameterPoint {
+                        id: 0,
+                        frame: 7,
+                        normalized: expected
+                    }
+                ]
+            );
+            worker.complete(request.block).unwrap();
+            if expected == 0.25 {
+                stage(&mut callback, 8, 8, &third);
+            }
+        }
     }
 }

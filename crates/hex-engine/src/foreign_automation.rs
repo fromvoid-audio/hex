@@ -1,6 +1,7 @@
 //! Control-prepared Arrangement curves for a foreign PCM parameter queue.
 //! The host supplies exact-source SDK facts and proves the origin-run limit
 //! before admission. This owner neither loads a plug-in nor publishes a graph.
+pub(crate) mod storage;
 use crate::Invalid;
 use hex_lattice::{ForeignNote, ForeignProcessorNode, ForeignProcessors, NativeInstrumentClock};
 use hex_lattice_contract::{DeviceAutomationTarget, ForeignParameterPoint};
@@ -130,11 +131,7 @@ impl BoundProgram {
     }
 
     pub fn borrow(&self) -> hex_lattice::ForeignAutomation<'_> {
-        hex_lattice::ForeignAutomation {
-            binding: self.binding,
-            revision: self.revision,
-            program: &self.program,
-        }
+        hex_lattice::ForeignAutomation::new(self.binding, self.revision, &self.program)
     }
 }
 

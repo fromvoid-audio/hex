@@ -628,14 +628,7 @@ impl ChainCustody {
             l.vec(points)?;
             l.vec(value.automation.touch_storage())?;
             if let Some(program) = value.automation.foreign() {
-                let owner = program.storage_owner();
-                l.shared(
-                    owner,
-                    Some((program.storage_bytes(), 0)),
-                    Owner::exclusive(owner),
-                    handle()?,
-                    None,
-                )?;
+                crate::foreign_automation::storage::declare(program, l)?;
             }
             let state = value
                 .configuration
