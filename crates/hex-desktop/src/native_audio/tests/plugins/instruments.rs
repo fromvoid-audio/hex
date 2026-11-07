@@ -181,6 +181,150 @@ fn render_completed_block(harness: &ResidentHarness) -> [hex_engine::Frame; 256]
     frames
 }
 
+fn verify_saved_instrument_automation(
+    harness: &mut ResidentHarness,
+    project: &hex_project::Project,
+    device: hex_project::DeviceId,
+    parameter_name: &str,
+) {
+    use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue, Editor};
+    use hex_session::service::PluginParameterQuery;
+
+    let context = harness.submitted.unwrap().1.context;
+    let output = harness
+        .audio
+        .as_ref()
+        .unwrap()
+        .control
+        .output_identity()
+        .unwrap();
+    harness.run(Request::QueryPluginParameters(PluginParameterQuery {
+        context,
+        device,
+        output_identity: output,
+        request_id: 1,
+    }));
+    let rows = harness.next().plugin_parameters.unwrap().rows.unwrap();
+    let parameter = rows
+        .iter()
+        .find(|row| row.editable && row.name.eq_ignore_ascii_case(parameter_name))
+        .unwrap_or_else(|| {
+            panic!(
+                "editable parameter {parameter_name:?} missing. Volume and output candidates: {:?}",
+                rows.iter()
+                    .filter(|row| {
+                        let name = row.name.to_ascii_lowercase();
+                        name.contains("vol") || name.contains("out")
+                    })
+                    .map(|row| (&row.name, row.id, row.editable))
+                    .collect::<Vec<_>>()
+            )
+        });
+    let target = hex_project::DeviceAutomationTarget::Vst3 {
+        parameter: parameter.id,
+    };
+    let points = [
+        (BeatTime::ZERO, 0.0),
+        (BeatTime::from_ratio(1, 8).unwrap(), 0.8),
+        (BeatTime::from_ratio(1, 4).unwrap(), 0.0),
+    ]
+    .map(|(beat, normalized)| AutomationPoint {
+        beat,
+        value: AutomationValue::new(normalized).unwrap(),
+        outgoing: AutomationInterpolation::Step,
+    })
+    .to_vec();
+    let mut editor = Editor::new(project.clone(), 8).unwrap();
+    editor
+        .execute(Command::ReplaceDeviceAutomationTarget {
+            device,
+            target,
+            points: points.clone(),
+        })
+        .unwrap();
+    let files = Files::new();
+    let path = files.0.join("instrument-automation.hex");
+    hex_storage::save_new(&path, editor.project()).unwrap();
+    let opened = harness.run(Request::Open(path));
+    assert!(
+        opened.error.is_none() && opened.project_replaced,
+        "{:?}",
+        opened.error
+    );
+    assert_eq!(
+        opened
+            .state
+            .project
+            .device(device)
+            .unwrap()
+            .automation_target(target)
+            .unwrap()
+            .points,
+        points
+    );
+    harness.release_relinquished_output();
+    harness.wait_fresh_output(output);
+    let (revision, _) = harness.applied(0);
+    let transport = |harness: &mut ResidentHarness, command| {
+        harness
+            .audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(command)
+            .unwrap();
+    };
+    let render_peak = |harness: &ResidentHarness| {
+        render_completed_block(harness)
+            .into_iter()
+            .flatten()
+            .map(f32::abs)
+            .fold(0.0, f32::max)
+    };
+    transport(harness, PlaybackCommand::Play);
+    let mut peaks = Vec::new();
+    for block in 0..35 {
+        if block == 17 {
+            transport(harness, PlaybackCommand::Pause);
+            render_peak(harness);
+            assert!(
+                !harness
+                    .audio
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .unwrap()
+                    .playing
+                    .load(Acquire)
+            );
+            transport(harness, PlaybackCommand::Play);
+        }
+        peaks.push(render_peak(harness));
+    }
+    let peak = |blocks: std::ops::Range<usize>| peaks[blocks].iter().copied().fold(0.0, f32::max);
+    let (before, during, after) = (peak(4..10), peak(15..20), peak(29..35));
+    println!(
+        "instrument automation parameter={} id={} before={before} during={during} after={after}",
+        parameter.name, parameter.id
+    );
+    assert!(
+        during > 0.01 && before < during * 0.05 && after < during * 0.05,
+        "saved output automation must mute the same held note before and after the step: {peaks:?}"
+    );
+    harness.run(Request::Edit(Command::SetLoopRegion {
+        start: 0,
+        end: 12_288,
+        enabled: true,
+    }));
+    harness.applied(revision);
+    let loop_peak = (0..40).map(|_| render_peak(harness)).fold(0.0, f32::max);
+    println!("instrument automation live loop peak={loop_peak}");
+    assert!(
+        loop_peak > 0.01,
+        "the edited loop must return to the audible step"
+    );
+}
+
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts and optional installed catalog"]
 fn second_vst3_instrument_sounds_during_the_same_playback() {
@@ -416,14 +560,17 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
     });
     let pitch = installed_pitch.unwrap_or(60);
     let rate = if installed.is_some() { 44_100 } else { 48_000 };
-    let mut harness = ResidentHarness::with_plugins_at_rate(
-        host(),
-        Some(EffectPresentation {
-            input_frames: 0,
-            output_frames: 512,
-        }),
-        rate,
-    );
+    let presentation = Some(EffectPresentation {
+        input_frames: 0,
+        output_frames: 512,
+    });
+    let automation_parameter = std::env::var("HEX_TEST_VST3_INSTRUMENT_AUTOMATION_PARAMETER").ok();
+    let mut harness = if automation_parameter.is_some() {
+        let catalog = PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap());
+        ResidentHarness::with_plugins_at_rate_and_catalog(host(), presentation, rate, catalog, 8192)
+    } else {
+        ResidentHarness::with_plugins_at_rate(host(), presentation, rate)
+    };
     assert!(harness.next().error.is_none());
     let (mut applied, _) = harness.applied(0);
     let add = harness.run(Request::Edit(Command::AddMidiTrack {
@@ -497,6 +644,15 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
     assert!(project_track.instrument().is_some());
     assert_eq!(accepted.state.project.sample_rate(), rate);
     (applied, _) = harness.applied(applied);
+    if let Some(parameter) = automation_parameter {
+        verify_saved_instrument_automation(
+            &mut harness,
+            &accepted.state.project,
+            project_track.instrument().unwrap().id(),
+            &parameter,
+        );
+        return;
+    }
     // Exercise the resident keyboard request on a newly inserted worker
     // before the authored transport has ever started.
     let keys = Arc::new(

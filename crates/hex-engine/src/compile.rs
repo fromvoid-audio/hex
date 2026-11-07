@@ -138,6 +138,7 @@ pub(crate) fn is_vst3_instrument(device: &hex_project::Device) -> bool {
 
 fn prepare_foreign_instrument(
     track: &hex_project::Track,
+    arrangement: &hex_project::Project,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     context: &hex_lattice::DevicePreparationContext<'_>,
 ) -> Result<Option<hex_lattice::PreparedRuntimeInstance>, Invalid> {
@@ -174,8 +175,21 @@ fn prepare_foreign_instrument(
             "vst3 instrument worker binding or processing role differs",
         ));
     }
+    let automation = crate::foreign_automation::candidate::prepare_device(
+        device,
+        identity,
+        registry,
+        facts,
+        arrangement.tempo_map(),
+        arrangement.loop_region(),
+    )
+    .map_err(|_| Invalid("authored vst3 instrument program or source could not be prepared"))?
+    .map_or_else(
+        hex_lattice::PreparedParameterAutomation::default,
+        hex_lattice::PreparedParameterAutomation::for_foreign,
+    );
     Ok(Some(hex_lattice::PreparedRuntimeInstance {
-        automation: Default::default(),
+        automation,
         meter: Default::default(),
         owner,
         device_id: device.id().value(),
@@ -545,7 +559,7 @@ fn compile_project_inner<'a>(
     // #2740 supplies the pitch-aware runtime. Refuse until then rather than
     // accepting a saved tuned project and silently playing equal temperament.
     crate::device_automation::validate_project_with_registry(snapshot, registry)?;
-    let (foreign_bytes, _) = crate::foreign_automation::candidate::quote(snapshot)
+    let (foreign_bytes, _) = crate::foreign_automation::candidate::quote_ordinary(snapshot)
         .map_err(|_| Invalid("authored vst3 project exceeds its preparation bounds"))?;
     if foreign_bytes > hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES {
         return Err(Invalid(
@@ -627,7 +641,8 @@ fn compile_project_inner<'a>(
         let instrument_config = source_config
             .filter(|_| has_receiver)
             .map(|prepared| &prepared.config);
-        let foreign_instrument = prepare_foreign_instrument(track, registry, &device_context)?;
+        let foreign_instrument =
+            prepare_foreign_instrument(track, snapshot, registry, &device_context)?;
         let instrument_latency = if let Some(node) = &foreign_instrument {
             node.algorithmic_latency_frames()
         } else if track.receives_source_audio() {

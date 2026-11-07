@@ -101,6 +101,7 @@ const TUID restore_controller_id={0x48,0x45,0x58,0x43,1,2,3,4,5,6,7,8,9,10,11,12
 // Original one-parameter SDK fixtures preserve the same opaque state shape.
 // Distinct variants exercise actual metadata and processing, not host guesses.
 static ParamID parameter_id(int variant) { return variant==80 || variant==89 || variant==92?0u:7u; }
+constexpr int authored_instrument_variant=143;
 constexpr ParamID drag_axis_id=11;
 static bool saturated_editor_drag(int variant) { return variant==87 || variant==131; }
 static int32 parameter_inventory_size() {
@@ -298,7 +299,7 @@ public:
             std::memcpy(info.title,name,sizeof(name));std::memcpy(info.shortTitle,name,sizeof(name));
             return kResultOk;
         }
-        if(fault==80 || fault==81 || fault==82 || fault==91 || fault==92) info.flags=ParameterInfo::kCanAutomate;
+        if(fault==80 || fault==81 || fault==82 || fault==91 || fault==92 || fault==authored_instrument_variant) info.flags=ParameterInfo::kCanAutomate;
         if(fault==91 || fault==92) {const char16_t unit[]=u"ratio";std::memcpy(info.units,unit,sizeof(unit));}
         if(fault==81) info.stepCount=3;
         if(fault==141 || (fault==142 && !edits_sent)) info.flags=ParameterInfo::kCanAutomate;
@@ -380,7 +381,7 @@ class ProcessingProcessor final : public Processor,public IAudioPresentationLate
     const int fault=next_fault;
     const bool multiple_outputs=fault>=128 && fault<=130;
     const bool silent_input=fault==120 || fault==136;
-    const bool midi_instrument=fault==115 || silent_input || fault==127 || multiple_outputs;
+    const bool midi_instrument=fault==115 || silent_input || fault==127 || multiple_outputs || fault==authored_instrument_variant;
     const int mode=midi_instrument?1:next_mode;
     bool initialized=false, arranged=false, setup=false, active=false;
     std::atomic<bool> processing{false};

@@ -1,33 +1,17 @@
-//! Canonical VST3 effect lanes for the closed Arrangement revision builder.
+//! Canonical VST3 lanes for Arrangement preparation.
 use super::{Knot, Lane, Program, QuantumProfile};
 use crate::AudioStorageError as Error;
-use hex_lattice::{
-    DevicePreparationContext, NativeDeviceRegistry, ProcessorChainOwner, ProcessorInstanceIdentity,
-};
+use hex_lattice::{DevicePreparationContext, NativeDeviceRegistry, ProcessorInstanceIdentity};
 use hex_lattice_contract::DeviceAutomationTarget;
 use hex_project::{Device, DeviceAutomation, Project};
 
-fn devices(project: &Project) -> impl Iterator<Item = (ProcessorChainOwner, &Device)> {
+fn effects(project: &Project) -> impl Iterator<Item = &Device> {
     project
         .tracks()
         .iter()
-        .flat_map(|track| {
-            track
-                .devices()
-                .iter()
-                .map(move |device| (ProcessorChainOwner::Track(track.id().value()), device))
-        })
-        .chain(project.return_tracks().iter().flat_map(|bus| {
-            bus.devices()
-                .iter()
-                .map(move |device| (ProcessorChainOwner::Return(bus.id().value()), device))
-        }))
-        .chain(
-            project
-                .main_devices()
-                .iter()
-                .map(|device| (ProcessorChainOwner::Main, device)),
-        )
+        .flat_map(|track| track.devices())
+        .chain(project.return_tracks().iter().flat_map(|bus| bus.devices()))
+        .chain(project.main_devices())
 }
 
 fn lanes(device: &Device) -> impl Iterator<Item = &DeviceAutomation> {
@@ -42,21 +26,39 @@ pub(crate) fn has_authored(device: &Device) -> bool {
 
 pub(crate) fn quote(project: &Project) -> Result<(usize, usize), Error> {
     if project
-        .tracks()
+        .native_sources()
         .iter()
-        .filter_map(|track| track.instrument())
-        .any(|device| lanes(device).next().is_some())
-        || project
-            .native_sources()
-            .iter()
-            .flat_map(|source| source.devices())
-            .any(|device| lanes(device).next().is_some())
+        .flat_map(|source| source.devices())
+        .any(has_authored)
     {
         return Err(Error::UnsupportedGraph);
     }
+    quote_devices(project, effects(project))
+}
+
+pub(crate) fn quote_ordinary(project: &Project) -> Result<(usize, usize), Error> {
+    quote_devices(project, effects(project).chain(instruments(project)))
+}
+
+pub(crate) fn quote_instruments(project: &Project) -> Result<usize, Error> {
+    quote_devices(project, instruments(project)).map(|(bytes, _)| bytes)
+}
+
+fn instruments(project: &Project) -> impl Iterator<Item = &Device> {
+    project
+        .native_sources()
+        .iter()
+        .filter(|source| source.receiver().is_some())
+        .map(|source| source.instrument())
+}
+
+fn quote_devices<'a>(
+    project: &Project,
+    devices: impl Iterator<Item = &'a Device>,
+) -> Result<(usize, usize), Error> {
     let mut rows = 0usize;
     let mut bytes = 0usize;
-    for (_, device) in devices(project).filter(|(_, device)| lanes(device).next().is_some()) {
+    for device in devices.filter(|device| has_authored(device)) {
         bytes = bytes
             .checked_add(std::mem::size_of::<Program>() + 3 * std::mem::size_of::<usize>())
             .ok_or(Error::Overflow)?;

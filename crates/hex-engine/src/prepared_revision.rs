@@ -1540,7 +1540,11 @@ impl PreparedRevision {
                 .checked_add(authored_midi::construction_bytes(project).ok()?)?
                 .checked_add(crate::PreparedSourceRouting::construction_bytes(project))
         })();
-        let candidate = bytes.ok_or(Invalid("device handoff metadata byte count overflow"))?;
+        let programs = crate::foreign_automation::candidate::quote_instruments(project)
+            .map_err(|_| Invalid("vst3 instrument automation reservation overflow"))?;
+        let candidate = bytes
+            .and_then(|bytes| bytes.checked_add(programs))
+            .ok_or(Invalid("device handoff metadata byte count overflow"))?;
         // Tuning continuation validates same_except_tuning before rebuilding predecessor
         // descriptors. It may coexist with the candidate; reserve that finite worst case even
         // when this generic preparation call does not know whether validation will be requested.
@@ -1580,6 +1584,15 @@ impl PreparedRevision {
                 }
                 for clip in &track.arrangement_midi_sources {
                     bytes = bytes.checked_add(clip.source.retained_control_metadata_bytes()?)?;
+                }
+            }
+            for track in &self.arrangement().tracks {
+                if let Some(program) = track
+                    .foreign_instrument
+                    .as_ref()
+                    .and_then(|instrument| instrument.automation.foreign())
+                {
+                    bytes = bytes.checked_add(program.storage_bytes())?;
                 }
             }
             bytes
