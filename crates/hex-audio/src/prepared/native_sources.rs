@@ -86,6 +86,8 @@ impl PublicationControl {
     /// before the worker request becomes visible. Failed reservation admits no
     /// point. Both returned handles retain exact terminal custody through late
     /// close. Drain the witness before another observation or publication.
+    /// Compensated pre-roll keeps this input queued until the accepted quantum
+    /// starts on a known Arrangement origin.
     pub fn begin_native_source_parameter_change_with_delivery_on_control(
         &mut self,
         source: AppliedAudioSource,
@@ -118,6 +120,9 @@ impl PublicationControl {
     /// Atomically reserve final Main delivery for a held target's Begin/Change
     /// or its exclusive Release. The release receipt carries the actual origin
     /// of the first successful SDK quantum with authored delivery restored.
+    /// Observed input remains queued during compensated pre-roll until that
+    /// quantum starts on a known Arrangement origin. Stop and queued withdrawal
+    /// retain their ordinary independent terminal paths.
     pub fn native_source_parameter_hold_with_delivery_on_control(
         &mut self,
         source: AppliedAudioSource,

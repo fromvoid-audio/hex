@@ -99,7 +99,7 @@ fn actual_parameter_reservation_precedes_publication_and_refusal_keeps_the_ordin
     let signal = Arc::clone(&owner.reaper.completed);
     let mut refused = None;
     let result: Result<(NativeWorkerParameterChange, ()), _> =
-        owner.parameter_change_with_before(0, 0.75, |request| {
+        owner.parameter_change_with_before(0, 0.75, false, |request| {
             assert!(!signal.parameter_change_requested.load(Acquire));
             refused = request.delivery_identity();
             Err("witness reservation refused")
@@ -107,7 +107,7 @@ fn actual_parameter_reservation_precedes_publication_and_refusal_keeps_the_ordin
     assert!(matches!(result, Err("witness reservation refused")));
     assert!(!signal.parameter_change_requested.load(Acquire));
     let (request, reserved) = owner
-        .parameter_change_with_before(0, 0.5, |request| {
+        .parameter_change_with_before(0, 0.5, false, |request| {
             assert!(!signal.parameter_change_requested.load(Acquire));
             Ok(request.delivery_identity().unwrap())
         })
@@ -125,6 +125,69 @@ fn actual_parameter_reservation_precedes_publication_and_refusal_keeps_the_ordin
     owner.revoke_on_control();
     let retired = owner.retire_on_control().unwrap();
     assert!(retired.failure.is_none() && retired.native.status.success());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn observed_preroll_input_remains_withdrawable_and_stop_drains_the_original_slot() {
+    let name = std::thread::current().name().unwrap().to_owned();
+    if fixture_child(92, &name) {
+        return;
+    }
+    let instance = original_instance();
+    let child = instance.child_id_on_control();
+    let (mut owner, mut endpoint) = NativeWorker::start_on_control(instance).unwrap();
+    let (request, ()) = owner
+        .parameter_change_with_before(0, 0.75, true, |_| Ok(()))
+        .unwrap();
+    for sequence in 0..3 {
+        callback(&owner, &mut endpoint, sequence, 1.0, &[]);
+    }
+    assert_eq!(
+        terminal_pending(&mut owner, &request),
+        NativeWorkerParameterProgress::Pending
+    );
+    assert!(
+        owner
+            .withdraw_parameter_change_on_control(&request)
+            .unwrap()
+    );
+    assert_eq!(
+        terminal(&mut owner, &request),
+        NativeWorkerParameterProgress::Withdrawn
+    );
+    let (stopped, ()) = owner
+        .parameter_change_with_before(0, 0.5, true, |_| Ok(()))
+        .unwrap();
+    for sequence in 3..5 {
+        callback(&owner, &mut endpoint, sequence, 1.0, &[]);
+    }
+    assert_eq!(
+        terminal_pending(&mut owner, &stopped),
+        NativeWorkerParameterProgress::Pending
+    );
+    owner.revoke_on_control();
+    assert_eq!(
+        terminal(&mut owner, &stopped),
+        NativeWorkerParameterProgress::Failed
+    );
+    assert_eq!(
+        drain(&mut owner, &stopped),
+        NativeWorkerParameterProgress::Withdrawn
+    );
+    let capture = begin(&mut owner);
+    let actual = complete(&mut owner, &capture);
+    assert_eq!(
+        &hex_plugin_state::decode(&actual)
+            .unwrap()
+            .component
+            .unwrap()[8..12],
+        &1.0_f32.to_le_bytes()
+    );
+    let source = owner.quiesce_on_control().unwrap();
+    assert_eq!(source.child_id_on_control(), child);
+    assert_eq!(source.completed_blocks(), 5);
+    assert!(source.retire_on_control().unwrap().status.success());
 }
 
 #[test]

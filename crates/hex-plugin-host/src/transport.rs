@@ -454,6 +454,10 @@ pub struct WorkerRequest {
     pub block: Block,
     pub parameter_capacity: usize,
     pub authored: bool,
+    /// The exact accepted quantum starts on a known compensated Arrangement
+    /// origin. The copied clock stays with the transport's in-flight request.
+    /// This observation grants no publication or parameter input authority.
+    pub manual_origin_available: bool,
 }
 
 /// The one exact host operation applied at offset zero in a successful SDK
@@ -1296,6 +1300,7 @@ impl Worker {
             block,
             parameter_capacity: request.parameter_capacity,
             authored: request.authored,
+            manual_origin_available: request.manual_origin.is_some(),
         }))
     }
     /// Publish exactly one matching reply after the isolated processor finishes.

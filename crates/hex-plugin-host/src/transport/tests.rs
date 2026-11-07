@@ -391,7 +391,9 @@ fn worker_enforces_single_inflight_and_exact_completion_before_next_receive() {
             .stage(&[[1.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
             .unwrap();
         callback.finish(true).unwrap();
-        let mut block = worker.receive().unwrap().unwrap();
+        let request = worker.receive_request().unwrap().unwrap();
+        assert!(!request.manual_origin_available);
+        let mut block = request.block;
         match case {
             0 => assert!(matches!(worker.receive(), Err(Fault::Protocol))),
             1 => {
@@ -1088,7 +1090,9 @@ fn manual_marker_requires_the_aligned_accepted_physical_callback() {
                     assert_eq!(accepted, None);
                 }
                 assert_eq!(callback.take_accepted_manual_parameter(), None);
-                if let Some(mut block) = worker.receive().unwrap() {
+                if let Some(request) = worker.receive_request().unwrap() {
+                    assert!(request.manual_origin_available);
+                    let mut block = request.block;
                     let marker = (block.sequence == 0).then_some(input);
                     if marker.is_some() {
                         block.pcm[..8].fill([3.0; 2]);
