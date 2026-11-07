@@ -16,6 +16,8 @@ widgets = (
     'self.arrangement(', 'self.ruler(', 'self.clip_view(',
     # Main's arrangement map paints cached geometry without text.
     'super::arrangement_map::view(',
+    # Meter insertion action normalizes its caption in the owning component.
+    'device_add::button(',
     # Query clear-slot composition contains a themed action and native input semantics.
     'self.clear_search_slot(',
     # Pinned browser collections compose themed heading, labels and icons.
