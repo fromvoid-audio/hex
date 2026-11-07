@@ -6,7 +6,7 @@ use hex_plugin_host::transport::ManualParameterOrigin;
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
-fn actual_manual_parameter_keeps_compensated_arrangement_origin_across_cuts() {
+fn actual_manual_parameter_waits_for_final_main_delivery_across_compensated_cuts() {
     const CHILD: &str = "HEX_ORDINARY_MANUAL_ORIGIN_DRIVER";
     if std::env::var_os(CHILD).is_none() {
         let name = std::thread::current().name().unwrap().to_owned();
@@ -40,11 +40,17 @@ fn actual_manual_parameter_keeps_compensated_arrangement_origin_across_cuts() {
     f.editor
         .execute(Command::InsertMainDevice {
             before: Some(device),
+            state: state.clone(),
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::InsertMainDevice {
+            before: None,
             state,
         })
         .unwrap();
     let playback = compile(&f, true);
-    assert_eq!(playback.main_output_latency_frames(), 11 + 16);
+    assert_eq!(playback.main_output_latency_frames(), 11 + 16 + 11);
     publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
     let root = f.control.native_candidate_root();
     f.control.command(PlaybackCommand::Play).unwrap();
@@ -57,7 +63,7 @@ fn actual_manual_parameter_keeps_compensated_arrangement_origin_across_cuts() {
 
     let expected = f.control.status.native_effect_source().unwrap();
     let until = Instant::now() + Duration::from_secs(3);
-    let _hold = loop {
+    let hold = loop {
         match f.control.native_source_parameter_hold_on_control(
             expected,
             f.binding,
@@ -74,47 +80,60 @@ fn actual_manual_parameter_keeps_compensated_arrangement_origin_across_cuts() {
         std::thread::yield_now();
     };
 
+    let target = loop {
+        match f
+            .control
+            .begin_native_source_parameter_delivery_on_control(expected, f.binding, &hold)
+        {
+            Ok(target) => break target,
+            Err(_) if Instant::now() < until => std::thread::yield_now(),
+            Err(error) => panic!("delivery observation: {error}"),
+        }
+    };
     physical_block::<5>(&mut f);
     physical_block::<3>(&mut f);
     replacement::wait_for_blocks(&root, f.binding, 3);
-    physical_block::<6>(&mut f);
-    let expected_pcm = physical_block::<5>(&mut f);
-    assert_eq!(&expected_pcm[..2], &[[0.25, -0.5]; 2]);
-    assert_eq!(&expected_pcm[2..], &[[0.75, -1.5]; 3]);
-    replacement::wait_for_blocks(&root, f.binding, 4);
-    let mut accepted = None;
-    allocation_free(|| {
-        f.data.owner_mut().unwrap().run(|callback, _| {
-            accepted = callback
-                .native_sources
-                .take_accepted_manual_parameter_for_test(f.binding);
-            assert_eq!(
-                callback
-                    .native_sources
-                    .take_accepted_manual_parameter_for_test(f.binding),
-                None
-            );
-        });
-    });
-    let accepted = accepted.unwrap();
-    assert_eq!(accepted.binding, f.binding);
-    assert_eq!(
-        (
-            accepted.sequence,
-            accepted.first_frame,
-            accepted.callback_offset
-        ),
-        (2, 16, 2)
+    assert!(
+        f.control
+            .try_native_source_parameter_delivery_on_control()
+            .is_none()
     );
-    assert_eq!(accepted.input.point.normalized, 0.75);
+    physical_block::<6>(&mut f);
+    assert_eq!(physical_block::<5>(&mut f), [[0.0; 2]; 5]);
+    replacement::wait_for_blocks(&root, f.binding, 4);
+    assert!(
+        f.control
+            .try_native_source_parameter_delivery_on_control()
+            .is_none()
+    );
+    let leading = physical_block::<5>(&mut f);
+    assert_eq!(&leading[..3], &[[0.0; 2]; 3]);
+    assert_eq!(&leading[3..], &[[0.25, -0.5]; 2]);
+    replacement::wait_for_blocks(&root, f.binding, 5);
+    assert_eq!(physical_block::<3>(&mut f), [[0.25, -0.5]; 3]);
+    assert!(
+        f.control
+            .try_native_source_parameter_delivery_on_control()
+            .is_none()
+    );
+    assert_eq!(physical_block::<1>(&mut f), [[0.75, -1.5]; 1]);
     assert_eq!(
-        accepted.origin,
-        Some(ManualParameterOrigin {
-            // Input clock has already traversed Overdrive's exact 11 frames.
-            arrangement_frame: 5,
-            performance_frame: 5,
-            loop_pass: 0,
+        f.control.try_native_source_parameter_delivery_on_control(),
+        Some(crate::foreign_parameter_delivery::Receipt::Delivered {
+            target,
+            normalized: 0.75,
+            origin: ManualParameterOrigin {
+                arrangement_frame: 5,
+                performance_frame: 5,
+                loop_pass: 0,
+            },
+            delivery_performance_frame: 43,
         })
+    );
+    assert!(
+        f.control
+            .try_native_source_parameter_delivery_on_control()
+            .is_none()
     );
     dispose(f);
 }

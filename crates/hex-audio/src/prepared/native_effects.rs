@@ -29,6 +29,7 @@ impl Callback {
         }
     }
     pub(crate) fn begin_native_effect_callback(&mut self, frames: usize) -> Result<(), Invalid> {
+        self.foreign_parameter_delivery.prepare();
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             if self.native_effects_revoked() && !self.status.playing.load(Relaxed) {
@@ -44,6 +45,33 @@ impl Callback {
             Ok(())
         }
     }
+    pub(crate) fn finish_foreign_parameter_delivery(&mut self, valid: bool) {
+        let Some(target) = self.foreign_parameter_delivery.target() else {
+            return;
+        };
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let marker = self
+            .native_sources
+            .take_accepted_manual_parameter(target.binding);
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let marker = None;
+        let active = self.active.as_ref().and_then(ActivePublication::current);
+        let (end, latency) = active.map_or((0, 0), |active| {
+            (
+                active.playback.performance_frame(),
+                active.playback.main_output_latency_frames(),
+            )
+        });
+        self.foreign_parameter_delivery.finish(
+            marker,
+            self.status.live_native_parameter_source(),
+            end,
+            latency,
+            valid,
+            self.output_transport.is_none(),
+        );
+    }
+
     pub(crate) fn finish_native_effect_callback(
         &mut self,
         accepted: bool,
