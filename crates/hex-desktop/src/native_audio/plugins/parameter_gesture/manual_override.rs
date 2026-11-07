@@ -187,19 +187,31 @@ impl Gesture {
         {
             live.scratch = None;
         }
-        // A target without a reading lane uses ordinary points. Cancel restores
-        // its original effective value on the same worker before releasing UI
-        // custody. Idle reading targets also restore their actual Begin value.
+        // Cancel explicitly restores a target without a reading lane, including
+        // a newly armed target still absent from the actual incoming programme.
+        // Keep that restoration inside its hold. Idle targets use ordinary input.
         // A running reading target releases its authored hold.
-        if !(live.discard || live.holds_program && live.playing)
+        if !(live.discard || live.reading && live.playing)
             && self.pending.is_none()
             && self.last != self.origin.initial
         {
-            match control.begin_native_source_parameter_change_on_control(
-                self.binding,
-                self.origin.parameter,
-                initial,
-            ) {
+            let restored = if let Some(hold) = live.hold.as_ref() {
+                control.native_source_parameter_hold_on_control(
+                    live.source,
+                    self.binding,
+                    NativeParameterHold::Change {
+                        hold,
+                        normalized: initial,
+                    },
+                )
+            } else {
+                control.begin_native_source_parameter_change_on_control(
+                    self.binding,
+                    self.origin.parameter,
+                    initial,
+                )
+            };
+            match restored {
                 Ok(token) => {
                     self.pending = Some(PendingPoint {
                         token,

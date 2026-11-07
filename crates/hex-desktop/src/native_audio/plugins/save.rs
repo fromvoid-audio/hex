@@ -220,7 +220,7 @@ impl Plugins {
         for mut entry in wanted {
             // All tokens have reached their actual terminals. A late source
             // close/replacement still refuses data before snapshot publication.
-            control.native_source_metadata(entry.binding)?;
+            entry.authored = edits::armed_selection(control, entry.binding)?;
             if let Some(selection) = entry.authored.as_ref() {
                 let host = self
                     .host

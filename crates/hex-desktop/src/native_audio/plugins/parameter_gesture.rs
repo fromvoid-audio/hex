@@ -23,6 +23,7 @@ use std::sync::atomic::Ordering::Acquire;
 use std::time::{Duration, Instant};
 
 mod manual_override;
+mod metadata;
 use manual_override::LiveOverride;
 
 struct PendingPoint {
@@ -68,7 +69,8 @@ fn admit<T>(
                 | "native parameter mailbox is busy"
                 | "native capture mailbox is busy"
                 | "native controller mailbox is busy"
-                | "native controller query is already pending",
+                | "native controller query is already pending"
+                | "native source is busy",
             ) if Instant::now() < deadline => edits::poll_control(control),
             result => return result.map_err(refused),
         }
@@ -197,10 +199,15 @@ impl Plugins {
             if !edits::original_state(control, binding, cancellation)
                 .map_err(refused)?
                 .processing_eq(input.canonical_state())
+                && control.native_source_approves_captured_state_on_control(
+                    binding,
+                    input.canonical_state(),
+                ) != Some(true)
             {
                 return Err(lost());
             }
             let steps = row.steps;
+            let automation_class = row.automation_class;
             let output = inventory.query.output_identity;
             if binding.root != inventory.binding.root
                 || binding.instance != inventory.binding.instance
@@ -211,26 +218,42 @@ impl Plugins {
             // Revalidate capability on the actual original SDK source,
             // including after renewal. Only page zero and the target page
             // can be queried, independently of total inventory size.
-            let current_value = validate_current_parameter(
+            let (current_value, _) = validate_current_parameter(
                 control,
                 binding,
                 origin,
                 steps,
                 input.reading_class().is_some(),
             )?;
-            let holds_program = self
+            let mut holds_program = self
                 .sources
                 .iter()
                 .find(|source| source.binding == binding)
                 .and_then(|source| source.authored.as_ref())
                 .is_some_and(|armed| {
-                    row.automation_class
-                        .is_some_and(|class| armed.contains(class, origin.parameter))
+                    automation_class.is_some_and(|class| armed.contains(class, origin.parameter))
                 });
             if input.is_instrument() && control.status.playing.load(Acquire) && !holds_program {
-                return Err(refused(
-                    "create an automation lane for this parameter before editing during playback",
-                ));
+                let class = input.isolated_class()
+                    .filter(|class| automation_class == Some(*class))
+                    .ok_or_else(|| refused("create an automation lane for this parameter before editing during playback"))?;
+                let selection = metadata::extend(
+                    self.host
+                        .as_ref()
+                        .ok_or_else(|| refused("qualified vst3 helper unavailable"))?,
+                    control,
+                    binding,
+                    class,
+                    origin,
+                    steps,
+                    cancellation,
+                )?;
+                self.sources
+                    .iter_mut()
+                    .find(|source| source.binding == binding)
+                    .ok_or_else(lost)?
+                    .authored = Some(selection);
+                holds_program = true;
             }
             let live = if let Some(class) = input.isolated_class() {
                 let playing = control.status.playing.load(Acquire);
@@ -238,9 +261,7 @@ impl Plugins {
                     .status
                     .native_parameter_source(playing)
                     .filter(|(source, _)| source.context == input.context())
-                    .filter(|_| {
-                        input.reading_class().is_none() || row.automation_class == Some(class)
-                    })
+                    .filter(|_| input.reading_class().is_none() || automation_class == Some(class))
                     .ok_or_else(|| refused("vst3 parameter source is not ready"))?;
                 Some(LiveOverride::new(
                     source,
@@ -632,7 +653,7 @@ fn validate_current_parameter(
     origin: PluginParameterOrigin,
     steps: u32,
     reading: bool,
-) -> Result<PluginParameterValue, Error> {
+) -> Result<(PluginParameterValue, u64), Error> {
     use hex_audio::plugin_worker::{NativeWorkerControllerProgress, ParameterPageQuery};
     let mut first = 0;
     let mut revision = 0;
@@ -680,7 +701,9 @@ fn validate_current_parameter(
                     "vst3 parameter metadata changed · refresh the list",
                 ));
             }
-            return PluginParameterValue::new(parameter.normalized).map_err(refused);
+            return PluginParameterValue::new(parameter.normalized)
+                .map(|value| (value, page.revision))
+                .map_err(refused);
         }
         first = origin.page_first;
         revision = page.revision;

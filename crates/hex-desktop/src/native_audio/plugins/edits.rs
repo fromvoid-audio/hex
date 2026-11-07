@@ -337,6 +337,21 @@ pub(super) fn original_state(
     }
 }
 
+/// Root's complete validated target set, including live metadata extensions.
+pub(super) fn armed_selection(
+    control: &mut PublicationControl,
+    binding: Binding,
+) -> Result<Option<AuthoredSelection>, String> {
+    let metadata = control.native_source_metadata(binding)?;
+    let class = metadata.selection().cid;
+    AuthoredSelection::from_targets(
+        metadata
+            .authored_base_values()
+            .map(|(id, _)| (id, Some(class))),
+    )
+    .map_err(str::to_owned)
+}
+
 /// Consume the private query through disposal even after cancellation.
 pub(super) fn canonical_bases(
     host: &Hosting,
