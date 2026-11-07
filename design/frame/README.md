@@ -3,7 +3,7 @@
 ## Continue editing in Frame
 
 [hex-orbital.frame.json](hex-orbital.frame.json) is the current editable prototype,
-saved at r156. It includes the structured design, prototype actions, and orbital
+saved at r157. It includes the structured design, prototype actions, and orbital
 styleguide in one portable project.
 
 In Frame, choose **Designs → Import design**, select the file, and open the
@@ -27,7 +27,8 @@ import the file into another Frame session. Its left device rail, host modulator
 tray, selection border, meter, and nesting hint use the Hex concept’s visuals.
 
 Four FM operators have compact numbered rows with ratio, frequency offset,
-level/modulation depth, and independent keytrack sliders. The keytrack examples
+level/modulation depth, and independent vertical keytrack sliders beside the
+numbered on/off buttons. The keytrack examples
 are 100%, 100%, 50%, and 0%. They share an amplitude-envelope editor and harmonic painter.
 The context panel covers oscillator response, filter, pitch, FM routing, and
 global voice/output settings. General modulation uses the host’s modulator tray.
