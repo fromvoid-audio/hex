@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 mod capture;
 mod manual_base;
+mod manual_origin;
 mod pressure;
 #[cfg(not(debug_assertions))]
 mod profile;

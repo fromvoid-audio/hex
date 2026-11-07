@@ -38,6 +38,20 @@ pub(crate) struct NativeEndpointBank {
     ordinary_requirements: bool,
 }
 impl NativeEndpointBank {
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn take_accepted_manual_parameter_for_test(
+        &mut self,
+        binding: Binding,
+    ) -> Option<hex_plugin_host::transport::AcceptedManualParameter> {
+        self.entries
+            .iter_mut()
+            .flatten()
+            .find(|entry| entry.0.binding == binding)?
+            .0
+            .callback
+            .as_mut()?
+            .take_accepted_manual_parameter_for_test()
+    }
     /// Headless control-side progress only. Compare each original installed
     /// endpoint's committed request prefix with its matching actual worker;
     /// source swaps, idle sources and new epochs have independent prefixes.
