@@ -228,10 +228,17 @@ fn chain_matching_recognizes_exact_retained_programs_without_relaxing_source_or_
                 _ => entry.device_id += 1,
             }
             let prepared = NativeRuntimeChain::new_prepared(vec![entry]);
-            if matches!(fault, 2 | 5) {
+            if fault == 2 {
                 assert!(matches!(
                     prepared,
                     Err(DeviceContractError::ForeignProcessingUnavailable)
+                ));
+                continue;
+            }
+            if fault == 5 {
+                assert!(matches!(
+                    prepared,
+                    Err(DeviceContractError::UnsupportedProcessingClass)
                 ));
                 continue;
             }
