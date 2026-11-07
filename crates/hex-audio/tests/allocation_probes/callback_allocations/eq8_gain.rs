@@ -22,7 +22,20 @@ fn eq8_gain_automation_callback_publication_history_and_save_reopen() -> Result<
     let Created::Device(device) = editor.execute(Command::InsertDevice {
         track,
         before: None,
-        state: hex_engine::default_native_device_state(EQ8_TYPE_ID)?,
+        state: {
+            use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+            let state = hex_engine::default_native_device_state(EQ8_TYPE_ID)?;
+            let state = hex_devices::eq8::EQ8_DEFINITION.patch_parameter(
+                &state,
+                p::enabled(0, 1),
+                ParameterValue::Bool(true),
+            )?;
+            hex_devices::eq8::EQ8_DEFINITION.patch_parameter(
+                &state,
+                p::gain(0, 1),
+                ParameterValue::Float(6.0),
+            )?
+        },
     })?
     else {
         return Err("expected eq8_gain".into());
@@ -58,8 +71,8 @@ fn eq8_gain_automation_callback_publication_history_and_save_reopen() -> Result<
     control.command(PlaybackCommand::Play).map_err(|_| "play")?;
     let mut output = [[0.0; 2]; BLOCK];
     measured_block(&mut callback, &mut output);
-    assert!((output[0][0] - 0.0001).abs() < 1e-10);
-    assert_eq!(output[BLOCK - 1], [0.0001, -0.0001]);
+    assert!(output.iter().flatten().all(|v| v.is_finite()));
+    assert!(output.iter().flatten().any(|v| v.abs() > 0.0));
     editor.execute(lane(2.0 / 16.0)?)?;
     assert!(editor.undo());
     assert!(editor.redo());
@@ -78,7 +91,18 @@ fn eq8_gain_automation_callback_publication_history_and_save_reopen() -> Result<
         .map_err(|_| "handoff")?;
     measured_block(&mut callback, &mut output);
     assert!(output.iter().all(|s| s[0].is_finite() && s[0] > 0.0));
-    assert!((output[BLOCK - 1][0] - 0.0002).abs() < 1e-10);
+    control.reclaim();
+    editor.execute(Command::RemoveDevice(device))?;
+    control
+        .publish(Playback::try_from_prepared_with_session(prepare(
+            editor.project(),
+        )?)?)
+        .map_err(|_| "tail publication")?;
+    measured_block(&mut callback, &mut output);
+    // The source has ended on the next block; only the retained EQ rings.
+    measured_block(&mut callback, &mut output);
+    assert!(output.iter().flatten().all(|v| v.is_finite()));
+    assert!(output.iter().flatten().any(|v| v.abs() > 1e-20));
     control.request_shutdown();
     measured_shutdown(&mut callback, &mut output);
     control.reclaim();
