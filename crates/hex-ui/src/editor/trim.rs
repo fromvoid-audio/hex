@@ -152,8 +152,17 @@ impl MidiEdgePreview {
             .map(BeatTime::from_raw)
     }
 }
+/// Option-dragging the right header edge repeat-extends; see [`TrimDrag::repeat`].
+fn midi_loop_kind(drag: &MidiTrimDrag) -> Option<LoopHandleKind> {
+    if drag.repeat.get() {
+        Some(LoopHandleKind::Outer)
+    } else {
+        drag.loop_kind
+    }
+}
+
 fn midi_edge_preview(drag: &MidiTrimDrag, beat: BeatTime) -> Option<MidiEdgePreview> {
-    if let Some(kind) = drag.loop_kind {
+    if let Some(kind) = midi_loop_kind(drag) {
         drag.clip
             .preview_loop_resize(kind.midi_operation(beat))
             .ok()
@@ -199,6 +208,11 @@ fn replace_midi_trim_preview(
 #[derive(Clone, Debug)]
 pub(super) struct TrimDrag {
     loop_kind: Option<LoopHandleKind>,
+    /// The right header edge can repeat-extend this clip with option.
+    repeat_available: bool,
+    /// Option was held when this gesture started: repeat-extend for its whole
+    /// duration, whatever modifiers change afterwards.
+    repeat: Rc<Cell<bool>>,
     canceled: Rc<Cell<bool>>,
     capture: Rc<Cell<Option<super::drag::PointerDown>>>,
     pub(super) stretch_modifier: Rc<Cell<bool>>,
@@ -227,6 +241,10 @@ pub(super) struct TrimDrag {
 #[derive(Clone, Debug)]
 pub(super) struct MidiTrimDrag {
     loop_kind: Option<LoopHandleKind>,
+    /// See [`TrimDrag::repeat_available`].
+    repeat_available: bool,
+    /// See [`TrimDrag::repeat`].
+    repeat: Rc<Cell<bool>>,
     canceled: Rc<Cell<bool>>,
     capture: Rc<Cell<Option<super::drag::PointerDown>>>,
     pub(super) project_generation: u64,
@@ -768,6 +786,9 @@ fn preview_for_pointer(
 /// outer loop corner. A plain trim cannot grow a warped clip past its retained
 /// audio, so routing it as a trim would refuse every extension.
 fn effective_loop_kind(drag: &TrimDrag) -> Option<LoopHandleKind> {
+    if drag.repeat.get() {
+        return Some(LoopHandleKind::Outer);
+    }
     drag.loop_kind.or_else(|| {
         (drag.edge == TrimEdge::Right
             && !drag.stretch_modifier.get()
@@ -934,6 +955,7 @@ impl EditorView {
         {
             let mut right = payload.clone();
             right.edge = TrimEdge::Right;
+            right.repeat_available = loop_handles::audio_repeat_available(clip, &state.project);
             handles.push(self.trim_handle(state, right, clip_width, None, scale, cx));
         }
         if let Some(controls) = loop_handles::audio_controls(clip, &state.project, lane, viewport) {
@@ -970,6 +992,8 @@ impl EditorView {
         };
         let drag = MidiTrimDrag {
             loop_kind: None,
+            repeat_available: false,
+            repeat: Rc::new(Cell::new(false)),
             canceled: Rc::new(Cell::new(false)),
             capture: Rc::new(Cell::new(None)),
             project_generation: self.project_generation,
@@ -1006,6 +1030,7 @@ impl EditorView {
         if visible_end == clip_end_frame {
             let mut right = drag.clone();
             right.edge = TrimEdge::Right;
+            right.repeat_available = loop_handles::midi_repeat_available(clip);
             handles.push(self.midi_trim_handle(
                 state,
                 right,
@@ -1069,10 +1094,15 @@ impl EditorView {
                 TrimEdge::Right => ("midi-trim-right", "midi-clip-trim-right"),
             },
         };
-        loop_handles::base(edge, clip_width, lane.height, control, scale)
+        let repeat_hover = control.is_none()
+            && edge == TrimEdge::Right
+            && payload.repeat_available
+            && self.option_held;
+        let repeat_available = payload.repeat_available;
+        loop_handles::base(edge, clip_width, lane.height, control, repeat_hover, scale)
             .id((element_prefix, clip_id.value()))
             .debug_selector(move || format!("{debug_prefix}-{}", clip_id.value()))
-            .map(|surface| loop_handles::decorate(surface, control))
+            .map(|surface| loop_handles::decorate(surface, control, edge, repeat_available))
             .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                 mouse_down_entity.update(cx, |view, _| {
                     if view.midi_trim_drag_current(&pointer_payload) {
@@ -1117,6 +1147,17 @@ impl EditorView {
                 payload.last_pointer_x.set(Some(pointer_x));
                 payload.snap_modifier.set(window.modifiers().platform);
                 payload.stretch_modifier.set(window.modifiers().shift);
+                // The mode is fixed here: option repeats, ahead of shift-stretch.
+                payload
+                    .repeat
+                    .set(payload.repeat_available && window.modifiers().alt);
+                if payload.repeat.get() {
+                    // GPUI installs the drag (with the edge's cursor) after
+                    // this callback, so switch its cursor once it exists.
+                    window.defer(cx, |window, cx| {
+                        cx.set_active_drag_cursor_style(gpui::CursorStyle::Loop, window);
+                    });
+                }
                 preview_owner_entity.update(cx, |view, cx| {
                     view.begin_midi_trim_drag(payload);
                     view.update_midi_trim_preview(payload, pointer_x, cx);
@@ -1138,6 +1179,8 @@ impl EditorView {
     ) -> TrimDrag {
         TrimDrag {
             loop_kind: None,
+            repeat_available: false,
+            repeat: Rc::new(Cell::new(false)),
             canceled: Rc::new(Cell::new(false)),
             capture: Rc::new(Cell::new(None)),
             stretch_modifier: Rc::new(Cell::new(false)),
@@ -1190,10 +1233,15 @@ impl EditorView {
                 TrimEdge::Right => ("trim-right", "clip-trim-right"),
             },
         };
-        loop_handles::base(edge, clip_width, lane.height, control, scale)
+        let repeat_hover = control.is_none()
+            && edge == TrimEdge::Right
+            && payload.repeat_available
+            && self.option_held;
+        let repeat_available = payload.repeat_available;
+        loop_handles::base(edge, clip_width, lane.height, control, repeat_hover, scale)
             .id((element_prefix, clip_id.value()))
             .debug_selector(move || format!("{debug_prefix}-{}", clip_id.value()))
-            .map(|surface| loop_handles::decorate(surface, control))
+            .map(|surface| loop_handles::decorate(surface, control, edge, repeat_available))
             .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                 mouse_down_entity.update(cx, |view, _| {
                     if view.trim_drag_current(&pointer_payload) {
@@ -1246,6 +1294,17 @@ impl EditorView {
                 payload.last_pointer_x.set(Some(pointer_x));
                 payload.snap_modifier.set(window.modifiers().platform);
                 payload.stretch_modifier.set(window.modifiers().shift);
+                // The mode is fixed here: option repeats, ahead of shift-stretch.
+                payload
+                    .repeat
+                    .set(payload.repeat_available && window.modifiers().alt);
+                if payload.repeat.get() {
+                    // GPUI installs the drag (with the edge's cursor) after
+                    // this callback, so switch its cursor once it exists.
+                    window.defer(cx, |window, cx| {
+                        cx.set_active_drag_cursor_style(gpui::CursorStyle::Loop, window);
+                    });
+                }
                 preview_owner_entity.update(cx, |view, cx| {
                     view.begin_trim_drag(payload);
                     view.update_trim_preview(payload, pointer_x, cx);
@@ -1571,8 +1630,8 @@ impl EditorView {
         let Some(preview) = midi_edge_preview(drag, beat) else {
             return;
         };
-        if (drag.loop_kind.is_some() && midi_grab_beat(drag) == Some(beat))
-            || (drag.loop_kind.is_none()
+        if (midi_loop_kind(drag).is_some() && midi_grab_beat(drag) == Some(beat))
+            || (midi_loop_kind(drag).is_none()
                 && preview.start() == drag.clip.start()
                 && preview.length() == drag.clip.length()
                 && preview.source_start() == drag.clip.source_start()
@@ -1582,7 +1641,7 @@ impl EditorView {
             return;
         }
         let stretch = drag.stretch_modifier.get();
-        let request = Request::Edit(if let Some(kind) = drag.loop_kind {
+        let request = Request::Edit(if let Some(kind) = midi_loop_kind(drag) {
             Command::ResizeMidiClipView {
                 clip: drag.clip.id(),
                 operation: kind.midi_operation(beat),
@@ -2271,6 +2330,8 @@ mod tests {
     pub(super) fn trim_drag(track: TrackId, clip: Clip, asset_playback_frames: u64) -> TrimDrag {
         TrimDrag {
             loop_kind: None,
+            repeat_available: false,
+            repeat: Rc::new(Cell::new(false)),
             canceled: Rc::new(Cell::new(false)),
             capture: Rc::new(Cell::new(None)),
             stretch_modifier: Rc::new(Cell::new(false)),

@@ -1232,9 +1232,9 @@ fn one_new_save_waits_for_current_or_new_save_and_replaces_once(cx: &mut TestApp
             );
         });
         // A duplicate/late save terminal cannot run the captured New again.
-        editor.update(cx, |view, _| {
-            view.complete_open_save(true, saved_revision);
-            view.complete_open_save(false, saved_revision);
+        editor.update(cx, |view, cx| {
+            view.complete_open_save(true, saved_revision, cx);
+            view.complete_open_save(false, saved_revision, cx);
             assert_eq!(view.worker_requests_pending, 0);
             assert_eq!(view.project_generation, generation + 1);
         });

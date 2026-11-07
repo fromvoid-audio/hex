@@ -194,10 +194,12 @@ impl Source {
             input_data_bytes,
             max_pending_data_bytes: input_data_bytes
                 .checked_add(config_data)?
+                .checked_add(protocol::PACKET_LIMIT)?
                 .checked_add(crate::NATIVE_DIAGNOSTIC_DATA_BYTES)?,
             max_prepared_data_bytes: config_data
                 .checked_add(restore_bytes)?
-                .checked_add(hex_lattice_contract::MAX_NATIVE_DEVICE_STATE_BYTES)?
+                .checked_add(protocol::PACKET_LIMIT)?
+                .checked_add(hex_plugin_state::MAX_ENVELOPE_BYTES)?
                 .checked_add(crate::NATIVE_DIAGNOSTIC_DATA_BYTES)?,
             diagnostic_data_bytes: crate::NATIVE_DIAGNOSTIC_DATA_BYTES,
             helper_working_data_bytes: build.revalidation_storage_bound()?.data_bytes,
@@ -228,7 +230,8 @@ impl Pending {
         Some(PendingStorage {
             data_bytes: data
                 .checked_add(self.source.metadata_backing()?)?
-                .checked_add(build.data_bytes)?,
+                .checked_add(build.data_bytes)?
+                .checked_add(self.packet.storage_bytes())?,
             shared_groups: shared,
             shared_handle_bound: shared,
             ipc_handle_bound: 2,
@@ -253,10 +256,18 @@ impl Prepared {
             Some(&self.ready.initial_state),
             &self.lease.cancellation,
         )?;
+        let (authored_data, authored_handle) =
+            if let Some(authored) = &self.authored_parameter_metadata {
+                (authored.backing_data_bytes()?, 1)
+            } else {
+                (0, 0)
+            };
         Some(PreparedStorage {
-            data_bytes,
+            data_bytes: data_bytes
+                .checked_add(self.packet.storage_bytes())?
+                .checked_add(authored_data)?,
             shared_groups: shared,
-            shared_handle_bound: shared,
+            shared_handle_bound: shared.checked_add(authored_handle)?,
             ipc_handle_bound: 2,
             native_child_lifetime_bound: 1,
         })

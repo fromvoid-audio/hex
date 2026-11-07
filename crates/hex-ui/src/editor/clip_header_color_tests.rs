@@ -131,6 +131,19 @@ fn fixture_with_environment(cx: &mut TestAppContext, environment: Arc<Environmen
 fn selector(prefix: &str, clip: ClipId) -> &'static str {
     Box::leak(format!("{prefix}-{}", clip.value()).into_boxed_str())
 }
+fn assert_header_geometry(visual: &mut VisualTestContext, clip: ClipId) {
+    let header = selector("clip-name", clip);
+    let bounds = visual.debug_bounds(header).unwrap();
+    assert_eq!(bounds.size.height, gpui::px(14.0));
+    let (_, widths, _) = visual.rendered_border(header).unwrap();
+    let scale = visual.update(|window, _| window.scale_factor());
+    assert_eq!(f64::from(widths.bottom), f64::from(scale));
+    let label = visual
+        .debug_bounds(selector("clip-name-label", clip))
+        .unwrap();
+    assert_eq!(label.size.height, gpui::px(14.0));
+    assert!((f32::from(label.center().y - bounds.center().y) + 0.5).abs() <= 0.5);
+}
 fn click(v: &mut VisualTestContext, clip: ClipId, modifiers: Modifiers) {
     let p = v
         .debug_bounds(selector("clip-name", clip))
@@ -171,6 +184,9 @@ fn clip_titles_paint_inherited_flavor_colors_through_selection_and_recolor(
     visual.run_until_parked();
     let bounds =
         [f.audio, f.midi].map(|id| visual.debug_bounds(selector("clip-name", id)).unwrap());
+    for clip in [f.audio, f.midi] {
+        assert_header_geometry(&mut visual, clip);
+    }
     let original_audio = f.editor.read_with(&visual, |v, _| {
         v.state
             .as_ref()
@@ -251,6 +267,19 @@ fn clip_titles_paint_inherited_flavor_colors_through_selection_and_recolor(
                     gpui::Background::from(gpui::rgb(expected)),
                     "actual audio/MIDI body and title consume the same shared fill"
                 );
+                let (divider_color, divider_widths, _) = visual.rendered_border(header).unwrap();
+                assert!(divider_widths.bottom > gpui::ScaledPixels::default());
+                assert!(
+                    divider_widths.bottom
+                        <= gpui::ScaledPixels::from(
+                            visual.update(|window, _| window.scale_factor())
+                        )
+                );
+                assert_eq!(divider_widths.top, gpui::ScaledPixels::default());
+                assert_eq!(divider_widths.left, gpui::ScaledPixels::default());
+                assert_eq!(divider_widths.right, gpui::ScaledPixels::default());
+                let ink = theme::readable_text(expected, theme::color(theme::PaletteRole::Text));
+                assert_eq!(divider_color, gpui::rgba((ink << 8) | 0x70).into());
                 assert_eq!(
                     visual.debug_bounds(header).unwrap(),
                     bounds[i],
@@ -266,7 +295,7 @@ fn clip_titles_paint_inherited_flavor_colors_through_selection_and_recolor(
                     gpui::Hsla::from(gpui::rgb(if select {
                         theme::color(theme::PaletteRole::Primary)
                     } else {
-                        0x000000
+                        theme::color(theme::PaletteRole::ClipOutline)
                     })),
                     "selection outline remains independent"
                 );
@@ -357,6 +386,11 @@ fn console_audio_midi_flavors_follow_shared_fill_and_history_without_geometry_ch
             format!("console-cell-{}-{}", f.track.value(), scene.value()).into_boxed_str(),
         );
         let bounds = visual.debug_bounds(cell).unwrap();
+        let label = visual
+            .debug_bounds(selector("clip-name-label", clip))
+            .unwrap();
+        assert_eq!(label.size.height, gpui::px(14.0));
+        assert!((f32::from(label.center().y - bounds.center().y)).abs() <= 0.5);
         for hue in [ElementColor::Cyan, ElementColor::Rose] {
             f.editor.update(&mut visual, |v, _| {
                 assert!(v.enqueue(Request::Edit(Command::SetTrackColor {

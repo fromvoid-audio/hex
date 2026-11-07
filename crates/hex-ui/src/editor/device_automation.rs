@@ -3,17 +3,20 @@
 //! stamps and owns history; released curves retain their exact ordered receipt.
 //! Provider descriptors and typed host gains have separate value metadata;
 //! reserved widget keys are translated only by the shared binding edge.
-//! Point selection is transient view state within one lane. A blank click adds
-//! a point; a blank drag draws the shared `hex_widgets::Marquee` (shift adds,
-//! cmd toggles). Dragging a selected point moves the whole selection, and
+//! Point selection is transient view state within one lane. A blank press adds
+//! a point and drags it; a shift blank drag draws the shared
+//! `hex_widgets::Marquee` (shift+cmd toggles). Dragging a selected point moves
+//! the whole selection, and
 //! delete/shape act on every selected point; each is one whole-lane request,
 //! so one Undo reverts the group edit.
 #[cfg(all(test, feature = "ui-test-support"))]
-mod host_tests;
+pub(super) mod host_tests;
 mod paint;
+mod plot_geometry;
 mod read_selection;
 #[cfg(test)]
 mod tests;
+mod vst3;
 use super::pending_edit::{Disposition, Receipt};
 use super::{EditorView, ViewState, device_panel::DevicePanelOwner as Owner};
 use crate::context_menu::{MenuItem, PopupMenu};
@@ -24,9 +27,10 @@ use hex_lattice_contract::{
     ParameterSemantics, ParameterValue,
 };
 use hex_project::{
-    AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, Device, DeviceId, Project,
+    AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, Device, DeviceAutomation,
+    DeviceId, Project,
 };
-use hex_session::service::{Event, Request};
+use hex_session::service::{Event, PluginParameterRow, Request, vst3_automation_class};
 pub(super) use paint::{overlay, rows};
 
 pub(super) const LANE_HEIGHT: f32 = 64.0;
@@ -37,8 +41,9 @@ pub(super) struct Target {
     pub(super) owner: Owner,
     pub(super) device: DeviceId,
     pub(super) kind: DeviceAutomationTarget,
-    class: NativeDeviceClass,
+    pub(super) class: NativeDeviceClass,
     provider: Option<DeviceTypeId>,
+    vst3_class: Option<[u8; 16]>,
 }
 
 #[derive(Clone)]
@@ -50,6 +55,13 @@ pub(super) struct Entry {
     end: Option<BeatTime>,
 }
 
+fn automation_extent(lane: &DeviceAutomation) -> Option<BeatTime> {
+    lane.points
+        .last()
+        .map(|point| point.beat)
+        .max(lane.touch.last().map(|span| span.end))
+}
+
 #[derive(Clone, Copy)]
 enum EntryMetadata {
     Provider {
@@ -57,6 +69,9 @@ enum EntryMetadata {
         semantics: ParameterSemantics,
     },
     HostGain,
+    Vst3 {
+        steps: u32,
+    },
 }
 #[derive(Clone, Copy)]
 pub(super) struct TargetKey(DeviceAutomationTarget);
@@ -66,6 +81,7 @@ impl std::fmt::Display for TargetKey {
             DeviceAutomationTarget::Parameter(id) => write!(f, "{}", id.value()),
             DeviceAutomationTarget::HostInputGain => f.write_str("host-input"),
             DeviceAutomationTarget::HostOutputGain => f.write_str("host-output"),
+            DeviceAutomationTarget::Vst3 { parameter, .. } => write!(f, "vst3-{parameter}"),
         }
     }
 }
@@ -94,6 +110,8 @@ pub(super) enum Action {
     HidePreview(Target),
     Clear(Target),
     Reenable(Target),
+    Override(Target),
+    ToggleNativeArm(Target),
     Shape(Target, AutomationInterpolation),
 }
 
@@ -147,7 +165,7 @@ pub(super) struct Draft {
     origin: [f32; 2],
 }
 
-/// Held blank press: a click adds `click` on release; a drag becomes a marquee.
+/// Held shift blank press: a click adds `click` on release; a drag becomes a marquee.
 #[derive(Clone)]
 pub(super) struct MarqueeDraft {
     target: Target,
@@ -272,13 +290,23 @@ impl Target {
         (class == self.class
             && self
                 .provider
-                .is_none_or(|provider| device.state().type_id() == provider))
+                .is_none_or(|provider| device.state().type_id() == provider)
+            && self
+                .vst3_class
+                .is_none_or(|class| vst3_automation_class(device.state()) == Some(class)))
         .then_some(device)
     }
-    fn current(self, project: &Project, generation: u64) -> Option<&Device> {
+    pub(super) fn current(self, project: &Project, generation: u64) -> Option<&Device> {
         let device = self.identity_current(project, generation)?;
-        hex_engine::project_device_automation_target_supported(project, self.device, self.kind)
-            .then_some(device)
+        match self.kind {
+            DeviceAutomationTarget::Vst3 { .. } => self.vst3_class.is_some().then_some(device),
+            _ => hex_engine::project_device_automation_target_supported(
+                project,
+                self.device,
+                self.kind,
+            )
+            .then_some(device),
+        }
     }
     pub(super) fn key(self) -> TargetKey {
         TargetKey(self.kind)
@@ -303,6 +331,7 @@ impl Entry {
         }
         let metadata = hex_engine::native_device_view_for_class(*class, source.state()).ok()?;
         let (entry_metadata, base, label) = match kind {
+            DeviceAutomationTarget::Vst3 { .. } => return None,
             DeviceAutomationTarget::Parameter(parameter) => {
                 let value = metadata
                     .parameters
@@ -342,18 +371,24 @@ impl Entry {
                 kind,
                 class: *class,
                 provider: kind.provider_parameter().map(|_| source.state().type_id()),
+                vst3_class: None,
             },
             label: format!("{} {} · {}", metadata.name, index + 1, label).into(),
             metadata: entry_metadata,
             base,
-            end: source
-                .automation_target(kind)
-                .and_then(|lane| lane.points.last())
-                .map(|point| point.beat),
+            end: source.automation_target(kind).and_then(automation_extent),
         })
     }
+
     fn refreshed(&self, project: &Project, generation: u64) -> Option<Self> {
-        self.target.identity_current(project, generation)?;
+        let source = self.target.identity_current(project, generation)?;
+        if matches!(self.metadata, EntryMetadata::Vst3 { .. }) {
+            let mut entry = self.clone();
+            entry.end = source
+                .automation_target(self.target.kind)
+                .and_then(automation_extent);
+            return Some(entry);
+        }
         Self::read(
             project,
             generation,
@@ -368,7 +403,7 @@ impl Entry {
             (EntryMetadata::HostGain, ParameterValue::Float(db)) => {
                 HostGain::from_db(db).ok().map(HostGain::normalized)
             }
-            (EntryMetadata::HostGain, _) => None,
+            (EntryMetadata::HostGain | EntryMetadata::Vst3 { .. }, _) => None,
             (
                 EntryMetadata::Provider {
                     descriptor,
@@ -379,6 +414,9 @@ impl Entry {
         }
     }
     fn is_discrete(&self) -> bool {
+        if let EntryMetadata::Vst3 { steps } = self.metadata {
+            return steps != 0;
+        }
         matches!(
             self.metadata,
             EntryMetadata::Provider {
@@ -395,6 +433,11 @@ impl Entry {
             EntryMetadata::HostGain => HostGain::from_normalized(value)
                 .ok()
                 .map(HostGain::normalized),
+            EntryMetadata::Vst3 { steps: 0 } => Some(value.clamp(0.0, 1.0)),
+            EntryMetadata::Vst3 { steps } => {
+                let steps = f64::from(steps);
+                Some(((f64::from(value).clamp(0.0, 1.0) * steps).round() / steps) as f32)
+            }
             EntryMetadata::Provider {
                 descriptor,
                 semantics,
@@ -421,6 +464,9 @@ impl Entry {
         }
     }
     fn format(&self, value: f32) -> String {
+        if matches!(self.metadata, EntryMetadata::Vst3 { .. }) {
+            return format!("{:.1}%", value * 100.0);
+        }
         let EntryMetadata::Provider {
             descriptor,
             semantics,
@@ -485,6 +531,9 @@ impl Lanes {
     pub(super) fn pointer_active(&self) -> bool {
         self.draft.is_some() || self.marquee.is_some()
     }
+    pub(super) fn point_draft_active(&self) -> bool {
+        self.draft.is_some()
+    }
     pub(super) fn extra_height(&self, owner: Owner) -> f32 {
         self.extra
             .iter()
@@ -506,22 +555,24 @@ impl Lanes {
             .find(|entry| entry.target == target)
     }
     fn points(&self, state: &ViewState, target: Target) -> Vec<AutomationPoint> {
+        self.points_ref(&state.project, target).to_vec()
+    }
+    /// Displayed points (draft, then pending, then canonical) without copying.
+    fn points_ref<'a>(&'a self, project: &'a Project, target: Target) -> &'a [AutomationPoint] {
         if let Some(draft) = self.draft.as_ref().filter(|draft| draft.target == target) {
-            return draft.points.clone();
+            return &draft.points;
         }
         if let Some(pending) = self
             .pending
             .as_ref()
             .filter(|pending| pending.target == target)
         {
-            return pending.points.clone();
+            return &pending.points;
         }
-        state
-            .project
+        project
             .device(target.device)
             .and_then(|device| device.automation_target(target.kind))
-            .map(|lane| lane.points.clone())
-            .unwrap_or_default()
+            .map_or(&[], |lane| lane.points.as_slice())
     }
 }
 
@@ -535,6 +586,7 @@ impl EditorView {
             DeviceAutomationTarget::Parameter(parameter) => parameter,
             DeviceAutomationTarget::HostInputGain => hex_engine::DEVICE_INPUT_GAIN.id,
             DeviceAutomationTarget::HostOutputGain => hex_engine::DEVICE_OUTPUT_GAIN.id,
+            DeviceAutomationTarget::Vst3 { .. } => return entry.base,
         };
         let key = super::device_panel::ParameterKey {
             device: entry.target.device,
@@ -543,6 +595,23 @@ impl EditorView {
         super::device_panel::parameter_display_override(self, key)
             .and_then(|value| entry.normalized(value))
             .unwrap_or(entry.base)
+    }
+
+    /// The device toolbar follows the exact native host lane selected in
+    /// Arrangement. The toolbar uses the device panel's existing input owner.
+    pub(super) fn selected_automation_trim(&self) -> Option<Target> {
+        if !self.automation_view.enabled || self.mode != super::EditorMode::Arrangement {
+            return None;
+        }
+        let owner = self.device_panel.owner?;
+        self.automation_view
+            .devices
+            .main
+            .iter()
+            .find(|entry| {
+                entry.target.owner == owner && matches!(entry.metadata, EntryMetadata::HostGain)
+            })
+            .map(|entry| entry.target)
     }
 
     pub(super) fn remember_automation_parameter(
@@ -599,6 +668,7 @@ impl EditorView {
         {
             actions.push(("re-enable automation", Action::Reenable(entry.target)));
         }
+        actions.extend(self.native_automation_arm_action(&entry));
         self.open_automation_menu(position, actions, window, cx);
         if utility_mode {
             self.append_utility_mode_choice(
@@ -607,6 +677,67 @@ impl EditorView {
                     .is_some_and(|parameter| parameter.value() == 10),
             );
         }
+        true
+    }
+
+    fn native_automation_arm_action(&self, entry: &Entry) -> Option<(&'static str, Action)> {
+        let target = entry.target;
+        let supported = matches!(
+            entry.metadata,
+            EntryMetadata::HostGain
+                | EntryMetadata::Provider {
+                    descriptor: ParameterDescriptor {
+                        kind: ParameterKind::Float { .. },
+                        ..
+                    },
+                    ..
+                }
+        );
+        (supported
+            && self.state.as_ref().is_some_and(|state| {
+                hex_engine::native_parameter_input_target(
+                    &state.project,
+                    target.device,
+                    target.kind,
+                )
+                .is_ok()
+            }))
+        .then(|| {
+            let label = if self.native_automation_arm_selected(target.device, target.kind) {
+                "disarm automation recording"
+            } else {
+                "arm automation recording"
+            };
+            (label, Action::ToggleNativeArm(target))
+        })
+    }
+
+    pub(super) fn open_vst3_automation_menu(
+        &mut self,
+        position: Point<Pixels>,
+        device: DeviceId,
+        row: &PluginParameterRow,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(owner) = self.device_panel.owner else {
+            return false;
+        };
+        let Some(entry) = self.state.as_ref().and_then(|state| {
+            Entry::vst3(&state.project, self.project_generation, owner, device, row)
+        }) else {
+            return false;
+        };
+        if !super::device_panel::finalize_controls(self, cx) {
+            return false;
+        }
+        let target = entry.target;
+        let mut actions = vec![
+            ("show automation", Action::Show(entry.clone(), false)),
+            ("add new automation lane", Action::Show(entry, true)),
+        ];
+        actions.extend(self.device_automation_read_action(target));
+        self.open_automation_menu(position, actions, window, cx);
         true
     }
 
@@ -702,6 +833,8 @@ impl EditorView {
             | Action::HidePreview(target)
             | Action::Clear(target)
             | Action::Reenable(target)
+            | Action::Override(target)
+            | Action::ToggleNativeArm(target)
             | Action::Shape(target, _) => self.state.as_ref().is_none_or(|state| {
                 target
                     .identity_current(&state.project, self.project_generation)
@@ -941,6 +1074,11 @@ impl EditorView {
                 self.track_scroll.remeasure();
             }
             Action::HidePreview(target) => {
+                if self.selected_automation_trim() == Some(target)
+                    && !super::device_panel::finalize_controls(self, cx)
+                {
+                    return;
+                }
                 self.automation_view.devices.clear_main(target.owner);
             }
             Action::Hide(target) => {
@@ -960,6 +1098,14 @@ impl EditorView {
                 self.track_scroll.remeasure();
             }
             Action::Reenable(target) => self.reenable_device_automation(Some(target), cx),
+            Action::Override(target) => self.select_device_automation_read(
+                Some(target),
+                hex_project::AutomationReadSelection::Base,
+                cx,
+            ),
+            Action::ToggleNativeArm(target) => {
+                self.toggle_native_automation_arm(target.device, target.kind);
+            }
             Action::Clear(target) => {
                 self.commit_device_automation(target, Vec::new(), cx);
             }
@@ -1066,7 +1212,7 @@ impl EditorView {
         let Some(pending) = &self.automation_view.devices.pending else {
             return false;
         };
-        matches!(request, Request::DeviceAutomation { project_generation, revision, device, target, points } if *project_generation == pending.target.generation && *revision == pending.revision && *device == pending.target.device && *target == pending.target.kind && *points == pending.points)
+        matches!(request, Request::DeviceAutomation { project_generation, revision, device, target, vst3_class, points } if *project_generation == pending.target.generation && *revision == pending.revision && *device == pending.target.device && *target == pending.target.kind && *vst3_class == pending.target.vst3_class && *points == pending.points)
     }
     pub(super) fn device_automation_submitted(&mut self) {
         if let Some(pending) = &mut self.automation_view.devices.read_pending {
@@ -1151,9 +1297,11 @@ impl EditorView {
         let canonical = state
             .project
             .device(target.device)
-            .and_then(|device| device.automation_target(target.kind))
-            .map_or(&[][..], |lane| lane.points.as_slice());
-        if canonical == points {
+            .and_then(|device| device.automation_target(target.kind));
+        let unchanged = canonical.map_or(points.is_empty(), |lane| {
+            lane.points == points && (!points.is_empty() || lane.touch.is_empty())
+        });
+        if unchanged {
             return;
         }
         let revision = state.revision;
@@ -1168,6 +1316,7 @@ impl EditorView {
             revision,
             device: target.device,
             target: target.kind,
+            vst3_class: target.vst3_class,
             points,
         }) {
             self.retire_pending_device_automation();

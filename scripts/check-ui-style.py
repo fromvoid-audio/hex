@@ -11,9 +11,13 @@ widgets = (
     'self.track(', 'self.mixer_strip(', 'self.mixer(', 'self.transport(', 'self.controller_input_row(', 'self.controller_input_settings(', 'self.clip_detail_view(',
     'self.browser(', 'self.inspector(', 'self.status_bar(', 'theme::text(', 'crate::theme::text(',
     'self.icon(', 'self.control_icon(', 'self.control_icon_description(',
+    # Workspace navigation components route their glyphs/tooltips through theme::text.
+    'self.browser_toggle_button(', 'self.workspace_view_toggle(',
     'self.arrangement(', 'self.ruler(', 'self.clip_view(',
     # Query clear-slot composition contains a themed action and native input semantics.
     'self.clear_search_slot(',
+    # Pinned browser collections compose themed heading, labels and icons.
+    'self.browser_collections(',
     # Header drop wrapper preserves the existing themed row and only refines drag paint.
     'self.device_drop_header(',
     # Clip name components normalize labels or render a native text-input entity.
@@ -39,6 +43,10 @@ widgets = (
     'hex_widgets::action(',
     # The shared splitter handle paints caller-resolved geometry/color only.
     'self.project_spectrum_splitter_input(cx)',
+    # Recorder controls route captions through the shared themed button factory.
+    'self.sample_arm_button(', 'self.sample_recorder_mode_button(',
+    # The take waveform canvas paints geometry only.
+    'wave_canvas(',
     'harmonic_range_control)', 'harmonic_repeat_control)', 'harmonic_tools)',
     'view.device_panel.operator_harmonics[&key].entity.clone())',
     'operator_row(', 'operator_label(', 'page_tab(', 'shell)', 'page_tabs)', 'detail)',
@@ -94,7 +102,7 @@ widgets = (
     'boundary::cursor_action(', 'boundary::handle(', 'source_adjust_button(', 'gain_adjust_button(', 'session_audio_loop_button(',
     'field_row(', 'loop_row(', 'time_ruler(', 'source_marker(', 'source_column)',
     'source_row(', 'details)', 'waveform_panel)', 'canvas_region)', 'roll_area)',
-    'status_slot(', 'super::waveform::waveform_view_cached(',
+    'status_slot(', 'disk_overload_slot(', 'super::waveform::waveform_view_cached(',
     'super::waveform::waveform_source_segment_view_cached(',
     'super::waveform::waveform_source_segment_gain_view_cached(',
     'toolbar)', 'control)', 'element)', 'controls)', 'clip_view)', 'step_button(', 'control_button(',
@@ -113,6 +121,8 @@ widgets = (
     # Device preset header actions reuse themed compact action buttons.
     'super::device_preset::actions(', 'super::device_panel::action_button(', 'super::device_panel::segment_button(',
     'super::super::device_preset::actions(',
+    # The VST3 editor toggle uses the same themed device action.
+    'vst3_editor_button(',
     # Shared A/B actions compose themed compact buttons, never raw text.
     'super::device_comparison::actions(', 'super::super::device_comparison::actions(',
     'device_drag_title(', 'render_return_drop_target(', 'uniform_list(',
@@ -192,6 +202,18 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/mixer.rs'
             and suffix.startswith(('super::track_meters::render(', 'toggle_button_with_style('))
         )
+        # Track meters compose a text-free shared gauge and its rendered fixture.
+        # Tooltip text still passes through MiniTooltip's theme::text boundary.
+        header_mixer_component = header_mixer_component or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/track_meters.rs'
+            and suffix.startswith(('meter)', 'render_meter('))
+        )
+        # This fixture calls the typed, text-free performance segment view.
+        # Keep the registration local; tooltip prose is normalized by its owner.
+        header_mixer_component = header_mixer_component or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/track_performance/tests.rs'
+            and suffix.startswith('super::super::render(')
+        )
         # Clip-detail bindings return shared widgets; their labels pass through
         # theme::text in the owning component, never raw .child text.
         clip_detail_component = (
@@ -219,6 +241,15 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/browser/layout.rs'
             and suffix.startswith(('gpui::svg()', 'browser_vector_icon('))
         )
+        # Browser result wrappers contain the existing UniformList and a
+        # text-free scrollbar. Keep these exceptions at their typed owners.
+        browser_scrollbar_component = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/browser.rs'
+            and suffix.startswith('self.browser_results(')
+        ) or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/browser/scrollbar.rs'
+            and suffix.startswith(('list)', 'self.browser_scrollbar('))
+        )
         # Playback vector controls and their SVG child contain no text.
         transport_vector_component = (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/transport.rs'
@@ -240,7 +271,22 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             )
             and suffix.startswith('insertion_gap(')
         )
-        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not transport_vector_component and not limiter_component and not device_insertion_component:
+        # The rotated title paints the already themed label in the inherited font.
+        device_insertion_component = device_insertion_component or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel.rs'
+            and suffix.startswith('hex_widgets::vertical_device_name(title)')
+        )
+        # The log viewer displays source bytes and native filenames verbatim;
+        # query/list are typed GPUI components; log_scrollbar is text-free.
+        log_viewer_source = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/log_viewer.rs'
+            and suffix.startswith(('display)', 'session)', 'detail)', 'status)', 'self.query.clone())', 'list)', 'self.log_scrollbar('))
+        )
+        plugin_parameter_search = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/vst3_parameters.rs'
+            and suffix.startswith('panel.search.clone())')
+        )
+        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not browser_scrollbar_component and not transport_vector_component and not limiter_component and not device_insertion_component and not log_viewer_source and not plugin_parameter_search:
             line = source.count('\n', 0, match.start()) + 1
             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):

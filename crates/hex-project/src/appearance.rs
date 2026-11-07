@@ -28,16 +28,15 @@ impl ElementColor {
         Self::Violet,
         Self::Rose,
     ];
-    /// Authored choices for new tracks and the track color picker. Gray remains
-    /// valid persisted data and a neutral theme identity, never a new choice.
-    pub const TRACK_CHOICES: [Self; 9] = [
+    /// Eight musical colors for new tracks and element pickers. Blue is reserved
+    /// for UI highlights; blue and gray remain valid persisted identities.
+    pub const TRACK_CHOICES: [Self; 8] = [
         Self::Red,
         Self::Orange,
         Self::Amber,
         Self::Olive,
         Self::Green,
         Self::Cyan,
-        Self::Blue,
         Self::Violet,
         Self::Rose,
     ];
@@ -108,16 +107,21 @@ mod automatic_color_tests {
     #[test]
     fn every_unused_tie_is_reachable_without_changing_the_palette() {
         let project = Project::new(48_000).unwrap();
-        let choices: Vec<_> = (0..9)
+        let choices: Vec<_> = (0..8)
             .map(|ticket| least_used_track_color(&project, ticket))
             .collect();
         assert_eq!(choices, ElementColor::TRACK_CHOICES);
         assert_eq!(
             least_used_track_color(&project, u64::MAX),
-            ElementColor::TRACK_CHOICES[(u64::MAX % 9) as usize]
+            ElementColor::TRACK_CHOICES[(u64::MAX % 8) as usize]
         );
         assert_eq!(ElementColor::ALL[0], ElementColor::Gray);
-        assert_eq!(ElementColor::ALL[1..], ElementColor::TRACK_CHOICES);
+        assert!(!ElementColor::TRACK_CHOICES.contains(&ElementColor::Gray));
+        assert!(!ElementColor::TRACK_CHOICES.contains(&ElementColor::Blue));
+        for identity in ElementColor::ALL {
+            assert_eq!(ElementColor::from_key(identity.key()), Ok(identity));
+        }
+        assert_eq!(ElementColor::ALL.len(), 10);
     }
     #[test]
     fn authored_count_profiles_preserve_exact_ticket_rank_for_every_tie_subset() {
@@ -129,7 +133,7 @@ mod automatic_color_tests {
         for base in [0_u16, 1] {
             for mask in 0..(1_usize << palette.len()) {
                 let counts =
-                    std::array::from_fn::<_, 9, _>(|i| base + u16::from(mask & (1 << i) != 0));
+                    std::array::from_fn::<_, 8, _>(|i| base + u16::from(mask & (1 << i) != 0));
                 let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
                 for (color, count) in palette.into_iter().zip(counts) {
                     for _ in 0..count {
@@ -163,7 +167,7 @@ mod automatic_color_tests {
                 completed += 1;
             }
         }
-        assert_eq!(completed, 1024);
+        assert_eq!(completed, 512);
     }
 }
 

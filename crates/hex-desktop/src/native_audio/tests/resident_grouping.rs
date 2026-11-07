@@ -1,7 +1,7 @@
 //! Grouping through the production Session/native publication path. Only output
 //! device creation is substituted; callback allocation probes stay enabled.
-use super::resident_preview::ResidentHarness;
 use super::*;
+use super::{resident_lifecycle::finish_replacement, resident_preview::ResidentHarness};
 use hex_project::{Command, Created};
 
 fn replay(h: &mut ResidentHarness) -> Vec<hex_engine::Frame> {
@@ -23,7 +23,7 @@ fn replay(h: &mut ResidentHarness) -> Vec<hex_engine::Frame> {
 }
 #[test]
 fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(32_768);
     assert!(h.next().error.is_none());
@@ -169,9 +169,7 @@ fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen(
     let reopened = h.run(Request::Open(saved));
     assert!(reopened.open_complete && reopened.project_replaced);
     assert_eq!(reopened.state.project, faded.state.project);
-    h.release_relinquished_output();
-    h.wait_fresh_output(old_output);
-    let (applied, _) = h.applied(0);
+    let applied = finish_replacement(&mut h, &reopened, old_output);
     assert_eq!(replay(&mut h), expected);
     let group = reopened
         .state
@@ -281,16 +279,14 @@ fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen(
     let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
     let reopened = h.run(Request::Open(saved));
     assert_eq!(reopened.state.project, regrouped.state.project);
-    h.release_relinquished_output();
-    h.wait_fresh_output(old_output);
-    h.applied(0);
+    finish_replacement(&mut h, &reopened, old_output);
     assert_eq!(replay(&mut h), expected);
 }
 
 #[test]
 fn resident_sampler_and_grouped_audio_retain_every_media_root_and_pcm() {
     use hex_project::BeatTime;
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(32_768);
     assert!(h.next().error.is_none());

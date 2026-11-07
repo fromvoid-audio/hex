@@ -349,6 +349,14 @@ impl PublicationControl {
         self.arrangement_edit_position(token)
             .map(|_| self.status.sampler_edit.playing.load(Acquire))
     }
+    /// Stop after the stopped witness can revoke native endpoints staged
+    /// behind this gate. The output owner can retry saved state on a fresh Root.
+    pub fn stopped_arrangement_edit_interrupted(&self, token: StoppedEditFence) -> bool {
+        self.arrangement_edit_position(token).is_some()
+            && (self.status.pending_stop_marker.load(Acquire) != 0
+                || self.status.transport_epoch.load(Acquire)
+                    != self.status.sampler_edit.ready_transport_epoch.load(Acquire))
+    }
     /// Transient launched loop from the exact ready witness, rather than saved markers.
     pub fn arrangement_edit_section_loop(&self, token: StoppedEditFence) -> Option<(u64, u64)> {
         self.arrangement_edit_position(token)?;
@@ -402,6 +410,14 @@ impl Callback {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if self.status.sampler_edit.native_epoch.load(Acquire) {
             let source = self.current_native_epoch_fence_source();
+            // Pin the transport at this operation's first callback witness.
+            // A later Stop must not refresh an already acknowledged fence.
+            if self.status.sampler_edit.ack.load(SeqCst) != operation {
+                self.status
+                    .sampler_edit
+                    .ready_transport_epoch
+                    .store(self.status.transport_epoch.load(Acquire), SeqCst);
+            }
             let playing = match self.active.as_ref() {
                 Some(ActivePublication::Eligible(active)) => active
                     .runtime()
@@ -514,6 +530,7 @@ mod tests {
         QueuedCommand {
             ticket,
             sampler_edit_gate,
+            project_generation: None,
             transport_epoch: 1,
             action: PlaybackAction::Transport(PlaybackCommand::Play),
         }

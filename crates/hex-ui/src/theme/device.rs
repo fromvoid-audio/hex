@@ -33,6 +33,8 @@ pub(crate) fn device_style(role: DeviceStyleRole) -> ControlStyle {
         focus_marker: text,
         dial_rail: color(PaletteRole::Border),
         hover: color(PaletteRole::Hover),
+        selection: color(PaletteRole::Secondary),
+        invalid: color(PaletteRole::Error),
         font_size: 9.0,
         text_case: hex_widgets::TextCase::Lowercase,
     };
@@ -53,7 +55,7 @@ pub(crate) fn device_style(role: DeviceStyleRole) -> ControlStyle {
             if role == DeviceStyleRole::Readout {
                 style.text = readable_text(display, style.accent);
             } else if role == DeviceStyleRole::ErrorDisplay {
-                style.text = readable_text(display, color(PaletteRole::Primary));
+                style.text = readable_text(display, color(PaletteRole::Error));
             }
         }
     }
@@ -62,21 +64,21 @@ pub(crate) fn device_style(role: DeviceStyleRole) -> ControlStyle {
         .map(|opacity| super::mix(style.rail, style.accent, opacity))
         .find(|fill| super::contrast_ratio(*fill, style.text) >= 4.5)
         .unwrap_or(style.rail);
+    // Text selection sits behind field text on `raised`; keep that text readable.
+    style.selection = [0.4, 0.3, 0.2, 0.1]
+        .into_iter()
+        .map(|opacity| super::mix(style.raised, style.accent, opacity))
+        .find(|fill| super::contrast_ratio(*fill, style.text) >= 4.5)
+        .unwrap_or(style.raised);
     style
 }
 
-/// One selected-header policy for every instrument, effect and return shell.
-/// Header paint is isolated from the neutral body and uses a readable foreground.
-/// The reserved shell stroke stays neutral and visible in every selection state.
+/// One border-only selection policy for every instrument, effect and return shell.
+/// The header and body keep their neutral surfaces and readable foregrounds.
 pub(crate) fn device_frame_style(selected: bool) -> DeviceFrameStyle {
     let mut style = device_style(DeviceStyleRole::Layout);
     style.border = color(PaletteRole::Border);
-    let frame = style.with_device_selection(selected);
-    if selected {
-        frame.with_header_colors(style.accent, readable_text(style.accent, style.text))
-    } else {
-        frame
-    }
+    style.with_device_selection(selected)
 }
 
 /// Stable musical identities a/b/c/d, shared by badges and routing diagrams.
@@ -131,6 +133,9 @@ mod tests {
             assert_eq!(control.hover, color(PaletteRole::Hover));
             assert_eq!(control.focus_marker, palette.text.packed());
             assert_eq!(control.accent, palette.secondary.packed());
+            assert_eq!(control.invalid, color(PaletteRole::Error));
+            assert_ne!(control.selection, control.raised);
+            assert!(super::super::contrast_ratio(control.selection, control.text) >= 4.5);
             assert_eq!(oscillator_identity_color(0), Some(0xe2cf25));
             assert_eq!(oscillator_identity_color(3), Some(0xf18428));
             assert_eq!(oscillator_identity_color(4), None);
@@ -149,14 +154,13 @@ pub(crate) enum DeviceActionRole {
     Bypassed,
 }
 
-pub(crate) fn device_header_action_style(selected: bool, role: DeviceActionRole) -> ActionStyle {
+pub(crate) fn device_header_action_style(_selected: bool, role: DeviceActionRole) -> ActionStyle {
     // Power is a canonical device state, independent of the selected header.
     // Keep the accent on hover too, so focus/hover cannot suggest a bypass edit.
     let layout = device_style(DeviceStyleRole::Layout);
     let background = match role {
         DeviceActionRole::Enabled => color(PaletteRole::Primary),
         DeviceActionRole::Bypassed => color(PaletteRole::Border),
-        _ if selected => layout.accent,
         _ => layout.surface,
     };
     let preferred = color(match role {
@@ -266,6 +270,7 @@ mod action_tests {
                     DeviceActionRole::Bypassed,
                 ] {
                     let style = device_header_action_style(selected, role);
+                    assert_eq!(style, device_header_action_style(!selected, role));
                     assert!(super::super::contrast_ratio(style.background, style.text) >= 4.5);
                     assert!(
                         super::super::contrast_ratio(

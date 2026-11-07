@@ -37,6 +37,17 @@ fn note(pitch: u8) -> MidiNoteInsert {
 }
 
 #[test]
+fn retained_source_path_change_is_not_a_midi_only_history_edge() {
+    let (editor, _, scene, _) = fixture();
+    let original = editor.project();
+    let mut changed = original.clone();
+    changed.tracks[0].retained_source_path = true;
+    let kind = Kind::AppendScene { scene };
+    assert!(same_shell(original, original, None, kind));
+    assert!(!same_shell(original, &changed, None, kind));
+}
+
+#[test]
 fn clip_gain_is_independent_of_curve_and_has_valid_history() {
     let (mut editor, _, _, clip) = fixture();
     let length = BeatTime::from_raw(4 << 32);
@@ -459,4 +470,69 @@ fn source_extent_note_edit_refusals_preserve_source_ids_history_and_strict_comma
     );
     assert_eq!(editor.project(), &original);
     assert!(editor.next_midi_history_effect(false).is_none());
+}
+
+#[test]
+fn stable_note_extent_update_has_a_closed_prepared_history_edge() {
+    for console in [false, true] {
+        let (mut editor, track, scene, mut clip) = fixture();
+        if console {
+            let Created::SessionClip(id) = editor
+                .execute(Command::CreateSessionMidiClip {
+                    track,
+                    scene,
+                    name: "extent update".into(),
+                    source_length: BeatTime::from_quarters(4).unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("console")
+            };
+            clip = id;
+        }
+        let Created::Note(id) = editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap()
+        else {
+            panic!("note")
+        };
+        let before = editor.project().clone();
+        cycle(
+            &mut editor,
+            Command::UpdateMidiNotesWithSourceExtent {
+                clip,
+                notes: vec![crate::MidiNoteUpdate {
+                    note: id,
+                    start: BeatTime::from_quarters(5).unwrap(),
+                    duration: BeatTime::ONE,
+                    pitch: 60,
+                    channel: 0,
+                    velocity: 100,
+                }],
+            },
+            true,
+        );
+        let changed = editor.project().clone();
+        let effect = editor.next_midi_history_effect(false).unwrap();
+        let mut corrupted = changed.clone();
+        corrupted.midi_source_mut(clip).unwrap().source_length =
+            BeatTime::from_quarters(7).unwrap();
+        assert!(
+            !effect.validates_forward(&before, &corrupted),
+            "growth must match requested note ends"
+        );
+        corrupted = changed.clone();
+        corrupted.midi_source_mut(clip).unwrap().looping = true;
+        assert!(
+            !effect.validates_forward(&before, &corrupted),
+            "loop changes cannot hide inside a note update"
+        );
+    }
 }

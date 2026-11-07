@@ -31,6 +31,17 @@ impl Handle {
         }
     }
 }
+// Two 8 px endpoints plus an 8 px gap in each dimension. The body starts
+// below the title; use post-zoom logical pixels so the threshold is DPI independent.
+const MIN_FADE_CONTROL_EXTENT: f32 = 24.0;
+
+fn fade_controls_fit(width: f32, height: f32) -> bool {
+    width.is_finite()
+        && height.is_finite()
+        && width >= MIN_FADE_CONTROL_EXTENT
+        && height - super::clip_name::CLIP_NAME_HEIGHT >= MIN_FADE_CONTROL_EXTENT
+}
+
 struct FadeControls {
     lane: LaneBounds,
     local_fade: ClipFade,
@@ -133,17 +144,23 @@ pub(super) fn edited_fade(
     let mut out_curve = fade.out_curve();
     let mut in_position = fade.in_position();
     let mut out_position = fade.out_position();
-    let shift = |value: u64, upper: u64| {
-        i128::from(value)
-            .saturating_add(whole_frames)
-            .clamp(0, i128::from(upper)) as u64
-    };
+    // The top handles push each other: the dragged ramp reaches the opposite
+    // silent endpoint and the other ramp gives way. Recomputing from the drag's
+    // original fade springs the pushed ramp back to, and no further than, its
+    // pre-drag length when the same gesture reverses.
+    let body = span.saturating_sub(start).saturating_sub(end_offset);
     match handle {
-        Handle::InTop => fade_in = shift(fade_in, span - start),
+        Handle::InTop => {
+            fade_in = i128::from(fade_in)
+                .saturating_add(whole_frames)
+                .clamp(0, i128::from(body)) as u64;
+            fade_out = fade_out.min(body - fade_in);
+        }
         Handle::OutTop => {
             fade_out = i128::from(fade_out)
                 .saturating_sub(whole_frames)
-                .clamp(0, i128::from(span - end_offset)) as u64
+                .clamp(0, i128::from(body)) as u64;
+            fade_in = fade_in.min(body - fade_out);
         }
         Handle::InBottom | Handle::OutBottom => return None,
         Handle::InCurve | Handle::OutCurve => {
@@ -348,13 +365,7 @@ impl EditorView {
             && self.state.as_ref().is_some_and(|state| {
                 self.project_generation == drag.generation
                     && state.revision == drag.revision
-                    && self.visible_viewport(state.timeline_frames) == drag.viewport
-                    && self.drag_lanes.get(&drag.track).is_some_and(|lane| {
-                        lane.left == drag.lane.left
-                            && lane.width == drag.lane.width
-                            && lane.top == drag.lane.top
-                            && lane.height == drag.lane.height
-                    })
+                    && self.drag_lanes.contains_key(&drag.track)
                     && state.project.clip(drag.clip.id()) == Some(drag.clip.as_ref())
             })
     }
@@ -561,15 +572,15 @@ impl EditorView {
         visible: (u64, u64),
         viewport: Viewport,
     ) -> Option<FadeControls> {
-        // Header-only rows have no visible fade body; arbitration and rendered
-        // handles must both refuse those hidden targets.
-        if self.track_height(track) <= super::track_layout::HEADER_ONLY_HEIGHT {
+        // An admitted gesture keeps its display through sizing changes; its
+        // captured lane and viewport continue to own pointer conversion.
+        let preview = self.fade_preview(clip.id());
+        let active = self.fade_curve_active(clip.id());
+        if !active && self.track_height(track) <= super::track_layout::HEADER_ONLY_HEIGHT {
             return None;
         }
         // Held `f` reveals every clip; otherwise only the hovered clip (or the
         // one whose gesture is still displayed) shows its controls.
-        let preview = self.fade_preview(clip.id());
-        let active = self.fade_curve_active(clip.id());
         if !self.fade_key_held
             && !active
             && self.hovered_fade_clip != Some((self.project_generation, clip.id()))
@@ -585,6 +596,10 @@ impl EditorView {
             || viewport.length == 0
             || visible.0 >= visible.1
         {
+            return None;
+        }
+        let visible_width = lane.width * ((visible.1 - visible.0) as f32 / viewport.length as f32);
+        if !active && !fade_controls_fit(visible_width, lane.height) {
             return None;
         }
         // Hover and held `f` share these local controls, so the hovered clip
@@ -616,16 +631,7 @@ impl EditorView {
                 continue;
             }
             let inset = (4.0_f32).min(pixel_width / 2.0);
-            // The outer loop corner owns the bottom-right hit box; the lower
-            // fade-out handle sits just inside it instead of covering it.
-            let right_inset = if matches!(handle, Handle::OutBottom) {
-                super::trim::loop_handles::WIDTH + 4.0
-            } else {
-                4.0
-            };
-            let fraction = (fraction * pixel_width)
-                .clamp(inset, (pixel_width - right_inset).max(inset))
-                / pixel_width;
+            let fraction = (fraction * pixel_width).clamp(inset, pixel_width - inset) / pixel_width;
             let name_height = super::clip_name::CLIP_NAME_HEIGHT;
             let body_height = (lane.height - name_height).max(8.0);
             let vertical_inset = (4.0 / body_height).min(0.5);
@@ -779,6 +785,16 @@ impl EditorView {
 mod tests {
     use super::*;
     #[test]
+    fn fade_control_geometry_requires_room_in_both_dimensions() {
+        let height = super::super::clip_name::CLIP_NAME_HEIGHT + MIN_FADE_CONTROL_EXTENT;
+        assert!(!fade_controls_fit(MIN_FADE_CONTROL_EXTENT - 0.01, height));
+        assert!(!fade_controls_fit(MIN_FADE_CONTROL_EXTENT, height - 0.01));
+        assert!(fade_controls_fit(MIN_FADE_CONTROL_EXTENT, height));
+        assert!(!fade_controls_fit(f32::NAN, height));
+        assert!(!fade_controls_fit(MIN_FADE_CONTROL_EXTENT, f32::INFINITY));
+    }
+
+    #[test]
     fn upper_lengths_and_curves_remain_independent() {
         let fade = ClipFade::new(100, 0, 40, 30)
             .unwrap()
@@ -790,18 +806,59 @@ mod tests {
             (10, 40, 30)
         );
         assert!(bent.gain_at(20) < fade.gain_at(20));
-        assert_eq!(
-            edited_fade(bent, Handle::InTop, (i128::MAX - 100) as f64, 0)
-                .unwrap()
-                .fade_in(),
-            90
-        );
-        assert_eq!(
-            edited_fade(bent, Handle::OutTop, i128::MIN as f64, 0)
-                .unwrap()
-                .fade_out(),
-            90
-        );
+        let pushed = edited_fade(bent, Handle::InTop, (i128::MAX - 100) as f64, 0).unwrap();
+        assert_eq!((pushed.fade_in(), pushed.fade_out()), (80, 0));
+        let pushed = edited_fade(bent, Handle::OutTop, i128::MIN as f64, 0).unwrap();
+        assert_eq!((pushed.fade_in(), pushed.fade_out()), (0, 80));
+    }
+
+    #[test]
+    fn top_handles_push_each_other_and_spring_back() {
+        let original = ClipFade::new(100, 0, 30, 40)
+            .unwrap()
+            .with_shape(5, 5, 300, -200)
+            .unwrap()
+            .with_curve_positions(400, 600)
+            .unwrap();
+        let lengths = |handle, frames| {
+            let fade = edited_fade(original, handle, frames, 0).unwrap();
+            assert_eq!(
+                (
+                    fade.in_start(),
+                    fade.out_end_offset(),
+                    fade.in_curve(),
+                    fade.out_curve(),
+                    fade.in_position(),
+                    fade.out_position()
+                ),
+                (5, 5, 300, -200, 400, 600)
+            );
+            (fade.fade_in(), fade.fade_out())
+        };
+        // Body is 90 frames; the fades meet once their lengths sum to 90.
+        assert_eq!(lengths(Handle::InTop, 20.0), (50, 40));
+        assert_eq!(lengths(Handle::InTop, 35.0), (65, 25));
+        // Reversing the same drag restores the pushed fade, and no further.
+        assert_eq!(lengths(Handle::InTop, 10.0), (40, 40));
+        assert_eq!(lengths(Handle::InTop, -30.0), (0, 40));
+        assert_eq!(lengths(Handle::InTop, 1e9), (90, 0));
+        assert_eq!(lengths(Handle::OutTop, -35.0), (15, 75));
+        assert_eq!(lengths(Handle::OutTop, -10.0), (30, 50));
+        assert_eq!(lengths(Handle::OutTop, 50.0), (30, 0));
+        assert_eq!(lengths(Handle::OutTop, -1e9), (0, 90));
+        // Opening an already-overlapping legacy fade only adjusts it once edited.
+        let legacy = ClipFade::new(100, 0, 70, 60).unwrap();
+        let fade = edited_fade(legacy, Handle::InTop, 0.0, 0).unwrap();
+        assert_eq!((fade.fade_in(), fade.fade_out()), (70, 30));
+        // Zero-length body leaves both fades empty.
+        let empty = ClipFade::new(10, 0, 0, 0)
+            .unwrap()
+            .with_shape(5, 5, 0, 0)
+            .unwrap();
+        for handle in [Handle::InTop, Handle::OutTop] {
+            let fade = edited_fade(empty, handle, 7.0, 0).unwrap();
+            assert_eq!((fade.fade_in(), fade.fade_out()), (0, 0));
+        }
     }
 }
 

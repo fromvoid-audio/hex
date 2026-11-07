@@ -134,12 +134,11 @@ pub(super) fn exercise(
         cx.background_executor
             .advance_clock(Duration::from_millis(16));
         visual.run_until_parked();
-        if let Ok(p) = hex_storage::load(saved) {
-            if let Some(scene) = p.scenes().first()
-                && ready(cx, window)
-            {
-                break scene.id();
-            }
+        if let Ok(p) = hex_storage::load(saved)
+            && let Some(scene) = p.scenes().first()
+            && ready(cx, window)
+        {
+            break scene.id();
         }
         assert!(Instant::now() < end, "save new scene");
         std::thread::sleep(Duration::from_millis(1));

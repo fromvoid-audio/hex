@@ -1389,13 +1389,16 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         sampler_load_complete: None,
         sampler_edit_complete: None,
         plugin_effect_complete: Vec::new(),
+        plugin_parameters: None,
         computer_keyboard_complete: None,
         midi_take_complete: None,
+        native_automation_take_complete: None,
         tuning_audition_complete: None,
         live_expression_complete: None,
         bounce_complete: None,
         audio_batch_complete: None,
         audio_batch_failure: None,
+        import_truncation: None,
         save_complete: false,
         save_correlation: None,
         document_format_upgrade_required: false,
@@ -2415,16 +2418,17 @@ fn selected_clips_hide_the_point_cursor_and_supply_the_earliest_play_start(
     let (project, source, target, audio) = audio_project();
     let mut model = Editor::new(project, 8).unwrap();
     model
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ZERO,
+            tempo: hex_project::Tempo::new(90_000_000).unwrap(),
+        })
+        .unwrap();
+    // Place the clip after the tempo edit, which preserves musical onsets.
+    model
         .execute(Command::MoveClip {
             clip: audio,
             track: source,
             start: 60_000,
-        })
-        .unwrap();
-    model
-        .execute(Command::SetTempoPoint {
-            beat: BeatTime::ZERO,
-            tempo: hex_project::Tempo::new(90_000_000).unwrap(),
         })
         .unwrap();
     let Created::Clip(midi) = model
@@ -2613,5 +2617,139 @@ fn assert_cursor_keeps_clip_detail(cx: &mut TestAppContext, midi: bool) {
     click_at(&mut visual, 0.75);
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.detail_clip_id(), None, "empty lane space retires it");
+    });
+}
+
+#[gpui::test]
+fn either_cursor_triangle_locks_play_start_across_selection_and_unlocks(cx: &mut TestAppContext) {
+    use super::time_selection::TimeSelection;
+    use hex_engine::playback::PlaybackCommand;
+    cx.update(super::bind_editor_keys);
+    let (project, track, _, clip) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let lane = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", track.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let point = point(lane.left() + lane.size.width * 0.125, lane.center().y);
+    visual.simulate_click(point, Modifiers::default());
+    visual.run_until_parked();
+    let start = editor.read_with(&visual, |v, _| v.edit_cursor.unwrap().frame);
+    let top = visual.debug_bounds("time-marker-top-start").unwrap();
+    editor.update(&mut visual, |v, _| v.close_prompt_open = true);
+    visual.simulate_click(top.center(), Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        assert!(v.valid_locked_play_start().is_none())
+    });
+    editor.update(&mut visual, |v, _| v.close_prompt_open = false);
+    visual.simulate_click(top.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.valid_locked_play_start().unwrap().frame, start);
+        assert_eq!(v.playback_start_frame(), start);
+        assert!(v.last_transport_command.is_none(), "locking never seeks");
+    });
+    assert!(visual.debug_bounds("locked-play-start-top").is_some());
+    assert!(visual.debug_bounds("locked-play-start-bottom").is_some());
+    editor.update(&mut visual, |v, cx| {
+        v.selected_clip = Some(clip);
+        v.time_selection = Some(TimeSelection {
+            anchor_track: track,
+            end_track: track,
+            anchor_frame: start + 10_000,
+            end_frame: start + 20_000,
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| assert_eq!(v.playback_start_frame(), start));
+    visual.update(|window, cx| editor.update(cx, |v, _| v.focus.focus(window)));
+    visual.simulate_keystrokes("space");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.last_transport_command,
+            Some(PlaybackCommand::PlayFrom(start))
+        )
+    });
+    let bottom = visual.debug_bounds("locked-play-start-bottom").unwrap();
+    visual.simulate_click(bottom.center(), Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        assert!(v.valid_locked_play_start().is_none());
+        assert_ne!(v.playback_start_frame(), start);
+        assert_eq!(
+            v.last_transport_command,
+            Some(PlaybackCommand::PlayFrom(start)),
+            "unlocking must not seek active playback"
+        );
+    });
+}
+
+#[gpui::test]
+fn locked_point_moves_on_click_but_not_range_or_loop_and_invalidates_on_replacement(
+    cx: &mut TestAppContext,
+) {
+    use hex_session::service::Request;
+    let (handle, editor, _, _, _environment) = super::loop_selection_ui_test::fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let track = editor.read_with(&visual, |v, _| {
+        v.state.as_ref().unwrap().project.tracks()[0].id()
+    });
+    let lane = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", track.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let at = |fraction| point(lane.left() + lane.size.width * fraction, lane.center().y);
+    visual.simulate_click(at(0.125), Modifiers::default());
+    visual.run_until_parked();
+    let bottom = visual.debug_bounds("time-marker-bottom-start").unwrap();
+    visual.simulate_click(bottom.center(), Modifiers::default());
+    visual.run_until_parked();
+    let original = editor.read_with(&visual, |v, _| v.valid_locked_play_start().unwrap().frame);
+    visual.simulate_mouse_down(at(0.3), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(at(0.6), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(at(0.6), MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        assert!(v.normalized_time_selection().is_some());
+        assert_eq!(v.playback_start_frame(), original);
+    });
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::SetLoopRegion {
+            start: 12_000,
+            end: 24_000,
+            enabled: true
+        })));
+    });
+    super::loop_selection_ui_test::pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.playback_start_frame(), original)
+    });
+    visual.simulate_click(at(0.75), Modifiers::default());
+    visual.run_until_parked();
+    let moved = editor.read_with(&visual, |v, _| {
+        let moved = v.edit_cursor.unwrap().frame;
+        assert_ne!(moved, original);
+        assert_eq!(v.valid_locked_play_start().unwrap().frame, moved);
+        assert_eq!(v.playback_start_frame(), moved);
+        moved
+    });
+    let top = visual.debug_bounds("locked-play-start-top").unwrap();
+    visual.simulate_click(top.center(), Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        assert!(v.valid_locked_play_start().is_none())
+    });
+    visual.run_until_parked();
+    let top = visual.debug_bounds("time-marker-top-start").unwrap();
+    visual.simulate_click(top.center(), Modifiers::default());
+    editor.update(&mut visual, |v, _| {
+        assert_eq!(v.valid_locked_play_start().unwrap().frame, moved);
+        v.project_generation += 1;
+        assert!(v.valid_locked_play_start().is_none());
+        v.tick_edit_cursor(Instant::now());
+        assert!(v.locked_play_start.is_none());
     });
 }

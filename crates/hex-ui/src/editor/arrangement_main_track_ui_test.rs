@@ -62,13 +62,16 @@ pub(super) fn completed_event(state: &ViewState) -> Event {
         sampler_load_complete: None,
         sampler_edit_complete: None,
         plugin_effect_complete: Vec::new(),
+        plugin_parameters: None,
         computer_keyboard_complete: None,
         midi_take_complete: None,
+        native_automation_take_complete: None,
         tuning_audition_complete: None,
         live_expression_complete: None,
         bounce_complete: None,
         audio_batch_complete: None,
         audio_batch_failure: None,
+        import_truncation: None,
         save_complete: false,
         save_correlation: None,
         document_format_upgrade_required: false,
@@ -118,7 +121,7 @@ fn return_section_is_bounded_and_pinned_above_main_at_minimum_size(cx: &mut Test
         .debug_bounds("arrangement-content")
         .expect("regular tracks remain independently scrollable");
     let detail = visual
-        .debug_bounds("clip-view-toggle-row")
+        .debug_bounds("clip-view")
         .expect("detail pane remains available");
     assert_eq!(returns.size.height, px(88.0));
     assert!(
@@ -222,7 +225,7 @@ fn main_track_stays_pinned_below_regular_tracks_at_minimum_size(cx: &mut TestApp
             .debug_bounds("arrangement-content")
             .expect("scrollable regular track and append region");
         let detail = visual
-            .debug_bounds("clip-view-toggle-row")
+            .debug_bounds("clip-view")
             .expect("shared detail panel remains below arrangement");
         assert_eq!(row.size.height, px(super::tracks::TRACK_ROW_HEIGHT));
         assert!(row.origin.y >= content.origin.y + content.size.height - px(1.0));
@@ -638,7 +641,7 @@ fn return_headers_share_track_geometry_without_redundant_section_chrome(cx: &mut
                 assert_eq!(header.size, ordinary.size);
                 assert_eq!(header.right(), ordinary.right());
                 if count == 1 {
-                    // The minimum window correctly clamps headers to 176px.
+                    // The minimum window clamps headers to the shared minimum.
                     // Give the shared width owner room for a real resize.
                     visual.simulate_resize(size(px(1280.0), px(800.0)));
                     visual.run_until_parked();

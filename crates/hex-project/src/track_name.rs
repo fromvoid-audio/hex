@@ -2,7 +2,8 @@
 //!
 //! A track name is *automatic* when hex chose it: the model-owned default
 //! `track N` from [`Command::InsertDefaultTrack`], or a device-derived name from
-//! [`Command::InsertDefaultTrackWithDevice`] and [`Command::LoadInstrument`].
+//! [`Command::InsertDefaultTrackWithDevice`],
+//! [`Command::InsertDefaultTrackWithDeviceAndGain`], and [`Command::LoadInstrument`].
 //! Every other creation path stores its caller-supplied name as user-set, and
 //! [`Command::RenameTrack`] always makes a name user-set, even when the new text
 //! equals the previous automatic one. Origin is an explicit stored flag; names

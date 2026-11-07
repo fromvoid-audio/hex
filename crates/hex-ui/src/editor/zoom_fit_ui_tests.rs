@@ -71,7 +71,7 @@ fn arrange_keys_and_buttons_fit_reversed_range_clip_content_and_restore_exact_pr
             })
         )
     });
-    visual.simulate_keystrokes("x");
+    visual.simulate_keystrokes("v");
     editor.read_with(&visual, |v, _| assert_eq!(v.viewport, prior));
     editor.update(&mut visual, |v, cx| {
         v.selected_clip = None;
@@ -105,7 +105,7 @@ fn arrange_keys_and_buttons_fit_reversed_range_clip_content_and_restore_exact_pr
     });
     visual.run_until_parked();
     let fitted = editor.read_with(&visual, |v, _| v.viewport);
-    visual.simulate_keystrokes("x");
+    visual.simulate_keystrokes("v");
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.viewport, fitted);
         assert!(v.zoom_fit.arrange.is_none());
@@ -137,8 +137,8 @@ fn midi_ruler_selection_fit_back_geometry_ack_and_document_reset_are_view_only(
     visual.simulate_keystrokes("z");
     editor.read_with(&visual, |v, _| {
         assert_eq!(
-            (v.piano_beat_start.raw(), v.piano_beat_span.raw()),
-            (BeatTime::ONE.raw(), 2 * BeatTime::ONE.raw())
+            (v.piano_beat_start, v.piano_beat_span.raw()),
+            (i128::from(BeatTime::ONE.raw()), 2 * BeatTime::ONE.raw())
         );
         assert_eq!(
             v.midi_time_selection_bounds(),
@@ -150,6 +150,8 @@ fn midi_ruler_selection_fit_back_geometry_ack_and_document_reset_are_view_only(
     visual.simulate_event(gpui::ScrollWheelEvent {
         position: roll.center(),
         delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(80.0))),
+        // Cmd zooms time; a plain wheel scrolls pitch.
+        modifiers: gpui::Modifiers::command(),
         ..Default::default()
     });
     visual.run_until_parked();
@@ -163,7 +165,7 @@ fn midi_ruler_selection_fit_back_geometry_ack_and_document_reset_are_view_only(
     editor.read_with(&visual, |v, _| {
         assert_eq!(
             (
-                v.piano_beat_start.raw(),
+                v.piano_beat_start,
                 v.piano_beat_span.raw(),
                 v.piano_pitch_low,
                 v.piano_pitch_rows
@@ -183,10 +185,10 @@ fn midi_ruler_selection_fit_back_geometry_ack_and_document_reset_are_view_only(
         })))
     });
     pump(&editor, &mut visual);
-    visual.simulate_keystrokes("x");
+    visual.simulate_keystrokes("v");
     editor.read_with(&visual, |v, _| {
         assert_eq!(
-            (v.piano_beat_start.raw(), v.piano_beat_span.raw()),
+            (v.piano_beat_start, v.piano_beat_span.raw()),
             (0, 4 * BeatTime::ONE.raw())
         )
     });
@@ -207,11 +209,11 @@ fn midi_ruler_selection_fit_back_geometry_ack_and_document_reset_are_view_only(
         cx.notify();
     });
     visual.run_until_parked();
-    visual.simulate_keystrokes("x");
+    visual.simulate_keystrokes("v");
     editor.read_with(&visual, |v, _| assert!(v.zoom_fit.midi.is_none()));
 }
 #[gpui::test]
-fn text_numeric_modal_and_musical_typing_keep_z_x_from_navigation(cx: &mut TestAppContext) {
+fn text_numeric_modal_and_musical_typing_keep_shortcuts_from_navigation(cx: &mut TestAppContext) {
     let (mut visual, editor, _environment, _clip) = fixture(cx);
     editor.update(&mut visual, |v, _| {
         v.viewport = Some(Viewport {
@@ -220,6 +222,7 @@ fn text_numeric_modal_and_musical_typing_keep_z_x_from_navigation(cx: &mut TestA
         });
     });
     let original = editor.read_with(&visual, |v, _| v.viewport);
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     let browser = editor.read_with(&visual, |v, cx| {
         v.browser.search.read(cx).focus_handle().clone()
     });
@@ -238,11 +241,11 @@ fn text_numeric_modal_and_musical_typing_keep_z_x_from_navigation(cx: &mut TestA
             assert!(gpui::EntityInputHandler::marked_text_range(input, window, cx).is_some());
         })
     });
-    visual.simulate_keystrokes("z x");
+    visual.simulate_keystrokes("z x v");
     editor.read_with(&visual, |v, _| assert_eq!(v.viewport, original));
     let tempo = visual.debug_bounds("project-tempo-value").unwrap();
     visual.simulate_click(tempo.center(), Modifiers::default());
-    visual.simulate_keystrokes("cmd-a z x");
+    visual.simulate_keystrokes("cmd-a z x v");
     editor.read_with(&visual, |v, _| assert_eq!(v.viewport, original));
     visual.simulate_keystrokes("escape");
     visual.update(|window, cx| {
@@ -260,7 +263,10 @@ fn text_numeric_modal_and_musical_typing_keep_z_x_from_navigation(cx: &mut TestA
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.computer_keyboard.base_pitch, pitch)
     });
+    let velocity = editor.read_with(&visual, |v, _| v.computer_keyboard.velocity);
+    visual.simulate_keystrokes("v");
     editor.read_with(&visual, |v, _| {
+        assert!(v.computer_keyboard.velocity > velocity);
         assert_eq!(v.viewport, original);
         assert!(v.zoom_fit.arrange.is_none());
     });
@@ -268,8 +274,12 @@ fn text_numeric_modal_and_musical_typing_keep_z_x_from_navigation(cx: &mut TestA
         v.computer_keyboard.enabled = false;
         v.close_prompt_open = true;
     });
-    visual.simulate_keystrokes("z x");
-    editor.read_with(&visual, |v, _| assert_eq!(v.viewport, original));
+    visual.simulate_keystrokes("z x v");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.viewport, original);
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        assert!(v.last_enqueued_edit.is_none());
+    });
 }
 #[test]
 fn fit_interval_normalizes_bounds_and_handles_empty_minimum_and_overflow_limits() {
@@ -324,7 +334,7 @@ fn empty_arrangement_fits_existing_horizon_and_restores_without_a_musical_edit(
             Viewport::fit(v.normal_navigation_horizon(v.state.as_ref().unwrap().timeline_frames))
         )
     });
-    visual.simulate_keystrokes("x");
+    visual.simulate_keystrokes("v");
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.viewport, prior);
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
@@ -380,7 +390,7 @@ fn console_midi_fit_back_is_local_and_explicit_clip_changes_retire_back(cx: &mut
         20,
     );
     let before = editor.update(&mut visual, |v, cx| {
-        v.piano_beat_start = prior.0;
+        v.piano_beat_start = i128::from(prior.0.raw());
         v.piano_beat_span = prior.1;
         v.piano_pitch_low = prior.2;
         v.piano_pitch_rows = prior.3;
@@ -389,7 +399,7 @@ fn console_midi_fit_back_is_local_and_explicit_clip_changes_retire_back(cx: &mut
     });
     visual.run_until_parked();
     click(&mut visual, "midi-zoom-fit");
-    visual.simulate_keystrokes("x");
+    visual.simulate_keystrokes("v");
     editor.read_with(&visual, |v, _| {
         assert_eq!(
             (
@@ -398,7 +408,7 @@ fn console_midi_fit_back_is_local_and_explicit_clip_changes_retire_back(cx: &mut
                 v.piano_pitch_low,
                 v.piano_pitch_rows
             ),
-            prior
+            (i128::from(prior.0.raw()), prior.1, prior.2, prior.3)
         )
     });
     click(&mut visual, "midi-zoom-fit");
@@ -412,7 +422,7 @@ fn console_midi_fit_back_is_local_and_explicit_clip_changes_retire_back(cx: &mut
         })
     });
     visual.run_until_parked();
-    visual.simulate_keystrokes("x");
+    visual.simulate_keystrokes("v");
     editor.read_with(&visual, |v, _| {
         assert!(v.zoom_fit.midi.is_none());
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
@@ -515,7 +525,7 @@ fn shortening_edit_preserves_arranger_view_through_real_ack_and_repaints(cx: &mu
             expected
         )
     });
-    visual.simulate_keystrokes("x");
+    visual.simulate_keystrokes("v");
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert_eq!(
@@ -557,7 +567,7 @@ fn shortening_edit_preserves_arranger_view_through_real_ack_and_repaints(cx: &mu
         )
     });
     visual.simulate_keystrokes("z"); // A no-op repeated fit must retain Back.
-    visual.simulate_keystrokes("x");
+    visual.simulate_keystrokes("v");
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert_eq!(
