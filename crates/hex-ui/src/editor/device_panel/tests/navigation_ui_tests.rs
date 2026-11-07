@@ -207,7 +207,7 @@ fn device_chain_bottom_toggle_preserves_return_owner_and_short_chain_is_safe(
     .expect("focus return");
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    visual.simulate_resize(size(px(2100.0), px(760.0)));
+    visual.simulate_resize(size(px(2400.0), px(760.0)));
     visual.run_until_parked();
     let toggle = visual
         .debug_bounds("device-panel-bottom-toggle")

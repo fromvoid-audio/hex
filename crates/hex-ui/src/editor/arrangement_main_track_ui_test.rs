@@ -121,7 +121,7 @@ fn return_section_is_bounded_and_pinned_above_main_at_minimum_size(cx: &mut Test
         .debug_bounds("arrangement-content")
         .expect("regular tracks remain independently scrollable");
     let detail = visual
-        .debug_bounds("clip-view-toggle-row")
+        .debug_bounds("clip-view")
         .expect("detail pane remains available");
     assert_eq!(returns.size.height, px(88.0));
     assert!(
@@ -225,7 +225,7 @@ fn main_track_stays_pinned_below_regular_tracks_at_minimum_size(cx: &mut TestApp
             .debug_bounds("arrangement-content")
             .expect("scrollable regular track and append region");
         let detail = visual
-            .debug_bounds("clip-view-toggle-row")
+            .debug_bounds("clip-view")
             .expect("shared detail panel remains below arrangement");
         assert_eq!(row.size.height, px(super::tracks::TRACK_ROW_HEIGHT));
         assert!(row.origin.y >= content.origin.y + content.size.height - px(1.0));
