@@ -520,6 +520,8 @@ impl SessionPlayback {
         } else {
             None
         };
+        let old_loop_region = previous.loop_region();
+        let new_loop_region = self.loop_region();
         let foreign_handoff = self.foreign_arrangement.plan_handoff(
             &previous.foreign_arrangement,
             self.revision.arrangement().tracks(),
@@ -531,6 +533,7 @@ impl SessionPlayback {
                 chase: false,
             },
             fresh,
+            [old_loop_region, new_loop_region],
         )?;
         if self.analytic_continuations.len() != MAX_TRACKS
             || self.analytic_continuation_scratch.len() != MAX_TRACKS
@@ -634,12 +637,12 @@ impl SessionPlayback {
         // 0: existing fresh/no-delay path; 1: copy into the larger fresh
         // history; 2: carry the actual larger donor plan/rings, explicitly bound
         // to the candidate's immutable typed pre-Main map.
-        let mapped_main_clock = self
+        let same_base_timing = self
             .revision
             .session()
             .timing()
-            .same_map(previous.revision.session().timing())
-            && self.loop_region() == previous.loop_region();
+            .same_map(previous.revision.session().timing());
+        let mapped_main_clock = same_base_timing && new_loop_region == old_loop_region;
         let donor_epoch_matches = previous.compensation.as_ref().is_none_or(|old| {
             old.delays.latest_stamp().is_none_or(|stamp| {
                 !stamp.transport_is_running
@@ -792,11 +795,17 @@ impl SessionPlayback {
         let relocate = (planned_transfer.is_none() || force_restart)
             && !self.current_sampler_console
             && !self.revision.requires_control_sampler_sources();
+        let compatible_instrument_loop_edit = same_base_timing
+            && new_loop_region != old_loop_region
+            && previous.anchor.is_none()
+            && foreign_handoff.keeps_first_pass_loop_clock;
         if foreign_handoff.requires_clock_continuity
             && (force_restart
                 || relocate
-                || !mapped_main_clock
-                || previous.periodic_tempo() != self.periodic_tempo_at(previous.arrangement_frame))
+                || (!compatible_instrument_loop_edit
+                    && (!mapped_main_clock
+                        || previous.periodic_tempo()
+                            != self.periodic_tempo_at(previous.arrangement_frame))))
         {
             return Err(foreign_arrangement::INCOMPATIBLE_HANDOFF);
         }

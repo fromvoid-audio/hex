@@ -101,6 +101,7 @@ impl Generator {
 pub(super) struct Handoff {
     old_indices: [Option<usize>; MAX_TRACKS],
     pub(super) requires_clock_continuity: bool,
+    pub(super) keeps_first_pass_loop_clock: bool,
 }
 
 pub(super) const INCOMPATIBLE_HANDOFF: SessionPlaybackError =
@@ -289,10 +290,12 @@ impl ForeignArrangement {
         tracks: &[Track],
         cut: FrameContext,
         fresh: Option<TrackId>,
+        loops: [Option<hex_project::LoopRegion>; 2],
     ) -> Result<Handoff, SessionPlaybackError> {
         let mut plan = Handoff {
             old_indices: [None; MAX_TRACKS],
             requires_clock_continuity: false,
+            keeps_first_pass_loop_clock: true,
         };
         let mut retained = [false; MAX_TRACKS];
         for (index, candidate) in self.generators.iter().enumerate() {
@@ -315,8 +318,31 @@ impl ForeignArrangement {
             *retained
                 .get_mut(old_index)
                 .ok_or(SessionPlaybackError::RevisionTrackMismatch)? = true;
-            plan.requires_clock_continuity |=
-                ledger.loop_pass.is_some() && (cut.playing || ledger.has_any_held_notes());
+            if ledger.loop_pass.is_some() && (cut.playing || ledger.has_any_held_notes()) {
+                plan.requires_clock_continuity = true;
+                // These held gates are timed against the canonical first
+                // pass. Keep their IDs and deadlines on the original worker.
+                plan.keeps_first_pass_loop_clock &= cut.loop_pass == 0
+                    && cut.performance == cut.arrangement
+                    && ledger.route == Some(RouteOwner::Arrangement)
+                    && !ledger.live.held()
+                    && !ledger.hardware.held()
+                    && loops
+                        .into_iter()
+                        .flatten()
+                        .all(|region| !region.enabled() || cut.arrangement < region.end())
+                    && crate::foreign_automation::QuantumProfile::keeps_instrument_epoch(
+                        candidate.processor.quantum_frames(),
+                        loops[0],
+                        loops[1],
+                    )
+                    && tracks.get(index).is_some_and(|track| {
+                        track
+                            .foreign_instrument
+                            .as_ref()
+                            .is_some_and(|node| node.automation.foreign().is_some())
+                    });
+            }
             if !ledger.cut
                 && matches!(ledger.route, Some(RouteOwner::Session { .. }))
                 && ledger.has_held_notes()
