@@ -1,5 +1,5 @@
-//! Isolated manual base capture for one exact applied ordinary effect. The
-//! original worker supplies immutable identity and configuration facts only.
+//! Isolated manual and saved-state base capture on one ordinary effect. The
+//! original Root source supplies immutable identity and configuration facts.
 //! A second Root cell owns the scratch child through exact disposal recovery.
 use super::{Binding, EffectSourceMetadata, Hosting, NativeDeviceState, PluginProfile};
 use crate::{
@@ -32,11 +32,10 @@ enum Phase {
 #[must_use = "poll the capture through its disposal terminal"]
 pub struct ManualBaseCapture {
     binding: Binding,
-    source: AppliedAudioSource,
-    transport_epoch: u64,
+    output_identity: u64,
+    source: Option<(AppliedAudioSource, u64)>,
     identity: hex_plugin_state::Identity,
     presentation: PresentationPlan,
-    id: u32,
     parameters: Parameters,
     phase: Phase,
 }
@@ -78,11 +77,67 @@ impl Hosting {
         )?;
         Ok(ManualBaseCapture {
             binding: scratch,
-            source,
-            transport_epoch,
+            output_identity: source.output_identity,
+            source: Some((source, transport_epoch)),
             identity,
             presentation: original.presentation,
-            id,
+            parameters,
+            phase: Phase::Prepare,
+        })
+    }
+    /// Restore fresh captured state in a private Root sibling, then put only
+    /// reading targets back to their source-bound canonical bases. Other
+    /// component/controller bytes remain part of the actual capture. Save owns
+    /// the canonical context and cancellation, without a live-delivery claim.
+    pub fn begin_saved_base_capture_on_control(
+        &self,
+        output: &mut PublicationControl,
+        binding: Binding,
+        canonical: &NativeDeviceState,
+        captured: &NativeDeviceState,
+        selection: &super::AuthoredSelection,
+    ) -> Result<ManualBaseCapture, String> {
+        let identity = Self::saved_identity_on_control(canonical)?;
+        if Self::saved_identity_on_control(captured)? != identity {
+            return Err("native saved capture identity differs".into());
+        }
+        let (rate, original) = output.native_saved_base_capture_source(binding, canonical)?;
+        let (class, ids) = selection.parameters();
+        if class != identity.class || original.metadata.authored_base_values().count() != ids.len()
+        {
+            return Err("native saved base selection differs".into());
+        }
+        let mut parameters = Parameters::default();
+        for (&expected, (id, normalized)) in
+            ids.iter().zip(original.metadata.authored_base_values())
+        {
+            if expected != id {
+                return Err("native saved base parameter differs".into());
+            }
+            parameters
+                .push(ParameterPoint {
+                    id,
+                    frame: 0,
+                    normalized,
+                })
+                .map_err(|_| "native saved base value is invalid")?;
+        }
+        let scratch = self.begin_on_control(
+            output,
+            original.metadata.selection(),
+            original.identity.owner(),
+            original.identity.device_id(),
+            binding.graph,
+            rate,
+            PluginProfile::Effect,
+            Some(captured.clone()),
+        )?;
+        Ok(ManualBaseCapture {
+            binding: scratch,
+            output_identity: binding.root,
+            source: None,
+            identity,
+            presentation: original.presentation,
             parameters,
             phase: Phase::Prepare,
         })
@@ -90,6 +145,11 @@ impl Hosting {
 }
 
 impl ManualBaseCapture {
+    fn source_matches(&self, status: &crate::prepared::Status) -> bool {
+        self.source
+            .is_none_or(|expected| status.live_native_parameter_source() == Some(expected))
+    }
+
     /// Advance one control operation. A captured envelope is returned once,
     /// only after the exact scratch child has been reaped and its Root cell
     /// recovered. Cancelled, stale and refused captures still drain custody.
@@ -99,14 +159,12 @@ impl ManualBaseCapture {
         is_cancelled: &mut dyn FnMut() -> bool,
     ) -> Option<Result<NativeDeviceState, String>> {
         if matches!(self.phase, Phase::Finished)
-            || output.output_identity() != Some(self.source.output_identity)
+            || output.output_identity() != Some(self.output_identity)
         {
             return None;
         }
         if !matches!(self.phase, Phase::Retire(Some(Err(_))))
-            && (is_cancelled()
-                || output.status.live_native_parameter_source()
-                    != Some((self.source, self.transport_epoch)))
+            && (is_cancelled() || !self.source_matches(&output.status))
         {
             self.phase = Phase::Retire(Some(Err("native manual base capture cancelled".into())));
         }
@@ -130,11 +188,7 @@ impl ManualBaseCapture {
             let report = output.recover_native_source_preparation(self.binding)?;
             let result = match (report.error.or(report.cleanup_error), result.take()) {
                 (Some(error), _) => Err(error.to_string()),
-                (None, Some(Ok(_)))
-                    if is_cancelled()
-                        || output.status.live_native_parameter_source()
-                            != Some((self.source, self.transport_epoch)) =>
-                {
+                (None, Some(Ok(_))) if is_cancelled() || !self.source_matches(&output.status) => {
                     Err("native manual base capture cancelled".into())
                 }
                 (None, Some(result)) => result,
@@ -147,11 +201,7 @@ impl ManualBaseCapture {
         // Recheck source changes during bounded native I/O without taking
         // locks or borrowing the publication endpoint from the cancellation.
         let status = std::sync::Arc::clone(&output.status);
-        let mut cancelled = || {
-            is_cancelled()
-                || status.live_native_parameter_source()
-                    != Some((self.source, self.transport_epoch))
-        };
+        let mut cancelled = || is_cancelled() || !self.source_matches(&status);
         let next = match (&self.phase, progress) {
             (Phase::Prepare, Some(Progress::Facts(_))) => output
                 .complete_native_source_preparation(self.binding, self.presentation)
@@ -174,8 +224,16 @@ impl ManualBaseCapture {
                 .and_then(|reply| {
                     reply
                         .filter(|reply| {
+                            // Manual gestures allow SDK normalization. Save
+                            // requires readback of every exact frozen base.
                             reply.disposition == FlushDisposition::Applied
-                                && reply.as_slice().iter().any(|value| value.id == self.id)
+                                && self.parameters.as_slice().iter().all(|expected| {
+                                    reply.as_slice().iter().any(|value| {
+                                        value.id == expected.id
+                                            && (self.source.is_some()
+                                                || value.normalized == expected.normalized)
+                                    })
+                                })
                         })
                         .map(|_| Phase::Capture)
                         .ok_or("native manual base input was not acknowledged")

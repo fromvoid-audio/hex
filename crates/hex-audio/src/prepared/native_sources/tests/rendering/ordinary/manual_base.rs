@@ -158,6 +158,7 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
         )
         .is_err()
     );
+    let captured_state = captured.clone();
     let captured = hex_plugin_state::decode(&captured).unwrap();
     let original = hex_plugin_state::decode(&initial).unwrap();
     assert_eq!(captured.identity, original.identity);
@@ -169,6 +170,59 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
     );
     assert_eq!(f.control.status.native_effect_source(), Some(source));
 
+    let selection = crate::plugin_effects::AuthoredSelection::from_targets([(
+        7,
+        Some(original.identity.class.bytes()),
+    )])
+    .unwrap()
+    .unwrap();
+    let wrong = crate::plugin_effects::AuthoredSelection::from_targets([(
+        63,
+        Some(original.identity.class.bytes()),
+    )])
+    .unwrap()
+    .unwrap();
+    let start_saved = |f: &mut OrdinaryFixture,
+                       selection: &crate::plugin_effects::AuthoredSelection| {
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            match host.begin_saved_base_capture_on_control(
+                &mut f.control,
+                binding,
+                &initial,
+                &captured_state,
+                selection,
+            ) {
+                Err(error)
+                    if matches!(
+                        error.as_str(),
+                        "native preparation is busy" | "native source is busy"
+                    ) && Instant::now() < until =>
+                {
+                    std::thread::yield_now()
+                }
+                terminal => break terminal,
+            }
+        }
+    };
+    assert!(
+        matches!(start_saved(&mut f, &wrong), Err(error) if error == "native saved base parameter differs")
+    );
+    let mut abandoned = start_saved(&mut f, &selection).unwrap();
+    assert!(poll(&mut f.control, &mut abandoned, true).is_err());
+    let mut normalized = start_saved(&mut f, &selection).unwrap();
+    let normalized = poll(&mut f.control, &mut normalized, false).unwrap();
+    assert_eq!(
+        &hex_plugin_state::decode(&normalized)
+            .unwrap()
+            .component
+            .unwrap()[8..12],
+        &1.0_f32.to_le_bytes()
+    );
+    assert_eq!(
+        hex_plugin_state::decode(&normalized).unwrap().controller,
+        captured.controller
+    );
     // Both Root metadata copies retain canonical .25 while actual authored
     // processing runs at .5 on the same source.
     let metadata = f.control.native_source_metadata(binding).unwrap();

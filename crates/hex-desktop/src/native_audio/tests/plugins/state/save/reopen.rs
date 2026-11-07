@@ -420,16 +420,22 @@ fn captured_gain(state: &NativeDeviceState) -> f32 {
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
 fn live_reading_vst3_drag_cancels_or_commits_exact_lane_and_preserves_other_read() {
-    authored_drag(true);
+    authored_drag(true, false);
 }
 
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
 fn live_unautomated_vst3_drag_preserves_the_other_lanes_canonical_base() {
-    authored_drag(false);
+    authored_drag(false, false);
 }
 
-fn authored_drag(reading: bool) {
+#[test]
+#[ignore = "explicit original SDK helper/source receipts required"]
+fn live_authored_vst3_save_preserves_fresh_opaque_editor_state() {
+    authored_drag(false, true);
+}
+
+fn authored_drag(reading: bool, editor_changed: bool) {
     use hex_project::{
         AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, DeviceAutomationTarget,
     };
@@ -444,6 +450,10 @@ fn authored_drag(reading: bool) {
             .args(["--exact", &name, "--ignored", "--nocapture"])
             .env(CHILD, "1")
             .env("HEX_ORIGINAL_INSTANCE_VARIANT", "144")
+            .env(
+                "HEX_ORIGINAL_CAPTURE_SCROLL_WHILE_PLAYING",
+                if editor_changed { "1" } else { "0" },
+            )
             .env("HEX_ORIGINAL_RESTORE_TRACE", files.0.join("restore-trace"))
             .output()
             .unwrap();
@@ -547,6 +557,13 @@ fn authored_drag(reading: bool) {
     };
     let original_pcm = render_steady(&h, "original reading");
     assert_eq!(original_pcm, if reading { 0.5 } else { 0.375 });
+    if reading {
+        // Both parameters are actively authored here, before a manual edit.
+        let saved = h.run(Request::SaveCurrent);
+        assert!(saved.save_complete && saved.error.is_none());
+        assert_eq!(hex_storage::load(&fixture.path).unwrap(), before);
+        assert_eq!(render_steady(&h, "after two-target save"), original_pcm);
+    }
     let first = query(&mut h, 1);
 
     let send = |h: &mut ResidentHarness, client: &mut GestureClient| {
@@ -631,10 +648,32 @@ fn authored_drag(reading: bool) {
     // Save after the committed worker has really processed both parameters,
     // before history can recreate it from the canonical base.
     let active_save = h.run(Request::SaveCurrent);
-    assert!(active_save.save_complete && active_save.error.is_none());
+    assert!(
+        active_save.save_complete && active_save.error.is_none(),
+        "{:?}",
+        active_save.error
+    );
+    let expected_active = if editor_changed {
+        let mut snapshot = committed.state.project.snapshot();
+        let state = &snapshot.main_devices[0].state;
+        let decoded = hex_plugin_state::decode(state).unwrap();
+        let mut controller = decoded.controller.unwrap().to_vec();
+        controller[4..8].copy_from_slice(&123_u32.to_le_bytes());
+        snapshot.main_devices[0].state = hex_plugin_state::encode(hex_plugin_state::State {
+            identity: decoded.identity,
+            component: decoded.component,
+            controller: Some(&controller),
+        })
+        .unwrap()
+        .with_host_metadata_from(state)
+        .unwrap();
+        hex_project::Project::from_snapshot(snapshot).unwrap()
+    } else {
+        committed.state.project.as_ref().clone()
+    };
     assert_eq!(
         hex_storage::load(&fixture.path).unwrap(),
-        *committed.state.project,
+        expected_active,
         "active authored values must not replace saved manual bases"
     );
 
@@ -667,4 +706,39 @@ fn authored_drag(reading: bool) {
         hex_storage::load(&fixture.path).unwrap(),
         *committed.state.project
     );
+    drop(h);
+    fixture.project = expected_active;
+    fixture.expected = fixture.project.device(device).unwrap().state().clone();
+    fixture.path = fixture.files.0.join("active-save-reopen.hex");
+    hex_storage::save_new(&fixture.path, &fixture.project).unwrap();
+    let mut reopened = open_saved(&fixture);
+    let (revision, _) = reopened.submitted.unwrap();
+    reopened
+        .audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert_eq!(render_steady(&reopened, "reopened authored save"), 1.0);
+    let base = history(
+        &mut reopened,
+        Request::Edit(Command::SetDeviceAutomationReadSelection {
+            device,
+            target: other_target,
+            selection: hex_project::AutomationReadSelection::Base,
+        }),
+    );
+    reopened.applied(revision);
+    assert!(
+        !base
+            .state
+            .project
+            .device(device)
+            .unwrap()
+            .automation_target(other_target)
+            .unwrap()
+            .is_reading()
+    );
+    assert_eq!(render_steady(&reopened, "reopened canonical base"), 0.5);
 }
