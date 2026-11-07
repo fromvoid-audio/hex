@@ -225,8 +225,8 @@ fn verify_saved_instrument_automation(
     };
     let points = [
         (BeatTime::ZERO, 0.0),
-        (BeatTime::from_ratio(1, 8).unwrap(), 0.8),
-        (BeatTime::from_ratio(1, 4).unwrap(), 0.0),
+        (BeatTime::from_ratio(1, 2).unwrap(), 0.8),
+        (BeatTime::from_ratio(5, 4).unwrap(), 0.0),
     ]
     .map(|(beat, normalized)| AutomationPoint {
         beat,
@@ -283,8 +283,8 @@ fn verify_saved_instrument_automation(
     };
     transport(harness, PlaybackCommand::Play);
     let mut peaks = Vec::new();
-    for block in 0..35 {
-        if block == 17 {
+    for block in 0..180 {
+        if block == 90 {
             transport(harness, PlaybackCommand::Pause);
             render_peak(harness);
             assert!(
@@ -302,7 +302,9 @@ fn verify_saved_instrument_automation(
         peaks.push(render_peak(harness));
     }
     let peak = |blocks: std::ops::Range<usize>| peaks[blocks].iter().copied().fold(0.0, f32::max);
-    let (before, during, after) = (peak(4..10), peak(15..20), peak(29..35));
+    // The real instrument smooths output changes. Measure away from each
+    // transition while the same Arrangement note is still held.
+    let (before, during, after) = (peak(25..40), peak(84..102), peak(170..180));
     println!(
         "instrument automation parameter={} id={} before={before} during={during} after={after}",
         parameter.name, parameter.id
@@ -313,11 +315,11 @@ fn verify_saved_instrument_automation(
     );
     harness.run(Request::Edit(Command::SetLoopRegion {
         start: 0,
-        end: 12_288,
+        end: 49_152,
         enabled: true,
     }));
     harness.applied(revision);
-    let loop_peak = (0..40).map(|_| render_peak(harness)).fold(0.0, f32::max);
+    let loop_peak = (0..110).map(|_| render_peak(harness)).fold(0.0, f32::max);
     println!("instrument automation live loop peak={loop_peak}");
     assert!(
         loop_peak > 0.01,
@@ -580,10 +582,19 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
         panic!("midi track");
     };
     (applied, _) = harness.applied(applied);
+    let (clip_length, note_duration) = if automation_parameter.is_some() {
+        let held = BeatTime::from_quarters(4).unwrap();
+        (held, held)
+    } else {
+        (
+            BeatTime::from_quarters(1).unwrap(),
+            BeatTime::from_ratio(1, 2).unwrap(),
+        )
+    };
     let clip = harness.run(Request::Edit(Command::PlaceMidiClip {
         track,
         start: BeatTime::ZERO,
-        length: BeatTime::from_ratio(1, 1).unwrap(),
+        length: clip_length,
     }));
     let Some(Created::Clip(clip)) = clip.created else {
         panic!("midi clip");
@@ -592,7 +603,7 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
     harness.run(Request::Edit(Command::AddMidiNote {
         clip,
         start: BeatTime::ZERO,
-        duration: BeatTime::from_ratio(1, 2).unwrap(),
+        duration: note_duration,
         pitch,
         channel: 0,
         velocity: 112,
