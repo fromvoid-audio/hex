@@ -283,48 +283,53 @@ impl EditorView {
         } else {
             "browser-history-back"
         };
-        browser_pending(if forward { "›" } else { "‹" })
-            .id(selector)
-            .debug_selector(move || selector.to_owned())
-            .when(enabled, |button| {
-                button
-                    .cursor_pointer()
-                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+        hex_widgets::action(
+            theme::text(if forward { "›" } else { "‹" }),
+            theme::action_style(),
+        )
+        .id(selector)
+        .debug_selector(move || selector.to_owned())
+        .size(px(18.0))
+        .text_xs()
+        .when(!enabled, |button| button.cursor_default().opacity(0.4))
+        .when(enabled, |button| {
+            button
+                .cursor_pointer()
+                .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+        })
+        .tooltip(move |_, cx| {
+            cx.new(|_| super::super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Identification,
+                description: theme::text(if forward { "forward" } else { "back" }),
             })
-            .tooltip(move |_, cx| {
-                cx.new(|_| super::super::transport::MiniTooltip {
-                    kind: crate::tooltips::Kind::Identification,
-                    description: theme::text(if forward { "forward" } else { "back" }),
-                })
-                .into()
-            })
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |view, _, window, cx| {
-                    if enabled {
-                        view.move_browser_history(forward, cx);
-                    } else {
-                        // A disabled arrow is inert, including the ancestor's
-                        // ordinary non-text focus transfer and text checkpoint.
-                        window.prevent_default();
-                        cx.stop_propagation();
-                    }
-                }),
-            )
+            .into()
+        })
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |view, _, window, cx| {
+                if enabled {
+                    view.move_browser_history(forward, cx);
+                } else {
+                    // A disabled arrow is inert, including the ancestor's
+                    // ordinary non-text focus transfer and text checkpoint.
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }
+            }),
+        )
     }
 
     pub(super) fn browser_toolbar(&self, cx: &mut Context<Self>) -> Div {
         browser_divider()
-            .h(px(30.0))
+            .h(px(24.0))
             .flex_shrink_0()
             .flex()
             .items_center()
             .px_1()
-            .gap_1()
+            .gap(px(2.0))
             .debug_selector(|| "browser-toolbar".to_owned())
             .child(self.browser_history_arrow(false, cx))
             .child(self.browser_history_arrow(true, cx))
-            .child(self.browser_reveal_button(cx))
             .child(
                 div()
                     .flex_1()
@@ -338,6 +343,13 @@ impl EditorView {
                     }))
                     .child(self.browser.search.clone()),
             )
+            .child(self.browser_icon(
+                "↻",
+                "refresh browser source",
+                |view, _, cx| view.refresh_browser_tree(cx),
+                cx,
+            ).size(px(18.0)))
+            .child(self.browser_reveal_button(cx).size(px(18.0)))
             .child(
                 self.browser_icon(
                     "⌗",
@@ -347,7 +359,7 @@ impl EditorView {
                         cx.notify();
                     },
                     cx,
-                ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+                ).size(px(18.0)).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
                 .debug_selector(|| "browser-insert-grid".to_owned())
                 .when(
                     self.input_quantization != hex_project::InputQuantization::Off,
@@ -362,7 +374,7 @@ impl EditorView {
                     cx.notify();
                 },
                 cx,
-            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)))
+            ).size(px(18.0)).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)))
             .child(self.browser_icon(
                 "⋮",
                 "show or hide tag editor",
@@ -371,7 +383,7 @@ impl EditorView {
                     cx.notify();
                 },
                 cx,
-            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)))
+            ).size(px(18.0)).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)))
             .child(self.browser_icon(
                 "×",
                 "close browser · cmd+alt+b",
@@ -379,7 +391,7 @@ impl EditorView {
                     view.toggle_browser(window, cx);
                 },
                 cx,
-            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)))
+            ).size(px(18.0)))
     }
 
     fn browser_reveal_button(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
