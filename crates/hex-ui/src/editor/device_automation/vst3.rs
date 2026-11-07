@@ -18,7 +18,7 @@ impl Entry {
             owner,
             device,
             kind,
-            class: NativeDeviceClass::Effect,
+            class: devices(project, owner).find(|current| current.id() == device)?.class(),
             provider: Some(hex_lattice_contract::VST3_DEVICE_TYPE_ID),
             vst3_class: Some(class),
         };
