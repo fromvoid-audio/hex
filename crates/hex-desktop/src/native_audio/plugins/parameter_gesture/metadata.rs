@@ -16,7 +16,7 @@ pub(super) fn extend(
     cancellation: Option<&RequestCancellation>,
 ) -> Result<AuthoredSelection, Error> {
     let id = origin.parameter;
-    let metadata = control.native_source_metadata(binding).map_err(refused)?;
+    let metadata = edits::source_metadata(control, binding, cancellation).map_err(refused)?;
     if metadata.selection().cid != class {
         return Err(lost());
     }

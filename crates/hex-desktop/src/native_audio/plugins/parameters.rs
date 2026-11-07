@@ -29,6 +29,29 @@ impl Inventory {
     pub(super) fn output_closed(&mut self) {
         self.terminal = Some(Err("vst3 parameter output changed".into()));
     }
+
+    // Metadata is observed inside the existing asynchronous query deadline.
+    // A busy Root neither blocks request intake nor creates unsupported rows.
+    fn observe_class(&mut self, result: Result<[u8; 16], String>, now: Instant) -> bool {
+        match result {
+            Ok(class) => {
+                self.class = Some(class);
+                true
+            }
+            Err(reason)
+                if matches!(
+                    reason.as_str(),
+                    "native preparation is busy" | "native source is busy"
+                ) && now < self.deadline =>
+            {
+                false
+            }
+            Err(reason) => {
+                self.terminal = Some(Err(reason));
+                false
+            }
+        }
+    }
 }
 
 impl Plugins {
@@ -68,10 +91,7 @@ impl Plugins {
         self.parameters = Some(Inventory {
             query,
             binding,
-            class: control
-                .native_source_metadata(binding)
-                .ok()
-                .map(|source| source.selection().cid),
+            class: None,
             token: None,
             revision: 0,
             total: None,
@@ -123,6 +143,14 @@ impl Plugins {
             && self.sources.iter().any(|source| {
                 source.binding == inventory.binding && source.accepted && !source.retiring
             });
+        if inventory.class.is_none() && current {
+            let class = control
+                .native_source_metadata(inventory.binding)
+                .map(|metadata| metadata.selection().cid);
+            if !inventory.observe_class(class, Instant::now()) {
+                return;
+            }
+        }
         let result = if let Some(token) = inventory.token.as_ref() {
             control.poll_native_source_controller_query_on_control(inventory.binding, token)
         } else if !current {
@@ -216,6 +244,82 @@ impl Plugins {
             }
             Err(error) => inventory.terminal = Some(Err(error.into())),
             _ => inventory.terminal = Some(Err("vst3 parameter source unavailable".into())),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn inventory(now: Instant) -> Inventory {
+        use hex_project::{Command, Created, Editor, Project};
+        let mut project = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
+        let Created::Device(device) = project
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: hex_engine::default_native_device_state(
+                    hex_engine::DeviceTypeId::from_static("hex.utility"),
+                )
+                .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("device")
+        };
+        Inventory {
+            query: PluginParameterQuery {
+                context: AudioSourceContext {
+                    project_generation: 1,
+                    editor_revision: 1,
+                },
+                device,
+                output_identity: 1,
+                request_id: 1,
+            },
+            binding: Binding {
+                root: 1,
+                instance: 1,
+                graph: 1,
+                epoch: 1,
+            },
+            class: None,
+            token: None,
+            revision: 0,
+            total: None,
+            rows: Vec::new(),
+            deadline: now + Duration::from_millis(250),
+            terminal: None,
+        }
+    }
+
+    #[test]
+    fn busy_metadata_retains_query_until_exact_class_is_available() {
+        let now = Instant::now();
+        let mut query = inventory(now);
+        for reason in ["native preparation is busy", "native source is busy"] {
+            assert!(!query.observe_class(Err(reason.into()), now));
+            assert!(query.terminal.is_none());
+            assert!(query.class.is_none());
+            assert!(query.rows.is_empty());
+        }
+        assert!(query.observe_class(Ok([7; 16]), now));
+        assert_eq!(query.class, Some([7; 16]));
+        assert!(query.terminal.is_none());
+    }
+
+    #[test]
+    fn metadata_timeout_and_definite_source_loss_finish_without_partial_rows() {
+        let now = Instant::now();
+        for (reason, at) in [
+            ("native source is busy", now + Duration::from_millis(250)),
+            ("native source differs", now),
+        ] {
+            let mut query = inventory(now);
+            assert!(!query.observe_class(Err(reason.into()), at));
+            assert_eq!(query.terminal, Some(Err(reason.into())));
+            assert!(query.class.is_none());
+            assert!(query.rows.is_empty());
         }
     }
 }

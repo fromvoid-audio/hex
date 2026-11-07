@@ -930,24 +930,50 @@ impl CandidateRoot {
         binding: Binding,
         read: impl FnOnce(bool, NativeEffectReference<'_>) -> T,
     ) -> Option<T> {
-        let work = self.0.eligible.work.try_lock().ok()?;
-        let bank = self.0.eligible.bank.try_lock().ok()?;
-        let index = bank.sources.index(binding)?;
-        let slot = bank.sources.slots.get(index)?;
+        self.try_with_native_source_endpoint(binding, read).ok()
+    }
+    fn try_with_native_source_endpoint<T>(
+        &self,
+        binding: Binding,
+        read: impl FnOnce(bool, NativeEffectReference<'_>) -> T,
+    ) -> Result<T, &'static str> {
+        let work = self
+            .0
+            .eligible
+            .work
+            .try_lock()
+            .map_err(|_| "native preparation is busy")?;
+        let bank = self
+            .0
+            .eligible
+            .bank
+            .try_lock()
+            .map_err(|_| "native source is busy")?;
+        let index = bank.sources.index(binding).ok_or("native source differs")?;
+        let slot = bank
+            .sources
+            .slots
+            .get(index)
+            .ok_or("native source differs")?;
         if bank.closing
             || slot.phase != Phase::Accepted
             || slot.retiring
             || slot.starting
             || slot.cancellation_requested
         {
-            return None;
+            return Err("native source is not active");
         }
-        let endpoint = match work.sources.cells.get(index)?.owner.as_ref()? {
-            Owner::Effect(effect) => NativeEffectReference::Unsplit(effect),
-            Owner::Loaned(control) => NativeEffectReference::Loaned(control),
-            _ => return None,
+        let endpoint = match work
+            .sources
+            .cells
+            .get(index)
+            .and_then(|cell| cell.owner.as_ref())
+        {
+            Some(Owner::Effect(effect)) => NativeEffectReference::Unsplit(effect),
+            Some(Owner::Loaned(control)) => NativeEffectReference::Loaned(control),
+            _ => return Err("native effect source is unavailable"),
         };
-        Some(read(slot.endpoint_loaned, endpoint))
+        Ok(read(slot.endpoint_loaned, endpoint))
     }
     #[cfg(feature = "allocation-probe")]
     pub(crate) fn native_source_completed_blocks(&self, binding: Binding) -> Option<u64> {

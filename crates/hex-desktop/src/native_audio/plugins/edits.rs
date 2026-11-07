@@ -7,6 +7,33 @@ use hex_audio::prepared::PublicationControl;
 use hex_session::service::RequestCancellation;
 
 impl Plugins {
+    pub(in crate::native_audio) fn received_foreign_program_on_control(
+        control: &mut PublicationControl,
+        binding: Binding,
+        cancellation: Option<&RequestCancellation>,
+    ) -> hex_engine::ForeignProgramFrontier {
+        use hex_engine::ForeignProgramFrontier;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
+        loop {
+            if check_cancel(cancellation).is_err() {
+                return ForeignProgramFrontier::Unknown;
+            }
+            match control.try_native_source_received_program_on_control(binding) {
+                Ok(Some(received)) if received.binding == binding => {
+                    return received.program.map_or(
+                        ForeignProgramFrontier::Empty,
+                        ForeignProgramFrontier::Program,
+                    );
+                }
+                Ok(None) | Err("native preparation is busy" | "native source is busy")
+                    if std::time::Instant::now() < deadline =>
+                {
+                    poll_control(control);
+                }
+                _ => return ForeignProgramFrontier::Unknown,
+            }
+        }
+    }
     pub(in crate::native_audio) fn preparing_edit(&self, context: AudioSourceContext) -> bool {
         self.edit == Some(context)
     }
@@ -118,8 +145,7 @@ impl Plugins {
                 continue;
             }
             if (retain_instrument
-                && control.native_source_approves_captured_state_on_control(source.binding, state)
-                    == Some(true))
+                && captured_state_approved(control, source.binding, state, cancellation)?)
                 || original_state(control, source.binding, cancellation)?.processing_eq(state)
             {
                 return Ok(Some(source.binding));
@@ -300,12 +326,46 @@ pub(super) fn check_cancel(cancellation: Option<&RequestCancellation>) -> Result
         Ok(())
     }
 }
+pub(super) fn captured_state_approved(
+    control: &mut PublicationControl,
+    binding: Binding,
+    state: &NativeDeviceState,
+    cancellation: Option<&RequestCancellation>,
+) -> Result<bool, String> {
+    loop {
+        check_cancel(cancellation)?;
+        match control.try_native_source_approves_captured_state_on_control(binding, state) {
+            Err("native preparation is busy" | "native source is busy") => poll_control(control),
+            result => return result.map_err(str::to_owned),
+        }
+    }
+}
 pub(super) fn poll_control(control: &mut PublicationControl) {
     control.reclaim();
     control.poll_resident_publication();
     // Existing control-worker polling cadence. This is not a paint delay,
     // native ACK, timeout-based acceptance or an audio callback wait.
     std::thread::sleep(std::time::Duration::from_millis(5));
+}
+pub(super) fn source_metadata(
+    control: &mut PublicationControl,
+    binding: Binding,
+    cancellation: Option<&RequestCancellation>,
+) -> Result<hex_audio::plugin_effects::EffectSourceMetadata, String> {
+    loop {
+        check_cancel(cancellation)?;
+        match control.native_source_metadata(binding) {
+            Err(reason)
+                if matches!(
+                    reason.as_str(),
+                    "native preparation is busy" | "native source is busy"
+                ) =>
+            {
+                poll_control(control)
+            }
+            result => return result,
+        }
+    }
 }
 pub(super) fn original_state(
     control: &mut PublicationControl,
@@ -342,8 +402,9 @@ pub(super) fn original_state(
 pub(super) fn armed_selection(
     control: &mut PublicationControl,
     binding: Binding,
+    cancellation: Option<&RequestCancellation>,
 ) -> Result<Option<AuthoredSelection>, String> {
-    let metadata = control.native_source_metadata(binding)?;
+    let metadata = source_metadata(control, binding, cancellation)?;
     let class = metadata.selection().cid;
     AuthoredSelection::from_targets(
         metadata
