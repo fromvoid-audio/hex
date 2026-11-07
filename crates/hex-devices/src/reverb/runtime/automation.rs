@@ -445,7 +445,7 @@ mod tests {
     fn each_output_matches_static_pcm_at_host_and_downsampled_tank_rates() {
         let settings = enabled_settings();
         for rate in [8000, 96000] {
-            let mut baseline = signal(4096);
+            let mut baseline = signal(8192);
             PreparedReverb::new(rate, settings)
                 .unwrap()
                 .runtime()
@@ -477,7 +477,7 @@ mod tests {
                 changed.0[crate::reverb::index(id).unwrap()] = value;
                 let mut actual = PreparedReverb::new(rate, settings).unwrap().runtime();
                 let mut reference = PreparedReverb::new(rate, changed).unwrap().runtime();
-                let mut output = signal(4096);
+                let mut output = signal(8192);
                 let mut expected = output.clone();
                 reference.process_block(&mut expected, &R);
                 for block in output.chunks_mut(13) {
