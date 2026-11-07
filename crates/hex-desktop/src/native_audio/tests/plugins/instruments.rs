@@ -303,16 +303,16 @@ fn verify_saved_instrument_automation(
     }
     let peak = |blocks: std::ops::Range<usize>| peaks[blocks].iter().copied().fold(0.0, f32::max);
     // The real instrument smooths output changes. Measure away from each
-    // transition while the same Arrangement note is still held.
+    // transition while an Arrangement note is still held.
     let (before, during, resumed, after) =
-        (peak(25..40), peak(84..90), peak(97..104), peak(170..180));
+        (peak(25..40), peak(84..90), peak(100..108), peak(170..180));
     println!(
         "instrument automation parameter={} id={} before={before} during={during} resumed={resumed} after={after}",
         parameter.name, parameter.id
     );
     assert!(
         during > 0.01 && resumed > 0.01 && before < during * 0.05 && after < during * 0.05,
-        "saved output automation must mute the same held note before and after the step: {peaks:?}"
+        "saved output automation must mute, open, and mute again across playback: {peaks:?}"
     );
     harness.run(Request::Edit(Command::SetLoopRegion {
         start: 0,
@@ -584,8 +584,10 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
     };
     (applied, _) = harness.applied(applied);
     let (clip_length, note_duration) = if automation_parameter.is_some() {
-        let held = BeatTime::from_quarters(4).unwrap();
-        (held, held)
+        (
+            BeatTime::from_quarters(4).unwrap(),
+            BeatTime::from_ratio(17, 16).unwrap(),
+        )
     } else {
         (
             BeatTime::from_quarters(1).unwrap(),
@@ -610,6 +612,19 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
         velocity: 112,
     }));
     (applied, _) = harness.applied(applied);
+    if automation_parameter.is_some() {
+        // Pause releases held gates. A new onset proves the saved parameter
+        // is still effective after resume.
+        harness.run(Request::Edit(Command::AddMidiNote {
+            clip,
+            start: BeatTime::from_ratio(9, 8).unwrap(),
+            duration: BeatTime::from_quarters(2).unwrap(),
+            pitch,
+            channel: 0,
+            velocity: 112,
+        }));
+        (applied, _) = harness.applied(applied);
+    }
     let scene = harness.run(Request::Edit(Command::AddScene {
         name: "console".into(),
     }));
