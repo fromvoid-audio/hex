@@ -94,7 +94,7 @@ fn actual_effect_storage_counts_spare_dry_capacity_and_retains_the_original_stat
         graph: 3,
         epoch: 4,
     };
-    let mut effect = NativeEffect::prepare_on_control(
+    let effect = NativeEffect::prepare_on_control(
         ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, binding.instance).unwrap(),
         original_instance_for_binding(binding),
     )
