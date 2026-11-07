@@ -227,6 +227,7 @@ impl Plugins {
                         &entry.expected,
                         state,
                         selection,
+                        None,
                     ) {
                         Ok(scratch) => break scratch,
                         Err(error)

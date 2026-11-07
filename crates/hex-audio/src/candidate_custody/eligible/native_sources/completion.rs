@@ -82,6 +82,7 @@ impl Custody {
             profile: source.profile(),
             presentation,
             prepared: source.prepared(),
+            canonical_is_constructor_state: source.matches_canonical_state(canonical),
         })
     }
 

@@ -451,6 +451,56 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
     .unwrap();
     let mut unknown_bases = start_bases(&mut f, &captured_state, &wrong).unwrap();
     assert!(poll_bases(&mut f.control, &mut unknown_bases, false).is_err());
+    // The same live source can now own a different canonical manual base.
+    // A save must normalize authored DSP values to that base, not its original.
+    for (canonical, selected, facts) in [
+        (&initial, &original_selection, &exact),
+        (&captured_state, &selected, &bases),
+    ] {
+        assert!(
+            host.begin_saved_base_capture_on_control(
+                &mut f.control,
+                binding,
+                canonical,
+                &initial,
+                selected,
+                Some(facts),
+            )
+            .is_err()
+        );
+    }
+    assert!(matches!(host.begin_saved_base_capture_on_control(
+        &mut f.control, binding, &captured_state, &initial, &original_selection, None,
+    ), Err(error) if error == "native saved current canonical bases are required"));
+    let save_deadline = Instant::now() + Duration::from_secs(3);
+    let mut current_save = loop {
+        match host.begin_saved_base_capture_on_control(
+            &mut f.control,
+            binding,
+            &captured_state,
+            &initial,
+            &original_selection,
+            Some(&exact),
+        ) {
+            Err(error)
+                if error == "native preparation is busy" || error == "native source is busy" =>
+            {
+                assert!(Instant::now() < save_deadline);
+                std::thread::yield_now()
+            }
+            result => break result.unwrap(),
+        }
+    };
+    let normalized_current = poll(&mut f.control, &mut current_save, false).unwrap();
+    let normalized_current = hex_plugin_state::decode(&normalized_current).unwrap();
+    assert_eq!(
+        &normalized_current.component.unwrap()[8..12],
+        &3.0f32.to_le_bytes()
+    );
+    assert_eq!(
+        &normalized_current.component.unwrap()[32..40],
+        &1.0f64.to_le_bytes()
+    );
     let start_saved = |f: &mut OrdinaryFixture,
                        selection: &crate::plugin_effects::AuthoredSelection| {
         let until = Instant::now() + Duration::from_secs(3);
@@ -461,6 +511,7 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
                 &initial,
                 &captured_state,
                 selection,
+                None,
             ) {
                 Err(error)
                     if matches!(
