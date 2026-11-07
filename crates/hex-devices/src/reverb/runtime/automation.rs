@@ -327,6 +327,64 @@ mod tests {
         }
     }
     #[test]
+    fn dense_controls_match_one_sample_canonical_edits_with_retained_phase() {
+        struct Dense {
+            ids: Vec<ParameterId>,
+        }
+        impl NativeParameterAutomation for Dense {
+            fn parameter_ids(&self) -> &[ParameterId] {
+                &self.ids
+            }
+            fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
+                let binding = BINDINGS.iter().find(|b| b.descriptor.id == id)?;
+                let hex_lattice_contract::ParameterKind::Float { min, max, .. } =
+                    binding.descriptor.kind
+                else {
+                    return None;
+                };
+                let fraction = ((offset * 17 + id.value() as usize * 7) % 65) as f32 / 64.0;
+                Some(ParameterValue::Float(min + (max - min) * fraction))
+            }
+        }
+        let values = Dense {
+            ids: BINDINGS.iter().map(|b| b.descriptor.id).collect(),
+        };
+        for rate in [8000, 96000] {
+            let mut settings = Settings::default_values();
+            settings.0[crate::reverb::index(p::SMOOTH).unwrap()] = 0.0;
+            let prepared = PreparedReverb::new(rate, settings).unwrap();
+            let mut actual = prepared.runtime();
+            actual.process_block(&mut signal(8193), &R);
+            let mut reference = prepared.runtime();
+            reference.copy_history_from(&actual);
+            let mut output = signal(128);
+            let mut expected = output.clone();
+            actual.process_automation(&mut output, &values).unwrap();
+            for (offset, frame) in expected.iter_mut().enumerate() {
+                let mut changed = settings;
+                for id in values.parameter_ids() {
+                    let Some(ParameterValue::Float(value)) = values.value_at(*id, offset) else {
+                        panic!("float source");
+                    };
+                    changed.0[crate::reverb::index(*id).unwrap()] = value;
+                }
+                // Public canonical handoff law with one-sample smoothing is
+                // an independent delivery oracle; no authored cache is used.
+                let mut next = PreparedReverb::new(rate, changed).unwrap().runtime();
+                next.copy_history_from(&reference);
+                next.process_block(std::slice::from_mut(frame), &R);
+                reference = next;
+            }
+            for (offset, (a, b)) in output.iter().zip(&expected).enumerate() {
+                assert!(
+                    (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6,
+                    "rate {rate} frame {offset}: {a:?} != {b:?}"
+                );
+            }
+            assert!(output.iter().flatten().any(|v| v.abs() > 1e-6));
+        }
+    }
+    #[test]
     fn delay_and_modulation_endpoints_match_static_rooms() {
         for binding in &BINDINGS[1..8] {
             let hex_lattice_contract::ParameterKind::Float { min, max, .. } =
