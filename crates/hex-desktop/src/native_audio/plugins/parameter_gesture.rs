@@ -214,24 +214,23 @@ impl Plugins {
                 binding,
                 origin,
                 steps,
-                input.reading_effect_class().is_some(),
+                input.reading_class().is_some(),
             )?;
-            let live = if let Some(class) = input.isolated_effect_class() {
+            let live = if let Some(class) = input.isolated_class() {
                 let playing = control.status.playing.load(Acquire);
                 let (source, transport_epoch) = control
                     .status
                     .native_parameter_source(playing)
                     .filter(|(source, _)| source.context == input.context())
                     .filter(|_| {
-                        input.reading_effect_class().is_none()
-                            || row.automation_class == Some(class)
+                        input.reading_class().is_none() || row.automation_class == Some(class)
                     })
                     .ok_or_else(|| refused("vst3 parameter source is not ready"))?;
                 Some(LiveOverride::new(
                     source,
                     transport_epoch,
                     class,
-                    input.reading_effect_class().is_some(),
+                    input.reading_class().is_some(),
                     playing,
                 ))
             } else {
@@ -366,8 +365,8 @@ impl Gesture {
             }
             let live = self.live.as_ref().ok_or_else(lost)?;
             if live.invalidated
-                || input.isolated_effect_class() != Some(live.class)
-                || input.reading_effect_class().is_some() != live.reading
+                || input.isolated_class() != Some(live.class)
+                || input.reading_class().is_some() != live.reading
                 || control.status.native_parameter_source(live.playing)
                     != Some((live.source, live.transport_epoch))
             {

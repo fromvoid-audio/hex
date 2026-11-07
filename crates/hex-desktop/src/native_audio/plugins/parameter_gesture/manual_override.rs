@@ -1,5 +1,5 @@
 //! Actual applied-worker hold and isolated canonical capture for one reading
-//! effect. Release drains on the ordinary control poll even after UI refusal.
+//! processor. Release drains on the ordinary control poll even after UI refusal.
 use super::*;
 
 pub(super) struct LiveOverride {
