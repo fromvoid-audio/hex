@@ -74,7 +74,8 @@ fn reverb_output_automation_callback_publication_history_and_save_reopen()
     editor.execute(lane(0.5)?)?;
     assert!(editor.undo());
     assert!(editor.redo());
-    // Change room outputs at sample density through the real callback.
+    // Change controls at sample density. Keep predelay within the short
+    // source so the recorded decay touch reaches an excited feedback network.
     let end = editor
         .project()
         .tempo_map()
@@ -109,17 +110,74 @@ fn reverb_output_automation_callback_publication_history_and_save_reopen()
             points: vec![
                 AutomationPoint {
                     beat: BeatTime::ZERO,
-                    value: AutomationValue::new(0.1)?,
+                    value: AutomationValue::new(if parameter == p::PREDELAY { 0.0 } else { 0.1 })?,
                     outgoing: AutomationInterpolation::Linear,
                 },
                 AutomationPoint {
                     beat: end,
-                    value: AutomationValue::new(0.9)?,
+                    value: AutomationValue::new(if parameter == p::PREDELAY { 0.01 } else { 0.9 })?,
                     outgoing: AutomationInterpolation::Step,
                 },
             ],
         })?;
     }
+    // Native recorded touches carry no VST3 class stamp in schema79.
+    // Exercise the current take command, history and half-open fallback before
+    // reopening and delivering this take through the actual callback.
+    let start = editor.project().tempo_map().frame_to_beat(BLOCK as u64)?;
+    let middle = editor
+        .project()
+        .tempo_map()
+        .frame_to_beat((BLOCK + BLOCK / 2) as u64)?;
+    let finish = editor
+        .project()
+        .tempo_map()
+        .frame_to_beat((BLOCK * 2) as u64)?;
+    let before_take = editor.project().clone();
+    let base_end = before_take
+        .device(device)
+        .ok_or("missing reverb")?
+        .automation_lane(p::DECAY)
+        .ok_or("missing decay lane")?
+        .value_at(finish);
+    editor.execute(Command::SpliceDeviceAutomationTouch {
+        device,
+        target: hex_project::DeviceAutomationTarget::Parameter(p::DECAY),
+        vst3_class: None,
+        spans: vec![hex_project::DeviceAutomationTouchSpan {
+            start,
+            end: finish,
+            steps: vec![
+                hex_project::DeviceAutomationTouchStep {
+                    beat: start,
+                    value: AutomationValue::new(0.75)?,
+                },
+                hex_project::DeviceAutomationTouchStep {
+                    beat: middle,
+                    value: AutomationValue::new(0.25)?,
+                },
+            ],
+        }],
+    })?;
+    let lane = editor
+        .project()
+        .device(device)
+        .ok_or("missing reverb")?
+        .automation_lane(p::DECAY)
+        .ok_or("missing recorded lane")?;
+    assert_eq!(lane.vst3_class, None);
+    assert_eq!(lane.value_at(start), Some(AutomationValue::new(0.75)?));
+    assert_eq!(lane.value_at(middle), Some(AutomationValue::new(0.25)?));
+    assert_eq!(
+        lane.value_at(finish),
+        base_end,
+        "touch end resumes the base curve"
+    );
+    let recorded = editor.project().clone();
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &before_take);
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &recorded);
     let path = std::env::temp_dir().join(format!(
         "hex-reverb_outputs-automation-{}.hex",
         std::process::id()
@@ -129,6 +187,25 @@ fn reverb_output_automation_callback_publication_history_and_save_reopen()
     std::fs::remove_file(path)?;
     let reopened = reopened?;
     assert_eq!(&reopened, editor.project());
+    let render_take = |project: &Project| -> Result<Vec<[f32; 2]>, Box<dyn Error>> {
+        let mut playback = hex_engine::SessionPlayback::new(prepare(project)?)?;
+        playback.apply(hex_engine::SessionPlaybackCommand::Play)?;
+        let mut pcm = vec![[0.0; 2]; BLOCK * 3];
+        playback.render(&mut pcm)?;
+        Ok(pcm)
+    };
+    let recorded_pcm = render_take(&reopened)?;
+    let base_pcm = render_take(&before_take)?;
+    assert!(
+        base_pcm
+            .iter()
+            .any(|frame| (frame[0] - 0.00005).abs() > 1e-10 || (frame[1] + 0.00005).abs() > 1e-10),
+        "the fixture must excite the wet network"
+    );
+    assert!(
+        recorded_pcm.iter().zip(&base_pcm).any(|(a, b)| a != b),
+        "the recorded native touch must affect rendered audio"
+    );
     let next = prepare(&reopened)?;
     control
         .publish(Playback::try_from_prepared_with_session(next)?)
