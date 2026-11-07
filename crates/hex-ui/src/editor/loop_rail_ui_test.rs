@@ -155,14 +155,14 @@ fn loop_rail_paint_previews_then_commits_adaptive_grid_range_disabled(cx: &mut T
     let rail = visual
         .debug_bounds("arrangement-loop-rail")
         .expect("loop rail");
-    let overview = visual
-        .debug_bounds("arrangement-overview-map")
-        .expect("overview timeline");
+    let map = visual
+        .debug_bounds("main-arrangement-map")
+        .expect("bottom Main miniature");
     let ruler = visual
         .debug_bounds("timeline-ruler")
         .expect("ruler timeline");
-    assert_eq!(rail.origin.x, overview.origin.x);
-    assert_eq!(rail.size.width, overview.size.width);
+    assert_eq!(rail.origin.x, map.origin.x);
+    assert_eq!(rail.size.width, map.size.width);
     assert_eq!(rail.origin.x, ruler.origin.x);
 
     let start = rail_point(&mut visual, 0.25);
