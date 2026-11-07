@@ -160,7 +160,7 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
     assert_eq!(
         f.control
             .native_source_approves_captured_state_on_control(binding, &initial),
-        Some(false)
+        Some(true)
     );
     assert_eq!(
         f.control
