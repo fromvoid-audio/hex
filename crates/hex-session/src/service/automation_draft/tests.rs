@@ -565,7 +565,7 @@ fn native_deliveries_seal_only_the_exact_target_values_and_restoration() {
             })
         );
         if index == 2 {
-            let prepare = super::super::automation_take::prepare_native_take_adoption_on_control;
+            let prepare = super::super::automation_take::prepare_device_take_adoption_on_control;
             assert!(prepare(&session, None, &mut take, stale).is_err());
             let before = session.project().clone();
             let command = prepare(&session, None, &mut take, stamp).unwrap();

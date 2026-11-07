@@ -177,6 +177,7 @@ pub(super) fn render(
         })
         .child(theme::text(if add_open { "×" } else { "+" }))
         .on_click(cx.listener(|view, _, _, cx| {
+            view.device_panel.add_menu_target = None;
             view.device_panel.add_menu_open = !view.device_panel.add_menu_open;
             cx.notify();
         }));
@@ -466,18 +467,31 @@ fn render_return_add_menu(
                         .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
                         .cursor(gpui::CursorStyle::PointingHand)
                         .child(theme::text(label))
-                        .on_click(cx.listener(move |view, _, _, cx| {
+                        .on_click(cx.listener(move |view, _, window, cx| {
                             let Some(revision) = view.state.as_ref().map(|state| state.revision)
                             else {
+                                return;
+                            };
+                            let panel_owner = match owner {
+                                EffectBusOwner::Main => DevicePanelOwner::Main,
+                                EffectBusOwner::Return(id) => DevicePanelOwner::Return(id),
+                            };
+                            let Some(before) = device_add::before(view, panel_owner) else {
+                                view.focus.focus(window);
+                                view.device_panel.add_menu_open = false;
+                                view.device_panel.message =
+                                    Some("device insertion cancelled · chain changed".into());
+                                cx.notify();
                                 return;
                             };
                             let request = owner.insert_request(
                                 view.project_generation,
                                 revision,
-                                None,
+                                before,
                                 type_id,
                             );
                             if finalize_controls(view, cx) && view.enqueue_device_barrier(request) {
+                                view.focus.focus(window);
                                 view.device_panel.add_menu_open = false;
                                 view.device_panel.message = None;
                             }
