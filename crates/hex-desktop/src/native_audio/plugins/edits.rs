@@ -67,10 +67,11 @@ impl Plugins {
     ) -> Result<Option<Binding>, String> {
         let owner = destination.owner();
         let retain_instrument = destination.is_instrument()
-            && control
-                .status
-                .playing
-                .load(std::sync::atomic::Ordering::Acquire);
+            && (self.restore.is_some()
+                || control
+                    .status
+                    .playing
+                    .load(std::sync::atomic::Ordering::Acquire));
         let authored = AuthoredSelection::from_targets(input.authored_plugin_targets(device))?;
         let mut changed_state = false;
         if input.preparing_edit()
