@@ -148,6 +148,7 @@ impl SourceCapabilities {
         instance: &mut hex_plugin_host::native::Prepared,
         class: hex_plugin_state::ClassId,
         ids: &[u32],
+        retained: Option<&Self>,
     ) -> Result<(Self, CanonicalParameterBases), hex_plugin_host::Error> {
         use hex_plugin_host::Error;
 
@@ -164,8 +165,21 @@ impl SourceCapabilities {
         };
         let mut bases = [None; MAX_PARAMETER_POINTS];
         for ((entry, base), &id) in source.parameters.iter_mut().zip(&mut bases).zip(ids) {
-            let normalized = metadata
-                .initial_normalized(id)
+            let previous = retained.and_then(|old| {
+                (old.class == Some(class))
+                    .then(|| old.parameters().iter().find(|p| p.id == id))
+                    .flatten()
+            });
+            if retained.is_some()
+                && previous.is_none_or(|p| metadata.step_count(id) != Some(p.steps))
+            {
+                return Err(Error::Protocol(
+                    "renewed authored parameter capability differs",
+                ));
+            }
+            let normalized = previous
+                .map(|p| f64::from_bits(p.normalized_base_bits))
+                .or_else(|| metadata.initial_normalized(id))
                 .ok_or(Error::Protocol("authored canonical value missing"))?;
             *base = Some((id, normalized.to_bits()));
             *entry = hex_lattice::ForeignParameterCapability {
