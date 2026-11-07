@@ -2,9 +2,9 @@
 //!
 //! Canonical coefficients are prepared on control from the RBJ audio-EQ
 //! cookbook equations. The callback retains fixed coefficient banks and
-//! transposed-direct-form-II histories. Shared gain, frequency and Q automation
+//! transposed-direct-form-II histories. Shared gain, frequency, Q and filter-type automation
 //! designs active-bank targets in fixed inline storage and reuses the rate-scaled
-//! coefficient/gain smoother. Band enable/type and routing automation remain
+//! coefficient/gain smoother. Band enable and routing automation remain
 //! unsupported. Compatible copies retain admitted trajectories; missing views
 //! restore canonical controls, and detached tails freeze their targets.
 mod automation;
