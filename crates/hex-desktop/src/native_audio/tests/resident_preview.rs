@@ -286,6 +286,12 @@ impl WorkerAudioSink for ResidentSink {
     ) -> Result<Option<hex_engine::PreparedRevision>, String> {
         self.inner.prepare_resident_effects(input, prepare)
     }
+    fn received_foreign_program_on_control(
+        &mut self,
+        binding: hex_lattice_contract::ForeignProcessorBinding,
+    ) -> hex_engine::ForeignProgramFrontier {
+        self.inner.received_foreign_program_on_control(binding)
+    }
     fn prepare_offline_bounce(
         &mut self,
         input: hex_session::service::ResidentEffectPreparation<'_>,
