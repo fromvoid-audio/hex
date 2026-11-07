@@ -71,16 +71,16 @@ mod utility_panel;
 pub(super) use send_controls::finalize_send_controls_for_track;
 pub(super) use send_controls::return_send_numeric_control;
 
-pub(super) const DEVICE_PANEL_HEIGHT: f32 = 213.0;
 const DEVICE_PANEL_BORDER_WIDTH: f32 = 1.0;
 const DEVICE_PANEL_HEADER_HEIGHT: f32 = 22.0;
 const DEVICE_CHAIN_PADDING: f32 = 3.0;
+pub(super) const DEVICE_PANEL_HEIGHT: f32 = crate::device_composition::FRAME_HEIGHT
+    + DEVICE_PANEL_BORDER_WIDTH
+    + DEVICE_PANEL_HEADER_HEIGHT
+    + DEVICE_CHAIN_PADDING * 2.0;
 const DEVICE_FRAME_WIDTH: f32 = crate::device_composition::GENERIC_FRAME_WIDTH;
 pub(super) const UTILITY_FRAME_WIDTH: f32 = crate::device_composition::UTILITY_FRAME_WIDTH;
-const DEVICE_FRAME_HEIGHT: f32 = DEVICE_PANEL_HEIGHT
-    - DEVICE_PANEL_BORDER_WIDTH
-    - DEVICE_PANEL_HEADER_HEIGHT
-    - (DEVICE_CHAIN_PADDING * 2.0);
+const DEVICE_FRAME_HEIGHT: f32 = crate::device_composition::FRAME_HEIGHT;
 const DEVICE_FRAME_BODY_HEIGHT: f32 = crate::device_composition::BODY_HEIGHT;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

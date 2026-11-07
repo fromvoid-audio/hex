@@ -53,7 +53,7 @@ fn catalog_fixture_track_return_labels_reuse_production_geometry_in_bounded_view
                 card.size,
                 size(
                     px(entry.width() + hex_widgets::DEVICE_FRAME_HEADER_WIDTH),
-                    px(184.0)
+                    px(200.0)
                 ),
                 "{entry:?}"
             );
@@ -64,6 +64,10 @@ fn catalog_fixture_track_return_labels_reuse_production_geometry_in_bounded_view
             assert_eq!(body.size.height, px(device_composition::BODY_HEIGHT));
             assert_eq!(body.origin.x, header.right());
             assert_eq!(body.origin.y, header.origin.y);
+            assert_eq!(
+                body.bottom() + px(hex_widgets::DEVICE_FRAME_BORDER_WIDTH),
+                card.bottom()
+            );
             assert_eq!(
                 visual.rendered_background("device-frame-header"),
                 Some(gpui::Background::from(rgb(theme::device_style(
