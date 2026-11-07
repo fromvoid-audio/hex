@@ -20,7 +20,10 @@
 //! The shared Arrangement adapter supplies authored dry/wet at host rate and
 //! output, predelay, reflection shape, diffusion scale, spin/chorus and filter
 //! frequency/Q, diffusion and stepped density controls at tank evaluations. Canonical edits retain their smoothing.
-//! Delay capacities, feedback and tail bounds stay unchanged. Detached tails
+//! Fixed delay capacities stay unchanged. Authored feedback derives from the
+//! effective parameter ramps at tank rate; canonical-only coefficient ramps
+//! retain their law. Decay-admitted factories reserve the maximum finite tail;
+//! ordinary factories refuse unprepared decay input and keep their old quote. Detached tails
 //! retain the last validated values after the host freezes their clock.
 mod runtime;
 mod state;
@@ -44,9 +47,22 @@ impl ReverbDefinition {
         state: &NativeDeviceState,
         rate: u32,
     ) -> Result<PreparedReverb, DeviceContractError> {
+        Self::prepare_owned_room_for_parameters(state, rate, &[])
+    }
+    /// Exact admitted provider targets, including live base-only input slots.
+    /// Decay admission expands the finite tail promise before publication.
+    pub fn prepare_owned_room_for_parameters(
+        state: &NativeDeviceState,
+        rate: u32,
+        parameters: &[ParameterId],
+    ) -> Result<PreparedReverb, DeviceContractError> {
+        if !parameters.is_empty() {
+            runtime::automation::validate_ids(parameters)?;
+        }
         state.require_asset_free_processing()?;
         let state = state::migrate(state)?;
         runtime::PreparedReverb::new(rate, decode(&state)?)
+            .map(|prepared| prepared.with_automation(parameters))
     }
 }
 impl NativeDeviceMetadata for ReverbDefinition {
@@ -173,7 +189,11 @@ impl NativeDeviceDefinition for ReverbDefinition {
         Ok(hex_lattice::PreparedRuntimeDevice {
             matrix: StereoMatrix::identity(),
             processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(
-                std::sync::Arc::new(Self::prepare_owned_room(state, context.sample_rate)?),
+                std::sync::Arc::new(Self::prepare_owned_room_for_parameters(
+                    state,
+                    context.sample_rate,
+                    parameters,
+                )?),
             )),
         })
     }

@@ -447,8 +447,12 @@ impl ChainCustody {
             } else if reverb {
                 Some(
                     OwnedShared::new_owned(
-                        hex_devices::reverb::ReverbDefinition::prepare_owned_room(&migrated, rate)
-                            .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                        hex_devices::reverb::ReverbDefinition::prepare_owned_room_for_parameters(
+                            &migrated,
+                            rate,
+                            automation.parameter_ids(),
+                        )
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?,
                     )
                     .into_processor_parts_on_control(),
                 )
@@ -699,6 +703,63 @@ fn copy_state(
 mod tests {
     use crate::audio_preparation::*;
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    #[test]
+    fn reverb_decay_live_input_uses_scoped_closed_factory_and_tail_quote() {
+        use hex_devices::reverb::{REVERB_DEFINITION as D, parameter as p};
+        use hex_lattice_contract::DeviceAutomationTarget;
+        let (project, _) = crate::audio_preparation::tests::fixture(2);
+        let mut snapshot = project.snapshot();
+        let id = snapshot.next_id;
+        snapshot.next_id += 1;
+        snapshot.tracks[0]
+            .devices
+            .push(hex_project::DeviceSnapshot {
+                id,
+                bypassed: false,
+                comparison: None,
+                automation: vec![],
+                state: D.default_state().unwrap(),
+            });
+        let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+        let track = &project.tracks()[0];
+        let device = &track.devices()[0];
+        let registry = hex_devices::native_registry().unwrap();
+        for armed in [false, true] {
+            let input = armed.then(|| {
+                crate::device_automation::native_parameter_input_target(
+                    &project,
+                    device.id(),
+                    DeviceAutomationTarget::Parameter(p::DECAY),
+                )
+                .unwrap()
+            });
+            let mut custody = super::ChainCustody::default();
+            let (quoted, overlap) = custody
+                .quote_with_input(track.devices(), project.sample_rate(), input)
+                .unwrap();
+            let chain = custody
+                .prepare_with_effects_and_input(
+                    track.devices(),
+                    hex_lattice::ProcessorChainOwner::Track(track.id().value()),
+                    project.sample_rate(),
+                    Some(&registry),
+                    input,
+                    None,
+                )
+                .unwrap();
+            assert!(custody.bytes(&chain).unwrap() <= quoted);
+            assert!(custody.construction_overlap() <= overlap);
+            let runtime = hex_lattice::NativeRuntimeChain::new_prepared(chain).unwrap();
+            assert_eq!(
+                runtime.output_tail_for_range(0..1),
+                Some(hex_lattice::OutputTail::Finite {
+                    max_tail_frames: u64::from(project.sample_rate())
+                        * (if armed { 181 } else { 8 })
+                        + u64::from(project.sample_rate()).div_ceil(10)
+                })
+            );
+        }
+    }
     #[test]
     fn armed_utility_provider_and_host_use_quoted_existing_chain_custody_without_points() {
         use hex_lattice_contract::DeviceAutomationTarget;

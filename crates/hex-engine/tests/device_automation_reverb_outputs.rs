@@ -115,6 +115,10 @@ fn reverb_outputs_match_independent_gain_and_width_oracles_on_all_effect_owners(
         // Held authored controls must reproduce a separately prepared room,
         // including delay positions and oscillator phase at each effect owner.
         let settings = [
+            (p::DECAY, 2.0),
+            (p::SIZE, 150.0),
+            (p::HIGH_RATIO, 1.4),
+            (p::LOW_RATIO, 1.5),
             (p::DIFFUSION, 10.0),
             (p::LO_FREQ, 250.0),
             (p::HI_FREQ, 3000.0),
@@ -133,9 +137,16 @@ fn reverb_outputs_match_independent_gain_and_width_oracles_on_all_effect_owners(
         let mut authored = Editor::new(editor.project().clone(), 32).unwrap();
         let mut changed = base.clone();
         for (id, value) in settings {
-            changed = D
-                .patch_parameter(&changed, id, ParameterValue::Float(value))
+            let point_value = point(id, 0, value, Shape::Step, &base);
+            let descriptor = *D.descriptors().iter().find(|d| d.id == id).unwrap();
+            let mapped = D
+                .parameter_semantics_for_state(&base, id)
+                .unwrap()
+                .unwrap()
+                .normalization
+                .denormalize(descriptor, point_value.value.get())
                 .unwrap();
+            changed = D.patch_parameter(&changed, id, mapped).unwrap();
             authored
                 .execute(Command::ReplaceDeviceAutomation {
                     device,
