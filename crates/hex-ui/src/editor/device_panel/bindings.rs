@@ -616,7 +616,13 @@ fn create_parameter_control(
                     NumericScale::LinearAmplitudeDecibels
                 }
                 ParameterPresentation::Logarithmic => NumericScale::Logarithmic,
-                ParameterPresentation::Linear if min < 0.0 && max > 0.0 => NumericScale::Bipolar,
+                ParameterPresentation::Linear
+                    if min < 0.0
+                        && max > 0.0
+                        && presentation != ControlPresentation::FilledSlider =>
+                {
+                    NumericScale::Bipolar
+                }
                 ParameterPresentation::Linear => NumericScale::Linear,
             };
             let mut spec = NumericSpec::new_f32(

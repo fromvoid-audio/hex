@@ -271,16 +271,16 @@ fn operator_row(
         ControlPresentation::MicroDial,
         Some(if fixed { "freq" } else { "coarse" }),
     );
-    let fine = preview::control(
+    let fine = compact_control_with_codec(
         view,
         cx,
         device,
-        [
-            preview::Field::FineA,
-            preview::Field::FineB,
-            preview::Field::FineC,
-            preview::Field::FineD,
-        ][operator],
+        identity,
+        parameters,
+        id(609 + operator as u32),
+        ControlPresentation::FilledSlider,
+        Some("fine"),
+        Some(super::numeric_display::NumericDisplayCodec::HertzOffset),
     );
     let level = shell_control(
         view,

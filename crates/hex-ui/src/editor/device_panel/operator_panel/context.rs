@@ -140,12 +140,11 @@ pub(super) fn focus_listener(
             }
             if let Some(state) = view.device_panel.operator_previews.get(&device) {
                 for (field, control) in &state.controls {
-                    let operator = field.operator();
-                    if operator.is_some() || field.is_global() {
+                    if field.is_global() {
                         handles.push((
                             control.entity.entity_id(),
                             control.entity.focus_handle(cx),
-                            operator,
+                            None,
                             None,
                         ));
                     }
@@ -244,7 +243,11 @@ pub(super) fn section_listener(
                         })
                         .collect();
                     match section {
-                        super::Section::Oscillator(operator) => {
+                        super::Section::Oscillator(operator)
+                            if !excluded
+                                .iter()
+                                .any(|key| (609..=612).contains(&key.parameter.value())) =>
+                        {
                             select_oscillator(view, cx, owner, operator, &excluded);
                         }
                         super::Section::Preview("lfo" | "filter")
