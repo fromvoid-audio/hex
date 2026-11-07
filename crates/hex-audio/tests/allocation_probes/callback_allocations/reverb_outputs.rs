@@ -74,7 +74,8 @@ fn reverb_output_automation_callback_publication_history_and_save_reopen()
     editor.execute(lane(0.5)?)?;
     assert!(editor.undo());
     assert!(editor.redo());
-    // Change room outputs at sample density through the real callback.
+    // Change controls at sample density. Keep predelay within the short
+    // source so the recorded decay touch reaches an excited feedback network.
     let end = editor
         .project()
         .tempo_map()
@@ -109,12 +110,12 @@ fn reverb_output_automation_callback_publication_history_and_save_reopen()
             points: vec![
                 AutomationPoint {
                     beat: BeatTime::ZERO,
-                    value: AutomationValue::new(0.1)?,
+                    value: AutomationValue::new(if parameter == p::PREDELAY { 0.0 } else { 0.1 })?,
                     outgoing: AutomationInterpolation::Linear,
                 },
                 AutomationPoint {
                     beat: end,
-                    value: AutomationValue::new(0.9)?,
+                    value: AutomationValue::new(if parameter == p::PREDELAY { 0.01 } else { 0.9 })?,
                     outgoing: AutomationInterpolation::Step,
                 },
             ],
@@ -195,6 +196,12 @@ fn reverb_output_automation_callback_publication_history_and_save_reopen()
     };
     let recorded_pcm = render_take(&reopened)?;
     let base_pcm = render_take(&before_take)?;
+    assert!(
+        base_pcm
+            .iter()
+            .any(|frame| (frame[0] - 0.00005).abs() > 1e-10 || (frame[1] + 0.00005).abs() > 1e-10),
+        "the fixture must excite the wet network"
+    );
     assert!(
         recorded_pcm.iter().zip(&base_pcm).any(|(a, b)| a != b),
         "the recorded native touch must affect rendered audio"
