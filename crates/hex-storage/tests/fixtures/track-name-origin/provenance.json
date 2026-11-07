@@ -1,0 +1,7 @@
+{
+  "writer_source": "6de4bd2d40fa248370c80311553de0c71f21cece",
+  "writer_schema": 62,
+  "writer": "schema62-writer.rs",
+  "fixture_sha256": "02da6d420b86e23f972e20be2bb788fa81d98c7d562ea6f2d2b33e99f69047ac",
+  "input": "Original synthetic project: tracks named with the historical UI defaults ('track 1', 'audio 2'), a user name ('lead'), and an instrument track named 'new track'."
+}

@@ -2,6 +2,7 @@
 use hex_project::{Command, Created, Editor, Project, TrackKind, TrackSelectionIds};
 use hex_storage::{decode, encode};
 use serde_json::{Value, json};
+mod common;
 const HISTORICAL: &[u8] =
     include_bytes!("fixtures/track-groups/schema43-flat-tracks-15957517.json");
 fn fixture() -> Editor {
@@ -42,8 +43,13 @@ fn actual_schema43_migrates_all_fields_without_rewriting_sources() {
     let mut current: Value = serde_json::from_slice(&encode(&project).unwrap()).unwrap();
     assert_eq!(current["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     assert_eq!(
-        current.as_object_mut().unwrap().remove("native_sources"),
-        Some(json!([]))
+        common::restore_pre_binding_instruments(&mut current),
+        original["tracks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|track| !track["instrument"].is_null())
+            .count()
     );
     let rows = current
         .as_object_mut()
@@ -109,7 +115,7 @@ fn hierarchy_inventory_is_required_exact_ordered_bounded_and_strict() {
     ]);
     cases.push(v);
     let mut v = original.clone();
-    v["version"] = (hex_storage::CURRENT_SCHEMA_VERSION + 1).into();
+    v["version"] = (hex_storage::NEWEST_SCHEMA_VERSION + 1).into();
     cases.push(v);
     for (index, v) in cases.into_iter().enumerate() {
         assert!(

@@ -124,3 +124,84 @@ fn removing_a_soloed_track_and_undo_restore_the_exact_solo_state() {
     assert_eq!(editor.project(), &before);
     assert!(editor.project().track(track).unwrap().soloed());
 }
+
+#[test]
+fn selected_solo_uses_one_group_intent_and_one_history_step() {
+    let (mut editor, [first, outside, last]) = setup();
+    for track in [first, outside] {
+        editor
+            .execute(Command::ToggleSolo {
+                track,
+                exclusive: false,
+            })
+            .unwrap();
+    }
+    let selection = hex_project::TrackSelectionIds::new(&[last, first]).unwrap();
+    let before = editor.project().clone();
+    editor
+        .execute(Command::ToggleSoloTracks {
+            tracks: selection.clone(),
+            exclusive: false,
+        })
+        .unwrap();
+    assert!(
+        editor.project().tracks().iter().all(|track| track.soloed()),
+        "mixed states enable the complete discontiguous selection"
+    );
+    let enabled = editor.project().clone();
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &before);
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &enabled);
+    editor
+        .execute(Command::ToggleSoloTracks {
+            tracks: selection.clone(),
+            exclusive: true,
+        })
+        .unwrap();
+    assert!(!editor.project().track(first).unwrap().soloed());
+    assert!(!editor.project().track(last).unwrap().soloed());
+    assert!(
+        editor.project().track(outside).unwrap().soloed(),
+        "disabling leaves outsiders intact"
+    );
+    editor
+        .execute(Command::ToggleSoloTracks {
+            tracks: selection,
+            exclusive: true,
+        })
+        .unwrap();
+    assert!(editor.project().track(first).unwrap().soloed());
+    assert!(editor.project().track(last).unwrap().soloed());
+    assert!(
+        !editor.project().track(outside).unwrap().soloed(),
+        "exclusive enabling clears outsiders once"
+    );
+}
+
+#[test]
+fn stale_selected_solo_preserves_project_and_redo() {
+    let (mut editor, [first, second, stale]) = setup();
+    let selection = hex_project::TrackSelectionIds::new(&[first, stale]).unwrap();
+    editor.execute(Command::RemoveTrack(stale)).unwrap();
+    editor
+        .execute(Command::ToggleSolo {
+            track: second,
+            exclusive: false,
+        })
+        .unwrap();
+    editor.undo();
+    let before = editor.project().clone();
+    assert!(
+        editor
+            .execute(Command::ToggleSoloTracks {
+                tracks: selection,
+                exclusive: true
+            })
+            .is_err()
+    );
+    assert_eq!(editor.project(), &before);
+    assert!(editor.can_redo());
+    assert!(editor.redo());
+    assert!(editor.project().track(second).unwrap().soloed());
+}

@@ -19,8 +19,7 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
     if (1..=29).contains(&version) {
         return decode_early(bytes, version);
     }
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: Value = serde_json::from_slice(bytes)?;
+    let mut value = super::audio_events::parse_unique(bytes)?;
     if value.get("version").and_then(Value::as_u64) != Some(u64::from(version)) {
         return Err(StorageError::Invalid("invalid historical project version"));
     }
@@ -36,7 +35,7 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
     }
     upgrade_audio_layout(&mut value)?;
     value["version"] = 34.into();
-    let project = super::tuning::decode_version(&serde_json::to_vec(&value)?, 34)?;
+    let project = super::tuning::decode_version_value(value, 34)?;
     restore_midi_boundaries(project, boundaries)
 }
 
@@ -501,5 +500,5 @@ fn restore_midi_boundaries(
     if !boundaries.is_empty() {
         return Err(StorageError::Invalid("unmatched historical MIDI policy"));
     }
-    Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+    Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }

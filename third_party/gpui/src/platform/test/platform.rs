@@ -10,7 +10,7 @@ use collections::VecDeque;
 use futures::channel::oneshot;
 use parking_lot::Mutex;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     path::{Path, PathBuf},
     rc::{Rc, Weak},
     sync::Arc,
@@ -35,6 +35,9 @@ pub(crate) struct TestPlatform {
     pub(crate) prompts: RefCell<TestPrompts>,
     screen_capture_sources: RefCell<Vec<TestScreenCaptureSource>>,
     pub opened_url: RefCell<Option<String>>,
+    should_quit: RefCell<Option<Box<dyn FnMut() -> bool>>>,
+    quit_request_pending: Cell<bool>,
+    quit_replies: RefCell<Vec<bool>>,
     pub text_system: Arc<dyn PlatformTextSystem>,
     #[cfg(target_os = "windows")]
     bitmap_factory: std::mem::ManuallyDrop<IWICImagingFactory>,
@@ -122,10 +125,42 @@ impl TestPlatform {
             current_primary_item: Mutex::new(None),
             weak: weak.clone(),
             opened_url: Default::default(),
+            should_quit: Default::default(),
+            quit_request_pending: Cell::new(false),
+            quit_replies: Default::default(),
             #[cfg(target_os = "windows")]
             bitmap_factory,
             text_system,
         })
+    }
+
+    /// Deliver an OS termination request, as AppKit's
+    /// `applicationShouldTerminate:` does. Returns true when the app deferred
+    /// its answer to `reply_to_quit`, false for immediate termination.
+    pub(crate) fn simulate_should_quit(&self) -> bool {
+        assert!(
+            !self.quit_request_pending.get(),
+            "a termination request is already awaiting its reply"
+        );
+        let Some(mut callback) = self.should_quit.borrow_mut().take() else {
+            return false;
+        };
+        // Pending first: the handler may reply before it returns.
+        self.quit_request_pending.set(true);
+        let deferred = callback();
+        if !deferred {
+            self.quit_request_pending.set(false);
+        }
+        self.should_quit.borrow_mut().get_or_insert(callback);
+        deferred
+    }
+
+    pub(crate) fn quit_request_pending(&self) -> bool {
+        self.quit_request_pending.get()
+    }
+
+    pub(crate) fn quit_replies(&self) -> Vec<bool> {
+        self.quit_replies.borrow().clone()
     }
 
     pub(crate) fn simulate_new_path_selection(
@@ -410,6 +445,16 @@ impl Platform for TestPlatform {
     }
 
     fn on_quit(&self, _callback: Box<dyn FnMut()>) {}
+
+    fn on_should_quit(&self, callback: Box<dyn FnMut() -> bool>) {
+        *self.should_quit.borrow_mut() = Some(callback);
+    }
+
+    fn reply_to_quit(&self, terminate: bool) {
+        if self.quit_request_pending.replace(false) {
+            self.quit_replies.borrow_mut().push(terminate);
+        }
+    }
 
     fn on_reopen(&self, _callback: Box<dyn FnMut()>) {
         unimplemented!()

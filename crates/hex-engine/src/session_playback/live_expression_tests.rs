@@ -149,7 +149,7 @@ fn start(
     runtime
 }
 #[test]
-fn controller_snapshot_is_frozen_across_subsegments_then_neutral_after_terminal_cancel() {
+fn controller_snapshot_is_frozen_across_subsegments_and_source_value_survives_cancel() {
     let f = fixture();
     for session in [false, true] {
         let revision = revision(&f);
@@ -199,12 +199,12 @@ fn controller_snapshot_is_frozen_across_subsegments_then_neutral_after_terminal_
         assert_eq!(input.snapshot(), Expression::default());
         assert_eq!(
             tested.mutable_instruments[0].as_ref().unwrap().expression,
-            Some(Expression::default())
+            Some(second)
         );
     }
 }
 #[test]
-fn same_instance_handoff_keeps_lease_and_deselection_resets_inherited_history() {
+fn same_source_handoff_and_deselection_retain_last_published_expression() {
     let f = fixture();
     let revision = revision(&f);
     let input = lease(&f);
@@ -225,7 +225,7 @@ fn same_instance_handoff_keeps_lease_and_deselection_resets_inherited_history() 
             .expression,
         Some(input.snapshot())
     );
-    let mut deselected = SessionPlayback::new(revision).unwrap();
+    let mut deselected = SessionPlayback::new(Arc::clone(&revision)).unwrap();
     deselected.try_inherit_state_from(&mut candidate).unwrap();
     deselected.render(&mut [[0.0; 2]; 64]).unwrap();
     assert_eq!(
@@ -233,9 +233,33 @@ fn same_instance_handoff_keeps_lease_and_deselection_resets_inherited_history() 
             .as_ref()
             .unwrap()
             .expression,
-        Some(Expression::default())
+        Some(input.snapshot())
     );
 }
+#[test]
+fn fresh_and_cancelled_input_do_not_zero_shared_source_expression() {
+    let f = fixture();
+    let revision = revision(&f);
+    let input = lease(&f);
+    let value = Expression::new(100, 8191, 80).unwrap();
+    input.publish(value);
+    let mut active = start(&f, Arc::clone(&revision), input, false);
+    active.render(&mut [[0.0; 2]; 64]).unwrap();
+    let fresh = lease(&f);
+    active.attach_live_expression(Arc::clone(&fresh)).unwrap();
+    active.render(&mut [[0.0; 2]; 64]).unwrap();
+    assert_eq!(
+        active.mutable_instruments[0].as_ref().unwrap().expression,
+        Some(value)
+    );
+    fresh.cancel();
+    active.render(&mut [[0.0; 2]; 64]).unwrap();
+    assert_eq!(
+        active.mutable_instruments[0].as_ref().unwrap().expression,
+        Some(value)
+    );
+}
+
 #[test]
 fn keyboard_monitor_receives_current_snapshot_without_starting_transport() {
     let f = fixture();

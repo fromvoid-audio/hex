@@ -1,4 +1,5 @@
 //! View-only horizontal navigation shared by track and return device rails.
+//! A Window pointer lease owns held input; cancellation keeps the last offset.
 use super::*;
 use gpui::{
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollHandle, ScrollWheelEvent, canvas, fill,
@@ -12,7 +13,7 @@ pub(in crate::editor) struct Navigation {
     identity: Option<(u64, DevicePanelOwner)>,
     mode: Option<super::super::EditorMode>,
     overview_bounds: Option<Bounds<Pixels>>,
-    toggle_bounds: Option<Bounds<Pixels>>,
+    pub(in crate::editor) detail_controls_bounds: Option<Bounds<Pixels>>,
 }
 
 struct Gesture {
@@ -20,6 +21,33 @@ struct Gesture {
     pointer_x: f32,
     offset: f32,
     scale: f32,
+    focus: Option<gpui::FocusHandle>,
+}
+
+impl Gesture {
+    fn cursor(&self) -> gpui::CursorStyle {
+        if self.button == MouseButton::Middle {
+            gpui::CursorStyle::ClosedHand
+        } else {
+            gpui::CursorStyle::PointingHand
+        }
+    }
+}
+
+fn current(view: &EditorView, window: &Window, cx: &App) -> bool {
+    let navigation = &view.device_panel.navigation;
+    view.clip_view_open
+        && view.device_panel_active
+        && navigation.identity
+            == view
+                .device_panel
+                .owner
+                .map(|owner| (view.project_generation, owner))
+        && navigation.mode == Some(view.mode)
+        && navigation
+            .gesture
+            .as_ref()
+            .is_some_and(|g| g.focus == window.focused(cx))
 }
 
 impl Navigation {
@@ -156,9 +184,9 @@ pub(in crate::editor) fn bottom_bar(
     let overview = div()
         .id("device-chain-overview")
         .debug_selector(|| "device-chain-overview".into())
-        .w(px(154.0))
+        .flex_1()
+        .min_w(px(24.0))
         .h(px(16.0))
-        .flex_shrink_0()
         .relative()
         .bg(rgb(theme::color(theme::PaletteRole::Background)))
         .cursor(gpui::CursorStyle::PointingHand)
@@ -234,49 +262,12 @@ pub(in crate::editor) fn bottom_bar(
                             ));
                         }
                     }
-                    let move_entity = entity.clone();
-                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-                        if !phase.capture() {
-                            return;
-                        }
-                        let moved =
-                            move_entity.update(cx, |view, _| {
-                                let navigation = &mut view.device_panel.navigation;
-                                if navigation.gesture.as_ref().is_some_and(|gesture| {
-                                    event.pressed_button != Some(gesture.button)
-                                }) {
-                                    return navigation.cancel();
-                                }
-                                navigation.update(f32::from(event.position.x))
-                            });
-                        if moved {
-                            cx.stop_propagation();
-                            window.refresh();
-                        }
-                    });
-                    let up_entity = entity.clone();
-                    window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-                        if !phase.capture() {
-                            return;
-                        }
-                        let ended = up_entity.update(cx, |view, _| {
-                            let navigation = &mut view.device_panel.navigation;
-                            if navigation
-                                .gesture
-                                .as_ref()
-                                .is_some_and(|gesture| gesture.button == event.button)
-                            {
-                                navigation.update(f32::from(event.position.x));
-                                navigation.cancel()
-                            } else {
-                                false
-                            }
-                        });
-                        if ended {
-                            cx.stop_propagation();
-                            window.refresh();
-                        }
-                    });
+                    let view = entity.read(cx);
+                    if current(view, window, cx)
+                        && let Some(gesture) = view.device_panel.navigation.gesture.as_ref()
+                    {
+                        window.renew_pointer_capture(entity.entity_id(), gesture.cursor());
+                    }
                     let wheel_entity = entity.clone();
                     window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
                         if !phase.capture() || !open || !bounds.contains(&event.position) {
@@ -295,84 +286,28 @@ pub(in crate::editor) fn bottom_bar(
             )
             .size_full(),
         );
-    let measure_entity = cx.entity();
+    let trim = open
+        .then(|| super::render_automation_trim(view, cx))
+        .flatten();
+    let controls = view.clip_detail_controls(cx);
     div()
         .id("device-chain-bottom-bar")
         .relative()
         .flex()
         .items_center()
         .gap(px(4.0))
-        .flex_shrink_0()
+        .w(px(270.0))
+        .min_w(px(160.0))
+        .children(trim)
         .child(overview)
-        .child(
-            div()
-                .id("device-panel-bottom-toggle")
-                .debug_selector(|| "device-panel-bottom-toggle".into())
-                .size(px(18.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .text_color(rgb(theme::color(if open {
-                    theme::PaletteRole::Primary
-                } else {
-                    theme::PaletteRole::Muted
-                })))
-                .tooltip(move |_, cx| {
-                    cx.new(|_| super::super::transport::MiniTooltip {
-                        kind: crate::tooltips::Kind::Identification,
-                        description: if open {
-                            "hide device panel"
-                        } else {
-                            "show device panel"
-                        }
-                        .into(),
-                    })
-                    .into()
-                })
-                .child(theme::text(if open { "⌄" } else { "⌃" }))
-                .on_click(cx.listener(move |view, _, window, cx| {
-                    if open {
-                        if !finalize_controls(view, cx) {
-                            cx.notify();
-                            return;
-                        }
-                        view.clip_view_open = false;
-                    } else {
-                        view.cancel_midi_note_gesture();
-                        view.device_panel_active = true;
-                        view.clip_view_open = true;
-                    }
-                    view.device_panel.navigation.cancel();
-                    view.focus.focus(window);
-                    if let Some(audio) = view.audio.as_mut() {
-                        let _ = audio.control.audition_cancel();
-                    }
-                    clear_eq8_audition_gesture_flags(view);
-                    cx.notify();
-                })),
-        )
-        .child(
-            canvas(
-                |_, _, _| (),
-                move |bounds, _, _, cx| {
-                    measure_entity.update(cx, |view, _| {
-                        view.device_panel.navigation.toggle_bounds = Some(Bounds::new(
-                            point(bounds.right() - px(18.0), bounds.center().y - px(9.0)),
-                            size(px(18.0), px(18.0)),
-                        ));
-                    });
-                },
-            )
-            .absolute()
-            .size_full(),
-        )
+        .child(controls)
 }
 
 /// Root capture runs before numeric fields' outside-down/blur handlers.
 pub(in crate::editor) fn capture_pointer_down(
     view: &mut EditorView,
     event: &MouseDownEvent,
+    window: &mut Window,
     cx: &mut Context<EditorView>,
 ) {
     if view.context_menu.is_some() || view.theme_settings.open {
@@ -384,7 +319,7 @@ pub(in crate::editor) fn capture_pointer_down(
         && view
             .device_panel
             .navigation
-            .toggle_bounds
+            .detail_controls_bounds
             .is_some_and(|bounds| bounds.contains(&event.position))
         && !finalize_controls(view, cx)
     {
@@ -392,10 +327,15 @@ pub(in crate::editor) fn capture_pointer_down(
         cx.notify();
         return;
     }
-    if !open {
+    if !open
+        || view.device_panel.navigation.is_active()
+        || !f32::from(event.position.x).is_finite()
+        || !f32::from(event.position.y).is_finite()
+    {
         return;
     }
-    let navigation = &mut view.device_panel.navigation;
+    let navigation = &view.device_panel.navigation;
+    let mut jump = None;
     let scale = if event.button == MouseButton::Middle
         && navigation.scroll.bounds().contains(&event.position)
     {
@@ -421,17 +361,89 @@ pub(in crate::editor) fn capture_pointer_down(
         );
         let pointer = f32::from(event.position.x - bounds.origin.x);
         if pointer < left || pointer > left + focus_width {
-            navigation.set_offset(-(pointer - focus_width / 2.0) / width * total);
+            jump = Some(-(pointer - focus_width / 2.0) / width * total);
         }
         -total / width
     } else {
         return;
     };
+    let identity = navigation.identity;
+    let mode = navigation.mode;
+    let button = event.button;
+    let owner = cx.entity().downgrade();
+    let cancelled = owner.clone();
+    if !window.capture_pointer(
+        cx.entity_id(),
+        button,
+        if button == MouseButton::Middle {
+            gpui::CursorStyle::ClosedHand
+        } else {
+            gpui::CursorStyle::PointingHand
+        },
+        move |event, window, cx| {
+            let moved = event.downcast_ref::<MouseMoveEvent>();
+            let released = event
+                .downcast_ref::<MouseUpEvent>()
+                .filter(|e| e.button == button);
+            let Some(position) = moved
+                .map(|e| e.position)
+                .or_else(|| released.map(|e| e.position))
+            else {
+                return;
+            };
+            let _ = owner.update(cx, |view, cx| {
+                let navigation = &view.device_panel.navigation;
+                if navigation.identity != identity
+                    || navigation.mode != mode
+                    || !navigation
+                        .gesture
+                        .as_ref()
+                        .is_some_and(|g| g.button == button)
+                {
+                    return;
+                }
+                let valid = current(view, window, cx)
+                    && f32::from(position.x).is_finite()
+                    && f32::from(position.y).is_finite();
+                let navigation = &mut view.device_panel.navigation;
+                if valid {
+                    navigation.update(f32::from(position.x));
+                }
+                if !valid || released.is_some() {
+                    navigation.cancel();
+                }
+                window.refresh();
+            });
+        },
+        move |window, cx| {
+            let _ = cancelled.update(cx, |view, _| {
+                let navigation = &mut view.device_panel.navigation;
+                if navigation.identity == identity
+                    && navigation.mode == mode
+                    && navigation
+                        .gesture
+                        .as_ref()
+                        .is_some_and(|g| g.button == button)
+                {
+                    navigation.cancel();
+                    window.refresh();
+                }
+            });
+        },
+        cx,
+    ) {
+        return;
+    }
+    let navigation = &mut view.device_panel.navigation;
+    if let Some(offset) = jump {
+        navigation.set_offset(offset);
+    }
     navigation.gesture = Some(Gesture {
         button: event.button,
         pointer_x: f32::from(event.position.x),
         offset: f32::from(navigation.scroll.offset().x),
         scale,
+        focus: window.focused(cx),
     });
     cx.stop_propagation();
     cx.notify();

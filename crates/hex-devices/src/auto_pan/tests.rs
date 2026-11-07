@@ -254,7 +254,7 @@ fn compatible_transfer_preserves_phase_and_unchanged_ramps_while_retargeting_cha
         .as_any()
         .downcast_ref::<AutoPanRuntime>()
         .expect("new runtime");
-    assert_eq!(target_pan.amount.remaining, 40);
+    assert_eq!(target_pan.dsp.amount.remaining, 40);
 
     let mut first = [[1.0, 1.0]; 10];
     target.process_block(&mut first, &hex_lattice::EMPTY_DEVICE_RESOURCES);
@@ -262,7 +262,7 @@ fn compatible_transfer_preserves_phase_and_unchanged_ramps_while_retargeting_cha
         .as_any()
         .downcast_ref::<AutoPanRuntime>()
         .expect("runtime");
-    assert_eq!(in_flight.amount.remaining, 30);
+    assert_eq!(in_flight.dsp.amount.remaining, 30);
     let transferred = runtime(&edit, 8_000);
     let mut same = transferred;
     same.copy_history_from(target.as_ref());
@@ -270,10 +270,13 @@ fn compatible_transfer_preserves_phase_and_unchanged_ramps_while_retargeting_cha
         .as_any()
         .downcast_ref::<AutoPanRuntime>()
         .expect("runtime");
-    assert_eq!(same_state.phase_cycles, in_flight.phase_cycles);
-    assert_eq!(same_state.amount.current, in_flight.amount.current);
-    assert_eq!(same_state.amount.step, in_flight.amount.step);
-    assert_eq!(same_state.amount.remaining, in_flight.amount.remaining);
+    assert_eq!(same_state.dsp.phase_cycles, in_flight.dsp.phase_cycles);
+    assert_eq!(same_state.dsp.amount.current, in_flight.dsp.amount.current);
+    assert_eq!(same_state.dsp.amount.step, in_flight.dsp.amount.step);
+    assert_eq!(
+        same_state.dsp.amount.remaining,
+        in_flight.dsp.amount.remaining
+    );
 
     let second_edit = patch(&edit, parameter::RATE, 2.0);
     let mut retargeted = runtime(&second_edit, 8_000);
@@ -282,10 +285,13 @@ fn compatible_transfer_preserves_phase_and_unchanged_ramps_while_retargeting_cha
         .as_any()
         .downcast_ref::<AutoPanRuntime>()
         .expect("runtime");
-    assert_eq!(retargeted.amount.remaining, in_flight.amount.remaining);
-    assert_eq!(retargeted.amount.step, in_flight.amount.step);
-    assert_eq!(retargeted.rate_hz.remaining, 40);
-    assert_ne!(retargeted.phase_cycles, old_pan.phase_cycles);
+    assert_eq!(
+        retargeted.dsp.amount.remaining,
+        in_flight.dsp.amount.remaining
+    );
+    assert_eq!(retargeted.dsp.amount.step, in_flight.dsp.amount.step);
+    assert_eq!(retargeted.dsp.rate_hz.remaining, 40);
+    assert_ne!(retargeted.dsp.phase_cycles, old_pan.dsp.phase_cycles);
 
     let phase_tie = shortest_degrees(0.0, 180.0);
     assert_eq!(phase_tie, 180.0);
@@ -309,16 +315,16 @@ fn edits_reach_targets_on_exactly_five_milliseconds_and_phase_retargets_by_short
         .as_any()
         .downcast_ref::<AutoPanRuntime>()
         .expect("runtime");
-    assert_eq!(ramp.amount.remaining, 1);
-    assert!((ramp.amount.current - (0.5 + 0.5 * 39.0 / 40.0)).abs() < 1.0e-14);
+    assert_eq!(ramp.dsp.amount.remaining, 1);
+    assert!((ramp.dsp.amount.current - (0.5 + 0.5 * 39.0 / 40.0)).abs() < 1.0e-14);
     let mut final_ramp_frame = [[1.0, 1.0]];
     edited.process_block(&mut final_ramp_frame, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let ramp = edited
         .as_any()
         .downcast_ref::<AutoPanRuntime>()
         .expect("runtime");
-    assert_eq!(ramp.amount.current, 1.0);
-    assert_eq!(ramp.amount.remaining, 0);
+    assert_eq!(ramp.dsp.amount.current, 1.0);
+    assert_eq!(ramp.dsp.amount.remaining, 0);
     let mut held_frame = [[1.0, 1.0]];
     edited.process_block(&mut held_frame, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(
@@ -326,6 +332,7 @@ fn edits_reach_targets_on_exactly_five_milliseconds_and_phase_retargets_by_short
             .as_any()
             .downcast_ref::<AutoPanRuntime>()
             .expect("runtime")
+            .dsp
             .amount
             .current,
         1.0
@@ -341,10 +348,10 @@ fn edits_reach_targets_on_exactly_five_milliseconds_and_phase_retargets_by_short
         .as_any()
         .downcast_ref::<AutoPanRuntime>()
         .expect("runtime");
-    assert_eq!(rate_state.rate_hz.current, 2.0);
-    assert_eq!(rate_state.rate_hz.remaining, 0);
-    assert!((rate_state.phase_cycles - 60.5 / 8_000.0).abs() < 1.0e-14);
-    let phase = rate_state.phase_cycles;
+    assert_eq!(rate_state.dsp.rate_hz.current, 2.0);
+    assert_eq!(rate_state.dsp.rate_hz.remaining, 0);
+    assert!((rate_state.dsp.phase_cycles - 60.5 / 8_000.0).abs() < 1.0e-14);
+    let phase = rate_state.dsp.phase_cycles;
     let mut after_rate_ramp = [[1.0, 1.0]];
     rate_edit.process_block(&mut after_rate_ramp, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let expected_left = (0.5 + 0.5 * (1.0 + (std::f64::consts::TAU * phase).sin()) * 0.5) as f32;
@@ -360,8 +367,8 @@ fn edits_reach_targets_on_exactly_five_milliseconds_and_phase_retargets_by_short
         .as_any()
         .downcast_ref::<AutoPanRuntime>()
         .expect("runtime");
-    assert!((phase.right_phase_degrees.current - 270.0).abs() < 1.0e-12);
-    assert_eq!(phase.right_phase_degrees.remaining, 20);
+    assert!((phase.dsp.right_phase_degrees.current - 270.0).abs() < 1.0e-12);
+    assert_eq!(phase.dsp.right_phase_degrees.remaining, 20);
     let phase_at_sample_20 = 19.0 / 8_000.0;
     let expected_lfo =
         (1.0 + (std::f64::consts::TAU * (phase_at_sample_20 + 270.0 / 360.0)).sin()) * 0.5;
@@ -377,8 +384,8 @@ fn edits_reach_targets_on_exactly_five_milliseconds_and_phase_retargets_by_short
         .as_any()
         .downcast_ref::<AutoPanRuntime>()
         .expect("runtime");
-    assert!((retargeted.right_phase_degrees.current - 274.5).abs() < 1.0e-12);
-    assert_eq!(retargeted.right_phase_degrees.remaining, 39);
+    assert!((retargeted.dsp.right_phase_degrees.current - 274.5).abs() < 1.0e-12);
+    assert_eq!(retargeted.dsp.right_phase_degrees.remaining, 39);
 
     // 360 and 0 are equivalent targets, so an unrelated in-flight phase ramp
     // must be inherited unchanged instead of restarted.
@@ -394,16 +401,16 @@ fn edits_reach_targets_on_exactly_five_milliseconds_and_phase_retargets_by_short
         .downcast_ref::<AutoPanRuntime>()
         .expect("runtime");
     assert_eq!(
-        equivalent.right_phase_degrees.current,
-        in_flight.right_phase_degrees.current
+        equivalent.dsp.right_phase_degrees.current,
+        in_flight.dsp.right_phase_degrees.current
     );
     assert_eq!(
-        equivalent.right_phase_degrees.step,
-        in_flight.right_phase_degrees.step
+        equivalent.dsp.right_phase_degrees.step,
+        in_flight.dsp.right_phase_degrees.step
     );
     assert_eq!(
-        equivalent.right_phase_degrees.remaining,
-        in_flight.right_phase_degrees.remaining
+        equivalent.dsp.right_phase_degrees.remaining,
+        in_flight.dsp.right_phase_degrees.remaining
     );
 }
 
@@ -429,10 +436,10 @@ fn reset_clears_phase_and_ramps_and_360_degrees_matches_zero() {
         .as_any()
         .downcast_ref::<AutoPanRuntime>()
         .expect("runtime");
-    assert_eq!(candidate.phase_cycles, 0.0);
-    assert_eq!(candidate.amount.current, 1.0);
-    assert_eq!(candidate.amount.target, 1.0);
-    assert_eq!(candidate.amount.remaining, 0);
+    assert_eq!(candidate.dsp.phase_cycles, 0.0);
+    assert_eq!(candidate.dsp.amount.current, 1.0);
+    assert_eq!(candidate.dsp.amount.target, 1.0);
+    assert_eq!(candidate.dsp.amount.remaining, 0);
     source.reset();
 }
 
@@ -535,10 +542,8 @@ fn independent_quarter_cycle_channel_oracles_and_zero_amount_cover_all_shapes() 
                     let prepared = prepared(&state, 48000);
                     let boxed = prepared.create_runtime();
                     let initial = boxed.as_any().downcast_ref::<AutoPanRuntime>().unwrap();
-                    let mut pan = AutoPanRuntime {
-                        phase_cycles: quarter as f64 / 4.0,
-                        ..copy_runtime(initial)
-                    };
+                    let mut pan = copy_runtime(initial);
+                    pan.dsp.phase_cycles = quarter as f64 / 4.0;
                     let input = [0.8, -0.25];
                     let mut sample = [input];
                     pan.process_block(&mut sample, &hex_lattice::EMPTY_DEVICE_RESOURCES);
@@ -562,16 +567,7 @@ fn independent_quarter_cycle_channel_oracles_and_zero_amount_cover_all_shapes() 
     }
 }
 fn copy_runtime(p: &AutoPanRuntime) -> AutoPanRuntime {
-    AutoPanRuntime {
-        sample_rate: p.sample_rate,
-        ramp_frames: p.ramp_frames,
-        phase_cycles: p.phase_cycles,
-        amount: p.amount,
-        rate_hz: p.rate_hz,
-        right_phase_degrees: p.right_phase_degrees,
-        waveform_weights: p.waveform_weights,
-        targets: p.targets,
-    }
+    *p
 }
 
 #[test]
@@ -623,13 +619,14 @@ fn shape_changes_crossfade_independent_steady_streams_without_clock_reset_or_blo
             }
             let state = actual.as_any().downcast_ref::<AutoPanRuntime>().unwrap();
             let expected_phase = ((count + 17) as f64 * 20.0 / f64::from(rate)).rem_euclid(1.0);
-            assert!((state.phase_cycles - expected_phase).abs() < 1.0e-12);
-            assert!(state.waveform_weights.iter().all(|w| w.remaining == 0));
+            assert!((state.dsp.phase_cycles - expected_phase).abs() < 1.0e-12);
+            assert!(state.dsp.waveform_weights.iter().all(|w| w.remaining == 0));
             assert_eq!(
                 source
                     .as_any()
                     .downcast_ref::<AutoPanRuntime>()
                     .unwrap()
+                    .dsp
                     .phase_cycles,
                 0.0,
                 "speculative copies never mutate committed source"
@@ -658,10 +655,11 @@ fn shape_changes_crossfade_independent_steady_streams_without_clock_reset_or_blo
 #[test]
 fn shape_codec_semantics_preview_and_rapid_retarget_remain_validated() {
     let base = AUTO_PAN_DEFINITION.default_state().unwrap();
+    // v1 decodes (crate::state_migration_tests); its values are still validated.
     let legacy = NativeDeviceState::new(AUTO_PAN_TYPE_ID, 1, vec![0; 12]).unwrap();
     assert_eq!(
         AUTO_PAN_DEFINITION.migrate_state(&legacy),
-        Err(DeviceContractError::UnsupportedStateVersion)
+        Err(DeviceContractError::InvalidParameterValue)
     );
     for value in [
         ParameterValue::Choice(5),
@@ -725,14 +723,14 @@ fn shape_codec_semantics_preview_and_rapid_retarget_remain_validated() {
     let mut rapid = runtime(&triangle, 8000);
     rapid.copy_history_from(change.as_ref());
     let after = rapid.as_any().downcast_ref::<AutoPanRuntime>().unwrap();
-    assert_eq!(after.phase_cycles, before.phase_cycles);
+    assert_eq!(after.dsp.phase_cycles, before.dsp.phase_cycles);
     assert_eq!(
-        after.waveform_weights.map(|w| w.current),
-        before.waveform_weights.map(|w| w.current)
+        after.dsp.waveform_weights.map(|w| w.current),
+        before.dsp.waveform_weights.map(|w| w.current)
     );
     rapid.process_block(&mut [[1.0, 1.0]; 40], &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let settled = rapid.as_any().downcast_ref::<AutoPanRuntime>().unwrap();
-    assert_eq!(settled.waveform_weights[1].current, 1.0);
+    assert_eq!(settled.dsp.waveform_weights[1].current, 1.0);
 }
 
 #[test]
@@ -761,4 +759,150 @@ fn intrinsic_edges_and_harmonic_content_are_explicit_not_alias_free_claims() {
     assert!((square - 1.0 / 9.0).abs() < 1.0e-4);
     assert!((triangle - 1.0 / 81.0).abs() < 1.0e-4);
     assert!(energy(Waveform::Sine, 3.0) / energy(Waveform::Sine, 1.0) < 1.0e-20);
+}
+
+#[test]
+fn wrapped_and_inflight_phase_retargets_follow_the_shortest_pcm_arc() {
+    const RATE: u32 = 8_000;
+    const RAMP_FRAMES: usize = 40; // Existing 5 ms transition at 8 kHz.
+    let input = [0.8_f32, -0.25];
+    let base = patch(
+        &patch(
+            &AUTO_PAN_DEFINITION.default_state().unwrap(),
+            parameter::AMOUNT,
+            1.0,
+        ),
+        parameter::RIGHT_PHASE,
+        10.0,
+    );
+    let phase_350 = patch(&base, parameter::RIGHT_PHASE, 350.0);
+    for (elapsed, next_degrees, normalized_start) in [(40, 0.0, 350.0), (30, 5.0, 355.0)] {
+        let source = runtime(&base, RATE);
+        let mut wrapped = runtime(&phase_350, RATE);
+        wrapped.copy_history_from(source.as_ref());
+        // 10 -> 350 takes the existing negative 20-degree shortest arc.
+        // The second case interrupts that transition after 30 finite samples.
+        wrapped.process_block(
+            &mut vec![input; elapsed],
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
+        let next = patch(&base, parameter::RIGHT_PHASE, next_degrees);
+        let mut edited = runtime(&next, RATE);
+        edited.copy_history_from(wrapped.as_ref());
+        let mut actual = [input; 49];
+        let mut from = 0;
+        for frames in [1, 7, 2, 13, 26] {
+            let to = from + frames;
+            edited.process_block(&mut actual[from..to], &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            from = to;
+        }
+        for (offset, frame) in actual.iter().enumerate() {
+            // Both second edits move only +10 degrees across zero. Controls
+            // advance before each sample; the oscillator is sampled before its
+            // unchanged 1 Hz clock advances. After 40 samples the offset holds.
+            let degrees = normalized_start
+                + 10.0 * ((offset + 1).min(RAMP_FRAMES) as f64 / RAMP_FRAMES as f64);
+            let oscillator = (elapsed + offset) as f64 / f64::from(RATE);
+            for channel in 0..2 {
+                let phase = if channel == 0 {
+                    oscillator
+                } else {
+                    (oscillator + degrees / 360.0).rem_euclid(1.0)
+                };
+                let expected =
+                    f64::from(input[channel]) * (1.0 + (std::f64::consts::TAU * phase).sin()) * 0.5;
+                assert!(
+                    (f64::from(frame[channel]) - expected).abs() < 8.0e-8,
+                    "elapsed {elapsed}, sample {offset}, channel {channel}: {} != {expected}",
+                    frame[channel]
+                );
+            }
+        }
+    }
+}
+
+/// Historical states keep opening (Pulse #3956). The v1 layout (12 bytes)
+/// comes from commit 65e935227.
+#[test]
+fn auto_pan_v1_state_migrates_to_a_sine_waveform() {
+    let payload = [0.75_f32, 2.0, 90.0]
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+    let v1 = NativeDeviceState::new(AUTO_PAN_TYPE_ID, 1, payload).unwrap();
+    let registry = crate::native_registry().unwrap();
+    let migrated = registry.migrate_state(&v1).unwrap();
+    assert_eq!(
+        registry.migrate_state(&migrated).unwrap(),
+        migrated,
+        "idempotent"
+    );
+    assert_eq!(migrated.state_version(), AUTO_PAN_STATE_VERSION);
+    let read = |id| AUTO_PAN_DEFINITION.read_parameter(&migrated, id).unwrap();
+    assert_eq!(read(parameter::AMOUNT), ParameterValue::Float(0.75));
+    assert_eq!(
+        read(parameter::WAVEFORM),
+        ParameterValue::Choice(0),
+        "v1 was a sine LFO"
+    );
+    assert_eq!(
+        AUTO_PAN_DEFINITION
+            .migrate_state(&NativeDeviceState::new(AUTO_PAN_TYPE_ID, 1, vec![0; 16]).unwrap()),
+        Err(DeviceContractError::MalformedState)
+    );
+    assert_eq!(
+        AUTO_PAN_DEFINITION
+            .migrate_state(&NativeDeviceState::new(AUTO_PAN_TYPE_ID, 3, vec![0; 16]).unwrap()),
+        Err(DeviceContractError::UnsupportedStateVersion)
+    );
+}
+
+/// Pulse #3959: square and saw edges at full depth become a 1 ms linear
+/// transition at every rate, so no sample steps the gain by more than the
+/// transition slope (formerly a full 0 to 1 step every cycle).
+#[test]
+fn square_and_saw_edges_ramp_over_one_millisecond_at_full_depth() {
+    for sample_rate in [44_100_u32, 192_000] {
+        for shape in [2_u32, 3, 4] {
+            for rate_hz in [1.0_f32, 20.0] {
+                let state = patch(
+                    &patch(
+                        &choice(&AUTO_PAN_DEFINITION.default_state().unwrap(), shape),
+                        parameter::AMOUNT,
+                        1.0,
+                    ),
+                    parameter::RATE,
+                    rate_hz,
+                );
+                let frames = (f64::from(sample_rate) / f64::from(rate_hz) * 1.2) as usize;
+                let mut signal = vec![[1.0_f32, 1.0]; frames];
+                runtime(&state, sample_rate)
+                    .process_block(&mut signal, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+                let edge_slope = 1.0 / (EDGE_SECONDS * f64::from(sample_rate));
+                let bound = edge_slope + f64::from(rate_hz) / f64::from(sample_rate) + 1.0e-6;
+                for channel in 0..2 {
+                    let largest = signal
+                        .windows(2)
+                        .map(|pair| {
+                            (f64::from(pair[1][channel]) - f64::from(pair[0][channel])).abs()
+                        })
+                        .fold(0.0, f64::max);
+                    let context = format!("rate={sample_rate} shape={shape} lfo={rate_hz}");
+                    assert!(largest <= bound, "{context}: step {largest} > {bound}");
+                    // The transition is about 1 ms, not a slower smear of the edge.
+                    assert!(largest >= 0.9 * edge_slope, "{context}: step {largest}");
+                    let (low, high) = signal.iter().fold((1.0_f32, 0.0_f32), |(l, h), f| {
+                        (l.min(f[channel]), h.max(f[channel]))
+                    });
+                    // A saw turns where its edge transition starts, one edge width
+                    // inside its full range; a square still reaches 0 and 1.
+                    let inset = f64::from(rate_hz) * EDGE_SECONDS + 1.0e-3;
+                    assert!(
+                        f64::from(low) < inset && f64::from(high) > 1.0 - inset,
+                        "{context}: depth {low}..{high}"
+                    );
+                }
+            }
+        }
+    }
 }

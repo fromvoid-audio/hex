@@ -4,6 +4,13 @@ use super::*;
 use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
 use std::collections::BTreeMap;
 
+mod capture;
+mod manual_base;
+mod manual_order;
+mod manual_origin;
+mod manual_pause;
+mod manual_preroll;
+mod parameter_extension;
 mod pressure;
 #[cfg(not(debug_assertions))]
 mod profile;
@@ -36,9 +43,18 @@ fn fixture_at(profile: &str, location: usize) -> OrdinaryFixture {
     fixture_with_quantum(profile, location, 8)
 }
 fn fixture_with_quantum(profile: &str, location: usize, quantum: u16) -> OrdinaryFixture {
+    fixture_with_authored(profile, location, quantum, &[])
+}
+
+fn fixture_with_authored(
+    profile: &str,
+    location: usize,
+    quantum: u16,
+    ids: &[u32],
+) -> OrdinaryFixture {
     let (mut control, mut callback) = channel(48_000).unwrap();
     control
-        .configure_physical_callback_request(&mut callback, quantum)
+        .configure_plugin_callback_quantum(&mut callback, quantum)
         .unwrap();
     let (mut data, errors, terminals) =
         crate::native_callback_owner::reserve_native(callback, Arc::clone(&control.status));
@@ -95,8 +111,9 @@ fn fixture_with_quantum(profile: &str, location: usize, quantum: u16) -> Ordinar
         _ => ProcessorChainOwner::Main,
     };
     let identity = ProcessorInstanceIdentity::new(owner, editor.project().next_identity()).unwrap();
-    let binding = source_for_profile(&mut control, identity, profile, quantum, None);
-    editor
+    let binding =
+        source_for_profile_with_authored(&mut control, identity, profile, quantum, None, ids);
+    let Created::Device(device) = editor
         .execute(match location {
             0 => Command::InsertDevice {
                 track,
@@ -113,12 +130,30 @@ fn fixture_with_quantum(profile: &str, location: usize, quantum: u16) -> Ordinar
                 state: control.native_source_prepared_state(binding).unwrap(),
             },
         })
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("original effect")
+    };
+    for &id in ids {
+        editor
+            .execute(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target: hex_project::DeviceAutomationTarget::Vst3 { parameter: id },
+                points: vec![hex_project::AutomationPoint {
+                    beat: hex_project::BeatTime::ZERO,
+                    value: hex_project::AutomationValue::new(if id == 7 { 0.25 } else { 0.5 })
+                        .unwrap(),
+                    outgoing: hex_project::AutomationInterpolation::Step,
+                }],
+            })
+            .unwrap();
+    }
+    let frames = if ids.is_empty() { 32 } else { 96 };
     let Created::Asset(asset) = editor
         .execute(Command::AddAsset {
             path: "ordinary-original.wav".into(),
             sample_rate: 48_000,
-            frames: 32,
+            frames,
         })
         .unwrap()
     else {
@@ -129,15 +164,15 @@ fn fixture_with_quantum(profile: &str, location: usize, quantum: u16) -> Ordinar
             track,
             asset,
             start: 0,
-            duration: 32,
+            duration: frames,
             source_offset: 0,
-            source_length: 32,
+            source_length: frames,
             looping: false,
         })
         .unwrap();
     let media = BTreeMap::from([(
         asset,
-        hex_engine::Audio::new(48_000, vec![[0.25, -0.5]; 32]).unwrap(),
+        hex_engine::Audio::new(48_000, vec![[0.25, -0.5]; frames as usize]).unwrap(),
     )]);
     let resources = PreparedDeviceResources::prepare_on_control(
         &ResidentDeviceAssets::default(),
@@ -173,6 +208,7 @@ fn compile(f: &OrdinaryFixture, with_native: bool) -> Playback {
             } else {
                 &[]
             },
+            &[],
             &mut |effects| {
                 effects.prepare_registered_revision(
                     f.editor.project(),
@@ -183,6 +219,7 @@ fn compile(f: &OrdinaryFixture, with_native: bool) -> Playback {
                     &f.resources,
                     1_000_000,
                     &AtomicBool::new(false),
+                    None,
                 )
             },
         )
@@ -237,17 +274,21 @@ fn publish(control: &mut Control, playback: Playback, policy: PublicationPolicy)
     }
 }
 fn block(f: &mut OrdinaryFixture) -> [Frame; 8] {
-    let mut output = [[0.0; 2]; 8];
-    let mut host = [0.0_f32; 16];
+    physical_block::<8>(f)
+}
+
+fn physical_block<const FRAMES: usize>(f: &mut OrdinaryFixture) -> [Frame; FRAMES] {
+    let mut output = [[0.0; 2]; FRAMES];
+    let mut host = [0.0_f32; 512];
     allocation_free(|| {
         f.data.owner_mut().unwrap().run(|callback, _| {
             callback.begin_block();
-            callback.begin_native_effect_callback(8).unwrap();
+            callback.begin_native_effect_callback(FRAMES).unwrap();
             let rendered = callback.render(&mut output);
             assert!(rendered.is_ok());
             assert!(crate::device::finish_host_chunk(
                 callback,
-                &mut host,
+                &mut host[..FRAMES * 2],
                 &mut output,
                 2,
                 &rendered,
@@ -257,6 +298,59 @@ fn block(f: &mut OrdinaryFixture) -> [Frame; 8] {
         })
     });
     output
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_ordinary_pause_keeps_the_vst3_source_available_for_play_from() {
+    let _serial = serial();
+    // The 128-frame Pause fade ends inside this physical callback.
+    const QUANTUM: usize = 256;
+    let mut f = fixture_with_quantum("processing", 0, QUANTUM as u16);
+    let playback = compile(&f, true);
+    publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+    let root = f.control.native_candidate_root();
+    let render = |f: &mut OrdinaryFixture| {
+        let output = physical_block::<QUANTUM>(f);
+        let mut committed = None;
+        f.data.owner_mut().unwrap().run(|callback, _| {
+            committed = callback.native_sources.test_committed_frames(f.binding);
+        });
+        replacement::wait_for_blocks(&root, f.binding, committed.unwrap() / QUANTUM as u64);
+        output
+    };
+    f.control.command(PlaybackCommand::Play).unwrap();
+    render(&mut f);
+    let source = f.control.status.native_effect_source().unwrap();
+
+    f.control.command(PlaybackCommand::Pause).unwrap();
+    render(&mut f);
+    assert!(!f.control.status.playing.load(Acquire));
+    assert_eq!(
+        f.control.native_source_endpoint_status(f.binding),
+        Some((true, true))
+    );
+
+    f.control.command(PlaybackCommand::PlayFrom(0)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        f.control.poll_resident_publication();
+        render(&mut f);
+        if f.control.status.playing.load(Acquire) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "PlayFrom did not resume");
+        std::thread::yield_now();
+    }
+    assert_eq!(f.control.status.native_effect_source(), Some(source));
+    // The copied endpoint returns the restarted input two quanta later.
+    render(&mut f);
+    let restarted = render(&mut f);
+    assert!(restarted.iter().flatten().any(|&sample| sample != 0.0));
+    let returned = dispose(f);
+    assert!(
+        matches!(returned.disposal, native::PreparationDisposal::Reaped(retired) if retired.status.success())
+    );
 }
 fn dispose(f: OrdinaryFixture) -> crate::NativeSourcePreparationReturn {
     let OrdinaryFixture {

@@ -58,7 +58,7 @@ class GpuiPatchTests(unittest.TestCase):
                     self.assertIn("unexpected files", result.stderr)
                     link.unlink()
 
-            for name in ("src/interactive.rs", "src/accessibility.rs"):
+            for name in ("src/interactive.rs", "src/element.rs", "src/accessibility.rs"):
                 with self.subTest(changed=name):
                     path = vendor / name
                     original = path.read_bytes()

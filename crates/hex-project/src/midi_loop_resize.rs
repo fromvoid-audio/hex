@@ -15,6 +15,11 @@ pub enum MidiViewResizeOperation {
     /// boundary, then reapplies direction; it is not an inverse reflected-seam
     /// gesture. Notes/hidden source content are never rewritten.
     CycleEnd { beat: BeatTime },
+    /// Move a forward one-shot's source start marker. Like Live's unlooped
+    /// region, the Arrangement clip begins at the marker: its start moves by
+    /// the same beats while its end and every note keep their song beat.
+    /// Looped and directed clips keep their source controls instead.
+    PlayStart { source_start: BeatTime },
 }
 
 /// Opaque Copy geometry for a loop gesture. The command recomputes against the
@@ -98,6 +103,41 @@ impl MidiSourcePlayback {
 }
 
 impl MidiClip {
+    /// Moved one-shot region for a new source start marker, without copying
+    /// notes. A note at source beat n keeps its song beat
+    /// `start + n - source_start - playback_offset`.
+    pub fn with_play_start(&self, source_start: BeatTime) -> Result<MidiClip, Invalid> {
+        if self.looping() || self.content_view.is_some() {
+            return Err(Invalid(
+                "looped and reversed midi clips keep their start in the source controls",
+            ));
+        }
+        let moved = i128::from(source_start.raw()) - i128::from(self.source_start().raw());
+        let start = u64::try_from(i128::from(self.start().raw()) + moved)
+            .map_err(|_| Invalid("midi play start would move the clip before song start"))?;
+        let length = u64::try_from(i128::from(self.length().raw()) - moved)
+            .ok()
+            .filter(|length| *length > 0)
+            .ok_or(Invalid("midi play start must precede the clip end"))?;
+        crate::midi::validate_source_boundary(
+            self.source_length(),
+            source_start,
+            self.loop_start(),
+            self.loop_end(),
+            false,
+            self.one_shot_boundary(),
+        )?;
+        let mut next = self.clone();
+        next.start = BeatTime::from_raw(start);
+        next.length = BeatTime::from_raw(length);
+        crate::midi::validate_clip(next.start, next.length)?;
+        if next.source_start() != source_start {
+            std::sync::Arc::make_mut(&mut next.source).source_start = source_start;
+        }
+        next.source_playback()?;
+        Ok(next)
+    }
+
     /// Read-only counterpart of AudioViewProjection::logical_first_boundary.
     /// A one-shot has no repeat marker, even when it retains authored loop bounds.
     pub fn first_repeat_boundary(&self) -> Option<BeatTime> {
@@ -121,6 +161,9 @@ impl MidiClip {
         let beat = match operation {
             MidiViewResizeOperation::RepeatOuterEnd { beat }
             | MidiViewResizeOperation::CycleEnd { beat } => beat,
+            MidiViewResizeOperation::PlayStart { .. } => {
+                return Err(Invalid("midi play start is not a loop resize"));
+            }
         };
         let delta = beat
             .raw()
@@ -153,6 +196,9 @@ impl MidiClip {
                     next.source_length = next.source_length.max(next.loop_end);
                 }
                 next.length = BeatTime::from_raw(delta);
+            }
+            MidiViewResizeOperation::PlayStart { .. } => {
+                return Err(Invalid("midi play start is not a loop resize"));
             }
             MidiViewResizeOperation::CycleEnd { .. } => {
                 if !self.looping() {
@@ -245,13 +291,22 @@ pub(crate) fn apply(
     let original = project
         .midi_clip(clip)
         .ok_or(Invalid("midi clip no longer exists"))?;
+    if let MidiViewResizeOperation::PlayStart { source_start } = operation {
+        if source_start == original.source_start() {
+            return Ok(Created::None);
+        }
+        let candidate = original.with_play_start(source_start)?;
+        return crate::clip_group::replace_midi(project, candidate);
+    }
     let next = original.preview_loop_resize(operation)?;
     let mut candidate = original.clone();
     candidate.content_view = next.content_view;
     candidate.length = next.length;
     candidate.playback_offset = next.playback_offset;
     let source = std::sync::Arc::make_mut(&mut candidate.source);
-    source.source_length = next.source_length;
+    if source.source_length != next.source_length {
+        source.source_length = next.source_length;
+    }
     source.source_start = next.source_start;
     source.loop_start = next.loop_start;
     source.loop_end = next.loop_end;

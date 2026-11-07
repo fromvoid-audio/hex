@@ -23,14 +23,36 @@ impl VerifiedTrackGainSource {
             return Ok(None);
         };
         if let Some(active) = event.active_device_gesture
-            && let GestureTarget::TrackGain { track } = active.target
+            && let Some(track) = active.target.track_gain_anchor()
         {
             let Some(preview) = event.device_preview.as_ref() else {
                 return Ok(None);
             };
             let identity = preview.identity;
             let gain = preview.state.project.track(track).map(|track| track.gain());
-            if identity.project_generation != canonical.context().project_generation
+            let group_correlated = match (active.target, active.track_gains, active.value) {
+                (
+                    GestureTarget::TrackGains { track },
+                    Some(group),
+                    ParameterValue::Float(value),
+                ) => {
+                    group.anchor() == track
+                        && group.validate_current(&event.state.project).is_ok()
+                        && group.values(value).is_ok_and(|values| {
+                            values.into_iter().all(|(id, gain)| {
+                                preview
+                                    .state
+                                    .project
+                                    .track(id)
+                                    .is_some_and(|track| track.gain() == gain)
+                            })
+                        })
+                }
+                (GestureTarget::TrackGain { .. }, None, _) => true,
+                _ => false,
+            };
+            if !group_correlated
+                || identity.project_generation != canonical.context().project_generation
                 || identity.key.generation != canonical.context().project_generation
                 || identity.key.token == 0
                 || preview.state.revision != event.state.revision
@@ -118,13 +140,17 @@ impl VerifiedTrackGainSource {
 
 #[cfg(test)]
 mod tests {
+    mod group;
     use super::*;
     use std::{
         sync::{Mutex, mpsc},
         time::Duration,
     };
     fn next(service: &Service) -> Event {
-        service.events.recv_timeout(Duration::from_secs(5)).unwrap()
+        service
+            .events
+            .recv_timeout(crate::test_wait::HANG_BOUND)
+            .unwrap()
     }
     fn send(service: &Service, request: Request) -> Event {
         service.submit(request).unwrap();
@@ -257,7 +283,7 @@ mod tests {
         fn close(&mut self) {}
     }
     fn await_count(observed: &Mutex<Observed>, count: usize) {
-        let until = std::time::Instant::now() + Duration::from_secs(2);
+        let until = std::time::Instant::now() + crate::test_wait::HANG_BOUND;
         while observed.lock().unwrap().sources.len() < count {
             assert!(
                 std::time::Instant::now() < until,

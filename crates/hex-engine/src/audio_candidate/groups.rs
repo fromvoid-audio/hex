@@ -99,19 +99,16 @@ impl<'a> Transfer<'a> {
         let view = actual_chain.storage_view();
         let mut bytes = view.entry_capacity_bytes().ok_or(invalid)?;
         for entry in view.entries() {
-            match (entry.primary_payload_bytes(), entry.scratch_payload_bytes()) {
-                (Some(a), Some(b))
-                    if entry
-                        .runtime_types_are::<hex_devices::utility_filters::UtilityFilterProcessor>(
-                        ) =>
-                {
-                    bytes = bytes
-                        .checked_add(a)
-                        .and_then(|n| n.checked_add(b))
-                        .ok_or(invalid)?;
-                }
-                (None, None) => {}
-                _ => return Err(invalid),
+            bytes = bytes
+                .checked_add(entry.automation().storage_bytes().ok_or(invalid)?)
+                .ok_or(invalid)?;
+            if let Some((a, b)) =
+                crate::native_effect_storage::pair_bytes(&entry).map_err(|_| invalid)?
+            {
+                bytes = bytes
+                    .checked_add(a)
+                    .and_then(|n| n.checked_add(b))
+                    .ok_or(invalid)?;
             }
         }
         let next_bytes = self
@@ -290,10 +287,10 @@ impl Archive {
             return Err(AudioStorageError::SourceMismatch);
         }
         for group in &proof.groups {
-            if let Some(origin) = group.origin.filter(|o| o.runtime == self.runtime) {
-                if !self.groups.iter().any(|g| g.origin == origin && !g.closed) {
-                    return Err(AudioStorageError::SourceMismatch);
-                }
+            if let Some(origin) = group.origin.filter(|o| o.runtime == self.runtime)
+                && !self.groups.iter().any(|g| g.origin == origin && !g.closed)
+            {
+                return Err(AudioStorageError::SourceMismatch);
             }
         }
         Ok(())
@@ -352,10 +349,10 @@ impl AudioCandidateRuntimeDisposed {
             }
         }
         for group in &self.groups {
-            if let Some(origin) = group.origin {
-                if !archives.clone().any(|a| a.runtime == origin.runtime) {
-                    return Err(AudioStorageError::SourceMismatch);
-                }
+            if let Some(origin) = group.origin
+                && !archives.clone().any(|a| a.runtime == origin.runtime)
+            {
+                return Err(AudioStorageError::SourceMismatch);
             }
         }
         for archive in archives {
@@ -399,14 +396,13 @@ impl AudioCandidateRuntimeDisposed {
             }
         }
         for group in &self.groups {
-            if let Some(origin) = group.origin {
-                if !owners
+            if let Some(origin) = group.origin
+                && !owners
                     .iter()
                     .flatten()
                     .any(|o| o.identity() == origin.runtime)
-                {
-                    return Err(AudioStorageError::SourceMismatch);
-                }
+            {
+                return Err(AudioStorageError::SourceMismatch);
             }
         }
         for owner in owners.iter().flatten() {
@@ -548,6 +544,7 @@ mod tests {
                 )
                 .unwrap();
             track.devices.push(hex_project::DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: snapshot.next_id,
                 bypassed: false,

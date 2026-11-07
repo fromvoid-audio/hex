@@ -51,9 +51,20 @@ fn pair_with_hooks(
     StreamCallbackPages,
     StreamSourceKey,
 ) {
-    let wav = crate::worker::tests::Fixture::pcm16_frames(16001);
+    pair_with_frames(hooks, 16001)
+}
+fn pair_with_frames(
+    hooks: Option<crate::worker::TestWorkerHooks>,
+    frames: u16,
+) -> (
+    crate::worker::tests::Fixture,
+    StreamControl,
+    StreamCallbackPages,
+    StreamSourceKey,
+) {
+    let wav = crate::worker::tests::Fixture::pcm16_frames(frames);
     let limits = VerifiedWavReaderLimits::new(
-        WavReaderLimits::new(2 * 1024 * 1024, 16001, 128, 32768),
+        WavReaderLimits::new(2 * 1024 * 1024, u64::from(frames), 128, 32768),
         1024 * 1024,
     );
     let reader = VerifiedWavReader::open(&wav.0, limits).unwrap();
@@ -63,7 +74,7 @@ fn pair_with_hooks(
         .execute(hex_project::Command::AddAsset {
             path: "source.wav".into(),
             sample_rate: 48000,
-            frames: 16001,
+            frames: u64::from(frames),
         })
         .unwrap()
     else {
@@ -74,8 +85,8 @@ fn pair_with_hooks(
         key,
         48000,
         48000,
-        16001,
-        16001,
+        u64::from(frames),
+        u64::from(frames),
         hex_project::IDENTITY_CONVERSION,
         *reader.fingerprint(),
     )
@@ -85,6 +96,8 @@ fn pair_with_hooks(
         StreamConfig::with_pool_pages(4),
         vec![SourceDefinition::new(wav.0.clone(), metadata, limits)],
         hooks,
+        #[cfg(feature = "test-support")]
+        None,
     )
     .unwrap();
     runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
@@ -117,6 +130,141 @@ fn finish(domain: &mut ConstructorStreamDomain) -> PagePoolReport {
     }
     panic!("domain disposal did not finish")
 }
+
+#[test]
+fn pending_arrivals_survive_unrelated_cache_turnover_until_receipt_or_cancel() {
+    let Some(mut owner) = artifact() else { return };
+    let (_wav, control, pages, key) = pair_with_frames(None, 24000);
+    let mut domain = ConstructorStreamDomain::try_new_with_readiness_limits_on_control(
+        control,
+        pages,
+        usize::MAX,
+        usize::MAX,
+        usize::MAX,
+        Some(StreamReadinessReservation {
+            extents_per_role: 3,
+        }),
+    )
+    .ok()
+    .unwrap();
+    let mut loan = domain.loan_pages_on_control().unwrap();
+    let extent = |page_index| StreamPageExtent {
+        source: key,
+        page_index,
+        start: 0,
+        end: 8,
+    };
+    let active = [extent(0)];
+    let active_stamp = stamp(&owner, 1);
+    loan.submit(ProtectionRole::Active, active_stamp, &active)
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        if loan
+            .service(ProtectionRole::Active, active_stamp, 3, 3)
+            .unwrap()
+            == ReadinessProgress::InstalledProtected
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "active page did not arrive"
+        );
+        std::thread::yield_now();
+    }
+    assert!(loan.acknowledge(ProtectionRole::Active, active_stamp, &active));
+    let pending = [extent(1), extent(2)];
+    let candidate = stamp(&owner, 2);
+    loan.submit(ProtectionRole::Candidate, candidate, &pending)
+        .unwrap();
+    // Only the first wanted page is requested. No receipt can be issued while
+    // the second remains absent, even though the first must retain custody.
+    loan.pages.request_page(key, 1);
+    while loan.pages.page(key, 1).is_none() {
+        #[cfg(feature = "allocation-probe")]
+        let mut result = None;
+        #[cfg(feature = "allocation-probe")]
+        let allocations = allocation_counter::measure(|| {
+            result = Some(loan.service(ProtectionRole::Candidate, candidate, 3, 0));
+        });
+        #[cfg(not(feature = "allocation-probe"))]
+        let result = loan.service(ProtectionRole::Candidate, candidate, 3, 0);
+        #[cfg(feature = "allocation-probe")]
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        #[cfg(feature = "allocation-probe")]
+        let result = result.unwrap();
+        assert_eq!(result, Ok(ReadinessProgress::Pending));
+        assert!(
+            std::time::Instant::now() < deadline,
+            "first candidate page did not arrive"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        loan.service(ProtectionRole::Candidate, candidate, 0, 0),
+        Ok(ReadinessProgress::Pending)
+    );
+    assert!(
+        loan.protected_pages(ProtectionRole::Candidate, candidate, &pending)
+            .is_none()
+    );
+    // Fill the remaining cache slot, then rotate unrelated pages through it.
+    for index in [3, 4, 3, 4, 3, 4, 3, 4] {
+        loan.pages.request_page(key, index);
+        while loan.pages.page(key, index).is_none() {
+            loan.pages.pump_ready(3);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "unrelated page did not arrive"
+            );
+            std::thread::yield_now();
+        }
+        assert!(
+            loan.pages.page(key, 1).is_some(),
+            "partially arrived candidate was evicted"
+        );
+        assert!(
+            loan.protected_pages(ProtectionRole::Active, active_stamp, &active)
+                .is_some()
+        );
+    }
+    assert!(loan.cancel(ProtectionRole::Candidate, candidate.request_epoch));
+    assert!(
+        loan.protected_pages(ProtectionRole::Active, active_stamp, &active)
+            .is_some()
+    );
+    let mut released = false;
+    for index in [3, 4, 3, 4, 3, 4, 3, 4] {
+        loan.pages.request_page(key, index);
+        while loan.pages.page(key, index).is_none() {
+            loan.pages.pump_ready(3);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "turnover after cancellation stalled"
+            );
+            std::thread::yield_now();
+        }
+        if loan.pages.page(key, 1).is_none() {
+            released = true;
+            break;
+        }
+    }
+    assert!(released, "cancelled partial page remained protected");
+    let mut loan = Some(loan);
+    domain.return_pages_on_control(&mut loan).unwrap();
+    let report = finish(&mut domain);
+    assert!(report.accounting_complete && report.worker_joined);
+    owner.dispose_on_control().unwrap();
+}
 #[test]
 fn real_decode_needs_installed_protection_receipt_and_exact_loan_return_before_join() {
     exact_decode_receipts(false);
@@ -131,6 +279,8 @@ fn exact_decode_receipts(ordinary: bool) {
     let (release_tx, release_rx) = mpsc::sync_channel(1);
     let (publication_tx, publication_rx) = mpsc::sync_channel(2);
     let (_wav, control, pages, key) = pair_with_hooks(Some(crate::worker::TestWorkerHooks {
+        read_gate: None,
+        scalar_steps: None,
         entered: entered_tx,
         release: release_rx,
         publications: publication_tx,

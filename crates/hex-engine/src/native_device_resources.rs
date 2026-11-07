@@ -411,11 +411,18 @@ mod tests;
 
 /// Metadata classification for containment/refusal only; type identity alone
 /// never grants source preparation, native admission or a musical runtime.
+/// Conservative control-side dispatch hint for an incoming retained source.
+/// This grants no resource/admission authority; the existing constructor still
+/// validates state, original-bank identity and all work/storage reservations.
+pub fn requires_private_sampler_state(state: &hex_lattice_contract::NativeDeviceState) -> bool {
+    hex_devices::sampler::state::requires_source(state)
+}
 pub fn requires_private_sampler_sources(project: &hex_project::Project) -> bool {
     project.tracks().iter().any(|track| {
-        track
-            .instrument()
-            .is_some_and(|device| hex_devices::sampler::state::requires_source(device.state()))
+        track.receives_source_audio()
+            && track
+                .instrument()
+                .is_some_and(|device| requires_private_sampler_state(device.state()))
     })
 }
 #[cfg(feature = "instrument-test-support")]

@@ -3,9 +3,12 @@
 //! zero total and signed-net callback allocations/frees.
 use super::resident_preview::ResidentHarness;
 use super::*;
-use hex_engine::eq::{EqState, Node, NodeId, NodeKind};
+use hex_engine::eq::{EqState, Node, NodeId, NodeKind, NodeParameter};
 use hex_project::{Command, Created};
-use hex_session::device_gesture::{EqNodeCreationSnapshot, GestureKey, GestureRequest};
+use hex_session::device_gesture::{
+    EqNodeCreationSnapshot, GestureKey, GestureRequest, GestureTarget, ParameterPairValue,
+    ParameterValue,
+};
 use std::sync::atomic::Ordering;
 
 fn periodic_source(files: &Files, frames: u32) -> PathBuf {
@@ -27,8 +30,215 @@ fn level(h: &ResidentHarness) -> f32 {
 }
 
 #[test]
+fn eq_curve_drag_and_burst_reach_the_actual_callback() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 131_072)));
+    (applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    let node_id = NodeId::new(1).unwrap();
+    let mut node = Node::new(node_id, 750.0, 0.0, 0).unwrap();
+    node.kind = NodeKind::LowShelf;
+    let mut eq = EqState::default();
+    eq.add(node).unwrap();
+    let inserted = h.run(Request::Edit(Command::InsertDevice {
+        track,
+        before: None,
+        state: eq.encode().unwrap(),
+    }));
+    let Some(Created::Device(device)) = inserted.created else {
+        panic!("eq device");
+    };
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..20 {
+        h.render();
+    }
+    let key = GestureKey {
+        generation: 0,
+        token: 17,
+    };
+    let began = h.run(Request::DeviceGesture(GestureRequest::Begin {
+        key,
+        target: GestureTarget::DeviceParameterPair {
+            device,
+            first: node_id.parameter(NodeParameter::Frequency).unwrap(),
+            second: node_id.parameter(NodeParameter::Gain).unwrap(),
+        },
+    }));
+    assert!(began.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
+    let mut last = h.render()[63];
+    assert!(last.iter().all(|sample| (*sample - 0.25).abs() < 0.001));
+    for (sequence, frequency, gain) in [(1, 1000.0, 12.0), (2, 400.0, -12.0), (3, 750.0, 0.0)] {
+        h.service
+            .submit(Request::DeviceGesture(GestureRequest::ChangePair {
+                key,
+                sequence,
+                value: ParameterPairValue {
+                    first: ParameterValue::Float(frequency),
+                    second: ParameterValue::Float(gain),
+                },
+            }))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut event = None;
+        let mut blocks = 0;
+        loop {
+            h.pump();
+            for frame in h.render() {
+                assert!(
+                    frame
+                        .iter()
+                        .all(|sample| sample.is_finite() && sample.abs() < 4.0)
+                );
+                last = frame;
+            }
+            blocks += 1;
+            if event.is_none() {
+                event = h.service.try_event().ok();
+            }
+            let active = h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_revision
+                .load(Acquire);
+            if let (Some(event), Some((revision, metadata))) = (&event, h.submitted)
+                && event.gesture_ack.as_ref().is_some_and(|ack| ack.accepted)
+                && metadata
+                    .device_preview
+                    .is_some_and(|preview| preview.sequence == sequence)
+                && active == revision
+                && revision > applied
+            {
+                applied = revision;
+                break;
+            }
+            assert!(blocks < 450, "source exhausted waiting for EQ preview");
+            assert!(
+                Instant::now() < deadline,
+                "EQ preview did not reach the active graph"
+            );
+            std::thread::yield_now();
+        }
+        for _ in 0..12 {
+            for frame in h.render() {
+                assert!(
+                    frame
+                        .iter()
+                        .all(|sample| sample.is_finite() && sample.abs() < 4.0)
+                );
+                last = frame;
+            }
+        }
+        let expected = 0.25 * 10.0_f32.powf(gain / 20.0);
+        assert!(
+            (last[0] - expected).abs() < 0.015,
+            "EQ preview sequence {sequence}: {} vs {expected}",
+            last[0]
+        );
+    }
+    // Queue repeated pointer moves before pumping the callback, then verify
+    // that the final preview is really installed and its audio stays smooth.
+    for sequence in 4..=11 {
+        h.service
+            .submit(Request::DeviceGesture(GestureRequest::ChangePair {
+                key,
+                sequence,
+                value: ParameterPairValue {
+                    first: ParameterValue::Float(if sequence % 2 == 0 { 400.0 } else { 1200.0 }),
+                    second: ParameterValue::Float(if sequence == 11 {
+                        6.0
+                    } else if sequence % 2 == 0 {
+                        -12.0
+                    } else {
+                        12.0
+                    }),
+                },
+            }))
+            .unwrap();
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut acknowledged = 0;
+    let mut blocks = 0;
+    loop {
+        h.pump();
+        for frame in h.render() {
+            assert!(
+                frame
+                    .iter()
+                    .all(|sample| sample.is_finite() && sample.abs() < 4.0)
+            );
+            last = frame;
+        }
+        blocks += 1;
+        while let Ok(event) = h.service.try_event() {
+            let ack = event.gesture_ack.expect("gesture acknowledgement");
+            assert!(ack.accepted, "{ack:?}");
+            acknowledged += 1;
+        }
+        let active = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire);
+        if let Some((revision, metadata)) = h.submitted
+            && acknowledged == 8
+            && revision > applied
+            && active == revision
+            && metadata
+                .device_preview
+                .is_some_and(|preview| preview.sequence == 11)
+        {
+            break;
+        }
+        assert!(
+            blocks < 450,
+            "EQ gesture burst not applied: acknowledged={acknowledged}, active={active}, prior={applied}, submitted={:?}",
+            h.submitted
+        );
+        assert!(
+            Instant::now() < deadline,
+            "final EQ burst preview did not reach the active graph"
+        );
+        // A headless callback can outrun the worker by many times the device
+        // rate; give control-side preparation a chance to publish the burst.
+        std::thread::sleep(Duration::from_micros(200));
+    }
+    for _ in 0..12 {
+        for frame in h.render() {
+            assert!(
+                frame
+                    .iter()
+                    .all(|sample| sample.is_finite() && sample.abs() < 4.0)
+            );
+            last = frame;
+        }
+    }
+    let expected = 0.25 * 10.0_f32.powf(6.0 / 20.0);
+    assert!(
+        (last[0] - expected).abs() < 0.015,
+        "EQ burst final level {} vs {expected}",
+        last[0]
+    );
+}
+
+#[test]
 fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_history() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for owner in 0..3 {
         for kind in [NodeKind::Bell, NodeKind::LowCut, NodeKind::Notch] {
             let files = Files::new();
@@ -46,6 +256,27 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
                     enabled: true,
                 }));
                 (applied, _) = h.applied(applied);
+            }
+            let main_compensated = owner == 0 && kind == NodeKind::LowCut;
+            if main_compensated {
+                h.run(Request::Edit(Command::InsertMainDevice {
+                    before: None,
+                    state: hex_engine::default_native_device_state_for_class(
+                        hex_engine::NativeDeviceClass::Effect,
+                        hex_engine::DeviceTypeId::from_static("hex.limiter"),
+                    )
+                    .unwrap(),
+                }));
+                (applied, _) = h.applied(applied);
+                // Reproduce the native report: insert the EQ into an already
+                // sounding graph whose serial Main chain has latency.
+                h.audio
+                    .as_mut()
+                    .unwrap()
+                    .control
+                    .command(PlaybackCommand::Play)
+                    .unwrap();
+                assert!(level(&h) > 0.01);
             }
             let state = EqState::default().encode().unwrap();
             let command = match owner {
@@ -233,10 +464,124 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
                 assert_runtime_loop(&h);
             }
             let redone = h.run(Request::Redo);
-            h.applied(applied);
+            let (audio_revision, metadata) = h.applied(applied);
+            applied = audio_revision;
+            if main_compensated {
+                assert_eq!(metadata.context.editor_revision, redone.state.revision);
+            }
             assert_eq!(redone.state.project, committed.state.project);
             if transient {
                 assert_runtime_loop(&h);
+            }
+            if main_compensated {
+                assert!(
+                    h.audio
+                        .as_ref()
+                        .unwrap()
+                        .status()
+                        .unwrap()
+                        .playing
+                        .load(Acquire)
+                );
+                // Verify the section fence after live EQ edits, both playing
+                // and paused (the latter matches the supplied failure log).
+                let mut section = h.run(Request::EditArrangementSection {
+                    project_generation: 0,
+                    revision: redone.state.revision,
+                    command: Command::AddArrangementSection {
+                        name: "copy".into(),
+                        color: hex_project::ElementColor::Cyan,
+                        start: hex_project::BeatTime::ZERO,
+                        end: hex_project::BeatTime::ONE,
+                    },
+                });
+                (applied, _) = h.applied(applied);
+                let Some(Created::ArrangementSection(section_id)) = section.created else {
+                    panic!("section");
+                };
+                // The captured report included both a copy after a different
+                // section and a copy after the source itself. Exercise both
+                // through the same applied-EQ and section-fence owner.
+                let destination = h.run(Request::EditArrangementSection {
+                    project_generation: 0,
+                    revision: section.state.revision,
+                    command: Command::AddArrangementSection {
+                        name: "destination".into(),
+                        color: hex_project::ElementColor::Cyan,
+                        start: hex_project::BeatTime::from_quarters(2).unwrap(),
+                        end: hex_project::BeatTime::from_quarters(3).unwrap(),
+                    },
+                });
+                (applied, _) = h.applied(applied);
+                let Some(Created::ArrangementSection(destination_id)) = destination.created else {
+                    panic!("destination section");
+                };
+                section = destination;
+                for (paused, target) in [(false, destination_id), (true, section_id)] {
+                    if paused {
+                        // Applied publication precedes the worker's poll that
+                        // releases its edit fence. Retain/retry the transport
+                        // intent until that existing bounded handoff completes.
+                        let deadline = Instant::now() + Duration::from_secs(10);
+                        while h
+                            .audio
+                            .as_mut()
+                            .unwrap()
+                            .control
+                            .command(PlaybackCommand::Pause)
+                            .is_err()
+                        {
+                            h.pump();
+                            h.render();
+                            assert!(Instant::now() < deadline, "section fence was not released");
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        h.render();
+                    }
+                    let before = section.state.project.snapshot();
+                    let duplicated = super::resident_sections::run_callback(
+                        &mut h,
+                        Request::EditArrangementSection {
+                            project_generation: 0,
+                            revision: section.state.revision,
+                            command: Command::DuplicateArrangementSectionAt {
+                                section: section_id,
+                                target,
+                                after: true,
+                            },
+                        },
+                    );
+                    assert!(duplicated.error.is_none(), "{:?}", duplicated.error);
+                    assert_eq!(duplicated.state.revision, section.state.revision + 1);
+                    assert!(matches!(
+                        duplicated.created,
+                        Some(Created::ArrangementSection(_))
+                    ));
+                    let after = duplicated.state.project.snapshot();
+                    assert_ne!(after, before);
+                    let (audio_revision, metadata) = h.applied(applied);
+                    applied = audio_revision;
+                    assert_eq!(metadata.context.editor_revision, duplicated.state.revision);
+                    let undone = super::resident_sections::run_callback(&mut h, Request::Undo);
+                    assert!(undone.error.is_none(), "{:?}", undone.error);
+                    (applied, _) = h.applied(applied);
+                    let mut restored = undone.state.project.snapshot();
+                    restored.next_id = before.next_id;
+                    assert_eq!(restored, before);
+                    let redone = super::resident_sections::run_callback(&mut h, Request::Redo);
+                    assert!(redone.error.is_none(), "{:?}", redone.error);
+                    let (audio_revision, metadata) = h.applied(applied);
+                    applied = audio_revision;
+                    assert_eq!(metadata.context.editor_revision, redone.state.revision);
+                    assert_eq!(redone.state.project.snapshot(), after);
+                    let undone = super::resident_sections::run_callback(&mut h, Request::Undo);
+                    assert!(undone.error.is_none(), "{:?}", undone.error);
+                    (applied, _) = h.applied(applied);
+                    let mut restored = undone.state.project.snapshot();
+                    restored.next_id = before.next_id;
+                    assert_eq!(restored, before);
+                    section = undone;
+                }
             }
             assert!(h.publication_refusals.is_empty());
         }
@@ -255,7 +600,7 @@ fn assert_runtime_loop(h: &ResidentHarness) {
 #[test]
 fn held_sampler_note_survives_eq_creation_commit_and_history_inside_a_launched_loop() {
     use hex_project::BeatTime;
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(8_000_000);
     assert!(h.next().error.is_none());

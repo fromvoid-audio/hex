@@ -2,7 +2,10 @@
 //! and gain; interpolation is demonstration artwork, never a DSP/filter model.
 //! The shared graph owns pointer capture. Its creation stream uses node zero;
 //! this owner admits one stable local identity and retains its rollback snapshot.
-use hex_widgets::{ResponseGraphEvent, ResponseGraphModel, ResponseGraphNode, ResponseGraphPhase};
+use hex_widgets::{
+    ResponseGraphEvent, ResponseGraphMarqueeEvent, ResponseGraphModel, ResponseGraphNode,
+    ResponseGraphPhase,
+};
 
 const MAX_POINTS: usize = 16;
 
@@ -68,7 +71,7 @@ impl ResponseDemo {
             }
             ResponseGraphPhase::Select => {
                 for node in &mut self.model.nodes {
-                    node.selected = node.id == id;
+                    node.selected = node.id == id || (event.modifiers.shift && node.selected);
                 }
             }
             ResponseGraphPhase::Remove => self.model.nodes.retain(|n| n.id != id),
@@ -89,6 +92,11 @@ impl ResponseDemo {
         }
         self.model = model(self.model.nodes.clone());
         Some(id)
+    }
+    pub fn marquee(&mut self, event: &ResponseGraphMarqueeEvent) {
+        for node in &mut self.model.nodes {
+            node.selected = event.selected.contains(&node.id);
+        }
     }
     pub fn cancel(&mut self) -> bool {
         self.created = None;
@@ -138,6 +146,7 @@ fn model(nodes: Vec<ResponseGraphNode>) -> ResponseGraphModel {
         secondary,
         analyzer: None,
         input_analyzer: None,
+        analyzer_peak: None,
         nodes,
     }
 }

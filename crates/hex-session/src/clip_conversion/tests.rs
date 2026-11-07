@@ -76,6 +76,11 @@ fn pcm(revision: Arc<hex_engine::PreparedRevision>, frames: usize) -> Vec<hex_en
 
 #[test]
 fn bounce_preserves_placement_sound_mix_history_and_saved_media() {
+    for main_type in ["hex.utility", "hex.overdrive"] {
+        bounce_with_main(main_type);
+    }
+}
+fn bounce_with_main(main_type: &'static str) {
     let folder = Folder::new();
     let (mut session, track, clip) = fixture();
     session
@@ -125,6 +130,19 @@ fn bounce_preserves_placement_sound_mix_history_and_saved_media() {
             state: effect,
         })
         .unwrap();
+    let main = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static(main_type),
+    )
+    .unwrap()
+    .with_output_gain_db(-6.0)
+    .unwrap();
+    session
+        .command(Command::InsertMainDevice {
+            before: None,
+            state: main,
+        })
+        .unwrap();
     let original = session.project().clone();
     let (start, frames) = original.midi_bounce_range(clip).unwrap();
     let before = session.compile_prepared_revision(None).unwrap();
@@ -141,6 +159,16 @@ fn bounce_preserves_placement_sound_mix_history_and_saved_media() {
         clip
     );
     assert!(session.project().midi_clip(clip).is_none());
+    assert_eq!(
+        session.project().native_sources(),
+        original.native_sources(),
+        "render normalization must not change retained source state"
+    );
+    assert_eq!(session.project().main_devices(), original.main_devices());
+    assert_eq!(
+        session.project().track(track).unwrap().devices(),
+        original.track(track).unwrap().devices()
+    );
     let actual = pcm(Arc::clone(&bounced), expected.len());
     let error = actual
         .iter()
@@ -460,4 +488,64 @@ fn effects_before_instrument_refuse_without_changing_source_or_redo() {
     );
     assert_eq!(session.project(), &original);
     assert_eq!(fs::read_dir(&folder.0).unwrap().count(), 0);
+}
+
+#[test]
+fn isolated_clip_source_omits_unrelated_retained_source_media_without_changing_live_state() {
+    let (session, track, clip) = fixture();
+    let mut editor = hex_project::Editor::new(session.project().clone(), 4).unwrap();
+    let Created::Asset(asset) = editor
+        .execute(Command::AddAsset {
+            path: "unassigned-original.wav".into(),
+            sample_rate: 48_000,
+            frames: 16,
+        })
+        .unwrap()
+    else {
+        panic!("asset")
+    };
+    let state = hex_project::default_instrument_state()
+        .unwrap()
+        .with_asset_references(vec![hex_lattice_contract::DeviceAssetReference {
+            slot: hex_lattice_contract::DeviceAssetSlot::new(1).unwrap(),
+            asset: hex_lattice_contract::DeviceAssetKey::new(asset.value()).unwrap(),
+        }])
+        .unwrap();
+    editor
+        .execute(Command::CreateNativeSource {
+            name: "unassigned".into(),
+            devices: vec![state],
+            instrument_index: 0,
+        })
+        .unwrap();
+    let original = editor.project().clone();
+    let (isolated, owner, _) = isolated_source(&original, clip).unwrap();
+    assert_eq!(owner, track);
+    assert_eq!(isolated.native_sources().len(), 1);
+    assert_eq!(
+        isolated.track(track).unwrap().source_id(),
+        original.track(track).unwrap().source_id()
+    );
+    assert!(isolated.asset(asset).is_none());
+    assert_eq!(editor.project(), &original);
+    assert!(editor.project().asset(asset).is_some());
+    assert_eq!(editor.project().native_sources().len(), 2);
+}
+
+#[test]
+fn isolated_conversion_admits_projects_with_automatic_names_on_dropped_tracks() {
+    let (mut session, track, clip) = fixture();
+    let Created::Track(other) = session
+        .command(Command::InsertDefaultTrack { before_track: None })
+        .unwrap()
+    else {
+        panic!("default track")
+    };
+    let original = session.project().clone();
+    assert!(original.track(other).unwrap().name_is_automatic());
+    let (isolated, owner, _) = isolated_source(&original, clip).unwrap();
+    assert_eq!(owner, track);
+    assert!(isolated.track(other).is_none());
+    assert!(isolated.snapshot().automatic_track_names.is_empty());
+    assert_eq!(session.project(), &original);
 }

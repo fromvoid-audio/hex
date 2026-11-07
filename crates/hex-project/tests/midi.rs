@@ -377,6 +377,7 @@ fn moving_midi_clip_to_new_hybrid_track_preserves_clip_and_note_ids_in_one_step(
 
     let Created::Track(inserted) = editor
         .execute(Command::MoveMidiClipToNewTrack {
+            initial_gain: None,
             clip,
             name: "track 3".into(),
             before_track: Some(anchor),
@@ -488,6 +489,7 @@ fn source_settings_are_atomic_keep_hidden_notes_and_duplicate_exactly() {
             clip,
             notes: vec![
                 MidiNoteInsert {
+                    active: true,
                     start: BeatTime::from_ratio(1, 2).unwrap(),
                     duration: beat(1),
                     pitch: 50,
@@ -495,6 +497,7 @@ fn source_settings_are_atomic_keep_hidden_notes_and_duplicate_exactly() {
                     velocity: 70,
                 },
                 MidiNoteInsert {
+                    active: true,
                     start: BeatTime::from_ratio(3, 2).unwrap(),
                     duration: beat(1),
                     pitch: 55,
@@ -502,6 +505,7 @@ fn source_settings_are_atomic_keep_hidden_notes_and_duplicate_exactly() {
                     velocity: 80,
                 },
                 MidiNoteInsert {
+                    active: true,
                     start: beat(4),
                     duration: beat(2),
                     pitch: 60,
@@ -509,6 +513,7 @@ fn source_settings_are_atomic_keep_hidden_notes_and_duplicate_exactly() {
                     velocity: 90,
                 },
                 MidiNoteInsert {
+                    active: true,
                     start: beat(7),
                     duration: beat(1),
                     pitch: 65,
@@ -687,6 +692,7 @@ fn batch_note_insert_preserves_input_order_expression_and_one_step_history() {
     let (mut editor, _, clip) = editor();
     let notes = vec![
         MidiNoteInsert {
+            active: true,
             start: BeatTime::from_ratio(1, 3).unwrap(),
             duration: BeatTime::from_ratio(1, 8).unwrap(),
             pitch: 72,
@@ -694,6 +700,7 @@ fn batch_note_insert_preserves_input_order_expression_and_one_step_history() {
             velocity: 91,
         },
         MidiNoteInsert {
+            active: true,
             start: BeatTime::ZERO,
             duration: BeatTime::from_ratio(1, 8).unwrap(),
             pitch: 72,
@@ -701,6 +708,7 @@ fn batch_note_insert_preserves_input_order_expression_and_one_step_history() {
             velocity: 91,
         },
         MidiNoteInsert {
+            active: true,
             start: beat(2),
             duration: BeatTime::from_ratio(1, 4).unwrap(),
             pitch: 40,
@@ -793,6 +801,7 @@ fn mixed_note_edit_compacts_then_appends_in_one_ordered_history_step() {
     let before = editor.project().clone();
     let inserts = vec![
         MidiNoteInsert {
+            active: true,
             start: BeatTime::from_ratio(1, 3).unwrap(),
             duration: BeatTime::from_ratio(1, 8).unwrap(),
             pitch: 90,
@@ -800,6 +809,7 @@ fn mixed_note_edit_compacts_then_appends_in_one_ordered_history_step() {
             velocity: 1,
         },
         MidiNoteInsert {
+            active: true,
             start: BeatTime::ZERO,
             duration: BeatTime::from_ratio(1, 8).unwrap(),
             pitch: 90,
@@ -863,6 +873,7 @@ fn mixed_note_edit_compacts_then_appends_in_one_ordered_history_step() {
             clip,
             remove: Vec::new(),
             insert: vec![MidiNoteInsert {
+                active: true,
                 start: beat(3),
                 duration: BeatTime::from_raw(1),
                 pitch: 50,
@@ -919,6 +930,7 @@ fn invalid_mixed_note_batches_preserve_project_allocator_and_redo() {
     assert!(editor.can_redo());
 
     let valid = MidiNoteInsert {
+        active: true,
         start: beat(2),
         duration: BeatTime::from_raw(1),
         pitch: 72,
@@ -935,6 +947,7 @@ fn invalid_mixed_note_batches_preserve_project_allocator_and_redo() {
             vec![
                 valid,
                 MidiNoteInsert {
+                    active: true,
                     duration: BeatTime::ZERO,
                     ..valid
                 },
@@ -945,6 +958,7 @@ fn invalid_mixed_note_batches_preserve_project_allocator_and_redo() {
             vec![
                 valid,
                 MidiNoteInsert {
+                    active: true,
                     pitch: 128,
                     ..valid
                 },
@@ -955,6 +969,7 @@ fn invalid_mixed_note_batches_preserve_project_allocator_and_redo() {
             vec![
                 valid,
                 MidiNoteInsert {
+                    active: true,
                     channel: 16,
                     ..valid
                 },
@@ -965,6 +980,7 @@ fn invalid_mixed_note_batches_preserve_project_allocator_and_redo() {
             vec![
                 valid,
                 MidiNoteInsert {
+                    active: true,
                     velocity: 0,
                     ..valid
                 },
@@ -975,6 +991,7 @@ fn invalid_mixed_note_batches_preserve_project_allocator_and_redo() {
             vec![
                 valid,
                 MidiNoteInsert {
+                    active: true,
                     start: BeatTime::from_raw(u64::MAX),
                     duration: BeatTime::from_raw(1),
                     ..valid
@@ -986,6 +1003,7 @@ fn invalid_mixed_note_batches_preserve_project_allocator_and_redo() {
             vec![
                 valid,
                 MidiNoteInsert {
+                    active: true,
                     start: beat(4),
                     duration: BeatTime::from_raw(1),
                     ..valid
@@ -1048,6 +1066,7 @@ fn mixed_batch_checks_final_global_cap_and_id_range_before_removing() {
     let mut exact = Editor::new(exact_project, 4).unwrap();
     let inserts = vec![
         MidiNoteInsert {
+            active: true,
             start: beat(2),
             duration: BeatTime::from_raw(1),
             pitch: 70,
@@ -1055,6 +1074,7 @@ fn mixed_batch_checks_final_global_cap_and_id_range_before_removing() {
             velocity: 80,
         },
         MidiNoteInsert {
+            active: true,
             start: beat(3),
             duration: BeatTime::from_raw(1),
             pitch: 71,
@@ -1099,6 +1119,7 @@ fn mixed_batch_checks_final_global_cap_and_id_range_before_removing() {
                     inserts[0],
                     inserts[1],
                     MidiNoteInsert {
+                        active: true,
                         pitch: 72,
                         ..inserts[0]
                     }
@@ -1163,6 +1184,7 @@ fn invalid_batch_insertions_preserve_project_ids_and_redo() {
     let before = editor.project().clone();
     let next_id = before.snapshot().next_id;
     let valid = MidiNoteInsert {
+        active: true,
         start: beat(0),
         duration: beat(1),
         pitch: 60,
@@ -1174,6 +1196,7 @@ fn invalid_batch_insertions_preserve_project_ids_and_redo() {
         vec![
             valid,
             MidiNoteInsert {
+                active: true,
                 duration: BeatTime::ZERO,
                 ..valid
             },
@@ -1181,6 +1204,7 @@ fn invalid_batch_insertions_preserve_project_ids_and_redo() {
         vec![
             valid,
             MidiNoteInsert {
+                active: true,
                 pitch: 128,
                 ..valid
             },
@@ -1188,6 +1212,7 @@ fn invalid_batch_insertions_preserve_project_ids_and_redo() {
         vec![
             valid,
             MidiNoteInsert {
+                active: true,
                 channel: 16,
                 ..valid
             },
@@ -1195,6 +1220,7 @@ fn invalid_batch_insertions_preserve_project_ids_and_redo() {
         vec![
             valid,
             MidiNoteInsert {
+                active: true,
                 velocity: 0,
                 ..valid
             },
@@ -1202,6 +1228,7 @@ fn invalid_batch_insertions_preserve_project_ids_and_redo() {
         vec![
             valid,
             MidiNoteInsert {
+                active: true,
                 start: BeatTime::from_raw(u64::MAX),
                 duration: BeatTime::from_raw(1),
                 ..valid
@@ -1210,6 +1237,7 @@ fn invalid_batch_insertions_preserve_project_ids_and_redo() {
         vec![
             valid,
             MidiNoteInsert {
+                active: true,
                 start: beat(4),
                 duration: BeatTime::from_raw(1),
                 ..valid
@@ -1231,6 +1259,7 @@ fn invalid_batch_insertions_preserve_project_ids_and_redo() {
             .execute(Command::AddMidiNotes {
                 clip: audio_clip,
                 notes: vec![MidiNoteInsert {
+                    active: true,
                     start: beat(0),
                     duration: beat(1),
                     pitch: 60,
@@ -1260,6 +1289,7 @@ fn invalid_batch_insertions_preserve_project_ids_and_redo() {
 fn batch_insert_rejects_size_project_cap_and_allocator_exhaustion_atomically() {
     let (editor, _, clip) = editor();
     let note = MidiNoteInsert {
+        active: true,
         start: beat(0),
         duration: BeatTime::from_raw(1),
         pitch: 60,
@@ -1286,6 +1316,7 @@ fn batch_insert_rejects_size_project_cap_and_allocator_exhaustion_atomically() {
             notes: vec![
                 note,
                 MidiNoteInsert {
+                    active: true,
                     start: BeatTime::from_raw(1),
                     ..note
                 },
@@ -1330,6 +1361,7 @@ fn batch_insert_rejects_size_project_cap_and_allocator_exhaustion_atomically() {
                 notes: vec![
                     note,
                     MidiNoteInsert {
+                        active: true,
                         start: BeatTime::from_raw(1),
                         ..note
                     }
@@ -1346,6 +1378,8 @@ fn project_with_notes_in_other_clip(editor: &Editor, count: usize) -> Project {
     let other_clip_id = other_track_id + 1;
     let first_note_id = other_track_id + 10;
     snapshot.tracks.push(hex_project::TrackSnapshot {
+        group_output_mutes: Vec::new(),
+        tags: Vec::new(),
         kind: hex_project::TrackKind::Ordinary,
         parent_group: None,
         color: hex_project::ElementColor::default(),
@@ -1379,6 +1413,7 @@ fn project_with_notes_in_other_clip(editor: &Editor, count: usize) -> Project {
             looping: false,
             notes: (0..count)
                 .map(|index| MidiNoteSnapshot {
+                    active: true,
                     id: first_note_id + index as u64,
                     start_raw: index as u64,
                     duration_raw: 1,
@@ -1822,6 +1857,7 @@ fn snapshot_rejects_bad_global_ids_and_note_cap() {
         panic!("instrument snapshot")
     };
     clips[0].notes.push(MidiNoteSnapshot {
+        active: true,
         id: track_id,
         start_raw: 0,
         duration_raw: 1,
@@ -1840,6 +1876,7 @@ fn snapshot_rejects_bad_global_ids_and_note_cap() {
     };
     clips[0].notes = (0..=MAX_NOTES)
         .map(|id| MidiNoteSnapshot {
+            active: true,
             id: 100 + id as u64,
             start_raw: 0,
             duration_raw: 1,

@@ -1,0 +1,11 @@
+{
+  "writer_source": "7a40a9ec37c1d0de57afa6005f4660b3d8456d98",
+  "writer": "schema58-writer.rs",
+  "writer_sha256": "8d6766b012de89e5a91063a327b4f84d25b07093e5158dc9603f4b1d647d3701",
+  "method": "public unmodified schema58 encoder from an archive of the exact source; fixed track color; generated document round-tripped on that encoder",
+  "fixture": "schema58-inactive-event.json",
+  "fixture_sha256": "e8c0a6afe614ea7f48ac84cb5d074b219a3dd514f38dab2e312de463b7c1d517",
+  "writer_binary_sha256": "ae17407632c70d8c2f86d415c987cb44e4dcf2a61055662445f189e1af2a2234",
+  "rustc": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+  "architecture": "arm64"
+}

@@ -174,7 +174,10 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
             fade: hex_project::ClipFade::neutral(1).unwrap(),
         })
         .collect();
-    let full = Project::from_snapshot(Snapshot {
+    let full = Project::from_legacy_snapshot(Snapshot {
+        automatic_track_names: Vec::new(),
+        retained_source_paths: Vec::new(),
+        aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
@@ -182,8 +185,10 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
+        sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
+        sample_rate_mode: Default::default(),
         next_id: 3 + MAX_CLIPS as u64,
         assets: vec![hex_project::AssetSnapshot {
             original_source: None,
@@ -195,6 +200,8 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
             conversion_version: 0,
         }],
         tracks: vec![TrackSnapshot {
+            group_output_mutes: Vec::new(),
+            tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),

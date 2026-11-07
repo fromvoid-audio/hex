@@ -6,7 +6,7 @@
 use super::*;
 use crate::{
     AudioSourceContext, Invalid, PlaybackAction, PlaybackActionError, PlaybackHandoffError,
-    PreparedStreamAction, StreamChunkWindow, StreamPageExtent,
+    PreparedStreamAction, StreamChunkWindow, StreamResourceExtent,
 };
 
 enum Runtime<'a> {
@@ -65,6 +65,8 @@ impl StreamPlayback<'_> {
                 sampler_console: false,
                 route_state_generation: r.session_route_state_generation(),
                 route_count: r.session_route_count(),
+                main_output_latency_frames: r.main_output_latency_frames(),
+                content_loop: r.automation_capture_loop(),
             }),
         }
     }
@@ -78,6 +80,17 @@ impl StreamPlayback<'_> {
         match &mut self.runtime {
             Runtime::Constructor(r) => r.apply_action(action),
             Runtime::Ordinary(r, _) => r.try_apply_action(action),
+        }
+    }
+    /// `apply_action` with the transport declick, so a ready streamed Play
+    /// from a paused position ramps in like the resident path.
+    pub fn apply_declicked_action(
+        &mut self,
+        action: PlaybackAction,
+    ) -> Result<(), PlaybackActionError> {
+        match &mut self.runtime {
+            Runtime::Constructor(r) => r.apply_declicked_action(action),
+            Runtime::Ordinary(r, _) => r.try_apply_declicked_action(action),
         }
     }
     pub fn prepare_stream_action(
@@ -122,7 +135,7 @@ impl StreamPlayback<'_> {
         &mut self,
         prepared: &PreparedStreamAction,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         match &mut self.runtime {
             Runtime::Constructor(r) => {
@@ -140,7 +153,7 @@ impl StreamPlayback<'_> {
         &mut self,
         due: u64,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         match &mut self.runtime {
             Runtime::Constructor(r) => r.visit_pending_stream_chunk(due, maximum_frames, visit),
@@ -153,7 +166,7 @@ impl StreamPlayback<'_> {
         &self,
         maximum_frames: usize,
         playing: Option<bool>,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         match &self.runtime {
             Runtime::Constructor(r) => r.visit_next_stream_chunk(maximum_frames, playing, visit),
@@ -167,7 +180,7 @@ impl StreamPlayback<'_> {
         previous: &mut StreamPlayback<'_>,
         maximum_frames: usize,
         playing: Option<bool>,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, PlaybackHandoffError> {
         // Constructor/constructor retains its exact existing identity and class
         // preflight. Mixed ownership can only borrow closed Current runtimes;

@@ -211,10 +211,8 @@ fn assert_return_export(authored_feed: bool, automation: bool) {
         let data = fs::read(target).unwrap();
         for (channel, expected) in expected.into_iter().enumerate() {
             let offset = 44 + channel * 2;
-            assert_eq!(
-                i16::from_le_bytes([data[offset], data[offset + 1]]),
-                (expected * 32767.0).round() as i16
-            );
+            let actual = i16::from_le_bytes([data[offset], data[offset + 1]]);
+            assert_pcm16_near(actual, expected, "captured output");
         }
         assert_eq!(
             control.progress(),
@@ -257,10 +255,8 @@ fn assert_return_export(authored_feed: bool, automation: bool) {
         assert_eq!(data.len(), 48);
         for (channel, expected) in expected.into_iter().enumerate() {
             let offset = 44 + channel * 2;
-            assert_eq!(
-                i16::from_le_bytes([data[offset], data[offset + 1]]),
-                (expected * 32767.0).round() as i16
-            );
+            let actual = i16::from_le_bytes([data[offset], data[offset + 1]]);
+            assert_pcm16_near(actual, expected, "captured output");
         }
     }
     // Refuse the whole existing batch; never merge/delete files in it.
@@ -546,4 +542,191 @@ fn assert_transformed_warp_export(mode: hex_project::WarpMode) {
         let expected = (expected * 32_767.).round() as i16;
         assert!((i32::from(sample) - i32::from(expected)).abs() <= 1);
     }
+}
+
+#[test]
+fn automatic_ranges_refuse_audible_unbounded_delay_only_on_relevant_paths() {
+    use hex_engine::OutputCaptureId;
+    use hex_export::{ExportControl, ExportSignal, Stem, controlled_frame_count};
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
+    let Created::Imported { track, asset, .. } = editor
+        .execute(Command::ImportPreparedAudioTrack {
+            name: "impulse".into(),
+            path: "memory.wav".into(),
+            source_sample_rate: RATE,
+            source_frames: 1,
+            playback_frames: 1,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        })
+        .unwrap()
+    else {
+        panic!("fixture track")
+    };
+    let Created::Track(dry_track) = editor
+        .execute(Command::AddTrack { name: "dry".into() })
+        .unwrap()
+    else {
+        panic!("dry track")
+    };
+    let mut state =
+        hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.delay")).unwrap();
+    for (id, value) in [
+        (1, ParameterValue::Float(10.0)),
+        (2, ParameterValue::Float(0.5)),
+        (3, ParameterValue::Float(1.0)),
+        (5, ParameterValue::Bool(false)),
+        (15, ParameterValue::Bool(false)),
+        (26, ParameterValue::Bool(false)),
+    ] {
+        state =
+            hex_engine::patch_native_device_parameter(&state, ParameterId::from_static(id), value)
+                .unwrap();
+    }
+    let delay_state = state.clone();
+    let Created::Device(device) = editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("delay")
+    };
+    let media = BTreeMap::from([(asset, Audio::new(RATE, vec![[0.5, -0.5]]).unwrap())]);
+    let prepare = |editor: &Editor| {
+        Arc::new(
+            PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
+                .unwrap(),
+        )
+    };
+    let revision = prepare(&editor);
+    let delayed = ExportSignal::CapturedMix(vec![OutputCaptureId::Track(track)]);
+    let dry = ExportSignal::CapturedMix(vec![OutputCaptureId::Track(dry_track)]);
+    let stems = ExportSignal::Stems(vec![Stem {
+        id: OutputCaptureId::Track(track),
+        name: "impulse".into(),
+    }]);
+    let directory = TestDir::new();
+    let path = directory.0.join("delay.wav");
+    hex_export::render_prepared_controlled(
+        &path,
+        Arc::clone(&revision),
+        0,
+        600,
+        delayed.clone(),
+        &ExportControl::default(),
+    )
+    .unwrap();
+    let bytes = fs::read(&path).unwrap();
+    let pcm: Vec<_> = bytes[44..]
+        .chunks_exact(4)
+        .map(|x| {
+            [
+                i16::from_le_bytes([x[0], x[1]]),
+                i16::from_le_bytes([x[2], x[3]]),
+            ]
+        })
+        .collect();
+    assert_pcm16_near(pcm[480][0], 0.5, "delayed left");
+    assert_pcm16_near(pcm[480][1], -0.5, "delayed right");
+    for signal in [&ExportSignal::Main, &delayed, &stems] {
+        let error = controlled_frame_count(revision.arrangement(), 0, None, signal).unwrap_err();
+        assert!(error.to_string().contains("explicit range"), "{error}");
+        assert_eq!(
+            controlled_frame_count(revision.arrangement(), 0, Some(600), signal).unwrap(),
+            600
+        );
+    }
+    assert_eq!(
+        controlled_frame_count(revision.arrangement(), 0, None, &dry).unwrap(),
+        1
+    );
+    let oversized = ExportSignal::CapturedMix(vec![
+        OutputCaptureId::Track(dry_track);
+        hex_engine::MAX_OUTPUT_CAPTURES + 1
+    ]);
+    assert!(controlled_frame_count(revision.arrangement(), 0, None, &oversized).is_err());
+    editor
+        .execute(Command::SetDeviceBypass {
+            device,
+            bypassed: true,
+        })
+        .unwrap();
+    let bypassed = prepare(&editor);
+    for signal in [&ExportSignal::Main, &delayed, &stems] {
+        assert_eq!(
+            controlled_frame_count(bypassed.arrangement(), 0, None, signal).unwrap(),
+            1
+        );
+    }
+
+    let Created::ReturnTrack(bus) = editor
+        .execute(Command::AddReturnTrack {
+            name: "delay return".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: bus,
+            gain: 1.0,
+        })
+        .unwrap();
+    editor
+        .execute(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state: delay_state.clone(),
+        })
+        .unwrap();
+    let returned = prepare(&editor);
+    let return_signal = ExportSignal::CapturedMix(vec![OutputCaptureId::Return(bus)]);
+    assert!(controlled_frame_count(returned.arrangement(), 0, None, &ExportSignal::Main).is_err());
+    assert!(controlled_frame_count(returned.arrangement(), 0, None, &return_signal).is_err());
+    assert_eq!(
+        controlled_frame_count(returned.arrangement(), 0, None, &delayed).unwrap(),
+        1
+    );
+    assert_eq!(
+        controlled_frame_count(returned.arrangement(), 0, None, &dry).unwrap(),
+        1
+    );
+
+    let Created::Track(group) = editor
+        .execute(Command::GroupTracks {
+            tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+            name: "group".into(),
+        })
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    editor
+        .execute(Command::InsertDevice {
+            track: group,
+            before: None,
+            state: delay_state,
+        })
+        .unwrap();
+    let grouped = prepare(&editor);
+    let group_signal = ExportSignal::CapturedMix(vec![OutputCaptureId::Track(group)]);
+    assert!(controlled_frame_count(grouped.arrangement(), 0, None, &group_signal).is_err());
+    assert_eq!(
+        controlled_frame_count(grouped.arrangement(), 0, None, &delayed).unwrap(),
+        1
+    );
+}
+
+/// PCM16 export applies ±1 LSB TPDF dither, so each sample lands within one
+/// LSB of plain rounding.
+fn assert_pcm16_near(actual: i16, expected: f32, context: &str) {
+    let rounded = (expected.clamp(-1.0, 1.0) * 32_767.0).round() as i32;
+    assert!(
+        (i32::from(actual) - rounded).abs() <= 1,
+        "{context}: {actual} not within one lsb of {rounded}"
+    );
 }

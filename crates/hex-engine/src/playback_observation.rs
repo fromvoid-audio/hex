@@ -1,5 +1,5 @@
 //! Exact read-only observations copied from one compiled revision on control. These values own
-//! only scalar MIDI gates/indexes/timing and existing two-atomic meter endpoints. They contain no
+//! only scalar MIDI gates/indexes/timing, graph latency, and scalar-atomic meter endpoints. They contain no
 //! PCM, prepared revision, instrument/effect factory, native configuration or analytic context.
 //! Consumers must correlate them with the actual applied output/context/audio revision.
 use crate::midi_compile::{CompiledNoteSpan, SpanNode};
@@ -9,8 +9,8 @@ use crate::prepared_tempo::{
     SessionBaseTimingView, SessionTimingView,
 };
 use crate::{
-    Invalid, MidiSpanBuffer, PreparedRevision, SessionClockAnchor, SessionMidiOrigin,
-    SessionPlaybackOwner,
+    Invalid, MidiSpanBuffer, OutputLatency, PreparedRevision, SessionClockAnchor,
+    SessionMidiOrigin, SessionPlaybackOwner,
 };
 use hex_project::{BeatTime, ClipId, TrackId};
 use std::sync::Arc;
@@ -20,15 +20,24 @@ struct Meter {
     id: u64,
     kind: hex_lattice_contract::DeviceTypeId,
     meter: Arc<hex_lattice::DeviceMeter>,
+    foreign: bool,
 }
 #[derive(Debug)]
 struct TrackGates {
     track: TrackId,
+    output_meter: Arc<hex_lattice::DeviceMeter>,
+    latency: Option<OutputLatency>,
     route: TrackId,
     spans: Vec<CompiledNoteSpan>,
     nodes: Vec<SpanNode>,
     root: Option<usize>,
     has_instrument: bool,
+}
+#[derive(Debug)]
+struct ReturnMeter {
+    id: hex_project::ReturnId,
+    meter: Arc<hex_lattice::DeviceMeter>,
+    latency: Option<OutputLatency>,
 }
 #[derive(Debug)]
 struct SessionGates {
@@ -55,10 +64,52 @@ pub struct PreparedMidiActivity {
 #[derive(Debug)]
 pub struct PreparedPlaybackObservation {
     meters: Vec<Meter>,
+    returns: Vec<ReturnMeter>,
     activity: PreparedMidiActivity,
+    sample_rate: u32,
+    main_latency: Option<OutputLatency>,
+    native_parameter_input: Option<crate::NativeParameterInputTarget>,
 }
 
 impl PreparedPlaybackObservation {
+    /// The exact native input prepared on this graph, if any. The caller must
+    /// correlate the observation with the applied output and audio revision.
+    pub fn native_parameter_input_target(&self) -> Option<crate::NativeParameterInputTarget> {
+        self.native_parameter_input
+    }
+
+    /// Control-only opt-in for Track/Return render-work sampling. These are the
+    /// existing scalar endpoints, not new graph/processor/resource owners.
+    /// Only enable an observation correlated with the applied output/revision.
+    pub fn set_render_work_enabled(&self, enabled: bool) {
+        for (_, meter) in self.render_work_meters() {
+            meter.set_enabled(enabled);
+        }
+    }
+
+    /// Stable canonical identities for sampled local audio-thread work. A
+    /// missing sample is unknown/disabled, not zero. Main, detached historical
+    /// tails and other shared costs remain in the global callback meter.
+    pub fn render_work_meters(
+        &self,
+    ) -> impl Iterator<Item = (crate::OutputCaptureId, &hex_lattice::RenderWorkMeter)> {
+        self.activity
+            .tracks
+            .iter()
+            .map(|track| {
+                (
+                    crate::OutputCaptureId::Track(track.track),
+                    track.output_meter.render_work(),
+                )
+            })
+            .chain(self.returns.iter().map(|bus| {
+                (
+                    crate::OutputCaptureId::Return(bus.id),
+                    bus.meter.render_work(),
+                )
+            }))
+    }
+
     /// Finite requested construction storage before allocation, including the outer Arc header
     /// and conservative backing for shared meter endpoints. Actual capacities are checked after
     /// capture. This is control metadata accounting, not allocator/RSS or graph provenance.
@@ -88,6 +139,14 @@ impl PreparedPlaybackObservation {
             .ok_or(Invalid("observation storage overflow"))?;
         add(
             &mut bytes,
+            revision
+                .arrangement()
+                .return_buses()
+                .len()
+                .checked_mul(std::mem::size_of::<ReturnMeter>() + meter_backing_bytes()),
+        )?;
+        add(
+            &mut bytes,
             revision.session().timing().observation_copy_quote(),
         )?;
         add(
@@ -96,7 +155,7 @@ impl PreparedPlaybackObservation {
                 .arrangement()
                 .tracks()
                 .len()
-                .checked_mul(std::mem::size_of::<TrackGates>()),
+                .checked_mul(std::mem::size_of::<TrackGates>() + meter_backing_bytes()),
         )?;
         for track in revision.arrangement().tracks() {
             if let Some(source) = &track.instrument {
@@ -143,19 +202,30 @@ impl PreparedPlaybackObservation {
     ) -> Result<Self, Invalid> {
         let quote = Self::storage_quote(revision, midi)?;
         let mut meters = reserved(meter_sources(revision).count())?;
-        for (id, kind, meter) in meter_sources(revision) {
+        for (id, kind, meter, foreign) in meter_sources(revision) {
             meters.push(Meter {
                 id,
                 kind,
                 meter: Arc::clone(meter),
+                foreign,
             });
         }
         meters.sort_unstable_by_key(|meter| meter.id);
         if meters.windows(2).any(|pair| pair[0].id == pair[1].id) {
             return Err(Invalid("observation device identity is duplicated"));
         }
-        let mut tracks = reserved(revision.arrangement().tracks().len())?;
-        for track in revision.arrangement().tracks() {
+        let arrangement = revision.arrangement();
+        let graph = arrangement.signal_graph.as_deref();
+        let mut tracks = reserved(arrangement.tracks().len())?;
+        let mut returns = reserved(arrangement.return_buses().len())?;
+        for (index, bus) in arrangement.return_buses().iter().enumerate() {
+            returns.push(ReturnMeter {
+                id: bus.id,
+                meter: Arc::clone(&bus.output_meter),
+                latency: graph.and_then(|graph| graph.return_latency(index)),
+            });
+        }
+        for (index, track) in arrangement.tracks().iter().enumerate() {
             let id = track
                 .canonical_track_id()
                 .ok_or(Invalid("observation track identity unavailable"))?;
@@ -165,6 +235,9 @@ impl PreparedPlaybackObservation {
             };
             tracks.push(TrackGates {
                 track: id,
+                output_meter: Arc::clone(&track.instrument_meter),
+                latency: graph
+                    .and_then(|graph| graph.track_latency(index, track.instrument_position())),
                 route: revision.midi_activity_route_track(id)?,
                 spans,
                 nodes,
@@ -186,6 +259,10 @@ impl PreparedPlaybackObservation {
         }
         let result = Self {
             meters,
+            returns,
+            sample_rate: arrangement.sample_rate(),
+            main_latency: graph.and_then(|graph| graph.main_output_latency()),
+            native_parameter_input: revision.native_parameter_input_target(),
             activity: PreparedMidiActivity {
                 tracks,
                 session,
@@ -220,6 +297,58 @@ impl PreparedPlaybackObservation {
     pub fn activity(&self) -> &PreparedMidiActivity {
         &self.activity
     }
+    /// Admitted algorithmic facts. Correlate this observation with the actual
+    /// applied audio revision before displaying them.
+    pub fn track_latency(&self, track: TrackId) -> Option<OutputLatency> {
+        self.activity
+            .tracks
+            .iter()
+            .find(|item| item.track == track)?
+            .latency
+    }
+    pub fn return_latency(&self, id: hex_project::ReturnId) -> Option<OutputLatency> {
+        self.returns.iter().find(|item| item.id == id)?.latency
+    }
+    pub fn main_latency(&self) -> Option<OutputLatency> {
+        self.main_latency
+    }
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+    /// Borrow the independently drained post-fader peak for a canonical track.
+    /// The caller must match this observation to the applied audio revision.
+    pub fn track_output_meter(&self, track: TrackId) -> Option<&hex_lattice::DeviceMeter> {
+        self.activity
+            .tracks
+            .iter()
+            .find(|item| item.track == track)
+            .map(|item| item.output_meter.as_ref())
+    }
+    /// Borrow a return's independently drained post-fader peak.
+    pub fn return_output_meter(
+        &self,
+        id: hex_project::ReturnId,
+    ) -> Option<&hex_lattice::DeviceMeter> {
+        self.returns
+            .iter()
+            .find(|item| item.id == id)
+            .map(|item| item.meter.as_ref())
+    }
+    /// Whether this exact compiled device selected a foreign processor. This
+    /// scalar is not native admission or ACK: consumers must first match this
+    /// observation to the actual applied output/context/audio revision.
+    pub fn foreign_processor(
+        &self,
+        device_id: u64,
+        device_type: hex_lattice_contract::DeviceTypeId,
+    ) -> Option<bool> {
+        self.meters
+            .binary_search_by_key(&device_id, |meter| meter.id)
+            .ok()
+            .and_then(|index| self.meters.get(index))
+            .filter(|meter| meter.kind == device_type)
+            .map(|meter| meter.foreign)
+    }
     pub fn retained_bytes_on_control(&self) -> Option<usize> {
         let mut bytes = std::mem::size_of::<Self>()
             .checked_add(2 * std::mem::size_of::<usize>())?
@@ -230,10 +359,22 @@ impl PreparedPlaybackObservation {
             )?
             .checked_add(self.meters.len().checked_mul(meter_backing_bytes())?)?
             .checked_add(
+                self.returns
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<ReturnMeter>())?,
+            )?
+            .checked_add(self.returns.len().checked_mul(meter_backing_bytes())?)?
+            .checked_add(
                 self.activity
                     .tracks
                     .capacity()
                     .checked_mul(std::mem::size_of::<TrackGates>())?,
+            )?
+            .checked_add(
+                self.activity
+                    .tracks
+                    .len()
+                    .checked_mul(meter_backing_bytes())?,
             )?
             .checked_add(
                 self.activity
@@ -397,6 +538,7 @@ fn meter_sources(
         u64,
         hex_lattice_contract::DeviceTypeId,
         &Arc<hex_lattice::DeviceMeter>,
+        bool,
     ),
 > + Clone {
     revision
@@ -407,14 +549,26 @@ fn meter_sources(
             track
                 .instrument_id
                 .zip(track.instrument_state.as_ref())
-                .map(|(id, state)| (id.value(), state.type_id(), &track.instrument_meter))
+                .map(|(id, state)| {
+                    (
+                        id.value(),
+                        state.type_id(),
+                        &track.instrument_meter,
+                        track.foreign_instrument.is_some(),
+                    )
+                })
                 .into_iter()
-                .chain(
-                    track
-                        .device_chain
-                        .iter()
-                        .map(|device| (device.device_id, device.device_type, &device.meter)),
-                )
+                .chain(track.device_chain.iter().map(|device| {
+                    (
+                        device.device_id,
+                        device.device_type,
+                        &device.meter,
+                        matches!(
+                            device.definition.as_ref(),
+                            Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
+                        ),
+                    )
+                }))
         })
         .chain(
             revision
@@ -423,7 +577,17 @@ fn meter_sources(
                 .iter()
                 .flat_map(|bus| bus.device_chain.iter())
                 .chain(revision.arrangement().main_device_chain.iter())
-                .map(|device| (device.device_id, device.device_type, &device.meter)),
+                .map(|device| {
+                    (
+                        device.device_id,
+                        device.device_type,
+                        &device.meter,
+                        matches!(
+                            device.definition.as_ref(),
+                            Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
+                        ),
+                    )
+                }),
         )
 }
 fn add(total: &mut usize, bytes: Option<usize>) -> Result<(), Invalid> {

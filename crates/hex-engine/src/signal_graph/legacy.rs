@@ -53,6 +53,8 @@ impl RendererRuntime {
                         loop_pass: 0,
                         performance_beat_raw: beat.raw(),
                         arrangement_beat_raw: Some(beat.raw()),
+                        meter: None,
+                        cycle_beats_raw: None,
                     })
                     .map_err(error)?;
                 for scratch in &mut self.return_scratch {
@@ -66,16 +68,15 @@ impl RendererRuntime {
                             let track = &project.tracks[index];
                             let mut audio = [[0.0; 2]];
                             let mut generator = [[0.0; 2]];
-                            if let Some(pages) = pages.as_deref_mut() {
-                                track.render_audio_range_with_pages(frame, end, &mut audio, pages);
-                            } else {
-                                track.render_audio_range(frame, end, &mut audio);
+                            if track.audio_content_enabled() {
+                                track.render_raw_audio(frame, &mut audio, pages.as_deref_mut())?;
                             }
-                            track.render_instrument_range(
+                            crate::render_source_generators(
+                                project,
+                                index,
                                 frame,
                                 end,
                                 &mut generator,
-                                None,
                                 volume_timing,
                             )?;
                             let processed = compensation.process_track(
@@ -89,9 +90,7 @@ impl RendererRuntime {
                                 &mut None,
                             )?;
                             let mixed = compensation.fader(track, index, None, processed)?;
-                            let main =
-                                compensation.edge(compensation.graph.tracks[index].main, mixed)?;
-                            compensation.main[index] = main;
+                            compensation.route_track_output(index, mixed)?;
                             for feed_index in 0..compensation.graph.tracks[index].audio_feeds.len()
                             {
                                 let feed =
@@ -114,10 +113,9 @@ impl RendererRuntime {
                         Owner::Return(index) => {
                             let bus = &project.return_buses[index];
                             let mut returned = self.return_scratch[index][0];
-                            compensation.effects(
-                                &compensation.graph.returns[index].devices,
+                            compensation.process_return(
+                                index,
                                 &mut self.return_chains[index],
-                                0,
                                 &mut returned,
                                 offset,
                                 &mut None,

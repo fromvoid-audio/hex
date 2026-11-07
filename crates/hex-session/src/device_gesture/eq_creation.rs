@@ -188,6 +188,9 @@ impl GestureMachine {
                     .ok_or(SessionError::Invalid("eq no longer exists"))?;
                 self.active = Some(Active {
                     snapshot: GestureSnapshot {
+                        track_gains: None,
+                        touched_parameters: crate::device_gesture::TouchedParameters::default(),
+                        manual_edit: false,
                         key,
                         target: GestureTarget::EqNodeCreation { device },
                         sequence: 0,
@@ -195,12 +198,16 @@ impl GestureMachine {
                         secondary_value: None,
                         parameters: None,
                         creation: Some(snapshot),
+                        plugin_value: None,
                     },
                     kind: ActiveKind::Device {
                         class,
                         type_id: entry.state().type_id(),
                     },
                     creation_origin: Some(entry.state().clone()),
+                    origin_parameters: None,
+                    state_origin: None,
+                    plugin_initial: None,
                 });
                 self.last_key = Some(key);
             }
@@ -229,6 +236,7 @@ impl GestureMachine {
                 let draft = GestureSnapshot {
                     sequence,
                     creation: Some(snapshot),
+                    plugin_value: None,
                     ..active
                 };
                 let before = session.project().clone();

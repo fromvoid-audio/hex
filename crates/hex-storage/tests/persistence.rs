@@ -480,7 +480,7 @@ fn current_format_preserves_opaque_instrument_state_and_requires_its_field() {
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     assert_eq!(
-        json["tracks"][0]["instrument"]["type_id"],
+        json["native_sources"][0]["devices"][0]["device"]["type_id"],
         "future.instrument"
     );
     assert_eq!(
@@ -544,30 +544,30 @@ fn schema_sixteen_roundtrips_chain_position_and_rejects_malformed_positions() {
     let bytes = encode(&project).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["version"], hex_storage::CURRENT_SCHEMA_VERSION);
-    assert_eq!(json["tracks"][0]["instrument_position"], 1);
+    assert_eq!(json["track_source_bindings"][0]["instrument_position"], 1);
     assert_eq!(decode(&bytes).unwrap(), project);
 
     let mut missing = json.clone();
-    missing["tracks"][0]
+    missing["track_source_bindings"][0]
         .as_object_mut()
         .unwrap()
         .remove("instrument_position");
     assert!(decode(&serde_json::to_vec(&missing).unwrap()).is_err());
 
     let mut out_of_range = json.clone();
-    out_of_range["tracks"][0]["instrument_position"] = 2.into();
+    out_of_range["track_source_bindings"][0]["instrument_position"] = 2.into();
     assert!(decode(&serde_json::to_vec(&out_of_range).unwrap()).is_err());
 
     let mut orphaned = json.clone();
-    orphaned["tracks"][0]["instrument"] = serde_json::Value::Null;
-    orphaned["tracks"][0]["instrument_position"] = 0.into();
+    orphaned["track_source_bindings"][0]["source"] = serde_json::Value::Null;
+    orphaned["track_source_bindings"][0]["instrument_position"] = 0.into();
     assert!(decode(&serde_json::to_vec(&orphaned).unwrap()).is_err());
 
     let mut missing_instrument = json;
-    missing_instrument["tracks"][0]
+    missing_instrument["track_source_bindings"][0]
         .as_object_mut()
         .unwrap()
-        .remove("instrument");
+        .remove("source");
     assert!(decode(&serde_json::to_vec(&missing_instrument).unwrap()).is_err());
     assert!(editor.project().device(effect).is_some());
 }
@@ -790,7 +790,7 @@ fn malformed_unknown_future_and_large_invalid_documents_refused() {
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     let mut future = json.clone();
-    future["version"] = (json["version"].as_u64().unwrap() + 1).into();
+    future["version"] = (hex_storage::NEWEST_SCHEMA_VERSION + 1).into();
     assert!(decode(&serde_json::to_vec(&future).unwrap()).is_err());
     let mut unknown = json.clone();
     unknown["unrecognized"] = true.into();
@@ -1290,4 +1290,126 @@ fn historical_layout_admission_has_no_blanket_document_byte_ceiling() {
     let mut historical = hex_storage::encode_schema20(&project).unwrap();
     historical.resize(LEGACY_READER_DOCUMENT_BYTES + 1, b' ');
     assert_eq!(decode(&historical).unwrap(), project);
+}
+
+#[test]
+fn compressor_sidechain_roundtrips_and_requires_schema_upgrade_consent() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(source) = editor
+        .execute(Command::AddTrack { name: "key".into() })
+        .unwrap()
+    else {
+        panic!("source")
+    };
+    let Created::Device(device) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: NativeDeviceState::new(
+                DeviceTypeId::from_static("hex.compressor"),
+                3,
+                vec![0; 32],
+            )
+            .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("compressor")
+    };
+    let original = editor.project().clone();
+    let dir = std::env::temp_dir().join(format!("hex-sidechain-schema-{}", std::process::id()));
+    fs::create_dir(&dir).unwrap();
+    let legacy = dir.join("legacy.hex");
+    save_new(&legacy, &original).unwrap();
+    let (reopened, token) = hex_storage::load_with_token(&legacy).unwrap();
+    assert_eq!(reopened, original);
+    assert!(reopened.sidechains().is_empty());
+    editor
+        .execute(Command::SetSidechain {
+            device,
+            source: Some(source),
+        })
+        .unwrap();
+    let routed = editor.project();
+    assert!(token.requires_save_confirmation(routed).unwrap());
+    assert!(hex_storage::encode_schema22(routed).is_err());
+    assert_eq!(
+        hex_storage::schema_version_for(routed),
+        hex_storage::SIDECHAIN_SCHEMA_VERSION
+    );
+    let path = dir.join("sidechain.hex");
+    save_new(&path, routed).unwrap();
+    assert_eq!(load(&path).unwrap(), *routed);
+
+    let document: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let mut invalid = document.clone();
+    invalid["sidechains"][0]["source"] = u64::MAX.into();
+    assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
+    let mut invalid = document.clone();
+    invalid["sidechains"][0]["tap"] = "unknown".into();
+    assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
+    let mut invalid = document;
+    let repeated = invalid["sidechains"][0].clone();
+    invalid["sidechains"].as_array_mut().unwrap().push(repeated);
+    assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn track_tags_upgrade_schema69_preserve_complete_state_and_original_bytes() {
+    let mut editor = Editor::new(project(), 16).unwrap();
+    let track = editor.project().tracks()[0].id();
+    let Created::Device(device) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: NativeDeviceState::new(
+                DeviceTypeId::from_static("hex.compressor"),
+                3,
+                vec![0; 32],
+            )
+            .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("compressor")
+    };
+    editor
+        .execute(Command::SetSidechain {
+            device,
+            source: Some(track),
+        })
+        .unwrap();
+    let original = editor.project().clone();
+    let dir = std::env::temp_dir().join(format!(
+        "hex-track-tags-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).unwrap();
+    let old = dir.join("schema69.hex");
+    save_new(&old, &original).unwrap();
+    let bytes = fs::read(&old).unwrap();
+    let (reopened, token) = hex_storage::load_with_token(&old).unwrap();
+    assert_eq!(reopened, original);
+    assert_eq!(hex_storage::schema_version_for(&reopened), 69);
+    editor
+        .execute(Command::SetTrackTags {
+            track,
+            tags: vec![
+                hex_project::TrackTag::new("drums").unwrap(),
+                hex_project::TrackTag::new("lowend").unwrap(),
+            ],
+        })
+        .unwrap();
+    assert!(token.requires_save_confirmation(editor.project()).unwrap());
+    let new = dir.join("schema72.hex");
+    save_new(&new, editor.project()).unwrap();
+    assert_eq!(load(&new).unwrap(), *editor.project());
+    assert_eq!(fs::read(&old).unwrap(), bytes);
+    assert_eq!(load(&old).unwrap(), original);
+    fs::remove_file(new).unwrap();
+    fs::remove_file(old).unwrap();
+    fs::remove_dir(dir).unwrap();
 }

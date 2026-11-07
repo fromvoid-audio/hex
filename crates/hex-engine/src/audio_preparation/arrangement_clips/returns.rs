@@ -7,6 +7,8 @@ pub struct ArrangementReturnCapacity {
     pub row_bytes: usize,
     pub chain_payload_bytes: usize,
     pub chain_declared_overhead_bytes: usize,
+    pub meter_payload_bytes: usize,
+    pub meter_declared_overhead_bytes: usize,
     pub reserved_handle_destinations: usize,
     pub independent_handle_obligations: usize,
     pub feed: ReturnFeedCapacity,
@@ -17,6 +19,8 @@ impl ArrangementReturnCapacity {
         self.row_bytes
             .checked_add(self.chain_payload_bytes)
             .and_then(|n| n.checked_add(self.chain_declared_overhead_bytes))
+            .and_then(|n| n.checked_add(self.meter_payload_bytes))
+            .and_then(|n| n.checked_add(self.meter_declared_overhead_bytes))
             .and_then(|n| n.checked_add(self.feed.bytes().ok()?))
             .ok_or(AudioStorageError::Overflow)
     }
@@ -31,6 +35,10 @@ struct Row {
     bare: Option<Arc<[hex_lattice::PreparedRuntimeInstance]>>,
     declaration: Option<SharedDeclaration>,
     handle: u64,
+    meter: Option<OwnedShared<hex_lattice::DeviceMeter>>,
+    bare_meter: Option<Arc<hex_lattice::DeviceMeter>>,
+    meter_declaration: Option<SharedDeclaration>,
+    meter_handle: u64,
     bus: Option<ReturnBus>,
     root_index: Option<usize>,
     disposal: Disposal,
@@ -152,7 +160,10 @@ impl ReturnAssembly {
                 .capacity()
                 .checked_mul(mem::size_of::<Row>())
                 .ok_or(AudioStorageError::Overflow)?,
-            reserved_handle_destinations: self.active,
+            reserved_handle_destinations: self
+                .active
+                .checked_mul(2)
+                .ok_or(AudioStorageError::Overflow)?,
             previous_growth_backing_bytes: if growth && self.phase != Phase::Vacant {
                 self.growth
                     .checked_add(feed.previous_growth_backing_bytes)
@@ -164,6 +175,37 @@ impl ReturnAssembly {
             ..Default::default()
         };
         for r in &self.rows {
+            let meter_parts = if let Some(bus) = r.actual(root)? {
+                r.meter_declaration
+                    .as_ref()
+                    .and_then(|d| d.parts(&bus.output_meter))
+            } else if let Some(meter) = &r.meter {
+                meter.parts()
+            } else {
+                r.bare_meter
+                    .as_ref()
+                    .and_then(|meter| r.meter_declaration.as_ref().and_then(|d| d.parts(meter)))
+            };
+            if r.meter.is_some()
+                || r.bare_meter.is_some()
+                || r.root_index.is_some()
+                || r.bus.is_some()
+            {
+                let (payload, overhead) =
+                    meter_parts.ok_or(AudioStorageError::UnsupportedConstructor)?;
+                c.meter_payload_bytes = c
+                    .meter_payload_bytes
+                    .checked_add(payload)
+                    .ok_or(AudioStorageError::Overflow)?;
+                c.meter_declared_overhead_bytes = c
+                    .meter_declared_overhead_bytes
+                    .checked_add(overhead)
+                    .ok_or(AudioStorageError::Overflow)?;
+                c.independent_handle_obligations = c
+                    .independent_handle_obligations
+                    .checked_add(1)
+                    .ok_or(AudioStorageError::Overflow)?;
+            }
             let nested = if let Some(bus) = r.actual(root)? {
                 r.effects.bytes(&bus.device_chain)?
             } else if let Some(chain) = &r.chain {
@@ -222,6 +264,7 @@ impl ReturnAssembly {
         &mut self,
         project: &hex_project::Project,
         effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
+        native_input: Option<crate::device_automation::NativeParameterInputTarget>,
     ) -> Result<(), AudioStorageError> {
         if self.phase != Phase::Vacant
             || self.rows.iter().any(|r| {
@@ -231,6 +274,10 @@ impl ReturnAssembly {
                     || r.bus.is_some()
                     || r.declaration.is_some()
                     || r.handle != 0
+                    || r.meter.is_some()
+                    || r.bare_meter.is_some()
+                    || r.meter_declaration.is_some()
+                    || r.meter_handle != 0
             })
         {
             return Err(AudioStorageError::Capacity);
@@ -283,16 +330,29 @@ impl ReturnAssembly {
         // handle exhaustion can interrupt acquisition. No owner is created yet.
         for r in &mut self.rows[..self.active] {
             r.handle = handle()?;
+            r.meter_handle = handle()?;
         }
         for (r, b) in self.rows[..self.active]
             .iter_mut()
             .zip(project.return_tracks())
         {
-            r.chain = Some(r.effects.prepare_with_effects(
+            r.meter = Some(OwnedShared::new_owned(hex_lattice::DeviceMeter::default()));
+            let meter = r.meter.as_ref().ok_or(AudioStorageError::UnknownStorage)?;
+            let (payload, _) = meter
+                .parts()
+                .ok_or(AudioStorageError::UnsupportedConstructor)?;
+            if meter.control_storage_declaration()
+                != (hex_lattice::PreparedStorageDeclaration::ExclusiveOnly { bytes: payload })
+            {
+                return Err(AudioStorageError::UnknownStorage);
+            }
+            r.chain = Some(r.effects.prepare_with_effects_and_input(
                 b.devices(),
                 hex_lattice::ProcessorChainOwner::Return(b.id().value()),
                 project.sample_rate(),
                 effects,
+                native_input,
+                Some(project),
             )?);
             self.growth = self
                 .growth
@@ -314,6 +374,10 @@ impl ReturnAssembly {
             if r.ordinal != index
                 || r.id.is_none()
                 || r.handle == 0
+                || r.meter_handle == 0
+                || r.meter.is_none()
+                || r.bare_meter.is_some()
+                || r.meter_declaration.is_some()
                 || r.chain.is_none()
                 || r.bare.is_some()
                 || r.declaration.is_some()
@@ -324,18 +388,26 @@ impl ReturnAssembly {
             }
         }
         for r in &mut self.rows[..self.active] {
+            if let Some(meter) = r.meter.take() {
+                let (arc, declaration) = meter.into_paired_parts_on_control();
+                r.meter_declaration = Some(declaration);
+                r.bare_meter = Some(arc);
+            }
             if let Some(chain) = r.chain.take() {
                 let (arc, declaration) = chain.into_paired_parts_on_control();
                 r.declaration = Some(declaration);
                 r.bare = Some(arc);
             }
-            if let (Some(id), Some(device_chain)) = (r.id, r.bare.take()) {
+            if let (Some(id), Some(device_chain), Some(output_meter)) =
+                (r.id, r.bare.take(), r.bare_meter.take())
+            {
                 r.bus = Some(ReturnBus {
                     id,
                     gain: r.gain,
                     muted: r.muted,
                     matrix: None,
                     device_chain,
+                    output_meter,
                 });
             }
             #[cfg(test)]
@@ -379,6 +451,9 @@ impl ReturnAssembly {
         if let Some(b) = &r.bus {
             if r.bare.is_some()
                 || r.chain.is_some()
+                || r.meter.is_some()
+                || r.bare_meter.is_some()
+                || r.meter_declaration.is_none()
                 || b.id != r.id.ok_or(AudioStorageError::SourceMismatch)?
                 || b.gain != r.gain
                 || b.muted != r.muted
@@ -394,9 +469,11 @@ impl ReturnAssembly {
                 muted: _,
                 matrix: _,
                 device_chain,
+                output_meter,
             }) = r.bus.take()
             {
                 r.bare = Some(device_chain);
+                r.bare_meter = Some(output_meter);
             }
         }
         if r.disposal != Disposal::Unstarted {
@@ -405,13 +482,17 @@ impl ReturnAssembly {
         r.disposal = Disposal::Pending;
         drop(r.chain.take());
         drop(r.bare.take());
+        drop(r.meter.take());
+        drop(r.bare_meter.take());
         #[cfg(test)]
         drop(self.probe.take());
         r.disposal = Disposal::Complete;
         r.effects.clear();
         r.handle = 0;
+        r.meter_handle = 0;
         r.id = None;
         r.declaration = None;
+        r.meter_declaration = None;
         self.cursor += 1;
         Ok(())
     }
@@ -426,6 +507,9 @@ impl ReturnAssembly {
                     || r.chain.is_some()
                     || r.bare.is_some()
                     || r.handle != 0
+                    || r.meter.is_some()
+                    || r.bare_meter.is_some()
+                    || r.meter_handle != 0
             })
         {
             return Err(AudioStorageError::Capacity);
@@ -523,6 +607,10 @@ impl ReturnAssembly {
                 bare,
                 declaration,
                 handle,
+                meter,
+                bare_meter,
+                meter_declaration,
+                meter_handle,
                 bus: _,
                 root_index: _,
                 disposal: _,
@@ -536,7 +624,17 @@ impl ReturnAssembly {
                     muted: _,
                     matrix: _,
                     device_chain,
+                    output_meter,
                 } = bus;
+                l.shared(
+                    output_meter,
+                    meter_declaration
+                        .as_ref()
+                        .and_then(|d| d.parts(output_meter)),
+                    Owner::exclusive(output_meter),
+                    *meter_handle,
+                    None,
+                )?;
                 effects.visit(device_chain, l)?;
                 l.shared(
                     device_chain,
@@ -546,6 +644,24 @@ impl ReturnAssembly {
                     None,
                 )?;
             } else {
+                if let Some(owner) = meter {
+                    l.shared(
+                        owner.arc(),
+                        owner.parts(),
+                        Owner::exclusive(owner),
+                        *meter_handle,
+                        None,
+                    )?;
+                }
+                if let Some(owner) = bare_meter {
+                    l.shared(
+                        owner,
+                        meter_declaration.as_ref().and_then(|d| d.parts(owner)),
+                        Owner::exclusive(owner),
+                        *meter_handle,
+                        None,
+                    )?;
+                }
                 if let Some(owner) = chain {
                     effects.visit(owner.arc(), l)?;
                     l.shared(

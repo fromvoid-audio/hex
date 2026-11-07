@@ -35,6 +35,7 @@ fn seed(cx: &mut TestAppContext, vertical: bool) -> Seed {
             clip,
             notes: vec![
                 MidiNoteInsert {
+                    active: true,
                     start: BeatTime::ZERO,
                     duration: beat(2),
                     pitch,
@@ -42,6 +43,7 @@ fn seed(cx: &mut TestAppContext, vertical: bool) -> Seed {
                     velocity: 91
                 },
                 MidiNoteInsert {
+                    active: true,
                     start: beat(3),
                     duration: half(1),
                     pitch: pitch + u8::from(vertical),
@@ -49,6 +51,7 @@ fn seed(cx: &mut TestAppContext, vertical: bool) -> Seed {
                     velocity: 103
                 },
                 MidiNoteInsert {
+                    active: true,
                     start: BeatTime::ONE,
                     duration: beat(2),
                     pitch: pitch + 2,
@@ -283,6 +286,7 @@ fn trailing_resize_and_group_move_paint_retirement_before_atomic_worker_commit(
                 assert!(v.enqueue(Request::Edit(Command::AddMidiNotes {
                     clip,
                     notes: vec![MidiNoteInsert {
+                        active: true,
                         start: half(5),
                         duration: half(1),
                         pitch: pitch + 1,
@@ -356,8 +360,14 @@ fn trailing_resize_and_group_move_paint_retirement_before_atomic_worker_commit(
             point(baseline[0].right() - px(1.5), baseline[0].center().y)
         };
         let end = point(down.x + per_beat * if group { -2.0 } else { 2.5 }, down.y);
+        // A trailing resize snaps only while cmd is held; the group case moves.
+        let held_modifiers = if group {
+            Modifiers::default()
+        } else {
+            Modifiers::command()
+        };
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
-        visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+        visual.simulate_mouse_move(end, Some(MouseButton::Left), held_modifiers);
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
             assert_eq!(&v.state.as_ref().unwrap().project, &before);
@@ -379,7 +389,7 @@ fn trailing_resize_and_group_move_paint_retirement_before_atomic_worker_commit(
             close(held_companion[0].size.width, per_beat / 2.0);
         }
         assert_eq!(bodies(&mut visual, other_y), unrelated);
-        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(end, MouseButton::Left, held_modifiers);
         pump(&editor, &mut visual);
         let after = editor.read_with(&visual, |v, _| {
             assert!(v.error.is_none(), "{:?}", v.error);

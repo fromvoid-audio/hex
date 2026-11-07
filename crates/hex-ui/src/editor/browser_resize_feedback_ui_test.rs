@@ -243,3 +243,6 @@ fn browser_resize_feedback_open_editor_and_compact_picker_keep_gesture_paint(
         assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
     });
 }
+
+#[path = "browser/resize_capture_tests.rs"]
+mod capture_tests;

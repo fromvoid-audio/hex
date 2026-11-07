@@ -107,6 +107,10 @@ impl DocumentV26 {
     pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         Self::into_project(serde_json::from_slice(bytes)?)
     }
+    /// Decode the envelope an upper migration layer already parsed and adapted.
+    pub(super) fn decode_value(value: serde_json::Value) -> Result<Project, StorageError> {
+        Self::into_project(serde_json::from_value(value)?)
+    }
     pub(super) fn into_project(doc: Self) -> Result<Project, StorageError> {
         if doc.format != "hex-project" || doc.version != 26 {
             return Err(StorageError::Invalid(
@@ -163,6 +167,6 @@ impl DocumentV26 {
                 "clip name references an unknown arrangement clip",
             ));
         }
-        Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
     }
 }

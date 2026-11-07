@@ -324,6 +324,7 @@ fn project_fixture(
             notes.reserve(NOTES_PER_TRACK);
             for note_index in 0..NOTES_PER_TRACK {
                 notes.push(MidiNoteSnapshot {
+                    active: true,
                     id: next_id,
                     start_raw: 0,
                     duration_raw: BeatTime::ONE.raw(),
@@ -335,6 +336,7 @@ fn project_fixture(
             }
         } else {
             notes.push(MidiNoteSnapshot {
+                active: true,
                 id: next_id,
                 start_raw: 0,
                 duration_raw: BeatTime::from_quarters(2)?.raw(),
@@ -345,6 +347,8 @@ fn project_fixture(
             next_id += 1;
         }
         tracks.push(TrackSnapshot {
+            group_output_mutes: Vec::new(),
+            tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),
@@ -358,12 +362,14 @@ fn project_fixture(
             muted: false,
             soloed: false,
             devices: vec![DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: effect_id,
                 bypassed: false,
                 state: utility_state.clone(),
             }],
             instrument: Some(DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: instrument_id,
                 bypassed: false,
@@ -413,6 +419,7 @@ fn project_fixture(
         gain: 1.0,
         muted: false,
         devices: vec![DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: return_effect_id,
             bypassed: false,
@@ -423,7 +430,7 @@ fn project_fixture(
 }
 
 fn format_bytes(bytes: usize) -> String {
-    if bytes >= 1024 * 1024 && bytes % (1024 * 1024) == 0 {
+    if bytes >= 1024 * 1024 && bytes.is_multiple_of(1024 * 1024) {
         format!("{} MiB", bytes / (1024 * 1024))
     } else if bytes >= 1024 {
         format!("{} KiB", bytes / 1024)

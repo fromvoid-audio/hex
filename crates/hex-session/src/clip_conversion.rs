@@ -13,7 +13,8 @@ const MAX_BOUNCE_FRAMES: u64 = hex_engine::session_playback::MAX_FINITE_BOUNCE_F
 static NEXT_BOUNCE: AtomicU64 = AtomicU64::new(0);
 
 impl Session {
-    /// Bounce only this clip's instrument, before retained track effects/mix.
+    /// Bounce only this clip's instrument, before retained track effects/mix
+    /// and Main processing. Those live processors must apply exactly once.
     /// Arrangement length is preserved exactly; tails beyond the clip are cut.
     /// Session bounces one initial source pass, since audio cells are one-shots.
     pub fn bounce_midi_clip(
@@ -200,6 +201,7 @@ fn isolated_source(
                 .iter()
                 .map(|note| hex_project::MidiNoteSnapshot {
                     id: note.id().value(),
+                    active: note.active(),
                     start_raw: note.start().raw(),
                     duration_raw: note.duration().raw(),
                     pitch: note.pitch(),
@@ -226,6 +228,7 @@ fn isolated_source(
     // the replacement clip, never to the isolated synthesis pass.
     source.active = true;
     snapshot.tracks.retain(|track| track.id == track_id.value());
+    snapshot.retain_automatic_track_names_after_projection();
     let track = snapshot
         .tracks
         .first_mut()
@@ -243,6 +246,22 @@ fn isolated_source(
             .map(|comparison| comparison.with_global_trims_from(&instrument.state))
             .transpose()
             .map_err(|e| e.to_string())?;
+    }
+    // This is a disposable render extraction. Normalize its canonical source
+    // and read projection together; the live retained definition stays untouched.
+    snapshot
+        .native_sources
+        .retain(|source| Some(source.id) == owner.source_id().map(|id| id.value()));
+    if let Some(instrument) = &track.instrument {
+        let source = snapshot
+            .native_sources
+            .first_mut()
+            .ok_or("clip source no longer exists")?;
+        let definition = source
+            .devices
+            .get_mut(source.instrument_index)
+            .ok_or("clip instrument no longer exists")?;
+        *definition = instrument.clone();
     }
     track.instrument_position = track.instrument.as_ref().map(|_| 0);
     track.gain = 1.0;
@@ -264,6 +283,9 @@ fn isolated_source(
     snapshot.assets.retain(|asset| required.contains(&asset.id));
     snapshot.session = Default::default();
     snapshot.return_tracks.clear();
+    // The converted clip still passes through the canonical Main chain.
+    // Exclude it only from this disposable instrument-source render.
+    snapshot.main_devices.clear();
     snapshot.audio_feeds.clear();
     snapshot.midi_routes.clear();
     snapshot.return_feeds.clear();

@@ -1,5 +1,7 @@
 //! One active local draft and read-only prepared curves; the actor owns every
 //! committed edit. Detail and inline plots share pointer/command semantics.
+//! Inline automation owns its target independently of background clip selection;
+//! the detail lane follows the selected track only outside automation view.
 //! Released markers retain their source-stamped ordered receipt until the exact
 //! terminal and canonical state arrive in one receive; cancellation of held input
 //! never revokes already-admitted display custody.
@@ -8,7 +10,7 @@ mod paint;
 mod pending;
 use pending::PendingGain;
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 use super::{EditorView, ViewState, viewport::Viewport};
 use gpui::{Context, Entity, Subscription, Window};
 use hex_project::{BeatTime, GainPoint, TrackId};
@@ -27,6 +29,7 @@ pub(super) struct Draft {
 }
 struct NumericBinding {
     entity: Entity<NumericControl>,
+    edit_state: hex_widgets::NumericEditState,
     _subscription: Subscription,
     key: (TrackId, BeatTime, u64, u64),
 }
@@ -41,6 +44,12 @@ pub(super) struct GainLane {
     pub(super) error: Option<String>,
 }
 impl GainLane {
+    pub(super) fn numeric_draft_active(&self) -> bool {
+        self.gain
+            .as_ref()
+            .is_some_and(|binding| binding.edit_state.is_editing())
+    }
+
     pub(super) fn pointer_is_active(&self) -> bool {
         self.draft.is_some_and(|draft| draft.pointer.is_some())
     }
@@ -85,13 +94,12 @@ impl GainLane {
             self.selected = None;
             self.gain = None;
         }
-        if let Some(track) = self.track.and_then(|track| project.track(track)) {
-            if self
+        if let Some(track) = self.track.and_then(|track| project.track(track))
+            && self
                 .selected
                 .is_some_and(|beat| !track.gain_envelope().iter().any(|point| point.beat == beat))
-            {
-                self.selected = track.gain_envelope().first().map(|point| point.beat);
-            }
+        {
+            self.selected = track.gain_envelope().first().map(|point| point.beat);
         }
     }
 }
@@ -179,6 +187,9 @@ impl EditorView {
         // This compact editor replaces the open detail body, leaving real track rows at minimum size.
         self.clip_view_open = false;
         self.select_track(track, window);
+        self.automation_view
+            .devices
+            .clear_main(super::device_panel::DevicePanelOwner::Track(track));
         self.gain_lane.track = Some(track);
         self.gain_lane.selected = self
             .state
@@ -191,6 +202,9 @@ impl EditorView {
         cx.notify();
     }
     pub(super) fn cancel_gain_draft(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.cancel_device_automation_draft(cx) {
+            return true;
+        }
         if self.gain_recorder.blocks_edits() {
             self.cancel_gain_recording();
             cx.notify();

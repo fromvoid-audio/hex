@@ -157,7 +157,7 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
     })?;
     // The frozen predecessor sees only state it can represent. It still owns
     // its complete directed views, native devices, musical roots and histories.
-    let legacy = Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))?;
+    let legacy = Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))?;
     let mut value = super::content_views::encode(&legacy)?;
     let object = value
         .as_object_mut()
@@ -167,8 +167,10 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
     Ok(value)
 }
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?)
+}
+/// Decode an envelope parsed once by [`super::audio_events::parse_unique`].
+pub(crate) fn decode_value(mut value: serde_json::Value) -> Result<Project, StorageError> {
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid audio event fade envelope"))?;
@@ -179,7 +181,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         StorageError::Invalid("audio event fade inventory is missing"),
     )?)?;
     object.insert("version".into(), 41.into());
-    let legacy = super::content_views::decode(&serde_json::to_vec(&value)?)?;
+    let legacy = super::content_views::decode_value(value)?;
     let mut rows = BTreeMap::new();
     for row in inventory.0 {
         if rows.insert(row.clip, row.events).is_some() {
@@ -226,7 +228,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "audio event fades reference a missing arrangement clip",
         ));
     }
-    Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+    Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }
 
 #[cfg(test)]

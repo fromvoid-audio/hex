@@ -1,8 +1,10 @@
-//! Compact source-window controls for the selected Session audio one-shot.
+//! Compact source-window and cycle controls for the selected Console audio cell.
+//! The waveform also shows the accepted Session playback position of that cell.
 use super::EditorView;
 use crate::theme;
-use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, rgb};
-use hex_project::{AssetId, ClipId, Command, SessionCellContent};
+use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, relative, rgb};
+use hex_audio::prepared::SessionRouteOwner;
+use hex_project::{AssetId, ClipId, Command, SessionAudioClip, SessionCellContent, TrackId};
 use hex_session::CachedWaveform;
 use std::ops::Range;
 
@@ -28,6 +30,8 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
     let project_generation = view.project_generation;
     let name = clip.name().to_lowercase();
     let gain = clip.gain();
+    let loop_range = clip.loop_range();
+    let playhead = view.session_audio_playhead(track, clip);
     let captured = SourceWindow {
         clip: id,
         asset: asset_id,
@@ -167,9 +171,47 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
                 ))),
         )
         .child(gain_adjust_button(cx, captured, gain, 1, edit_pending));
+    row = row.child(session_audio_loop_button(
+        cx,
+        captured,
+        loop_range,
+        None,
+        edit_pending,
+    ));
+    if let Some(range) = loop_range {
+        for (edge, glyph) in [
+            (SourceEdge::StartEarlier, "‹"),
+            (SourceEdge::StartLater, "›"),
+        ] {
+            row = row.child(session_audio_loop_button(
+                cx,
+                captured,
+                loop_range,
+                Some((edge, glyph)),
+                edit_pending,
+            ));
+        }
+        row = row.child(
+            div()
+                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                .debug_selector(|| "session-audio-loop-readout".into())
+                .child(theme::text(format!("{}–{}", range.start(), range.end()))),
+        );
+        for (edge, glyph) in [(SourceEdge::EndEarlier, "‹"), (SourceEdge::EndLater, "›")] {
+            row = row.child(session_audio_loop_button(
+                cx,
+                captured,
+                loop_range,
+                Some((edge, glyph)),
+                edit_pending,
+            ));
+        }
+    }
     if let Some(amplitudes) = waveform {
         let linear_gain = gain.linear();
         let mut bars = div()
+            .debug_selector(|| "session-audio-waveform".into())
+            .relative()
             .h(px(24.0))
             .flex_1()
             .min_w_0()
@@ -188,9 +230,186 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
                 ),
             );
         }
+        if let Some(fraction) = playhead {
+            bars = bars.child(
+                div()
+                    .debug_selector(|| "session-audio-playback-position".into())
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(relative(fraction))
+                    .w(px(1.0))
+                    .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
+            );
+        }
         row = row.child(bars);
     }
     Some(row)
+}
+
+/// Fraction of the displayed `source_start..source_end` window heard at
+/// `performance_frame` for a cell launched at `launch_frame`, both on the
+/// performance clock in project frames. None before the launch, after a
+/// one-shot ends, or where a loop cycle starts before the displayed window.
+fn playhead_fraction(
+    clip: &SessionAudioClip,
+    launch_frame: u64,
+    performance_frame: u64,
+) -> Option<f32> {
+    let elapsed = performance_frame.checked_sub(launch_frame)?;
+    let frame = clip.source_frame_at(elapsed)?;
+    let span = clip
+        .source_end()
+        .checked_sub(clip.source_start())
+        .filter(|span| *span > 0)?;
+    let offset = frame
+        .checked_sub(clip.source_start())
+        .filter(|offset| *offset < span)?;
+    Some((offset as f64 / span as f64) as f32)
+}
+
+impl EditorView {
+    /// Accepted Session playback of this cell only: the same revision, fault
+    /// and route-owner guards as the piano roll's Session cursor, reading the
+    /// launch published with the route snapshot. Never an optimistic launch.
+    fn session_audio_playhead(&self, track: TrackId, clip: &SessionAudioClip) -> Option<f32> {
+        use std::sync::atomic::Ordering::Acquire;
+        if !clip.active() {
+            return None;
+        }
+        let state = self.state.as_ref()?;
+        let audible = self.audible_playback.as_ref()?;
+        if audible.project_generation != self.project_generation
+            || audible.state.revision != state.revision
+        {
+            return None;
+        }
+        let audio = self.audio.as_ref()?;
+        let status = audio.control.status()?;
+        if status.applied_revision.load(Acquire) != audible.audio_revision
+            || status.device_fault.load(Acquire)
+            || status.render_fault.load(Acquire)
+            || status.shutdown_complete.load(Acquire)
+        {
+            return None;
+        }
+        let snapshot = self.session_routes.matching_snapshot(
+            audio.control.output_identity()?,
+            Some((
+                audible.audio_revision,
+                state.revision,
+                self.project_generation,
+            )),
+            state.revision,
+            self.project_generation,
+        )?;
+        let route = self
+            .session_routes
+            .entry_for_track(snapshot, true, track.value())?;
+        if route.owner
+            != (SessionRouteOwner::Session {
+                clip_id: clip.id().value(),
+            })
+        {
+            return None;
+        }
+        let fraction = playhead_fraction(
+            clip,
+            route.audio_launch_frame?,
+            status.performance_frame.load(Acquire),
+        )?;
+        // A publication can change during scalar reads; never paint it against
+        // another compiled revision's launch.
+        (status.applied_revision.load(Acquire) == audible.audio_revision).then_some(fraction)
+    }
+}
+
+fn session_audio_loop_button(
+    cx: &mut Context<EditorView>,
+    window: SourceWindow,
+    range: Option<hex_project::SessionAudioLoop>,
+    edge: Option<(SourceEdge, &'static str)>,
+    pending: bool,
+) -> Stateful<Div> {
+    let label = edge.map_or("↻", |(_, glyph)| glyph);
+    let selector = match edge.map(|(edge, _)| edge) {
+        None => "session-audio-loop-toggle",
+        Some(SourceEdge::StartEarlier) => "session-audio-loop-start-earlier",
+        Some(SourceEdge::StartLater) => "session-audio-loop-start-later",
+        Some(SourceEdge::EndEarlier) => "session-audio-loop-end-earlier",
+        Some(SourceEdge::EndLater) => "session-audio-loop-end-later",
+    };
+    hex_widgets::action(theme::text(label), theme::action_style())
+        .id((selector, window.clip.value()))
+        .size(px(18.0))
+        .debug_selector(move || selector.into())
+        .text_color(rgb(theme::color(if range.is_some() {
+            theme::PaletteRole::Primary
+        } else {
+            theme::PaletteRole::Muted
+        })))
+        .tooltip(move |_, cx| {
+            let description = match edge.map(|(edge, _)| edge) {
+                None => "toggle audio loop; enabling repeats the source window",
+                Some(SourceEdge::StartEarlier) => "move loop start earlier · alt: 1 frame",
+                Some(SourceEdge::StartLater) => "move loop start later · alt: 1 frame",
+                Some(SourceEdge::EndEarlier) => "move loop end earlier · alt: 1 frame",
+                Some(SourceEdge::EndLater) => "move loop end later · alt: 1 frame",
+            };
+            cx.new(|_| super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::control("audio loop"),
+                description: description.into(),
+            })
+            .into()
+        })
+        .on_click(cx.listener(move |view, event: &gpui::ClickEvent, _, cx| {
+            let Some(state) = view.state.as_ref() else {
+                return;
+            };
+            if pending
+                || view.edit_pending()
+                || view.mode != super::EditorMode::Session
+                || !source_window_is_current(
+                    window,
+                    view.project_generation,
+                    view.selected_cell,
+                    state.revision,
+                    &state.project,
+                )
+            {
+                return;
+            }
+            let next = if let Some((edge, _)) = edge {
+                let Some(range) = range else {
+                    return;
+                };
+                let (start, mut end) = adjusted_source_range(
+                    range.start(),
+                    range.end(),
+                    window.end,
+                    edge,
+                    source_step(state.project.sample_rate(), event.modifiers().alt),
+                );
+                end = end.max(window.start.saturating_add(1));
+                let Ok(next) = hex_project::SessionAudioLoop::new(start, end) else {
+                    return;
+                };
+                Some(next)
+            } else if range.is_some() {
+                None
+            } else {
+                hex_project::SessionAudioLoop::new(window.start, window.end).ok()
+            };
+            if next != range {
+                view.enqueue(hex_session::service::Request::Edit(
+                    Command::SetSessionAudioClipLoop {
+                        clip: window.clip,
+                        loop_range: next,
+                    },
+                ));
+            }
+            cx.notify();
+        }))
 }
 
 fn gain_adjust_button(
@@ -453,8 +672,8 @@ fn bin_range(waveform: &CachedWaveform, start: usize, end: usize) -> Range<usize
 #[cfg(test)]
 mod tests {
     use super::{
-        SourceEdge, SourceWindow, WAVEFORM_COLUMNS, adjusted_source_range, bin_range, source_step,
-        source_window_is_current, waveform_bars,
+        SourceEdge, SourceWindow, WAVEFORM_COLUMNS, adjusted_source_range, bin_range,
+        playhead_fraction, source_step, source_window_is_current, waveform_bars,
     };
     #[cfg(feature = "ui-test-support")]
     use gpui::{AnyWindowHandle, AppContext, Empty, TestAppContext, VisualTestContext, px};
@@ -614,6 +833,97 @@ mod tests {
         ));
     }
 
+    fn session_audio_cell(source_start: u64, source_end: u64) -> (Editor, hex_project::ClipId) {
+        let mut editor = Editor::new(Project::new(48_000).expect("project"), 8).expect("editor");
+        let Ok(Created::Track(track)) = editor.execute(Command::AddTrack {
+            name: "audio".into(),
+        }) else {
+            panic!("track")
+        };
+        let Ok(Created::Scene(scene)) = editor.execute(Command::AddScene {
+            name: "scene".into(),
+        }) else {
+            panic!("scene")
+        };
+        let Ok(Created::Asset(asset)) = editor.execute(Command::AddAsset {
+            path: "source.wav".into(),
+            sample_rate: 48_000,
+            frames: 1_000,
+        }) else {
+            panic!("asset")
+        };
+        let Ok(Created::SessionClip(clip)) = editor.execute(Command::CreateSessionAudioClip {
+            track,
+            scene,
+            name: "audio".into(),
+            asset,
+            source_start,
+            source_end,
+        }) else {
+            panic!("Session clip")
+        };
+        (editor, clip)
+    }
+
+    fn cell(editor: &Editor, clip: hex_project::ClipId) -> &hex_project::SessionAudioClip {
+        editor
+            .project()
+            .session_audio_clip(clip)
+            .expect("Session audio cell")
+    }
+
+    #[test]
+    fn playhead_follows_source_offset_from_the_accepted_launch() {
+        let (editor, clip) = session_audio_cell(100, 300);
+        let clip = cell(&editor, clip);
+        // Launched at performance frame 5_000: elapsed 0 is the offset start.
+        assert_eq!(playhead_fraction(clip, 5_000, 5_000), Some(0.0));
+        assert_eq!(playhead_fraction(clip, 5_000, 5_050), Some(0.25));
+        assert_eq!(
+            playhead_fraction(clip, 5_000, 5_199),
+            Some((199.0_f64 / 200.0) as f32)
+        );
+    }
+
+    #[test]
+    fn playhead_hides_before_launch_and_after_a_one_shot_ends() {
+        let (editor, clip) = session_audio_cell(100, 300);
+        let clip = cell(&editor, clip);
+        assert_eq!(playhead_fraction(clip, 5_000, 4_999), None);
+        assert_eq!(playhead_fraction(clip, 5_000, 5_200), None);
+        assert_eq!(playhead_fraction(clip, 5_000, u64::MAX), None);
+    }
+
+    #[test]
+    fn looped_playhead_wraps_inside_the_cycle_and_hides_outside_the_window() {
+        let (mut editor, id) = session_audio_cell(100, 300);
+        editor
+            .execute(Command::SetSessionAudioClipLoop {
+                clip: id,
+                loop_range: Some(hex_project::SessionAudioLoop::new(150, 250).expect("loop")),
+            })
+            .expect("loop");
+        let clip = cell(&editor, id);
+        // Intro 100..250 (150 frames), then the 150..250 cycle repeats.
+        assert_eq!(playhead_fraction(clip, 0, 100), Some(0.5));
+        assert_eq!(playhead_fraction(clip, 0, 150), Some(0.25));
+        assert_eq!(playhead_fraction(clip, 0, 250), Some(0.25));
+        assert_eq!(
+            playhead_fraction(clip, 0, 1_000_075),
+            playhead_fraction(clip, 0, 175)
+        );
+        // A cycle that starts before the displayed source start has no line there.
+        editor
+            .execute(Command::SetSessionAudioClipLoop {
+                clip: id,
+                loop_range: Some(hex_project::SessionAudioLoop::new(50, 250).expect("loop")),
+            })
+            .expect("loop");
+        let clip = cell(&editor, id);
+        assert_eq!(playhead_fraction(clip, 0, 150), None);
+        assert_eq!(playhead_fraction(clip, 0, 200), Some(0.0));
+    }
+
     #[cfg(feature = "ui-test-support")]
     #[gpui::test]
     fn source_panel_keeps_its_compact_row_while_an_edit_is_pending(cx: &mut TestAppContext) {
@@ -710,5 +1020,114 @@ mod tests {
             .debug_bounds("session-audio-source-readout")
             .expect("source bounds remain visible while editing");
         assert!(readout.size.width > px(0.0));
+    }
+    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
+    fn console_audio_loop_controls_edit_real_cell_history_and_saved_state(cx: &mut TestAppContext) {
+        use super::super::{EditorMode, clip_drag_ui_test, midi_ruler};
+        use gpui::{Modifiers, MouseButton};
+        use hex_session::service::Request;
+        let (files, handle, editor) = clip_drag_ui_test::upper_rail_owned_fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::AddScene {
+                name: "loop scene".into()
+            })));
+        });
+        clip_drag_ui_test::pump_move(&editor, &mut visual);
+        let (track, scene, source) = editor.read_with(&visual, |v, _| {
+            let p = &v.state.as_ref().unwrap().project;
+            (
+                p.tracks()[0].id(),
+                p.scenes()[0].id(),
+                p.tracks()[0].clips()[0].id(),
+            )
+        });
+        editor.update(&mut visual, |v, _| {
+            assert!(
+                v.enqueue(Request::Edit(Command::CopyArrangementAudioClipToSession {
+                    source,
+                    scene
+                }))
+            );
+        });
+        clip_drag_ui_test::pump_move(&editor, &mut visual);
+        let clip = editor.update(&mut visual, |v, cx| {
+            let SessionCellContent::Audio(c) = v
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .session_cell(track, scene)
+                .unwrap()
+            else {
+                panic!("audio")
+            };
+            let id = c.id();
+            v.mode = EditorMode::Session;
+            v.selected_cell = Some((track, scene));
+            v.selected_clip = Some(id);
+            v.clip_view_open = true;
+            v.device_panel_active = false;
+            cx.notify();
+            id
+        });
+        visual.run_until_parked();
+        let original = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());
+        for selector in [
+            "session-audio-loop-toggle",
+            "session-audio-loop-start-later",
+            "session-audio-loop-end-earlier",
+        ] {
+            let b = visual.debug_bounds(selector).unwrap();
+            visual.simulate_mouse_down(
+                b.center(),
+                MouseButton::Left,
+                Modifiers {
+                    alt: true,
+                    ..Modifiers::default()
+                },
+            );
+            visual.simulate_mouse_up(
+                b.center(),
+                MouseButton::Left,
+                Modifiers {
+                    alt: true,
+                    ..Modifiers::default()
+                },
+            );
+            clip_drag_ui_test::pump_move(&editor, &mut visual);
+            editor.read_with(&visual, |v, _| assert!(v.error.is_none(), "{:?}", v.error));
+        }
+        let changed = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());
+        let c = changed.session_audio_clip(clip).unwrap();
+        assert_eq!(
+            c.loop_range(),
+            Some(
+                hex_project::SessionAudioLoop::new(c.source_start() + 1, c.source_end() - 1)
+                    .unwrap()
+            )
+        );
+        assert_eq!(changed.tracks(), original.tracks());
+        let reopened = midi_ruler::roundtrip(&editor, &mut visual, &files);
+        assert_eq!(*reopened, *changed);
+        for _ in 0..3 {
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Undo));
+            });
+            clip_drag_ui_test::pump_move(&editor, &mut visual);
+        }
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(*v.state.as_ref().unwrap().project, *original)
+        });
+        for _ in 0..3 {
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Redo));
+            });
+            clip_drag_ui_test::pump_move(&editor, &mut visual);
+        }
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(*v.state.as_ref().unwrap().project, *changed)
+        });
     }
 }

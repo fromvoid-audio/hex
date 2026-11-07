@@ -35,12 +35,13 @@ struct Options {
     scenario: Scenario,
     density_check: bool,
     all_operators: bool,
+    shared_source: bool,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     let options = parse_options()?;
     println!(
-        "profile={} operator=registered feedback=nonzero states=feedback:{FEEDBACK_A}->{FEEDBACK_B},level:{LEVEL_A}->{LEVEL_B} ramp_default=5ms sample_rate={} tracks={} notes_per_track={} block_frames={} warmup_blocks={} measured_blocks={} scenario={:?} all_operators={} arch={} os={}",
+        "profile={} operator=registered feedback=nonzero states=feedback:{FEEDBACK_A}->{FEEDBACK_B},level:{LEVEL_A}->{LEVEL_B} ramp_default=5ms sample_rate={} tracks={} notes_per_track={} topology={} block_frames={} warmup_blocks={} measured_blocks={} scenario={:?} all_operators={} arch={} os={}",
         if cfg!(debug_assertions) {
             "debug"
         } else {
@@ -49,6 +50,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         fixture::SAMPLE_RATE,
         options.tracks,
         options.notes,
+        if options.shared_source {
+            "shared_source"
+        } else {
+            "independent"
+        },
         options.block,
         options.warmup,
         options.measured,
@@ -61,13 +67,30 @@ fn main() -> Result<(), Box<dyn Error>> {
     let target_state = fixture::state_with_operators(FEEDBACK_A, LEVEL_A, options.all_operators)?;
     report_registered_storage(&target_state)?;
 
-    let initial = fixture::project_with_operators(
-        options.tracks,
-        options.notes,
-        FEEDBACK_A,
-        LEVEL_A,
-        options.all_operators,
-    )?;
+    let initial = if options.shared_source {
+        fixture::shared_source_project_with_operators(
+            options.tracks,
+            options.notes,
+            FEEDBACK_A,
+            LEVEL_A,
+            options.all_operators,
+        )?
+    } else {
+        fixture::project_with_operators(
+            options.tracks,
+            options.notes,
+            FEEDBACK_A,
+            LEVEL_A,
+            options.all_operators,
+        )?
+    };
+    println!(
+        "topology_sources={} source_contributors={} authored_notes={} modeled_peak_authored_voices={}",
+        initial.source_count,
+        initial.contributor_count,
+        initial.authored_notes,
+        initial.peak_authored_voices,
+    );
     let table = Arc::new(SineTable::new());
     let initial_revision = Arc::new(prepare_revision(&initial.project, &table, None)?);
     verify_partition_checksum(Arc::clone(&initial_revision))?;
@@ -114,9 +137,9 @@ fn run_steady(
     println!("scenario=steady setup_and_runtime_creation_ns={setup_nanos}");
     print_stats("steady_render", &timings, options.block, true);
     println!(
-        "steady_checksum={checksum:016x} rendered_frames={} held_voices={} session_playback_host_bytes=not_exposed_by_public_api",
+        "steady_checksum={checksum:016x} rendered_frames={} modeled_peak_authored_voices={} session_playback_host_bytes=not_exposed_by_public_api",
         options.block * options.measured,
-        options.tracks * options.notes,
+        initial.peak_authored_voices,
     );
     Ok(())
 }
@@ -205,10 +228,10 @@ fn run_retarget(
         true,
     );
     println!(
-        "retarget_checksum={checksum:016x} measured_handoffs={} rendered_frames={} retargeted_track_per_handoff=1 held_voices={} session_playback_host_bytes=not_exposed_by_public_api",
+        "retarget_checksum={checksum:016x} measured_handoffs={} rendered_frames={} retargeted_track_per_handoff=1 modeled_peak_authored_voices={} session_playback_host_bytes=not_exposed_by_public_api",
         handoff_timings.len(),
         options.block * options.measured,
-        options.tracks * options.notes,
+        initial.peak_authored_voices,
     );
     Ok(())
 }
@@ -408,12 +431,15 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
         scenario: Scenario::Both,
         density_check: false,
         all_operators: false,
+        shared_source: false,
     };
     for argument in std::env::args().skip(1) {
         if argument == "--density-check" {
             options.density_check = true;
         } else if argument == "--all-operators" {
             options.all_operators = true;
+        } else if argument == "--shared-source" {
+            options.shared_source = true;
         } else if let Some(value) = argument.strip_prefix("--tracks=") {
             options.tracks = value.parse()?;
         } else if let Some(value) = argument.strip_prefix("--notes=") {
@@ -435,7 +461,7 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
             return Err(usage().into());
         }
     }
-    if !matches!(options.tracks, 1 | 100)
+    if !matches!(options.tracks, 1 | 2 | 100)
         || !matches!(options.notes, 1 | 16)
         || !matches!(options.block, 128 | 512)
         || options.measured == 0
@@ -443,6 +469,9 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
         || options.warmup > 100_000
     {
         return Err(usage().into());
+    }
+    if options.shared_source && !matches!(options.scenario, Scenario::Steady) {
+        return Err("--shared-source currently supports --scenario=steady only".into());
     }
     let run_blocks = options
         .warmup
@@ -462,5 +491,5 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
 }
 
 fn usage() -> &'static str {
-    "usage: profile_operator_feedback [--tracks=1|100] [--notes=1|16] [--block=128|512] [--warmup-blocks=n] [--measured-blocks=n] [--scenario=steady|retarget|both] [--density-check] [--all-operators]"
+    "usage: profile_operator_feedback [--tracks=1|2|100] [--notes=1|16] [--block=128|512] [--warmup-blocks=n] [--measured-blocks=n] [--scenario=steady|retarget|both] [--density-check] [--all-operators] [--shared-source (steady only)]"
 }

@@ -483,3 +483,6 @@ fn unrelated_pending_edit_keeps_sampler_paint_and_blocks_new_controls(cx: &mut T
     visual.run_until_parked();
     assert_eq!(visual.rendered_filled_quads("device-panel"), before);
 }
+
+#[path = "sampler_boundary_capture_tests.rs"]
+mod capture_tests;

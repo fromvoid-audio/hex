@@ -16,8 +16,8 @@ AppKit access stays inside GPUI's existing native boundary.
 This is an excluded external dependency, not a Hex workspace crate. Hex crates
 retain unsafe_code=forbid. Do not edit the machine's registry cache, add app FFI,
 or grow this patch beyond the documented input, cursor, titlebar, test-support,
-explicit grid-literal and bounded accessibility decisions.
-view-cache epoch, scene replay and explicit grid-literal decisions.
+explicit grid-literal, bounded accessibility, text decoration storage,
+view-cache epoch, scene replay and macOS Blade layer ownership decisions.
 See scripts/check-gpui-patch.py and run python3 scripts/check-gpui-patch.py from the Hex
 workspace.
 
@@ -294,3 +294,147 @@ can improve the result. No new geometric predicate or placement-path pruning,
 topology, storage, allocation, reservation or painter-order change. The locked
 independent leaf-scan oracle includes higher-child misses, tied maxima and
 already-satisfied queries, retaining numeric union/clear/overflow coverage.
+
+### Compact element identities
+
+`GlobalElementId` and Window's active/deferred ID stacks use eight inline
+`ElementId` entries instead of 32. The existing SmallVec dynamic spill retains
+longer paths without a depth limit or truncation. This reduces inline payloads
+moved through Drawable phases and state-map keys. It changes the concrete inline
+capacity exposed through GlobalElementId's derived Deref target; callers retain
+the same complete sequence, equality/hash/display and push/pop semantics. No
+identity interning, shared ownership, lifecycle, dispatch, layout or painter
+contract changes. Deep identical-prefix click/focus and held-click repaint tests,
+plus keys built in ordinary/forced-dynamic storage, exercise the retained values
+and state through the existing root-locked UI test-support graph. Source size
+alone is not navigation performance or native acceptance evidence.
+
+### Pointer drag hover state
+
+Window tracks pressed-pointer motion across the shared two-pixel drag threshold
+before mouse dispatch. This input state survives consumed move events and cached
+view replay, and ends on matching release, button loss, escape or window
+inactivation. Drag-state transitions invalidate only views with hover/tooltip paint
+dependencies whose painted/current hover can change. Their insertion ranges
+replay with cached/deferred paint; group dependencies retain clipped bounds rather
+than an external parent's transient hitbox ID. Unrelated clip scenes and ordinary
+clicks retain their caches. Div suppresses ordinary/group hover styles and tooltip eligibility
+while this state is active. Stored hover callbacks run before mouse dispatch,
+independently of propagation, and reconcile at pointer/key terminals. Focus
+changes clear drag state without synthesizing hover entry. Callbacks never
+mutate view state during paint. Already visible hoverable
+tooltips are hidden immediately, and pending tooltip builders do not run during
+the drag even when capture swallowed their cancellation event. Typed drag-over styles and
+drop handlers keep their existing hit testing and delivery. This is a bounded
+pure-Rust input/paint change in the existing dependency; there is no native API,
+unsafe Hex code, new UI framework or project/audio contract change.
+
+Window-level state is needed because ordinary Hex capture listeners can stop
+propagation without affecting GPUI's style calculation. This state does not grant
+exclusive mouse routing, own gesture cancellation or select a gesture cursor;
+consumers retain those contracts. Completed-scene regressions check consumed
+movement and repeated repaint, tooltip eligibility, release/button-loss/escape/
+deactivation recovery, and retained typed drop feedback/delivery. Native pointer
+and OS tooltip acceptance remain separate from these headless scene checks.
+
+26 October explicit pointer ownership: Window admits one pressed-button lease
+before a control mutates its gesture. Captured mouse input bypasses ordinary/raw
+listeners after the initiating press; that press retains gesture-owned ancestor
+selection. Keyboard dispatch and the existing typed drag path stay independent.
+The owner supplies its mouse handler, cancellation and cursor. Paint records only
+a live-held witness, including cached/deferred replay ranges. Missing witnesses,
+escape, button loss, deactivation and control-side window removal cancel once
+outside paint; normal matching release commits through the owner without cancel.
+Cancelled buttons retain bounded inline tombstones until their old release or
+next press, preventing trailing actions. Numeric controls use weak entity handlers
+and retain their existing typed events, drafts and owner-acknowledgement contracts.
+Selection-anchor loss preserves newer text/IME drafts. No native API/FFI or new
+unsafe code is added; actual OS interaction acceptance remains separate.
+
+Capture-start input notification also clears framework-only click/drag and active
+latches on affected Divs. It uses the existing cached/deferred observer range and
+never invokes an action or synthesizes mouse-up. The initiating press's ancestor
+selection still runs; an ancestor cannot retain that press and begin a phantom
+drag after the exclusive owner releases, including without an intervening repaint.
+
+Pointer-lease Escape sequencing: dispatch the existing keyboard path before
+retiring any remaining lease. Gesture key handlers still see held state and keep
+their cancellation/propagation guards; a handled Escape cannot accidentally reach
+the parent after premature model cancellation. The terminal still runs outside
+paint in that same input turn, and idempotent widget cancellation retains one
+typed terminal. Other loss/normal release paths and native APIs are unchanged.
+
+Owners may revoke their own lease with `cancel_pointer_capture_for` when a
+host refuses Begin after pointer admission. It checks the exact EntityId, leaves
+other owners/typed drags untouched, and runs the existing cancellation terminal
+immediately outside paint. Refusal therefore retains no input lease while its
+trailing release remains suppressed. Splitter sizing snapshots remain host-owned.
+
+The existing macOS cursor owner rasterizes Hex's three embedded SVG sources in
+`../../assets/cursors/` using the pinned GPUI SVG dependencies. The 24-point
+logical size, centered (12, 12) hotspot, cached native cursor ownership and OS
+fallbacks remain in this dependency boundary; the 48-pixel raster is derived
+at startup. No new workspace unsafe code or native cursor path is introduced.
+
+Test support may install an application's asset source and inspect completed
+monochrome sprite geometry. This is for deterministic SVG consumer tests; it
+does not change the native asset cache, create an OS window, or establish
+native framebuffer appearance.
+
+30 October text decoration storage: `ShapedLine`, `WrappedLine` and the two
+`WindowTextSystem` shaping accumulators keep up to four `DecorationRun`s inline
+instead of thirty-two, and spill beyond that to the existing dynamic storage. No
+span, text-length or project limit is added; run order, styles, glyph shaping,
+wrapping and painting are unchanged. Ordinary labels carry one to three runs, so
+each shaped line copies and caches far less inline storage. Only
+`src/text_system.rs` and `src/text_system/line.rs` change; provenance hashes and
+the cumulative patch were regenerated from the verified published 0.2.2 archive.
+Hex's `text_decoration_runs` regression shapes and paints 1/4/5/32/33/80-run
+mixed-UTF-8 lines across both inline boundaries.
+
+1 November should-terminate hook (Pulse #4092): the macOS app delegate also
+registers `applicationShouldTerminate:`. When the app installed a handler with
+`App::on_should_quit`, the delegate runs it and returns NSTerminateLater; the app
+answers once with `App::reply_to_quit(bool)`, which sends
+`replyToApplicationShouldTerminate:` on a later main run-loop turn so that a YES
+reply (and the synchronous `applicationWillTerminate:` shutdown) never runs
+inside an App borrow. Without a handler the delegate returns NSTerminateNow, so
+upstream behavior is unchanged; replies with no pending request are ignored and
+a repeated request while one is pending stays deferred. `App::quit` reaches the
+same handler through `terminate:`. New `Platform::on_should_quit`/`reply_to_quit`
+methods have no-op defaults, so Linux/Windows sources are untouched. The test
+platform records the request and each reply; `TestAppContext::simulate_should_quit`,
+`quit_request_pending` and `quit_replies` drive it headlessly (Hex regression:
+`crates/hex-widgets/tests/should_quit.rs`). Native code stays in the existing
+delegate class inside this excluded dependency; no new framework, FFI owner or
+unsafe Hex code. Changes are confined to `src/platform.rs`, `src/app.rs`,
+`src/platform/mac/platform.rs`, `src/platform/test/platform.rs` and
+`src/app/test_context.rs`; changed-source hashes and their cumulative patch
+blocks were regenerated against the hash-verified published 0.2.2 sources.
+Dock Quit/logout/restart prompting and AppKit's modal-panel run-loop delivery
+during NSTerminateLater remain native user acceptance items.
+
+3 November quit-reply correction: `App::quit` invokes AppKit termination from
+the main dispatch queue. During `NSTerminateLater`, AppKit can run a nested
+main run loop while that queue remains occupied, so dispatching the reply to
+the same queue deadlocks. Schedule a copied Objective-C block in the main run
+loop's common modes and wake it instead; this retains the deferred App-borrow
+and one-reply contracts. Core Foundation copies the block before returning.
+The noninteractive `native_quit_probe` exercises the actual GPUI/AppKit path
+for acceptance and cancellation followed by acceptance; run it with
+`crates/hex-ui/tests/native_quit_test.py` after building the example. This uses the
+existing native dependency boundary and adds no unsafe Hex workspace code.
+
+6 November rotated device titles: the existing monochrome glyph raster cache
+and sprite transform support a bottom-to-top quarter turn at a shaped glyph's
+baseline. Scene admission and cached replay use the transformed sprite bounds
+for clipping and paint order. The app supplies the name and title hitbox, so
+normal text layout and pointer handling remain with their existing owners.
+Test support exposes the resulting rotated glyph bounds without GPU readback.
+
+6 November macOS Blade layer ownership: the backing-properties callback borrows
+the Metal layer retained by the Blade surface. Its accessor returns a
+`MetalLayerRef` tied to the renderer borrow. The previous owning wrapper released
+a reference on every scale update despite receiving only a borrowed pointer.
+The change stays in the existing external renderer and leaves surface custody,
+display-link behavior, and Hex's workspace unsafe prohibition intact.

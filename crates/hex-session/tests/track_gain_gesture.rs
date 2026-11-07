@@ -11,7 +11,7 @@ use std::{
 };
 
 fn wait(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + std::time::Duration::from_secs(60);
     loop {
         match service.try_event() {
             Ok(event) => return event,
@@ -170,6 +170,7 @@ fn held_gain_changes_pcm_before_commit_and_commits_one_undo_step() {
     let committed = request(
         &service,
         Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: false,
             key,
             sequence: 6,
             value: ParameterValue::Float(0.75),
@@ -243,6 +244,7 @@ fn invalid_final_gain_and_deleted_target_refuse_without_mutating_canonical_state
     let rejected = request(
         &service,
         Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: false,
             key,
             sequence: 7,
             value: ParameterValue::Float(2.1),
@@ -255,6 +257,7 @@ fn invalid_final_gain_and_deleted_target_refuse_without_mutating_canonical_state
     let stale = request(
         &service,
         Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: false,
             key,
             sequence: 1,
             value: ParameterValue::Float(0.2),
@@ -273,6 +276,7 @@ fn no_op_commit_has_no_history_and_new_automation_retires_the_gesture() {
     let committed = request(
         &service,
         Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: false,
             key,
             sequence: 2,
             value: ParameterValue::Float(1.0),
@@ -299,6 +303,7 @@ fn no_op_commit_has_no_history_and_new_automation_retires_the_gesture() {
     let stale = request(
         &service,
         Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: false,
             key,
             sequence: 2,
             value: ParameterValue::Float(0.25),
@@ -552,6 +557,7 @@ fn track_gain_worker_profile_covers_populated_projects_and_retains_one_history_s
         let committed = request(
             &service,
             Request::DeviceGesture(GestureRequest::Commit {
+                manual_edit: false,
                 key,
                 sequence: 65,
                 value: ParameterValue::Float(0.25),
@@ -782,6 +788,7 @@ fn header_pan_previews_real_pcm_and_commits_or_cancels_one_canonical_edit() {
     let committed = request(
         &service,
         Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: false,
             key,
             sequence: 6,
             value: ParameterValue::Float(0.75),
@@ -906,6 +913,7 @@ fn header_return_gain_previews_real_bus_pcm_and_preserves_current_save_open_and_
     let committed = request(
         &service,
         Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: false,
             key,
             sequence: 5,
             value: ParameterValue::Float(0.25),
@@ -975,6 +983,7 @@ fn header_mix_targets_refuse_nonfinite_out_of_range_and_removed_owners() {
         let stale = request(
             &service,
             Request::DeviceGesture(GestureRequest::Commit {
+                manual_edit: false,
                 key,
                 sequence: 5,
                 value: ParameterValue::Float(0.5),

@@ -4,13 +4,13 @@ use super::super::{
     test_environment::Environment,
 };
 use super::*;
-use gpui::{Entity, Modifiers, ScrollDelta, ScrollWheelEvent, TestAppContext, VisualTestContext};
-use hex_project::{BeatTime, ClipId, MidiNoteInsert};
-use hex_session::service::{Event, Service};
-use std::{
-    path::Path,
-    time::{Duration, Instant},
+use gpui::{
+    Entity, Modifiers, MouseUpEvent, ScrollDelta, ScrollWheelEvent, TestAppContext,
+    VisualTestContext,
 };
+use hex_project::{BeatTime, ClipId, Command, MidiNoteInsert};
+use hex_session::service::{Event, Request, Service};
+use std::{path::Path, time::Instant};
 
 fn setup(
     cx: &mut TestAppContext,
@@ -35,6 +35,7 @@ fn setup(
     ]
     .into_iter()
     .map(|(pitch, start, velocity)| MidiNoteInsert {
+        active: true,
         start: BeatTime::from_raw(start),
         duration: BeatTime::from_raw(BeatTime::ONE.raw() / 4),
         pitch,
@@ -48,7 +49,7 @@ fn setup(
     pump(&editor, &mut visual);
     editor.update(&mut visual, |view, cx| {
         view.midi_selection.clear();
-        view.piano_beat_start = BeatTime::ZERO;
+        view.piano_beat_start = 0;
         view.piano_beat_span = BeatTime::from_quarters(4).unwrap();
         cx.notify();
     });
@@ -326,19 +327,22 @@ fn velocity_resize_collapse_and_wheel_keep_note_space_and_time_alignment(cx: &mu
         );
         assert_eq!(
             view.midi_velocity.scene.as_ref().unwrap().key.start,
-            view.piano_beat_start.raw()
+            view.piano_beat_start
         );
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
     });
 }
 fn next(service: &Service) -> Event {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
             return event;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "next: hang guard expired"
+        );
         std::thread::yield_now();
     }
 }
@@ -572,10 +576,9 @@ fn lane_at(
     )
 }
 fn painted_time_in_lane(visual: &mut VisualTestContext) {
-    let color: gpui::Background =
-        gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Secondary)))
-            .opacity(theme::TIME_SELECTION_OPACITY)
-            .into();
+    let color: gpui::Background = gpui::Hsla::from(rgb(theme::time_selection_fill()))
+        .opacity(theme::TIME_SELECTION_OPACITY)
+        .into();
     assert!(
         visual
             .rendered_filled_quads("midi-velocity-lane")
@@ -590,7 +593,7 @@ fn velocity_empty_drag_shares_time_range_and_duplicate_destination_after_ack(
     let (mut visual, editor, _environment, clip) = setup(cx);
     for (start, span, reverse) in [(0.0, 4.0, false), (0.25, 2.0, true)] {
         editor.update(&mut visual, |v, cx| {
-            v.piano_beat_start = BeatTime::from_raw((start * BeatTime::ONE.raw() as f32) as u64);
+            v.piano_beat_start = i128::from((start * BeatTime::ONE.raw() as f32) as u64);
             v.piano_beat_span = BeatTime::from_raw((span * BeatTime::ONE.raw() as f32) as u64);
             cx.notify();
         });
@@ -850,7 +853,7 @@ fn velocity_range_and_marquee_cancel_on_escape_blur_resize_and_stale_view(cx: &m
                         .read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
                 }
                 _ => editor.update(&mut visual, |v, cx| {
-                    v.piano_beat_start = BeatTime::ONE;
+                    v.piano_beat_start = i128::from(BeatTime::ONE.raw());
                     cx.notify();
                 }),
             }
@@ -873,7 +876,7 @@ fn velocity_range_and_marquee_cancel_on_escape_blur_resize_and_stale_view(cx: &m
             });
             editor.update(&mut visual, |v, cx| {
                 v.selected_clip = Some(clip);
-                v.piano_beat_start = BeatTime::ZERO;
+                v.piano_beat_start = 0;
                 cx.notify();
             });
             visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
@@ -920,14 +923,70 @@ fn velocity_stationary_click_outside_release_and_collapse_keep_capture_bounded(
         let toggle = visual.debug_bounds("midi-velocity-toggle").unwrap();
         visual.simulate_mouse_down(toggle.center(), MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
+        // Both captured selection owners block a repeated press on collapse.
         editor.read_with(&visual, |v, _| {
+            assert!(v.midi_velocity.open);
+            if shift {
+                assert!(v.midi_velocity.marquee.is_some());
+            } else {
+                assert!(v.midi_velocity_time_selection_active());
+            }
+        });
+        visual.simulate_keystrokes("escape");
+        visual.simulate_mouse_up(last, MouseButton::Left, modifiers);
+        visual.simulate_click(toggle.center(), Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            assert!(!v.midi_velocity.open);
             assert!(v.midi_velocity.marquee.is_none());
             assert!(!v.midi_velocity_time_selection_active());
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         });
-        visual.simulate_mouse_up(last, MouseButton::Left, modifiers);
         let toggle = visual.debug_bounds("midi-velocity-toggle").unwrap();
         visual.simulate_click(toggle.center(), Modifiers::default());
         visual.run_until_parked();
     }
 }
+
+#[gpui::test]
+fn externally_collapsed_velocity_lane_retires_held_time_selection(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, _) = setup(cx);
+    let first = lane_at(&mut visual, 0.25, 0., 4., 2.);
+    let last = lane_at(&mut visual, 1.5, 0., 4., 2.);
+    visual.simulate_mouse_down(first, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(last, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(last, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let prior = editor.read_with(&visual, |v, _| {
+        (
+            v.midi_time_selection_bounds(),
+            v.midi_marker,
+            v.state.as_ref().unwrap().project.snapshot(),
+        )
+    });
+    visual.simulate_mouse_down(last, MouseButton::Left, Modifiers::default());
+    assert!(visual.update(|w, _| w.is_pointer_dragging()));
+    // External visibility changes do not dispatch through the pointer lease.
+    editor.update(&mut visual, |v, cx| {
+        v.midi_velocity.open = false;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(!visual.update(|w, _| w.is_pointer_dragging()));
+    visual.simulate_mouse_up(first, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert!(!v.midi_velocity_time_selection_active());
+        assert_eq!(
+            (
+                v.midi_time_selection_bounds(),
+                v.midi_marker,
+                v.state.as_ref().unwrap().project.snapshot()
+            ),
+            prior
+        );
+    });
+}
+
+#[path = "midi_velocity_preview_ui_tests.rs"]
+mod preview_tests;

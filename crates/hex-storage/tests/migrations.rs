@@ -6,8 +6,11 @@
 //! Schema36 reused a version in two branches: absence of sections identifies the
 //! valid tempo branch; deletion of that whole inventory cannot be distinguished.
 use hex_project::{Command, Editor};
-use hex_storage::{CURRENT_SCHEMA_VERSION, decode, encode, load_with_token, save_new};
+use hex_storage::{
+    CURRENT_SCHEMA_VERSION, NEWEST_SCHEMA_VERSION, decode, encode, load_with_token, save_new,
+};
 use serde_json::{Value, json};
+mod common;
 
 // 85e6dfe2181b9b1d9ad5bc3af34843b179a536a5
 const V34: &[u8] = include_bytes!("fixtures/migrations/schema34-85e6dfe2.json");
@@ -34,6 +37,7 @@ fn bytes(value: &Value) -> Vec<u8> {
 }
 
 fn assert_migrated_defaults(current: &mut Value, old: &Value) {
+    common::restore_pre_binding_instruments(current);
     let hierarchy: Vec<_> = old["tracks"]
         .as_array()
         .unwrap()
@@ -43,10 +47,6 @@ fn assert_migrated_defaults(current: &mut Value, old: &Value) {
     assert_eq!(
         current.as_object_mut().unwrap().remove("track_hierarchy"),
         Some(json!(hierarchy))
-    );
-    assert_eq!(
-        current.as_object_mut().unwrap().remove("native_sources"),
-        Some(serde_json::json!([]))
     );
     let groups: Vec<_> = old["tracks"]
         .as_array()
@@ -264,7 +264,7 @@ fn migration_never_defaults_missing_required_fields_or_discards_unknown_data() {
     wrong_lineage["midi_clip_volumes"] = json!({"clips":[]});
     assert!(decode(&bytes(&wrong_lineage)).is_err());
     let mut future = value(V35);
-    future["version"] = (CURRENT_SCHEMA_VERSION + 1).into();
+    future["version"] = (NEWEST_SCHEMA_VERSION + 1).into();
     assert!(
         decode(&bytes(&future))
             .unwrap_err()
@@ -423,5 +423,34 @@ fn historical_nested_fields_refuse_missing_unknown_or_mixed_layouts() {
         );
         assert_ne!(duplicate.as_bytes(), fixture);
         assert!(decode(duplicate.as_bytes()).is_err());
+    }
+}
+
+/// Opening parses a document once and threads that value down the frozen
+/// schema chain (Pulse #4015). Layout cannot reach a lower layer, and the
+/// single duplicate-field check of the original bytes still refuses nested
+/// duplicates that the shared value would otherwise collapse.
+#[test]
+fn single_parse_chain_is_layout_independent_and_refuses_nested_duplicates() {
+    let fixtures: [&[u8]; 6] = [
+        V34,
+        include_bytes!("fixtures/clip-activation/schema39-audio-ae200f3c.json"),
+        include_bytes!("fixtures/track-groups/schema43-flat-tracks-15957517.json"),
+        include_bytes!("fixtures/native-sources/schema48-console-loop-677a00f4.json"),
+        include_bytes!("fixtures/alias-projection/schema58-inactive-event.json"),
+        include_bytes!("fixtures/midi-clip-gain/schema61.json"),
+    ];
+    for bytes in fixtures {
+        let project = decode(bytes).unwrap();
+        for document in [bytes.to_vec(), encode(&project).unwrap()] {
+            let value: Value = serde_json::from_slice(&document).unwrap();
+            let pretty = serde_json::to_vec_pretty(&value).unwrap();
+            assert_eq!(decode(&pretty).unwrap(), project);
+            let compact = String::from_utf8(serde_json::to_vec(&value).unwrap()).unwrap();
+            let track = compact.find("\"tracks\":[{").unwrap() + "\"tracks\":[{".len();
+            let mut duplicate = compact.clone();
+            duplicate.insert_str(track, "\"name\":\"duplicate\",");
+            assert!(decode(duplicate.as_bytes()).is_err());
+        }
     }
 }

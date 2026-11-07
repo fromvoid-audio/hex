@@ -2,8 +2,9 @@
 //! Control owns take construction/history. The callback owns only fixed-size values.
 use rtrb::{Consumer, Producer, RingBuffer};
 
-const IN_FLIGHT: usize = 64;
-const CAPACITY: usize = IN_FLIGHT + 2;
+#[cfg(test)]
+use crate::live_delivery::IN_FLIGHT;
+use crate::live_delivery::{CAPACITY, Credits, Pending};
 pub const MAX_TAKE_EVENTS: u64 = 1022;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,9 +100,11 @@ pub struct Control {
     receipts: Consumer<Receipt>,
     target: Option<Target>,
     sequence: u64,
-    outstanding: usize,
+    credits: Credits,
     finishing: bool,
     status: Option<std::sync::Arc<crate::prepared::Status>>,
+    #[cfg(test)]
+    pub(crate) begin_gate: Option<std::sync::Arc<std::sync::Barrier>>,
 }
 pub(crate) struct Callback {
     commands: Consumer<Command>,
@@ -110,8 +113,7 @@ pub(crate) struct Callback {
     value: Option<(Target, f32)>,
     staged: Option<(Command, Clock)>,
     terminal: Option<(Target, Clock)>,
-    pending: [Option<(u64, Receipt)>; CAPACITY],
-    pending_len: usize,
+    pending: Pending<Receipt>,
     /// Defensive telemetry; reservation invariants make this unreachable in normal use.
     pub(crate) receipt_fault: bool,
 }
@@ -132,9 +134,11 @@ pub(crate) fn channel() -> (Control, Callback) {
             receipts,
             target: None,
             sequence: 0,
-            outstanding: 0,
+            credits: Credits::default(),
             finishing: false,
             status: None,
+            #[cfg(test)]
+            begin_gate: None,
         },
         Callback {
             commands: incoming,
@@ -143,8 +147,7 @@ pub(crate) fn channel() -> (Control, Callback) {
             value: None,
             staged: None,
             terminal: None,
-            pending: [None; CAPACITY],
-            pending_len: 0,
+            pending: Pending::default(),
             receipt_fault: false,
         },
     )
@@ -158,7 +161,7 @@ impl Control {
         self.target
     }
     pub fn begin(&mut self, target: Target, gain: f32) -> Result<(), &'static str> {
-        if self.outstanding != 0 && self.target.is_none() {
+        if !self.credits.is_empty() && self.target.is_none() {
             return Err("prior gain recording receipts are still draining");
         }
         if self.target.is_some() {
@@ -174,6 +177,11 @@ impl Control {
             .status
             .as_ref()
             .map_or(Ok(false), |s| s.reserve_gain_begin())?;
+        #[cfg(test)]
+        if let Some(gate) = &self.begin_gate {
+            gate.wait();
+            gate.wait();
+        }
         if self
             .commands
             .push(Command {
@@ -193,7 +201,7 @@ impl Control {
         }
         self.target = Some(target);
         self.sequence = 1;
-        self.outstanding = 1;
+        self.credits.issued();
         self.finishing = false;
         Ok(())
     }
@@ -206,7 +214,7 @@ impl Control {
         if self.sequence >= MAX_TAKE_EVENTS {
             return Err("gain take is full; release to save it");
         }
-        if self.outstanding >= IN_FLIGHT {
+        if !self.credits.available() {
             return Err("gain recording is applying; retry the value");
         }
         let sequence = self.sequence + 1;
@@ -218,7 +226,7 @@ impl Control {
             })
             .map_err(|_| "gain recording command queue is full")?;
         self.sequence = sequence;
-        self.outstanding += 1;
+        self.credits.issued();
         Ok(())
     }
     pub fn release(&mut self) -> Result<(), &'static str> {
@@ -249,7 +257,7 @@ impl Control {
             receipt,
             Receipt::Applied { .. } | Receipt::Superseded { .. }
         ) {
-            self.outstanding = self.outstanding.saturating_sub(1);
+            self.credits.retired();
         }
         if Some(receipt.target()) == self.target {
             match receipt {
@@ -279,7 +287,7 @@ impl Callback {
             || self.value.is_some()
             || self.staged.is_some()
             || self.terminal.is_some()
-            || self.pending_len != 0
+            || !self.pending.is_empty()
     }
     pub(crate) fn constructor_channel_storage(
         &self,
@@ -308,10 +316,10 @@ impl Callback {
         &mut self,
         mut admit: impl FnMut(Target) -> Result<Clock, AbortReason>,
     ) -> Option<(u64, f32)> {
-        if let Some(owner) = self.owner {
-            if let Err(reason) = admit(owner) {
-                self.abort(reason);
-            }
+        if let Some(owner) = self.owner
+            && let Err(reason) = admit(owner)
+        {
+            self.abort(reason);
         }
         let count = self.commands.slots().min(CAPACITY);
         for _ in 0..count {
@@ -380,10 +388,7 @@ impl Callback {
             self.abort(AbortReason::ClockExhausted);
             return;
         };
-        if let Some(slot) = self.pending.get_mut(self.pending_len) {
-            *slot = Some((due, receipt));
-            self.pending_len += 1;
-        } else {
+        if self.pending.push(due, receipt).is_err() {
             self.discard_marker_value(receipt);
             self.receipt_fault = true;
             self.abort(AbortReason::OutputFailed);
@@ -396,22 +401,32 @@ impl Callback {
             self.abort(AbortReason::OutputFailed);
             return;
         }
-        if let Some((command, clock)) = self.staged.take() {
-            if let Kind::Begin(gain) | Kind::Change(gain) = command.kind {
-                self.queue_marker(
-                    clock,
-                    Receipt::Applied {
-                        target: command.target,
-                        sequence: command.sequence,
-                        gain,
-                        performance_frame: clock.performance_frame,
-                        content_frame: clock.content_frame,
-                        loop_pass: clock.loop_pass,
-                    },
-                );
-            }
+        if let Some((command, clock)) = self.staged.take()
+            && let Kind::Begin(gain) | Kind::Change(gain) = command.kind
+        {
+            self.queue_marker(
+                clock,
+                Receipt::Applied {
+                    target: command.target,
+                    sequence: command.sequence,
+                    gain,
+                    performance_frame: clock.performance_frame,
+                    content_frame: clock.content_frame,
+                    loop_pass: clock.loop_pass,
+                },
+            );
         }
-        if let Some((target, clock)) = self.terminal.take() {
+        if let Some((target, mut clock)) = self.terminal.take() {
+            // Preserve the release timestamp and delay publication through
+            // the initial rejoin window and the downstream Main latency.
+            let Some(delay) = clock
+                .delivery_delay
+                .checked_add(u64::from(target.sample_rate.div_ceil(200).max(1) - 1))
+            else {
+                self.abort(AbortReason::ClockExhausted);
+                return;
+            };
+            clock.delivery_delay = delay;
             self.queue_marker(
                 clock,
                 Receipt::Finished {
@@ -422,17 +437,7 @@ impl Callback {
                 },
             );
         }
-        while self.pending_len != 0 {
-            let Some((due, receipt)) = self.pending[0] else {
-                self.receipt_fault = true;
-                break;
-            };
-            if due >= end_performance_frame {
-                break;
-            }
-            self.pending.copy_within(1..self.pending_len, 0);
-            self.pending_len -= 1;
-            self.pending[self.pending_len] = None;
+        while let Some(receipt) = self.pending.pop_due(end_performance_frame) {
             self.emit(receipt);
             if matches!(receipt, Receipt::Finished { .. }) {
                 self.owner = None;
@@ -446,18 +451,9 @@ impl Callback {
             self.discard(command);
         }
         self.terminal = None;
-        for index in 0..self.pending_len {
-            if let Some((
-                _,
-                Receipt::Applied {
-                    target, sequence, ..
-                },
-            )) = self.pending[index].take()
-            {
-                self.emit(Receipt::Superseded { target, sequence });
-            }
+        while let Some(receipt) = self.pending.pop() {
+            self.discard_marker_value(receipt);
         }
-        self.pending_len = 0;
         // Drain the captured take before its terminal; no late normal receipt
         // can release credits belonging to a subsequent take.
         let count = self.commands.slots().min(CAPACITY);

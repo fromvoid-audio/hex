@@ -231,7 +231,7 @@ impl PreparedAnalyticContinuation for Context {
         _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<[f32; 2], Error> {
         self.validate_note(note)?;
-        if self.refusal == 2 && age % 17 == 0 {
+        if self.refusal == 2 && age.is_multiple_of(17) {
             return Err(Error::InvalidParameters);
         }
         Ok(signal(age, gate, self.gain(target, parameters)?))
@@ -242,7 +242,7 @@ fn fixture(gain: u8, law: u8, refusal: u8, duration: u64) -> Project {
     let mut snapshot = project(1.0, 0, duration).snapshot();
     snapshot.tracks[0].instrument.as_mut().unwrap().state =
         NativeDeviceState::new(TYPE, 1, vec![gain, law, refusal]).unwrap();
-    Project::from_snapshot(snapshot).unwrap()
+    Project::from_legacy_snapshot(snapshot).unwrap()
 }
 
 fn edited(project: &Project, gain: u8, law: u8, refusal: u8) -> Project {
@@ -532,6 +532,7 @@ fn new_notes_and_exact_publication_note_off_share_the_current_owner_boundary() {
         let next = on.next_id;
         if let TrackContentSnapshot::Hybrid { midi_clips, .. } = &mut on.tracks[0].content {
             midi_clips[0].notes.push(MidiNoteSnapshot {
+                active: true,
                 id: next,
                 start_raw: start,
                 duration_raw: duration,
@@ -544,6 +545,7 @@ fn new_notes_and_exact_publication_note_off_share_the_current_owner_boundary() {
             panic!("fixture midi")
         };
         clip.source.notes.push(MidiNoteSnapshot {
+            active: true,
             id: next + 1,
             start_raw: start,
             duration_raw: duration,
@@ -552,7 +554,7 @@ fn new_notes_and_exact_publication_note_off_share_the_current_owner_boundary() {
             velocity: 100,
         });
         on.next_id += 2;
-        let on = Project::from_snapshot(on).unwrap();
+        let on = Project::from_legacy_snapshot(on).unwrap();
         let off = edited(&on, 0, 0, 0);
         let mut old = playing(&on, session);
         render_checkpoint_prefix(&mut old, 96);
@@ -579,7 +581,10 @@ fn deleted_owner_mid_ramp_retains_target_context_until_original_release_expires(
         let mut removed = off.snapshot();
         removed.tracks.clear();
         removed.session.cells.clear();
-        let mut deleted = handoff(&mut disabled, &Project::from_snapshot(removed).unwrap());
+        let mut deleted = handoff(
+            &mut disabled,
+            &Project::from_legacy_snapshot(removed).unwrap(),
+        );
         assert_eq!(deleted.release_voice_count(), 1);
         assert!(!deleted.releases[0].voice.sampler().is_current());
         assert!(deleted.retained_contexts.iter().any(Option::is_some));
@@ -599,6 +604,7 @@ fn analytic_polyphony_above_mutable_limit_and_capture_single_sample_order_are_pr
     if let TrackContentSnapshot::Hybrid { midi_clips, .. } = &mut on.tracks[0].content {
         for offset in 0..24 {
             midi_clips[0].notes.push(MidiNoteSnapshot {
+                active: true,
                 id: on.next_id + offset,
                 start_raw: 0,
                 duration_raw: 8 << 32,
@@ -609,7 +615,7 @@ fn analytic_polyphony_above_mutable_limit_and_capture_single_sample_order_are_pr
         }
     }
     on.next_id += 24;
-    let on = Project::from_snapshot(on).unwrap();
+    let on = Project::from_legacy_snapshot(on).unwrap();
     let off = edited(&on, 0, 0, 0);
     let mut old = playing(&on, false);
     render_checkpoint_prefix(&mut old, 96);
@@ -677,7 +683,7 @@ fn reconstructed_matching_session_sources_keep_current_ownership_through_histori
 }
 
 #[test]
-fn stopped_enable_edits_start_at_target_but_paused_notes_keep_continuity() {
+fn stopped_enable_edits_start_at_target_and_paused_notes_release_without_retrigger() {
     for session in [false, true] {
         for paused in [false, true] {
             let on = fixture(1, 0, 0, 8 << 32);
@@ -691,15 +697,28 @@ fn stopped_enable_edits_start_at_target_but_paused_notes_keep_continuity() {
             })
             .unwrap();
             let mut disabled = handoff(&mut old, &off);
-            // Rendering while stopped/paused must not advance the ramp clock.
-            assert_eq!(render_checkpoint_prefix(&mut disabled, 16), [[0.0; 2]; 16]);
+            // Pause releases continue at the captured source age while the
+            // canonical transport and parameter ramp clock stay frozen.
+            let monitored = render_checkpoint_prefix(&mut disabled, 16);
+            for (offset, actual) in monitored.iter().enumerate() {
+                let expected = if paused {
+                    signal(96 + offset as u64, 96, 1.0)
+                } else {
+                    [0.0; 2]
+                };
+                assert_eq!(
+                    *actual, expected,
+                    "monitor session={session}, paused={paused}, offset={offset}"
+                );
+            }
+            assert_eq!(disabled.performance_frame(), if paused { 96 } else { 0 });
             disabled.apply(SessionPlaybackCommand::Play).unwrap();
             let actual = render_checkpoint_prefix(&mut disabled, 241);
             for (offset, frame) in actual.iter().enumerate() {
                 let expected = if paused {
                     signal(
-                        96 + offset as u64,
-                        192_000,
+                        112 + offset as u64,
+                        96,
                         (1.0 - offset as f64 / 240.0).max(0.0),
                     )
                 } else {

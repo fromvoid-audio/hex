@@ -132,6 +132,7 @@ fn instrument_memory_budget_retained_tails_refuse_bytes_without_moving_owners() 
         };
         for slot in 0..tails {
             let mut runtime = MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+            runtime.enable_source_live();
             runtime
                 .inherit_from(donor.mutable_instruments[0].as_ref().unwrap())
                 .unwrap();
@@ -139,6 +140,7 @@ fn instrument_memory_budget_retained_tails_refuse_bytes_without_moving_owners() 
             previous.tail_suffix_starts[slot] = 0;
             previous.tail_mutable_instruments[slot] =
                 Some(crate::mutable_instrument::MutableInstrumentTail {
+                    sends: Default::default(),
                     track_id: track,
                     runtime,
                 });

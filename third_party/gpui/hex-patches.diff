@@ -253,7 +253,56 @@ new file mode 100644
 diff --git a/src/app.rs b/src/app.rs
 --- a/src/app.rs
 +++ b/src/app.rs
-@@ -1122,0 +1123,10 @@
+@@ -591,0 +592 @@ pub struct App {
++    should_quit_handler: Option<Box<dyn FnMut(&mut App)>>,
+@@ -594,0 +596,8 @@ impl App {
++    /// Install the application asset source in deterministic test contexts.
++    #[cfg(any(test, feature = "test-support"))]
++    pub fn use_test_assets(&mut self, assets: impl AssetSource) {
++        let assets = Arc::new(assets);
++        self.asset_source = assets.clone();
++        self.svg_renderer = SvgRenderer::new(assets);
++    }
++
+@@ -662,0 +672 @@ impl App {
++                should_quit_handler: None,
+@@ -692,0 +703,14 @@ impl App {
++        platform.on_should_quit(Box::new({
++            let cx = app.clone();
++            move || {
++                let mut cx = cx.borrow_mut();
++                let Some(mut handler) = cx.should_quit_handler.take() else {
++                    return false;
++                };
++                cx.update(|cx| handler(cx));
++                // A handler installed while this one ran replaces it.
++                cx.should_quit_handler.get_or_insert(handler);
++                true
++            }
++        }));
++
+@@ -752,0 +777,20 @@ impl App {
++    /// Hex patch: handle the platform's request to terminate (macOS
++    /// `applicationShouldTerminate:` from Dock Quit, logout, restart, shutdown
++    /// or [`App::quit`]). While a handler is installed the platform defers
++    /// termination; the handler, or work it starts, must answer exactly once
++    /// with [`App::reply_to_quit`]. Replaces any previous handler. Without a
++    /// handler the platform terminates immediately, as upstream GPUI does.
++    /// [`App::quit`] also reaches this handler, so a handler should reply
++    /// `true` at once when the user has already confirmed quitting.
++    pub fn on_should_quit(&mut self, handler: impl FnMut(&mut App) + 'static) {
++        self.should_quit_handler = Some(Box::new(handler));
++    }
++
++    /// Hex patch: answer a termination request deferred by [`App::on_should_quit`]:
++    /// `true` terminates, `false` cancels. Ignored when no request is pending.
++    /// On macOS the reply is delivered on a later main run-loop turn, outside any
++    /// App borrow, because terminating runs the quit observers synchronously.
++    pub fn reply_to_quit(&self, terminate: bool) {
++        self.platform.reply_to_quit(terminate);
++    }
++
+@@ -1122,0 +1167,10 @@ impl App {
 +    /// Select paths, optionally starting in an exact native directory.
 +    /// Platforms without a directory override retain their ordinary picker.
 +    pub fn prompt_for_paths_with_directory(
@@ -264,10 +313,12 @@ diff --git a/src/app.rs b/src/app.rs
 +        self.platform.prompt_for_paths_with_directory(options, directory)
 +    }
 +
+@@ -1374,0 +1429 @@ impl App {
++                window.cancel_pointer_capture(cx);
 diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 --- a/src/app/test_context.rs
 +++ b/src/app/test_context.rs
-@@ -120,6 +120,24 @@
+@@ -120,6 +120,24 @@ impl AppContext for TestAppContext {
  }
 
  impl TestAppContext {
@@ -292,12 +343,10 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
      /// Creates a new `TestAppContext`. Usually you can rely on `#[gpui::test]` to do this for you.
      pub fn build(dispatcher: TestDispatcher, fn_name: Option<&'static str>) -> Self {
          let arc_dispatcher = Arc::new(dispatcher.clone());
-@@ -140,6 +158,24 @@
-             fn_name,
-             on_quit: Rc::new(RefCell::new(Vec::default())),
+@@ -142,6 +160,24 @@ impl TestAppContext {
          }
-+    }
-+
+     }
+
 +    /// Opt into real macOS font registration and shaping for a disposable test.
 +    /// Call before opening any window. This retains the deterministic test
 +    /// platform and never creates an OS window or changes system font settings.
@@ -314,10 +363,12 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 +        app.text_system = Arc::clone(&text_system);
 +        self.text_system = text_system;
 +        Ok(())
-     }
-
++    }
++
      /// Create a single TestAppContext, for non-multi-client tests
-@@ -305,6 +341,38 @@
+     pub fn single() -> Self {
+         let dispatcher = TestDispatcher::new(StdRng::seed_from_u64(0));
+@@ -305,6 +341,56 @@ impl TestAppContext {
          self.test_platform.simulate_new_path_selection(select_path);
      }
 
@@ -339,6 +390,24 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 +    pub fn pending_save_options(&self) -> Option<(std::path::PathBuf, Option<String>)> {
 +        self.test_platform.pending_save_options()
 +    }
++    /// Hex patch: deliver an OS termination request (Dock Quit, logout,
++    /// restart) to the app's [`App::on_should_quit`] handler. Returns true when
++    /// the app deferred its answer; false means it would terminate immediately.
++    pub fn simulate_should_quit(&self) -> bool {
++        self.test_platform.simulate_should_quit()
++    }
++
++    /// Hex patch: whether a simulated termination request awaits its reply.
++    pub fn quit_request_pending(&self) -> bool {
++        self.test_platform.quit_request_pending()
++    }
++
++    /// Hex patch: every [`App::reply_to_quit`] answer to a pending simulated
++    /// request, in order (`true` terminates, `false` cancels).
++    pub fn quit_replies(&self) -> Vec<bool> {
++        self.test_platform.quit_replies()
++    }
++
 +    /// Complete the injected Open request with a platform error, without a panel.
 +    pub fn simulate_paths_error(&self, message: &str) {
 +        self.test_platform.simulate_paths_error(message);
@@ -356,7 +425,7 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
      /// Simulates clicking a button in an platform-level alert dialog.
      #[track_caller]
      pub fn simulate_prompt_answer(&self, button: &str) {
-@@ -675,6 +743,118 @@
+@@ -675,6 +761,151 @@ pub struct VisualTestContext {
  }
 
  impl VisualTestContext {
@@ -381,6 +450,39 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 +                .rev()
 +                .find(|quad| quad.bounds == scaled && !quad.background.is_transparent())
 +                .map(|quad| quad.background)
++        })
++    }
++
++    /// Return monochrome sprite colors intersecting an element in the completed scene.
++    /// This observes SVG painting, not a native framebuffer or cursor.
++    pub fn rendered_monochrome_colors(&mut self, selector: &'static str) -> Vec<crate::Hsla> {
++        self.update(|window, _| {
++            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
++                return Vec::new();
++            };
++            let scaled = bounds.scale(window.scale_factor());
++            window.rendered_frame.scene.monochrome_sprites.iter()
++                .filter(|sprite| sprite.bounds.intersects(&scaled))
++                .map(|sprite| sprite.color)
++                .collect()
++        })
++    }
++
++    /// Bounds of bottom-to-top monochrome sprites in a rendered element.
++    pub fn rendered_vertical_glyph_bounds(
++        &mut self,
++        selector: &'static str,
++    ) -> Vec<Bounds<crate::ScaledPixels>> {
++        self.update(|window, _| {
++            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
++                return Vec::new();
++            };
++            let bounds = bounds.scale(window.scale_factor());
++            window.rendered_frame.scene.monochrome_sprites.iter()
++                .filter(|sprite| sprite.transformation.rotation_scale == [[0.0, 1.0], [-1.0, 0.0]])
++                .map(|sprite| sprite.painted_bounds())
++                .filter(|glyph| glyph.intersects(&bounds))
++                .collect()
 +        })
 +    }
 +
@@ -752,6 +854,9 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 diff --git a/src/elements/div.rs b/src/elements/div.rs
 --- a/src/elements/div.rs
 +++ b/src/elements/div.rs
+@@ -47 +47 @@
+-const DRAG_THRESHOLD: f64 = 2.;
++use crate::window::POINTER_DRAG_THRESHOLD;
 @@ -1227,0 +1228 @@
 +        accessibility: None,
 @@ -1236,0 +1238,4 @@
@@ -784,7 +889,119 @@ diff --git a/src/elements/div.rs b/src/elements/div.rs
 +                        );
 +                    }
 +                }
-@@ -2906,0 +2935,12 @@
+@@ -1789,0 +1818,20 @@
++        if self.hover_style.is_some()
++            || self.group_hover_style.is_some()
++            || self.hover_listener.is_some()
++            || self.tooltip_builder.is_some()
++        {
++            let group = self
++                .group_hover_style
++                .as_ref()
++                .and_then(|style| GroupHitboxes::dependency(&style.group, cx));
++            let group_hitbox = group.map(|(id, _)| id);
++            let painted_hover = !cx.has_active_drag()
++                && !window.is_pointer_dragging()
++                && (hitbox.is_some_and(|hitbox| hitbox.is_hovered(window))
++                    || group_hitbox.is_some_and(|id| id.is_hovered(window)));
++            window.observe_pointer_hover(
++                hitbox.map(|hitbox| hitbox.id),
++                group.map(|(_, bounds)| bounds),
++                painted_hover,
++            );
++        }
+@@ -1845 +1893 @@
+-                                                GroupHitboxes::push(group, hitbox.id, cx);
++                                                GroupHitboxes::push(group, hitbox, cx);
+@@ -2087,0 +2136,4 @@
++        let tracks_pointer_click = !click_listeners.is_empty()
++            || drag_listener.is_some()
++            || self.active_style.is_some()
++            || self.group_active_style.is_some();
+@@ -2159 +2211 @@
+-                            && (event.position - mouse_down.position).magnitude() > DRAG_THRESHOLD
++                            && (event.position - mouse_down.position).magnitude() > POINTER_DRAG_THRESHOLD
+@@ -2261,4 +2313 @@
+-                window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
+-                    if phase != DispatchPhase::Bubble {
+-                        return;
+-                    }
++                window.on_pointer_hover_change(move |window, cx| {
+@@ -2266,0 +2316 @@
++                        && !window.is_pointer_dragging()
+@@ -2274,0 +2325,3 @@
++                        true
++                    } else {
++                        false
+@@ -2298 +2351,2 @@
+-                        pending_mouse_down.borrow().is_none()
++                        !window.is_pointer_dragging()
++                            && pending_mouse_down.borrow().is_none()
+@@ -2305 +2359,3 @@
+-                        pending_mouse_down.borrow().is_none() && hitbox.is_hovered(window)
++                        !window.is_pointer_dragging()
++                            && pending_mouse_down.borrow().is_none()
++                            && hitbox.is_hovered(window)
+@@ -2321,0 +2378,21 @@
++            if tracks_pointer_click {
++                let pending = element_state.pending_mouse_down.clone();
++                let clicked = active_state.clone();
++                window.on_pointer_hover_change(move |window, _| {
++                    if !window.has_pointer_capture() {
++                        return false;
++                    }
++                    // An explicit gesture owns the press. Clear framework-only
++                    // click/drag latches after its initiating press propagates,
++                    // without delivering a mouse-up or invoking a user action.
++                    // These records replay with cached/deferred paint and run
++                    // during input, including a press/release with no repaint.
++                    let had_press = pending
++                        .as_ref()
++                        .is_some_and(|pending| pending.borrow_mut().take().is_some());
++                    let mut clicked = clicked.borrow_mut();
++                    let was_clicked = clicked.is_clicked();
++                    *clicked = ElementClickedState::default();
++                    had_press || was_clicked
++                });
++            }
+@@ -2498 +2575 @@
+-            if !cx.has_active_drag() {
++            if !cx.has_active_drag() && !window.is_pointer_dragging() {
+@@ -2758,0 +2836,6 @@
++                        // A capture listener can consume movement before this
++                        // pending tooltip receives its cancellation event.
++                        if window.is_pointer_dragging() {
++                            active_tooltip.borrow_mut().take();
++                            return;
++                        }
+@@ -2874,0 +2958,4 @@
++// Bounds are conservative invalidation metadata only. Style calculation still
++// uses the current group's actual hitbox and ordinary occlusion rules.
++type GroupHitboxDependency = (HitboxId, Bounds<Pixels>);
++
+@@ -2876 +2963 @@
+-pub(crate) struct GroupHitboxes(HashMap<SharedString, SmallVec<[HitboxId; 1]>>);
++pub(crate) struct GroupHitboxes(HashMap<SharedString, SmallVec<[GroupHitboxDependency; 1]>>);
+@@ -2881,0 +2969,4 @@
++        Self::dependency(name, cx).map(|(id, _)| id)
++    }
++
++    fn dependency(name: &SharedString, cx: &mut App) -> Option<GroupHitboxDependency> {
+@@ -2886,4 +2977,4 @@
+-            .cloned()
+-    }
+-
+-    pub fn push(name: SharedString, hitbox_id: HitboxId, cx: &mut App) {
++            .copied()
++    }
++
++    pub fn push(name: SharedString, hitbox: &Hitbox, cx: &mut App) {
+@@ -2894 +2985 @@
+-            .push(hitbox_id);
++            .push((hitbox.id, hitbox.bounds.intersect(&hitbox.content_mask.bounds)));
+@@ -2904,0 +2996,12 @@
++}
++
 +impl Stateful<Div> {
 +    /// Attach native semantics to this stateful control without changing its layout.
 +    pub fn accessibility(
@@ -795,8 +1012,6 @@ diff --git a/src/elements/div.rs b/src/elements/div.rs
 +        self.element = self.element.accessibility(descriptor, action);
 +        self
 +    }
-+}
-+
 diff --git a/src/gpui.rs b/src/gpui.rs
 --- a/src/gpui.rs
 +++ b/src/gpui.rs
@@ -858,7 +1073,7 @@ diff --git a/src/platform.rs b/src/platform.rs
 @@ -0,0 +1,2 @@
 +#[cfg(any(target_os = "macos", test))]
 +mod accessibility_bridge;
-@@ -221,0 +224,7 @@
+@@ -221,0 +224,7 @@ pub(crate) trait Platform: 'static {
 +    fn prompt_for_paths_with_directory(
 +        &self,
 +        options: PathPromptOptions,
@@ -866,7 +1081,16 @@ diff --git a/src/platform.rs b/src/platform.rs
 +    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
 +        self.prompt_for_paths(options)
 +    }
-@@ -491,0 +501,8 @@
+@@ -231,0 +241,8 @@ pub(crate) trait Platform: 'static {
++    /// Hex patch: consulted when the OS asks whether the app may terminate.
++    /// The callback returns true when it defers the answer to
++    /// [`Platform::reply_to_quit`]; false terminates immediately. Platforms
++    /// without such a request ignore the callback.
++    fn on_should_quit(&self, _callback: Box<dyn FnMut() -> bool>) {}
++    /// Hex patch: answer a request deferred by the `on_should_quit` callback.
++    /// Ignored when no request is pending.
++    fn reply_to_quit(&self, _terminate: bool) {}
+@@ -491,0 +509,8 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
 +    fn publish_accessibility(&self, _nodes: Vec<crate::AccessibilityNode>, _refused: bool) {}
 +    /// Revoke before accepted close callbacks or UI-owned resources are released.
 +    fn revoke_accessibility(&self) {}
@@ -875,30 +1099,30 @@ diff --git a/src/platform.rs b/src/platform.rs
 +        _callback: Box<dyn FnMut(crate::AccessibilityRequest) -> bool>,
 +    ) {
 +    }
-@@ -1228,0 +1246 @@
+@@ -1228,0 +1254 @@ impl Default for WindowOptions {
 +                hide_native_window_controls: Default::default(),
-@@ -1257,0 +1276,4 @@
+@@ -1257,0 +1284,4 @@ pub struct TitlebarOptions {
 +
 +    /// Hide the standard macOS close, minimize, and zoom buttons.
 +    /// This does not change the native titlebar or window movement/resizing flags.
 +    pub hide_native_window_controls: bool,
-@@ -1411,0 +1434,4 @@
+@@ -1411,0 +1442,4 @@ pub enum CursorStyle {
 +    /// A persistent invisible cursor for a window-scoped pointer adjustment.
 +    /// macOS uses a transparent image, without changing NSCursor hide counts.
 +    Hidden,
 +
-@@ -1439,0 +1466,6 @@
+@@ -1439,0 +1474,6 @@ pub enum CursorStyle {
 +    /// A bracket cursor for trimming an item from its left edge.
 +    ResizeLeftBracket,
 +
 +    /// A bracket cursor for trimming an item from its right edge.
 +    ResizeRightBracket,
 +
-@@ -1442,0 +1475,4 @@
-+
+@@ -1443,0 +1484,4 @@ pub enum CursorStyle {
 +    /// Repeat/loop editing cursor. macOS caches original circular-arrow artwork;
 +    /// other platforms retain a horizontal resize fallback.
 +    Loop,
++
 diff --git a/src/platform/accessibility_bridge.rs b/src/platform/accessibility_bridge.rs
 new file mode 100644
 --- /dev/null
@@ -2988,21 +3212,30 @@ diff --git a/src/platform/mac/events.rs b/src/platform/mac/events.rs
 diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 --- a/src/platform/mac/platform.rs
 +++ b/src/platform/mac/platform.rs
-@@ -22 +22 @@
+@@ -22 +22 @@ use cocoa::{
 -        NSPasteboardTypeTIFF, NSSavePanel, NSWindow,
 +        NSPasteboardTypeTIFF, NSImage, NSSavePanel, NSWindow,
-@@ -26,2 +26,2 @@
+@@ -26,2 +26,2 @@ use cocoa::{
 -        NSArray, NSAutoreleasePool, NSBundle, NSData, NSInteger, NSProcessInfo, NSRange, NSString,
 -        NSUInteger, NSURL,
 +        NSArray, NSAutoreleasePool, NSBundle, NSData, NSInteger, NSPoint, NSProcessInfo, NSRange, NSRect,
 +        NSSize, NSString, NSUInteger, NSURL,
-@@ -45,0 +46 @@
+@@ -37,0 +38,3 @@ use core_foundation::{
++use core_foundation_sys::runloop::{
++    CFRunLoopGetMain, CFRunLoopRef, CFRunLoopWakeUp, kCFRunLoopCommonModes,
++};
+@@ -45,0 +49 @@ use objc::{
 +    rc::StrongPtr,
-@@ -53 +54 @@
+@@ -53 +57 @@ use std::{
 -    ffi::{CStr, OsStr, c_void},
 +    ffi::{CStr, CString, OsStr, c_void},
-@@ -70,0 +72,142 @@
+@@ -64,0 +69,5 @@ use util::ResultExt;
++#[link(name = "CoreFoundation", kind = "framework")]
++unsafe extern "C" {
++    fn CFRunLoopPerformBlock(run_loop: CFRunLoopRef, mode: CFTypeRef, block: *const c_void);
++}
 +
+@@ -71,0 +81,62 @@ static mut APP_DELEGATE_CLASS: *const Class = ptr::null();
 +/// A cached transparent cursor avoids NSCursor's process-wide hide count.
 +fn make_hidden_cursor() -> Option<StrongPtr> {
 +    unsafe {
@@ -3025,64 +3258,37 @@ diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 +    }
 +}
 +
-+/// Original high-contrast bracket cursor artwork; cached by `MacPlatformState`.
-+fn make_bracket_cursor(points_left: bool) -> Option<StrongPtr> {
++// Hex owns these editable vectors; GPUI retains native cursor and hotspot custody.
++const LEFT_BRACKET_SVG: &[u8] =
++    include_bytes!("../../../../../assets/cursors/resize-left-bracket.svg");
++const RIGHT_BRACKET_SVG: &[u8] =
++    include_bytes!("../../../../../assets/cursors/resize-right-bracket.svg");
++const LOOP_SVG: &[u8] = include_bytes!("../../../../../assets/cursors/loop.svg");
++
++/// Rasterize the 24-point cursor at 2x, then let NSImage scale it to logical points.
++fn make_vector_cursor(svg: &[u8]) -> Option<StrongPtr> {
++    let tree = usvg::Tree::from_data(svg, &usvg::Options::default()).ok()?;
++    if tree.size().width() != 24.0 || tree.size().height() != 24.0 {
++        return None;
++    }
++    let mut pixmap = resvg::tiny_skia::Pixmap::new(48, 48)?;
++    resvg::render(
++        &tree,
++        resvg::tiny_skia::Transform::from_scale(2.0, 2.0),
++        &mut pixmap.as_mut(),
++    );
++    let png = pixmap.encode_png().ok()?;
 +    unsafe {
-+        let image: id = NSImage::alloc(nil).initWithSize_(NSSize::new(24.0, 24.0));
++        let data: id = msg_send![class!(NSData), dataWithBytes: png.as_ptr() length: png.len()];
++        if data == nil {
++            return None;
++        }
++        let image: id = msg_send![NSImage::alloc(nil), initWithData: data];
 +        if image == nil {
 +            return None;
 +        }
 +        let image = StrongPtr::new(image);
-+        let _: () = msg_send![*image, lockFocus];
-+        let path: id = msg_send![class!(NSBezierPath), bezierPath];
-+        if path == nil {
-+            let _: () = msg_send![*image, unlockFocus];
-+            return None;
-+        }
-+
-+        let center_x = 12.0;
-+        let toward = if points_left { -1.0 } else { 1.0 };
-+        let bracket = if points_left { 1.0 } else { -1.0 };
-+        let segments = [
-+            (NSPoint::new(center_x, 4.0), NSPoint::new(center_x, 20.0)),
-+            (
-+                NSPoint::new(center_x, 4.0),
-+                NSPoint::new(center_x + bracket * 5.0, 4.0),
-+            ),
-+            (
-+                NSPoint::new(center_x, 20.0),
-+                NSPoint::new(center_x + bracket * 5.0, 20.0),
-+            ),
-+            (
-+                NSPoint::new(center_x, 12.0),
-+                NSPoint::new(center_x + toward * 7.0, 12.0),
-+            ),
-+            (
-+                NSPoint::new(center_x + toward * 7.0, 12.0),
-+                NSPoint::new(center_x + toward * 4.0, 15.0),
-+            ),
-+            (
-+                NSPoint::new(center_x + toward * 7.0, 12.0),
-+                NSPoint::new(center_x + toward * 4.0, 9.0),
-+            ),
-+        ];
-+        for (start, end) in segments {
-+            let _: () = msg_send![path, moveToPoint: start];
-+            let _: () = msg_send![path, lineToPoint: end];
-+        }
-+
-+        let white: id = msg_send![class!(NSColor), whiteColor];
-+        let _: () = msg_send![white, setStroke];
-+        let _: () = msg_send![path, setLineWidth: 4.0_f64];
-+        let _: () = msg_send![path, setLineCapStyle: 1_isize];
-+        let _: () = msg_send![path, setLineJoinStyle: 1_isize];
-+        let _: () = msg_send![path, stroke];
-+        let black: id = msg_send![class!(NSColor), blackColor];
-+        let _: () = msg_send![black, setStroke];
-+        let _: () = msg_send![path, setLineWidth: 1.75_f64];
-+        let _: () = msg_send![path, stroke];
-+        let _: () = msg_send![*image, unlockFocus];
-+
++        let _: () = msg_send![*image, setSize: NSSize::new(24.0, 24.0)];
 +        let allocated: id = msg_send![class!(NSCursor), alloc];
 +        let cursor: id = msg_send![allocated, initWithImage: *image hotSpot: NSPoint::new(12.0, 12.0)];
 +        if cursor == nil {
@@ -3092,64 +3298,20 @@ diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 +    }
 +}
 +
-+/// Original high-contrast circular-arrow loop cursor artwork; cached by `MacPlatformState`.
-+fn make_loop_cursor() -> Option<StrongPtr> {
-+    unsafe {
-+        let image: id = NSImage::alloc(nil).initWithSize_(NSSize::new(24.0, 24.0));
-+        if image == nil {
-+            return None;
-+        }
-+        let image = StrongPtr::new(image);
-+        let _: () = msg_send![*image, lockFocus];
-+        let path: id = msg_send![class!(NSBezierPath), bezierPath];
-+        if path == nil {
-+            let _: () = msg_send![*image, unlockFocus];
-+            return None;
-+        }
-+
-+        // An open circular arc with a tangent arrowhead. Original vector
-+        // artwork, centered hotspot; black stroke with white outline remains
-+        // legible over both light and dark clips.
-+        for index in 0..=24 {
-+            let angle = (45.0 + f64::from(index) * 270.0 / 24.0).to_radians();
-+            let point = NSPoint::new(12.0 + angle.cos() * 7.0, 12.0 + angle.sin() * 7.0);
-+            if index == 0 {
-+                let _: () = msg_send![path, moveToPoint: point];
-+            } else {
-+                let _: () = msg_send![path, lineToPoint: point];
-+            }
-+        }
-+        let tip = NSPoint::new(16.95, 7.05);
-+        let _: () = msg_send![path, moveToPoint: NSPoint::new(12.0, 6.5)];
-+        let _: () = msg_send![path, lineToPoint: tip];
-+        let _: () = msg_send![path, lineToPoint: NSPoint::new(17.5, 2.1)];
-+
-+        let white: id = msg_send![class!(NSColor), whiteColor];
-+        let _: () = msg_send![white, setStroke];
-+        let _: () = msg_send![path, setLineWidth: 4.0_f64];
-+        let _: () = msg_send![path, setLineCapStyle: 1_isize];
-+        let _: () = msg_send![path, setLineJoinStyle: 1_isize];
-+        let _: () = msg_send![path, stroke];
-+        let black: id = msg_send![class!(NSColor), blackColor];
-+        let _: () = msg_send![black, setStroke];
-+        let _: () = msg_send![path, setLineWidth: 1.75_f64];
-+        let _: () = msg_send![path, stroke];
-+        let _: () = msg_send![*image, unlockFocus];
-+
-+        let allocated: id = msg_send![class!(NSCursor), alloc];
-+        let cursor: id = msg_send![allocated, initWithImage: *image hotSpot: NSPoint::new(12.0, 12.0)];
-+        if cursor == nil {
-+            return None;
-+        }
-+        Some(StrongPtr::new(cursor))
-+    }
-+}
-@@ -179,0 +323,4 @@
+@@ -96,0 +168,4 @@ unsafe fn build_classes() {
++            decl.add_method(
++                sel!(applicationShouldTerminate:),
++                should_terminate as extern "C" fn(&mut Object, Sel, id) -> NSUInteger,
++            );
+@@ -170,0 +246,2 @@ pub(crate) struct MacPlatformState {
++    should_quit: Option<Box<dyn FnMut() -> bool>>,
++    quit_request_pending: bool,
+@@ -179,0 +257,4 @@ pub(crate) struct MacPlatformState {
 +    hidden_cursor: Option<StrongPtr>,
 +    resize_left_bracket_cursor: Option<StrongPtr>,
 +    resize_right_bracket_cursor: Option<StrongPtr>,
 +    loop_cursor: Option<StrongPtr>,
-@@ -188,0 +336,10 @@
+@@ -188,0 +270,10 @@ impl MacPlatform {
 +    #[cfg(any(test, feature = "test-support"))]
 +    pub(crate) fn picker_directory_url_for_test(directory: &Path) -> Result<PathBuf> {
 +        unsafe {
@@ -3160,18 +3322,21 @@ diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 +        }
 +    }
 +
-@@ -199,0 +357,5 @@
+@@ -199,0 +291,5 @@ impl MacPlatform {
 +        let (resize_left_bracket_cursor, resize_right_bracket_cursor) = if headless {
 +            (None, None)
 +        } else {
-+            (make_bracket_cursor(true), make_bracket_cursor(false))
++            (make_vector_cursor(LEFT_BRACKET_SVG), make_vector_cursor(RIGHT_BRACKET_SVG))
 +        };
-@@ -221,0 +384,4 @@
+@@ -211,0 +308,2 @@ impl MacPlatform {
++            should_quit: None,
++            quit_request_pending: false,
+@@ -221,0 +320,4 @@ impl MacPlatform {
 +            hidden_cursor: if headless { None } else { make_hidden_cursor() },
 +            resize_left_bracket_cursor,
 +            resize_right_bracket_cursor,
-+            loop_cursor: if headless { None } else { make_loop_cursor() },
-@@ -713,0 +880,9 @@
++            loop_cursor: if headless { None } else { make_vector_cursor(LOOP_SVG) },
+@@ -713,0 +816,9 @@ impl Platform for MacPlatform {
 +        self.prompt_for_paths_with_directory(options, None)
 +    }
 +
@@ -3181,7 +3346,7 @@ diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 +        directory: Option<&Path>,
 +    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
 +        let directory = directory.map(Path::to_owned);
-@@ -718,0 +894,9 @@
+@@ -718,0 +830,9 @@ impl Platform for MacPlatform {
 +                    if let Some(directory) = directory {
 +                        match ns_directory_url(&directory) {
 +                            Ok(url) => panel.setDirectoryURL(url),
@@ -3191,7 +3356,7 @@ diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 +                            }
 +                        }
 +                    }
-@@ -772,3 +956,7 @@
+@@ -772,3 +892,7 @@ impl Platform for MacPlatform {
 -                    let path = ns_string(directory.to_string_lossy().as_ref());
 -                    let url = NSURL::fileURLWithPath_isDirectory_(nil, path, true.to_objc());
 -                    panel.setDirectoryURL(url);
@@ -3202,7 +3367,41 @@ diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 +                            return;
 +                        }
 +                    }
-@@ -973,2 +1161,18 @@
+@@ -877,0 +1002,33 @@ impl Platform for MacPlatform {
++    fn on_should_quit(&self, callback: Box<dyn FnMut() -> bool>) {
++        self.0.lock().should_quit = Some(callback);
++    }
++
++    fn reply_to_quit(&self, terminate: bool) {
++        let mut lock = self.0.lock();
++        if !std::mem::replace(&mut lock.quit_request_pending, false) {
++            return;
++        }
++        drop(lock);
++        // Termination may already be running on the main dispatch queue, so a
++        // queued dispatch block cannot run while AppKit waits for this reply.
++        // A later main run-loop turn also releases the App borrow before a YES
++        // reply synchronously invokes the quit observers.
++        let reply = ConcreteBlock::new(move || unsafe {
++            let app = NSApplication::sharedApplication(nil);
++            let answer = if terminate { YES } else { NO };
++            let _: () = msg_send![app, replyToApplicationShouldTerminate: answer];
++        })
++        .copy();
++        // Core Foundation copies the block before returning. The main run loop
++        // and its common-modes constant remain valid for the application's life.
++        unsafe {
++            let run_loop = CFRunLoopGetMain();
++            CFRunLoopPerformBlock(
++                run_loop,
++                kCFRunLoopCommonModes as CFTypeRef,
++                &*reply as *const _ as *const c_void,
++            );
++            CFRunLoopWakeUp(run_loop);
++        }
++    }
++
+@@ -973,2 +1130,18 @@ impl Platform for MacPlatform {
 -            let new_cursor: id = match style {
 -                CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
 +            let bracket_cursor = {
@@ -3223,16 +3422,47 @@ diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 +            };
 +            let new_cursor: id = bracket_cursor.unwrap_or_else(|| match style {
 +                CursorStyle::Hidden | CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
-@@ -980 +1184 @@
+@@ -980 +1153 @@ impl Platform for MacPlatform {
 -                CursorStyle::ResizeLeftRight => msg_send![class!(NSCursor), resizeLeftRightCursor],
 +                CursorStyle::ResizeLeftRight | CursorStyle::Loop => msg_send![class!(NSCursor), resizeLeftRightCursor],
-@@ -983,0 +1188,2 @@
+@@ -983,0 +1157,2 @@ impl Platform for MacPlatform {
 +                CursorStyle::ResizeLeftBracket => msg_send![class!(NSCursor), resizeLeftCursor],
 +                CursorStyle::ResizeRightBracket => msg_send![class!(NSCursor), resizeRightCursor],
-@@ -1008 +1214 @@
+@@ -1008 +1183 @@ impl Platform for MacPlatform {
 -            };
 +            });
-@@ -1538,0 +1745,12 @@
+@@ -1420,0 +1596,30 @@ extern "C" fn should_handle_reopen(this: &mut Object, _: Sel, _: id, has_open_wi
++// NSApplicationTerminateReply values.
++const NS_TERMINATE_NOW: NSUInteger = 1;
++const NS_TERMINATE_LATER: NSUInteger = 2;
++
++/// Hex patch: defer termination to the app's should-quit handler when one
++/// answers via `reply_to_quit`; otherwise terminate now, as before.
++extern "C" fn should_terminate(this: &mut Object, _: Sel, _: id) -> NSUInteger {
++    let platform = unsafe { get_mac_platform(this) };
++    let mut lock = platform.0.lock();
++    if lock.quit_request_pending {
++        // AppKit does not re-ask while a reply is outstanding; stay deferred.
++        return NS_TERMINATE_LATER;
++    }
++    let Some(mut callback) = lock.should_quit.take() else {
++        return NS_TERMINATE_NOW;
++    };
++    // Pending first: the handler may request its reply before returning.
++    lock.quit_request_pending = true;
++    drop(lock);
++    let deferred = callback();
++    let mut lock = platform.0.lock();
++    lock.should_quit.get_or_insert(callback);
++    if deferred {
++        NS_TERMINATE_LATER
++    } else {
++        lock.quit_request_pending = false;
++        NS_TERMINATE_NOW
++    }
++}
++
+@@ -1538,0 +1744,12 @@ unsafe fn ns_string(string: &str) -> id {
 +// NSURL copies the filesystem representation; no lossy display conversion.
 +unsafe fn ns_directory_url(directory: &Path) -> Result<id> {
 +    let bytes = CString::new(directory.as_os_str().as_bytes())
@@ -3376,21 +3606,60 @@ diff --git a/src/platform/mac/window.rs b/src/platform/mac/window.rs
 diff --git a/src/platform/test/platform.rs b/src/platform/test/platform.rs
 --- a/src/platform/test/platform.rs
 +++ b/src/platform/test/platform.rs
-@@ -90 +90,2 @@
+@@ -13 +13 @@ use std::{
+-    cell::RefCell,
++    cell::{Cell, RefCell},
+@@ -37,0 +38,3 @@ pub(crate) struct TestPlatform {
++    should_quit: RefCell<Option<Box<dyn FnMut() -> bool>>>,
++    quit_request_pending: Cell<bool>,
++    quit_replies: RefCell<Vec<bool>>,
+@@ -90 +93,2 @@ pub(crate) struct TestPrompts {
 -    new_path: VecDeque<(PathBuf, oneshot::Sender<Result<Option<PathBuf>>>)>,
 +    new_path: VecDeque<(PathBuf, Option<String>, oneshot::Sender<Result<Option<PathBuf>>>)>,
 +    paths: VecDeque<(Option<PathBuf>, oneshot::Sender<Result<Option<Vec<PathBuf>>>>)>,
-@@ -93,0 +95,4 @@
+@@ -93,0 +98,4 @@ impl TestPlatform {
 +    pub(crate) fn cursor_style(&self) -> CursorStyle {
 +        *self.active_cursor.lock()
 +    }
 +
-@@ -130 +135 @@
--        let (path, tx) = self
-+        let (path, _, tx) = self
-@@ -155,0 +161,32 @@
+@@ -119,0 +128,3 @@ impl TestPlatform {
++            should_quit: Default::default(),
++            quit_request_pending: Cell::new(false),
++            quit_replies: Default::default(),
+@@ -125,0 +137,29 @@ impl TestPlatform {
++    /// Deliver an OS termination request, as AppKit's
++    /// `applicationShouldTerminate:` does. Returns true when the app deferred
++    /// its answer to `reply_to_quit`, false for immediate termination.
++    pub(crate) fn simulate_should_quit(&self) -> bool {
++        assert!(
++            !self.quit_request_pending.get(),
++            "a termination request is already awaiting its reply"
++        );
++        let Some(mut callback) = self.should_quit.borrow_mut().take() else {
++            return false;
++        };
++        // Pending first: the handler may reply before it returns.
++        self.quit_request_pending.set(true);
++        let deferred = callback();
++        if !deferred {
++            self.quit_request_pending.set(false);
++        }
++        self.should_quit.borrow_mut().get_or_insert(callback);
++        deferred
 +    }
 +
++    pub(crate) fn quit_request_pending(&self) -> bool {
++        self.quit_request_pending.get()
++    }
++
++    pub(crate) fn quit_replies(&self) -> Vec<bool> {
++        self.quit_replies.borrow().clone()
++    }
++
+@@ -130 +170 @@ impl TestPlatform {
+-        let (path, tx) = self
++        let (path, _, tx) = self
+@@ -157,0 +198,32 @@ impl TestPlatform {
 +    pub(crate) fn did_prompt_for_paths(&self) -> bool {
 +        !self.prompts.borrow().paths.is_empty()
 +    }
@@ -3421,15 +3690,17 @@ diff --git a/src/platform/test/platform.rs b/src/platform/test/platform.rs
 +        let (_, _, tx) = self.prompts.borrow_mut().new_path.pop_front().expect("pending save prompt");
 +        self.background_executor().set_waiting_hint(None);
 +        tx.send(Err(anyhow::anyhow!(message.to_owned()))).ok();
-@@ -335,0 +373,7 @@
++    }
++
+@@ -334,0 +407,7 @@ impl Platform for TestPlatform {
++        &self,
 +        options: crate::PathPromptOptions,
 +    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
 +        self.prompt_for_paths_with_directory(options, None)
 +    }
 +
 +    fn prompt_for_paths_with_directory(
-+        &self,
-@@ -337,2 +381,6 @@
+@@ -337,2 +416,6 @@ impl Platform for TestPlatform {
 -    ) -> oneshot::Receiver<Result<Option<Vec<std::path::PathBuf>>>> {
 -        unimplemented!()
 +        directory: Option<&Path>,
@@ -3438,12 +3709,23 @@ diff --git a/src/platform/test/platform.rs b/src/platform/test/platform.rs
 +        self.background_executor().set_waiting_hint(Some("PROMPT FOR OPEN PATHS".into()));
 +        self.prompts.borrow_mut().paths.push_back((directory.map(Path::to_owned), tx));
 +        rx
-@@ -344 +392 @@
+@@ -344 +427 @@ impl Platform for TestPlatform {
 -        _suggested_name: Option<&str>,
 +        suggested_name: Option<&str>,
-@@ -352 +400 @@
+@@ -352 +435 @@ impl Platform for TestPlatform {
 -            .push_back((directory.to_path_buf(), tx));
 +            .push_back((directory.to_path_buf(), suggested_name.map(str::to_owned), tx));
+@@ -365,0 +449,10 @@ impl Platform for TestPlatform {
++    fn on_should_quit(&self, callback: Box<dyn FnMut() -> bool>) {
++        *self.should_quit.borrow_mut() = Some(callback);
++    }
++
++    fn reply_to_quit(&self, terminate: bool) {
++        if self.quit_request_pending.replace(false) {
++            self.quit_replies.borrow_mut().push(terminate);
++        }
++    }
++
 diff --git a/src/platform/windows/events.rs b/src/platform/windows/events.rs
 --- a/src/platform/windows/events.rs
 +++ b/src/platform/windows/events.rs
@@ -3482,7 +3764,7 @@ diff --git a/src/platform/windows/util.rs b/src/platform/windows/util.rs
 diff --git a/src/scene.rs b/src/scene.rs
 --- a/src/scene.rs
 +++ b/src/scene.rs
-@@ -11,8 +11,9 @@
+@@ -11,8 +11,9 @@ use crate::{
  use std::{
      fmt::Debug,
      iter::Peekable,
@@ -3493,16 +3775,19 @@ diff --git a/src/scene.rs b/src/scene.rs
  };
 
  #[allow(non_camel_case_types, unused)]
-@@ -65,7 +66,7 @@
+@@ -65,9 +66,9 @@ impl Scene {
      }
 
      pub fn insert_primitive(&mut self, primitive: impl Into<Primitive>) {
 -        let mut primitive = primitive.into();
 +        let primitive = primitive.into();
          let clipped_bounds = primitive
-             .bounds()
+-            .bounds()
++            .painted_bounds()
              .intersect(&primitive.content_mask().bounds);
-@@ -79,6 +80,10 @@
+
+         if clipped_bounds.is_empty() {
+@@ -79,6 +80,10 @@ impl Scene {
              .last()
              .copied()
              .unwrap_or_else(|| self.primitive_bounds.insert(clipped_bounds));
@@ -3513,7 +3798,7 @@ diff --git a/src/scene.rs b/src/scene.rs
          match &mut primitive {
              Primitive::Shadow(shadow) => {
                  shadow.order = order;
-@@ -115,6 +120,127 @@
+@@ -115,6 +120,129 @@ impl Scene {
      }
 
      pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
@@ -3567,9 +3852,11 @@ diff --git a/src/scene.rs b/src/scene.rs
 +                    {
 +                        return false;
 +                    }
-+                    let clipped = primitive
-+                        .bounds()
-+                        .intersect(&primitive.content_mask().bounds);
++                    let painted = primitive.painted_bounds();
++                    if !finite_replay_bounds(&painted) {
++                        return false;
++                    }
++                    let clipped = painted.intersect(&primitive.content_mask().bounds);
 +                    if clipped.is_empty() {
 +                        continue;
 +                    }
@@ -3641,7 +3928,7 @@ diff --git a/src/scene.rs b/src/scene.rs
          for operation in &prev_scene.paint_operations[range] {
              match operation {
                  PaintOperation::Primitive(primitive) => self.insert_primitive(primitive.clone()),
-@@ -170,6 +296,20 @@
+@@ -170,6 +298,20 @@ impl Scene {
      }
  }
 
@@ -3662,7 +3949,7 @@ diff --git a/src/scene.rs b/src/scene.rs
  #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Default)]
  #[cfg_attr(
      all(
-@@ -207,6 +347,17 @@
+@@ -207,6 +349,17 @@ pub(crate) enum Primitive {
  }
 
  impl Primitive {
@@ -3680,7 +3967,56 @@ diff --git a/src/scene.rs b/src/scene.rs
      pub fn bounds(&self) -> &Bounds<ScaledPixels> {
          match self {
              Primitive::Shadow(shadow) => &shadow.bounds,
-@@ -671,6 +822,36 @@
+@@ -219,6 +372,13 @@ impl Primitive {
+         }
+     }
+
++    fn painted_bounds(&self) -> Bounds<ScaledPixels> {
++        if let Self::MonochromeSprite(sprite) = self {
++            return sprite.painted_bounds();
++        }
++        *self.bounds()
++    }
++
+     pub fn content_mask(&self) -> &ContentMask<ScaledPixels> {
+         match self {
+             Primitive::Shadow(shadow) => &shadow.content_mask,
+@@ -628,6 +788,34 @@ pub(crate) struct MonochromeSprite {
+     pub transformation: TransformationMatrix,
+ }
+
++impl MonochromeSprite {
++    pub(crate) fn painted_bounds(&self) -> Bounds<ScaledPixels> {
++        if self.transformation == TransformationMatrix::unit() {
++            return self.bounds;
++        }
++        let transform = |point: Point<ScaledPixels>| {
++            self.transformation
++                .apply(point.map(|p| Pixels(p.0)))
++                .map(|p| ScaledPixels(p.0))
++        };
++        let first = transform(self.bounds.origin);
++        let mut min = first;
++        let mut max = first;
++        for corner in [
++            self.bounds.top_right(),
++            self.bounds.bottom_left(),
++            self.bounds.bottom_right(),
++        ] {
++            let p = transform(corner);
++            min.x = min.x.min(p.x);
++            min.y = min.y.min(p.y);
++            max.x = max.x.max(p.x);
++            max.y = max.y.max(p.y);
++        }
++        Bounds::from_corners(min, max)
++    }
++}
++
+ impl From<MonochromeSprite> for Primitive {
+     fn from(sprite: MonochromeSprite) -> Self {
+         Primitive::MonochromeSprite(sprite)
+@@ -671,6 +859,36 @@ impl From<PaintSurface> for Primitive {
  #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
  pub(crate) struct PathId(pub(crate) usize);
 
@@ -3717,7 +4053,7 @@ diff --git a/src/scene.rs b/src/scene.rs
  /// A line made up of a series of vertices and control points.
  #[derive(Clone, Debug)]
  pub struct Path<P: Clone + Debug + Default + PartialEq> {
-@@ -678,7 +859,8 @@
+@@ -678,7 +896,8 @@ pub struct Path<P: Clone + Debug + Default + PartialEq> {
      pub(crate) order: DrawOrder,
      pub(crate) bounds: Bounds<P>,
      pub(crate) content_mask: ContentMask<P>,
@@ -3727,7 +4063,7 @@ diff --git a/src/scene.rs b/src/scene.rs
      pub(crate) color: Background,
      start: Point<P>,
      current: Point<P>,
-@@ -691,7 +873,7 @@
+@@ -691,7 +910,7 @@ impl Path<Pixels> {
          Self {
              id: PathId(0),
              order: DrawOrder::default(),
@@ -3736,7 +4072,7 @@ diff --git a/src/scene.rs b/src/scene.rs
              start,
              current: start,
              bounds: Bounds {
-@@ -711,11 +893,8 @@
+@@ -711,11 +930,8 @@ impl Path<Pixels> {
              order: self.order,
              bounds: self.bounds.scale(factor),
              content_mask: self.content_mask.scale(factor),
@@ -3750,7 +4086,7 @@ diff --git a/src/scene.rs b/src/scene.rs
              start: self.start.map(|start| start.scale(factor)),
              current: self.current.scale(factor),
              contour_count: self.contour_count,
-@@ -780,17 +959,18 @@
+@@ -780,17 +996,18 @@ impl Path<Pixels> {
                  size: Default::default(),
              });
 
@@ -3772,7 +4108,7 @@ diff --git a/src/scene.rs b/src/scene.rs
              xy_position: xy.2,
              st_position: st.2,
              content_mask: Default::default(),
-@@ -831,3 +1011,650 @@
+@@ -831,3 +1048,650 @@ impl PathVertex<Pixels> {
          }
      }
  }
@@ -4462,12 +4798,78 @@ diff --git a/src/view.rs b/src/view.rs
 diff --git a/src/window.rs b/src/window.rs
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -667,0 +668 @@
+@@ -53,6 +53,9 @@ use util::post_inc;
+ use util::{ResultExt, measure};
+ use uuid::Uuid;
+ 
++/// Shared threshold for pointer hover suppression and typed drag initiation.
++pub(crate) const POINTER_DRAG_THRESHOLD: f64 = 2.;
++
+ mod prompts;
+ 
+ use crate::util::atomic_incr_if_not_zero;
+@@ -462,6 +465,28 @@ type FrameCallback = Box<dyn FnOnce(&mut Window, &mut App)>;
+ pub(crate) type AnyMouseListener =
+     Box<dyn FnMut(&dyn Any, DispatchPhase, &mut Window, &mut App) + 'static>;
+ 
++type CapturedMouseListener = Box<dyn FnMut(&dyn Any, &mut Window, &mut App)>;
++
++// One control-side lease. The owner must witness its live held gesture in paint;
++// cached/deferred replay retains that witness. No callback executes during paint.
++struct PointerCapture {
++    owner: EntityId,
++    button: MouseButton,
++    cursor: CursorStyle,
++    listener: Option<CapturedMouseListener>,
++    cancelled: Option<FrameCallback>,
++}
++
++type PointerHoverListener = Box<dyn Fn(&mut Window, &mut App) -> bool>;
++
++struct PointerHoverObserver {
++    view: EntityId,
++    listener: Option<PointerHoverListener>,
++    hitbox: Option<HitboxId>,
++    group_bounds: Option<Bounds<Pixels>>,
++    painted_hover: bool,
++}
++
+ #[derive(Clone)]
+ pub(crate) struct CursorStyleRequest {
+     pub(crate) hitbox_id: Option<HitboxId>,
+@@ -656,7 +681,7 @@ pub(crate) struct DeferredDraw {
+     current_view: EntityId,
+     priority: usize,
+     parent_node: DispatchNodeId,
+-    element_id_stack: SmallVec<[ElementId; 32]>,
++    element_id_stack: SmallVec<[ElementId; 8]>,
+     text_style_stack: Vec<TextStyleRefinement>,
+     element: Option<AnyElement>,
+     absolute_offset: Point<Pixels>,
+@@ -665,6 +690,7 @@ pub(crate) struct DeferredDraw {
+ }
+ 
+ pub(crate) struct Frame {
 +    pub(crate) accessibility: crate::accessibility::AccessibilityFrame,
-@@ -682 +683 @@
+     pub(crate) focus: Option<FocusId>,
+     pub(crate) window_active: bool,
+     pub(crate) element_states: FxHashMap<(GlobalElementId, TypeId), ElementStateBox>,
+@@ -678,8 +704,10 @@ pub(crate) struct Frame {
+     pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
+     pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
+     pub(crate) cursor_styles: Vec<CursorStyleRequest>,
++    pointer_hover_observers: Vec<PointerHoverObserver>,
++    pointer_capture_owners: Vec<EntityId>,
+     #[cfg(any(test, feature = "test-support"))]
 -    pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
 +    pub(crate) debug_bounds: DebugBounds,
-@@ -689,0 +691,33 @@
+     #[cfg(any(feature = "inspector", debug_assertions))]
+     pub(crate) next_inspector_instance_ids: FxHashMap<Rc<crate::InspectorElementPath>, usize>,
+     #[cfg(any(feature = "inspector", debug_assertions))]
+@@ -687,8 +715,42 @@ pub(crate) struct Frame {
+     pub(crate) tab_stops: TabStopMap,
+ }
+ 
 +// Test selectors follow paint ordering, including cached and nested view replay.
 +// Retaining only the final map loses each cached view's insertion range and can
 +// incorrectly restore another view's later overwrite of the same selector.
@@ -4501,23 +4903,85 @@ diff --git a/src/window.rs b/src/window.rs
 +    }
 +}
 +
-@@ -691,0 +726 @@
+ #[derive(Clone, Default)]
+ pub(crate) struct PrepaintStateIndex {
 +    accessibility_index: usize,
-@@ -708,0 +744,2 @@
+     hitboxes_index: usize,
+     tooltips_index: usize,
+     deferred_draws_index: usize,
+@@ -703,14 +765,19 @@ pub(crate) struct PaintIndex {
+     mouse_listeners_index: usize,
+     input_handlers_index: usize,
+     cursor_styles_index: usize,
++    pointer_hover_observers_index: usize,
++    pointer_capture_owners_index: usize,
+     accessed_element_states_index: usize,
+     tab_handle_index: usize,
+     line_layout_index: LineLayoutIndex,
 +    #[cfg(any(test, feature = "test-support"))]
 +    debug_bounds_index: usize,
-@@ -713,0 +751 @@
+ }
+ 
+ impl Frame {
+     pub(crate) fn new(dispatch_tree: DispatchTree) -> Self {
+         Frame {
 +            accessibility: Default::default(),
-@@ -729 +767 @@
+             focus: None,
+             window_active: false,
+             element_states: FxHashMap::default(),
+@@ -724,9 +791,11 @@ impl Frame {
+             input_handlers: Vec::new(),
+             tooltip_requests: Vec::new(),
+             cursor_styles: Vec::new(),
++            pointer_hover_observers: Vec::new(),
++            pointer_capture_owners: Vec::new(),
+ 
+             #[cfg(any(test, feature = "test-support"))]
 -            debug_bounds: FxHashMap::default(),
 +            debug_bounds: DebugBounds::default(),
-@@ -740,0 +779 @@
+ 
+             #[cfg(any(feature = "inspector", debug_assertions))]
+             next_inspector_instance_ids: FxHashMap::default(),
+@@ -738,6 +807,7 @@ impl Frame {
+     }
+ 
+     pub(crate) fn clear(&mut self) {
 +        self.accessibility = Default::default();
-@@ -753,0 +793,3 @@
-+
+         self.element_states.clear();
+         self.accessed_element_states.clear();
+         self.mouse_listeners.clear();
+@@ -746,12 +816,17 @@ impl Frame {
+         self.input_handlers.clear();
+         self.tooltip_requests.clear();
+         self.cursor_styles.clear();
++        self.pointer_hover_observers.clear();
++        self.pointer_capture_owners.clear();
+         self.hitboxes.clear();
+         self.window_control_hitboxes.clear();
+         self.deferred_draws.clear();
+         self.tab_stops.clear();
+         self.focus = None;
+ 
 +        #[cfg(any(test, feature = "test-support"))]
 +        self.debug_bounds.clear();
-@@ -817,0 +860,9 @@
++
+         #[cfg(any(feature = "inspector", debug_assertions))]
+         {
+             self.next_inspector_instance_ids.clear();
+@@ -760,6 +835,9 @@ impl Frame {
+     }
+ 
+     pub(crate) fn cursor_style(&self, window: &Window) -> Option<CursorStyle> {
++        if let Some(capture) = &window.pointer_capture {
++            return Some(capture.cursor);
++        }
+         self.cursor_styles
+             .iter()
+             .rev()
+@@ -815,11 +893,21 @@ impl Frame {
+     }
+ }
+ 
 +// A frame-owned cursor override must restore even when its window is destroyed.
 +struct HiddenCursorRestore(Rc<dyn crate::Platform>);
 +
@@ -4527,13 +4991,52 @@ diff --git a/src/window.rs b/src/window.rs
 +    }
 +}
 +
-@@ -822,0 +874 @@
+ /// Holds the state for a specific window.
+ pub struct Window {
+     pub(crate) handle: AnyWindowHandle,
+     pub(crate) invalidator: WindowInvalidator,
+     pub(crate) removed: bool,
 +    hidden_cursor_restore: Option<HiddenCursorRestore>,
-@@ -1097,0 +1150,3 @@
+     pub(crate) platform_window: Box<dyn PlatformWindow>,
+     display_id: Option<DisplayId>,
+     sprite_atlas: Arc<dyn PlatformAtlas>,
+@@ -833,7 +921,7 @@ pub struct Window {
+     pub(crate) viewport_size: Size<Pixels>,
+     layout_engine: Option<TaffyLayoutEngine>,
+     pub(crate) root: Option<AnyView>,
+-    pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
++    pub(crate) element_id_stack: SmallVec<[ElementId; 8]>,
+     pub(crate) text_style_stack: Vec<TextStyleRefinement>,
+     pub(crate) rendered_entity_stack: Vec<EntityId>,
+     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
+@@ -853,6 +941,10 @@ pub struct Window {
+     default_prevented: bool,
+     mouse_position: Point<Pixels>,
+     mouse_hit_test: HitTest,
++    pointer_press: Option<(MouseButton, Point<Pixels>)>,
++    pointer_dragging: bool,
++    pointer_capture: Option<PointerCapture>,
++    suppressed_pointer_ups: SmallVec<[MouseButton; 5]>,
+     modifiers: Modifiers,
+     capslock: Capslock,
+     scale_factor: f32,
+@@ -1095,6 +1187,12 @@ impl Window {
+                 handle
+                     .update(&mut cx, |_, window, cx| {
+                         window.active.set(active);
 +                        if !active {
++                            window.cancel_pointer_capture(cx);
 +                            window.hidden_cursor_restore.take();
++                            window.pointer_press = None;
++                            window.pointer_dragging = false;
 +                        }
-@@ -1123,0 +1179,10 @@
+                         window.modifiers = window.platform_window.modifiers();
+                         window.capslock = window.platform_window.capslock();
+                         window
+@@ -1121,6 +1219,16 @@ impl Window {
+                     .log_err();
+             }
+         }));
 +        platform_window.on_accessibility_action({
 +            let mut cx = cx.to_async();
 +            Box::new(move |request: crate::AccessibilityRequest| {
@@ -4544,9 +5047,32 @@ diff --git a/src/window.rs b/src/window.rs
 +                    .unwrap_or(false)
 +            })
 +        });
-@@ -1210,0 +1276 @@
+         platform_window.on_input({
+             let mut cx = cx.to_async();
+             Box::new(move |event| {
+@@ -1208,6 +1316,7 @@ impl Window {
+             handle,
+             invalidator,
+             removed: false,
 +            hidden_cursor_restore: None,
-@@ -1373,0 +1440,7 @@
+             platform_window,
+             display_id,
+             sprite_atlas,
+@@ -1236,6 +1345,10 @@ impl Window {
+             default_prevented: true,
+             mouse_position,
+             mouse_hit_test: HitTest::default(),
++            pointer_press: None,
++            pointer_dragging: false,
++            pointer_capture: None,
++            suppressed_pointer_ups: SmallVec::new(),
+             modifiers,
+             capslock,
+             scale_factor,
+@@ -1371,8 +1484,17 @@ impl Window {
+         }
+     }
+ 
 +    /// Whether this window currently owns an invisible cursor override.
 +    /// Test support only: this does not establish physical cursor appearance.
 +    #[cfg(any(test, feature = "test-support"))]
@@ -4554,10 +5080,17 @@ diff --git a/src/window.rs b/src/window.rs
 +        self.hidden_cursor_restore.is_some()
 +    }
 +
-@@ -1375,0 +1449,2 @@
+     /// Close this window.
+     pub fn remove_window(&mut self) {
 +        self.platform_window.revoke_accessibility();
 +        self.hidden_cursor_restore.take();
-@@ -1910,0 +1986,55 @@
+         self.removed = true;
+     }
+ 
+@@ -1908,6 +2030,61 @@ impl Window {
+         self.platform_window.completed_frame();
+     }
+ 
 +    /// Current bounded, actually mounted semantic nodes in rendered order.
 +    pub fn accessibility_nodes(&self) -> impl Iterator<Item = &crate::AccessibilityNode> {
 +        self.rendered_frame
@@ -4613,14 +5146,62 @@ diff --git a/src/window.rs b/src/window.rs
 +        })
 +    }
 +
-@@ -1943,0 +2074,4 @@
+     /// Produces a new frame and assigns it to `rendered_frame`. To actually show
+     /// the contents of the new [`Scene`], use [`Self::present`].
+     #[profiling::function]
+@@ -1941,6 +2118,10 @@ impl Window {
+         let previous_window_active = self.rendered_frame.window_active;
+         mem::swap(&mut self.rendered_frame, &mut self.next_frame);
+         self.next_frame.clear();
 +        self.platform_window.publish_accessibility(
 +            self.accessibility_nodes().cloned().collect(),
 +            self.rendered_frame.accessibility.invalid,
 +        );
-@@ -2222,0 +2357 @@
+         let current_focus_path = self.rendered_frame.focus_path();
+         let current_window_active = self.rendered_frame.window_active;
+ 
+@@ -1975,6 +2156,17 @@ impl Window {
+         self.reset_cursor_style(cx);
+         self.refreshing = false;
+         self.invalidator.set_phase(DrawPhase::None);
++        if self.pointer_capture.as_ref().is_some_and(|capture| {
++            !self
++                .rendered_frame
++                .pointer_capture_owners
++                .contains(&capture.owner)
++        }) {
++            // Roots have finished updating their entities. A removed, replaced or
++            // no-longer-held control cannot retain input just because it is alive.
++            self.cancel_pointer_capture(cx);
++            self.reset_cursor_style(cx);
++        }
+         self.needs_present.set(true);
+ 
+         ArenaClearNeeded
+@@ -2086,6 +2278,11 @@ impl Window {
+     }
+ 
+     fn prepaint_tooltip(&mut self, cx: &mut App) -> Option<AnyElement> {
++        // Hoverable tooltips may otherwise retain themselves or wait through a
++        // hide delay even after their source stops being eligible.
++        if self.is_pointer_dragging() {
++            return None;
++        }
+         // Use indexing instead of iteration to avoid borrowing self for the duration of the loop.
+         for tooltip_request_index in (0..self.next_frame.tooltip_requests.len()).rev() {
+             let Some(Some(tooltip_request)) = self
+@@ -2220,6 +2417,7 @@ impl Window {
+ 
+     pub(crate) fn prepaint_index(&self) -> PrepaintStateIndex {
+         PrepaintStateIndex {
 +            accessibility_index: self.next_frame.accessibility.nodes.len(),
-@@ -2232,0 +2368,8 @@
+             hitboxes_index: self.next_frame.hitboxes.len(),
+             tooltips_index: self.next_frame.tooltip_requests.len(),
+             deferred_draws_index: self.next_frame.deferred_draws.len(),
+@@ -2230,6 +2428,14 @@ impl Window {
+     }
+ 
+     pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
 +        for (node, callback) in &self.rendered_frame.accessibility.nodes
 +            [range.start.accessibility_index..range.end.accessibility_index]
 +        {
@@ -4629,16 +5210,109 @@ diff --git a/src/window.rs b/src/window.rs
 +                .insert(node.clone(), callback.clone());
 +        }
 +        self.next_frame.accessibility.invalid |= self.rendered_frame.accessibility.invalid;
-@@ -2289,0 +2433,2 @@
+         self.next_frame.hitboxes.extend(
+             self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
+                 .iter()
+@@ -2284,13 +2490,38 @@ impl Window {
+             mouse_listeners_index: self.next_frame.mouse_listeners.len(),
+             input_handlers_index: self.next_frame.input_handlers.len(),
+             cursor_styles_index: self.next_frame.cursor_styles.len(),
++            pointer_hover_observers_index: self.next_frame.pointer_hover_observers.len(),
++            pointer_capture_owners_index: self.next_frame.pointer_capture_owners.len(),
+             accessed_element_states_index: self.next_frame.accessed_element_states.len(),
+             tab_handle_index: self.next_frame.tab_stops.paint_index(),
+             line_layout_index: self.text_system.layout_index(),
 +            #[cfg(any(test, feature = "test-support"))]
 +            debug_bounds_index: self.next_frame.debug_bounds.insertion_history.len(),
-@@ -2293,0 +2439,5 @@
+         }
+     }
+ 
+     pub(crate) fn reuse_paint(&mut self, range: Range<PaintIndex>) {
 +        #[cfg(any(test, feature = "test-support"))]
 +        self.next_frame.debug_bounds.replay(
 +            &self.rendered_frame.debug_bounds.insertion_history
 +                [range.start.debug_bounds_index..range.end.debug_bounds_index],
 +        );
-@@ -3527,7 +3677,11 @@
++        self.next_frame.pointer_capture_owners.extend_from_slice(
++            &self.rendered_frame.pointer_capture_owners
++                [range.start.pointer_capture_owners_index..range.end.pointer_capture_owners_index],
++        );
++        self.next_frame.pointer_hover_observers.extend(
++            self.rendered_frame.pointer_hover_observers[range.start.pointer_hover_observers_index
++                ..range.end.pointer_hover_observers_index]
++                .iter_mut()
++                .map(|observer| PointerHoverObserver {
++                    view: observer.view,
++                    listener: observer.listener.take(),
++                    hitbox: observer.hitbox,
++                    group_bounds: observer.group_bounds,
++                    painted_hover: observer.painted_hover,
++                }),
++        );
+         self.next_frame.cursor_styles.extend(
+             self.rendered_frame.cursor_styles
+                 [range.start.cursor_styles_index..range.end.cursor_styles_index]
+@@ -2952,6 +3183,31 @@ impl Window {
+         glyph_id: GlyphId,
+         font_size: Pixels,
+         color: Hsla,
++    ) -> Result<()> {
++        self.paint_oriented_glyph(origin, font_id, glyph_id, font_size, color, false)
++    }
++
++    /// Paint a shaped monochrome glyph with its advance running bottom to top.
++    /// The origin is the rotated glyph's baseline anchor in window coordinates.
++    pub fn paint_vertical_glyph(
++        &mut self,
++        origin: Point<Pixels>,
++        font_id: FontId,
++        glyph_id: GlyphId,
++        font_size: Pixels,
++        color: Hsla,
++    ) -> Result<()> {
++        self.paint_oriented_glyph(origin, font_id, glyph_id, font_size, color, true)
++    }
++
++    fn paint_oriented_glyph(
++        &mut self,
++        origin: Point<Pixels>,
++        font_id: FontId,
++        glyph_id: GlyphId,
++        font_size: Pixels,
++        color: Hsla,
++        vertical: bool,
+     ) -> Result<()> {
+         self.invalidator.debug_assert_paint();
+
+@@ -2986,6 +3242,15 @@ impl Window {
+                 size: tile.bounds.size.map(Into::into),
+             };
+             let content_mask = self.content_mask().scale(scale_factor);
++            let transformation = if vertical {
++                let Point { x, y } = glyph_origin;
++                TransformationMatrix {
++                    rotation_scale: [[0.0, 1.0], [-1.0, 0.0]],
++                    translation: [x.0 - y.0, y.0 + x.0],
++                }
++            } else {
++                TransformationMatrix::unit()
++            };
+             self.next_frame.scene.insert_primitive(MonochromeSprite {
+                 order: 0,
+                 pad: 0,
+@@ -2993,7 +3258,7 @@ impl Window {
+                 content_mask,
+                 color: color.opacity(element_opacity),
+                 tile,
+-                transformation: TransformationMatrix::unit(),
++                transformation,
+             });
+         }
+         Ok(())
+@@ -3524,14 +3789,28 @@ impl Window {
+         subscription
+     }
+ 
 -    fn reset_cursor_style(&self, cx: &mut App) {
 -        // Set the cursor only if we're the active window.
 -        if self.is_window_hovered() {
@@ -4657,7 +5331,7 @@ diff --git a/src/window.rs b/src/window.rs
 +            if self.hidden_cursor_restore.is_none() {
 +                self.hidden_cursor_restore = Some(HiddenCursorRestore(cx.platform.clone()));
 +            }
-@@ -3534,0 +3689,10 @@
+             cx.platform.set_cursor_style(style);
 +        } else {
 +            self.hidden_cursor_restore.take();
 +            if self.is_window_hovered() {
@@ -4668,10 +5342,425 @@ diff --git a/src/window.rs b/src/window.rs
 +                        style
 +                    });
 +            }
-@@ -3576,0 +3741,6 @@
+         }
+     }
+ 
+@@ -3576,6 +3855,188 @@ impl Window {
+             .unwrap_or_else(|| action.name().to_string())
+     }
+ 
++    /// Record a paint dependency on pressed-pointer hover state. Entries retain
++    /// their insertion ranges through cached/deferred paint replay.
++    pub(crate) fn observe_pointer_hover(
++        &mut self,
++        hitbox: Option<HitboxId>,
++        group_bounds: Option<Bounds<Pixels>>,
++        painted_hover: bool,
++    ) {
++        self.invalidator.debug_assert_paint();
++        let view = self.current_view();
++        self.next_frame
++            .pointer_hover_observers
++            .push(PointerHoverObserver {
++                view,
++                listener: None,
++                hitbox,
++                group_bounds,
++                painted_hover,
++            });
++    }
++
++    /// Register a hover notification independent of mouse-event propagation.
++    /// Notifications run during input, never while painting a view's model.
++    /// Returning true marks the registering view dirty for callback-derived paint.
++    pub(crate) fn on_pointer_hover_change(
++        &mut self,
++        listener: impl Fn(&mut Window, &mut App) -> bool + 'static,
++    ) {
++        self.invalidator.debug_assert_paint();
++        let view = self.current_view();
++        self.next_frame
++            .pointer_hover_observers
++            .push(PointerHoverObserver {
++                view,
++                listener: Some(Box::new(listener)),
++                hitbox: None,
++                group_bounds: None,
++                painted_hover: false,
++            });
++    }
++
++    fn dispatch_pointer_hover(&mut self, cx: &mut App) {
++        let observers = mem::take(&mut self.rendered_frame.pointer_hover_observers);
++        let propagate = cx.propagate_event;
++        let default_prevented = self.default_prevented;
++        for observer in &observers {
++            if let Some(listener) = &observer.listener
++                && listener(self, cx)
++            {
++                let mut invalidation = self.invalidator.inner.borrow_mut();
++                invalidation.dirty_views.insert(observer.view);
++                invalidation.dirty = true;
++            }
++        }
++        // Hover notifications do not consume the active gesture's mouse event.
++        cx.propagate_event = propagate;
++        self.default_prevented = default_prevented;
++        self.rendered_frame.pointer_hover_observers = observers;
++    }
++
++    fn invalidate_pointer_hover(&self) {
++        // This is window-local style state, not a model/entity mutation. Use
++        // existing view-path invalidation without notifying model observers or
++        // forcing unrelated cached clip scenes to render again.
++        let mut invalidation = self.invalidator.inner.borrow_mut();
++        for observer in &self.rendered_frame.pointer_hover_observers {
++            if observer.painted_hover
++                || observer.hitbox.is_some_and(|id| id.is_hovered(self))
++                || observer
++                    .group_bounds
++                    .is_some_and(|bounds| bounds.contains(&self.mouse_position()))
++            {
++                invalidation.dirty_views.insert(observer.view);
++            }
++        }
++        invalidation.dirty = true;
++    }
++
++    /// Claim one pressed pointer for an explicit gesture owner. While held, all
++    /// mouse input goes only to `listener`, including movement outside its bounds;
++    /// keyboard dispatch stays unchanged. The initiating press keeps its normal
++    /// propagation, including gesture-owned ancestor selection. Subsequent mouse
++    /// input is exclusive. Escape reaches existing key handlers before lease
++    /// retirement, preserving their cancellation/propagation guards. Refuses a
++    /// different owner, an absent or
++    /// mismatched press, and an existing typed drag. Call before mutating the gesture.
++    ///
++    /// The owner must call `renew_pointer_capture` while painting its held gesture.
++    /// Missing witnesses (including source replacement), escape, button loss and
++    /// deactivation cancel exactly once outside paint. Normal matching mouse-up
++    /// runs the listener then releases without cancellation. A cancelled press's
++    /// trailing mouse-up is consumed. This lifetime never follows an edit ACK.
++    pub fn capture_pointer(
++        &mut self,
++        owner: EntityId,
++        button: MouseButton,
++        cursor: CursorStyle,
++        listener: impl FnMut(&dyn Any, &mut Window, &mut App) + 'static,
++        cancelled: impl FnOnce(&mut Window, &mut App) + 'static,
++        cx: &App,
++    ) -> bool {
++        if let Some(capture) = &self.pointer_capture {
++            return capture.owner == owner && capture.button == button;
++        }
++        if cx.has_active_drag()
++            || !self
++                .pointer_press
++                .is_some_and(|(pressed, _)| pressed == button)
++        {
++            return false;
++        }
++        self.pointer_capture = Some(PointerCapture {
++            owner,
++            button,
++            cursor,
++            listener: Some(Box::new(listener)),
++            cancelled: Some(Box::new(cancelled)),
++        });
++        true
++    }
++
++    /// Renew the active owner's held-gesture witness and cursor during paint.
++    /// Ordinary hitbox/window cursor requests cannot override this cursor.
++    pub fn renew_pointer_capture(&mut self, owner: EntityId, cursor: CursorStyle) {
++        self.invalidator.debug_assert_paint();
++        if let Some(capture) = &mut self.pointer_capture
++            && capture.owner == owner
++        {
++            capture.cursor = cursor;
++            self.next_frame.pointer_capture_owners.push(owner);
++        }
++    }
++
++    /// Cancel only this owner's active lease, including an admitted press whose
++    /// host then refuses Begin. Other owners and typed drags remain untouched.
++    /// The normal cancellation callback runs immediately outside paint.
++    pub fn cancel_pointer_capture_for(&mut self, owner: EntityId, cx: &mut App) -> bool {
++        if self.pointer_capture.as_ref().is_some_and(|capture| capture.owner == owner) {
++            self.cancel_pointer_capture(cx);
++            true
++        } else {
++            false
++        }
++    }
++
++    pub(crate) fn has_pointer_capture(&self) -> bool {
++        self.pointer_capture.is_some()
++    }
++
++    pub(crate) fn cancel_pointer_capture(&mut self, cx: &mut App) {
++        if let Some(mut capture) = self.pointer_capture.take() {
++            if !self.suppressed_pointer_ups.contains(&capture.button) {
++                // MouseButton has five possible values; unique entries stay
++                // within inline storage even across overlapping cancellations.
++                self.suppressed_pointer_ups.push(capture.button);
++            }
++            self.pointer_press = None;
++            self.pointer_dragging = false;
++            if let Some(cancelled) = capture.cancelled.take() {
++                cancelled(self, cx);
++            }
++            self.invalidate_pointer_hover();
++        }
++    }
++
++    /// Whether an explicit pointer owner is held, or a pressed pointer has moved
++    /// beyond GPUI's drag threshold.
++    ///
++    /// This is window input state, independent of event propagation, view caches,
++    /// and asynchronous edit acknowledgements. It suppresses ordinary hover paint;
++    /// it does not replace a consumer's capture, cancellation or drop contract.
++    /// Release, button loss, escape and window deactivation clear it.
++    pub fn is_pointer_dragging(&self) -> bool {
++        self.pointer_dragging || self.pointer_capture.is_some()
 +    }
 +
 +    /// Dispatch input through this window's existing event path, without exposing
 +    /// private propagation metadata or generating operating-system input events.
 +    pub fn dispatch_input(&mut self, event: PlatformInput, cx: &mut App) {
 +        self.dispatch_event(event, cx);
++    }
++
+     /// Dispatch a mouse or keyboard event on the window.
+     #[profiling::function]
+     pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
+@@ -3585,6 +4046,63 @@ impl Window {
+         // Handlers may set this to true by calling `prevent_default`.
+         self.default_prevented = false;
+ 
++        let was_dragging = self.is_pointer_dragging();
++        // Retain isolation for the entire terminal event, even if cancellation
++        // or the owner clears its lease while handling it.
++        let mut isolated_mouse_event = self.pointer_capture.is_some();
++        match &event {
++            PlatformInput::MouseDown(down) => {
++                if self
++                    .pointer_capture
++                    .as_ref()
++                    .is_some_and(|capture| capture.button != down.button)
++                {
++                    // A secondary button pressed during capture must not leak
++                    // its release after the primary gesture has finished.
++                    if !self.suppressed_pointer_ups.contains(&down.button) {
++                        self.suppressed_pointer_ups.push(down.button);
++                    }
++                } else {
++                    self.suppressed_pointer_ups
++                        .retain(|button| *button != down.button);
++                }
++            }
++            PlatformInput::MouseUp(up) if self.suppressed_pointer_ups.contains(&up.button) => {
++                self.suppressed_pointer_ups
++                    .retain(|button| *button != up.button);
++                isolated_mouse_event = true;
++            }
++            PlatformInput::MouseMove(moved)
++                if self
++                    .pointer_capture
++                    .as_ref()
++                    .is_some_and(|capture| moved.pressed_button != Some(capture.button)) =>
++            {
++                self.cancel_pointer_capture(cx);
++            }
++            _ => {}
++        }
++        match &event {
++            PlatformInput::MouseDown(down) if self.pointer_press.is_none() => {
++                self.pointer_press = Some((down.button, down.position));
++            }
++            PlatformInput::MouseMove(moved) => {
++                if let Some((button, origin)) = self.pointer_press {
++                    if moved.pressed_button == Some(button) {
++                        self.pointer_dragging |=
++                            (moved.position - origin).magnitude() > POINTER_DRAG_THRESHOLD;
++                    } else {
++                        self.pointer_press = None;
++                        self.pointer_dragging = false;
++                    }
++                }
++            }
++            PlatformInput::KeyDown(key) if key.keystroke.key == "escape" => {
++                self.pointer_press = None;
++                self.pointer_dragging = false;
++            }
++            _ => {}
++        }
+         let event = match event {
+             // Track the mouse position with our own state, since accessing the platform
+             // API for the mouse position can only occur on the main thread.
+@@ -3662,25 +4180,87 @@ impl Window {
+             PlatformInput::KeyDown(_) | PlatformInput::KeyUp(_) => event,
+         };
+ 
++        let pointer_hover_transition = was_dragging != self.is_pointer_dragging();
++        let keyboard_hover_transition =
++            event.keyboard_event().is_some() && pointer_hover_transition;
++        if keyboard_hover_transition {
++            self.invalidate_pointer_hover();
++            self.dispatch_pointer_hover(cx);
++        }
+         if let Some(any_mouse_event) = event.mouse_event() {
+-            self.dispatch_mouse_event(any_mouse_event, cx);
++            self.dispatch_mouse_event(
++                any_mouse_event,
++                pointer_hover_transition,
++                isolated_mouse_event,
++                cx,
++            );
+         } else if let Some(any_key_event) = event.keyboard_event() {
+             self.dispatch_key_event(any_key_event, cx);
+         }
+
++        if keyboard_hover_transition {
++            self.dispatch_pointer_hover(cx);
++            self.invalidate_pointer_hover();
++        }
++
++        if let PlatformInput::KeyDown(key) = &event
++            && key.keystroke.key == "escape"
++        {
++            // Existing widget key handlers must see their held state so their
++            // cancellation/propagation guards still run. Retire any remaining
++            // lease afterward; the owner may already have cancelled its model.
++            self.cancel_pointer_capture(cx);
++        }
++
++        if let PlatformInput::MouseUp(up) = &event {
++            if self
++                .pointer_capture
++                .as_ref()
++                .is_some_and(|capture| capture.button == up.button)
++            {
++                self.pointer_capture.take();
++            }
++            if self
++                .pointer_press
++                .is_some_and(|(button, _)| button == up.button)
++            {
++                self.pointer_press = None;
++                self.pointer_dragging = false;
++            }
++        }
++        if was_dragging != self.is_pointer_dragging() {
++            self.invalidate_pointer_hover();
++            self.dispatch_pointer_hover(cx);
++        }
++        if isolated_mouse_event != self.pointer_capture.is_some() {
++            self.reset_cursor_style(cx);
++        }
++
+         DispatchEventResult {
+             propagate: cx.propagate_event,
+             default_prevented: self.default_prevented,
+         }
+     }
+ 
+-    fn dispatch_mouse_event(&mut self, event: &dyn Any, cx: &mut App) {
++    fn dispatch_mouse_event(
++        &mut self,
++        event: &dyn Any,
++        hover_transition: bool,
++        isolated: bool,
++        cx: &mut App,
++    ) {
+         let hit_test = self.rendered_frame.hit_test(self.mouse_position());
+         if hit_test != self.mouse_hit_test {
+             self.mouse_hit_test = hit_test;
+             self.reset_cursor_style(cx);
+         }
+ 
++        if hover_transition {
++            // Use the updated hit test: both painted hover and newly eligible
++            // hover must retire/restore even if capture consumes this event.
++            self.invalidate_pointer_hover();
++        }
++
+         #[cfg(any(feature = "inspector", debug_assertions))]
+         if self.is_inspector_picking(cx) {
+             self.handle_inspector_mouse_event(event, cx);
+@@ -3688,6 +4268,27 @@ impl Window {
+             return;
+         }
+
++        if event.is::<MouseMoveEvent>() {
++            self.dispatch_pointer_hover(cx);
++        }
++
++        if isolated {
++            let listener = self
++                .pointer_capture
++                .as_mut()
++                .and_then(|capture| capture.listener.take());
++            if let Some(mut listener) = listener {
++                listener(event, self, cx);
++                if let Some(capture) = &mut self.pointer_capture {
++                    capture.listener = Some(listener);
++                }
++            }
++            // No underlying action, wheel, raw listener or trailing click can
++            // receive this input, even if the owner ignored this event type.
++            cx.stop_propagation();
++            return;
++        }
++
+         let mut mouse_listeners = mem::take(&mut self.rendered_frame.mouse_listeners);
+ 
+         // Capture phase, events bubble from back to front. Handlers for this phase are used for
+diff --git a/src/element.rs b/src/element.rs
+--- a/src/element.rs
++++ b/src/element.rs
+@@ -272,8 +272,13 @@
+ }
+
+ /// A globally unique identifier for an element, used to track state across frames.
++///
++/// Keep short paths inline without carrying 32 entries through every draw phase
++/// and state-map operation. Longer paths spill into SmallVec's existing dynamic
++/// storage: this is not a depth limit. Equality, hashing and display retain the
++/// entire ordered path. Window's active and deferred stacks use the same capacity.
+ #[derive(Deref, DerefMut, Default, Debug, Eq, PartialEq, Hash)]
+-pub struct GlobalElementId(pub(crate) SmallVec<[ElementId; 32]>);
++pub struct GlobalElementId(pub(crate) SmallVec<[ElementId; 8]>);
+
+ impl Display for GlobalElementId {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+diff --git a/src/text_system/line.rs b/src/text_system/line.rs
+index 189a3e8..581fcc1 100644
+--- a/src/text_system/line.rs
++++ b/src/text_system/line.rs
+@@ -37 +37 @@ pub struct ShapedLine {
+-    pub(crate) decoration_runs: SmallVec<[DecorationRun; 32]>,
++    pub(crate) decoration_runs: SmallVec<[DecorationRun; 4]>,
+@@ -117 +117 @@ pub struct WrappedLine {
+-    pub(crate) decoration_runs: SmallVec<[DecorationRun; 32]>,
++    pub(crate) decoration_runs: SmallVec<[DecorationRun; 4]>,
+diff --git a/src/text_system.rs b/src/text_system.rs
+index 85a3133..5b9520b 100644
+--- a/src/text_system.rs
++++ b/src/text_system.rs
+@@ -377 +377 @@ impl WindowTextSystem {
+-        let mut decoration_runs = SmallVec::<[DecorationRun; 32]>::new();
++        let mut decoration_runs = SmallVec::<[DecorationRun; 4]>::new();
+@@ -429 +429 @@ impl WindowTextSystem {
+-            let mut decoration_runs = SmallVec::<[DecorationRun; 32]>::new();
++            let mut decoration_runs = SmallVec::<[DecorationRun; 4]>::new();
+diff --git a/src/platform/blade/blade_renderer.rs b/src/platform/blade/blade_renderer.rs
+--- a/src/platform/blade/blade_renderer.rs
++++ b/src/platform/blade/blade_renderer.rs
+@@ -554,2 +554,4 @@
+-    pub fn layer(&self) -> metal::MetalLayer {
+-        unsafe { foreign_types::ForeignType::from_ptr(self.layer_ptr()) }
++    pub fn layer(&self) -> &metal::MetalLayerRef {
++        // SAFETY: Surface retains this CAMetalLayer for the lifetime of self.
++        // The pointer does not transfer ownership to the caller.
++        unsafe { foreign_types::ForeignTypeRef::from_ptr(self.layer_ptr()) }

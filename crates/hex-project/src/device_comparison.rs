@@ -76,6 +76,7 @@ impl Device {
         std::iter::once(&self.state).chain(self.comparison.iter().map(DeviceComparison::inactive))
     }
     pub(crate) fn replace_state(&mut self, state: NativeDeviceState) -> Result<(), Invalid> {
+        self.validate_automation_provider(&state)?;
         self.comparison = if self.state.type_id() == state.type_id() {
             self.comparison
                 .clone()
