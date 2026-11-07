@@ -18,6 +18,7 @@ fn fresh_selected_lookup_finds_raw_zero_beyond_the_first_page_without_inventory(
             ])
             .env(CHILD, "1")
             .env("HEX_ORIGINAL_INSTANCE_VARIANT", "80")
+            .env("HEX_ORIGINAL_PARAMETER_INVENTORY", "9")
             .output()
             .unwrap();
         assert!(
