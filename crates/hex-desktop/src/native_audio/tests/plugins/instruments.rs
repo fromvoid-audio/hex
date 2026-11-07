@@ -598,7 +598,7 @@ fn instrument_takeover_preserves_other_base_and_held_midi() {
     const CASE: &str = "HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE";
     if std::env::var_os(CASE).is_none() {
         let name = std::thread::current().name().unwrap().to_owned();
-        for case in ["reading", "unread", "empty", "idle", "refused"] {
+        for case in ["reading", "unread", "empty", "renew", "idle", "refused"] {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", &name, "--ignored", "--nocapture"])
                 .env(CASE, case)
@@ -694,9 +694,12 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
     };
     (applied, _) = harness.applied(applied);
     let (clip_length, note_duration) = if takeover {
+        // The headless control driver can render far faster than wall time
+        // while waiting for SDK work. Keep its held note alive throughout
+        // these operations without adding processing to the test.
         (
-            BeatTime::from_quarters(16).unwrap(),
-            BeatTime::from_quarters(16).unwrap(),
+            BeatTime::from_quarters(256).unwrap(),
+            BeatTime::from_quarters(256).unwrap(),
         )
     } else if automation_parameter.is_some() {
         (
@@ -1453,7 +1456,7 @@ fn verify_instrument_takeover(
     use hex_session::device_gesture::{GestureClient, PluginParameterOrigin, PluginParameterValue};
     use hex_session::service::{DeviceAutomationControlEdit, PluginParameterQuery};
     let case = std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").unwrap();
-    let reading = !matches!(case.as_str(), "unread" | "empty");
+    let reading = !matches!(case.as_str(), "unread" | "empty" | "renew");
     let playing = case != "idle";
     let context = h.submitted.unwrap().1.context;
     let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
@@ -1474,7 +1477,7 @@ fn verify_instrument_takeover(
     let mut before = original.clone();
     let mut revision = context.editor_revision;
     for (id, value) in [(7, 0.25), (11, 0.5)] {
-        if case == "empty" || id == 7 && !reading {
+        if matches!(case.as_str(), "empty" | "renew") || id == 7 && !reading {
             continue;
         }
         let event = super::automation::edit_with_running_callback(
@@ -1746,5 +1749,48 @@ fn verify_instrument_takeover(
         saved.error
     );
     assert_eq!(hex_storage::load(path).unwrap(), *saved.state.project);
+    if case == "renew" {
+        let before_stop = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire);
+        h.audio.as_ref().unwrap().control.stop();
+        h.render_plugin_block();
+        let mut restored = h.run(Request::RestoreStoppedPlayback);
+        if !restored.stopped_playback_restore_complete {
+            restored = restored_terminal(h);
+        }
+        assert!(restored.error.is_none(), "{:?}", restored.error);
+        assert_eq!(restored.state.project, saved.state.project);
+        h.applied(before_stop);
+        wait(|| h.plugin_completed.load(Acquire) == 0);
+        wait(|| {
+            h.pump();
+            h.audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command(PlaybackCommand::Play)
+                .is_ok()
+        });
+        assert!(
+            (peak(h) - baseline * 2.0).abs() < 0.0001,
+            "renewal must retain the manual canonical base"
+        );
+        client.begin_plugin(query(h, 16)).unwrap();
+        send(h, &mut client, true);
+        client
+            .change_plugin(PluginParameterValue::new(0.75).unwrap())
+            .unwrap();
+        send(h, &mut client, true);
+        assert!((peak(h) - baseline * 3.0).abs() < 0.0001);
+        client.cancel().unwrap();
+        send(h, &mut client, true);
+        assert!((peak(h) - baseline * 2.0).abs() < 0.0001);
+    }
     println!("instrument takeover {case} passed");
 }
