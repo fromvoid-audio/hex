@@ -637,7 +637,8 @@ fn instrument_entrypoint(shared_authoring: bool) {
         output_frames: 512,
     });
     let automation_parameter = std::env::var("HEX_TEST_VST3_INSTRUMENT_AUTOMATION_PARAMETER").ok();
-    let mut harness = if automation_parameter.is_some() {
+    let mut harness = if automation_parameter.is_some() || (shared_authoring && installed.is_some())
+    {
         let catalog = PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap());
         ResidentHarness::with_plugins_at_rate_and_catalog(host(), presentation, rate, catalog, 8192)
     } else {
