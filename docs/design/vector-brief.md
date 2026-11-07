@@ -4,7 +4,7 @@ Vector supports deep four-operator FM sound design through a clean, direct workf
 
 ## Working surface
 
-Every oscillator uses a compact two-row layout: ratio and level above, fine Hz offset and waveform below. Every oscillator exposes ratio, fine Hz offset, one filled horizontal dB level slider, waveform choice, and its own keytrack slider. Fixed routing presets, feedback, filter cutoff/resonance and envelope amount, a voice-count dropdown and glide remain available while editing envelopes. Custom routing is outside the first iteration. Phase/retrigger live in a narrow optional oscillator panel; voice count is directly exposed in place of the mono/poly button, with concept choices 1, 2, 4, 8, 16 and 32 (default 8; 1 voice is mono). It is not duplicated in device settings. General modulation uses host modulators.
+Every oscillator uses a compact two-row layout: ratio and level above, fine Hz offset and waveform below. Every oscillator exposes ratio, a signed fine Hz offset from −1000 to +1000 Hz (default 0 Hz, added after ratio/fixed-frequency multiplication), one filled horizontal dB level slider, waveform choice, and its own keytrack slider. Fixed routing presets, feedback, filter cutoff/resonance and envelope amount, a voice-count dropdown and glide remain available while editing envelopes. Custom routing is outside the first iteration. Phase/retrigger live in a narrow optional oscillator panel; voice count is directly exposed in place of the mono/poly button, with concept choices 1, 2, 4, 8, 16 and 32 (default 8; 1 voice is mono). It is not duplicated in device settings. General modulation uses host modulators.
 
 ## Envelope editing
 

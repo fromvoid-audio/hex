@@ -352,6 +352,70 @@ fn original_root_extends_only_acknowledged_targets_with_isolated_constructor_bas
                 )
                 .is_err()
         );
+        f.control.stop();
+        let fence = f
+            .control
+            .request_ordinary_native_epoch_fence(source)
+            .unwrap();
+        allocation_free(|| {
+            f.data
+                .owner_mut()
+                .unwrap()
+                .run(|callback, _| callback.begin_block())
+        });
+        assert_eq!(
+            f.control.stopped_edit_fence_state(fence),
+            StoppedEditFenceState::Ready
+        );
+        f.control
+            .return_stopped_ordinary_native_epoch_runtime(source, fence)
+            .unwrap();
+        for _ in 0..2 {
+            allocation_free(|| {
+                f.data
+                    .owner_mut()
+                    .unwrap()
+                    .run(|callback, _| callback.begin_block())
+            });
+        }
+        let previous = f.binding;
+        let next = epoch::renew_after_returns(&mut f.control, previous);
+        epoch::on_control(|| {
+            f.control.complete_native_source_preparation(
+                next,
+                Some(hex_plugin_host::protocol::PresentationLatency {
+                    input_frames: 77,
+                    output_frames: 91,
+                }),
+            )
+        });
+        let selection =
+            AuthoredSelection::from_targets(selected.iter().map(|&id| (id, Some(class.bytes()))))
+                .unwrap()
+                .unwrap();
+        epoch::on_control(|| {
+            f.control
+                .start_native_effect_with_authored_selection(next, Some(&selection))
+        });
+        f.binding = next;
+        assert_eq!(
+            capabilities(&f, &initial).1,
+            new.1,
+            "renewal must preserve constructor bases independently of live SDK readback"
+        );
+        assert_eq!(
+            f.control
+                .native_source_metadata(next)
+                .unwrap()
+                .authored_base_values()
+                .collect::<Vec<_>>(),
+            selected.iter().map(|&id| (id, 0.25)).collect::<Vec<_>>()
+        );
+        assert!(
+            f.control.native_source_metadata(previous).is_err(),
+            "the old epoch grants no metadata access"
+        );
+        f.control.release_stopped_edit_fence(fence);
         dispose(f);
     }
 }

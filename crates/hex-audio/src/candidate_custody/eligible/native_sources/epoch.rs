@@ -88,7 +88,10 @@ impl Custody {
         after_reservation();
         let result = catch_unwind(AssertUnwindSafe(|| match cell.owner.take() {
             Some(Owner::Effect(effect)) => match effect.into_quiescent_on_control() {
-                Ok(owner) => cell.owner = Some(Owner::Quiescent(owner)),
+                Ok((owner, renewal)) => {
+                    cell.renewal = Some(renewal);
+                    cell.owner = Some(Owner::Quiescent(owner));
+                }
                 Err(owner) => {
                     cell.constructor_refused = true;
                     cell.owner = Some(Owner::WorkerRefused(owner));
