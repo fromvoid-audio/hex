@@ -186,6 +186,19 @@ fn reverb_output_automation_callback_publication_history_and_save_reopen()
     std::fs::remove_file(path)?;
     let reopened = reopened?;
     assert_eq!(&reopened, editor.project());
+    let render_take = |project: &Project| -> Result<Vec<[f32; 2]>, Box<dyn Error>> {
+        let mut playback = hex_engine::SessionPlayback::new(prepare(project)?)?;
+        playback.apply(hex_engine::SessionPlaybackCommand::Play)?;
+        let mut pcm = vec![[0.0; 2]; BLOCK * 3];
+        playback.render(&mut pcm)?;
+        Ok(pcm)
+    };
+    let recorded_pcm = render_take(&reopened)?;
+    let base_pcm = render_take(&before_take)?;
+    assert!(
+        recorded_pcm.iter().zip(&base_pcm).any(|(a, b)| a != b),
+        "the recorded native touch must affect rendered audio"
+    );
     let next = prepare(&reopened)?;
     control
         .publish(Playback::try_from_prepared_with_session(next)?)
