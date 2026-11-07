@@ -566,6 +566,13 @@ impl EditorView {
             ));
         }
         actions.extend(self.device_automation_read_action(target));
+        if !main
+            && self.device_panel.owner == Some(target.owner)
+            && let Some(entry) = self.automation_view.devices.entry(target)
+            && matches!(entry.metadata, EntryMetadata::HostGain)
+        {
+            actions.extend(self.native_automation_arm_action(entry));
+        }
         actions.push(("clear automation", Action::Clear(target)));
         actions.push((
             "hide lane",
