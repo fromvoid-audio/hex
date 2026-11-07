@@ -383,9 +383,10 @@ fn transport_runner_with_setup(
                     block,
                     parameter_capacity,
                     authored,
+                    manual_origin_available,
                 })) => {
                     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-                    let _ = parameter_capacity;
+                    let _ = (parameter_capacity, manual_origin_available);
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     let mut block = block;
                     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -396,6 +397,7 @@ fn transport_runner_with_setup(
                         &mut block,
                         parameter_capacity,
                         authored,
+                        manual_origin_available,
                     ) {
                         Ok(point) => point,
                         Err(error) => {

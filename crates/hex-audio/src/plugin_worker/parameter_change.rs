@@ -42,6 +42,7 @@ pub(super) struct Slot {
     phase: Phase,
     point: ParameterPoint,
     intent: Intent,
+    require_arrangement_origin: bool,
     result: Option<Terminal>,
 }
 #[derive(Default)]
@@ -298,13 +299,14 @@ impl NativeWorker {
         &mut self,
         command: NativeParameterHold<'_>,
     ) -> Result<NativeWorkerParameterChange, &'static str> {
-        self.parameter_hold_with_before(command, |_| Ok(()))
+        self.parameter_hold_with_before(command, false, |_| Ok(()))
             .map(|(request, ())| request)
     }
 
     pub(crate) fn parameter_hold_with_before<T>(
         &mut self,
         command: NativeParameterHold<'_>,
+        require_arrangement_origin: bool,
         before_publish: impl FnOnce(&NativeWorkerParameterChange) -> Result<T, &'static str>,
     ) -> Result<(NativeWorkerParameterChange, T), &'static str> {
         let (id, normalized, intent) = match command {
@@ -324,16 +326,29 @@ impl NativeWorker {
                 (id, 0.0, Intent::Release(hold.ordinal))
             }
         };
-        self.queue_parameter_change_with_before(id, normalized, intent, before_publish)
+        self.queue_parameter_change_with_before(
+            id,
+            normalized,
+            intent,
+            require_arrangement_origin,
+            before_publish,
+        )
     }
 
     pub(crate) fn parameter_change_with_before<T>(
         &mut self,
         id: u32,
         normalized: f64,
+        require_arrangement_origin: bool,
         before_publish: impl FnOnce(&NativeWorkerParameterChange) -> Result<T, &'static str>,
     ) -> Result<(NativeWorkerParameterChange, T), &'static str> {
-        self.queue_parameter_change_with_before(id, normalized, Intent::Point, before_publish)
+        self.queue_parameter_change_with_before(
+            id,
+            normalized,
+            Intent::Point,
+            require_arrangement_origin,
+            before_publish,
+        )
     }
 
     fn queue_parameter_change(
@@ -342,18 +357,21 @@ impl NativeWorker {
         normalized: f64,
         intent: Intent,
     ) -> Result<NativeWorkerParameterChange, &'static str> {
-        self.queue_parameter_change_with_before(id, normalized, intent, |_| Ok(()))
+        self.queue_parameter_change_with_before(id, normalized, intent, false, |_| Ok(()))
             .map(|(request, ())| request)
     }
 
     /// Reserve copied control data while the exact request is still private.
     /// Refusal leaves the slot/ordinal intact. After this hook succeeds, queue
     /// publication cannot fail and carries both handles through late close.
+    /// Origin-required input retains the queued slot until an accepted PCM
+    /// request has a real compensated Arrangement origin.
     fn queue_parameter_change_with_before<T>(
         &mut self,
         id: u32,
         normalized: f64,
         intent: Intent,
+        require_arrangement_origin: bool,
         before_publish: impl FnOnce(&NativeWorkerParameterChange) -> Result<T, &'static str>,
     ) -> Result<(NativeWorkerParameterChange, T), &'static str> {
         let point = ParameterPoint {
@@ -402,6 +420,7 @@ impl NativeWorker {
         slot.ordinal = ordinal;
         slot.point = point;
         slot.intent = intent;
+        slot.require_arrangement_origin = require_arrangement_origin;
         slot.phase = Phase::Queued;
         slot.result = None;
         self.reaper
@@ -579,6 +598,7 @@ impl State {
         block: &mut Block,
         parameter_capacity: usize,
         authored: bool,
+        manual_origin_available: bool,
     ) -> Result<Option<ParameterPoint>, Fault> {
         let work = &mut self.parameter_change;
         let pending = work.ordinal.is_none() && signal.parameter_change_requested.load(Acquire);
@@ -601,6 +621,12 @@ impl State {
         // Withdrawal may win after the worker's atomic observation and before
         // this lock. It must not become a source fault or a late mutation.
         if slot.phase != Phase::Queued || slot.intent == Intent::Idle {
+            return Ok(None);
+        }
+        // Preserve queued custody through compensated pre-roll. Existing held
+        // masking still applies, but an observed operation may only consume a
+        // quantum whose exact first input sample has an Arrangement origin.
+        if slot.require_arrangement_origin && !manual_origin_available {
             return Ok(None);
         }
         let (ordinal, point, intent) = (slot.ordinal, slot.point, slot.intent);
