@@ -415,6 +415,108 @@ fn original_root_extends_only_acknowledged_targets_with_isolated_constructor_bas
             f.control.native_source_metadata(previous).is_err(),
             "the old epoch grants no metadata access"
         );
+        assert!(
+            host.begin_canonical_bases_capture_on_control(
+                &mut f.control,
+                source,
+                next,
+                &initial,
+                &selection,
+                false
+            )
+            .is_err(),
+            "ordinary queries cannot substitute for the returned graph"
+        );
+        for (wrong_source, wrong_binding) in [
+            (
+                AppliedAudioSource {
+                    audio_revision: source.audio_revision + 1,
+                    ..source
+                },
+                next,
+            ),
+            (source, previous),
+        ] {
+            assert!(
+                host.begin_stopped_canonical_bases_capture_on_control(
+                    &mut f.control,
+                    wrong_source,
+                    fence,
+                    wrong_binding,
+                    &initial,
+                    &selection
+                )
+                .is_err()
+            );
+        }
+        let mut query = host
+            .begin_stopped_canonical_bases_capture_on_control(
+                &mut f.control,
+                source,
+                fence,
+                next,
+                &initial,
+                &selection,
+            )
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(3);
+        let facts = loop {
+            if let Some(result) = query.poll_on_control(&mut f.control, &mut || false) {
+                break result.unwrap();
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        };
+        assert_eq!(
+            facts.values().collect::<Vec<_>>(),
+            selected.iter().map(|&id| (id, 0.25)).collect::<Vec<_>>()
+        );
+        assert!(facts.matches_output_on_control(&f.control));
+        let mut cancelled = host
+            .begin_stopped_canonical_bases_capture_on_control(
+                &mut f.control,
+                source,
+                fence,
+                next,
+                &initial,
+                &selection,
+            )
+            .unwrap();
+        if initially_armed {
+            f.control.stop();
+            allocation_free(|| {
+                f.data
+                    .owner_mut()
+                    .unwrap()
+                    .run(|callback, _| callback.begin_block())
+            });
+        } else {
+            f.control.release_stopped_edit_fence(fence);
+        }
+        assert!(!facts.matches_output_on_control(&f.control));
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(result) = cancelled.poll_on_control(&mut f.control, &mut || false) {
+                assert!(result.is_err(), "lost fence/transport cannot publish facts");
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "cancelled scratch must reach actual disposal"
+            );
+            std::thread::yield_now();
+        }
+        assert!(
+            host.begin_stopped_canonical_bases_capture_on_control(
+                &mut f.control,
+                source,
+                fence,
+                next,
+                &initial,
+                &selection
+            )
+            .is_err()
+        );
         f.control.release_stopped_edit_fence(fence);
         dispose(f);
     }

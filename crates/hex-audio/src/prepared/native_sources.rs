@@ -15,12 +15,7 @@ impl PublicationControl {
         &self,
         facts: &crate::plugin_effects::CapturedCanonicalBases,
     ) -> Result<NativeDeviceState, &'static str> {
-        let (source, epoch, playing) = facts.source();
-        let matches = || {
-            !self.status.closing.load(Acquire)
-                && self.output_identity() == Some(source.output_identity)
-                && self.status.native_parameter_source(playing) == Some((source, epoch))
-        };
+        let matches = || facts.matches_output_on_control(self);
         if !self.native_custody || !matches() {
             return Err("native processing approval source changed");
         }
@@ -110,6 +105,52 @@ impl Status {
 }
 
 impl PublicationControl {
+    pub(crate) fn canonical_source_matches_on_control(
+        &self,
+        (source, epoch, playing): (AppliedAudioSource, u64, bool),
+        fence: Option<StoppedEditFence>,
+    ) -> bool {
+        if !self.native_custody
+            || self.output_identity() != Some(source.output_identity)
+            || self.status.closing.load(Acquire)
+        {
+            return false;
+        }
+        match fence {
+            None => self.status.native_parameter_source(playing) == Some((source, epoch)),
+            Some(fence) => {
+                !playing
+                    && !self.status.playing.load(Acquire)
+                    && self.status.pending_stop_marker.load(Acquire) == 0
+                    && self.status.transport_epoch.load(Acquire) == epoch
+                    && self.status.sampler_edit.ready_transport_epoch.load(Acquire) == epoch
+                    && self.status.applied_revision.load(Acquire) == source.audio_revision
+                    && self.status.sampler_edit.ordinary_native_epoch_active()
+                    && self.status.sampler_edit.matches_source(fence, source)
+                    && self.stopped_edit_fence_state(fence) == StoppedEditFenceState::Ready
+            }
+        }
+    }
+
+    pub(crate) fn native_fenced_base_capture_source(
+        &self,
+        source: AppliedAudioSource,
+        fence: StoppedEditFence,
+        binding: Binding,
+        canonical: &NativeDeviceState,
+    ) -> Result<(u32, u64, crate::plugin_effects::BaseCaptureSource), String> {
+        let epoch = self.status.transport_epoch.load(Acquire);
+        if binding.root != source.output_identity
+            || !self.canonical_source_matches_on_control((source, epoch, false), Some(fence))
+        {
+            return Err("native base capture requires its held ordinary restore fence".into());
+        }
+        let original = self
+            .candidate_root
+            .native_source_for_base_capture(binding, canonical, false)?;
+        Ok((self.rate, epoch, original))
+    }
+
     pub(crate) fn native_base_capture_source(
         &self,
         expected: AppliedAudioSource,

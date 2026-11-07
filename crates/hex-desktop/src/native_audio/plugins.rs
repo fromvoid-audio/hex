@@ -881,6 +881,7 @@ impl Plugins {
                     state,
                     &selection,
                     cancellation,
+                    self.restored_canonical_source(input.context()),
                 )?);
             }
             Ok(())
