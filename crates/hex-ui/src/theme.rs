@@ -445,8 +445,28 @@ fn muted_clip_fill(accent: u32) -> u32 {
 /// canonical and projected clip layers use it independently of curve/handle ink.
 pub(crate) const CLIP_FADE_SHADE: u32 = 0x00000066;
 
-/// Shared audio/MIDI body, Console cell, drag preview and title fill. The persisted
-/// `Muted` flavor is darker and more saturated; Accent keeps the track hue.
+const CLIP_SELECTION_LIFT: u32 = 22;
+
+/// Additional white mixed into selected Arrangement bodies after the ordinary
+/// selection lift. Header strips and Console cells retain their own fills.
+const SELECTED_CLIP_BODY_WHITENING: f32 = 0.35;
+
+/// Derive the Arrangement content surface from its unselected header color.
+/// This changes no geometry or content ink, and requires no project traversal.
+pub(crate) fn arrangement_clip_body_fill(header: u32, selected: bool) -> u32 {
+    if selected {
+        mix(
+            lighten(header, CLIP_SELECTION_LIFT),
+            0xffffff,
+            SELECTED_CLIP_BODY_WHITENING,
+        )
+    } else {
+        header
+    }
+}
+
+/// Shared clip palette for Console cells, drag previews and unselected titles.
+/// The persisted `Muted` flavor is darker and more saturated; Accent keeps the track hue.
 /// Track strips, sections and browser marker palettes retain their own surfaces.
 pub fn clip_fill(
     color: hex_project::ElementColor,
@@ -460,7 +480,11 @@ pub fn clip_fill(
             hex_project::ClipFlavor::Accent => theme.elements[color as usize].accent,
         }
     });
-    if selected { lighten(base, 22) } else { base }
+    if selected {
+        lighten(base, CLIP_SELECTION_LIFT)
+    } else {
+        base
+    }
 }
 
 /// Activation is independent of the persisted color flavor. Keep inactive clips

@@ -198,7 +198,10 @@ fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
                             .unwrap()
                             .flavor()
                     });
-                theme::clip_fill(source.color(), flavor, selected)
+                theme::arrangement_clip_body_fill(
+                    theme::clip_fill(source.color(), flavor, false),
+                    selected,
+                )
             });
             assert_eq!(
                 visual.rendered_background(selector),
