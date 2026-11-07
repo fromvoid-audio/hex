@@ -14,6 +14,32 @@ pub(super) enum NativeEpochRuntimeTarget {
 }
 
 impl PublicationControl {
+    pub(crate) fn native_base_capture_source(
+        &self,
+        expected: AppliedAudioSource,
+        binding: Binding,
+        canonical: &NativeDeviceState,
+    ) -> Result<(u32, crate::plugin_effects::BaseCaptureSource), String> {
+        if !self.native_base_capture_is_current(expected)
+            || binding.root != expected.output_identity
+        {
+            return Err("native base capture requires the applied ordinary effect".into());
+        }
+        let source = self
+            .candidate_root
+            .native_source_for_base_capture(binding, canonical)?;
+        Ok((self.rate, source))
+    }
+
+    pub(crate) fn native_base_capture_is_current(&self, expected: AppliedAudioSource) -> bool {
+        self.native_custody
+            && !self.status.closing.load(Acquire)
+            && self.output_identity() == Some(expected.output_identity)
+            && self.status.playing.load(Acquire)
+            && self.status.applied_audio_source().is_none()
+            && self.status.native_effect_source() == Some(expected)
+    }
+
     /// Queue a live hold on the selected original worker. A begin/change
     /// requires the exact applied ordinary source and a running transport.
     /// Release stays with the original worker even if its editor revision
