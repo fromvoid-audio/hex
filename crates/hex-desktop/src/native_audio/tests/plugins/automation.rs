@@ -1,7 +1,8 @@
 //! Signed controller eligibility and ordinary Session authoring.
 use super::*;
-use hex_lattice_contract::DeviceAutomationTarget;
-use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime};
+use hex_project::{
+    AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, DeviceAutomationTarget,
+};
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
