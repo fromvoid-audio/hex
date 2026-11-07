@@ -152,6 +152,7 @@ mod midi_pitch_zoom;
 mod midi_recording;
 mod midi_viewport_grid;
 mod missing_media;
+mod native_automation_recording;
 mod track_defaults;
 mod user_errors;
 #[cfg(feature = "ui-test-support")]
@@ -820,6 +821,7 @@ pub(super) struct EditorView {
     project_tempo_control: Option<tempo_input::Binding>,
     track_gain_controls: track_gain::Controls,
     gain_recorder: gain_recording::Recorder,
+    native_automation_recorder: native_automation_recording::Recorder,
     midi_recorder: midi_recording::Recorder,
     routing_open: bool,
     routing_page: usize,
@@ -1593,6 +1595,7 @@ impl EditorView {
             project_tempo_control: None,
             track_gain_controls: track_gain::Controls::default(),
             gain_recorder: gain_recording::Recorder::default(),
+            native_automation_recorder: native_automation_recording::Recorder::default(),
             midi_recorder: midi_recording::Recorder::default(),
             routing_open: false,
             routing_page: 0,

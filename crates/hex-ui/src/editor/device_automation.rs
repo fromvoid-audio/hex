@@ -97,6 +97,7 @@ pub(super) enum Action {
     HidePreview(Target),
     Clear(Target),
     Reenable(Target),
+    ToggleNativeArm(Target),
     Shape(Target, AutomationInterpolation),
 }
 
@@ -609,6 +610,27 @@ impl EditorView {
         {
             actions.push(("re-enable automation", Action::Reenable(entry.target)));
         }
+        if matches!(
+            entry.metadata,
+            EntryMetadata::Provider {
+                descriptor: ParameterDescriptor {
+                    kind: ParameterKind::Float { .. },
+                    ..
+                },
+                ..
+            }
+        ) && self.state.as_ref().is_some_and(|state| {
+            hex_engine::native_parameter_input_target(&state.project, device, kind).is_ok()
+        }) {
+            actions.push((
+                if self.native_automation_arm_selected(device, kind) {
+                    "disarm automation recording"
+                } else {
+                    "arm automation recording"
+                },
+                Action::ToggleNativeArm(entry.target),
+            ));
+        }
         self.open_automation_menu(position, actions, window, cx);
         if utility_mode {
             self.append_utility_mode_choice(
@@ -712,6 +734,7 @@ impl EditorView {
             | Action::HidePreview(target)
             | Action::Clear(target)
             | Action::Reenable(target)
+            | Action::ToggleNativeArm(target)
             | Action::Shape(target, _) => self.state.as_ref().is_none_or(|state| {
                 target
                     .identity_current(&state.project, self.project_generation)
@@ -970,6 +993,9 @@ impl EditorView {
                 self.track_scroll.remeasure();
             }
             Action::Reenable(target) => self.reenable_device_automation(Some(target), cx),
+            Action::ToggleNativeArm(target) => {
+                self.toggle_native_automation_arm(target.device, target.kind);
+            }
             Action::Clear(target) => {
                 self.commit_device_automation(target, Vec::new(), cx);
             }
