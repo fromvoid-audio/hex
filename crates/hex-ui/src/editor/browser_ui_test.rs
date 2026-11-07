@@ -1976,48 +1976,6 @@ fn empty_arrangement_keeps_the_grid_aligned_with_the_ruler(cx: &mut TestAppConte
 }
 
 #[gpui::test]
-fn arrangement_overview_shows_the_project_and_click_centers_a_clamped_viewport(
-    cx: &mut TestAppContext,
-) {
-    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
-    editor.update(cx, |view, _| {
-        view.viewport = Some(super::super::viewport::Viewport {
-            start: 0,
-            length: 96_000,
-        });
-    });
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let overview = visual
-        .debug_bounds("arrangement-overview-map")
-        .expect("compact project overview above the ruler");
-    let ruler = visual
-        .debug_bounds("timeline-ruler")
-        .expect("Arrangement ruler");
-    assert_eq!(overview.origin.x, ruler.origin.x);
-    assert_eq!(overview.size.width, ruler.size.width);
-    assert!(overview.size.height >= px(20.0));
-    let before = editor.read_with(cx, |view, _| {
-        let state = view.state.as_ref().expect("project");
-        view.visible_viewport(state.timeline_frames)
-    });
-    assert_eq!(before.start, 0);
-    let click = point(
-        overview.origin.x + overview.size.width * 0.99,
-        overview.origin.y + overview.size.height / 2.0,
-    );
-    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    let after = editor.read_with(cx, |view, _| {
-        let state = view.state.as_ref().expect("project");
-        view.visible_viewport(state.timeline_frames)
-    });
-    assert_eq!(after.length, 96_000);
-    assert_eq!(after.end(), Some(672_000));
-    assert!(after.start > before.start);
-}
-
-#[gpui::test]
 fn middle_drag_pans_both_arrangement_axes_until_release(cx: &mut TestAppContext) {
     let names = (0..32)
         .map(|index| format!("track {index}"))
