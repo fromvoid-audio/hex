@@ -828,7 +828,7 @@ mod tests {
         );
     }
     #[test]
-    fn clock_free_tail_holds_last_validated_automation_controls() {
+    fn clock_free_tail_does_not_resurrect_removed_automation() {
         for rate in [8000, 96000] {
             for frozen in [false, true] {
                 let mut prepared = PreparedReverb::new(rate, enabled_settings()).unwrap();
@@ -879,8 +879,44 @@ mod tests {
                 output.fill([0.0; 2]);
                 expected.fill([0.0; 2]);
                 canonical.process_block(&mut output, &R);
-                canonical_reference.process_block(&mut expected, &R);
+                let absent = Values {
+                    ids: vec![],
+                    values: vec![],
+                };
+                canonical_reference
+                    .process_automation(&mut expected, &absent)
+                    .unwrap();
                 assert_eq!(output, expected);
+                // Identical authored values must be sampled again after an
+                // ordinary canonical render, even if their old cache matches.
+                let mut resumed = prepared.runtime();
+                resumed.copy_history_from(&canonical);
+                let mut resumed_reference = prepared.runtime();
+                resumed_reference.copy_history_from(&canonical_reference);
+                let mut resumed_output = signal(128);
+                let mut resumed_expected = resumed_output.clone();
+                resumed
+                    .process_automation(&mut resumed_output, &values)
+                    .unwrap();
+                resumed_reference
+                    .process_automation(&mut resumed_expected, &values)
+                    .unwrap();
+                assert_eq!(
+                    resumed_output, resumed_expected,
+                    "resumed rate {rate} frozen {frozen}"
+                );
+                // Removing this now-canonical device must retain its current
+                // controls, not resurrect the previously removed lanes.
+                canonical.begin_output_tail();
+                canonical_reference.begin_output_tail();
+                output.fill([0.0; 2]);
+                expected.fill([0.0; 2]);
+                canonical.process_block(&mut output, &R);
+                canonical_reference.process_block(&mut expected, &R);
+                assert_eq!(
+                    output, expected,
+                    "canonical tail rate {rate} frozen {frozen}"
+                );
                 source.reset();
                 output.fill([0.0; 2]);
                 source.process_block(&mut output, &R);
@@ -960,7 +996,7 @@ mod benchmark {
     #[ignore = "release-only targeted delivery microbenchmark"]
     fn output_delivery_cost_against_legacy_scalar_loop() {
         assert!(!black_box(cfg!(debug_assertions)), "run with --release");
-        for mode in 0..4 {
+        for mode in 0..5 {
             let source = Source {
                 ids: if mode < 2 {
                     vec![p::DRY_WET]
