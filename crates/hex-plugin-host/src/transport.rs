@@ -17,6 +17,7 @@
 type Frame = [f32; 2];
 use hex_lattice_contract::ForeignProcessorBinding as Binding;
 use rtrb::{Consumer, Producer, RingBuffer};
+use std::num::NonZeroU64;
 use std::sync::{
     Arc,
     atomic::{
@@ -437,11 +438,49 @@ pub struct WorkerRequest {
     pub authored: bool,
 }
 
+/// The one exact host operation applied at offset zero in a successful SDK
+/// exchange. This metadata is attached by the joining worker after native
+/// validation and never enters the native request/reply wire.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ManualParameterInput {
+    pub operation: NonZeroU64,
+    pub point: ParameterPoint,
+}
+
+/// Manual input carried by a sample in the accepted physical endpoint
+/// callback. The mix owner still decides final output/transport acceptance.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AcceptedManualParameter {
+    pub binding: Binding,
+    pub sequence: u64,
+    pub first_frame: u64,
+    pub callback_offset: u16,
+    pub input: ManualParameterInput,
+}
+
+#[derive(Clone, Copy)]
+struct OutputReply {
+    block: Block,
+    manual: Option<ManualParameterInput>,
+}
+
+impl OutputReply {
+    fn valid(&self, binding: Binding, quantum: u16, sequence: u64) -> Result<(), Fault> {
+        self.block.valid_reply(binding, quantum, sequence)?;
+        if self.manual.is_some_and(|manual| {
+            manual.point.frame != 0 || !parameters::valid(manual.point, usize::from(quantum))
+        }) {
+            return Err(Fault::InvalidParameters);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy)]
 struct State {
     position: u64,
     input: Block,
-    output: Block,
+    output: OutputReply,
     output_gap: bool,
     parameter_capacity: usize,
 }
@@ -449,6 +488,7 @@ struct State {
 struct Stage {
     state: State,
     request: Option<InputRequest>,
+    manual: Option<AcceptedManualParameter>,
     expected_frames: usize,
     staged_frames: usize,
     input_events: usize,
@@ -474,10 +514,11 @@ pub struct Callback {
     first_reply_sequence: u64,
     conceal_instrument_gap: bool,
     requests: Producer<InputRequest>,
-    replies: Consumer<Block>,
+    replies: Consumer<OutputReply>,
     revoked: Arc<Revocation>,
     state: State,
     staged: Option<Stage>,
+    accepted_manual: Option<AcceptedManualParameter>,
     // Only the prefix below the staged position is read. Rejection permanently
     // revokes the endpoint, so origin scratch does not need a rollback copy.
     authored_origins: AuthoredOrigins,
@@ -489,7 +530,7 @@ pub struct Worker {
     binding: Binding,
     quantum: u16,
     requests: Consumer<InputRequest>,
-    replies: Producer<Block>,
+    replies: Producer<OutputReply>,
     revoked: Arc<Revocation>,
     sequence: u64,
     in_flight: bool,
@@ -556,11 +597,15 @@ fn channel_with_policy(
             state: State {
                 position,
                 input: empty,
-                output: empty,
+                output: OutputReply {
+                    block: empty,
+                    manual: None,
+                },
                 output_gap: false,
                 parameter_capacity: MAX_PARAMETER_POINTS,
             },
             staged: None,
+            accepted_manual: None,
             authored_origins: AuthoredOrigins::default(),
         },
         Worker {
@@ -611,6 +656,7 @@ impl Callback {
     pub fn revoke(&mut self) {
         self.revoked.revoke();
         self.staged = None;
+        self.accepted_manual = None;
     }
     pub fn latency_frames(&self) -> u32 {
         u32::from(self.quantum) * 2
@@ -646,6 +692,7 @@ impl Callback {
     fn fail<T>(&mut self, fault: Fault) -> Result<T, Fault> {
         self.revoked.record_callback_fault(fault);
         self.staged = None;
+        self.accepted_manual = None;
         Err(fault)
     }
     /// Declare one actual physical callback, even when the graph renders it in
@@ -658,9 +705,11 @@ impl Callback {
         if self.staged.is_some() || frames == 0 || frames > usize::from(self.quantum) {
             return self.fail(Fault::Protocol);
         }
+        self.accepted_manual = None;
         self.staged = Some(Stage {
             state: self.state,
             request: None,
+            manual: None,
             expected_frames: frames,
             staged_frames: 0,
             input_events: 0,
@@ -901,6 +950,17 @@ impl Callback {
                         &mut stage.state,
                         sequence - 2,
                     )?;
+                    if let Some(input) = stage.state.output.manual {
+                        // Extent is at most one quantum, so only one reply
+                        // start can fall in the complete physical callback.
+                        stage.manual = Some(AcceptedManualParameter {
+                            binding: self.binding,
+                            sequence: stage.state.output.block.sequence,
+                            first_frame: stage.state.output.block.first_frame,
+                            callback_offset: (frame_offset + index) as u16,
+                            input,
+                        });
+                    }
                 }
             } else if origin.is_some() && self.authored_origins.frames[offset - 1].is_none() {
                 // Starting a new authored run after unavailable history needs
@@ -944,10 +1004,11 @@ impl Callback {
                 parameter_index += 1;
             }
             if sequence >= 2 {
-                *destination = stage.state.output.pcm[offset];
+                *destination = stage.state.output.block.pcm[offset];
                 for event in stage
                     .state
                     .output
+                    .block
                     .events
                     .as_slice()
                     .iter()
@@ -960,6 +1021,7 @@ impl Callback {
                 for point in stage
                     .state
                     .output
+                    .block
                     .parameters
                     .as_slice()
                     .iter()
@@ -1037,12 +1099,21 @@ impl Callback {
             stage.state.parameter_capacity = MAX_PARAMETER_POINTS;
         }
         self.state = stage.state;
+        self.accepted_manual = stage.manual;
         Ok(())
+    }
+
+    /// Consume the exact accepted point once, before the next physical
+    /// callback. An unaccepted or revoked endpoint never exposes a marker.
+    pub fn take_accepted_manual_parameter(&mut self) -> Option<AcceptedManualParameter> {
+        self.accepted_manual
+            .take()
+            .filter(|_| !self.revoked.is_revoked())
     }
 }
 
 fn stage_reply(
-    replies: &mut Consumer<Block>,
+    replies: &mut Consumer<OutputReply>,
     revoked: &Revocation,
     binding: Binding,
     quantum: u16,
@@ -1050,19 +1121,19 @@ fn stage_reply(
     state: &mut State,
     expected: u64,
 ) -> Result<(), Fault> {
-    let validate = |reply: &Block, sequence| {
-        if conceal_instrument_gap && !reply.events.as_slice().is_empty() {
+    let validate = |reply: &OutputReply, sequence| {
+        if conceal_instrument_gap && !reply.block.events.as_slice().is_empty() {
             return Err(Fault::InvalidEvents);
         }
-        reply.valid_reply(binding, quantum, sequence)
+        reply.valid(binding, quantum, sequence)
     };
     let mut reply = replies.pop();
     if state.output_gap
         && let Ok(late) = &reply
-        && expected.checked_sub(1) == Some(late.sequence)
+        && expected.checked_sub(1) == Some(late.block.sequence)
     {
         // At most one concealed block may precede the sample-aligned reply.
-        validate(late, late.sequence)?;
+        validate(late, late.block.sequence)?;
         reply = replies.pop();
     }
     match reply {
@@ -1072,7 +1143,10 @@ fn stage_reply(
             state.output_gap = false;
         }
         Err(_) if conceal_instrument_gap && !state.output_gap => {
-            state.output = Block::empty(binding, quantum);
+            state.output = OutputReply {
+                block: Block::empty(binding, quantum),
+                manual: None,
+            };
             state.output_gap = true;
         }
         Err(_) => {
@@ -1151,6 +1225,16 @@ impl Worker {
     /// Publish exactly one matching reply after the isolated processor finishes.
     /// Revocation discards a late completion; it cannot undo DSP already run.
     pub fn complete(&mut self, reply: Block) -> Result<(), Fault> {
+        self.complete_with_manual_parameter(reply, None)
+    }
+
+    /// Attach a validated offset-zero host operation to this exact successful
+    /// PCM reply. Callers use the original joining worker's input receipt.
+    pub fn complete_with_manual_parameter(
+        &mut self,
+        reply: Block,
+        manual: Option<ManualParameterInput>,
+    ) -> Result<(), Fault> {
         if self.revoked.is_revoked() {
             return Err(Fault::Revoked);
         }
@@ -1160,7 +1244,11 @@ impl Worker {
         self.revoked
             .processed_prefix
             .store(self.sequence.saturating_add(1), Release);
-        if let Err(fault) = reply.valid_reply(self.binding, self.quantum, self.sequence) {
+        let reply = OutputReply {
+            block: reply,
+            manual,
+        };
+        if let Err(fault) = reply.valid(self.binding, self.quantum, self.sequence) {
             return self.fail(fault);
         }
         let Some(next) = self.sequence.checked_add(1) else {

@@ -588,26 +588,35 @@ impl State {
         work.input = Some((block.sequence, block.first_frame));
         Ok(Some(point))
     }
-    pub(super) fn complete_parameter_change(&mut self, reply: &Block) -> Result<(), Fault> {
-        if let Some((sequence, first_frame)) = self.parameter_change.input {
-            if sequence != reply.sequence || first_frame != reply.first_frame {
-                return Err(Fault::Protocol);
-            }
-            self.parameter_change.result = Some(if self.parameter_change.releasing {
-                Terminal::Released {
-                    sequence,
-                    first_frame,
-                }
-            } else {
-                Terminal::Processed(ProcessedParameterChange {
-                    point: self.parameter_change.point,
-                    sequence,
-                    first_frame,
-                })
-            });
-            self.parameter_change.input = None;
+    pub(super) fn complete_parameter_change(
+        &mut self,
+        reply: &Block,
+    ) -> Result<Option<ManualParameterInput>, Fault> {
+        let work = &mut self.parameter_change;
+        let Some((sequence, first_frame)) = work.input.take() else {
+            return Ok(None);
+        };
+        if sequence != reply.sequence || first_frame != reply.first_frame {
+            return Err(Fault::Protocol);
         }
-        Ok(())
+        if work.releasing {
+            work.result = Some(Terminal::Released {
+                sequence,
+                first_frame,
+            });
+            return Ok(None);
+        }
+        let point = work.point;
+        work.result = Some(Terminal::Processed(ProcessedParameterChange {
+            point,
+            sequence,
+            first_frame,
+        }));
+        let operation = work
+            .ordinal
+            .and_then(std::num::NonZeroU64::new)
+            .ok_or(Fault::Protocol)?;
+        Ok(Some(ManualParameterInput { operation, point }))
     }
     pub(super) fn publish_parameter_change(&mut self, signal: &Signal) -> Result<(), Fault> {
         let Some(result) = self.parameter_change.result else {

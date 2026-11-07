@@ -413,8 +413,10 @@ fn transport_runner_with_setup(
                                 // revokes the transport before callback publication.
                                 // The live terminal is still published only below.
                                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                                state.complete_parameter_change(&reply)?;
-                                state.worker.complete(reply)?;
+                                let manual = state.complete_parameter_change(&reply)?;
+                                #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                                let manual = None;
+                                state.worker.complete_with_manual_parameter(reply, manual)?;
                                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                                 state.observe_parameter_reply(&reply)?;
                                 Ok(())
