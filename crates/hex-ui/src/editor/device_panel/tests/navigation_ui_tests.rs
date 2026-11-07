@@ -487,6 +487,11 @@ fn workspace_four_returns_hidden_add_menu_does_not_block_tab(cx: &mut TestAppCon
         assert!(v.device_panel.add_menu_open);
     });
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
+    // Cancel the visible picker before using another control. Hidden-state
+    // coverage below deliberately installs the stale flag, independent of UI placement.
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-add-menu").is_none());
     let toggle = visual
         .debug_bounds("device-panel-bottom-toggle")
         .unwrap()
@@ -495,6 +500,12 @@ fn workspace_four_returns_hidden_add_menu_does_not_block_tab(cx: &mut TestAppCon
     visual.run_until_parked();
     assert!(visual.debug_bounds("device-add-menu").is_none());
     editor.read_with(&visual, |v, _| assert!(!v.clip_view_open));
+    editor.update(&mut visual, |v, cx| {
+        v.device_panel.add_menu_open = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-add-menu").is_none());
     visual.update(|window, cx| editor.read_with(cx, |v, _| assert!(v.focus.is_focused(window))));
     visual.simulate_keystrokes("tab");
     editor.read_with(&visual, |v, _| {
@@ -554,6 +565,9 @@ fn workspace_adb3_returns_removed_last_track_menu_does_not_own_tab(cx: &mut Test
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.mode, crate::editor::EditorMode::Arrangement)
     });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-add-menu").is_none());
     let remove = visual
         .debug_bounds("remove selected track")
         .unwrap()
@@ -565,6 +579,13 @@ fn workspace_adb3_returns_removed_last_track_menu_does_not_own_tab(cx: &mut Test
     visual.run_until_parked();
     assert!(visual.debug_bounds("device-add-menu").is_none());
     assert!(visual.debug_bounds("device-add-toggle").is_none());
+    // Preserve the legacy stale-menu regression after the rendered owner is gone.
+    editor.update(&mut visual, |v, cx| {
+        v.device_panel.add_menu_open = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-add-menu").is_none());
     let before = editor.read_with(&visual, |v, _| {
         assert!(v.state.as_ref().unwrap().project.tracks().is_empty());
         assert!(v.selected_track.is_none());
