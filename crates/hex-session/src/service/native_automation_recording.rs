@@ -1,8 +1,11 @@
-//! Single control-owned native touch take. The audio client supplies delivery
+//! Single control-owned device touch take. The audio client supplies delivery
 //! receipts and retains a batch until Session acknowledges its admission.
 //! The disk worker seals the file independently of callback and UI lifetimes.
 use super::Session;
-use super::automation_draft::{DeviceDraftInput, DraftProvenance, DraftWorker, DraftWorkerOutcome};
+use super::automation_draft::{
+    DeviceDraftInput, DraftProvenance, DraftWorker, DraftWorkerOutcome, Vst3CaptureTarget,
+    Vst3ParameterApplication,
+};
 use super::automation_take::{CompletedAutomationTake, prepare_device_take_adoption_on_control};
 use hex_engine::{AudioSourceContext, NativeParameterApplication, NativeParameterInputTarget};
 use hex_storage::automation_draft::{
@@ -17,13 +20,33 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+/// Closed capture kinds share one exclusive draft/worker and adoption owner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NativeAutomationTakeScope {
-    pub target: NativeParameterInputTarget,
+pub enum DeviceCaptureTarget {
+    Native(NativeParameterInputTarget),
+    Vst3(Vst3CaptureTarget),
+}
+impl DeviceCaptureTarget {
+    pub fn native(self) -> Option<NativeParameterInputTarget> {
+        match self {
+            Self::Native(target) => Some(target),
+            Self::Vst3(_) => None,
+        }
+    }
+}
+impl From<NativeParameterInputTarget> for DeviceCaptureTarget {
+    fn from(target: NativeParameterInputTarget) -> Self {
+        Self::Native(target)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeviceAutomationTakeScope {
+    pub target: DeviceCaptureTarget,
     pub stamp: DraftProvenance,
 }
 
-impl NativeAutomationTakeScope {
+impl DeviceAutomationTakeScope {
     pub(super) fn context(self) -> AudioSourceContext {
         AudioSourceContext {
             project_generation: self.stamp.project_generation,
@@ -35,8 +58,8 @@ impl NativeAutomationTakeScope {
 /// Copied observation of the applied and playing resident output. The
 /// callback still checks the actual source and epoch when admitting Begin.
 #[derive(Clone, Copy)]
-pub struct NativeAutomationSource {
-    pub target: NativeParameterInputTarget,
+pub struct DeviceAutomationSource {
+    pub target: DeviceCaptureTarget,
     pub sample_rate: u32,
     pub output_identity: u64,
     pub audio_revision: u64,
@@ -44,8 +67,8 @@ pub struct NativeAutomationSource {
     pub section_loop: Option<hex_project::LoopRegion>,
 }
 
-impl NativeAutomationSource {
-    fn matches(self, scope: NativeAutomationTakeScope) -> bool {
+impl DeviceAutomationSource {
+    fn matches(self, scope: DeviceAutomationTakeScope) -> bool {
         self.target == scope.target
             && self.sample_rate == scope.stamp.sample_rate
             && self.output_identity == scope.stamp.output_identity
@@ -55,10 +78,12 @@ impl NativeAutomationSource {
 }
 
 #[derive(Debug)]
-pub enum NativeAutomationTakeAction {
+pub enum DeviceAutomationTakeAction {
     Begin,
     Append(Arc<[(u64, NativeParameterApplication)]>),
     Finish(NativeParameterApplication),
+    AppendVst3(Arc<[(u64, Vst3ParameterApplication)]>),
+    FinishVst3(Vst3ParameterApplication),
     Abort(DraftAbortReason),
     Interrupt,
     /// Poll without waiting for disk. A sealed matching take commits during
@@ -67,7 +92,7 @@ pub enum NativeAutomationTakeAction {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum NativeAutomationTakeProgress {
+pub enum DeviceAutomationTakeProgress {
     Started,
     Appended,
     Backpressured,
@@ -78,9 +103,9 @@ pub enum NativeAutomationTakeProgress {
     Refused,
 }
 
-pub struct NativeAutomationTakeCompletion {
+pub struct DeviceAutomationTakeCompletion {
     pub request_id: u64,
-    pub progress: NativeAutomationTakeProgress,
+    pub progress: DeviceAutomationTakeProgress,
 }
 
 #[derive(Default)]
@@ -92,13 +117,13 @@ pub(super) struct Lane {
 }
 
 struct Active {
-    scope: NativeAutomationTakeScope,
+    scope: DeviceAutomationTakeScope,
     input: DeviceDraftInput,
     worker: DraftWorker,
 }
 
 pub(super) enum Step {
-    Progress(NativeAutomationTakeProgress),
+    Progress(DeviceAutomationTakeProgress),
     Commit(Box<hex_project::Command>, PathBuf),
 }
 
@@ -111,21 +136,21 @@ impl Lane {
         &mut self,
         session: &Session,
         document_base: Option<&Path>,
-        scope: NativeAutomationTakeScope,
-        source: NativeAutomationSource,
+        scope: DeviceAutomationTakeScope,
+        source: DeviceAutomationSource,
         directory: &Path,
     ) -> Result<Step, String> {
         if let Some(failed) = self.failed.as_ref() {
             return Err(retained_error(
                 &failed.path,
-                "recover the previous native automation take first",
+                "recover the previous device automation take first",
             ));
         }
         if self.active.is_some() {
-            return Err("a native automation take already owns the input".into());
+            return Err("a device automation take already owns the input".into());
         }
         if !source.matches(scope) || source.sample_rate != session.project().sample_rate() {
-            return Err("native automation source or transport changed".into());
+            return Err("device automation source or transport changed".into());
         }
         let clock = CaptureClock {
             sample_rate: source.sample_rate,
@@ -137,20 +162,30 @@ impl Lane {
             }),
         };
         let path = draft_path(directory)?;
-        let (input, worker) = DeviceDraftInput::start_on_control(
-            session,
-            document_base,
-            path,
-            scope.target,
-            scope.stamp,
-            clock,
-        )?;
+        let (input, worker) = match scope.target {
+            DeviceCaptureTarget::Native(target) => DeviceDraftInput::start_on_control(
+                session,
+                document_base,
+                path,
+                target,
+                scope.stamp,
+                clock,
+            ),
+            DeviceCaptureTarget::Vst3(target) => DeviceDraftInput::start_vst3_on_control(
+                session,
+                document_base,
+                path,
+                target,
+                scope.stamp,
+                clock,
+            ),
+        }?;
         self.active = Some(Active {
             scope,
             input,
             worker,
         });
-        Ok(Step::Progress(NativeAutomationTakeProgress::Started))
+        Ok(Step::Progress(DeviceAutomationTakeProgress::Started))
     }
 
     pub(super) fn receive(
@@ -158,26 +193,33 @@ impl Lane {
         session: &Session,
         document_base: Option<&Path>,
         current: AudioSourceContext,
-        scope: NativeAutomationTakeScope,
-        action: &NativeAutomationTakeAction,
+        scope: DeviceAutomationTakeScope,
+        action: &DeviceAutomationTakeAction,
     ) -> Result<Step, String> {
-        use NativeAutomationTakeProgress as Progress;
+        use DeviceAutomationTakeProgress as Progress;
         let active = self
             .active
             .as_mut()
-            .ok_or("native automation take is no longer active")?;
+            .ok_or("device automation take is no longer active")?;
         if active.scope != scope {
-            return Err("native automation receipt belongs to another take".into());
+            return Err("device automation receipt belongs to another take".into());
         }
         while active.input.poll().is_some() {}
         let progress = match action {
-            NativeAutomationTakeAction::Begin => {
-                return Err("native automation take is already active".into());
+            DeviceAutomationTakeAction::Begin => {
+                return Err("device automation take is already active".into());
             }
-            NativeAutomationTakeAction::Append(batch) => {
+            DeviceAutomationTakeAction::Append(batch) => {
                 if active
                     .input
-                    .append_delivered(scope.target, scope.stamp, batch)?
+                    .append_delivered(
+                        scope
+                            .target
+                            .native()
+                            .ok_or("native applications require a native take")?,
+                        scope.stamp,
+                        batch,
+                    )?
                     .is_some()
                 {
                     Progress::Appended
@@ -185,23 +227,58 @@ impl Lane {
                     Progress::Backpressured
                 }
             }
-            NativeAutomationTakeAction::Finish(application) => {
-                active
-                    .input
-                    .finish_delivered(scope.target, scope.stamp, *application)?;
+            DeviceAutomationTakeAction::Finish(application) => {
+                active.input.finish_delivered(
+                    scope
+                        .target
+                        .native()
+                        .ok_or("native restoration requires a native take")?,
+                    scope.stamp,
+                    *application,
+                )?;
                 Progress::Sealing
             }
-            NativeAutomationTakeAction::Abort(reason) => {
+            DeviceAutomationTakeAction::AppendVst3(batch) => {
+                let DeviceCaptureTarget::Vst3(target) = scope.target else {
+                    return Err("vst3 applications require a vst3 take".into());
+                };
+                if active
+                    .input
+                    .append_vst3_delivered(target, scope.stamp, batch)?
+                    .is_some()
+                {
+                    Progress::Appended
+                } else {
+                    Progress::Backpressured
+                }
+            }
+            DeviceAutomationTakeAction::FinishVst3(application) => {
+                let DeviceCaptureTarget::Vst3(target) = scope.target else {
+                    return Err("vst3 restoration requires a vst3 take".into());
+                };
                 active
                     .input
-                    .abort_delivered(scope.target, scope.stamp, *reason)?;
+                    .finish_vst3_delivered(target, scope.stamp, *application)?;
                 Progress::Sealing
             }
-            NativeAutomationTakeAction::Interrupt => {
+            DeviceAutomationTakeAction::Abort(reason) => {
+                match scope.target {
+                    DeviceCaptureTarget::Native(target) => {
+                        active.input.abort_delivered(target, scope.stamp, *reason)?
+                    }
+                    DeviceCaptureTarget::Vst3(target) => {
+                        active
+                            .input
+                            .abort_vst3_delivered(target, scope.stamp, *reason)?
+                    }
+                }
+                Progress::Sealing
+            }
+            DeviceAutomationTakeAction::Interrupt => {
                 active.worker.request_interruption_on_control()?;
                 Progress::Sealing
             }
-            NativeAutomationTakeAction::Poll => {
+            DeviceAutomationTakeAction::Poll => {
                 if active.input.progress().failed {
                     // A failed append has no natural terminal until its
                     // owner closes the input. Preserve its original batches.
@@ -232,7 +309,7 @@ impl Lane {
         session: &Session,
         document_base: Option<&Path>,
         current: AudioSourceContext,
-        scope: NativeAutomationTakeScope,
+        scope: DeviceAutomationTakeScope,
         outcome: DraftWorkerOutcome,
     ) -> Result<Step, String> {
         if let Some(reason) = outcome.failure.as_deref() {
@@ -244,7 +321,7 @@ impl Lane {
             || outcome.admitted_events == 0
             || current != scope.context()
         {
-            return Ok(Step::Progress(NativeAutomationTakeProgress::Retained(
+            return Ok(Step::Progress(DeviceAutomationTakeProgress::Retained(
                 outcome.path,
             )));
         }
@@ -287,7 +364,10 @@ fn draft_path(directory: &Path) -> Result<PathBuf, String> {
         .as_nanos();
     let serial = NEXT.fetch_add(1, Ordering::Relaxed);
     Ok(directory.join(format!(
-        "native-{}-{time}-{serial}.hex-automation-draft",
+        "device-{}-{time}-{serial}.hex-automation-draft",
         std::process::id()
     )))
 }
+
+#[cfg(test)]
+mod tests;
