@@ -157,6 +157,59 @@ impl SourceCapabilities {
         Ok((source, bases))
     }
 
+    pub(super) fn from_canonical(
+        class: hex_plugin_state::ClassId,
+        values: &CanonicalParameterBases,
+        steps: &[u32; MAX_PARAMETER_POINTS],
+    ) -> Result<Self, &'static str> {
+        let mut result = Self {
+            class: Some(class),
+            ..Self::default()
+        };
+        let mut ended = false;
+        for (value, &steps) in values.iter().zip(steps) {
+            let Some((id, bits)) = *value else {
+                ended = true;
+                continue;
+            };
+            let normalized = f64::from_bits(bits);
+            if ended
+                || !normalized.is_finite()
+                || !(0.0..=1.0).contains(&normalized)
+                || result.parameters[..result.len]
+                    .last()
+                    .is_some_and(|old| old.id >= id)
+            {
+                return Err("native canonical parameter metadata differs");
+            }
+            *result
+                .parameters
+                .get_mut(result.len)
+                .ok_or("native canonical parameter capacity exceeded")? =
+                hex_lattice::ForeignParameterCapability {
+                    id,
+                    steps,
+                    normalized_base_bits: bits,
+                };
+            result.len += 1;
+        }
+        Ok(result)
+    }
+
+    pub(super) fn parameters(&self) -> &[hex_lattice::ForeignParameterCapability] {
+        &self.parameters[..self.len]
+    }
+
+    pub(super) fn same_parameters(&self, other: &Self) -> bool {
+        self.class == other.class
+            && self.len == other.len
+            && self
+                .parameters()
+                .iter()
+                .zip(other.parameters())
+                .all(|(a, b)| a.id == b.id && a.steps == b.steps)
+    }
+
     pub(super) fn is_armed(&self) -> bool {
         self.class.is_some()
     }
@@ -182,6 +235,35 @@ impl SourceCapabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_metadata_keeps_exact_bases_and_requires_complete_ordered_values() {
+        let class = hex_plugin_state::ClassId::new([3; 16]).unwrap();
+        let mut values = [None; MAX_PARAMETER_POINTS];
+        let steps = [0; MAX_PARAMETER_POINTS];
+        let precise = f64::from_bits(0x3fe0000000000001);
+        values[0] = Some((0, precise.to_bits()));
+        values[1] = Some((7, 0.25f64.to_bits()));
+        let first = SourceCapabilities::from_canonical(class, &values, &steps).unwrap();
+        assert_eq!(
+            first.parameters()[0].normalized_base_bits,
+            precise.to_bits()
+        );
+        values[1] = Some((7, 0.75f64.to_bits()));
+        let changed = SourceCapabilities::from_canonical(class, &values, &steps).unwrap();
+        assert!(first.same_parameters(&changed));
+        let mut changed_steps = steps;
+        changed_steps[1] = 3;
+        assert!(!first.same_parameters(
+            &SourceCapabilities::from_canonical(class, &values, &changed_steps).unwrap()
+        ));
+        values[0] = None;
+        assert!(SourceCapabilities::from_canonical(class, &values, &steps).is_err());
+        values[0] = Some((7, precise.to_bits()));
+        assert!(SourceCapabilities::from_canonical(class, &values, &steps).is_err());
+        values[0] = Some((0, f64::NAN.to_bits()));
+        assert!(SourceCapabilities::from_canonical(class, &values, &steps).is_err());
+    }
 
     #[test]
     fn saved_targets_form_one_bounded_class_selection_with_raw_zero() {

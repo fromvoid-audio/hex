@@ -336,7 +336,7 @@ impl NativeEffectReference<'_> {
             && node
                 .configuration
                 .as_deref()
-                .is_some_and(|state| state.processing_eq(&config.state))
+                .is_some_and(|state| config.matches_processing_state(state))
     }
     pub(crate) fn binding(&self) -> Binding {
         self.configuration().binding

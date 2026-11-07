@@ -299,6 +299,28 @@ impl Hosting {
         })
     }
 
+    /// Borrow isolated canonical facts only through this synchronous compiler
+    /// call. Facts grant no worker/endpoint custody or graph publication.
+    pub fn prepare_with_canonical_bases_on_control(
+        output: &PublicationControl,
+        bindings: &[Binding],
+        unavailable: &[super::UnavailableEffect<'_>],
+        canonical: &[CapturedCanonicalBases],
+        prepare: &mut dyn FnMut(
+            &AudioCandidateEffects<'_, '_>,
+        )
+            -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<hex_engine::PreparedRevision, String> {
+        output.with_native_effect_definition(bindings, |definition| {
+            let definition = definition
+                .including_unavailable(unavailable)
+                .and_then(|definition| definition.including_canonical_bases(canonical))
+                .map_err(|error| error.to_string())?;
+            AudioCandidateEffects::with_host_definitions(&[&definition], prepare)
+                .map_err(|error| error.to_string())
+        })
+    }
+
     /// Preserve validated opaque devices without claiming native processing.
     /// The prepared graph contains identity placeholders, not foreign factories.
     /// Callers must expose their absence through the applied graph observation.
