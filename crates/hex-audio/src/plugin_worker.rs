@@ -16,7 +16,10 @@ mod capture;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod controller;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub use controller::{NativeWorkerControllerProgress, NativeWorkerControllerQuery};
+pub use controller::{
+    NativeWorkerAuthoredParameterProgress, NativeWorkerControllerProgress,
+    NativeWorkerControllerQuery,
+};
 pub use hex_plugin_host::protocol::{ControllerRequest, ParameterPageQuery, PluginEditorState};
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod edits;
