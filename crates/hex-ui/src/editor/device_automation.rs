@@ -1284,9 +1284,11 @@ impl EditorView {
         let canonical = state
             .project
             .device(target.device)
-            .and_then(|device| device.automation_target(target.kind))
-            .map_or(&[][..], |lane| lane.points.as_slice());
-        if canonical == points {
+            .and_then(|device| device.automation_target(target.kind));
+        let unchanged = canonical.map_or(points.is_empty(), |lane| {
+            lane.points == points && (!points.is_empty() || lane.touch.is_empty())
+        });
+        if unchanged {
             return;
         }
         let revision = state.revision;
