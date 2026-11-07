@@ -1309,12 +1309,14 @@ fn assert_instrument_takeover_refused(
         .control
         .output_identity()
         .unwrap();
-    harness.run(Request::QueryPluginParameters(PluginParameterQuery {
-        context,
-        device,
-        output_identity: output,
-        request_id: 2,
-    }));
+    harness.run(Request::QueryPluginParameters(
+        hex_session::service::PluginParameterQuery {
+            context,
+            device,
+            output_identity: output,
+            request_id: 2,
+        },
+    ));
     let rows = harness.next().plugin_parameters.unwrap().rows.unwrap();
     let current = rows.iter().find(|row| row.id == parameter).unwrap();
     let mut client = hex_session::device_gesture::GestureClient::default();
