@@ -1875,19 +1875,23 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         let bounds = visual.debug_bounds(row).expect("operator row");
         assert_eq!(bounds.size.height, px(40.0));
         let level_id = operator * 3 + 2;
-        let knob = Box::leak(
-            format!("device-{}-parameter-{level_id}-knob", instrument_id.value()).into_boxed_str(),
+        let slider = Box::leak(
+            format!(
+                "device-{}-parameter-{level_id}-slider",
+                instrument_id.value()
+            )
+            .into_boxed_str(),
         );
-        let bounds = visual.debug_bounds(knob).expect("shell MicroDial");
+        let bounds = visual.debug_bounds(slider).expect("filled level slider");
+        assert_eq!(bounds.size, size(px(58.0), px(14.0)));
         assert!(
-            bounds.size.width >= px(18.0),
-            "MicroDial ring width: {:?}",
-            bounds.size
-        );
-        assert!(
-            bounds.size.height >= px(18.0),
-            "MicroDial ring height: {:?}",
-            bounds.size
+            visual
+                .debug_bounds(Box::leak(
+                    format!("device-{}-parameter-{level_id}-knob", instrument_id.value())
+                        .into_boxed_str(),
+                ))
+                .is_none(),
+            "level no longer reserves a rotary control"
         );
     }
     for parameter in [1, 2, 4, 5, 7, 8, 10, 11] {
@@ -2698,9 +2702,10 @@ fn operator_shell_controls_select_their_oscillator_without_losing_the_edit(
         let parameter = selected as u32 * 3 + 2;
         let knob = visual
             .debug_bounds(Box::leak(
-                format!("device-{}-parameter-{parameter}-knob", operator.value()).into_boxed_str(),
+                format!("device-{}-parameter-{parameter}-slider", operator.value())
+                    .into_boxed_str(),
             ))
-            .expect("Operator shell level knob");
+            .expect("Operator shell level slider");
         visual.simulate_click(knob.center(), Modifiers::default());
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
@@ -2730,9 +2735,9 @@ fn operator_shell_controls_select_their_oscillator_without_losing_the_edit(
     enter_typed_value(&mut visual, operator, phase_a, "invalid");
     let d_level = visual
         .debug_bounds(Box::leak(
-            format!("device-{}-parameter-11-knob", operator.value()).into_boxed_str(),
+            format!("device-{}-parameter-11-slider", operator.value()).into_boxed_str(),
         ))
-        .expect("operator d level knob");
+        .expect("operator d level slider");
     visual.simulate_click(d_level.center(), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, cx| {
@@ -2761,9 +2766,9 @@ fn operator_shell_controls_select_their_oscillator_without_losing_the_edit(
 
     let d_level = visual
         .debug_bounds(Box::leak(
-            format!("device-{}-parameter-11-knob", operator.value()).into_boxed_str(),
+            format!("device-{}-parameter-11-slider", operator.value()).into_boxed_str(),
         ))
-        .expect("operator d level knob");
+        .expect("operator d level slider");
     let start = point(d_level.center().x, d_level.center().y);
     let moved = point(start.x, start.y - px(30.0));
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
@@ -2818,10 +2823,12 @@ fn operator_shell_controls_select_their_oscillator_without_losing_the_edit(
     });
     let b_level = visual
         .debug_bounds(Box::leak(
-            format!("device-{}-parameter-5-knob", operator.value()).into_boxed_str(),
+            format!("device-{}-parameter-5-slider", operator.value()).into_boxed_str(),
         ))
-        .expect("operator b level knob");
+        .expect("operator b level slider");
     visual.simulate_click(b_level.center(), Modifiers::default());
+    // A filled field opens text entry on click; return to numeric stepping.
+    visual.simulate_keystrokes("escape");
     editor.update(cx, |view, cx| {
         view.device_panel.operator_pages.insert(
             operator,
@@ -3002,7 +3009,14 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                         .into_boxed_str(),
                 );
                 let bounds = visual.debug_bounds(field).expect("fixed-mode control");
-                assert_eq!(bounds.size.width, px(hex_widgets::MICRO_DIAL_WIDTH));
+                assert_eq!(
+                    bounds.size.width,
+                    px(if parameter == level_id {
+                        60.0
+                    } else {
+                        hex_widgets::MICRO_DIAL_WIDTH
+                    })
+                );
                 assert!(bounds.origin.x >= row_bounds.origin.x + px(4.0));
                 assert!(
                     bounds.origin.x + bounds.size.width

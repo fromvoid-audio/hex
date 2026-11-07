@@ -64,6 +64,20 @@ fn catalog_fixture_track_return_labels_reuse_production_geometry_in_bounded_view
             assert_eq!(body.size.height, px(device_composition::BODY_HEIGHT));
             assert_eq!(body.origin.x, header.right());
             assert_eq!(body.origin.y, header.origin.y);
+            if entry == Entry::Vector {
+                for operator in 0..4 {
+                    let index = operator * 3 + 2;
+                    let slider = visual
+                        .debug_bounds(number_id(entry, index, "-slider"))
+                        .unwrap();
+                    assert_eq!(slider.size, size(px(58.0), px(14.0)));
+                    assert!(
+                        visual
+                            .debug_bounds(number_id(entry, index, "-knob"))
+                            .is_none()
+                    );
+                }
+            }
             assert_eq!(
                 body.bottom() + px(hex_widgets::DEVICE_FRAME_BORDER_WIDTH),
                 card.bottom()

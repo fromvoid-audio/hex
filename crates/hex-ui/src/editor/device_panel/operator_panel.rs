@@ -290,7 +290,7 @@ fn operator_row(
         parameters,
         operator,
         id(base + 1),
-        ControlPresentation::MicroDial,
+        ControlPresentation::FilledSlider,
         Some("level"),
     );
     let (section_focus, focused) =
@@ -312,7 +312,7 @@ fn operator_row(
         .items_center()
         .justify_between()
         .gap(px(2.0))
-        .pr(px(14.0))
+        .pr(px(18.0))
         .relative()
         .track_focus(&section_focus)
         .child(primary);
@@ -330,16 +330,24 @@ fn operator_row(
     );
     row = row.child(
         div()
-            .w(px(30.0))
+            .w(px(60.0))
             .h(px(40.0))
             .flex()
             .flex_col()
             .items_center()
-            .gap(px(5.0))
-            .child(section_title("fixed"))
-            .child(fixed_control),
+            .justify_center()
+            .gap(px(2.0))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(section_title("fixed"))
+                    .child(fixed_control),
+            )
+            .child(level),
     );
-    row = row.child(level).child(
+    row = row.child(
         operator_label(view, cx, device, parameters, operator, selected)
             .absolute()
             .right(px(4.0))

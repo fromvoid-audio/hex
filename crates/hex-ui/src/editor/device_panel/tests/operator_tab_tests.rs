@@ -557,7 +557,7 @@ fn operator_shell_controls_precede_selectors_and_sections_follow_child_focus(
         let level = bounds(
             &mut visual,
             format!(
-                "device-{}-parameter-{}-knob",
+                "device-{}-parameter-{}-slider",
                 device.value(),
                 operator * 3 + 2
             ),
