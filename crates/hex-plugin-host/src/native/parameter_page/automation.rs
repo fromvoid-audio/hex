@@ -2,6 +2,10 @@
 use super::*;
 use protocol::{MAX_CONTROLLER_PARAMETERS, ParameterPage};
 
+mod extension;
+pub use extension::AuthoredParameterExtensionProgress;
+pub(super) use extension::AuthoredTarget;
+
 /// Capability observed during one coherent enumeration of the exact source.
 /// The processing worker rechecks the selected capability; the page revision
 /// may advance independently as normalized values change.
@@ -12,9 +16,27 @@ pub struct AuthoredParameterMetadata {
     class: ClassId,
     revision: u64,
     parameters: Vec<Parameter>,
+    extension_limit: Option<usize>,
 }
 
 impl AuthoredParameterMetadata {
+    pub(in crate::native) fn retain_reserved_capacity(
+        &mut self,
+        previous: Option<&Self>,
+    ) -> Result<()> {
+        let Some(limit) = previous.and_then(|previous| previous.extension_limit) else {
+            return Ok(());
+        };
+        if self.parameters.len() > limit {
+            return Err(Error::Protocol("authored parameter reservation exceeded"));
+        }
+        self.parameters
+            .try_reserve_exact(limit - self.parameters.len())
+            .map_err(|_| Error::Protocol("authored parameter reservation unavailable"))?;
+        self.extension_limit = Some(limit);
+        Ok(())
+    }
+
     pub(in crate::native) fn backing_data_bytes(&self) -> Option<usize> {
         self.parameters
             .capacity()
@@ -189,7 +211,7 @@ impl Selection {
         if let Some(previous) = instance
             .authored_parameter_metadata
             .as_ref()
-            .filter(|previous| previous.retains_lease(instance))
+            .filter(|previous| previous.retains_lease(instance) && !previous.parameters.is_empty())
         {
             self.retain_initial_values(previous);
         }
@@ -199,6 +221,7 @@ impl Selection {
             class: instance.config.identity.class,
             revision,
             parameters: self.parameters,
+            extension_limit: None,
         })
     }
 }
@@ -253,6 +276,7 @@ mod tests {
             class,
             revision: 1,
             parameters: selection.parameters,
+            extension_limit: None,
         };
         assert_eq!(metadata.initial_normalized(0), Some(value));
         assert_eq!(metadata.initial_normalized(7), None);

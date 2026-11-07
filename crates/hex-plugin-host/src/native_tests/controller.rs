@@ -1,6 +1,9 @@
 //! Actual no-editor SDK controller data; no native Hex application is started.
 use super::*;
 
+#[path = "controller/extension.rs"]
+mod extension;
+
 fn wait_controller_held(case: &Case) {
     let until = Instant::now() + Duration::from_secs(2);
     while case.observation().is_none_or(|values| values[0] != 26) {

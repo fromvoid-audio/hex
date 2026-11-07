@@ -5,7 +5,7 @@ mod epoch;
 mod live_capture;
 mod parameter_page;
 pub use epoch::Quiescent;
-pub use parameter_page::AuthoredParameterMetadata;
+pub use parameter_page::{AuthoredParameterExtensionProgress, AuthoredParameterMetadata};
 mod preparation_failure;
 pub use preparation_failure::{PreparationDisposal, PreparationFailure};
 mod storage;
@@ -678,12 +678,13 @@ impl Prepared {
     /// the caller. A renewed epoch must install a new observation.
     pub fn arm_authored_parameter_metadata_on_control(
         &mut self,
-        metadata: AuthoredParameterMetadata,
+        mut metadata: AuthoredParameterMetadata,
     ) -> Result<()> {
         self.require_live_epoch()?;
         if !metadata.matches(self) {
             return Err(Error::Protocol("authored parameter source differs"));
         }
+        metadata.retain_reserved_capacity(self.authored_parameter_metadata.as_ref())?;
         self.authored_parameter_metadata = Some(metadata);
         Ok(())
     }
