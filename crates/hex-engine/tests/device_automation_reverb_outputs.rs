@@ -169,7 +169,17 @@ fn reverb_outputs_match_independent_gain_and_width_oracles_on_all_effect_owners(
                 }],
             })
             .unwrap();
-        for parameter in [p::LO_CUT, p::HI_CUT, p::SPIN, p::HIGH, p::LOW, p::CHORUS] {
+        for parameter in [
+            p::LO_CUT,
+            p::HI_CUT,
+            p::SPIN,
+            p::HIGH,
+            p::LOW,
+            p::CHORUS,
+            p::FREEZE,
+            p::FLAT,
+            p::CUT,
+        ] {
             changed = D
                 .patch_parameter(&changed, parameter, ParameterValue::Bool(false))
                 .unwrap();
