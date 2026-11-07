@@ -56,11 +56,13 @@ fn saved_authored_effect_opens_with_restored_or_unavailable_source() {
         .control
         .command(PlaybackCommand::Play)
         .unwrap();
-    for _ in 0..3 {
-        restored.render_worker_step();
+    for block in 0..3 {
+        let pcm = restored.render_plugin_block();
+        wait(|| restored.plugin_completed.load(Acquire) > block);
+        if block == 2 {
+            assert!(pcm.iter().all(|frame| *frame == [0.25; 2]), "{:?}", pcm[0]);
+        }
     }
-    let pcm = restored.render_plugin_block();
-    assert!(pcm.iter().all(|frame| *frame == [0.25; 2]), "{:?}", pcm[0]);
     assert_eq!(fs::read(&fixture.path).unwrap(), bytes);
     drop(restored);
 
