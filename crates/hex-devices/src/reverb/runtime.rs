@@ -424,7 +424,7 @@ pub struct ReverbRuntimeStorage {
 }
 pub const RUNTIME_HEAP_ALLOCATIONS: usize = 14;
 pub struct ReverbRuntime {
-    automation_controls: crate::parameter_binding::Controls<AutomatedSettings, 23>,
+    automation_controls: crate::parameter_binding::Controls<AutomatedSettings, 29>,
     automated_values: AutomatedValues,
     tail_controls_frozen: bool,
     scatter_cache: ScatterCache,
@@ -619,15 +619,15 @@ impl ReverbRuntime {
         for c in 0..2 {
             let mut x = input[c] * excitation;
             let high = high_filter.apply(&mut self.input_low[c], x, true);
-            x += (high - x) * self.v(p::LO_CUT);
+            x += (high - x) * output.lo_cut.unwrap_or_else(|| self.v(p::LO_CUT));
             let low = low_filter.apply(&mut self.input_high[c], x, false);
-            x += (low - x) * self.v(p::HI_CUT);
+            x += (low - x) * output.hi_cut.unwrap_or_else(|| self.v(p::HI_CUT));
             self.inputs[c].push(x);
             late_input[c] = self.inputs[c].read(predelay + 1.0);
             for (i, seconds) in TAPS.into_iter().enumerate() {
                 let phase = self.spin_phase + c as f32 * 0.25 + i as f32 * 0.137;
                 let spin = (std::f32::consts::TAU * phase).sin()
-                    * self.v(p::SPIN)
+                    * output.spin.unwrap_or_else(|| self.v(p::SPIN))
                     * spin_amount
                     * 0.000025
                     * self.tank_rate;
@@ -640,8 +640,11 @@ impl ReverbRuntime {
             }
             late_input[c] += early[c] * 0.25;
         }
-        let depth =
-            self.v(p::CHORUS) * chorus_amount * 0.001 * self.tank_rate * (1.0 - self.v(p::FREEZE));
+        let depth = output.chorus.unwrap_or_else(|| self.v(p::CHORUS))
+            * chorus_amount
+            * 0.001
+            * self.tank_rate
+            * (1.0 - self.v(p::FREEZE));
         let delayed = std::array::from_fn(|i| {
             let modulation =
                 (std::f32::consts::TAU * (self.chorus_phase + i as f32 * 0.173)).sin() * depth;
@@ -661,6 +664,8 @@ impl ReverbRuntime {
             || output.size.is_some()
             || output.high_ratio.is_some()
             || output.low_ratio.is_some()
+            || output.high.is_some()
+            || output.low.is_some()
         {
             let feedback_parameters = [
                 output.decay.unwrap_or_else(|| self.v(p::DECAY)),
@@ -669,8 +674,8 @@ impl ReverbRuntime {
                 output.low_ratio.unwrap_or_else(|| self.v(p::LOW_RATIO)),
                 self.v(p::FREEZE),
                 self.v(p::FLAT),
-                self.v(p::LOW),
-                self.v(p::HIGH),
+                output.low.unwrap_or_else(|| self.v(p::LOW)),
+                output.high.unwrap_or_else(|| self.v(p::HIGH)),
             ];
             Some(self.feedback_cache.resolve(feedback_parameters))
         } else {

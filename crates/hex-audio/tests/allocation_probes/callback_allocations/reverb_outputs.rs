@@ -81,6 +81,12 @@ fn reverb_output_automation_callback_publication_history_and_save_reopen()
         .tempo_map()
         .frame_to_beat((BLOCK * 3) as u64)?;
     for parameter in [
+        p::LO_CUT,
+        p::HI_CUT,
+        p::SPIN,
+        p::HIGH,
+        p::LOW,
+        p::CHORUS,
         p::DECAY,
         p::SIZE,
         p::HIGH_RATIO,
