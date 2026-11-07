@@ -40,7 +40,7 @@ pub(super) struct Target {
     pub(super) owner: Owner,
     pub(super) device: DeviceId,
     pub(super) kind: DeviceAutomationTarget,
-    class: NativeDeviceClass,
+    pub(super) class: NativeDeviceClass,
     provider: Option<DeviceTypeId>,
     vst3_class: Option<[u8; 16]>,
 }
@@ -295,7 +295,7 @@ impl Target {
                 .is_none_or(|class| vst3_automation_class(device.state()) == Some(class)))
         .then_some(device)
     }
-    fn current(self, project: &Project, generation: u64) -> Option<&Device> {
+    pub(super) fn current(self, project: &Project, generation: u64) -> Option<&Device> {
         let device = self.identity_current(project, generation)?;
         match self.kind {
             DeviceAutomationTarget::Vst3 { .. } => self.vst3_class.is_some().then_some(device),
@@ -624,6 +624,23 @@ impl EditorView {
             .unwrap_or(entry.base)
     }
 
+    /// The device toolbar follows the exact native host lane selected in
+    /// Arrangement. The toolbar uses the device panel's existing input owner.
+    pub(super) fn selected_automation_trim(&self) -> Option<Target> {
+        if !self.automation_view.enabled || self.mode != super::EditorMode::Arrangement {
+            return None;
+        }
+        let owner = self.device_panel.owner?;
+        self.automation_view
+            .devices
+            .main
+            .iter()
+            .find(|entry| {
+                entry.target.owner == owner && matches!(entry.metadata, EntryMetadata::HostGain)
+            })
+            .map(|entry| entry.target)
+    }
+
     pub(super) fn remember_automation_parameter(
         &mut self,
         device: DeviceId,
@@ -678,27 +695,7 @@ impl EditorView {
         {
             actions.push(("re-enable automation", Action::Reenable(entry.target)));
         }
-        if matches!(
-            entry.metadata,
-            EntryMetadata::Provider {
-                descriptor: ParameterDescriptor {
-                    kind: ParameterKind::Float { .. },
-                    ..
-                },
-                ..
-            }
-        ) && self.state.as_ref().is_some_and(|state| {
-            hex_engine::native_parameter_input_target(&state.project, device, kind).is_ok()
-        }) {
-            actions.push((
-                if self.native_automation_arm_selected(device, kind) {
-                    "disarm automation recording"
-                } else {
-                    "arm automation recording"
-                },
-                Action::ToggleNativeArm(entry.target),
-            ));
-        }
+        actions.extend(self.native_automation_arm_action(&entry));
         self.open_automation_menu(position, actions, window, cx);
         if utility_mode {
             self.append_utility_mode_choice(
@@ -708,6 +705,38 @@ impl EditorView {
             );
         }
         true
+    }
+
+    fn native_automation_arm_action(&self, entry: &Entry) -> Option<(&'static str, Action)> {
+        let target = entry.target;
+        let supported = matches!(
+            entry.metadata,
+            EntryMetadata::HostGain
+                | EntryMetadata::Provider {
+                    descriptor: ParameterDescriptor {
+                        kind: ParameterKind::Float { .. },
+                        ..
+                    },
+                    ..
+                }
+        );
+        (supported
+            && self.state.as_ref().is_some_and(|state| {
+                hex_engine::native_parameter_input_target(
+                    &state.project,
+                    target.device,
+                    target.kind,
+                )
+                .is_ok()
+            }))
+        .then(|| {
+            let label = if self.native_automation_arm_selected(target.device, target.kind) {
+                "disarm automation recording"
+            } else {
+                "arm automation recording"
+            };
+            (label, Action::ToggleNativeArm(target))
+        })
     }
 
     pub(super) fn open_vst3_automation_menu(
@@ -1072,6 +1101,11 @@ impl EditorView {
                 self.track_scroll.remeasure();
             }
             Action::HidePreview(target) => {
+                if self.selected_automation_trim() == Some(target)
+                    && !super::device_panel::finalize_controls(self, cx)
+                {
+                    return;
+                }
                 self.automation_view.devices.clear_main(target.owner);
             }
             Action::Hide(target) => {
