@@ -163,7 +163,10 @@ fn first_programme_preserves_the_open_empty_quantum_and_starts_at_the_next_bound
                     program: None
                 })
             );
-            worker.complete(old.block).unwrap();
+            let mut reply = old.block;
+            // Input clock cuts are consumed by DSP, never echoed in its reply.
+            reply.timing_changes = TimingChanges::default();
+            worker.complete(reply).unwrap();
             for sequence in 1..=2 {
                 measured(|| {
                     callback.begin_physical_callback(8).unwrap();
