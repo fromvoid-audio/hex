@@ -74,8 +74,8 @@ pub struct DeadlineMiss {
     pub worker_phase: DeadlineWorkerPhase,
 }
 
-#[derive(Default)]
 struct Revocation {
+    binding: Binding,
     revoked: AtomicBool,
     callback_fault: AtomicU8,
     received_prefix: AtomicU64,
@@ -86,6 +86,19 @@ struct Revocation {
 }
 impl Revocation {
     const REPORTED: u8 = 1 << 7;
+
+    fn new(binding: Binding) -> Self {
+        Self {
+            binding,
+            revoked: AtomicBool::new(false),
+            callback_fault: AtomicU8::new(0),
+            received_prefix: AtomicU64::new(0),
+            received_programs: std::array::from_fn(|_| AtomicU64::new(0)),
+            processed_prefix: AtomicU64::new(0),
+            missed_reply: AtomicU64::new(0),
+            missed_phase: AtomicU8::new(0),
+        }
+    }
 
     fn revoke(&self) {
         self.revoked.store(true, Release);
@@ -401,7 +414,6 @@ impl Block {
 /// Queue-independent revocation. Retain this control lease through worker join
 /// and callback terminal return; neither endpoint may be destroyed on callback.
 pub struct Control {
-    binding: Binding,
     revoked: Arc<Revocation>,
 }
 
@@ -429,7 +441,7 @@ impl Control {
         }
         let (sequence, program) = self.revoked.received_program()?;
         (!self.is_revoked()).then_some(ReceivedProgram {
-            binding: self.binding,
+            binding: self.revoked.binding,
             sequence,
             program,
         })
@@ -694,11 +706,10 @@ fn channel_with_policy(
     let first_reply_sequence = completed_blocks.checked_add(2).ok_or(Fault::Exhausted)?;
     let (request_tx, request_rx) = RingBuffer::new(QUEUE_CAPACITY);
     let (reply_tx, reply_rx) = RingBuffer::new(QUEUE_CAPACITY);
-    let revoked = Arc::new(Revocation::default());
+    let revoked = Arc::new(Revocation::new(binding));
     let empty = Block::empty(binding, quantum);
     Ok((
         Control {
-            binding,
             revoked: Arc::clone(&revoked),
         },
         Callback {
