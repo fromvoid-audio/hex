@@ -1033,6 +1033,25 @@ mod idle_tests {
 
     #[test]
     fn recording_source_observation_rejects_pending_retiring_and_replaced_bindings() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+        let mut insert = || {
+            let hex_project::Created::Device(device) = editor
+                .execute(hex_project::Command::InsertMainDevice {
+                    before: None,
+                    state: hex_engine::default_native_device_state(
+                        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+                    )
+                    .unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("device")
+            };
+            device
+        };
+        let device = insert();
+        let other = insert();
         let mut plugins = Plugins::default();
         let binding = Binding {
             root: 1,
@@ -1045,7 +1064,7 @@ mod idle_tests {
             editor_revision: 7,
         };
         let target = hex_session::service::automation_draft::Vst3CaptureTarget {
-            device: hex_project::DeviceId::new(2).unwrap(),
+            device,
             class: [9; 16],
             parameter: 0,
             binding,
@@ -1053,7 +1072,7 @@ mod idle_tests {
         plugins.sources.push(Source {
             binding,
             owner: ProcessorChainOwner::Main,
-            device: 2,
+            device: device.value(),
             project_generation: 1,
             operation: SourceOperation::Reopen,
             authored: None,
@@ -1087,7 +1106,7 @@ mod idle_tests {
         assert!(!plugins.matches_capture_source(
             context,
             hex_session::service::automation_draft::Vst3CaptureTarget {
-                device: hex_project::DeviceId::new(3).unwrap(),
+                device: other,
                 ..target
             }
         ));
