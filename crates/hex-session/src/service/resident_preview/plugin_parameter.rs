@@ -91,6 +91,11 @@ pub(super) fn operation(
                 SessionError::PluginSourceLost("plugin parameter device changed".into())
             })?;
         let state = source.state();
+        let instrument = session
+            .project()
+            .native_sources()
+            .iter()
+            .any(|source| source.instrument().id() == device);
         let target = DeviceAutomationTarget::Vst3 { parameter };
         let reading_class = source
             .automation_target(target)
@@ -124,6 +129,10 @@ pub(super) fn operation(
                 "manual vst3 automation takeover is unavailable for this device",
             ));
         }
+        // Instruments must retain their original MIDI/PCM worker even before
+        // their first lane. This saved identity chooses isolation only; the
+        // host still validates the actual SDK row and loaded source profile.
+        let isolated_class = isolated_class.or_else(|| instrument_class(session, device));
         let result = sink
             .prepare_plugin_parameter_gesture(PluginParameterGestureInput {
                 context,
@@ -131,11 +140,7 @@ pub(super) fn operation(
                 canonical_state: state,
                 reading_class,
                 isolated_class,
-                instrument: session
-                    .project()
-                    .native_sources()
-                    .iter()
-                    .any(|source| source.instrument().id() == device),
+                instrument,
             })
             .map_err(|error| match error {
                 PluginParameterGestureError::Refused(reason) => SessionError::NativeAudio(reason),
@@ -217,6 +222,16 @@ fn bind_capture(
         .map_err(|_| SessionError::Invalid("plugin capture changed provider"))
 }
 
+/// Saved placement/identity chooses isolation, never live SDK eligibility.
+fn instrument_class(session: &Session, device: hex_project::DeviceId) -> Option<[u8; 16]> {
+    session
+        .project()
+        .native_sources()
+        .iter()
+        .find(|source| source.instrument().id() == device)
+        .and_then(|source| super::super::vst3_automation_class(source.instrument().state()))
+}
+
 fn override_command(
     session: &Session,
     context: hex_engine::AudioSourceContext,
@@ -242,9 +257,10 @@ fn override_command(
         .automation()
         .iter()
         .any(|lane| lane.is_reading() && lane.vst3_class == class)
+        && instrument_class(session, device) != class
     {
         return Err(SessionError::Invalid(
-            "plugin override requires the exact authored processor",
+            "plugin override requires an instrument or authored processor",
         ));
     }
     Ok(Command::ManualDeviceEdit {
@@ -280,12 +296,14 @@ mod tests {
     fn isolated_override_commits_only_the_exact_lane_and_keeps_the_canonical_undo() {
         for reading in [false, true] {
             for instrument in [false, true] {
-                verify_isolated_override(reading, instrument);
+                verify_isolated_override(reading, instrument, true);
             }
         }
+        verify_isolated_override(false, true, false);
+        verify_isolated_override(false, false, false);
     }
 
-    fn verify_isolated_override(reading: bool, instrument: bool) {
+    fn verify_isolated_override(reading: bool, instrument: bool, lanes: bool) {
         use hex_project::{
             AutomationInterpolation, AutomationPoint, AutomationReadSelection as Read,
             AutomationValue, BeatTime,
@@ -322,7 +340,7 @@ mod tests {
         let target = DeviceAutomationTarget::Vst3 { parameter: 0 };
         let other = DeviceAutomationTarget::Vst3 { parameter: 7 };
         for (lane_target, value) in [(target, 0.75), (other, 0.5)] {
-            if lane_target == target && !reading {
+            if !lanes || lane_target == target && !reading {
                 continue;
             }
             session
@@ -401,8 +419,15 @@ mod tests {
             device,
             0,
             &capture(context, class, 0, [2; 32]),
-        )
-        .unwrap();
+        );
+        if !lanes && !instrument {
+            assert!(
+                command.is_err(),
+                "unlaned effects keep their original capture workflow"
+            );
+            return;
+        }
+        let command = command.unwrap();
         let expected_base = plugin_state(class, [2; 32], b"isolated manual base")
             .with_input_gain_millidb(-3000)
             .unwrap();

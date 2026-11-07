@@ -43,8 +43,9 @@ impl<'a> PluginParameterGestureInput<'a> {
     pub fn reading_class(&self) -> Option<[u8; 16]> {
         self.reading_class
     }
-    /// A retained lane on this exact processor requires an isolated manual base,
-    /// including when the edited parameter has no lane of its own.
+    /// Retained lanes and VST3 instruments require an isolated manual base,
+    /// including before the edited parameter has a lane. Saved class identity
+    /// chooses isolation; the host still validates actual SDK eligibility.
     pub fn isolated_class(&self) -> Option<[u8; 16]> {
         self.isolated_class
     }
