@@ -66,10 +66,11 @@ pub use audio_sink::{
     ArrangementEditPosition, NativeSamplerInput, NativeSamplerReservationHold,
     NativeSamplerRetryFacts, OfflineBounceSource, PluginParameterCapture,
     PluginParameterGestureError, PluginParameterGestureInput, PluginParameterGestureResult,
-    ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata, ResidentFilePublication,
-    ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet, ResidentFreshRuntimeFence,
-    ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
-    ResidentPublicationReadiness, ResidentPublicationRefusal, ResidentRuntimeLoop, WorkerAudioSink,
+    PluginParameterOverride, ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata,
+    ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
+    ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationMetadata,
+    ResidentPublicationPolicy, ResidentPublicationReadiness, ResidentPublicationRefusal,
+    ResidentRuntimeLoop, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -2816,7 +2817,7 @@ fn run_worker(
                         None
                     }
                     Ok(Step::Commit(command, path)) => {
-                        adopted_native_draft = Some(path);
+                        adopted_native_draft = Some((path, scope.target));
                         Some(Ok(*command))
                     }
                     Err(reason) => Some(Err(reason)),
@@ -3941,6 +3942,15 @@ fn run_worker(
                             project_generation,
                         )
                     };
+                    // Begin may renew a stopped native epoch before metadata
+                    // admission. Retain the new canonical resources even if
+                    // the subsequent target validation refuses this gesture.
+                    if matches!(gesture, GestureRequest::BeginPlugin { .. })
+                        && resident_preview.is_none()
+                        && let Some(snapshot) = resident_snapshot.as_ref()
+                    {
+                        compiled = Some((revision, Arc::clone(&snapshot.prepared)));
+                    }
                     let native_terminal_accepted = events.resident_publication_enabled()
                         && session.audio_mode() == DocumentAudioMode::Resident
                         && outcome.ack.accepted
@@ -4833,13 +4843,24 @@ fn run_worker(
                         .resident_audio()
                         .ok_or(SessionError::Invalid("native worker unavailable"))
                         .and_then(|sink| {
-                            session.command_resident_snapshot(
-                                command,
-                                context,
-                                sink,
-                                admission,
-                                resident_snapshot.as_ref(),
-                            )
+                            if let Some((_, target)) = adopted_native_draft.as_ref() {
+                                session.native_take_resident_snapshot(
+                                    command,
+                                    *target,
+                                    context,
+                                    sink,
+                                    admission,
+                                    resident_snapshot.as_ref(),
+                                )
+                            } else {
+                                session.command_resident_snapshot(
+                                    command,
+                                    context,
+                                    sink,
+                                    admission,
+                                    resident_snapshot.as_ref(),
+                                )
+                            }
                         });
                     match result {
                         Ok((new, snapshot)) => {
@@ -6115,6 +6136,11 @@ fn run_worker(
                         {
                             return Err(SessionError::Invalid(
                                 "automation arm refused · project changed",
+                            ));
+                        }
+                        if native_automation_take.busy() {
+                            return Err(SessionError::Invalid(
+                                "finish the current automation take before changing its arm",
                             ));
                         }
                         if device_gesture.snapshot().is_some() {
@@ -8087,7 +8113,7 @@ fn run_worker(
             editor_revision: revision,
         });
         if let Some(completion) = native_automation_take_complete.as_mut() {
-            if let Some(path) = adopted_native_draft {
+            if let Some((path, _)) = adopted_native_draft {
                 if error.is_none() && revision != revision_before_request {
                     completion.progress = NativeAutomationTakeProgress::Committed;
                     status = Some("device automation take committed".into());

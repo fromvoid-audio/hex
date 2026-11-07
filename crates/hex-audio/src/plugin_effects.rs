@@ -16,7 +16,8 @@ use hex_plugin_host::{
     Error,
     native::Prepared,
     transport::{
-        Callback, Fault, InputEvents, MAX_FRAMES, MidiEvent, ProcessTiming, SegmentTiming,
+        AcceptedManualParameter, AuthoredSegment, Callback, EffectSegmentOrigins, Fault,
+        InputEvents, MAX_FRAMES, ManualParameterOrigin, MidiEvent, ProcessTiming, SegmentTiming,
     },
 };
 
@@ -27,8 +28,11 @@ mod definition;
 mod tail;
 pub use definition::{NativeEffectDefinition, UnavailableEffect};
 mod hosting;
+mod manual_base_capture;
 pub use hex_lattice_contract::ForeignProcessorBinding as EffectBinding;
 pub use hosting::{EffectPresentation, EffectSelection, Hosting, PluginProfile};
+pub(crate) use manual_base_capture::BaseCaptureSource;
+pub use manual_base_capture::ManualBaseCapture;
 mod control;
 pub(crate) use control::{NativeEffectControl, NativeEffectReference};
 mod source_metadata;
@@ -164,16 +168,19 @@ impl NativeEffect {
                 cause, instance,
             ));
         }
+        let mut authored_bases = [None; hex_plugin_host::transport::MAX_PARAMETER_POINTS];
         if let Some((class, ids)) = authored {
-            configuration.authored =
+            let (capabilities, bases) =
                 match automation::SourceCapabilities::arm(&mut instance, class, ids) {
-                    Ok(capabilities) => capabilities,
+                    Ok(observed) => observed,
                     Err(cause) => {
                         return Err(NativeWorkerStartFailure::retain_source_on_control(
                             cause, instance,
                         ));
                     }
                 };
+            configuration.authored = capabilities;
+            authored_bases = bases;
         }
         let dry_frames = configuration.prepared.total_latency_frames() as usize;
         // Reserve the actual retirement diagnostics before starting the worker;
@@ -192,7 +199,7 @@ impl NativeEffect {
                 instance,
             ));
         }
-        let source_metadata =
+        let mut source_metadata =
             match EffectSourceMetadata::from_configuration(instance.configuration()) {
                 Ok(source) => source,
                 Err(cause) => {
@@ -201,6 +208,7 @@ impl NativeEffect {
                     ));
                 }
             };
+        source_metadata.authored_bases = authored_bases;
         let mut dry = Vec::new();
         if dry.try_reserve_exact(dry_frames).is_err() || dry.capacity() != dry_frames {
             return Err(NativeWorkerStartFailure::retain_source_on_control(
@@ -396,6 +404,11 @@ impl NativeEffectCallback {
         self.transport.finish(accepted)?;
         self.tail.commit();
         Ok(())
+    }
+    /// Consume the exact operation and input clock from this accepted endpoint
+    /// callback. This is still before the mix's recording/delivery decision.
+    pub fn take_accepted_manual_parameter(&mut self) -> Option<AcceptedManualParameter> {
+        self.transport.take_accepted_manual_parameter()
     }
     pub(crate) fn end_staging_at_pause(&mut self, frame: usize) {
         self.transport.end_staging_at_pause(frame);
@@ -612,29 +625,31 @@ impl ForeignProcessors for NativeEffectCallback {
             },
         };
         let input = &self.input[..frames.len()];
-        let result = if let Some(program) = node.automation {
-            let program = automation::TransportProgram(program);
-            self.transport.stage_segment_with_authored_parameters(
-                offset,
-                input,
-                events.as_slice(),
-                frames,
-                timing,
-                hex_plugin_host::transport::AuthoredSegment {
-                    program: &program,
-                    origin: &|index| clock?.authored_arrangement_frame_at_offset(index),
-                },
-            )
-        } else {
-            self.transport.stage_segment_with_timing(
-                offset,
-                input,
-                events.as_slice(),
-                parameters,
-                frames,
-                timing,
-            )
+        let authored_program = node.automation.map(automation::TransportProgram);
+        let authored_origin = |index| clock?.authored_arrangement_frame_at_offset(index);
+        let manual_origin = |index| {
+            let clock = clock?;
+            Some(ManualParameterOrigin {
+                arrangement_frame: clock.authored_arrangement_frame_at_offset(index)?,
+                performance_frame: clock.performance_frame_at_offset(index)?,
+                loop_pass: clock.loop_pass_at_offset(index)?,
+            })
         };
+        let result = self.transport.stage_effect_segment(
+            offset,
+            input,
+            events.as_slice(),
+            parameters,
+            frames,
+            timing,
+            EffectSegmentOrigins {
+                authored: authored_program.as_ref().map(|program| AuthoredSegment {
+                    program,
+                    origin: &authored_origin,
+                }),
+                manual: Some(&manual_origin),
+            },
+        );
         if result.is_err() {
             // The transport revoked only this endpoint's epoch. Leave the
             // aligned dry input so a containing carrier can keep rendering.

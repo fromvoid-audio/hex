@@ -29,6 +29,25 @@ impl PluginStateSaveInput<'_> {
     pub fn cancellation(&self) -> &RequestCancellation {
         self.cancellation
     }
+    /// Reading raw targets retained in the canonical saved project. Native
+    /// source metadata must independently validate their exact class and bases.
+    pub fn authored_plugin_targets(
+        &self,
+        device: u64,
+    ) -> impl Iterator<Item = (u32, Option<[u8; 16]>)> + '_ {
+        self.project
+            .automation_devices()
+            .find(|candidate| candidate.id().value() == device)
+            .into_iter()
+            .flat_map(hex_project::Device::reading_automation)
+            .filter_map(|lane| match lane.target {
+                hex_lattice_contract::DeviceAutomationTarget::Vst3 { parameter } => {
+                    Some((parameter, lane.vst3_class))
+                }
+                _ => None,
+            })
+    }
+
     pub fn visit_plugin_devices(
         &self,
         mut visit: impl FnMut(ProcessorChainOwner, u64, &NativeDeviceState) -> Result<(), String>,

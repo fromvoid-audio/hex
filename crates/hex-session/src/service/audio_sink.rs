@@ -28,6 +28,8 @@ pub struct PluginParameterGestureInput<'a> {
     pub(in crate::service) context: hex_engine::AudioSourceContext,
     pub(in crate::service) operation: crate::device_gesture::PluginGesturePreparation,
     pub(in crate::service) canonical_state: &'a NativeDeviceState,
+    pub(in crate::service) reading_effect_class: Option<[u8; 16]>,
+    pub(in crate::service) isolated_effect_class: Option<[u8; 16]>,
 }
 impl<'a> PluginParameterGestureInput<'a> {
     pub fn context(&self) -> hex_engine::AudioSourceContext {
@@ -35,6 +37,15 @@ impl<'a> PluginParameterGestureInput<'a> {
     }
     pub fn operation(&self) -> crate::device_gesture::PluginGesturePreparation {
         self.operation
+    }
+    /// Exact class of the reading Arrangement lane, for ordinary effects.
+    pub fn reading_effect_class(&self) -> Option<[u8; 16]> {
+        self.reading_effect_class
+    }
+    /// A reading lane on this exact effect requires an isolated manual base,
+    /// including when the edited parameter has no lane of its own.
+    pub fn isolated_effect_class(&self) -> Option<[u8; 16]> {
+        self.isolated_effect_class
     }
     pub fn canonical_state(&self) -> &'a NativeDeviceState {
         self.canonical_state
@@ -48,6 +59,17 @@ pub enum PluginParameterGestureResult {
     /// Actual host capture. The host retains its private matching receipt and
     /// staged compiler permission until finish_plugin_parameter_commit.
     Captured(Box<PluginParameterCapture>),
+    /// A manual base prepared from the exact canonical plug-in state in
+    /// isolation from the live authored processor. This does not authorize
+    /// changing another parameter's read selection or using live DSP state
+    /// as the Undo preimage.
+    OverrideCaptured(Box<PluginParameterOverride>),
+}
+pub struct PluginParameterOverride {
+    pub source: hex_engine::AudioSourceContext,
+    pub class: [u8; 16],
+    pub parameter: u32,
+    pub base: NativeDeviceState,
 }
 pub struct PluginParameterCapture {
     pub before: NativeDeviceState,
@@ -376,6 +398,17 @@ impl std::fmt::Debug for ResidentPublicationRefusal {
 /// Construction must not start device work or hold an opened output: a failed
 /// thread spawn may drop the uninitialized adapter on the constructing thread.
 pub trait WorkerAudioSink: Send {
+    /// Before Begin, request renewal only when the exact stopped source has
+    /// returned its endpoints. Session republishes its unchanged canonical
+    /// snapshot through the existing stopped-restore owner before admission.
+    /// An already owned restoration must refuse this independent request.
+    fn plugin_parameter_requires_stopped_restore(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _origin: crate::device_gesture::PluginParameterOrigin,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
     /// Use the existing actual source for one keyed plugin operation. Begin
     /// revalidates observed metadata/context. Preview/Restore must apply the
     /// real point before returning Applied; they never edit canonical state.

@@ -2,11 +2,12 @@
 //! keeps canonical history and the actual native source stays in Root.
 use super::*;
 use hex_audio::{
+    plugin_effects::ManualBaseCapture,
     plugin_worker::{
-        NativeWorkerCapture, NativeWorkerCaptureProgress, NativeWorkerParameterChange,
-        NativeWorkerParameterProgress,
+        NativeParameterHold, NativeWorkerCapture, NativeWorkerCaptureProgress,
+        NativeWorkerParameterChange, NativeWorkerParameterProgress,
     },
-    prepared::PublicationControl,
+    prepared::{AppliedAudioSource, PublicationControl},
 };
 use hex_session::{
     device_gesture::{
@@ -15,10 +16,21 @@ use hex_session::{
     },
     service::{
         PluginParameterCapture, PluginParameterGestureError as Error, PluginParameterGestureInput,
-        PluginParameterGestureResult as Prepared,
+        PluginParameterGestureResult as Prepared, PluginParameterOverride, RequestCancellation,
     },
 };
+use std::sync::atomic::Ordering::Acquire;
 use std::time::{Duration, Instant};
+
+mod manual_override;
+use manual_override::LiveOverride;
+
+struct PendingPoint {
+    token: NativeWorkerParameterChange,
+    value: PluginParameterValue,
+    sequence: u64,
+    opening_hold: bool,
+}
 
 pub(super) struct Gesture {
     key: GestureKey,
@@ -28,7 +40,8 @@ pub(super) struct Gesture {
     steps: u32,
     last: PluginParameterValue,
     sequence: u64,
-    pending: Option<(NativeWorkerParameterChange, PluginParameterValue, u64)>,
+    pending: Option<PendingPoint>,
+    live: Option<LiveOverride>,
     capture: Option<NativeWorkerCapture>,
     before: Option<NativeDeviceState>,
     commit: Option<(AudioSourceContext, u64)>,
@@ -51,7 +64,9 @@ fn admit<T>(
             Err(
                 "native preparation is busy"
                 | "native parameter mailbox is busy"
-                | "native capture mailbox is busy",
+                | "native capture mailbox is busy"
+                | "native controller mailbox is busy"
+                | "native controller query is already pending",
             ) if Instant::now() < deadline => edits::poll_control(control),
             result => return result.map_err(refused),
         }
@@ -59,12 +74,86 @@ fn admit<T>(
 }
 
 impl Plugins {
+    pub(in crate::native_audio) fn parameter_requires_restore(
+        &mut self,
+        control: &mut PublicationControl,
+        context: AudioSourceContext,
+        device: u64,
+    ) -> Result<bool, String> {
+        if self
+            .restore
+            .as_ref()
+            .is_some_and(super::restore::Restore::submitted)
+        {
+            self.poll_restore(control, Some(context));
+        }
+        if self.restore.is_some() {
+            return Err("wait for stopped vst3 restoration".into());
+        }
+        if control
+            .status
+            .playing
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Ok(false);
+        }
+        let source = self
+            .sources
+            .iter()
+            .rev()
+            .find(|source| {
+                source.accepted
+                    && !source.retiring
+                    && source.project_generation == context.project_generation
+                    && source.device == device
+            })
+            .ok_or("vst3 parameter source changed")?;
+        if control
+            .status
+            .recording_source()
+            .is_none_or(|source| source.context != context)
+        {
+            return Err("vst3 parameter source changed".into());
+        }
+        Ok(control
+            .native_source_endpoint_status(source.binding)
+            .is_some_and(|(_, live)| !live))
+    }
     pub(in crate::native_audio) fn parameter_gesture(
         &mut self,
         control: &mut PublicationControl,
         input: PluginParameterGestureInput<'_>,
+        cancellation: Option<&RequestCancellation>,
     ) -> Result<Prepared, Error> {
         if let PluginGesturePreparation::Begin { origin, snapshot } = input.operation() {
+            let restored_revision = self
+                .restore
+                .as_ref()
+                .and_then(super::restore::Restore::submitted_revision);
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while self
+                .restore
+                .as_ref()
+                .is_some_and(super::restore::Restore::submitted)
+            {
+                self.poll_restore(control, Some(input.context()));
+                if self.restore.is_none() {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    return Err(refused("stopped vst3 restoration has not been installed"));
+                }
+                edits::poll_control(control);
+            }
+            if restored_revision.is_some_and(|revision| {
+                control
+                    .status
+                    .applied_revision
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    != revision
+            }) {
+                return Err(refused("stopped vst3 restoration was refused"));
+            }
             if self.parameter_gesture.is_some()
                 || self.parameters.is_some()
                 || self.restore.is_some()
@@ -91,15 +180,83 @@ impl Plugins {
                         && row.normalized == origin.initial.normalized()
                 })
                 .ok_or_else(|| refused("vst3 parameter metadata changed · refresh the list"))?;
+            let binding = self
+                .sources
+                .iter()
+                .rev()
+                .find(|source| {
+                    source.accepted
+                        && !source.retiring
+                        && source.project_generation == origin.context.project_generation
+                        && source.device == origin.device.value()
+                })
+                .ok_or_else(lost)?
+                .binding;
+            if !edits::original_state(control, binding, cancellation)
+                .map_err(refused)?
+                .processing_eq(input.canonical_state())
+            {
+                return Err(lost());
+            }
+            let steps = row.steps;
+            let output = inventory.query.output_identity;
+            if binding.root != inventory.binding.root
+                || binding.instance != inventory.binding.instance
+                || binding.graph != inventory.binding.graph
+            {
+                return Err(lost());
+            }
+            // Revalidate capability on the actual original SDK source,
+            // including after renewal. Only page zero and the target page
+            // can be queried, independently of total inventory size.
+            let current_value = validate_current_parameter(
+                control,
+                binding,
+                origin,
+                steps,
+                input.reading_effect_class().is_some(),
+            )?;
+            let live = if let Some(class) = input.isolated_effect_class() {
+                let playing = control.status.playing.load(Acquire);
+                let (source, transport_epoch) = control
+                    .status
+                    .native_parameter_source(playing)
+                    .filter(|(source, _)| source.context == input.context())
+                    .filter(|_| {
+                        input.reading_effect_class().is_none()
+                            || row.automation_class == Some(class)
+                    })
+                    .ok_or_else(|| refused("vst3 parameter source is not ready"))?;
+                Some(LiveOverride::new(
+                    source,
+                    transport_epoch,
+                    class,
+                    input.reading_effect_class().is_some(),
+                    playing,
+                ))
+            } else {
+                None
+            };
+            let mut origin = origin;
+            if live
+                .as_ref()
+                .is_some_and(|live| live.reading && !live.playing)
+            {
+                // A list can predate playback. Cancel must restore the actual
+                // stopped worker value observed at Begin, including after a
+                // moving authored envelope changed it beneath that list.
+                origin.initial = current_value;
+            }
             let gesture = Gesture {
                 key: snapshot.key,
                 origin,
-                binding: inventory.binding,
-                output: inventory.query.output_identity,
-                steps: row.steps,
+                binding,
+                output,
+                steps,
                 last: origin.initial,
                 sequence: 0,
                 pending: None,
+                live,
                 capture: None,
                 before: None,
                 commit: None,
@@ -111,15 +268,21 @@ impl Plugins {
             return Ok(Prepared::Applied);
         }
         let mut gesture = self.parameter_gesture.take().ok_or_else(lost)?;
-        if !gesture.current(self, control, input.context()) {
-            return Err(lost());
+        let result = if !gesture.current(self, control, input.context()) {
+            Err(lost())
+        } else {
+            gesture.apply(control, self.host.as_ref(), &input, cancellation)
+        };
+        let source_lost = matches!(&result, Err(Error::SourceLost(_)));
+        let restored =
+            result.is_ok() && matches!(input.operation(), PluginGesturePreparation::Restore { .. });
+        if source_lost && let Some(live) = gesture.live.as_mut() {
+            live.invalidated = true;
+            live.discard = true;
         }
-        let result = gesture.apply(control, input.context(), input.operation());
-        // Only an actual restore or a confirmed source loss retires the preview.
-        if !(matches!(&result, Err(Error::SourceLost(_)))
-            || result.is_ok()
-                && matches!(input.operation(), PluginGesturePreparation::Restore { .. }))
-        {
+        // Live refusal can still own a queued input, scratch or hold. Keep it
+        // on this worker's regular poll path until its actual terminal.
+        if !restored && (!source_lost || gesture.live.is_some()) {
             self.parameter_gesture = Some(gesture);
         }
         result
@@ -141,6 +304,9 @@ impl Plugins {
                 self.observed_parameters = None;
             } else {
                 gesture.commit = None;
+                if let Some(live) = gesture.live.as_mut() {
+                    live.invalidated = true;
+                }
             }
         }
     }
@@ -171,10 +337,12 @@ impl Gesture {
     fn apply(
         &mut self,
         control: &mut PublicationControl,
-        context: AudioSourceContext,
-        operation: PluginGesturePreparation,
+        host: Option<&Hosting>,
+        input: &PluginParameterGestureInput<'_>,
+        cancellation: Option<&RequestCancellation>,
     ) -> Result<Prepared, Error> {
-        let (snapshot, value, restore, commit) = match operation {
+        let context = input.context();
+        let (snapshot, value, restore, commit) = match input.operation() {
             PluginGesturePreparation::Preview(snapshot) => {
                 (snapshot, snapshot.plugin_value, false, false)
             }
@@ -192,6 +360,20 @@ impl Gesture {
         if !self.matches(snapshot) || (!restore && snapshot.sequence < self.sequence) {
             return Err(refused("vst3 parameter gesture changed"));
         }
+        if self.live.is_some() {
+            if restore {
+                return self.restore_override(control);
+            }
+            let live = self.live.as_ref().ok_or_else(lost)?;
+            if live.invalidated
+                || input.isolated_effect_class() != Some(live.class)
+                || input.reading_effect_class().is_some() != live.reading
+                || control.status.native_parameter_source(live.playing)
+                    != Some((live.source, live.transport_epoch))
+            {
+                return Err(lost());
+            }
+        }
         if self.capture.is_some() && !commit {
             self.capture(control)?;
         }
@@ -199,6 +381,15 @@ impl Gesture {
         if commit {
             if snapshot.sequence != self.sequence || value != self.last {
                 return Err(refused("vst3 final point has not been processed"));
+            }
+            if self.live.is_some() {
+                self.commit = Some((context, snapshot.sequence));
+                return self.capture_override(
+                    control,
+                    host.ok_or_else(|| refused("qualified vst3 helper unavailable"))?,
+                    input.canonical_state(),
+                    cancellation,
+                );
             }
             let before = self
                 .before
@@ -212,23 +403,49 @@ impl Gesture {
             })));
         }
         if value != self.last {
-            if self.before.is_none() {
+            if self.live.is_none() && self.before.is_none() {
                 self.before = Some(self.capture(control)?);
             }
-            let actual = if self.steps == 0 {
-                value.normalized()
+            let actual = self.sdk_value(value);
+            let (token, opening_hold) = if let Some(live) = self
+                .live
+                .as_ref()
+                .filter(|live| live.reading && live.playing)
+            {
+                let command = live.hold.as_ref().map_or(
+                    NativeParameterHold::Begin {
+                        id: self.origin.parameter,
+                        normalized: actual,
+                    },
+                    |hold| NativeParameterHold::Change {
+                        hold,
+                        normalized: actual,
+                    },
+                );
+                let token = admit(control, |control| {
+                    control.native_source_parameter_hold_on_control(
+                        live.source,
+                        self.binding,
+                        command,
+                    )
+                })?;
+                (token, live.hold.is_none())
             } else {
-                let steps = f64::from(self.steps);
-                (value.normalized() * steps).round() / steps
+                let token = admit(control, |control| {
+                    control.begin_native_source_parameter_change_on_control(
+                        self.binding,
+                        self.origin.parameter,
+                        actual,
+                    )
+                })?;
+                (token, false)
             };
-            let token = admit(control, |control| {
-                control.begin_native_source_parameter_change_on_control(
-                    self.binding,
-                    self.origin.parameter,
-                    actual,
-                )
-            })?;
-            self.pending = Some((token, value, snapshot.sequence));
+            self.pending = Some(PendingPoint {
+                token,
+                value,
+                sequence: snapshot.sequence,
+                opening_hold,
+            });
             self.drain_point(control)?;
         }
         self.sequence = snapshot.sequence;
@@ -244,51 +461,70 @@ impl Gesture {
                 }
     }
 
-    fn drain_point(&mut self, control: &mut PublicationControl) -> Result<(), Error> {
-        let Some((token, value, sequence)) = self.pending.as_ref() else {
-            return Ok(());
+    fn sdk_value(&self, value: PluginParameterValue) -> f64 {
+        if self.steps == 0 {
+            value.normalized()
+        } else {
+            let steps = f64::from(self.steps);
+            (value.normalized() * steps).round() / steps
+        }
+    }
+
+    fn poll_point(&mut self, control: &mut PublicationControl) -> Result<bool, Error> {
+        let Some(pending) = self.pending.as_ref() else {
+            return Ok(true);
         };
+        match poll_input(control, self.binding, &pending.token) {
+            Ok(
+                NativeWorkerParameterProgress::Processed(_)
+                | NativeWorkerParameterProgress::Flushed,
+            ) => {
+                if let Some(pending) = self.pending.take() {
+                    self.last = pending.value;
+                    self.sequence = pending.sequence;
+                    if pending.opening_hold
+                        && let Some(live) = self.live.as_mut()
+                    {
+                        live.hold = Some(pending.token);
+                    }
+                }
+                Ok(true)
+            }
+            Ok(NativeWorkerParameterProgress::Pending) | Err("native preparation is busy") => {
+                Ok(false)
+            }
+            Ok(NativeWorkerParameterProgress::Failed) => {
+                self.pending = None;
+                Err(lost())
+            }
+            Ok(
+                NativeWorkerParameterProgress::Refused
+                | NativeWorkerParameterProgress::Withdrawn
+                | NativeWorkerParameterProgress::Released { .. },
+            ) => {
+                self.pending = None;
+                Err(refused("vst3 input was not applied"))
+            }
+            Err(reason) if source_gone(reason) => {
+                self.pending = None;
+                Err(lost())
+            }
+            Err(reason) => Err(refused(reason)),
+        }
+    }
+
+    fn drain_point(&mut self, control: &mut PublicationControl) -> Result<(), Error> {
         let deadline = Instant::now() + Duration::from_millis(150);
         loop {
-            let mut result =
-                control.poll_native_source_parameter_change_on_control(self.binding, token);
-            if matches!(result, Ok(NativeWorkerParameterProgress::Failed)) {
-                result = control
-                    .drain_stopped_native_source_parameter_change_on_control(self.binding, token);
-            }
-            match result {
-                Ok(
-                    NativeWorkerParameterProgress::Processed(_)
-                    | NativeWorkerParameterProgress::Flushed,
-                ) => {
-                    self.last = *value;
-                    self.sequence = *sequence;
-                    self.pending = None;
-                    return Ok(());
-                }
-                Ok(
-                    NativeWorkerParameterProgress::Refused
-                    | NativeWorkerParameterProgress::Withdrawn,
-                ) => {
-                    self.pending = None;
-                    return Err(refused("vst3 input was not applied"));
-                }
-                Ok(NativeWorkerParameterProgress::Failed) => {
-                    self.pending = None;
-                    return Err(lost());
-                }
-                Ok(NativeWorkerParameterProgress::Pending) | Err("native preparation is busy") => {}
-                Err(
-                    "native parameter output is closing"
-                    | "native stopped parameter source differs",
-                ) => {
-                    return Err(lost());
-                }
-                Err(reason) => return Err(refused(reason)),
+            if self.poll_point(control)? {
+                return Ok(());
             }
             if Instant::now() >= deadline {
-                if control.withdraw_native_source_parameter_change_on_control(self.binding, token)
-                    == Ok(true)
+                if let Some(pending) = self.pending.as_ref()
+                    && control.withdraw_native_source_parameter_change_on_control(
+                        self.binding,
+                        &pending.token,
+                    ) == Ok(true)
                 {
                     continue;
                 }
@@ -332,5 +568,94 @@ impl Gesture {
             }
             edits::poll_control(control);
         }
+    }
+}
+
+fn poll_input(
+    control: &mut PublicationControl,
+    binding: Binding,
+    token: &NativeWorkerParameterChange,
+) -> Result<NativeWorkerParameterProgress, &'static str> {
+    match control.poll_native_source_parameter_change_on_control(binding, token) {
+        Ok(NativeWorkerParameterProgress::Failed) => {
+            control.drain_stopped_native_source_parameter_change_on_control(binding, token)
+        }
+        other => other,
+    }
+}
+
+fn source_gone(reason: &str) -> bool {
+    matches!(
+        reason,
+        "native parameter output is closing"
+            | "native parameter hold output differs or is closing"
+            | "native stopped parameter source differs"
+            | "native parameter source is not live"
+            | "native capture is closing"
+            | "native capture source is closing"
+            | "native source differs"
+    )
+}
+
+/// Revalidate only the bounded target page on the actual original source. The
+/// native worker owns query deadlines and every admitted token is drained.
+fn validate_current_parameter(
+    control: &mut PublicationControl,
+    binding: Binding,
+    origin: PluginParameterOrigin,
+    steps: u32,
+    reading: bool,
+) -> Result<PluginParameterValue, Error> {
+    use hex_audio::plugin_worker::{NativeWorkerControllerProgress, ParameterPageQuery};
+    let mut first = 0;
+    let mut revision = 0;
+    loop {
+        let token = admit(control, |control| {
+            control.begin_native_source_controller_query_on_control(
+                binding,
+                ParameterPageQuery {
+                    first,
+                    revision,
+                    conversion: None,
+                },
+            )
+        })?;
+        let page = loop {
+            match control.poll_native_source_controller_query_on_control(binding, &token) {
+                Ok(NativeWorkerControllerProgress::Pending) | Err("native preparation is busy") => {
+                    edits::poll_control(control)
+                }
+                Ok(NativeWorkerControllerProgress::Page(page)) => break page,
+                _ => {
+                    return Err(refused(
+                        "vst3 parameter metadata changed · refresh the list",
+                    ));
+                }
+            }
+        };
+        if page.first != first || (revision != 0 && page.revision != revision) {
+            return Err(refused(
+                "vst3 parameter metadata changed · refresh the list",
+            ));
+        }
+        if first == origin.page_first {
+            let parameter = page
+                .as_slice()
+                .iter()
+                .find(|parameter| parameter.id == origin.parameter)
+                .ok_or_else(|| refused("vst3 parameter metadata changed · refresh the list"))?;
+            if !parameter.is_editable()
+                || parameter.step_count != steps
+                || (reading && !parameter.supports_authored_automation())
+                || (!reading && parameter.normalized != origin.initial.normalized())
+            {
+                return Err(refused(
+                    "vst3 parameter metadata changed · refresh the list",
+                ));
+            }
+            return PluginParameterValue::new(parameter.normalized).map_err(refused);
+        }
+        first = origin.page_first;
+        revision = page.revision;
     }
 }

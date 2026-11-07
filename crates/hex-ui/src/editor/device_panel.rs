@@ -35,8 +35,8 @@ use bindings::{
 pub(super) use bindings::{effective_parameter_value, parameter_display_override};
 mod gesture_adapter;
 pub(super) use gesture_adapter::{
-    NumericGestureLease, commit_owned_numeric_edit, dispatch_bound_numeric_gesture,
-    dispatch_numeric_gesture, owns_numeric_gesture,
+    NumericGestureKey, NumericGestureLease, commit_owned_numeric_edit,
+    dispatch_bound_numeric_gesture, dispatch_numeric_gesture, owns_numeric_gesture,
 };
 mod chain_window;
 mod effect_bus;
@@ -3191,6 +3191,53 @@ fn binding_policy(
         choice_order,
         numeric_begin,
     }
+}
+
+/// Bind the active Arrangement trim on the persistent device toolbar.
+fn render_automation_trim(view: &mut EditorView, cx: &mut Context<EditorView>) -> Option<Div> {
+    use hex_lattice_contract::DeviceAutomationTarget;
+    let target = view.selected_automation_trim()?;
+    let descriptor = match target.kind {
+        DeviceAutomationTarget::HostInputGain => hex_engine::DEVICE_INPUT_GAIN,
+        DeviceAutomationTarget::HostOutputGain => hex_engine::DEVICE_OUTPUT_GAIN,
+        _ => return None,
+    };
+    let state = view.state.as_ref()?;
+    let device = target.current(&state.project, view.project_generation)?;
+    let identity = DeviceControlIdentity {
+        class: target.class,
+        type_id: device.state().type_id(),
+    };
+    let value =
+        hex_engine::native_device_parameter_for_class(target.class, device.state(), descriptor.id)
+            .ok()?;
+    let control = bindings::render_parameter(
+        view,
+        cx,
+        target.device,
+        identity,
+        &NativeDeviceParameterView {
+            descriptor,
+            semantics: None,
+            value,
+            enabled: true,
+        },
+        bindings::BindingPresentation {
+            kind: ControlPresentation::InlineValue,
+            text: ControlText::default(),
+            policy: binding_policy,
+            compact_toggle_width: 0.0,
+        },
+    );
+    Some(
+        div()
+            .flex()
+            .items_center()
+            .gap(px(3.0))
+            .flex_shrink_0()
+            .child(theme::text(descriptor.label))
+            .child(control),
+    )
 }
 
 fn parameter_control(

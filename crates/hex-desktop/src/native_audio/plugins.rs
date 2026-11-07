@@ -311,6 +311,7 @@ impl Plugins {
             && self.editor.is_none()
             && self.parameters.is_none()
             && self.restore.is_none()
+            && !self.parameter_override_cleanup_pending()
             && self.reopen.is_none()
             && self.edit.is_none()
             && self.degraded_changed.is_none()
@@ -595,6 +596,7 @@ impl Plugins {
         };
         self.poll_editor(control, context);
         self.poll_parameters(control, context);
+        self.poll_parameter_override(control, context);
         self.poll_restore(control, context);
         if let Some(output) = control.output_identity()
             && let Some(context) = context

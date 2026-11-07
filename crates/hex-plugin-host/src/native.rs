@@ -649,7 +649,7 @@ impl Prepared {
     /// Only on the existing joining transport worker. A failed operation
     /// permanently faults this lease; no foreign DSP retry/replay is possible.
     pub fn exchange_on_worker(&mut self, block: Block) -> Result<Block> {
-        self.exchange_on_worker_with_metadata(block, None)
+        self.exchange_on_worker_with_metadata(block, None, None)
     }
     /// Deliver one authored input block to the same lease that observed the
     /// selected parameters. The SDK processing snapshot rechecks eligibility
@@ -659,10 +659,19 @@ impl Prepared {
         block: Block,
         metadata: &AuthoredParameterMetadata,
     ) -> Result<Block> {
+        self.exchange_authored_with_manual_on_worker(block, metadata, None)
+    }
+
+    fn exchange_authored_with_manual_on_worker(
+        &mut self,
+        block: Block,
+        metadata: &AuthoredParameterMetadata,
+        manual_parameter: Option<crate::transport::ParameterPoint>,
+    ) -> Result<Block> {
         if !metadata.matches(self) {
             return Err(Error::Protocol("authored parameter source differs"));
         }
-        self.exchange_on_worker_with_metadata(block, Some(metadata))
+        self.exchange_on_worker_with_metadata(block, Some(metadata), manual_parameter)
     }
     /// Retain the exact capability observation with the lease that will run
     /// authored requests. Admission and endpoint construction remain with
@@ -679,14 +688,32 @@ impl Prepared {
         Ok(())
     }
 
+    /// Used only by the original joining worker when admitting a live hold.
+    pub fn has_armed_authored_parameter(&self, id: u32) -> bool {
+        self.authored_parameter_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.matches(self) && metadata.step_count(id).is_some())
+    }
+
     pub fn exchange_armed_authored_on_worker(&mut self, block: Block) -> Result<Block> {
+        self.exchange_armed_authored_with_manual_on_worker(block, None)
+    }
+
+    /// On the joining worker, distinguish its one newly admitted manual input
+    /// from prepared authored points. Native SDK metadata validates both kinds.
+    pub fn exchange_armed_authored_with_manual_on_worker(
+        &mut self,
+        block: Block,
+        manual_parameter: Option<crate::transport::ParameterPoint>,
+    ) -> Result<Block> {
         let metadata = self
             .authored_parameter_metadata
             .take()
             .ok_or(Error::Protocol(
                 "authored parameter capability is not armed",
             ))?;
-        let result = self.exchange_authored_on_worker(block, &metadata);
+        let result =
+            self.exchange_authored_with_manual_on_worker(block, &metadata, manual_parameter);
         self.authored_parameter_metadata = Some(metadata);
         result
     }
@@ -695,11 +722,12 @@ impl Prepared {
         &mut self,
         block: Block,
         metadata: Option<&AuthoredParameterMetadata>,
+        manual_parameter: Option<crate::transport::ParameterPoint>,
     ) -> Result<Block> {
         if self.faulted || self.retired.is_some() {
             return Err(Error::Protocol("instance lease is retired or faulted"));
         }
-        let result = self.exchange(block, metadata);
+        let result = self.exchange(block, metadata, manual_parameter);
         if result.is_err() {
             self.faulted = true;
             self.lease.cancel_native();
@@ -710,6 +738,7 @@ impl Prepared {
         &mut self,
         block: Block,
         metadata: Option<&AuthoredParameterMetadata>,
+        manual_parameter: Option<crate::transport::ParameterPoint>,
     ) -> Result<Block> {
         self.check_live_capture_deadline()?;
         self.check_parameter_page_deadline()?;
@@ -721,7 +750,7 @@ impl Prepared {
         let mut bytes = [0; crate::transport::wire::MAX_PACKET_BYTES];
         let mut cursor = Cursor::new(bytes.as_mut_slice());
         if let Some(metadata) = metadata {
-            crate::transport::wire::write_authored(&mut cursor, &block, &|id| {
+            crate::transport::wire::write_authored(&mut cursor, &block, manual_parameter, &|id| {
                 metadata.step_count(id)
             })
         } else {

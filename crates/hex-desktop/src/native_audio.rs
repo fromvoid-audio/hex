@@ -1050,6 +1050,20 @@ impl NativeAudioSink {
 }
 impl WorkerAudioSink for NativeAudioSink {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn plugin_parameter_requires_stopped_restore(
+        &mut self,
+        context: AudioSourceContext,
+        origin: hex_session::device_gesture::PluginParameterOrigin,
+    ) -> Result<bool, String> {
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .ok_or("vst3 output is unavailable")?;
+        self.plugins
+            .parameter_requires_restore(control, context, origin.device.value())
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn prepare_plugin_parameter_gesture(
         &mut self,
         input: hex_session::service::PluginParameterGestureInput<'_>,
@@ -1066,7 +1080,8 @@ impl WorkerAudioSink for NativeAudioSink {
                     "vst3 output is unavailable".into(),
                 )
             })?;
-        self.plugins.parameter_gesture(control, input)
+        self.plugins
+            .parameter_gesture(control, input, self.request_cancellation.as_ref())
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn confirm_plugin_parameter_publication(
@@ -1086,6 +1101,7 @@ impl WorkerAudioSink for NativeAudioSink {
         };
         use std::time::{Duration, Instant};
         let deadline = Instant::now() + Duration::from_secs(2);
+        let live_override = self.plugins.override_publication_source(context);
         loop {
             let Some(control) = self
                 .output
@@ -1096,11 +1112,18 @@ impl WorkerAudioSink for NativeAudioSink {
                 return Err(Error::SourceLost("vst3 edit lost its audio output".into()));
             };
             let status = &control.status;
-            if status.recording_source().is_some_and(|source| {
+            let installed = status.recording_source().filter(|source| {
                 source.output_identity == output_identity
                     && source.audio_revision == audio_revision
                     && source.context == context
-            }) {
+            });
+            if let Some(installed) = installed {
+                if live_override.is_some_and(|(_, epoch, playing)| {
+                    status.native_parameter_source(playing) != Some((installed, epoch))
+                }) {
+                    self.relinquish_output();
+                    return Err(Error::SourceLost("vst3 override transport changed".into()));
+                }
                 return Ok(());
             }
             if let Some((revision, reason)) = status.rejected_revision()
@@ -1452,6 +1475,21 @@ impl WorkerAudioSink for NativeAudioSink {
             ),
         ) {
             return Err(hex_session::service::ResidentPublicationRefusal { playback, error });
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if let Some((source, epoch, playing)) =
+            self.plugins.override_publication_source(metadata.context)
+            && self
+                .output
+                .as_mut()
+                .and_then(|output| output.publication.control())
+                .and_then(|control| control.status.native_parameter_source(playing))
+                != Some((source, epoch))
+        {
+            return Err(hex_session::service::ResidentPublicationRefusal {
+                playback,
+                error: "vst3 override transport changed".into(),
+            });
         }
         let preparing_output =
             if let hex_session::service::ResidentPublicationPolicy::ReplaceDocument {

@@ -181,7 +181,7 @@ fn binding_target(
     view.device_gesture
         .snapshot()
         .filter(|active| {
-            Some(active.key) == lease.get()
+            Some(device_panel::NumericGestureKey::Canonical(active.key)) == lease.get()
                 && active.key.generation == view.project_generation
                 && active.target.track_gain_anchor() == Some(track)
         })
@@ -210,7 +210,11 @@ fn dispatch_track_gain(
             if group.len() > 1 {
                 view.device_gesture
                     .begin_track_gains(view.project_generation, group)?;
-                lease.set(view.device_gesture.snapshot().map(|active| active.key));
+                lease.set(
+                    view.device_gesture
+                        .snapshot()
+                        .map(|active| device_panel::NumericGestureKey::Canonical(active.key)),
+                );
                 return Ok(());
             }
         }

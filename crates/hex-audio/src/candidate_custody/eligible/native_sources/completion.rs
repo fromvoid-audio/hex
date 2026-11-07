@@ -34,6 +34,54 @@ impl Custody {
             .try_copy_on_control()
             .map_err(|error| error.to_string())
     }
+    pub(in crate::candidate_custody) fn native_source_for_base_capture(
+        &self,
+        binding: Binding,
+        canonical: &NativeDeviceState,
+        require_installed: bool,
+    ) -> Result<crate::plugin_effects::BaseCaptureSource, String> {
+        let work = self
+            .work
+            .try_lock()
+            .map_err(|_| "native preparation is busy")?;
+        let bank = self.bank.try_lock().map_err(|_| "native source is busy")?;
+        let index = bank.sources.index(binding).ok_or("native source differs")?;
+        let slot = &bank.sources.slots[index];
+        let source = match work.sources.cells[index].owner.as_ref() {
+            Some(Owner::Effect(owner)) => NativeEffectReference::Unsplit(owner),
+            Some(Owner::Loaned(owner)) => NativeEffectReference::Loaned(owner),
+            _ => return Err("native base capture requires the original effect".into()),
+        };
+        if bank.closing
+            || slot.phase != Phase::Accepted
+            || slot.starting
+            || slot.retiring
+            || (require_installed
+                && (!slot.endpoint_loaned
+                    || !slot.endpoint_return.as_ref().is_some_and(|signal| {
+                        signal.installed.load(Ordering::Acquire)
+                            && signal.runtime_required.load(Ordering::Acquire)
+                    })))
+            || source.binding() != binding
+            || slot.identity != Some(source.identity())
+            || !source.matches_canonical_effect(canonical)
+        {
+            return Err("native base capture source differs from the canonical effect".into());
+        }
+        let (_, presentation) = slot
+            .presentation
+            .ok_or("native presentation is unavailable")?;
+        drop(bank);
+        Ok(crate::plugin_effects::BaseCaptureSource {
+            metadata: source
+                .source_metadata()
+                .try_copy_on_control()
+                .map_err(|error| error.to_string())?,
+            identity: source.identity(),
+            presentation,
+        })
+    }
+
     pub(in crate::candidate_custody) fn complete_native_source(
         &self,
         binding: Binding,
@@ -106,7 +154,7 @@ impl Custody {
         after_completion();
         cell.pending = false;
         let completed = match cell.owner.as_ref() {
-            Some(Owner::Prepared(owner)) => Some(owner.ready().presentation),
+            Some(Owner::Prepared(owner)) => Some((owner.ready().presentation, presentation)),
             _ => None,
         };
         let mut bank = lock(&self.bank);
@@ -163,6 +211,19 @@ impl CandidateRoot {
             .map_err(str::to_owned)?;
         self.0.eligible.native_source_metadata(binding)
     }
+    pub(crate) fn native_source_for_base_capture(
+        &self,
+        binding: Binding,
+        canonical: &NativeDeviceState,
+        require_installed: bool,
+    ) -> Result<crate::plugin_effects::BaseCaptureSource, String> {
+        self.require_native_source_control_open()
+            .map_err(str::to_owned)?;
+        self.0
+            .eligible
+            .native_source_for_base_capture(binding, canonical, require_installed)
+    }
+
     pub(crate) fn complete_native_source_preparation(
         &self,
         binding: Binding,

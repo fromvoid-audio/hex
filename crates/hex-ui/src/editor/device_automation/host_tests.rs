@@ -721,6 +721,7 @@ fn stale_reenable_keeps_pending_selection_until_its_terminal_then_restores_canon
         let edit = Edit::ReadSelection {
             device,
             target,
+            vst3_class: None,
             selection: Read::Authored,
         };
         view.automation_view.devices.read_pending = Some(super::read_selection::PendingRead {
@@ -1279,4 +1280,175 @@ fn touching_an_automated_parameter_shows_its_envelope_unmoved(cx: &mut TestAppCo
         Modifiers::default(),
     );
     pump(&mut visual, &editor);
+}
+
+#[gpui::test]
+fn clearing_a_recorded_only_lane_removes_the_take_with_one_undo(cx: &mut TestAppContext) {
+    use hex_project::{DeviceAutomationTouchSpan, DeviceAutomationTouchStep};
+    let (mut visual, editor, owner, _, device) = window(cx, "hex.utility", Slot::Track);
+    let kind = DeviceAutomationTarget::HostOutputGain;
+    let start = BeatTime::from_ratio(1, 64).unwrap();
+    let touch = vec![DeviceAutomationTouchSpan {
+        start,
+        end: BeatTime::from_ratio(1, 32).unwrap(),
+        steps: vec![DeviceAutomationTouchStep {
+            beat: start,
+            value: AutomationValue::new(0.25).unwrap(),
+        }],
+    }];
+    editor.update(&mut visual, |view, _| {
+        assert!(
+            view.enqueue(Request::Edit(Command::SpliceDeviceAutomationTouch {
+                device,
+                target: kind,
+                spans: touch.clone(),
+            }))
+        );
+    });
+    pump(&mut visual, &editor);
+    let target = visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            let state = view.state.as_ref().unwrap();
+            let lane = state
+                .project
+                .device(device)
+                .unwrap()
+                .automation_target(kind)
+                .unwrap();
+            assert!(lane.points.is_empty());
+            assert_eq!(lane.touch, touch);
+            let entry =
+                Entry::read(&state.project, view.project_generation, owner, device, kind).unwrap();
+            assert_eq!(entry.end, Some(touch[0].end));
+            let target = entry.target;
+            view.automation_view.enabled = true;
+            view.automation_menu_action(Action::Show(entry, true), window, cx);
+            target
+        })
+    });
+    pump(&mut visual, &editor);
+    let dotted: &'static str = Box::leak(
+        format!(
+            "automation-dotted-{}-{}-false",
+            device.value(),
+            target.key()
+        )
+        .into_boxed_str(),
+    );
+    let center = plot(&mut visual, device, kind).center();
+    assert!(visual.debug_bounds(dotted).is_none());
+    visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
+    editor.update(&mut visual, |view, cx| {
+        assert_eq!(
+            view.error.as_deref(),
+            Some("clear recorded automation before editing this lane"),
+        );
+        assert!(!view.automation_view.devices.pointer_active());
+        view.commit_device_automation(target, Vec::new(), cx);
+    });
+    pump(&mut visual, &editor);
+    assert!(visual.debug_bounds(dotted).is_some());
+    editor.update(&mut visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert!(
+            state
+                .project
+                .device(device)
+                .unwrap()
+                .automation_target(kind)
+                .is_none()
+        );
+        assert!(view.enqueue(Request::Undo));
+    });
+    pump(&mut visual, &editor);
+    assert!(visual.debug_bounds(dotted).is_none());
+    editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        let lane = state
+            .project
+            .device(device)
+            .unwrap()
+            .automation_target(kind)
+            .unwrap();
+        assert!(lane.points.is_empty());
+        assert_eq!(lane.touch, touch);
+    });
+}
+
+#[gpui::test]
+fn host_trim_lane_controls_edit_their_exact_stage_and_offer_record_arm(cx: &mut TestAppContext) {
+    let (mut visual, editor, owner, _, device) = window(cx, "hex.utility", Slot::Track);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+    assert!(visual.update(|window, _| window.is_window_active()));
+    for (kind, descriptor, delta) in [
+        (
+            DeviceAutomationTarget::HostInputGain,
+            hex_engine::DEVICE_INPUT_GAIN,
+            -16.0,
+        ),
+        (
+            DeviceAutomationTarget::HostOutputGain,
+            hex_engine::DEVICE_OUTPUT_GAIN,
+            8.0,
+        ),
+    ] {
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                let state = view.state.as_ref().unwrap();
+                let entry =
+                    Entry::read(&state.project, view.project_generation, owner, device, kind).unwrap();
+                assert!(matches!(
+                    view.native_automation_arm_action(&entry),
+                    Some(("arm automation recording", Action::ToggleNativeArm(target))) if target.kind == kind
+                ));
+                view.automation_menu_action(Action::Show(entry, true), window, cx);
+            });
+        });
+        pump(&mut visual, &editor);
+        let selector = Box::leak(
+            format!(
+                "device-{}-parameter-{}-value",
+                device.value(),
+                descriptor.id.value()
+            )
+            .into_boxed_str(),
+        );
+        let center = visual.debug_bounds(selector).unwrap().center();
+        let end = point(center.x, center.y + px(delta));
+        visual.simulate_mouse_move(center, None, Modifiers::default());
+        visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
+        let (captured, focused) =
+            visual.update(|window, cx| (window.is_pointer_dragging(), window.focused(cx)));
+        assert!(captured, "trim pointer capture, focus={focused:?}");
+        visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            let snapshot = view.device_gesture.snapshot();
+            assert!(matches!(snapshot.map(|gesture| gesture.target),
+                Some(hex_session::device_gesture::GestureTarget::DeviceParameter { device: id, parameter })
+                if id == device && parameter == descriptor.id), "{snapshot:?} / {:?}", view.error);
+        });
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        pump(&mut visual, &editor);
+    }
+    let read = |visual: &VisualTestContext| {
+        editor.read_with(visual, |view, _| {
+            let state = view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .state();
+            (state.input_gain_db(), state.output_gain_db())
+        })
+    };
+    let (input, output) = read(&visual);
+    assert!(input > 0.0 && output < 0.0, "{input} / {output}");
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump(&mut visual, &editor);
+    assert_eq!(read(&visual), (input, 0.0));
 }

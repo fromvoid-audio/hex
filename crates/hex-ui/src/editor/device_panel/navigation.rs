@@ -286,6 +286,9 @@ pub(in crate::editor) fn bottom_bar(
             )
             .size_full(),
         );
+    let trim = open
+        .then(|| super::render_automation_trim(view, cx))
+        .flatten();
     let measure_entity = cx.entity();
     div()
         .id("device-chain-bottom-bar")
@@ -294,6 +297,7 @@ pub(in crate::editor) fn bottom_bar(
         .items_center()
         .gap(px(4.0))
         .flex_shrink_0()
+        .children(trim)
         .child(overview)
         .child(
             div()

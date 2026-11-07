@@ -25,7 +25,8 @@ mod parameter_change;
 mod parameters;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use parameter_change::{
-    NativeWorkerParameterChange, NativeWorkerParameterProgress, ProcessedParameterChange,
+    NativeParameterHold, NativeWorkerParameterChange, NativeWorkerParameterProgress,
+    ProcessedParameterChange,
 };
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use parameters::{MAX_OBSERVED_PARAMETERS, NativeParameterValue, NativeParameterValues};
@@ -165,14 +166,21 @@ impl State {
         }
         Ok(())
     }
-    fn process(&mut self, block: Block, authored: bool) -> Result<Block, Fault> {
+    fn process(
+        &mut self,
+        block: Block,
+        authored: bool,
+        manual_parameter: Option<ParameterPoint>,
+    ) -> Result<Block, Fault> {
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let _ = manual_parameter;
         match self.processor.as_mut() {
             Some(Processor::Function(process)) if !authored => process(block),
             Some(Processor::Function(_)) => Err(Fault::InvalidParameters),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             Some(Processor::Native(instance)) => {
                 let result = if authored {
-                    instance.exchange_armed_authored_on_worker(block)
+                    instance.exchange_armed_authored_with_manual_on_worker(block, manual_parameter)
                 } else {
                     instance.exchange_on_worker(block)
                 };
@@ -375,31 +383,46 @@ fn transport_runner_with_setup(
                     block,
                     parameter_capacity,
                     authored,
+                    manual_origin_available,
                 })) => {
                     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-                    let _ = parameter_capacity;
+                    let _ = (parameter_capacity, manual_origin_available);
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     let mut block = block;
+                    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                    let manual_parameter = None;
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                    if let Err(error) =
-                        state.stage_parameter_change(&published, &mut block, parameter_capacity)
-                    {
-                        state.worker.revoke();
-                        fault = Some(error);
-                        break;
-                    }
-                    let result = state.process(block, authored).and_then(|reply| {
-                        // Native exchange already validated the complete SDK
-                        // reply. Retain its private input receipt even if Stop
-                        // revokes the transport before callback publication.
-                        // The live terminal is still published only below.
-                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                        state.complete_parameter_change(&reply)?;
-                        state.worker.complete(reply)?;
-                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                        state.observe_parameter_reply(&reply)?;
-                        Ok(())
-                    });
+                    let manual_parameter = match state.stage_parameter_change(
+                        &published,
+                        &mut block,
+                        parameter_capacity,
+                        authored,
+                        manual_origin_available,
+                    ) {
+                        Ok(point) => point,
+                        Err(error) => {
+                            state.worker.revoke();
+                            fault = Some(error);
+                            break;
+                        }
+                    };
+                    let result =
+                        state
+                            .process(block, authored, manual_parameter)
+                            .and_then(|reply| {
+                                // Native exchange already validated the complete SDK
+                                // reply. Retain its private input receipt even if Stop
+                                // revokes the transport before callback publication.
+                                // The live terminal is still published only below.
+                                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                                let manual = state.complete_parameter_change(&reply)?;
+                                #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                                let manual = None;
+                                state.worker.complete_with_manual_parameter(reply, manual)?;
+                                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                                state.observe_parameter_reply(&reply)?;
+                                Ok(())
+                            });
                     if let Err(error) = result {
                         state.worker.revoke();
                         if error != Fault::Revoked {

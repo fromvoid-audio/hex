@@ -5,6 +5,11 @@ use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDevic
 use std::collections::BTreeMap;
 
 mod capture;
+mod manual_base;
+mod manual_order;
+mod manual_origin;
+mod manual_pause;
+mod manual_preroll;
 mod pressure;
 #[cfg(not(debug_assertions))]
 mod profile;
@@ -37,6 +42,15 @@ fn fixture_at(profile: &str, location: usize) -> OrdinaryFixture {
     fixture_with_quantum(profile, location, 8)
 }
 fn fixture_with_quantum(profile: &str, location: usize, quantum: u16) -> OrdinaryFixture {
+    fixture_with_authored(profile, location, quantum, &[])
+}
+
+fn fixture_with_authored(
+    profile: &str,
+    location: usize,
+    quantum: u16,
+    ids: &[u32],
+) -> OrdinaryFixture {
     let (mut control, mut callback) = channel(48_000).unwrap();
     control
         .configure_plugin_callback_quantum(&mut callback, quantum)
@@ -96,8 +110,9 @@ fn fixture_with_quantum(profile: &str, location: usize, quantum: u16) -> Ordinar
         _ => ProcessorChainOwner::Main,
     };
     let identity = ProcessorInstanceIdentity::new(owner, editor.project().next_identity()).unwrap();
-    let binding = source_for_profile(&mut control, identity, profile, quantum, None);
-    editor
+    let binding =
+        source_for_profile_with_authored(&mut control, identity, profile, quantum, None, ids);
+    let Created::Device(device) = editor
         .execute(match location {
             0 => Command::InsertDevice {
                 track,
@@ -114,12 +129,30 @@ fn fixture_with_quantum(profile: &str, location: usize, quantum: u16) -> Ordinar
                 state: control.native_source_prepared_state(binding).unwrap(),
             },
         })
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("original effect")
+    };
+    for &id in ids {
+        editor
+            .execute(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target: hex_project::DeviceAutomationTarget::Vst3 { parameter: id },
+                points: vec![hex_project::AutomationPoint {
+                    beat: hex_project::BeatTime::ZERO,
+                    value: hex_project::AutomationValue::new(if id == 7 { 0.25 } else { 0.5 })
+                        .unwrap(),
+                    outgoing: hex_project::AutomationInterpolation::Step,
+                }],
+            })
+            .unwrap();
+    }
+    let frames = if ids.is_empty() { 32 } else { 96 };
     let Created::Asset(asset) = editor
         .execute(Command::AddAsset {
             path: "ordinary-original.wav".into(),
             sample_rate: 48_000,
-            frames: 32,
+            frames,
         })
         .unwrap()
     else {
@@ -130,15 +163,15 @@ fn fixture_with_quantum(profile: &str, location: usize, quantum: u16) -> Ordinar
             track,
             asset,
             start: 0,
-            duration: 32,
+            duration: frames,
             source_offset: 0,
-            source_length: 32,
+            source_length: frames,
             looping: false,
         })
         .unwrap();
     let media = BTreeMap::from([(
         asset,
-        hex_engine::Audio::new(48_000, vec![[0.25, -0.5]; 32]).unwrap(),
+        hex_engine::Audio::new(48_000, vec![[0.25, -0.5]; frames as usize]).unwrap(),
     )]);
     let resources = PreparedDeviceResources::prepare_on_control(
         &ResidentDeviceAssets::default(),

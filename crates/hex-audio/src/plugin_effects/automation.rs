@@ -102,12 +102,14 @@ impl Default for SourceCapabilities {
     }
 }
 
+pub(super) type CanonicalParameterBases = [Option<(u32, u64)>; MAX_PARAMETER_POINTS];
+
 impl SourceCapabilities {
     pub(super) fn arm(
         instance: &mut hex_plugin_host::native::Prepared,
         class: hex_plugin_state::ClassId,
         ids: &[u32],
-    ) -> Result<Self, hex_plugin_host::Error> {
+    ) -> Result<(Self, CanonicalParameterBases), hex_plugin_host::Error> {
         use hex_plugin_host::Error;
 
         if ids.len() > MAX_PARAMETER_POINTS {
@@ -121,7 +123,15 @@ impl SourceCapabilities {
             len: ids.len(),
             ..Self::default()
         };
-        for (entry, &id) in source.parameters.iter_mut().zip(ids) {
+        let mut bases = [None; MAX_PARAMETER_POINTS];
+        for ((entry, base), &id) in source.parameters.iter_mut().zip(&mut bases).zip(ids) {
+            *base = Some((
+                id,
+                metadata
+                    .initial_normalized(id)
+                    .ok_or(Error::Protocol("authored canonical value missing"))?
+                    .to_bits(),
+            ));
             *entry = hex_lattice::ForeignParameterCapability {
                 id,
                 steps: metadata
@@ -130,7 +140,7 @@ impl SourceCapabilities {
             };
         }
         instance.arm_authored_parameter_metadata_on_control(metadata)?;
-        Ok(source)
+        Ok((source, bases))
     }
 
     pub(super) fn is_armed(&self) -> bool {

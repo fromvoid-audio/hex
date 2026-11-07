@@ -195,7 +195,7 @@ struct Packet {
     std::array<uint8_t,header_size+max_frames*8+hex_instance::INPUT_NOTE_COUNT*12+hex_instance::PARAMETER_POINT_COUNT*20+extended_timing_size+timing_change_limit*timing_change_bytes> bytes{};
     std::array<hex_instance::ParameterPoint,hex_instance::PARAMETER_POINT_COUNT> parameters{};
     std::array<uint32_t,hex_instance::PARAMETER_POINT_COUNT> authored_steps{};
-    bool authored_parameters=false;
+    bool authored_parameters=false,manual_parameter=false;
     std::array<hex_instance::InputNote,hex_instance::INPUT_NOTE_COUNT> notes{};
     size_t note_count=0;
     size_t parameter_count=0;
@@ -379,17 +379,23 @@ struct Packet {
         return true;
     }
     bool parse_parameters(const uint8_t* start,int32_t limit) {
+        manual_parameter=false;
         for(size_t n=0;n<parameter_count;++n) {
             const auto* point=start+n*(authored_parameters?20:16);
             auto& value=parameters[n];value.offset=static_cast<int32_t>(number(point,2));
             value.id=static_cast<uint32_t>(number(point+4,4));
             const auto bits=number(point+8,8);std::memcpy(&value.normalized,&bits,8);
-            if(number(point+2,2) || value.offset>=limit || value.id>0x7FFFFFFFu ||
+            const auto kind=number(point+2,2);
+            if(kind && (!authored_parameters || n || kind!=1 || value.offset)) return false;
+            if(kind) manual_parameter=true;
+            if((n && manual_parameter && parameters[0].id==value.id) ||
+                value.offset>=limit || value.id>0x7FFFFFFFu ||
                 !std::isfinite(value.normalized) || value.normalized<0 || value.normalized>1 ||
                 (n && parameters[n-1].offset>value.offset)) return false;
             if(authored_parameters) {
                 authored_steps[n]=static_cast<uint32_t>(number(point+16,4));
-                if(authored_steps[n]>static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) return false;
+                if(kind?authored_steps[n]!=0:
+                    authored_steps[n]>static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) return false;
             }
         }
         return true;

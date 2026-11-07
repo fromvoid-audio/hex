@@ -28,7 +28,7 @@ impl State {
 }
 
 impl NativeWorker {
-    pub(super) fn prepare_stopped_capture(&mut self) -> Result<(), &'static str> {
+    pub(in crate::plugin_worker) fn prepare_stopped_capture(&mut self) -> Result<(), &'static str> {
         {
             let slot = self
                 .reaper

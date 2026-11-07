@@ -43,6 +43,7 @@ mod candidate_custody;
 pub use candidate_custody::{
     NativeSourceDataReservation, NativeSourcePreparationProgress, NativeSourcePreparationReturn,
 };
+pub mod foreign_parameter_delivery;
 pub mod gain_recording;
 mod lifecycle;
 mod live_delivery;

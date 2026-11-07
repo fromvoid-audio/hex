@@ -2,8 +2,8 @@
 //! existing carrier. There is no public constructor, clone or worker extraction.
 use super::*;
 use crate::plugin_worker::{
-    NativeWorkerCapture, NativeWorkerCaptureProgress, NativeWorkerControllerProgress,
-    NativeWorkerControllerQuery,
+    NativeParameterHold, NativeWorkerCapture, NativeWorkerCaptureProgress,
+    NativeWorkerControllerProgress, NativeWorkerControllerQuery, NativeWorkerParameterChange,
 };
 
 pub(crate) struct NativeEffectControl {
@@ -13,6 +13,29 @@ pub(crate) struct NativeEffectControl {
     source_metadata: EffectSourceMetadata,
 }
 impl NativeEffect {
+    pub(crate) fn parameter_hold(
+        &mut self,
+        command: NativeParameterHold<'_>,
+    ) -> Result<NativeWorkerParameterChange, &'static str> {
+        self.worker.parameter_hold_on_control(command)
+    }
+    pub(crate) fn parameter_hold_with_before<T>(
+        &mut self,
+        command: NativeParameterHold<'_>,
+        before_publish: impl FnOnce(&NativeWorkerParameterChange) -> Result<T, &'static str>,
+    ) -> Result<(NativeWorkerParameterChange, T), &'static str> {
+        self.worker
+            .parameter_hold_with_before(command, true, before_publish)
+    }
+    pub(crate) fn parameter_change_with_before<T>(
+        &mut self,
+        id: u32,
+        normalized: f64,
+        before_publish: impl FnOnce(&NativeWorkerParameterChange) -> Result<T, &'static str>,
+    ) -> Result<(NativeWorkerParameterChange, T), &'static str> {
+        self.worker
+            .parameter_change_with_before(id, normalized, true, before_publish)
+    }
     pub(crate) fn begin_parameter_change(
         &mut self,
         id: u32,
@@ -103,6 +126,29 @@ impl NativeEffect {
     }
 }
 impl NativeEffectControl {
+    pub(crate) fn parameter_hold(
+        &mut self,
+        command: NativeParameterHold<'_>,
+    ) -> Result<NativeWorkerParameterChange, &'static str> {
+        self.worker.parameter_hold_on_control(command)
+    }
+    pub(crate) fn parameter_hold_with_before<T>(
+        &mut self,
+        command: NativeParameterHold<'_>,
+        before_publish: impl FnOnce(&NativeWorkerParameterChange) -> Result<T, &'static str>,
+    ) -> Result<(NativeWorkerParameterChange, T), &'static str> {
+        self.worker
+            .parameter_hold_with_before(command, true, before_publish)
+    }
+    pub(crate) fn parameter_change_with_before<T>(
+        &mut self,
+        id: u32,
+        normalized: f64,
+        before_publish: impl FnOnce(&NativeWorkerParameterChange) -> Result<T, &'static str>,
+    ) -> Result<(NativeWorkerParameterChange, T), &'static str> {
+        self.worker
+            .parameter_change_with_before(id, normalized, true, before_publish)
+    }
     pub(crate) fn begin_parameter_change(
         &mut self,
         id: u32,
@@ -264,6 +310,10 @@ impl NativeEffectReference<'_> {
     }
     pub(crate) fn binding(&self) -> Binding {
         self.configuration().binding
+    }
+    pub(crate) fn matches_canonical_effect(&self, state: &NativeDeviceState) -> bool {
+        let configuration = self.configuration();
+        !configuration.prepared.is_instrument_profile() && configuration.state.processing_eq(state)
     }
     pub(crate) fn identity(&self) -> ProcessorInstanceIdentity {
         self.configuration().identity

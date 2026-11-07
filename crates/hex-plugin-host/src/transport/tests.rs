@@ -25,9 +25,9 @@ fn constructor_storage_requires_the_original_pair_and_survives_exchange_and_reti
     // Both queue allocations retain all slots, even when no blocks are queued.
     assert_eq!(
         storage.data_bytes,
-        QUEUE_CAPACITY * (std::mem::size_of::<InputRequest>() + std::mem::size_of::<Block>())
+        QUEUE_CAPACITY * (std::mem::size_of::<InputRequest>() + std::mem::size_of::<OutputReply>())
             + std::mem::size_of::<RingBuffer<InputRequest>>()
-            + std::mem::size_of::<RingBuffer<Block>>()
+            + std::mem::size_of::<RingBuffer<OutputReply>>()
             + std::mem::size_of::<Revocation>()
     );
     assert_eq!((storage.shared_groups, storage.shared_handle_bound), (3, 7));
@@ -319,7 +319,23 @@ fn consumer_rejects_each_identity_field_and_nonfinite_or_invalid_events() {
             _ => unreachable!(),
         }
         // Deliberately bypass the original producer to test consumer validation.
-        worker.replies.push(reply).unwrap();
+        worker
+            .replies
+            .push(OutputReply {
+                block: reply,
+                manual: Some(ManualExchange {
+                    input: ManualParameterInput {
+                        operation: NonZeroU64::MIN,
+                        action: ManualParameterAction::Point(ParameterPoint {
+                            id: 0,
+                            frame: 0,
+                            normalized: 0.5,
+                        }),
+                    },
+                    origin: None,
+                }),
+            })
+            .unwrap();
         let expected = match case {
             7 => Fault::InvalidSamples,
             8 | 9 => Fault::InvalidEvents,
@@ -329,6 +345,7 @@ fn consumer_rejects_each_identity_field_and_nonfinite_or_invalid_events() {
             matches!(callback.stage(&[[1.0; 2]; 8], &[], &mut output), Err(fault) if fault == expected)
         );
         assert_eq!(output, [[0.0; 2]; 8]);
+        assert_eq!(callback.take_accepted_manual_parameter(), None);
     }
 }
 
@@ -344,7 +361,13 @@ fn duplicate_and_out_of_order_replies_are_terminal() {
         let first = worker.receive().unwrap().unwrap();
         worker.complete(first).unwrap();
         if duplicate {
-            worker.replies.push(first).unwrap();
+            worker
+                .replies
+                .push(OutputReply {
+                    block: first,
+                    manual: None,
+                })
+                .unwrap();
             callback.stage(&[[1.0; 2]; 8], &[], &mut output).unwrap();
             callback.finish(true).unwrap();
         } else {
@@ -368,7 +391,9 @@ fn worker_enforces_single_inflight_and_exact_completion_before_next_receive() {
             .stage(&[[1.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
             .unwrap();
         callback.finish(true).unwrap();
-        let mut block = worker.receive().unwrap().unwrap();
+        let request = worker.receive_request().unwrap().unwrap();
+        assert!(!request.manual_origin_available);
+        let mut block = request.block;
         match case {
             0 => assert!(matches!(worker.receive(), Err(Fault::Protocol))),
             1 => {
@@ -415,6 +440,7 @@ fn bounded_input_validation_and_queue_independent_stop() {
                             block: Block::empty(BINDING, 8),
                             parameter_capacity: MAX_PARAMETER_POINTS,
                             authored: false,
+                            manual_origin: None,
                         })
                         .unwrap();
                 }
@@ -429,6 +455,7 @@ fn bounded_input_validation_and_queue_independent_stop() {
                             block: Block::empty(BINDING, 8),
                             parameter_capacity: MAX_PARAMETER_POINTS,
                             authored: false,
+                            manual_origin: None,
                         })
                         .unwrap();
                 }
@@ -974,4 +1001,169 @@ fn graph_fragment_staging_final_acceptance_and_refusal_allocate_and_free_nothing
         (0, 0, 0, 0)
     );
     assert!(worker.requests.is_empty());
+}
+
+#[test]
+fn manual_marker_requires_the_aligned_accepted_physical_callback() {
+    for action in [
+        ManualParameterAction::Point(ParameterPoint {
+            id: 0,
+            frame: 0,
+            normalized: 0.75,
+        }),
+        ManualParameterAction::Release { parameter: 0 },
+    ] {
+        let input = ManualParameterInput {
+            operation: NonZeroU64::MIN,
+            action,
+        };
+        for host_accepts in [false, true] {
+            let (control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
+            let mut position = 0;
+            let mut delivered = false;
+            for size in [3, 4, 6, 2, 4, 5, 8] {
+                let mut output = [[0.0; 2]; 8];
+                callback.begin_physical_callback(size).unwrap();
+                // The transport's first marked output is at position 16, which
+                // falls in the second render segment of a physical callback.
+                let split = size.min(1);
+                let mut stage = |offset, input: &[Frame], output: &mut [Frame]| {
+                    let origin = |index| {
+                        let frame = (position + offset + index) as u64;
+                        Some(ManualParameterOrigin {
+                            arrangement_frame: 127 + frame,
+                            performance_frame: 301 + frame,
+                            loop_pass: 2,
+                        })
+                    };
+                    callback
+                        .stage_effect_segment(
+                            offset,
+                            input,
+                            &[],
+                            &[],
+                            output,
+                            SegmentTiming {
+                                playing: None,
+                                at: |_| None,
+                            },
+                            EffectSegmentOrigins {
+                                authored: None,
+                                manual: Some(&origin),
+                            },
+                        )
+                        .unwrap();
+                };
+                stage(0, &[[1.0; 2]; 1][..split], &mut output[..split]);
+                if split < size {
+                    stage(split, &[[1.0; 2]; 8][split..size], &mut output[split..size]);
+                }
+                assert_eq!(callback.take_accepted_manual_parameter(), None);
+                let includes_marker = (position..position + size).contains(&16);
+                if includes_marker && !host_accepts {
+                    assert_eq!(callback.finish(false), Err(Fault::Protocol));
+                    assert_eq!(callback.take_accepted_manual_parameter(), None);
+                    assert!(control.is_revoked());
+                    break;
+                }
+                callback.finish(true).unwrap();
+                let accepted = callback.take_accepted_manual_parameter();
+                if includes_marker {
+                    assert_eq!(
+                        accepted,
+                        Some(AcceptedManualParameter {
+                            binding: BINDING,
+                            sequence: 0,
+                            first_frame: 0,
+                            callback_offset: (16 - position) as u16,
+                            input,
+                            origin: Some(ManualParameterOrigin {
+                                arrangement_frame: 127,
+                                performance_frame: 301,
+                                loop_pass: 2,
+                            }),
+                        })
+                    );
+                    assert_eq!(output[16 - position], [3.0; 2]);
+                    delivered = true;
+                } else {
+                    assert_eq!(accepted, None);
+                }
+                assert_eq!(callback.take_accepted_manual_parameter(), None);
+                if let Some(request) = worker.receive_request().unwrap() {
+                    assert!(request.manual_origin_available);
+                    let mut block = request.block;
+                    let marker = (block.sequence == 0).then_some(input);
+                    if marker.is_some() {
+                        block.pcm[..8].fill([3.0; 2]);
+                    }
+                    worker
+                        .complete_with_manual_parameter(block, marker)
+                        .unwrap();
+                }
+                position += size;
+            }
+            assert_eq!(delivered, host_accepts);
+        }
+    }
+}
+
+#[test]
+fn malformed_or_late_manual_marker_cannot_escape_its_reply() {
+    let marker = ManualParameterInput {
+        operation: NonZeroU64::MIN,
+        action: ManualParameterAction::Point(ParameterPoint {
+            id: 7,
+            frame: 0,
+            normalized: 0.5,
+        }),
+    };
+    for action in [
+        ManualParameterAction::Point(ParameterPoint {
+            frame: 1,
+            ..marker.point().unwrap()
+        }),
+        ManualParameterAction::Point(ParameterPoint {
+            normalized: f64::NAN,
+            ..marker.point().unwrap()
+        }),
+        ManualParameterAction::Release {
+            parameter: u32::MAX,
+        },
+    ] {
+        let (_control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
+        callback
+            .stage(&[[0.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
+            .unwrap();
+        callback.finish(true).unwrap();
+        let block = worker.receive().unwrap().unwrap();
+        assert_eq!(
+            worker.complete_with_manual_parameter(
+                block,
+                Some(ManualParameterInput { action, ..marker })
+            ),
+            Err(Fault::InvalidParameters)
+        );
+        assert!(callback.is_revoked());
+        assert_eq!(callback.take_accepted_manual_parameter(), None);
+    }
+    let (_control, mut callback, mut worker) =
+        instrument_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+    let stage = |callback: &mut Callback| {
+        let mut output = [[9.0; 2]; 8];
+        callback.stage(&[[0.0; 2]; 8], &[], &mut output).unwrap();
+        callback.finish(true).unwrap();
+        assert_eq!(callback.take_accepted_manual_parameter(), None);
+        assert_eq!(output, [[0.0; 2]; 8]);
+    };
+    stage(&mut callback);
+    let late = worker.receive().unwrap().unwrap();
+    stage(&mut callback);
+    stage(&mut callback); // Exactly one concealed missing reply.
+    worker
+        .complete_with_manual_parameter(late, Some(marker))
+        .unwrap();
+    let on_time = worker.receive().unwrap().unwrap();
+    worker.complete(on_time).unwrap();
+    stage(&mut callback);
 }

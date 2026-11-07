@@ -13,11 +13,216 @@ pub(super) enum NativeEpochRuntimeTarget {
     Ordinary(AppliedAudioSource),
 }
 
+impl Status {
+    /// The ordinary source and epoch eligible for new live parameter input.
+    /// Priority Stop invalidates admission before the callback consumes it.
+    pub fn live_native_parameter_source(&self) -> Option<(AppliedAudioSource, u64)> {
+        self.native_parameter_source(true)
+    }
+
+    /// Current ordinary source at the requested transport state. Idle uses the
+    /// installed canonical graph observation, including after native runtime
+    /// return. Root must independently match the exact native binding and state.
+    pub fn native_parameter_source(&self, playing: bool) -> Option<(AppliedAudioSource, u64)> {
+        let epoch = self.transport_epoch.load(Acquire);
+        let source = if playing {
+            self.native_effect_source()?
+        } else {
+            self.recording_source()?
+        };
+        (self.playing.load(Acquire) == playing
+            && self.pending_stop_marker.load(Acquire) == 0
+            && self.applied_audio_source().is_none()
+            && !self.closing.load(Acquire)
+            && self.transport_epoch.load(Acquire) == epoch)
+            .then_some((source, epoch))
+    }
+}
+
 impl PublicationControl {
+    pub(crate) fn native_base_capture_source(
+        &self,
+        expected: AppliedAudioSource,
+        binding: Binding,
+        canonical: &NativeDeviceState,
+        playing: bool,
+    ) -> Result<(u32, u64, crate::plugin_effects::BaseCaptureSource), String> {
+        let (_, epoch) = self
+            .status
+            .native_parameter_source(playing)
+            .filter(|(source, _)| *source == expected)
+            .filter(|_| {
+                self.native_custody && self.output_identity() == Some(expected.output_identity)
+            })
+            .filter(|_| binding.root == expected.output_identity)
+            .ok_or("native base capture requires the current ordinary effect")?;
+        let source = self
+            .candidate_root
+            .native_source_for_base_capture(binding, canonical, playing)?;
+        Ok((self.rate, epoch, source))
+    }
+
+    pub(crate) fn native_saved_base_capture_source(
+        &self,
+        binding: Binding,
+        canonical: &NativeDeviceState,
+    ) -> Result<(u32, crate::plugin_effects::BaseCaptureSource), String> {
+        if !self.native_custody
+            || self.status.closing.load(Acquire)
+            || self.output_identity() != Some(binding.root)
+        {
+            return Err("native saved base capture output differs or is closing".into());
+        }
+        // Save may follow a pending ordinary publication or stopped playback.
+        // Its caller retains exact captured data and canonical source identity.
+        // This private scratch never needs or claims a live callback witness.
+        let source = self
+            .candidate_root
+            .native_source_for_base_capture(binding, canonical, false)?;
+        Ok((self.rate, source))
+    }
+
+    /// Admit one actual PCM point and reserve its final Main delivery witness
+    /// before the worker request becomes visible. Failed reservation admits no
+    /// point. Both returned handles retain exact terminal custody through late
+    /// close. Drain the witness before another observation or publication.
+    /// Compensated pre-roll keeps this input queued until the accepted quantum
+    /// starts on a known Arrangement origin.
+    pub fn begin_native_source_parameter_change_with_delivery_on_control(
+        &mut self,
+        source: AppliedAudioSource,
+        binding: Binding,
+        id: u32,
+        normalized: f64,
+    ) -> Result<
+        (
+            crate::plugin_worker::NativeWorkerParameterChange,
+            crate::foreign_parameter_delivery::Target,
+        ),
+        &'static str,
+    > {
+        self.require_parameter_delivery_source(source, binding)?;
+        let status = &self.status;
+        let delivery = &mut self.foreign_parameter_delivery;
+        self.candidate_root.native_parameter_change_with_before(
+            binding,
+            id,
+            normalized,
+            |request| {
+                let (binding, operation, parameter) = request
+                    .delivery_identity()
+                    .ok_or("vst3 delivery requires a PCM parameter operation")?;
+                delivery.begin(status, source, binding, operation, parameter)
+            },
+        )
+    }
+
+    /// Atomically reserve final Main delivery for a held target's Begin/Change
+    /// or its exclusive Release. The release receipt carries the actual origin
+    /// of the first successful SDK quantum with authored delivery restored.
+    /// Observed input remains queued during compensated pre-roll until that
+    /// quantum starts on a known Arrangement origin. Stop and queued withdrawal
+    /// retain their ordinary independent terminal paths.
+    pub fn native_source_parameter_hold_with_delivery_on_control(
+        &mut self,
+        source: AppliedAudioSource,
+        binding: Binding,
+        command: crate::plugin_worker::NativeParameterHold<'_>,
+    ) -> Result<
+        (
+            crate::plugin_worker::NativeWorkerParameterChange,
+            crate::foreign_parameter_delivery::Target,
+        ),
+        &'static str,
+    > {
+        self.require_parameter_delivery_source(source, binding)?;
+        let status = &self.status;
+        let delivery = &mut self.foreign_parameter_delivery;
+        self.candidate_root
+            .native_parameter_hold_with_before(binding, command, |request| {
+                let (binding, operation, parameter) = request
+                    .delivery_identity()
+                    .ok_or("vst3 delivery requires a PCM parameter operation")?;
+                delivery.begin(status, source, binding, operation, parameter)
+            })
+    }
+
+    fn require_parameter_delivery_source(
+        &self,
+        source: AppliedAudioSource,
+        binding: Binding,
+    ) -> Result<(), &'static str> {
+        if !self.native_custody
+            || self.status.closing.load(Acquire)
+            || self.output_identity() != Some(source.output_identity)
+            || binding.root != source.output_identity
+            || self.native_source_endpoint_installed(binding) != Some(true)
+        {
+            return Err("vst3 delivery source differs or is closing");
+        }
+        Ok(())
+    }
+
+    pub fn cancel_native_source_parameter_delivery_on_control(
+        &mut self,
+        target: crate::foreign_parameter_delivery::Target,
+    ) -> bool {
+        self.foreign_parameter_delivery.cancel(target)
+    }
+
+    pub fn try_native_source_parameter_delivery_on_control(
+        &mut self,
+    ) -> Option<crate::foreign_parameter_delivery::Receipt> {
+        self.foreign_parameter_delivery.try_receipt(&self.status)
+    }
+
+    /// Queue a live hold on the selected original worker. A begin/change
+    /// requires the exact applied ordinary source and a running transport.
+    /// Release stays with the original worker even if its editor revision
+    /// changed or playback is paused. A release queued while paused is
+    /// consumed before authored delivery in the next actual PCM quantum.
+    /// A returned token keeps its ordinary progress/drain custody
+    /// if the output starts closing after admission.
+    pub fn native_source_parameter_hold_on_control(
+        &mut self,
+        expected: AppliedAudioSource,
+        binding: Binding,
+        command: crate::plugin_worker::NativeParameterHold<'_>,
+    ) -> Result<crate::plugin_worker::NativeWorkerParameterChange, &'static str> {
+        use crate::plugin_worker::NativeParameterHold;
+        if !self.native_custody
+            || self.status.closing.load(Acquire)
+            || self.output_identity() != Some(expected.output_identity)
+            || binding.root != expected.output_identity
+        {
+            return Err("native parameter hold output differs or is closing");
+        }
+        if !matches!(command, NativeParameterHold::Release { .. }) {
+            if !self.status.playing.load(Acquire) {
+                return Err("native parameter hold requires running playback");
+            }
+            if self
+                .status
+                .live_native_parameter_source()
+                .map(|(source, _)| source)
+                != Some(expected)
+                || self.native_source_endpoint_installed(binding) != Some(true)
+            {
+                return Err("native parameter hold source is not applied");
+            }
+        }
+        self.candidate_root.native_parameter_hold(binding, command)
+    }
+
     /// Queue one validated raw SDK parameter input on the original live source.
     /// While playing, an actual PCM quantum consumes it. While idle, the same
-    /// worker flushes the point and acknowledges controller readback without
-    /// advancing PCM. Validate current metadata/writability at the caller.
+    /// serialized source flushes the point and acknowledges controller readback
+    /// without advancing PCM. After revocation, admission observes its healthy
+    /// worker join and the exact stopped-input drain performs that SDK exchange.
+    /// Validate current metadata/writability at the caller. Once admitted, the
+    /// caller receives the exact operation token even if output closure races
+    /// admission. Retain it through its actual terminal or original worker
+    /// release; a returned token does not establish continued source liveness.
     /// Processing progress below grants no canonical/state installation.
     pub fn begin_native_source_parameter_change_on_control(
         &mut self,
@@ -28,16 +233,12 @@ impl PublicationControl {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native parameter output is closing");
         }
-        let result = self.candidate_root.begin_native_parameter_change(
+        self.candidate_root.begin_native_parameter_change(
             binding,
             id,
             normalized,
             !self.status.playing.load(Acquire),
-        )?;
-        if self.status.closing.load(Acquire) {
-            return Err("native parameter output is closing");
-        }
-        Ok(result)
+        )
     }
     /// True only if the exact queued input was withdrawn before processing.
     /// An in-flight operation must reach its real terminal; this does not roll
@@ -869,3 +1070,42 @@ impl Callback {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod parameter_source_tests {
+    use super::*;
+
+    #[test]
+    fn parameter_source_requires_exact_transport_mode_and_current_ordinary_graph() {
+        let status = Status::default();
+        let source = AppliedAudioSource {
+            context: hex_engine::AudioSourceContext {
+                project_generation: 3,
+                editor_revision: 7,
+            },
+            audio_revision: 9,
+            output_identity: 11,
+        };
+        status.recording_source.publish(Some(source));
+        status.applied_revision.store(9, Release);
+        status.transport_epoch.store(5, Release);
+        assert_eq!(status.native_parameter_source(false), Some((source, 5)));
+        assert_eq!(status.live_native_parameter_source(), None);
+        status.pending_stop_marker.store(1, Release);
+        assert_eq!(status.native_parameter_source(false), None);
+        status.pending_stop_marker.store(0, Release);
+        status.playing.store(true, Release);
+        status.ordinary_native_revision.store(9, Release);
+        assert_eq!(status.native_parameter_source(false), None);
+        assert_eq!(status.live_native_parameter_source(), Some((source, 5)));
+        status.closing.store(true, Release);
+        assert_eq!(status.live_native_parameter_source(), None);
+        status.closing.store(false, Release);
+        status.playing.store(false, Release);
+        status.applied_source.publish(Some(source));
+        assert_eq!(status.native_parameter_source(false), None);
+        status.applied_source.publish(None);
+        status.applied_revision.store(10, Release);
+        assert_eq!(status.native_parameter_source(false), None);
+    }
+}

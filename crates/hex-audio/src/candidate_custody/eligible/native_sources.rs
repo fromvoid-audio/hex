@@ -132,7 +132,10 @@ struct Slot {
     starting: bool,
     retiring: bool,
     facts: Option<hex_plugin_host::protocol::Facts>,
-    presentation: Option<hex_plugin_host::protocol::Presentation>,
+    presentation: Option<(
+        hex_plugin_host::protocol::Presentation,
+        hex_plugin_host::protocol::PresentationPlan,
+    )>,
     processor: Option<hex_lattice::PreparedForeignProcessor>,
     cancellation: Option<Cancellation>,
     cancellation_requested: bool,
@@ -557,7 +560,7 @@ impl Custody {
             },
             _ if slot.presentation.is_some() => NativeSourcePreparationProgress::Prepared {
                 facts: slot.facts?,
-                presentation: slot.presentation?,
+                presentation: slot.presentation?.0,
             },
             Phase::Reserved => NativeSourcePreparationProgress::Preparing,
             _ => NativeSourcePreparationProgress::Facts(slot.facts?),
