@@ -1306,21 +1306,49 @@ fn clearing_a_recorded_only_lane_removes_the_take_with_one_undo(cx: &mut TestApp
         );
     });
     pump(&mut visual, &editor);
-    editor.update(&mut visual, |view, cx| {
-        let state = view.state.as_ref().unwrap();
-        let lane = state
-            .project
-            .device(device)
-            .unwrap()
-            .automation_target(kind)
-            .unwrap();
-        assert!(lane.points.is_empty());
-        assert_eq!(lane.touch, touch);
-        let entry =
-            Entry::read(&state.project, view.project_generation, owner, device, kind).unwrap();
-        view.commit_device_automation(entry.target, Vec::new(), cx);
+    let target = visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            let state = view.state.as_ref().unwrap();
+            let lane = state
+                .project
+                .device(device)
+                .unwrap()
+                .automation_target(kind)
+                .unwrap();
+            assert!(lane.points.is_empty());
+            assert_eq!(lane.touch, touch);
+            let entry =
+                Entry::read(&state.project, view.project_generation, owner, device, kind).unwrap();
+            assert_eq!(entry.end, Some(touch[0].end));
+            let target = entry.target;
+            view.automation_view.enabled = true;
+            view.automation_menu_action(Action::Show(entry, true), window, cx);
+            target
+        })
     });
     pump(&mut visual, &editor);
+    let dotted: &'static str = Box::leak(
+        format!(
+            "automation-dotted-{}-{}-false",
+            device.value(),
+            target.key()
+        )
+        .into_boxed_str(),
+    );
+    let center = plot(&mut visual, device, kind).center();
+    assert!(visual.debug_bounds(dotted).is_none());
+    visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
+    editor.update(&mut visual, |view, cx| {
+        assert_eq!(
+            view.error.as_deref(),
+            Some("clear recorded automation before editing this lane"),
+        );
+        assert!(!view.automation_view.devices.pointer_active());
+        view.commit_device_automation(target, Vec::new(), cx);
+    });
+    pump(&mut visual, &editor);
+    assert!(visual.debug_bounds(dotted).is_some());
     editor.update(&mut visual, |view, _| {
         let state = view.state.as_ref().unwrap();
         assert!(
@@ -1334,6 +1362,7 @@ fn clearing_a_recorded_only_lane_removes_the_take_with_one_undo(cx: &mut TestApp
         assert!(view.enqueue(Request::Undo));
     });
     pump(&mut visual, &editor);
+    assert!(visual.debug_bounds(dotted).is_none());
     editor.read_with(&visual, |view, _| {
         let state = view.state.as_ref().unwrap();
         let lane = state
