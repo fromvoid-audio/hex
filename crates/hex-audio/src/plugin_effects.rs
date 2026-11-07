@@ -245,7 +245,7 @@ impl NativeEffect {
                 || old.sample_rate != configuration.sample_rate
                 || old.binding.root != configuration.binding.root
                 || old.binding.instance != configuration.binding.instance
-                || old.binding.graph != configuration.binding.graph
+                || old.binding.graph > configuration.binding.graph
                 || old.binding.epoch >= configuration.binding.epoch
         }) {
             return Err(NativeWorkerStartFailure::retain_source_on_control(
