@@ -27,8 +27,9 @@
 //! prepared coefficient ramps. Decay-admitted unfrozen factories reserve the
 //! maximum finite tail. Ordinary factories keep their previous tail declaration
 //! and refuse unprepared decay input. Factories admitting freeze input declare
-//! unbounded tails before publication and otherwise refuse freeze delivery. Detached tails retain their last validated
-//! values after the host freezes the automation clock.
+//! unbounded tails before publication and otherwise refuse freeze delivery.
+//! Detached tails retain their last validated values after the host freezes the
+//! automation clock.
 
 mod runtime;
 mod state;
