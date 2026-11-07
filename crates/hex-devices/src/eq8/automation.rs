@@ -3,7 +3,7 @@
 //! Copy delivery state preserve the active target across compatible histories.
 use super::*;
 use crate::parameter_binding::{Binding, SCALAR_ENVELOPE};
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Gain(pub f32);
 pub(super) const SEMANTICS: hex_lattice_contract::ParameterSemantics =
     hex_lattice_contract::ParameterSemantics {
