@@ -28,8 +28,20 @@ impl CandidateRoot {
         &self,
         binding: Binding,
     ) -> Option<crate::plugin_worker::ReceivedProgram> {
-        self.with_native_source_endpoint(binding, |_, endpoint| {
-            endpoint.received_program_on_control()
+        self.try_native_source_received_program(binding)
+            .ok()
+            .flatten()
+    }
+    pub(crate) fn try_native_source_received_program(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<crate::plugin_worker::ReceivedProgram>, &'static str> {
+        self.require_native_source_control_open()?;
+        self.try_with_native_source_endpoint(binding, |_, endpoint| {
+            if !endpoint.transport_is_live_on_control() {
+                return Err("native automation transport is not live");
+            }
+            Ok(endpoint.received_program_on_control())
         })?
     }
     pub(crate) fn native_source_processed_program(
@@ -132,6 +144,24 @@ mod tests {
         assert_eq!(updated.3, original.3);
         assert_eq!(root.native_source_prepared_state(binding).unwrap(), state);
         assert_eq!(outer.native_source_received_program(binding), None);
+        assert_eq!(outer.try_native_source_received_program(binding), Ok(None));
+        #[cfg(feature = "allocation-probe")]
+        outer
+            .with_native_source_work_held_on_control(|| {
+                assert_eq!(
+                    outer.try_native_source_received_program(binding),
+                    Err("native preparation is busy")
+                );
+            })
+            .unwrap();
+        assert!(
+            outer
+                .try_native_source_received_program(Binding {
+                    epoch: binding.epoch + 1,
+                    ..binding
+                })
+                .is_err()
+        );
         assert_eq!(outer.native_source_processed_program(binding), None);
         let callback = outer.loan_native_endpoint(binding).unwrap();
         let second = outer.reserve_native_program_revision(binding).unwrap();
@@ -192,6 +222,10 @@ mod tests {
         assert_eq!(observed.binding, binding);
         assert_eq!(observed.sequence, 0);
         assert_eq!(
+            outer.try_native_source_received_program(binding),
+            Ok(Some(observed))
+        );
+        assert_eq!(
             observed.program, None,
             "a current compiler key is never substituted for an ordinary actual request"
         );
@@ -214,6 +248,7 @@ mod tests {
         assert!(root.retire_native_source(binding));
         assert!(outer.reserve_native_program_revision(binding).is_err());
         assert_eq!(outer.native_source_received_program(binding), None);
+        assert!(outer.try_native_source_received_program(binding).is_err());
         dispose(root, binding);
         outer.announce_retirement();
     }

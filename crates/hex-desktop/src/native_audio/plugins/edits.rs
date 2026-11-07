@@ -7,6 +7,33 @@ use hex_audio::prepared::PublicationControl;
 use hex_session::service::RequestCancellation;
 
 impl Plugins {
+    pub(in crate::native_audio) fn received_foreign_program_on_control(
+        control: &mut PublicationControl,
+        binding: Binding,
+        cancellation: Option<&RequestCancellation>,
+    ) -> hex_engine::ForeignProgramFrontier {
+        use hex_engine::ForeignProgramFrontier;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
+        loop {
+            if check_cancel(cancellation).is_err() {
+                return ForeignProgramFrontier::Unknown;
+            }
+            match control.try_native_source_received_program_on_control(binding) {
+                Ok(Some(received)) if received.binding == binding => {
+                    return received.program.map_or(
+                        ForeignProgramFrontier::Empty,
+                        ForeignProgramFrontier::Program,
+                    );
+                }
+                Ok(None) | Err("native preparation is busy" | "native source is busy")
+                    if std::time::Instant::now() < deadline =>
+                {
+                    poll_control(control);
+                }
+                _ => return ForeignProgramFrontier::Unknown,
+            }
+        }
+    }
     pub(in crate::native_audio) fn preparing_edit(&self, context: AudioSourceContext) -> bool {
         self.edit == Some(context)
     }

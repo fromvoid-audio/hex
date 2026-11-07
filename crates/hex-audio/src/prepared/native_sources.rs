@@ -1002,6 +1002,21 @@ impl PublicationControl {
         }
         self.candidate_root.native_source_received_program(binding)
     }
+    /// Retryable observation on the exact original live worker. `Ok(None)`
+    /// means no coherent pickup is available yet; only `Some(received)` whose
+    /// `program` is None proves an observed empty frontier. Busy observations
+    /// are distinct from a stale, revoked or closing source. No admission or
+    /// callback/graph custody is granted by this query.
+    pub fn try_native_source_received_program_on_control(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<crate::plugin_worker::ReceivedProgram>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native automation output is closing");
+        }
+        self.candidate_root
+            .try_native_source_received_program(binding)
+    }
     /// Exact worker reply publication, still distinct from final Main delivery.
     pub fn native_source_processed_program_on_control(
         &self,

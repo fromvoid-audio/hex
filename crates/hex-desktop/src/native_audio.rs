@@ -1289,24 +1289,23 @@ impl WorkerAudioSink for NativeAudioSink {
             prepare,
         )
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn received_foreign_program_on_control(
         &mut self,
         binding: hex_audio::plugin_effects::EffectBinding,
     ) -> hex_engine::ForeignProgramFrontier {
-        use hex_engine::ForeignProgramFrontier;
-        let received = self
+        let Some(control) = self
             .output
             .as_mut()
             .and_then(|output| output.publication.control())
-            .and_then(|control| control.native_source_received_program_on_control(binding))
-            .filter(|received| received.binding == binding);
-        match received {
-            None => ForeignProgramFrontier::Unknown,
-            Some(received) => received.program.map_or(
-                ForeignProgramFrontier::Empty,
-                ForeignProgramFrontier::Program,
-            ),
-        }
+        else {
+            return hex_engine::ForeignProgramFrontier::Unknown;
+        };
+        plugins::Plugins::received_foreign_program_on_control(
+            control,
+            binding,
+            self.request_cancellation.as_ref(),
+        )
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn prepare_offline_bounce(
