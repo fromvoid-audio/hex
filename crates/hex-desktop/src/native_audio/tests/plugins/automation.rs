@@ -4,6 +4,20 @@ use hex_project::{
     AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, DeviceAutomationTarget,
 };
 
+fn edit_with_running_callback(h: &mut ResidentHarness, request: Request) -> Event {
+    h.service.submit(request).unwrap();
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        h.pump();
+        h.render();
+        if let Ok(event) = h.service.try_event() {
+            return event;
+        }
+        assert!(Instant::now() < until, "vst3 lane edit did not complete");
+        std::thread::yield_now();
+    }
+}
+
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn signed_vst3_rows_admit_only_matching_arrangement_lane_edits() {
@@ -107,10 +121,8 @@ fn signed_vst3_rows_admit_only_matching_arrangement_lane_edits() {
         assert_eq!(refused.state.project, accepted.state.project);
         assert_eq!(refused.state.revision, revision);
     }
-    h.service
-        .submit(edit(revision, Some(exact_class), points.clone()))
-        .unwrap();
-    let event = h.next();
+    let event =
+        edit_with_running_callback(&mut h, edit(revision, Some(exact_class), points.clone()));
     if !eligible {
         assert!(
             event.error.is_some(),
@@ -133,10 +145,12 @@ fn signed_vst3_rows_admit_only_matching_arrangement_lane_edits() {
     assert_eq!(lane.vst3_class, Some(exact_class));
     assert_eq!(lane.points, points);
 
-    let undone = h.run(Request::Undo);
+    let undone = edit_with_running_callback(&mut h, Request::Undo);
+    assert!(undone.error.is_none(), "{:?}", undone.error);
     assert_eq!(undone.state.project, accepted.state.project);
     applied = h.applied(applied).0;
-    let redone = h.run(Request::Redo);
+    let redone = edit_with_running_callback(&mut h, Request::Redo);
+    assert!(redone.error.is_none(), "{:?}", redone.error);
     assert_eq!(redone.state.project, event.state.project);
     h.applied(applied);
 
