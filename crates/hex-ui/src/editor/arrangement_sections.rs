@@ -553,6 +553,7 @@ impl EditorView {
             && self.clip_name_edit.is_none()
             && !self.track_name.is_editing()
             && self.context_menu.is_none()
+            && !super::device_panel::picker_is_open(self)
             && !self.save_dialog_open
             && !self.export_dialog_open
             && !self.project_open.busy()

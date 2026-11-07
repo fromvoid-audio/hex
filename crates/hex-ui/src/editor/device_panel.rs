@@ -50,7 +50,9 @@ pub(super) use eq_panel::after_scroll_worker_event as eq_scroll_after_worker_eve
 pub(super) use eq_panel::reconcile_spectrum as reconcile_eq_spectrum;
 mod device_add;
 mod device_picker;
-pub(super) use device_picker::bind_keys as bind_picker_keys;
+pub(super) use device_picker::{
+    bind_keys as bind_picker_keys, is_open as picker_is_open, overlay as picker_overlay,
+};
 mod device_meter;
 mod gate_panel;
 mod keyboard;
@@ -1292,13 +1294,6 @@ fn render_track(
         header = header.child(menu_message("device catalog unavailable"));
     }
     root = root.child(header).child(chain);
-    if add_open {
-        root = root.child(device_picker::render(
-            view,
-            DevicePanelOwner::Track(track_id),
-            cx,
-        ));
-    }
     root
 }
 
