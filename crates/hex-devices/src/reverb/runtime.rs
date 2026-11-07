@@ -657,21 +657,21 @@ impl ReverbRuntime {
             scatter_rotations(self.v(p::DIFFUSION) * 0.01, self.v(p::DENSITY) + 1.0)
         };
         let feedback = scatter(delayed, rotations);
-        let feedback_parameters = [
-            output.decay.unwrap_or_else(|| self.v(p::DECAY)),
-            size,
-            output.high_ratio.unwrap_or_else(|| self.v(p::HIGH_RATIO)),
-            output.low_ratio.unwrap_or_else(|| self.v(p::LOW_RATIO)),
-            self.v(p::FREEZE),
-            self.v(p::FLAT),
-            self.v(p::LOW),
-            self.v(p::HIGH),
-        ];
         let authored_feedback = if output.decay.is_some()
             || output.size.is_some()
             || output.high_ratio.is_some()
             || output.low_ratio.is_some()
         {
+            let feedback_parameters = [
+                output.decay.unwrap_or_else(|| self.v(p::DECAY)),
+                size,
+                output.high_ratio.unwrap_or_else(|| self.v(p::HIGH_RATIO)),
+                output.low_ratio.unwrap_or_else(|| self.v(p::LOW_RATIO)),
+                self.v(p::FREEZE),
+                self.v(p::FLAT),
+                self.v(p::LOW),
+                self.v(p::HIGH),
+            ];
             Some(self.feedback_cache.resolve(feedback_parameters))
         } else {
             None
