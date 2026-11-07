@@ -29,6 +29,7 @@ pub struct PluginParameterGestureInput<'a> {
     pub(in crate::service) operation: crate::device_gesture::PluginGesturePreparation,
     pub(in crate::service) canonical_state: &'a NativeDeviceState,
     pub(in crate::service) reading_effect_class: Option<[u8; 16]>,
+    pub(in crate::service) isolated_effect_class: Option<[u8; 16]>,
 }
 impl<'a> PluginParameterGestureInput<'a> {
     pub fn context(&self) -> hex_engine::AudioSourceContext {
@@ -40,6 +41,11 @@ impl<'a> PluginParameterGestureInput<'a> {
     /// Exact class of the reading Arrangement lane, for ordinary effects.
     pub fn reading_effect_class(&self) -> Option<[u8; 16]> {
         self.reading_effect_class
+    }
+    /// A reading lane on this exact effect requires an isolated manual base,
+    /// including when the edited parameter has no lane of its own.
+    pub fn isolated_effect_class(&self) -> Option<[u8; 16]> {
+        self.isolated_effect_class
     }
     pub fn canonical_state(&self) -> &'a NativeDeviceState {
         self.canonical_state

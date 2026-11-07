@@ -404,7 +404,7 @@ class ProcessingProcessor final : public Processor,public IAudioPresentationLate
     double sample_rate=0;
     int32 process_mode=kRealtime;
     std::atomic<float> gain{1};
-    double manual_gain=1.0;
+    std::atomic<double> manual_gain{1.0};
     uint32 input_latency=0,output_latency=0,restored_latency=0;
     std::array<std::array<double,2>,32> delay{};uint32 delay_cursor=0;
 #if HEX_FIXTURE_RESIDUAL_ECHO
@@ -488,6 +488,12 @@ public:
         }
         float restored_gain=0;std::memcpy(&restored_gain,data.data()+8,4);std::memcpy(&restored_latency,data.data()+4,4);
         if(!std::isfinite(restored_gain) || restored_gain<0 || restored_gain>4 || restored_latency>32 || (fault<37 && restored_latency))return kResultFalse;
+        if(fault==144) {
+            double restored_manual=1.0;
+            const auto result=stream->read(&restored_manual,8,&read);
+            if(read && (result!=kResultOk || read!=8 || !std::isfinite(restored_manual) || restored_manual<0 || restored_manual>4)) return kResultFalse;
+            manual_gain.store(restored_manual);
+        }
         gain.store(restored_gain);
         if(fault==118 && (!latency_handler ||
             latency_handler->beginEdit(51)!=kResultOk ||
@@ -542,11 +548,14 @@ public:
         ISizeableStream* sized=nullptr;
         if (stream->queryInterface(INLINE_UID_OF(ISizeableStream),reinterpret_cast<void**>(&sized))!=kResultOk || !sized)
             return kResultFalse;
-        const bool sized_ok=sized->setStreamSize(32)==kResultOk;sized->release();
+        const bool sized_ok=sized->setStreamSize(fault==144?40:32)==kResultOk;sized->release();
         int32 written=0;
         const bool ok=sized_ok && stream->seek(4,IBStream::kIBSeekSet,nullptr)==kResultOk &&
             stream->write(bytes.data()+4,28,&written)==kResultOk && written==28 &&
             stream->seek(0,IBStream::kIBSeekSet,nullptr)==kResultOk && stream->write(bytes.data(),4,&written)==kResultOk && written==4;
+        auto captured_manual_gain=manual_gain.load();
+        if(ok && fault==144 && (stream->seek(32,IBStream::kIBSeekSet,nullptr)!=kResultOk ||
+            stream->write(&captured_manual_gain,8,&written)!=kResultOk || written!=8)) return kResultFalse;
         if(ok && fault==121) {
             unsigned char marker=0x37;
             if(stream->seek(150544,IBStream::kIBSeekSet,nullptr)!=kResultOk ||
@@ -824,7 +833,7 @@ public:
             }
         } primary,secondary;
         primary.left_value=static_cast<double>(gain.load())/4.0;
-        secondary.left_value=manual_gain/4.0;
+        secondary.left_value=manual_gain.load()/4.0;
         if(data.inputParameterChanges) {
             const auto count=data.inputParameterChanges->getParameterCount();
             if(count<1 || count>(mixed_parameter_input(fault)?2:1)) return kInvalidArgument;
@@ -879,7 +888,7 @@ public:
                     return kResultFalse;
             }
             if(point_count) current_gain=parameter_value(fault,primary.at(frame))*4.0;
-            if(secondary.count) manual_gain=secondary.at(frame)*4.0;
+            if(secondary.count) manual_gain.store(secondary.at(frame)*4.0);
             // Independent internal change at offset0; later host automation
             // still reaches its endpoint at the end of this actual SDK block.
             if(fault==79 && point_count && frame==0) current_gain=1.0;
@@ -889,7 +898,7 @@ public:
             const double left=mode==1?(midi_instrument?note_output:0.25):(input?(precision==kSample32?data.inputs[0].channelBuffers32[0][frame]:data.inputs[0].channelBuffers64[0][frame]):0.0);
             const double right=mode==1?left:(input && inputs==2?(precision==kSample32?data.inputs[0].channelBuffers32[1][frame]:data.inputs[0].channelBuffers64[1][frame]):left);
             if (output) for (int32 channel=0;channel<outputs;++channel) {
-                double value=(channel?right:left)*(fault==82?(current_gain>=2.0?1.0:scale):scale*current_gain)*manual_gain;
+                double value=(channel?right:left)*(fault==82?(current_gain>=2.0?1.0:scale):scale*current_gain)*manual_gain.load();
 #if HEX_FIXTURE_RESIDUAL_ECHO
                 // Original three-frame FIR echo. Store the immediate sample,
                 // not the summed result: zero input has a genuinely finite tail.
