@@ -739,6 +739,14 @@ fn scatter(mut output: [f32; 8], rotations: Rotations) -> [f32; 8] {
 }
 impl NativeProcessorRuntime for ReverbRuntime {
     fn process_block(&mut self, frames: &mut [StereoFrame], _: &dyn hex_lattice::DeviceResources) {
+        if !frames.is_empty() && !self.tail_controls_frozen {
+            // This active render has no provider automation view. Discard
+            // inherited delivery state without resetting the room; a later
+            // tail must freeze canonical controls, and resumed identical
+            // authored values must be sampled into a fresh cache.
+            self.automation_controls.reset();
+            self.automated_values = AutomatedValues::default();
+        }
         for frame in frames {
             if self.tail_controls_frozen {
                 self.frame_outputs(frame, self.automated_values);
