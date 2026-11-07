@@ -1,4 +1,4 @@
-//! Compressor uses ordinary publication, shared lane evaluation and runtime custody.
+//! EQ8 uses ordinary publication, shared lane evaluation and runtime custody.
 use super::*;
 use hex_devices::eq8::{EQ8_TYPE_ID, parameter as p};
 use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue};

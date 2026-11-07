@@ -142,6 +142,7 @@ impl Eq8Runtime {
             if previous != *self.target {
                 self.smooth_remaining = coefficient_smooth_frames(self.sample_rate);
             }
+            self.refresh_active_bands();
         }
         self.band_targets_pending = self.band_automation_admitted;
         self.retarget_gain(f64::from(self.controls.effective().gain));
@@ -639,6 +640,33 @@ mod tests {
         }
     }
     #[test]
+    fn absent_view_after_canonical_enable_reactivates_the_filter_immediately() {
+        for rate in [8000, 96000] {
+            let base = state(0, false);
+            let id = parameter::frequency(0, 1);
+            let held = Values {
+                ids: vec![id],
+                value: Some(ParameterValue::Float(700.0)),
+                dense: false,
+                start: 0,
+            };
+            let mut source = prepare(&base, rate, &[id]).unwrap().runtime();
+            source
+                .process_automation(&mut signal(513), &held, false)
+                .unwrap();
+            let colored = state(0, true);
+            let mut actual = prepare(&colored, rate, &[id]).unwrap().runtime();
+            actual.inherit_history_from(&source);
+            let mut expected = room(&colored, rate, false);
+            expected.inherit_history_from(&source);
+            let mut out = signal(129);
+            let mut reference = out.clone();
+            actual.process_block(&mut out, &R);
+            expected.process_block(&mut reference, &R);
+            assert_eq!(out, reference, "rate {rate}");
+        }
+    }
+    #[test]
     fn band_ranges_are_rejected_before_audio_or_targets_change() {
         let base = all_bands(0);
         for (id, value) in [
@@ -699,7 +727,7 @@ mod tests {
         use std::{hint::black_box, time::Instant};
         assert!(!black_box(cfg!(debug_assertions)), "run with --release");
         let state = state(0, false);
-        for mode in 0..5 {
+        for mode in 0..6 {
             let mut source = values(Some(2.0));
             source.dense = mode == 2;
             let band_source = BandDense {
@@ -718,7 +746,7 @@ mod tests {
             let mut run = || {
                 for _ in 0..128 {
                     block.fill([0.125, -0.25]);
-                    if mode == 0 {
+                    if mode == 0 || mode == 5 {
                         runtime.process_block(&mut block, &R);
                     } else if mode >= 3 {
                         if mode == 3 {
