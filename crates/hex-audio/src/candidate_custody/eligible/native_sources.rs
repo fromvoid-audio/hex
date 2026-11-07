@@ -699,7 +699,7 @@ impl Custody {
                         // is allocated and disposal custody stays in the owner.
                         cell.take_constructor_cause();
                         drop(cell.owner.take());
-                        drop(cell.renewal.take());
+                        cell.renewal = None;
                         drop(cancellation);
                     }
                     Ok(disposed)
