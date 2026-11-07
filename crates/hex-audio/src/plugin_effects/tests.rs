@@ -407,9 +407,6 @@ fn actual_native_bypass_handoff_retains_untrimmed_dry_history() {
             .unwrap();
         let mut after =
             hex_engine::playback::Playback::try_from_prepared_with_session(prepare(&f)).unwrap();
-        f.editor.execute(Command::RemoveDevice(f.device)).unwrap();
-        let mut removed =
-            hex_engine::playback::Playback::try_from_prepared_with_session(prepare(&f)).unwrap();
         let (mut worker, mut callback) = f.effect.into_parts();
         for block in 0..2 {
             let mut output = [[9.0; 2]; 8];
@@ -424,12 +421,6 @@ fn actual_native_bypass_handoff_retains_untrimmed_dry_history() {
                 assert!(Instant::now() < deadline);
                 std::thread::yield_now();
             }
-        }
-        if location < 2 {
-            assert!(
-                removed.try_inherit_runtime_from(&mut before).is_err(),
-                "positive-latency Track/Return removal still requires retained-route admission"
-            );
         }
         assert_eq!(before.position(), 16);
         let measured =
@@ -535,6 +526,80 @@ fn equal_state_and_device_id_cannot_select_another_actual_native_epoch() {
         Err(DeviceContractError::ForeignProcessingUnavailable),
         "old/new native leases with equal saved state are distinct source epochs"
     );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_pre_main_removal_restarts_at_kept_cursor_without_dispatching_the_old_source() {
+    for location in 0..2 {
+        let mut f = fixture(location, false);
+        let mut before =
+            hex_engine::playback::Playback::try_from_prepared_with_session(prepare(&f)).unwrap();
+        before.apply(hex_engine::PlaybackCommand::Play);
+        f.editor.execute(Command::RemoveDevice(f.device)).unwrap();
+        let mut after =
+            hex_engine::playback::Playback::try_from_prepared_with_session(prepare(&f)).unwrap();
+        // The production multi-endpoint adapter stages only visited sources.
+        // A restarted graph must not dispatch fabricated zeros to the removed
+        // source merely because its returned endpoint is still retained here.
+        let (mut workers, mut callbacks) =
+            NativeEffectCallbacks::from_effects_on_control(vec![f.effect]).unwrap();
+        let mut worker = workers.pop().unwrap();
+        for block in 0..2 {
+            let mut output = [[9.0; 2]; 8];
+            callbacks.begin_host_callback(8).unwrap();
+            before
+                .render_with_foreign_processors(&mut output, None, None, None, &mut callbacks)
+                .unwrap();
+            callbacks.finish_host_callback(true).unwrap();
+            assert_eq!(output, [[0.0; 2]; 8]);
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while worker.published_blocks_on_control() < block + 1 {
+                assert!(Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+        }
+        let mut output = [[9.0; 2]; 16];
+        let measured = allocation_counter::measure(|| {
+            after.try_inherit_runtime_from(&mut before).unwrap();
+            assert_eq!(after.position(), 16);
+            for chunk in output.chunks_mut(8) {
+                callbacks.begin_host_callback(chunk.len()).unwrap();
+                after
+                    .render_with_foreign_processors(chunk, None, None, None, &mut callbacks)
+                    .unwrap();
+                callbacks.finish_host_callback(true).unwrap();
+            }
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(
+            &output[..15],
+            &[[0.0; 2]; 15],
+            "fresh-runtime restart resets the old effect tail"
+        );
+        let gain = if location == 1 { 2.0 } else { 1.0 };
+        assert_eq!(
+            output[15],
+            [f.samples[31][0] * gain, f.samples[31][1] * gain],
+            "the source cursor stays at frame 16 and the return keeps its dry send"
+        );
+        assert_eq!(after.position(), 32);
+        assert_eq!(worker.published_blocks_on_control(), 2);
+        let stopped = worker.quiesce_on_control().unwrap();
+        assert_eq!(stopped.completed_blocks(), 2);
+        drop(callbacks);
+        drop(worker);
+        let terminal = stopped.retire_on_control().unwrap().terminal.unwrap();
+        assert_eq!((terminal.blocks, terminal.frames), (2, 16));
+    }
 }
 
 #[test]
