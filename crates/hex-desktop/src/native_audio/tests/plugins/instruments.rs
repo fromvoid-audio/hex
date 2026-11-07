@@ -262,9 +262,9 @@ fn verify_saved_instrument_automation(
             .points,
         points
     );
-    harness.release_relinquished_output();
-    harness.wait_fresh_output(output);
-    let (revision, _) = harness.applied(0);
+    let revision = super::super::resident_lifecycle::finish_replacement(harness, &opened, output);
+    let restored = harness.next();
+    assert!(restored.error.is_none(), "{:?}", restored.error);
     let transport = |harness: &mut ResidentHarness, command| {
         harness
             .audio
