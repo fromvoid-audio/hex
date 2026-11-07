@@ -532,6 +532,173 @@ fn actual_authored_parameter_input_refuses_competing_host_point_without_replacin
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_manual_input_coexists_with_another_authored_parameter() {
+    const NAME: &str = "plugin_worker::capture::tests::parameter_change::actual_manual_input_coexists_with_another_authored_parameter";
+    if fixture_child(143, NAME) {
+        return;
+    }
+    use hex_plugin_host::transport::{
+        AuthoredParameterProgram, AuthoredSegment, ProcessTiming, SegmentTiming, TimingChanges,
+    };
+    use std::num::NonZeroU64;
+
+    struct FixtureEnvelope;
+    impl AuthoredParameterProgram for FixtureEnvelope {
+        fn quantum_program_key(&self) -> NonZeroU64 {
+            NonZeroU64::MIN
+        }
+
+        fn render_quantum(
+            &self,
+            origins: &[Option<u64>],
+            timing: &TimingChanges,
+            output: &mut Parameters,
+        ) -> Result<(), Fault> {
+            assert_eq!(
+                origins,
+                &[
+                    Some(0),
+                    Some(1),
+                    Some(2),
+                    None,
+                    Some(100),
+                    Some(101),
+                    Some(102),
+                    Some(103)
+                ]
+            );
+            let [change] = timing.as_slice() else {
+                return Err(Fault::InvalidParameters);
+            };
+            assert_eq!(change.frame, 4);
+            for (frame, normalized) in [(0, 0.25), (2, 0.5), (4, 0.75)] {
+                output.push(ParameterPoint {
+                    frame,
+                    id: 7,
+                    normalized,
+                })?;
+            }
+            Ok(())
+        }
+    }
+
+    let mut instance = original_instance();
+    let class = instance.configuration().identity.class;
+    assert!(
+        instance
+            .read_authored_parameter_metadata_on_control(class, &[11])
+            .is_err()
+    );
+    let metadata = instance
+        .read_authored_parameter_metadata_on_control(class, &[7])
+        .unwrap();
+    instance
+        .arm_authored_parameter_metadata_on_control(metadata)
+        .unwrap();
+    let (mut owner, mut endpoint) = NativeWorker::start_on_control(instance).unwrap();
+    let request = begin_change(&mut owner, 11, 0.5);
+    let input = [[0.5, -0.25]; 8];
+    let mut output = [[9.0; 2]; 8];
+    let origin = |frame| match frame {
+        3 => None,
+        0..=2 => Some(frame as u64),
+        _ => Some(frame as u64 + 96),
+    };
+    let stage = || {
+        endpoint.begin_physical_callback(8).unwrap();
+        endpoint
+            .stage_segment_with_authored_parameters(
+                0,
+                &input,
+                &[],
+                &mut output,
+                SegmentTiming {
+                    playing: None,
+                    at: |frame| {
+                        Some(ProcessTiming {
+                            arrangement_frame: origin(frame)? as i64,
+                            playing: true,
+                            arrangement_beat_raw: None,
+                            tempo_micro_bpm: None,
+                            meter: None,
+                            cycle_beats_raw: None,
+                        })
+                    },
+                },
+                AuthoredSegment {
+                    program: &FixtureEnvelope,
+                    origin: &origin,
+                },
+            )
+            .unwrap();
+        endpoint.finish(true).unwrap();
+    };
+    #[cfg(feature = "allocation-probe")]
+    {
+        let counts = allocation_counter::measure(stage);
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    #[cfg(not(feature = "allocation-probe"))]
+    {
+        let mut stage = stage;
+        stage();
+    }
+    assert_eq!(output, [[0.0; 2]; 8]);
+    let progress = terminal(&mut owner, &request);
+    let NativeWorkerParameterProgress::Processed(receipt) = progress else {
+        panic!(
+            "manual input did not reach the original PCM worker: {progress:?}, {:?}",
+            owner.take_failure_diagnostic_on_control()
+        );
+    };
+    assert_eq!(
+        receipt.point,
+        ParameterPoint {
+            frame: 0,
+            id: 11,
+            normalized: 0.5
+        }
+    );
+    assert_eq!((receipt.sequence, receipt.first_frame), (0, 0));
+
+    for sequence in 1..=2 {
+        endpoint.begin_physical_callback(input.len()).unwrap();
+        endpoint
+            .stage_segment_with_parameters(0, &input, &[], &[], &mut output)
+            .unwrap();
+        endpoint.finish(true).unwrap();
+        let until = Instant::now() + Duration::from_secs(3);
+        while owner.published_blocks_on_control() <= sequence {
+            assert!(Instant::now() < until);
+            thread::yield_now();
+        }
+    }
+    let expected_left = [0.5, 0.75, 1.0, 1.0, 1.875, 1.875, 1.875, 1.875];
+    for (actual, expected) in output.into_iter().zip(expected_left) {
+        assert!(
+            (actual[0] - expected).abs() < 1.0e-6,
+            "{actual:?} != {expected}"
+        );
+        assert!(
+            (actual[1] + expected / 2.0).abs() < 1.0e-6,
+            "{actual:?} != {expected}"
+        );
+    }
+    owner.revoke_on_control();
+    let retired = owner.retire_on_control().unwrap();
+    assert!(retired.failure.is_none() && retired.native.status.success());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn rejected_physical_callback_never_consumes_queued_host_parameter_input() {
     const NAME: &str = "plugin_worker::capture::tests::parameter_change::rejected_physical_callback_never_consumes_queued_host_parameter_input";
     if fixture_child(92, NAME) {
