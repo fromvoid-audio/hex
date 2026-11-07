@@ -673,7 +673,7 @@ fn instrument_entrypoint(shared_authoring: bool) {
         panic!("midi clip");
     };
     (applied, _) = harness.applied(applied);
-    harness.run(Request::Edit(Command::AddMidiNote {
+    let mut note = harness.run(Request::Edit(Command::AddMidiNote {
         clip,
         start: BeatTime::ZERO,
         duration: note_duration,
@@ -685,7 +685,7 @@ fn instrument_entrypoint(shared_authoring: bool) {
     if automation_parameter.is_some() {
         // Pause releases held gates. A new onset proves the saved parameter
         // is still effective after resume.
-        harness.run(Request::Edit(Command::AddMidiNote {
+        note = harness.run(Request::Edit(Command::AddMidiNote {
             clip,
             start: BeatTime::from_ratio(9, 8).unwrap(),
             duration: BeatTime::from_quarters(2).unwrap(),
@@ -695,32 +695,37 @@ fn instrument_entrypoint(shared_authoring: bool) {
         }));
         (applied, _) = harness.applied(applied);
     }
-    let scene = harness.run(Request::Edit(Command::AddScene {
-        name: "console".into(),
-    }));
-    let Some(Created::Scene(scene)) = scene.created else {
-        panic!("scene")
+    let console = if shared_authoring {
+        None
+    } else {
+        let scene = harness.run(Request::Edit(Command::AddScene {
+            name: "console".into(),
+        }));
+        let Some(Created::Scene(scene)) = scene.created else {
+            panic!("scene")
+        };
+        (applied, _) = harness.applied(applied);
+        let console = harness.run(Request::Edit(Command::CreateSessionMidiClip {
+            track,
+            scene,
+            name: "console notes".into(),
+            source_length: BeatTime::from_quarters(1).unwrap(),
+        }));
+        let Some(Created::SessionClip(console)) = console.created else {
+            panic!("console clip")
+        };
+        (applied, _) = harness.applied(applied);
+        note = harness.run(Request::Edit(Command::AddMidiNote {
+            clip: console,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_quarters(1).unwrap(),
+            pitch: installed_pitch.unwrap_or(if controlled_fixture { 60 } else { 64 }),
+            channel,
+            velocity: 88,
+        }));
+        (applied, _) = harness.applied(applied);
+        Some(console)
     };
-    (applied, _) = harness.applied(applied);
-    let console = harness.run(Request::Edit(Command::CreateSessionMidiClip {
-        track,
-        scene,
-        name: "console notes".into(),
-        source_length: BeatTime::from_quarters(1).unwrap(),
-    }));
-    let Some(Created::SessionClip(console)) = console.created else {
-        panic!("console clip")
-    };
-    (applied, _) = harness.applied(applied);
-    let note = harness.run(Request::Edit(Command::AddMidiNote {
-        clip: console,
-        start: BeatTime::ZERO,
-        duration: BeatTime::from_quarters(1).unwrap(),
-        pitch: installed_pitch.unwrap_or(if controlled_fixture { 60 } else { 64 }),
-        channel,
-        velocity: 88,
-    }));
-    (applied, _) = harness.applied(applied);
     let mut insertion = request(&note.state, PluginEffectDestination::Instrument(track));
     if let Some(bundle) = installed {
         insertion.selection = installed_selection(
@@ -760,6 +765,7 @@ fn instrument_entrypoint(shared_authoring: bool) {
         );
         return;
     }
+    let console = console.unwrap();
     // Exercise the resident keyboard request on a newly inserted worker
     // before the authored transport has ever started.
     let keys = Arc::new(
