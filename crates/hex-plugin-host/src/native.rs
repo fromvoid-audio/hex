@@ -688,6 +688,13 @@ impl Prepared {
         Ok(())
     }
 
+    /// Used only by the original joining worker when admitting a live hold.
+    pub fn has_armed_authored_parameter(&self, id: u32) -> bool {
+        self.authored_parameter_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.matches(self) && metadata.step_count(id).is_some())
+    }
+
     pub fn exchange_armed_authored_on_worker(&mut self, block: Block) -> Result<Block> {
         self.exchange_armed_authored_with_manual_on_worker(block, None)
     }

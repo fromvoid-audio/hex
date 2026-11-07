@@ -268,7 +268,8 @@ impl Gesture {
                 }
                 Ok(
                     NativeWorkerParameterProgress::Refused
-                    | NativeWorkerParameterProgress::Withdrawn,
+                    | NativeWorkerParameterProgress::Withdrawn
+                    | NativeWorkerParameterProgress::Released { .. },
                 ) => {
                     self.pending = None;
                     return Err(refused("vst3 input was not applied"));
