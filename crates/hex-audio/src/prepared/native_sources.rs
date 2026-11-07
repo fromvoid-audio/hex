@@ -11,6 +11,20 @@ use hex_plugin_scan::macos::build_identity::InstanceBuild;
 mod parameter_extension;
 
 impl PublicationControl {
+    /// Definite correspondence or a specific unavailable/busy observation.
+    /// A control caller must not turn contention into a negative approval or
+    /// use this observation as graph/native admission authority.
+    pub fn try_native_source_approves_captured_state_on_control(
+        &self,
+        binding: Binding,
+        state: &NativeDeviceState,
+    ) -> Result<bool, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native captured-state output is closing");
+        }
+        self.candidate_root
+            .try_native_source_approves_captured_state(binding, state)
+    }
     pub(crate) fn approve_native_canonical_processing_on_control(
         &self,
         facts: &crate::plugin_effects::CapturedCanonicalBases,

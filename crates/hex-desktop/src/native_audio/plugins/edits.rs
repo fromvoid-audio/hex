@@ -118,8 +118,7 @@ impl Plugins {
                 continue;
             }
             if (retain_instrument
-                && control.native_source_approves_captured_state_on_control(source.binding, state)
-                    == Some(true))
+                && captured_state_approved(control, source.binding, state, cancellation)?)
                 || original_state(control, source.binding, cancellation)?.processing_eq(state)
             {
                 return Ok(Some(source.binding));
@@ -298,6 +297,20 @@ pub(super) fn check_cancel(cancellation: Option<&RequestCancellation>) -> Result
         Err("vst3 edit cancelled by document request or shutdown".into())
     } else {
         Ok(())
+    }
+}
+pub(super) fn captured_state_approved(
+    control: &mut PublicationControl,
+    binding: Binding,
+    state: &NativeDeviceState,
+    cancellation: Option<&RequestCancellation>,
+) -> Result<bool, String> {
+    loop {
+        check_cancel(cancellation)?;
+        match control.try_native_source_approves_captured_state_on_control(binding, state) {
+            Err("native preparation is busy" | "native source is busy") => poll_control(control),
+            result => return result.map_err(str::to_owned),
+        }
     }
 }
 pub(super) fn poll_control(control: &mut PublicationControl) {
