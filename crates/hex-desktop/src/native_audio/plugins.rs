@@ -354,6 +354,25 @@ impl Plugins {
     }
     /// The exact successor has applied. Keep the old bindings until Root
     /// returns their graph, tail and endpoint obligations on control.
+    /// Copied source observation only; actual target SDK/delivery admission
+    /// remains in the parameter gesture adapter and Root.
+    pub(super) fn matches_capture_source(
+        &self,
+        context: AudioSourceContext,
+        target: hex_session::service::automation_draft::Vst3CaptureTarget,
+    ) -> bool {
+        self.sources
+            .iter()
+            .rev()
+            .find(|source| {
+                source.accepted
+                    && !source.retiring
+                    && source.project_generation == context.project_generation
+                    && source.device == target.device.value()
+            })
+            .is_some_and(|source| source.binding == target.binding)
+    }
+
     pub(super) fn retire_document_sources(&mut self, generation: u64) {
         for source in self
             .sources

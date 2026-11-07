@@ -30,8 +30,8 @@ impl Drop for Scratch {
 
 #[test]
 fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
-    use NativeAutomationTakeAction as Action;
-    use NativeAutomationTakeProgress as Progress;
+    use DeviceAutomationTakeAction as Action;
+    use DeviceAutomationTakeProgress as Progress;
     let scratch = Scratch::new();
     let observed = Arc::new(Observed::default());
     let runtime = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES;
@@ -94,9 +94,10 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
         });
         assert!(armed.error.is_none(), "{:?}", armed.error);
         let audio_revision = observed.publications.lock().unwrap().len() as u64;
-        NativeAutomationTakeScope {
+        DeviceAutomationTakeScope {
             target: hex_engine::native_parameter_input_target(&armed.state.project, device, target)
-                .unwrap(),
+                .unwrap()
+                .into(),
             stamp: DraftProvenance {
                 sample_rate: 48_000,
                 project_generation: 0,
@@ -111,12 +112,12 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
     let next = AtomicU64::new(1);
     let send = |scope, action| {
         let request_id = next.fetch_add(1, Ordering::Relaxed);
-        let mut event = submit(Request::NativeAutomationTake {
+        let mut event = submit(Request::DeviceAutomationTake {
             request_id,
             scope,
             action,
         });
-        let complete = event.native_automation_take_complete.take().unwrap();
+        let complete = event.device_automation_take_complete.take().unwrap();
         assert_eq!(complete.request_id, request_id);
         (event, complete.progress)
     };
@@ -138,7 +139,7 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
     observed
         .native_capture_playing
         .store(true, Ordering::Release);
-    let wrong_epoch = NativeAutomationTakeScope {
+    let wrong_epoch = DeviceAutomationTakeScope {
         stamp: DraftProvenance {
             transport_epoch: 2,
             ..initial_scope.stamp
@@ -149,8 +150,8 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
     assert!(!draft_directory.exists());
 
     let application =
-        |scope: NativeAutomationTakeScope, frame, operation| NativeParameterApplication {
-            identity: scope.target.identity(),
+        |scope: DeviceAutomationTakeScope, frame, operation| NativeParameterApplication {
+            identity: scope.target.native().unwrap().identity(),
             operation,
             arrangement_frame: frame,
             loop_pass: 0,
@@ -164,13 +165,14 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
             1,
             application(scope, frame, NativeTransientOperation::Set(value)),
         )]);
-        let wrong_target = NativeAutomationTakeScope {
+        let wrong_target = DeviceAutomationTakeScope {
             target: hex_engine::native_parameter_input_target(
                 &authored.state.project,
                 device,
                 DeviceAutomationTarget::HostInputGain,
             )
-            .unwrap(),
+            .unwrap()
+            .into(),
             ..scope
         };
         assert_eq!(
@@ -189,7 +191,7 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
     assert!(blocked_disarm.error.is_some());
     assert_eq!(
         *observed.native_parameter_input.lock().unwrap(),
-        Some(initial_scope.target)
+        initial_scope.target.native()
     );
     assert_eq!(
         send(initial_scope, Action::Abort(DraftAbortReason::Cancelled)).1,
@@ -256,10 +258,10 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
     assert_eq!(send(final_scope, Action::Begin).1, Progress::Refused);
     assert_eq!(
         *observed.native_parameter_input.lock().unwrap(),
-        Some(final_scope.target)
+        final_scope.target.native()
     );
     let audio_revision = observed.publications.lock().unwrap().len() as u64;
-    let second_scope = NativeAutomationTakeScope {
+    let second_scope = DeviceAutomationTakeScope {
         stamp: DraftProvenance {
             editor_revision: committed.state.revision,
             audio_revision,
@@ -268,7 +270,7 @@ fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
         },
         ..final_scope
     };
-    let unapplied = NativeAutomationTakeScope {
+    let unapplied = DeviceAutomationTakeScope {
         stamp: DraftProvenance {
             audio_revision: final_scope.stamp.audio_revision,
             ..second_scope.stamp
