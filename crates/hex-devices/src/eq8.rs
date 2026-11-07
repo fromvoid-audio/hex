@@ -2,7 +2,11 @@
 //!
 //! Coefficients are prepared on the control side from the RBJ audio-EQ
 //! cookbook equations. The callback owns only a fixed coefficient bank and
-//! transposed-direct-form-II histories.
+//! transposed-direct-form-II histories. Shared output-gain automation uses the
+//! existing rate-scaled coefficient/gain smoother; band and routing automation
+//! remain unsupported. Compatible copies retain admitted gain trajectories,
+//! missing views restore canonical gain, and detached tails freeze their target.
+mod automation;
 use hex_lattice::{
     NativeDeviceDefinition, NativeProcessorAudition, NativeProcessorRuntime, OutputTail,
     PreparedNativeProcessor, ProcessorAuditionSelection, StereoFrame, StereoMatrix,
@@ -244,6 +248,14 @@ impl NativeDeviceMetadata for Eq8Definition {
             _ => return Err(DeviceContractError::UnknownParameter),
         })
     }
+    fn parameter_semantics_for_state(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
+        decode(state)?;
+        Ok((id == parameter::OUTPUT_GAIN).then_some(automation::SEMANTICS))
+    }
     fn patch_parameter(
         &self,
         state: &NativeDeviceState,
@@ -321,6 +333,34 @@ fn decode_parameter_id(id: ParameterId) -> Result<(usize, usize), DeviceContract
 }
 
 impl NativeDeviceDefinition for Eq8Definition {
+    fn supports_parameter_automation(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<bool, DeviceContractError> {
+        decode(state)?;
+        Ok(id == parameter::OUTPUT_GAIN)
+    }
+    fn prepare_automated_runtime_instance(
+        &self,
+        _identity: hex_lattice::ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+        ids: &[ParameterId],
+    ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
+        state.require_asset_free_processing()?;
+        if ids != [parameter::OUTPUT_GAIN] {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
+        let mut prepared = PreparedEq8::new(decode(state)?, context.sample_rate)?;
+        prepared.gain_admitted = true;
+        Ok(hex_lattice::PreparedRuntimeDevice {
+            matrix: StereoMatrix::identity(),
+            processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(Arc::new(
+                prepared,
+            ))),
+        })
+    }
     fn prepare_matrix(
         &self,
         _state: &NativeDeviceState,
@@ -371,6 +411,7 @@ type BandStages = [Coefficients; 4];
 
 #[derive(Clone)]
 struct PreparedEq8 {
+    gain_admitted: bool,
     sample_rate: u32,
     mode: ChannelMode,
     output_gain: f64,
@@ -406,6 +447,7 @@ impl PreparedEq8 {
             }
         }
         Ok(Self {
+            gain_admitted: false,
             sample_rate,
             mode: settings.mode,
             output_gain: f64::from(settings.output_gain),
@@ -416,6 +458,11 @@ impl PreparedEq8 {
 
     fn runtime(&self) -> Eq8Runtime {
         Eq8Runtime {
+            gain_controls: crate::parameter_binding::Controls::new(
+                automation::Gain(self.output_gain as f32),
+                [self.gain_admitted],
+            ),
+            tail_gain_frozen: false,
             sample_rate: self.sample_rate,
             mode: self.mode,
             current_gain: self.output_gain,
@@ -436,6 +483,12 @@ impl PreparedEq8 {
 }
 
 impl PreparedNativeProcessor for PreparedEq8 {
+    fn supports_parameter_automation(&self, id: ParameterId) -> bool {
+        self.gain_admitted && id == parameter::OUTPUT_GAIN
+    }
+    fn parameter_automation_descriptor(&self, id: ParameterId) -> Option<ParameterDescriptor> {
+        (self.gain_admitted && id == parameter::OUTPUT_GAIN).then_some(DESCRIPTORS[201])
+    }
     fn supports_smoothed_bypass(&self) -> bool {
         true
     }
@@ -480,6 +533,8 @@ impl PreparedNativeProcessor for PreparedEq8 {
 
 #[derive(Clone, Debug)]
 pub struct Eq8Runtime {
+    gain_controls: crate::parameter_binding::Controls<automation::Gain, 1>,
+    tail_gain_frozen: bool,
     sample_rate: u32,
     mode: ChannelMode,
     current_gain: f64,
@@ -752,6 +807,9 @@ impl Eq8Runtime {
     }
 
     pub fn reset(&mut self) {
+        self.gain_controls.reset();
+        self.target_gain = f64::from(self.gain_controls.effective().0);
+        self.tail_gain_frozen = false;
         self.history = [[[[0.0; 2]; 4]; BAND_COUNT]; 2];
         self.audition_history = [[[0.0; 2]; 4]; 2];
         self.coefficients = *self.target;
@@ -765,6 +823,16 @@ impl Eq8Runtime {
     }
 
     pub fn inherit_history_from(&mut self, previous: &Self) -> bool {
+        if self.sample_rate == previous.sample_rate
+            && self.mode == previous.mode
+            && self.gain_controls.admitted(0)
+            && previous.gain_controls.admitted(0)
+        {
+            self.gain_controls.inherit(&previous.gain_controls);
+            if previous.gain_controls.has_value(0) {
+                self.target_gain = previous.target_gain;
+            }
+        }
         if self.sample_rate != previous.sample_rate {
             self.reset();
             false
@@ -948,7 +1016,35 @@ impl NativeProcessorRuntime for Eq8Runtime {
         frames: &mut [StereoFrame],
         _resources: &dyn hex_lattice::DeviceResources,
     ) {
+        if !frames.is_empty() && !self.tail_gain_frozen {
+            self.gain_controls.reset();
+            self.retarget_gain(f64::from(self.gain_controls.effective().0));
+        }
         self.process(frames);
+    }
+    fn begin_output_tail(&mut self) {
+        self.tail_gain_frozen = true;
+    }
+    fn supports_parameter_automation(&self, id: ParameterId) -> bool {
+        id == parameter::OUTPUT_GAIN && self.gain_controls.admitted(0)
+    }
+    fn process_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        _: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        self.process_gain_automation(frames, values, false)
+    }
+    fn process_bypassed_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        _: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        self.process_gain_automation(frames, values, true)
     }
     fn reset(&mut self) {
         Eq8Runtime::reset(self);
