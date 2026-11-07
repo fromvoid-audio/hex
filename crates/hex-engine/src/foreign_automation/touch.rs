@@ -112,6 +112,25 @@ impl Overlay {
         Ok(Some(overlay))
     }
 
+    /// Upper bound for the retained allocations; preparation uses exact reserves.
+    pub(super) fn reservation_bytes(
+        source: &[DeviceAutomationTouchSpan],
+        base_knots: usize,
+    ) -> Option<usize> {
+        if source.is_empty() {
+            return Some(0);
+        }
+        let steps = source
+            .iter()
+            .try_fold(0usize, |n, span| n.checked_add(span.steps.len()))?;
+        let cuts = base_knots.checked_add(steps)?.checked_add(source.len())?;
+        source
+            .len()
+            .checked_mul(std::mem::size_of::<Span>())?
+            .checked_add(steps.checked_mul(std::mem::size_of::<Knot>())?)?
+            .checked_add(cuts.checked_mul(std::mem::size_of::<u64>())?)
+    }
+
     pub(super) fn backing_bytes(&self) -> Option<usize> {
         let bytes = self
             .spans

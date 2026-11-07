@@ -511,6 +511,7 @@ pub(super) fn command(value: &Command) -> Description {
             device,
             target,
             spans,
+            ..
         } => {
             describe!("splice_device_automation_touch"; ["device" => device.value(), "target" => target, "span_count" => spans.len()]; omitted="")
         }
