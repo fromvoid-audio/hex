@@ -118,6 +118,9 @@ impl NativeDeviceMetadata for ReverbDefinition {
         };
         decode(state)?;
         let i = index(id)?;
+        if let Some(semantics) = runtime::output_automation::semantics(id) {
+            return Ok(Some(semantics));
+        }
         let (normalization, stepping) = match DESCRIPTORS[i].kind {
             ParameterKind::Bool => (N::Discrete, T::Boolean),
             ParameterKind::Choice { .. } => (N::Discrete, T::Choice),
@@ -154,7 +157,7 @@ impl NativeDeviceDefinition for ReverbDefinition {
         parameter: ParameterId,
     ) -> Result<bool, DeviceContractError> {
         decode(state)?;
-        Ok(parameter == self::parameter::DRY_WET)
+        Ok(runtime::output_automation::supports(parameter))
     }
 
     fn prepare_automated_runtime_instance(
@@ -164,9 +167,7 @@ impl NativeDeviceDefinition for ReverbDefinition {
         context: &hex_lattice::DevicePreparationContext<'_>,
         parameters: &[ParameterId],
     ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
-        if parameters != [parameter::DRY_WET] {
-            return Err(DeviceContractError::UnsupportedProcessingClass);
-        }
+        runtime::output_automation::validate_ids(parameters)?;
         Ok(hex_lattice::PreparedRuntimeDevice {
             matrix: StereoMatrix::identity(),
             processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(
