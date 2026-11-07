@@ -50,7 +50,7 @@ impl Custody {
         let source = match work.sources.cells[index].owner.as_ref() {
             Some(Owner::Effect(owner)) => NativeEffectReference::Unsplit(owner),
             Some(Owner::Loaned(owner)) => NativeEffectReference::Loaned(owner),
-            _ => return Err("native base capture requires the original effect".into()),
+            _ => return Err("native base capture requires the original processor".into()),
         };
         if bank.closing
             || slot.phase != Phase::Accepted
@@ -64,9 +64,9 @@ impl Custody {
                     })))
             || source.binding() != binding
             || slot.identity != Some(source.identity())
-            || !source.matches_canonical_effect(canonical)
+            || !source.matches_canonical_state(canonical)
         {
-            return Err("native base capture source differs from the canonical effect".into());
+            return Err("native base capture source differs from the canonical processor".into());
         }
         let (_, presentation) = slot
             .presentation
@@ -78,6 +78,7 @@ impl Custody {
                 .try_copy_on_control()
                 .map_err(|error| error.to_string())?,
             identity: source.identity(),
+            profile: source.profile(),
             presentation,
         })
     }

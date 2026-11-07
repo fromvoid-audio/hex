@@ -1,4 +1,4 @@
-//! Isolated manual and saved-state base capture on one ordinary effect. The
+//! Isolated manual and saved-state base capture on one ordinary processor. The
 //! original Root source supplies immutable identity and configuration facts.
 //! A second Root cell owns the scratch child through exact disposal recovery.
 use super::{Binding, EffectSourceMetadata, Hosting, NativeDeviceState, PluginProfile};
@@ -15,6 +15,7 @@ use hex_plugin_host::{
 pub(crate) struct BaseCaptureSource {
     pub metadata: EffectSourceMetadata,
     pub identity: ProcessorInstanceIdentity,
+    pub profile: PluginProfile,
     pub presentation: PresentationPlan,
 }
 
@@ -116,7 +117,7 @@ impl Hosting {
             original.identity.device_id(),
             binding.graph,
             rate,
-            PluginProfile::Effect,
+            original.profile,
             Some(canonical.clone()),
         )?;
         Ok(ManualBaseCapture {
@@ -173,7 +174,7 @@ impl Hosting {
             original.identity.device_id(),
             binding.graph,
             rate,
-            PluginProfile::Effect,
+            original.profile,
             Some(captured.clone()),
         )?;
         Ok(ManualBaseCapture {

@@ -55,7 +55,7 @@ impl PublicationControl {
                 self.native_custody && self.output_identity() == Some(expected.output_identity)
             })
             .filter(|_| binding.root == expected.output_identity)
-            .ok_or("native base capture requires the current ordinary effect")?;
+            .ok_or("native base capture requires the current ordinary processor")?;
         let source = self
             .candidate_root
             .native_source_for_base_capture(binding, canonical, playing)?;

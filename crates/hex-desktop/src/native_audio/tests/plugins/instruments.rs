@@ -245,7 +245,7 @@ fn verify_saved_instrument_automation(
     let files = Files::new();
     let path = files.0.join("instrument-automation.hex");
     hex_storage::save_new(&path, editor.project()).unwrap();
-    let opened = harness.run(Request::Open(path));
+    let opened = harness.run(Request::Open(path.clone()));
     assert!(
         opened.error.is_none() && opened.project_replaced,
         "{:?}",
@@ -354,6 +354,57 @@ fn verify_saved_instrument_automation(
         }),
         "the edited loop must return to the audible step"
     );
+    let saved = harness.run(Request::SaveCurrent);
+    assert!(
+        saved.error.is_none() && saved.save_complete,
+        "{:?}",
+        saved.error
+    );
+    let reopened = hex_storage::load(&path).unwrap();
+    assert_eq!(
+        reopened
+            .device(device)
+            .unwrap()
+            .automation_target(target)
+            .unwrap()
+            .points,
+        points
+    );
+    let context = harness.submitted.unwrap().1.context;
+    harness.run(Request::QueryPluginParameters(PluginParameterQuery {
+        context,
+        device,
+        output_identity: output,
+        request_id: 2,
+    }));
+    let rows = harness.next().plugin_parameters.unwrap().rows.unwrap();
+    let current = rows.iter().find(|row| row.id == parameter.id).unwrap();
+    let mut client = hex_session::device_gesture::GestureClient::default();
+    client
+        .begin_plugin(hex_session::device_gesture::PluginParameterOrigin {
+            context,
+            device,
+            parameter: current.id,
+            page_first: current.page_first,
+            metadata_revision: current.metadata_revision,
+            initial: hex_session::device_gesture::PluginParameterValue::new(current.normalized)
+                .unwrap(),
+        })
+        .unwrap();
+    let begin = client.next_request().unwrap();
+    client.mark_submitted();
+    let refused = harness.run(Request::DeviceGesture(begin));
+    let ack = refused.gesture_ack.unwrap();
+    assert!(!ack.accepted && !ack.source_lost, "{ack:?}");
+    assert!(
+        ack.reason
+            .as_ref()
+            .unwrap()
+            .contains("manual vst3 automation takeover is unavailable")
+    );
+    assert!(client.acknowledge(&ack));
+    assert_eq!(refused.state.project, saved.state.project);
+    assert_eq!(refused.state.revision, saved.state.revision);
 }
 
 #[test]
