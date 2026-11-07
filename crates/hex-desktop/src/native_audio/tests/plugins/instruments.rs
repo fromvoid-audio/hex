@@ -598,7 +598,7 @@ fn instrument_takeover_preserves_other_base_and_held_midi() {
     const CASE: &str = "HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE";
     if std::env::var_os(CASE).is_none() {
         let name = std::thread::current().name().unwrap().to_owned();
-        for case in ["reading", "unread", "idle"] {
+        for case in ["reading", "unread", "idle", "refused"] {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", &name, "--ignored", "--nocapture"])
                 .env(CASE, case)
@@ -1519,7 +1519,7 @@ fn verify_instrument_takeover(
             initial: PluginParameterValue::new(row.normalized).unwrap(),
         }
     };
-    let send = |h: &mut ResidentHarness, client: &mut GestureClient| {
+    let send = |h: &mut ResidentHarness, client: &mut GestureClient, accepted: bool| {
         let request = client.next_request().unwrap();
         client.mark_submitted();
         h.service.submit(Request::DeviceGesture(request)).unwrap();
@@ -1531,7 +1531,8 @@ fn verify_instrument_takeover(
                 && ack.key == request.key()
                 && ack.phase == request.phase()
             {
-                assert!(ack.accepted, "{case}: {ack:?} {:?}", event.error);
+                assert_eq!(ack.accepted, accepted, "{case}: {ack:?} {:?}", event.error);
+                assert!(!ack.source_lost, "{case}: {ack:?}");
                 assert!(client.acknowledge(ack));
                 return event;
             }
@@ -1543,13 +1544,29 @@ fn verify_instrument_takeover(
             std::thread::yield_now();
         }
     };
+    if case == "unread" {
+        let mut client = GestureClient::default();
+        client.begin_plugin(query(h, 12)).unwrap();
+        let refused = send(h, &mut client, false);
+        assert!(
+            refused
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("create an automation lane")
+        );
+        assert_eq!(refused.state.project.as_ref(), &before);
+        assert!((peak(h) - baseline).abs() < 0.0001);
+        println!("instrument unarmed target remains explicitly guarded");
+        return;
+    }
     let mut client = GestureClient::default();
     client.begin_plugin(query(h, 12)).unwrap();
-    assert_eq!(send(h, &mut client).state.project.as_ref(), &before);
+    assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
     client
         .change_plugin(PluginParameterValue::new(0.75).unwrap())
         .unwrap();
-    assert_eq!(send(h, &mut client).state.project.as_ref(), &before);
+    assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
     if playing {
         assert!(
             (peak(h) - baseline * 3.0).abs() < 0.0001,
@@ -1557,7 +1574,7 @@ fn verify_instrument_takeover(
         );
     }
     client.cancel().unwrap();
-    assert_eq!(send(h, &mut client).state.project.as_ref(), &before);
+    assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
     if playing {
         assert!(
             (peak(h) - baseline).abs() < 0.0001,
@@ -1565,12 +1582,28 @@ fn verify_instrument_takeover(
         );
     }
     client.begin_plugin(query(h, 13)).unwrap();
-    send(h, &mut client);
+    send(h, &mut client, true);
     let manual = PluginParameterValue::new(0.5).unwrap();
     client.change_plugin(manual).unwrap();
-    send(h, &mut client);
+    send(h, &mut client, true);
     client.finish_plugin(manual).unwrap();
-    let committed = send(h, &mut client);
+    if case == "refused" {
+        h.refuse.store(true, std::sync::atomic::Ordering::Release);
+        let refused = send(h, &mut client, false);
+        h.refuse.store(false, std::sync::atomic::Ordering::Release);
+        assert_eq!(refused.state.project.as_ref(), &before);
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(
+            (peak(h) - baseline * 2.0).abs() < 0.0001,
+            "a refused commit must keep the acknowledged preview audible"
+        );
+        client.cancel().unwrap();
+        send(h, &mut client, true);
+        assert!((peak(h) - baseline).abs() < 0.0001);
+        println!("instrument commit refusal preserved preview until cancel");
+        return;
+    }
+    let committed = send(h, &mut client, true);
     applied = h.applied(applied).0;
     let result = committed.state.project.device(device).unwrap();
     let target = DeviceAutomationTarget::Vst3 { parameter: 7 };
