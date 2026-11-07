@@ -534,22 +534,61 @@ fn captured_gain(state: &NativeDeviceState) -> f32 {
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
 fn live_reading_vst3_drag_cancels_or_commits_exact_lane_and_preserves_other_read() {
-    authored_drag(true, false);
+    authored_drag(true, false, GestureTransport::Running);
 }
 
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
 fn live_unautomated_vst3_drag_preserves_the_other_lanes_canonical_base() {
-    authored_drag(false, false);
+    authored_drag(false, false, GestureTransport::Running);
 }
 
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
 fn live_authored_vst3_save_preserves_fresh_opaque_editor_state() {
-    authored_drag(false, true);
+    authored_drag(false, true, GestureTransport::Running);
 }
 
-fn authored_drag(reading: bool, editor_changed: bool) {
+#[derive(Clone, Copy)]
+enum GestureTransport {
+    Running,
+    Idle,
+    IdleThenPlay,
+    Paused,
+    Stopped,
+}
+
+#[test]
+#[ignore = "explicit original SDK helper/source receipts required"]
+fn idle_reading_vst3_drag_restores_or_commits_without_pcm() {
+    authored_drag(true, false, GestureTransport::Idle);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper/source receipts required"]
+fn stopped_reading_vst3_drag_keeps_the_open_parameter_list() {
+    authored_drag(true, false, GestureTransport::Stopped);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper/source receipts required"]
+fn paused_reading_vst3_drag_preserves_other_base_and_original_cancel_value() {
+    authored_drag(true, false, GestureTransport::Paused);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper/source receipts required"]
+fn stopped_unautomated_vst3_drag_preserves_the_other_reading_lane() {
+    authored_drag(false, false, GestureTransport::Stopped);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper/source receipts required"]
+fn idle_reading_vst3_gesture_yields_to_authored_playback_without_stale_rollback() {
+    authored_drag(true, false, GestureTransport::IdleThenPlay);
+}
+
+fn authored_drag(reading: bool, editor_changed: bool, transport: GestureTransport) {
     use hex_project::{
         AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, DeviceAutomationTarget,
     };
@@ -630,12 +669,22 @@ fn authored_drag(reading: bool, editor_changed: bool) {
             initial: PluginParameterValue::new(gain.normalized).unwrap(),
         }
     };
-    h.audio
-        .as_mut()
-        .unwrap()
-        .control
-        .command(PlaybackCommand::Play)
-        .unwrap();
+    let before_play_origin = matches!(
+        transport,
+        GestureTransport::Stopped | GestureTransport::Paused
+    )
+    .then(|| query(&mut h, 0));
+    if !matches!(
+        transport,
+        GestureTransport::Idle | GestureTransport::IdleThenPlay
+    ) {
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+    }
     let render_steady = |h: &ResidentHarness, phase: &str| {
         let mut block = [[0.0; 2]; 256];
         for _ in 0..3 {
@@ -669,17 +718,48 @@ fn authored_drag(reading: bool, editor_changed: bool) {
         );
         block[0][0]
     };
-    let original_pcm = render_steady(&h, "original reading");
+    let original_pcm = if matches!(
+        transport,
+        GestureTransport::Idle | GestureTransport::IdleThenPlay
+    ) {
+        0.5
+    } else {
+        render_steady(&h, "original reading")
+    };
     assert_eq!(original_pcm, if reading { 0.5 } else { 0.375 });
-    if reading {
+    if reading && matches!(transport, GestureTransport::Running) {
         // Both parameters are actively authored here, before a manual edit.
         let saved = h.run(Request::SaveCurrent);
         assert!(saved.save_complete && saved.error.is_none());
         assert_eq!(hex_storage::load(&fixture.path).unwrap(), before);
         assert_eq!(render_steady(&h, "after two-target save"), original_pcm);
     }
-    let first = query(&mut h, 1);
-
+    let first = before_play_origin.unwrap_or_else(|| query(&mut h, 1));
+    if matches!(
+        transport,
+        GestureTransport::Stopped | GestureTransport::Paused
+    ) {
+        if matches!(transport, GestureTransport::Paused) {
+            h.audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command(PlaybackCommand::Pause)
+                .unwrap();
+        } else {
+            h.audio.as_ref().unwrap().control.stop();
+        }
+        h.render_plugin_block();
+        assert!(
+            !h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
+        );
+    }
     let send = |h: &mut ResidentHarness, client: &mut GestureClient| {
         let request = client.next_request().unwrap();
         client.mark_submitted();
@@ -707,27 +787,100 @@ fn authored_drag(reading: bool, editor_changed: bool) {
     let mut client = GestureClient::default();
     let manual = PluginParameterValue::new(0.5).unwrap();
     client.begin_plugin(first).unwrap();
-    send(&mut h, &mut client);
+    let begun = send(&mut h, &mut client);
+    assert_eq!(begun.state.project.as_ref(), &before);
+    assert!(!begun.state.can_undo && !begun.state.can_redo);
+    let completed_before = h.plugin_completed.load(Acquire);
     client.change_plugin(manual).unwrap();
     let preview = send(&mut h, &mut client);
     assert_eq!(preview.state.project.as_ref(), &before);
-    assert_eq!(
-        render_steady(&h, "first held preview"),
-        if reading { original_pcm * 2.0 } else { 1.0 }
-    );
+    if matches!(transport, GestureTransport::Running) {
+        assert_eq!(
+            render_steady(&h, "first held preview"),
+            if reading { original_pcm * 2.0 } else { 1.0 }
+        );
+    } else {
+        assert_eq!(
+            h.plugin_completed.load(Acquire),
+            completed_before,
+            "idle preview cannot advance PCM"
+        );
+    }
+    if matches!(transport, GestureTransport::IdleThenPlay) {
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        assert_eq!(
+            render_steady(&h, "play supersedes idle preview"),
+            original_pcm
+        );
+        client
+            .change_plugin(PluginParameterValue::new(0.75).unwrap())
+            .unwrap();
+        let change = client.next_request().unwrap();
+        client.mark_submitted();
+        let refused = h.run(Request::DeviceGesture(change));
+        let ack = refused.gesture_ack.unwrap();
+        assert!(
+            !ack.accepted && ack.source_lost && !ack.preview_retained,
+            "{ack:?}"
+        );
+        assert!(client.acknowledge(&ack));
+        assert_eq!(refused.state.project.as_ref(), &before);
+        assert!(!refused.state.can_undo && !refused.state.can_redo);
+        assert_eq!(
+            render_steady(&h, "after stale idle input refused"),
+            original_pcm
+        );
+        let saved = h.run(Request::SaveCurrent);
+        assert!(saved.save_complete && !saved.state.unsaved);
+        assert_eq!(hex_storage::load(&fixture.path).unwrap(), before);
+        return;
+    }
     client.cancel().unwrap();
     assert_eq!(send(&mut h, &mut client).state.project.as_ref(), &before);
-    assert_eq!(render_steady(&h, "after cancel"), original_pcm);
+    if matches!(transport, GestureTransport::Running) {
+        assert_eq!(render_steady(&h, "after cancel"), original_pcm);
+    } else {
+        assert_eq!(
+            h.plugin_completed.load(Acquire),
+            completed_before,
+            "idle cancel cannot advance PCM"
+        );
+    }
 
     let second = query(&mut h, 2);
+    if !matches!(transport, GestureTransport::Running) {
+        assert_eq!(
+            second.initial,
+            if reading
+                && matches!(
+                    transport,
+                    GestureTransport::Stopped | GestureTransport::Paused
+                )
+            {
+                PluginParameterValue::new(0.25).unwrap()
+            } else {
+                first.initial
+            },
+            "idle Cancel must restore the actual Begin value, even when the list predates playback"
+        );
+    }
     client.begin_plugin(second).unwrap();
     send(&mut h, &mut client);
     client.change_plugin(manual).unwrap();
     send(&mut h, &mut client);
-    assert_eq!(
-        render_steady(&h, "second held preview"),
-        if reading { original_pcm * 2.0 } else { 1.0 }
-    );
+    if matches!(transport, GestureTransport::Running) {
+        assert_eq!(
+            render_steady(&h, "second held preview"),
+            if reading { original_pcm * 2.0 } else { 1.0 }
+        );
+    } else {
+        assert_eq!(h.plugin_completed.load(Acquire), completed_before);
+    }
     client.finish_plugin(manual).unwrap();
     let committed = send(&mut h, &mut client);
     let (revision, _) = h.applied(original_revision);
@@ -754,6 +907,23 @@ fn authored_drag(reading: bool, editor_changed: bool) {
         1.0,
         "other reading lane must retain its canonical base"
     );
+    if !matches!(transport, GestureTransport::Running) {
+        assert!(
+            !h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
+        );
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+    }
     assert_eq!(
         render_steady(&h, "after commit"),
         if reading { original_pcm * 2.0 } else { 1.0 }

@@ -19,6 +19,7 @@ use hex_session::{
         PluginParameterGestureResult as Prepared, PluginParameterOverride, RequestCancellation,
     },
 };
+use std::sync::atomic::Ordering::Acquire;
 use std::time::{Duration, Instant};
 
 mod manual_override;
@@ -208,7 +209,7 @@ impl Plugins {
             // Revalidate capability on the actual original SDK source,
             // including after renewal. Only page zero and the target page
             // can be queried, independently of total inventory size.
-            validate_current_parameter(
+            let current_value = validate_current_parameter(
                 control,
                 binding,
                 origin,
@@ -216,26 +217,36 @@ impl Plugins {
                 input.reading_effect_class().is_some(),
             )?;
             let live = if let Some(class) = input.isolated_effect_class() {
+                let playing = control.status.playing.load(Acquire);
                 let (source, transport_epoch) = control
                     .status
-                    .live_native_parameter_source()
+                    .native_parameter_source(playing)
                     .filter(|(source, _)| source.context == input.context())
                     .filter(|_| {
                         input.reading_effect_class().is_none()
                             || row.automation_class == Some(class)
                     })
-                    .ok_or_else(|| {
-                        refused("play the arrangement to edit this automated vst3 effect")
-                    })?;
+                    .ok_or_else(|| refused("vst3 parameter source is not ready"))?;
                 Some(LiveOverride::new(
                     source,
                     transport_epoch,
                     class,
                     input.reading_effect_class().is_some(),
+                    playing,
                 ))
             } else {
                 None
             };
+            let mut origin = origin;
+            if live
+                .as_ref()
+                .is_some_and(|live| live.reading && !live.playing)
+            {
+                // A list can predate playback. Cancel must restore the actual
+                // stopped worker value observed at Begin, including after a
+                // moving authored envelope changed it beneath that list.
+                origin.initial = current_value;
+            }
             let gesture = Gesture {
                 key: snapshot.key,
                 origin,
@@ -357,7 +368,7 @@ impl Gesture {
             if live.invalidated
                 || input.isolated_effect_class() != Some(live.class)
                 || input.reading_effect_class().is_some() != live.reading
-                || control.status.live_native_parameter_source()
+                || control.status.native_parameter_source(live.playing)
                     != Some((live.source, live.transport_epoch))
             {
                 return Err(lost());
@@ -396,36 +407,39 @@ impl Gesture {
                 self.before = Some(self.capture(control)?);
             }
             let actual = self.sdk_value(value);
-            let (token, opening_hold) =
-                if let Some(live) = self.live.as_ref().filter(|live| live.reading) {
-                    let command = live.hold.as_ref().map_or(
-                        NativeParameterHold::Begin {
-                            id: self.origin.parameter,
-                            normalized: actual,
-                        },
-                        |hold| NativeParameterHold::Change {
-                            hold,
-                            normalized: actual,
-                        },
-                    );
-                    let token = admit(control, |control| {
-                        control.native_source_parameter_hold_on_control(
-                            live.source,
-                            self.binding,
-                            command,
-                        )
-                    })?;
-                    (token, live.hold.is_none())
-                } else {
-                    let token = admit(control, |control| {
-                        control.begin_native_source_parameter_change_on_control(
-                            self.binding,
-                            self.origin.parameter,
-                            actual,
-                        )
-                    })?;
-                    (token, false)
-                };
+            let (token, opening_hold) = if let Some(live) = self
+                .live
+                .as_ref()
+                .filter(|live| live.reading && live.playing)
+            {
+                let command = live.hold.as_ref().map_or(
+                    NativeParameterHold::Begin {
+                        id: self.origin.parameter,
+                        normalized: actual,
+                    },
+                    |hold| NativeParameterHold::Change {
+                        hold,
+                        normalized: actual,
+                    },
+                );
+                let token = admit(control, |control| {
+                    control.native_source_parameter_hold_on_control(
+                        live.source,
+                        self.binding,
+                        command,
+                    )
+                })?;
+                (token, live.hold.is_none())
+            } else {
+                let token = admit(control, |control| {
+                    control.begin_native_source_parameter_change_on_control(
+                        self.binding,
+                        self.origin.parameter,
+                        actual,
+                    )
+                })?;
+                (token, false)
+            };
             self.pending = Some(PendingPoint {
                 token,
                 value,
@@ -591,7 +605,7 @@ fn validate_current_parameter(
     origin: PluginParameterOrigin,
     steps: u32,
     reading: bool,
-) -> Result<(), Error> {
+) -> Result<PluginParameterValue, Error> {
     use hex_audio::plugin_worker::{NativeWorkerControllerProgress, ParameterPageQuery};
     let mut first = 0;
     let mut revision = 0;
@@ -639,7 +653,7 @@ fn validate_current_parameter(
                     "vst3 parameter metadata changed · refresh the list",
                 ));
             }
-            return Ok(());
+            return PluginParameterValue::new(parameter.normalized).map_err(refused);
         }
         first = origin.page_first;
         revision = page.revision;

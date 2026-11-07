@@ -17,9 +17,20 @@ impl Status {
     /// The ordinary source and epoch eligible for new live parameter input.
     /// Priority Stop invalidates admission before the callback consumes it.
     pub fn live_native_parameter_source(&self) -> Option<(AppliedAudioSource, u64)> {
+        self.native_parameter_source(true)
+    }
+
+    /// Current ordinary source at the requested transport state. Idle uses the
+    /// installed canonical graph observation, including after native runtime
+    /// return. Root must independently match the exact native binding and state.
+    pub fn native_parameter_source(&self, playing: bool) -> Option<(AppliedAudioSource, u64)> {
         let epoch = self.transport_epoch.load(Acquire);
-        let source = self.native_effect_source()?;
-        (self.playing.load(Acquire)
+        let source = if playing {
+            self.native_effect_source()?
+        } else {
+            self.recording_source()?
+        };
+        (self.playing.load(Acquire) == playing
             && self.pending_stop_marker.load(Acquire) == 0
             && self.applied_audio_source().is_none()
             && !self.closing.load(Acquire)
@@ -34,19 +45,20 @@ impl PublicationControl {
         expected: AppliedAudioSource,
         binding: Binding,
         canonical: &NativeDeviceState,
+        playing: bool,
     ) -> Result<(u32, u64, crate::plugin_effects::BaseCaptureSource), String> {
         let (_, epoch) = self
             .status
-            .live_native_parameter_source()
+            .native_parameter_source(playing)
             .filter(|(source, _)| *source == expected)
             .filter(|_| {
                 self.native_custody && self.output_identity() == Some(expected.output_identity)
             })
             .filter(|_| binding.root == expected.output_identity)
-            .ok_or("native base capture requires the applied ordinary effect")?;
+            .ok_or("native base capture requires the current ordinary effect")?;
         let source = self
             .candidate_root
-            .native_source_for_base_capture(binding, canonical, true)?;
+            .native_source_for_base_capture(binding, canonical, playing)?;
         Ok((self.rate, epoch, source))
     }
 
@@ -147,7 +159,8 @@ impl PublicationControl {
     /// While playing, an actual PCM quantum consumes it. While idle, the same
     /// serialized source flushes the point and acknowledges controller readback
     /// without advancing PCM. After revocation, admission observes its healthy
-    /// worker join and the exact stopped-input drain performs that SDK exchange. Validate current metadata/writability at the caller.
+    /// worker join and the exact stopped-input drain performs that SDK exchange.
+    /// Validate current metadata/writability at the caller.
     /// Processing progress below grants no canonical/state installation.
     pub fn begin_native_source_parameter_change_on_control(
         &mut self,
@@ -999,3 +1012,42 @@ impl Callback {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod parameter_source_tests {
+    use super::*;
+
+    #[test]
+    fn parameter_source_requires_exact_transport_mode_and_current_ordinary_graph() {
+        let status = Status::default();
+        let source = AppliedAudioSource {
+            context: hex_engine::AudioSourceContext {
+                project_generation: 3,
+                editor_revision: 7,
+            },
+            audio_revision: 9,
+            output_identity: 11,
+        };
+        status.recording_source.publish(Some(source));
+        status.applied_revision.store(9, Release);
+        status.transport_epoch.store(5, Release);
+        assert_eq!(status.native_parameter_source(false), Some((source, 5)));
+        assert_eq!(status.live_native_parameter_source(), None);
+        status.pending_stop_marker.store(1, Release);
+        assert_eq!(status.native_parameter_source(false), None);
+        status.pending_stop_marker.store(0, Release);
+        status.playing.store(true, Release);
+        status.ordinary_native_revision.store(9, Release);
+        assert_eq!(status.native_parameter_source(false), None);
+        assert_eq!(status.live_native_parameter_source(), Some((source, 5)));
+        status.closing.store(true, Release);
+        assert_eq!(status.live_native_parameter_source(), None);
+        status.closing.store(false, Release);
+        status.playing.store(false, Release);
+        status.applied_source.publish(Some(source));
+        assert_eq!(status.native_parameter_source(false), None);
+        status.applied_source.publish(None);
+        status.applied_revision.store(10, Release);
+        assert_eq!(status.native_parameter_source(false), None);
+    }
+}

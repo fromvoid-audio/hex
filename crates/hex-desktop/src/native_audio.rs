@@ -1118,8 +1118,8 @@ impl WorkerAudioSink for NativeAudioSink {
                     && source.context == context
             });
             if let Some(installed) = installed {
-                if live_override.is_some_and(|(_, epoch)| {
-                    status.live_native_parameter_source() != Some((installed, epoch))
+                if live_override.is_some_and(|(_, epoch, playing)| {
+                    status.native_parameter_source(playing) != Some((installed, epoch))
                 }) {
                     self.relinquish_output();
                     return Err(Error::SourceLost("vst3 override transport changed".into()));
@@ -1477,13 +1477,14 @@ impl WorkerAudioSink for NativeAudioSink {
             return Err(hex_session::service::ResidentPublicationRefusal { playback, error });
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        if let Some(expected) = self.plugins.override_publication_source(metadata.context)
+        if let Some((source, epoch, playing)) =
+            self.plugins.override_publication_source(metadata.context)
             && self
                 .output
                 .as_mut()
                 .and_then(|output| output.publication.control())
-                .and_then(|control| control.status.live_native_parameter_source())
-                != Some(expected)
+                .and_then(|control| control.status.native_parameter_source(playing))
+                != Some((source, epoch))
         {
             return Err(hex_session::service::ResidentPublicationRefusal {
                 playback,

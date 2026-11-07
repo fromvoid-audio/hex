@@ -33,7 +33,7 @@ enum Phase {
 pub struct ManualBaseCapture {
     binding: Binding,
     output_identity: u64,
-    source: Option<(AppliedAudioSource, u64)>,
+    source: Option<(AppliedAudioSource, u64, bool)>,
     identity: hex_plugin_state::Identity,
     presentation: PresentationPlan,
     parameters: Parameters,
@@ -54,17 +54,61 @@ impl Hosting {
         id: u32,
         normalized: f64,
     ) -> Result<ManualBaseCapture, String> {
-        let mut parameters = Parameters::default();
-        parameters
-            .push(ParameterPoint {
+        self.begin_parameter_base_capture(
+            output,
+            source,
+            binding,
+            canonical,
+            ParameterPoint {
                 id,
                 frame: 0,
                 normalized,
-            })
+            },
+            true,
+        )
+    }
+
+    /// Isolate one stopped manual edit from canonical state. The exact idle
+    /// source and epoch must remain current through capture and disposal.
+    pub fn begin_idle_manual_base_capture_on_control(
+        &self,
+        output: &mut PublicationControl,
+        source: AppliedAudioSource,
+        binding: Binding,
+        canonical: &NativeDeviceState,
+        id: u32,
+        normalized: f64,
+    ) -> Result<ManualBaseCapture, String> {
+        self.begin_parameter_base_capture(
+            output,
+            source,
+            binding,
+            canonical,
+            ParameterPoint {
+                id,
+                frame: 0,
+                normalized,
+            },
+            false,
+        )
+    }
+
+    fn begin_parameter_base_capture(
+        &self,
+        output: &mut PublicationControl,
+        source: AppliedAudioSource,
+        binding: Binding,
+        canonical: &NativeDeviceState,
+        point: ParameterPoint,
+        playing: bool,
+    ) -> Result<ManualBaseCapture, String> {
+        let mut parameters = Parameters::default();
+        parameters
+            .push(point)
             .map_err(|_| "native manual base input is invalid")?;
         let identity = Self::saved_identity_on_control(canonical)?;
         let (rate, transport_epoch, original) =
-            output.native_base_capture_source(source, binding, canonical)?;
+            output.native_base_capture_source(source, binding, canonical, playing)?;
         let scratch = self.begin_on_control(
             output,
             original.metadata.selection(),
@@ -78,7 +122,7 @@ impl Hosting {
         Ok(ManualBaseCapture {
             binding: scratch,
             output_identity: source.output_identity,
-            source: Some((source, transport_epoch)),
+            source: Some((source, transport_epoch, playing)),
             identity,
             presentation: original.presentation,
             parameters,
@@ -146,8 +190,9 @@ impl Hosting {
 
 impl ManualBaseCapture {
     fn source_matches(&self, status: &crate::prepared::Status) -> bool {
-        self.source
-            .is_none_or(|expected| status.live_native_parameter_source() == Some(expected))
+        self.source.is_none_or(|(source, epoch, playing)| {
+            status.native_parameter_source(playing) == Some((source, epoch))
+        })
     }
 
     /// Advance one control operation. A captured envelope is returned once,
