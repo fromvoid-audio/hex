@@ -33,6 +33,8 @@ pub use hex_lattice_contract::ForeignProcessorBinding as EffectBinding;
 pub use hosting::{EffectPresentation, EffectSelection, Hosting, PluginProfile};
 pub(crate) use manual_base_capture::BaseCaptureSource;
 pub use manual_base_capture::ManualBaseCapture;
+mod canonical_bases;
+pub use canonical_bases::{CanonicalBasesCapture, CapturedCanonicalBases};
 mod control;
 mod state_approval;
 pub(crate) use control::{NativeEffectControl, NativeEffectReference};

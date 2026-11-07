@@ -17,6 +17,7 @@ pub(crate) struct BaseCaptureSource {
     pub identity: ProcessorInstanceIdentity,
     pub profile: PluginProfile,
     pub presentation: PresentationPlan,
+    pub prepared: hex_lattice::PreparedForeignProcessor,
 }
 
 enum Phase {
