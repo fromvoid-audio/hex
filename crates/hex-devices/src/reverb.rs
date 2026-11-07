@@ -19,13 +19,17 @@
 //! declared zero-input deadline (including up to 100 ms of copied smoothing).
 //! The shared Arrangement adapter supplies authored dry/wet at host rate.
 //! Other admitted controls use tank evaluations, including decay, size and
-//! decay ratios. Density is stepped; canonical edits retain their smoothing.
+//! decay ratios. Density and six filter/modulation/shaping switches are stepped;
+//! canonical edits retain their smoothing. Freeze/flat/cut use the same typed
+//! delivery; smoothing-mode automation remains unsupported.
 //! Fixed delay rings preserve history. With authored feedback controls, gains
 //! derive from effective parameter ramps; canonical-only rendering retains
 //! prepared coefficient ramps. Decay-admitted unfrozen factories reserve the
 //! maximum finite tail. Ordinary factories keep their previous tail declaration
-//! and refuse unprepared decay input. Detached tails retain their last validated
-//! values after the host freezes the automation clock.
+//! and refuse unprepared decay input. Factories admitting freeze input declare
+//! unbounded tails before publication and otherwise refuse freeze delivery.
+//! Detached tails retain their last validated values after the host freezes the
+//! automation clock.
 
 mod runtime;
 mod state;
@@ -52,7 +56,8 @@ impl ReverbDefinition {
         Self::prepare_owned_room_for_parameters(state, rate, &[])
     }
     /// Exact admitted provider targets, including live base-only input slots.
-    /// Decay admission expands the finite tail promise before publication.
+    /// Decay admission expands the finite tail promise; freeze admission makes
+    /// it unbounded. Both promises are established before publication.
     pub fn prepare_owned_room_for_parameters(
         state: &NativeDeviceState,
         rate: u32,

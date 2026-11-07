@@ -1,13 +1,25 @@
 //! Borrowed output, delay and modulation controls. Authored values bypass
 //! canonical edit ramps; room controls use the existing tank evaluation rate.
-//! Input filter and shelf-frequency conversions are cached; feedback gains,
-//! ring capacity and tail bounds remain unchanged.
+//! Input filter and shelf-frequency conversions are cached. Boolean overrides
+//! switch existing paths without resetting their history or oscillator phase;
+//! decay shaping uses the effective mode in the fixed feedback cache. Ring
+//! capacity stays fixed. Freeze input requires control-side admission of an
+//! unbounded output tail before publication.
 use super::*;
 use crate::parameter_binding::{Binding, SCALAR_ENVELOPE};
 use hex_lattice_contract::ParameterSemantics;
 
 #[derive(Clone, Copy, PartialEq)]
 pub(super) struct AutomatedSettings {
+    lo_cut: bool,
+    hi_cut: bool,
+    spin: bool,
+    high: bool,
+    low: bool,
+    chorus: bool,
+    freeze: bool,
+    flat: bool,
+    cut: bool,
     decay: f32,
     dry_wet: f32,
     lo_freq: f32,
@@ -35,6 +47,15 @@ pub(super) struct AutomatedSettings {
 impl AutomatedSettings {
     pub(super) fn new(settings: Settings) -> Self {
         Self {
+            lo_cut: settings.on(p::LO_CUT),
+            hi_cut: settings.on(p::HI_CUT),
+            spin: settings.on(p::SPIN),
+            high: settings.on(p::HIGH),
+            low: settings.on(p::LOW),
+            chorus: settings.on(p::CHORUS),
+            freeze: settings.on(p::FREEZE),
+            flat: settings.on(p::FLAT),
+            cut: settings.on(p::CUT),
             decay: settings.get(p::DECAY),
             dry_wet: settings.get(p::DRY_WET),
             lo_freq: settings.get(p::LO_FREQ),
@@ -62,6 +83,15 @@ impl AutomatedSettings {
     }
     pub(super) fn check_inline(&self) {
         let Self {
+            lo_cut,
+            hi_cut,
+            spin,
+            high,
+            low,
+            chorus,
+            freeze,
+            flat,
+            cut,
             decay,
             dry_wet,
             lo_freq,
@@ -110,6 +140,15 @@ impl AutomatedSettings {
             lo_q,
             hi_q,
         ];
+        let _: &bool = lo_cut;
+        let _: &bool = hi_cut;
+        let _: &bool = spin;
+        let _: &bool = high;
+        let _: &bool = low;
+        let _: &bool = chorus;
+        let _: &bool = freeze;
+        let _: &bool = flat;
+        let _: &bool = cut;
         let _: &u32 = density;
     }
 }
@@ -121,11 +160,16 @@ const LOG_SEMANTICS: ParameterSemantics = ParameterSemantics {
     normalization: hex_lattice_contract::ParameterNormalization::PositiveLogarithmic,
     ..SEMANTICS
 };
+const BOOLEAN_SEMANTICS: ParameterSemantics = ParameterSemantics {
+    smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+    ..crate::parameter_binding::BOOLEAN_ENVELOPE
+};
 const CHOICE_SEMANTICS: ParameterSemantics = ParameterSemantics {
     smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
     ..crate::parameter_binding::CHOICE_ENVELOPE
 };
-const BINDINGS: [Binding<AutomatedSettings>; 23] = [
+pub(super) const FREEZE_INDEX: usize = 24;
+const BINDINGS: [Binding<AutomatedSettings>; 32] = [
     Binding::float(
         crate::reverb::DESCRIPTORS[0],
         LOG_SEMANTICS,
@@ -138,11 +182,23 @@ const BINDINGS: [Binding<AutomatedSettings>; 23] = [
         |s| s.dry_wet,
         |s, v| s.dry_wet = v,
     ),
+    Binding::boolean(
+        crate::reverb::DESCRIPTORS[2],
+        BOOLEAN_SEMANTICS,
+        |s| s.lo_cut,
+        |s, v| s.lo_cut = v,
+    ),
     Binding::float(
         crate::reverb::DESCRIPTORS[3],
         LOG_SEMANTICS,
         |s| s.lo_freq,
         |s, v| s.lo_freq = v,
+    ),
+    Binding::boolean(
+        crate::reverb::DESCRIPTORS[4],
+        BOOLEAN_SEMANTICS,
+        |s| s.hi_cut,
+        |s, v| s.hi_cut = v,
     ),
     Binding::float(
         crate::reverb::DESCRIPTORS[5],
@@ -155,6 +211,12 @@ const BINDINGS: [Binding<AutomatedSettings>; 23] = [
         SEMANTICS,
         |s| s.predelay,
         |s, v| s.predelay = v,
+    ),
+    Binding::boolean(
+        crate::reverb::DESCRIPTORS[7],
+        BOOLEAN_SEMANTICS,
+        |s| s.spin,
+        |s, v| s.spin = v,
     ),
     Binding::float(
         crate::reverb::DESCRIPTORS[8],
@@ -174,6 +236,12 @@ const BINDINGS: [Binding<AutomatedSettings>; 23] = [
         |s| s.shape,
         |s, v| s.shape = v,
     ),
+    Binding::boolean(
+        crate::reverb::DESCRIPTORS[11],
+        BOOLEAN_SEMANTICS,
+        |s| s.high,
+        |s, v| s.high = v,
+    ),
     Binding::float(
         crate::reverb::DESCRIPTORS[12],
         LOG_SEMANTICS,
@@ -185,6 +253,12 @@ const BINDINGS: [Binding<AutomatedSettings>; 23] = [
         LOG_SEMANTICS,
         |s| s.high_ratio,
         |s, v| s.high_ratio = v,
+    ),
+    Binding::boolean(
+        crate::reverb::DESCRIPTORS[14],
+        BOOLEAN_SEMANTICS,
+        |s| s.low,
+        |s, v| s.low = v,
     ),
     Binding::float(
         crate::reverb::DESCRIPTORS[15],
@@ -216,6 +290,12 @@ const BINDINGS: [Binding<AutomatedSettings>; 23] = [
         |s| s.size,
         |s, v| s.size = v,
     ),
+    Binding::boolean(
+        crate::reverb::DESCRIPTORS[20],
+        BOOLEAN_SEMANTICS,
+        |s| s.chorus,
+        |s, v| s.chorus = v,
+    ),
     Binding::float(
         crate::reverb::DESCRIPTORS[21],
         SEMANTICS,
@@ -236,6 +316,24 @@ const BINDINGS: [Binding<AutomatedSettings>; 23] = [
             s.density = v;
             Ok(())
         },
+    ),
+    Binding::boolean(
+        crate::reverb::DESCRIPTORS[25],
+        BOOLEAN_SEMANTICS,
+        |s| s.freeze,
+        |s, v| s.freeze = v,
+    ),
+    Binding::boolean(
+        crate::reverb::DESCRIPTORS[26],
+        BOOLEAN_SEMANTICS,
+        |s| s.flat,
+        |s, v| s.flat = v,
+    ),
+    Binding::boolean(
+        crate::reverb::DESCRIPTORS[27],
+        BOOLEAN_SEMANTICS,
+        |s| s.cut,
+        |s, v| s.cut = v,
     ),
     Binding::float(
         crate::reverb::DESCRIPTORS[28],
@@ -285,6 +383,15 @@ pub(in crate::reverb) fn validate_ids(ids: &[ParameterId]) -> Result<(), DeviceC
 }
 #[derive(Clone, Copy, Default)]
 pub(super) struct AutomatedValues {
+    pub lo_cut: Option<f32>,
+    pub hi_cut: Option<f32>,
+    pub spin: Option<f32>,
+    pub high: Option<f32>,
+    pub low: Option<f32>,
+    pub chorus: Option<f32>,
+    pub freeze: Option<f32>,
+    pub flat: Option<f32>,
+    pub cut: Option<f32>,
     pub decay: Option<f32>,
     pub dry_wet: Option<f32>,
     pub lo_g: Option<f32>,
@@ -312,6 +419,15 @@ pub(super) struct AutomatedValues {
 impl AutomatedValues {
     pub(super) fn check_inline(&self) {
         let Self {
+            lo_cut,
+            hi_cut,
+            spin,
+            high,
+            low,
+            chorus,
+            freeze,
+            flat,
+            cut,
             decay,
             dry_wet,
             lo_g,
@@ -336,7 +452,16 @@ impl AutomatedValues {
             lo_damping,
             hi_damping,
         } = self;
-        let _: [&Option<f32>; 23] = [
+        let _: [&Option<f32>; 32] = [
+            lo_cut,
+            hi_cut,
+            spin,
+            high,
+            low,
+            chorus,
+            freeze,
+            flat,
+            cut,
             decay,
             dry_wet,
             lo_g,
@@ -402,72 +527,81 @@ impl ReverbRuntime {
                     (std::f32::consts::PI * hz.min(self.tank_rate * 0.45) / self.tank_rate).tan()
                 };
                 let output = AutomatedValues {
+                    lo_cut: present(2).then_some(f32::from(settings.lo_cut)),
+                    hi_cut: present(4).then_some(f32::from(settings.hi_cut)),
+                    spin: present(7).then_some(f32::from(settings.spin)),
+                    high: present(11).then_some(f32::from(settings.high)),
+                    low: present(14).then_some(f32::from(settings.low)),
+                    chorus: present(20).then_some(f32::from(settings.chorus)),
+                    freeze: present(24).then_some(f32::from(settings.freeze)),
+                    flat: present(25).then_some(f32::from(settings.flat)),
+                    cut: present(26).then_some(f32::from(settings.cut)),
                     decay: present(0).then_some(settings.decay),
                     dry_wet: present(1).then_some(settings.dry_wet),
                     lo_g: converted(
-                        present(2),
+                        present(3),
                         settings.lo_freq,
                         old.lo_freq,
                         self.automated_values.lo_g,
                         g,
                     ),
                     hi_g: converted(
-                        present(3),
+                        present(5),
                         settings.hi_freq,
                         old.hi_freq,
                         self.automated_values.hi_g,
                         g,
                     ),
-                    predelay: present(4).then_some(settings.predelay),
-                    spin_amount: present(5).then_some(settings.spin_amount),
-                    spin_rate: present(6).then_some(settings.spin_rate),
-                    shape: present(7).then_some(settings.shape),
+                    predelay: present(6).then_some(settings.predelay),
+                    spin_amount: present(8).then_some(settings.spin_amount),
+                    spin_rate: present(9).then_some(settings.spin_rate),
+                    shape: present(10).then_some(settings.shape),
                     high_alpha: converted(
-                        present(8),
+                        present(12),
                         settings.high_freq,
                         old.high_freq,
                         self.automated_values.high_alpha,
                         |v| alpha(v, self.tank_rate),
                     ),
-                    high_ratio: present(9).then_some(settings.high_ratio),
+                    high_ratio: present(13).then_some(settings.high_ratio),
                     low_alpha: converted(
-                        present(10),
+                        present(15),
                         settings.low_freq,
                         old.low_freq,
                         self.automated_values.low_alpha,
                         |v| alpha(v, self.tank_rate),
                     ),
-                    low_ratio: present(11).then_some(settings.low_ratio),
-                    diffusion: present(12).then_some(settings.diffusion),
-                    scale: present(13).then_some(settings.scale),
-                    size: present(14).then_some(settings.size),
-                    chorus_amount: present(15).then_some(settings.chorus_amount),
-                    chorus_rate: present(16).then_some(settings.chorus_rate),
-                    density: present(17).then_some(settings.density as f32),
-                    stereo: present(18).then_some(settings.stereo),
+                    low_ratio: present(16).then_some(settings.low_ratio),
+                    diffusion: present(17).then_some(settings.diffusion),
+                    scale: present(18).then_some(settings.scale),
+                    size: present(19).then_some(settings.size),
+                    chorus_amount: present(21).then_some(settings.chorus_amount),
+                    chorus_rate: present(22).then_some(settings.chorus_rate),
+                    density: present(23).then_some(settings.density as f32),
+                    stereo: present(27).then_some(settings.stereo),
                     reflect: converted(
-                        present(19),
+                        present(28),
                         settings.reflect,
                         old.reflect,
                         self.automated_values.reflect,
                         |v| 10.0_f32.powf(v / 20.0),
                     ),
                     diffuse: converted(
-                        present(20),
+                        present(29),
                         settings.diffuse,
                         old.diffuse,
                         self.automated_values.diffuse,
                         |v| 10.0_f32.powf(v / 20.0),
                     ),
                     lo_damping: converted(
-                        present(21),
+                        present(30),
                         settings.lo_q,
                         old.lo_q,
                         self.automated_values.lo_damping,
                         |v| 1.0 / v,
                     ),
                     hi_damping: converted(
-                        present(22),
+                        present(31),
                         settings.hi_q,
                         old.hi_q,
                         self.automated_values.hi_damping,
@@ -510,7 +644,7 @@ mod tests {
         rate: u32,
         settings: Settings,
     ) -> Result<PreparedReverb, DeviceContractError> {
-        PreparedReverb::new(rate, settings).map(|p| p.with_automation(&[p::DECAY]))
+        PreparedReverb::new(rate, settings).map(|p| p.with_automation(&[p::DECAY, p::FREEZE]))
     }
     fn enabled_settings() -> Settings {
         let mut settings = Settings::default_values();
@@ -528,9 +662,78 @@ mod tests {
         .map(|v| Some(ParameterValue::Float(v)))
         .collect();
         values[17] = Some(ParameterValue::Choice(1));
+        for (index, value) in [
+            (2, false),
+            (4, false),
+            (7, false),
+            (11, false),
+            (14, false),
+            (20, false),
+        ] {
+            values.insert(index, Some(ParameterValue::Bool(value)));
+        }
+        for (index, value) in [(24, false), (25, true), (26, true)] {
+            values.insert(index, Some(ParameterValue::Bool(value)));
+        }
         Values {
             ids: BINDINGS.iter().map(|b| b.descriptor.id).collect(),
             values,
+        }
+    }
+    #[test]
+    fn boolean_modes_match_canonical_settings_and_reject_wrong_types() {
+        for rate in [8000, 96000] {
+            for id in [
+                p::LO_CUT,
+                p::HI_CUT,
+                p::SPIN,
+                p::HIGH,
+                p::LOW,
+                p::CHORUS,
+                p::FREEZE,
+                p::FLAT,
+                p::CUT,
+            ] {
+                let mut variants = Vec::new();
+                for enabled in [false, true] {
+                    let mut settings = enabled_settings();
+                    settings.0[crate::reverb::index(p::CUT).unwrap()] = 0.0;
+                    if matches!(id, p::FLAT | p::CUT) {
+                        settings.0[crate::reverb::index(p::FREEZE).unwrap()] = 1.0;
+                    }
+                    settings.0[crate::reverb::index(p::PREDELAY).unwrap()] = 0.0;
+                    settings.0[crate::reverb::index(p::SPIN_AMOUNT).unwrap()] = 100.0;
+                    settings.0[crate::reverb::index(p::CHORUS_AMOUNT).unwrap()] = 4.0;
+                    settings.0[crate::reverb::index(p::HIGH_RATIO).unwrap()] = 0.2;
+                    settings.0[crate::reverb::index(p::LOW_RATIO).unwrap()] = 2.0;
+                    settings.0[crate::reverb::index(id).unwrap()] = f32::from(!enabled);
+                    let mut actual = automated_prepared(rate, settings).unwrap().runtime();
+                    settings.0[crate::reverb::index(id).unwrap()] = f32::from(enabled);
+                    let mut reference = automated_prepared(rate, settings).unwrap().runtime();
+                    let values = Values {
+                        ids: vec![id],
+                        values: vec![Some(ParameterValue::Bool(enabled))],
+                    };
+                    let mut output = signal(8192);
+                    let mut expected = output.clone();
+                    actual.process_automation(&mut output, &values).unwrap();
+                    reference.process_block(&mut expected, &R);
+                    assert_eq!(output, expected, "{rate} {id:?} {enabled}");
+                    variants.push(output);
+                    let wrong = Values {
+                        ids: vec![id],
+                        values: vec![Some(ParameterValue::Float(1.0))],
+                    };
+                    assert!(actual.process_automation(&mut [[0.0; 2]], &wrong).is_err());
+                }
+                assert!(
+                    variants[0]
+                        .iter()
+                        .zip(&variants[1])
+                        .any(|(a, b)| (a[0] - b[0]).abs() > 1e-7),
+                    "inaudible fixture {rate} {id:?}"
+                );
+            }
         }
     }
     fn signal(len: usize) -> Vec<StereoFrame> {
@@ -634,7 +837,9 @@ mod tests {
                     hex_lattice_contract::ParameterKind::Choice { labels } => Some(
                         ParameterValue::Choice(((offset / 17) % labels.len()) as u32),
                     ),
-                    _ => None,
+                    hex_lattice_contract::ParameterKind::Bool => {
+                        Some(ParameterValue::Bool((offset / 17).is_multiple_of(2)))
+                    }
                 }
             }
         }
@@ -738,6 +943,45 @@ mod tests {
         }
     }
     #[test]
+    fn freeze_admission_and_effective_clock_preserve_the_tail_promise() {
+        use hex_lattice::PreparedNativeProcessor;
+        let state = crate::reverb::REVERB_DEFINITION.default_state().unwrap();
+        for rate in [8000, 96000] {
+            let plain = crate::reverb::ReverbDefinition::prepare_owned_room(&state, rate).unwrap();
+            let mut unprepared = plain.runtime();
+            let mut values = Values {
+                ids: vec![p::FREEZE],
+                values: vec![Some(ParameterValue::Bool(true))],
+            };
+            assert!(!plain.supports_parameter_automation(p::FREEZE));
+            assert!(!unprepared.supports_parameter_automation(p::FREEZE));
+            let mut input = [[0.125; 2]];
+            assert!(unprepared.process_automation(&mut input, &values).is_err());
+            assert_eq!(input, [[0.125; 2]]);
+            let admitted = crate::reverb::ReverbDefinition::prepare_owned_room_for_parameters(
+                &state,
+                rate,
+                &[p::FREEZE],
+            )
+            .unwrap();
+            assert_eq!(admitted.output_tail(), hex_lattice::OutputTail::Unbounded);
+            let mut room = admitted.runtime();
+            room.process_block(&mut signal(8193), &R);
+            room.silent_frames = room.silence_limit - 1;
+            room.process_automation(&mut [[0.0; 2]], &values).unwrap();
+            assert!(!room.is_quiescent());
+            assert_eq!(room.silent_frames, room.silence_limit - 1);
+            room.begin_output_tail();
+            room.process_block(&mut [[0.0; 2]; 17], &R);
+            assert!(!room.is_quiescent());
+            values.values[0] = Some(ParameterValue::Bool(false));
+            room.process_automation(&mut [[0.0; 2]], &values).unwrap();
+            assert!(room.is_quiescent());
+            room.reset();
+            assert_eq!(room.automated_values.freeze, None);
+        }
+    }
+    #[test]
     fn authored_feedback_cache_tracks_canonical_ramps_and_reaches_static_law() {
         for rate in [8000, 96000] {
             let settings = enabled_settings();
@@ -745,6 +989,8 @@ mod tests {
             old.process_block(&mut signal(8193), &R);
             let mut changed = settings;
             changed.0[crate::reverb::index(p::DECAY).unwrap()] = 0.4;
+            changed.0[crate::reverb::index(p::HIGH).unwrap()] = 0.0;
+            changed.0[crate::reverb::index(p::LOW).unwrap()] = 0.0;
             let prepared = automated_prepared(rate, changed).unwrap();
             let mut whole = prepared.runtime();
             whole.copy_history_from(&old);
@@ -938,11 +1184,12 @@ mod tests {
         let mut source = prepared.runtime();
         let mut reference = prepared.runtime();
         let mut values = held_values();
-        values.values[4] = Some(ParameterValue::Float(f32::NAN));
+        let filter = values.ids.iter().position(|&id| id == p::LO_FREQ).unwrap();
+        values.values[filter] = Some(ParameterValue::Float(f32::NAN));
         let mut output = [[0.125; 2]; 17];
         assert!(source.process_automation(&mut output, &values).is_err());
         assert_eq!(output, [[0.125; 2]; 17]);
-        values.values[4] = Some(ParameterValue::Float(25.0));
+        values.values[filter] = Some(ParameterValue::Float(25.0));
         let mut expected = output;
         source.process_automation(&mut output, &values).unwrap();
         reference
@@ -998,12 +1245,14 @@ mod tests {
             for frozen in [false, true] {
                 let mut prepared = automated_prepared(rate, enabled_settings()).unwrap();
                 let mut source = prepared.runtime();
-                let values = held_values();
+                let mut values = held_values();
                 // Fill beyond the authored 50ms predelay even at 96kHz.
                 source
                     .process_automation(&mut signal(8193), &values)
                     .unwrap();
                 if frozen {
+                    values.values[values.ids.iter().position(|&id| id == p::FREEZE).unwrap()] =
+                        Some(ParameterValue::Bool(true));
                     let mut settings = enabled_settings();
                     for id in [p::FREEZE, p::FLAT, p::CUT] {
                         settings.0[crate::reverb::index(id).unwrap()] = 1.0;
@@ -1127,6 +1376,23 @@ mod benchmark {
             } else {
                 0.5
             };
+            if [
+                p::LO_CUT,
+                p::HI_CUT,
+                p::SPIN,
+                p::HIGH,
+                p::LOW,
+                p::CHORUS,
+                p::FREEZE,
+                p::FLAT,
+                p::CUT,
+            ]
+            .contains(&id)
+            {
+                return Some(hex_lattice_contract::ParameterValue::Bool(
+                    !self.dense || (offset / 17).is_multiple_of(2),
+                ));
+            }
             if id == p::DENSITY {
                 return Some(hex_lattice_contract::ParameterValue::Choice(
                     if self.dense {
@@ -1200,8 +1466,14 @@ mod benchmark {
             };
             let mut runtime = PreparedReverb::new(48000, Settings::default_values())
                 .unwrap()
-                .with_automation(&[p::DECAY])
+                .with_automation(&[p::DECAY, p::FREEZE])
                 .runtime();
+            // Excite the room before held freeze+cut can suppress new input.
+            // Construction and this seed are outside every timed interval.
+            runtime.process_block(
+                &mut [[0.125, -0.25]; 8192],
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            );
             let mut block = [[0.125, -0.25]; 128];
             let mut run = || {
                 for _ in 0..128 {

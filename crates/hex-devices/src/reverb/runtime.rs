@@ -136,6 +136,7 @@ pub struct PreparedReverb {
     allpass_capacities: [usize; 2],
     silence_limit: u64,
     decay_admitted: bool,
+    freeze_admitted: bool,
 }
 // Topology-preserving state-variable section. Positive g and damping remain
 // stable throughout bounded parameter ramps; no arbitrary biquad interpolation.
@@ -222,17 +223,22 @@ impl PreparedReverb {
                 .map(|t| (t * 2.0 * tank_rate).ceil() as usize + 4),
             silence_limit: silence_deadline_frames(rate, settings.get(p::DECAY)),
             decay_admitted: false,
+            freeze_admitted: false,
         })
     }
     pub(super) fn with_automation(mut self, parameters: &[ParameterId]) -> Self {
         self.decay_admitted = parameters.contains(&p::DECAY);
+        self.freeze_admitted = parameters.contains(&p::FREEZE);
         self
     }
     fn runtime(&self) -> ReverbRuntime {
         ReverbRuntime {
             automation_controls: crate::parameter_binding::Controls::new(
                 AutomatedSettings::new(self.settings),
-                std::array::from_fn(|i| i != 0 || self.decay_admitted),
+                std::array::from_fn(|i| {
+                    (i != 0 || self.decay_admitted)
+                        && (i != automation::FREEZE_INDEX || self.freeze_admitted)
+                }),
             ),
             automated_values: AutomatedValues::default(),
             tail_controls_frozen: false,
@@ -281,7 +287,9 @@ impl PreparedNativeProcessor for PreparedReverb {
             .copied()
     }
     fn supports_parameter_automation(&self, parameter: ParameterId) -> bool {
-        automation::supports(parameter) && (parameter != p::DECAY || self.decay_admitted)
+        automation::supports(parameter)
+            && (parameter != p::DECAY || self.decay_admitted)
+            && (parameter != p::FREEZE || self.freeze_admitted)
     }
 
     fn supports_smoothed_bypass(&self) -> bool {
@@ -306,7 +314,7 @@ impl PreparedNativeProcessor for PreparedReverb {
         Some(0)
     }
     fn output_tail(&self) -> OutputTail {
-        if self.settings.on(p::FREEZE) {
+        if self.settings.on(p::FREEZE) || self.freeze_admitted {
             OutputTail::Unbounded
         } else {
             OutputTail::Finite {
@@ -424,7 +432,7 @@ pub struct ReverbRuntimeStorage {
 }
 pub const RUNTIME_HEAP_ALLOCATIONS: usize = 14;
 pub struct ReverbRuntime {
-    automation_controls: crate::parameter_binding::Controls<AutomatedSettings, 23>,
+    automation_controls: crate::parameter_binding::Controls<AutomatedSettings, 32>,
     automated_values: AutomatedValues,
     tail_controls_frozen: bool,
     scatter_cache: ScatterCache,
@@ -573,6 +581,9 @@ impl ReverbRuntime {
         self.active = false;
     }
     fn tank(&mut self, input: StereoFrame, output: AutomatedValues) {
+        let freeze = output.freeze.unwrap_or_else(|| self.v(p::FREEZE));
+        let flat = output.flat.unwrap_or_else(|| self.v(p::FLAT));
+        let cut = output.cut.unwrap_or_else(|| self.v(p::CUT));
         let predelay = output.predelay.unwrap_or_else(|| self.v(p::PREDELAY));
         let spin_amount = output.spin_amount.unwrap_or_else(|| self.v(p::SPIN_AMOUNT));
         let spin_rate = output.spin_rate.unwrap_or_else(|| self.v(p::SPIN_RATE));
@@ -586,7 +597,7 @@ impl ReverbRuntime {
         let density = output.density.unwrap_or_else(|| self.v(p::DENSITY));
         let size = (output.size.unwrap_or_else(|| self.v(p::SIZE)) / 100.0).sqrt();
         let predelay = predelay * 0.001 * self.tank_rate;
-        let excitation = 1.0 - self.v(p::FREEZE) * self.v(p::CUT);
+        let excitation = 1.0 - freeze * cut;
         let settled = self.tank_ramp_remaining == 0;
         let [high_filter, low_filter] = if settled {
             self.settled_tank.filters
@@ -619,15 +630,15 @@ impl ReverbRuntime {
         for c in 0..2 {
             let mut x = input[c] * excitation;
             let high = high_filter.apply(&mut self.input_low[c], x, true);
-            x += (high - x) * self.v(p::LO_CUT);
+            x += (high - x) * output.lo_cut.unwrap_or_else(|| self.v(p::LO_CUT));
             let low = low_filter.apply(&mut self.input_high[c], x, false);
-            x += (low - x) * self.v(p::HI_CUT);
+            x += (low - x) * output.hi_cut.unwrap_or_else(|| self.v(p::HI_CUT));
             self.inputs[c].push(x);
             late_input[c] = self.inputs[c].read(predelay + 1.0);
             for (i, seconds) in TAPS.into_iter().enumerate() {
                 let phase = self.spin_phase + c as f32 * 0.25 + i as f32 * 0.137;
                 let spin = (std::f32::consts::TAU * phase).sin()
-                    * self.v(p::SPIN)
+                    * output.spin.unwrap_or_else(|| self.v(p::SPIN))
                     * spin_amount
                     * 0.000025
                     * self.tank_rate;
@@ -640,13 +651,16 @@ impl ReverbRuntime {
             }
             late_input[c] += early[c] * 0.25;
         }
-        let depth =
-            self.v(p::CHORUS) * chorus_amount * 0.001 * self.tank_rate * (1.0 - self.v(p::FREEZE));
+        let depth = output.chorus.unwrap_or_else(|| self.v(p::CHORUS))
+            * chorus_amount
+            * 0.001
+            * self.tank_rate
+            * (1.0 - freeze);
         let delayed = std::array::from_fn(|i| {
             let modulation =
                 (std::f32::consts::TAU * (self.chorus_phase + i as f32 * 0.173)).sin() * depth;
             let base = TIMES[i] * size * self.tank_rate;
-            let delay = base + self.v(p::FREEZE) * (base.round() - base);
+            let delay = base + freeze * (base.round() - base);
             self.lines[i].read(delay + modulation)
         });
         let rotations = if output.diffusion.is_some() || output.density.is_some() {
@@ -661,16 +675,20 @@ impl ReverbRuntime {
             || output.size.is_some()
             || output.high_ratio.is_some()
             || output.low_ratio.is_some()
+            || output.high.is_some()
+            || output.low.is_some()
+            || output.freeze.is_some()
+            || output.flat.is_some()
         {
             let feedback_parameters = [
                 output.decay.unwrap_or_else(|| self.v(p::DECAY)),
                 size,
                 output.high_ratio.unwrap_or_else(|| self.v(p::HIGH_RATIO)),
                 output.low_ratio.unwrap_or_else(|| self.v(p::LOW_RATIO)),
-                self.v(p::FREEZE),
-                self.v(p::FLAT),
-                self.v(p::LOW),
-                self.v(p::HIGH),
+                freeze,
+                flat,
+                output.low.unwrap_or_else(|| self.v(p::LOW)),
+                output.high.unwrap_or_else(|| self.v(p::HIGH)),
             ];
             Some(self.feedback_cache.resolve(feedback_parameters))
         } else {
@@ -757,10 +775,12 @@ impl ReverbRuntime {
                 0.0
             }
         });
-        if input != [0.0; 2] && self.v(p::FREEZE) * self.v(p::CUT) < 1.0 {
+        let freeze = output.freeze.unwrap_or_else(|| self.v(p::FREEZE));
+        let cut = output.cut.unwrap_or_else(|| self.v(p::CUT));
+        if input != [0.0; 2] && freeze * cut < 1.0 {
             self.active = true;
             self.silent_frames = 0;
-        } else if self.active && self.v(p::FREEZE) == 0.0 {
+        } else if self.active && freeze == 0.0 {
             self.silent_frames += 1;
             if self.silent_frames >= self.silence_limit {
                 self.clear();
@@ -843,6 +863,8 @@ impl NativeProcessorRuntime for ReverbRuntime {
     fn supports_parameter_automation(&self, parameter: ParameterId) -> bool {
         automation::supports(parameter)
             && (parameter != p::DECAY || self.automation_controls.admitted(0))
+            && (parameter != p::FREEZE
+                || self.automation_controls.admitted(automation::FREEZE_INDEX))
     }
     fn process_block_with_automation(
         &mut self,
