@@ -518,6 +518,7 @@ fn moved_host_target_refusal_retires_only_its_own_receipt_without_new_history(
             revision,
             device,
             target,
+            vst3_class: None,
             points
         }));
         let earlier = event(&view.service);
@@ -569,6 +570,7 @@ fn explicit_equal_numeric_text_and_real_reenable_menus_preserve_curve_and_receip
                 revision,
                 device,
                 target: kind,
+                vst3_class: None,
                 points: points.clone()
             }));
             let entry = Entry::read(
@@ -686,6 +688,7 @@ fn stale_reenable_keeps_pending_selection_until_its_terminal_then_restores_canon
             revision,
             device,
             target,
+            vst3_class: None,
             points: vec![AutomationPoint {
                 beat: BeatTime::ZERO,
                 value: AutomationValue::new(0.5).unwrap(),
@@ -1224,6 +1227,7 @@ fn touching_an_automated_parameter_shows_its_envelope_unmoved(cx: &mut TestAppCo
             revision,
             device,
             target: kind,
+            vst3_class: None,
             points: points.clone()
         }));
         view.automation_view.enabled = true;

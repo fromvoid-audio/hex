@@ -239,6 +239,8 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
                                 } else {
                                     None
                                 };
+                                let row_id = row.id;
+                                let row_editor = editor.clone();
                                 Some(
                                     div()
                                         .id(("vst3-parameter", row.id))
@@ -259,6 +261,25 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
                                             )),
                                         ))
                                         .children(knob)
+                                        .when(row.automation_class.is_some(), |item| {
+                                            item.on_mouse_down(
+                                                gpui::MouseButton::Right,
+                                                move |event, window, app| {
+                                                    let _ = row_editor.update(app, |view, cx| {
+                                                        if show_automation_menu(
+                                                            view,
+                                                            query,
+                                                            row_id,
+                                                            event.position,
+                                                            window,
+                                                            cx,
+                                                        ) {
+                                                            cx.stop_propagation();
+                                                        }
+                                                    });
+                                                },
+                                            )
+                                        })
                                         .when(!row.editable, |item| {
                                             item.child(div().max_w(px(92.0)).truncate().child(
                                                 theme::text(hex_session::service::text::verbatim(
@@ -278,6 +299,38 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
             )
         }
     }
+}
+
+fn show_automation_menu(
+    view: &mut EditorView,
+    query: PluginParameterQuery,
+    id: u32,
+    position: gpui::Point<gpui::Pixels>,
+    window: &mut gpui::Window,
+    cx: &mut Context<EditorView>,
+) -> bool {
+    if current_context(view) != Some(query.context)
+        || view
+            .audio
+            .as_ref()
+            .and_then(|audio| audio.control.output_identity())
+            != Some(query.output_identity)
+    {
+        return false;
+    }
+    let row = view
+        .device_panel
+        .vst3_parameters
+        .panel
+        .as_ref()
+        .filter(|panel| panel.query == query)
+        .and_then(|panel| panel.result.as_ref()?.as_ref().ok())
+        .and_then(|rows| {
+            rows.iter()
+                .find(|row| row.id == id && row.automation_class.is_some())
+        })
+        .cloned();
+    row.is_some_and(|row| view.open_vst3_automation_menu(position, query.device, &row, window, cx))
 }
 
 pub(in crate::editor) fn refresh(view: &mut EditorView) {
@@ -430,6 +483,7 @@ mod tests {
                 default_normalized: 0.25,
                 steps: 0,
                 editable: true,
+                automation_class: None,
                 page_first: 0,
                 metadata_revision: 1,
             })

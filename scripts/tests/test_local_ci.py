@@ -1044,6 +1044,7 @@ fi
             run_id="failure",
             env={**self.env, "FAIL_MATCH": "bad"},
             steps=(local_ci.Step("bad", ("bad",)), local_ci.Step("later", ("second",))),
+            min_free_bytes=0,
         )
         self.assertEqual(runner.run(), 1)
         summary = self.summary("failure")
@@ -1161,6 +1162,7 @@ fi
             run_id="missing",
             env=self.env,
             steps=(local_ci.Step("missing", ("not-installed",)),),
+            min_free_bytes=0,
         )
         self.assertEqual(runner.run(), 1)
         summary = self.summary("missing")
@@ -1309,6 +1311,7 @@ fi
             run_id="stale",
             env={**self.env, "MUTATE_FILE": str(source), "FAKE_FILE_LIST": "source.rs"},
             steps=(local_ci.Step("mutate", ("first",)),),
+            min_free_bytes=0,
         )
         self.assertEqual(runner.run(), 3)
         summary = self.summary("stale")
@@ -1322,6 +1325,7 @@ fi
             run_id="interrupted",
             env={**self.env, "INTERRUPT_ON": "1"},
             steps=(local_ci.Step("interrupt", ("first",)), local_ci.Step("later", ("second",))),
+            min_free_bytes=0,
         )
         self.assertEqual(runner.run(), 130)
         summary = self.summary("interrupted")
