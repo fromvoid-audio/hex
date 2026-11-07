@@ -347,7 +347,7 @@ fn clip_fade_layer(samples: Vec<(f32, f32)>, active: bool) -> impl IntoElement +
             }
             shade.close();
             if let Ok(shade) = shade.build() {
-                window.paint_path(shade, rgba(0x00000038));
+                window.paint_path(shade, rgba(theme::CLIP_FADE_SHADE));
             }
             if let Some(path) = path
                 && let Ok(path) = path.build()

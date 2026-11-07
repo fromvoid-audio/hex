@@ -441,6 +441,10 @@ fn muted_clip_fill(accent: u32) -> u32 {
         .unwrap_or(accent)
 }
 
+/// Black shading above a clip's fade envelope, at 40 percent opacity. Shared
+/// canonical and projected clip layers use it independently of curve/handle ink.
+pub(crate) const CLIP_FADE_SHADE: u32 = 0x00000066;
+
 /// Shared audio/MIDI body, Console cell, drag preview and title fill. The persisted
 /// `Muted` flavor is darker and more saturated; Accent keeps the track hue.
 /// Track strips, sections and browser marker palettes retain their own surfaces.
