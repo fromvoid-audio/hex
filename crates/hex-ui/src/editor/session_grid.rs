@@ -1163,7 +1163,8 @@ impl EditorView {
                 } else {
                     theme::color(theme::PaletteRole::Background)
                 }))
-                .text_xs();
+                .text_xs()
+                .line_height(px(super::clip_name::CLIP_NAME_HEIGHT));
             match content {
                 Some(SessionCellContent::Midi(clip)) => {
                     let clip_id = clip.id();
