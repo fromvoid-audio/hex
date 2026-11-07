@@ -28,7 +28,7 @@ fn query(observed: &ParameterPage) -> ParameterPageQuery {
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn extension_reads_a_fresh_selected_page_after_pcm_feedback_changes_revision() {
     let case = Case::new();
-    let setup = case.setup(91);
+    let setup = case.setup(80);
     let mut instance = Prepared::prepare(
         &build(),
         source(),
@@ -54,7 +54,7 @@ fn extension_reads_a_fresh_selected_page_after_pcm_feedback_changes_revision() {
         .parameters
         .push(crate::transport::ParameterPoint {
             frame: 0,
-            id: 7,
+            id: 0,
             normalized: 0.75,
         })
         .unwrap();
@@ -77,23 +77,23 @@ fn extension_reads_a_fresh_selected_page_after_pcm_feedback_changes_revision() {
     }
     let storage = instance.retained_storage_on_control().unwrap();
     instance
-        .begin_authored_parameter_extension_on_worker(class(), 7, 0, q)
+        .begin_authored_parameter_extension_on_worker(class(), 0, 0, q)
         .unwrap();
     assert!(matches!(
         poll_extension(&mut instance),
         Progress::Armed {
-            id: 7,
+            id: 0,
             steps: 0,
             ..
         }
     ));
-    assert!(instance.has_armed_authored_parameter(7));
+    assert!(instance.has_armed_authored_parameter(0));
     assert_eq!(
         instance
             .authored_parameter_metadata
             .as_ref()
             .unwrap()
-            .initial_normalized(7),
+            .initial_normalized(0),
         None
     );
     assert_eq!(instance.retained_storage_on_control().unwrap(), storage);
@@ -102,7 +102,7 @@ fn extension_reads_a_fresh_selected_page_after_pcm_feedback_changes_revision() {
         .parameters
         .push(crate::transport::ParameterPoint {
             frame: 0,
-            id: 7,
+            id: 0,
             normalized: 0.5,
         })
         .unwrap();
