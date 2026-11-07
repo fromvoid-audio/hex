@@ -1032,6 +1032,68 @@ mod idle_tests {
     use super::*;
 
     #[test]
+    fn recording_source_observation_rejects_pending_retiring_and_replaced_bindings() {
+        let mut plugins = Plugins::default();
+        let binding = Binding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 4,
+        };
+        let context = AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 7,
+        };
+        let target = hex_session::service::automation_draft::Vst3CaptureTarget {
+            device: hex_project::DeviceId::new(2).unwrap(),
+            class: [9; 16],
+            parameter: 0,
+            binding,
+        };
+        plugins.sources.push(Source {
+            binding,
+            owner: ProcessorChainOwner::Main,
+            device: 2,
+            project_generation: 1,
+            operation: SourceOperation::Reopen,
+            authored: None,
+            accepted: false,
+            retiring: false,
+            queued: true,
+            observes_latency: true,
+            editor_open: false,
+            edit_backlog: false,
+            #[cfg(feature = "allocation-probe")]
+            observed_latency_receipt: false,
+            #[cfg(feature = "allocation-probe")]
+            attempts: 0,
+        });
+        assert!(!plugins.matches_capture_source(context, target));
+        plugins.sources[0].accepted = true;
+        assert!(plugins.matches_capture_source(context, target));
+        plugins.sources[0].retiring = true;
+        assert!(!plugins.matches_capture_source(context, target));
+        plugins.sources[0].retiring = false;
+        plugins.sources[0].binding.epoch += 1;
+        assert!(!plugins.matches_capture_source(context, target));
+        plugins.sources[0].binding = binding;
+        assert!(!plugins.matches_capture_source(
+            AudioSourceContext {
+                project_generation: 2,
+                ..context
+            },
+            target
+        ));
+        assert!(!plugins.matches_capture_source(
+            context,
+            hex_session::service::automation_draft::Vst3CaptureTarget {
+                device: hex_project::DeviceId::new(3).unwrap(),
+                ..target
+            }
+        ));
+    }
+
+    #[test]
     fn stopped_editor_backlog_keeps_polling_busy_until_drained_or_output_closes() {
         let mut plugins = Plugins::default();
         plugins.sources.push(Source {
