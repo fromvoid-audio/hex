@@ -102,7 +102,8 @@ const TUID restore_controller_id={0x48,0x45,0x58,0x43,1,2,3,4,5,6,7,8,9,10,11,12
 // Distinct variants exercise actual metadata and processing, not host guesses.
 static ParamID parameter_id(int variant) { return variant==80 || variant==89 || variant==92?0u:7u; }
 constexpr ParamID drag_axis_id=11;
-constexpr int mixed_input_fixture=143;
+constexpr int mixed_input_fixture=143, held_input_fixture=144;
+static bool mixed_parameter_input(int variant) { return variant==mixed_input_fixture || variant==held_input_fixture; }
 static bool saturated_editor_drag(int variant) { return variant==87 || variant==131; }
 static int32 parameter_inventory_size() {
     const auto* shape=std::getenv("HEX_ORIGINAL_PARAMETER_INVENTORY");
@@ -123,7 +124,7 @@ IComponentHandler* latency_handler=nullptr;
 class RestoreController final : public IEditController {
     std::atomic<uint32> refs{1};
     const int fault=next_fault;
-    const int32 inventory_size=(saturated_editor_drag(fault) || fault==mixed_input_fixture)?2:parameter_inventory_size();
+    const int32 inventory_size=(saturated_editor_drag(fault) || mixed_parameter_input(fault))?2:parameter_inventory_size();
     FUnknown* context=nullptr;
     IComponentHandler* handler=nullptr;
     float component_gain=0;uint32 scroll=7;
@@ -290,7 +291,11 @@ public:
         // Keep the low gain ID last to exercise SDK page order separately
         // from the host's sorted processing lookup.
         if(inventory_size>1 && index<inventory_size-1) {
-            if(saturated_editor_drag(fault) || fault==mixed_input_fixture) {info.id=drag_axis_id;return kResultOk;}
+            if(saturated_editor_drag(fault) || mixed_parameter_input(fault)) {
+                info.id=drag_axis_id;
+                if(fault==held_input_fixture) info.flags=ParameterInfo::kCanAutomate;
+                return kResultOk;
+            }
             const auto* shape=std::getenv("HEX_ORIGINAL_PARAMETER_INVENTORY");
             if(index!=inventory_size-2 || !shape || std::strcmp(shape,"duplicate"))
                 info.id=static_cast<ParamID>(1001+index);
@@ -299,7 +304,7 @@ public:
             std::memcpy(info.title,name,sizeof(name));std::memcpy(info.shortTitle,name,sizeof(name));
             return kResultOk;
         }
-        if(fault==80 || fault==81 || fault==82 || fault==91 || fault==92 || fault==mixed_input_fixture) info.flags=ParameterInfo::kCanAutomate;
+        if(fault==80 || fault==81 || fault==82 || fault==91 || fault==92 || mixed_parameter_input(fault)) info.flags=ParameterInfo::kCanAutomate;
         if(fault==91 || fault==92) {const char16_t unit[]=u"ratio";std::memcpy(info.units,unit,sizeof(unit));}
         if(fault==81) info.stepCount=3;
         if(fault==141 || (fault==142 && !edits_sent)) info.flags=ParameterInfo::kCanAutomate;
@@ -310,7 +315,7 @@ public:
         const char16_t name[]=u"gain";std::memcpy(info.title,name,sizeof(name));std::memcpy(info.shortTitle,name,sizeof(name));return kResultOk;
     }
     ParamValue PLUGIN_API getParamNormalized(ParamID id) override {
-        if(control() && context && (saturated_editor_drag(fault) || fault==mixed_input_fixture) && id==drag_axis_id) return drag_axis;
+        if(control() && context && (saturated_editor_drag(fault) || mixed_parameter_input(fault)) && id==drag_axis_id) return drag_axis;
         if(control() && context && id>1000 && id<static_cast<ParamID>(1000+inventory_size)) return 0.25;
         if (!control() || !context || id!=parameter_id(fault)) {++observed.violations;return 0;}
         ++restoration.value_reads;trace(19);
@@ -365,7 +370,7 @@ public:
         // The editor has already painted 0.875. The fixture also accepts a
         // deliberately later authored value, but rejects replay of 0.25.
         if(fault==135 && edits_sent && value!=0.875 && value!=0.5) return kResultFalse;
-        if((saturated_editor_drag(fault) || fault==mixed_input_fixture) && id==drag_axis_id) {drag_axis=value;return kResultOk;}
+        if((saturated_editor_drag(fault) || mixed_parameter_input(fault)) && id==drag_axis_id) {drag_axis=value;return kResultOk;}
         if(id!=parameter_id(fault)) return kInvalidArgument;
         if(fault==76 && observed.flushes.load()) return kResultFalse;
         component_gain=static_cast<float>(parameter_value(fault,value)*4.0);
@@ -795,11 +800,11 @@ public:
         std::array<std::pair<int32,ParamValue>,64> points{};int32 point_count=0;
         if(data.inputParameterChanges) {
             const auto count=data.inputParameterChanges->getParameterCount();
-            if(count<1 || count>(fault==mixed_input_fixture?2:1)) return kInvalidArgument;
+            if(count<1 || count>(mixed_parameter_input(fault)?2:1)) return kInvalidArgument;
             for(int32 index=0;index<count;++index) {
                 auto* queue=data.inputParameterChanges->getParameterData(index);
                 if(!queue) return kInvalidArgument;
-                if(fault==mixed_input_fixture && queue->getParameterId()==drag_axis_id) {
+                if(mixed_parameter_input(fault) && queue->getParameterId()==drag_axis_id) {
                     int32 offset=-1;ParamValue value=-1;
                     if(queue->getPointCount()!=1 || queue->getPoint(0,offset,value)!=kResultOk ||
                         offset!=0 || !std::isfinite(value) || value<0 || value>1) return kInvalidArgument;
@@ -822,7 +827,7 @@ public:
         if (fault==28) fault_hang(9);
         if (fault==31) fault_crash(9);
         if (fault==10) return kResultFalse;
-        const float scale=fault==127?1.0f:0.5f+static_cast<float>(block)*0.125f;
+        const float scale=(fault==127 || fault==held_input_fixture)?1.0f:0.5f+static_cast<float>(block)*0.125f;
         int32 next_point=0,left_offset=-1;double left_value=static_cast<double>(gain.load())/4.0;
         double current_gain=gain.load();
         bool silent=true;
@@ -988,7 +993,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>mixed_input_fixture) return false;next_fault=value;
+        if (value>held_input_fixture) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

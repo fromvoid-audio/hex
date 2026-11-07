@@ -394,6 +394,7 @@ fn transport_runner_with_setup(
                         &published,
                         &mut block,
                         parameter_capacity,
+                        authored,
                     ) {
                         Ok(point) => point,
                         Err(error) => {

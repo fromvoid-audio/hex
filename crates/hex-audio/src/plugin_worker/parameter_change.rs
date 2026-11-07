@@ -12,10 +12,27 @@ enum Phase {
     InFlight,
     Complete,
 }
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Intent {
+    #[default]
+    Point,
+    Idle,
+    Hold,
+    Update(u64),
+    Release(u64),
+}
+
+#[derive(Clone, Copy)]
+struct Hold {
+    ordinal: u64,
+    id: u32,
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Terminal {
     Processed(ProcessedParameterChange),
     Flushed,
+    Released { sequence: u64, first_frame: u64 },
     Refused,
     Withdrawn,
 }
@@ -24,7 +41,7 @@ pub(super) struct Slot {
     ordinal: u64,
     phase: Phase,
     point: ParameterPoint,
-    idle: bool,
+    intent: Intent,
     result: Option<Terminal>,
 }
 #[derive(Default)]
@@ -32,6 +49,8 @@ pub(super) struct Work {
     ordinal: Option<u64>,
     point: ParameterPoint,
     input: Option<(u64, u64)>,
+    hold: Option<Hold>,
+    releasing: bool,
     result: Option<Terminal>,
 }
 
@@ -43,6 +62,7 @@ pub struct NativeWorkerParameterChange {
     source: Weak<Signal>,
     binding: Binding,
     ordinal: u64,
+    hold_id: Option<u32>,
 }
 /// The requested point travelled in this successful SDK input/reply exchange.
 /// This is not controller readback, final host delivery, captured state or a
@@ -59,6 +79,12 @@ pub enum NativeWorkerParameterProgress {
     Processed(ProcessedParameterChange),
     /// A zero-frame exchange acknowledged by the original processor and controller.
     Flushed,
+    /// The hold ended before this SDK quantum. Any applicable authored points
+    /// for the previously held target can now reach the processor.
+    Released {
+        sequence: u64,
+        first_frame: u64,
+    },
     /// The accepted input already contains this ID, or its quantum/physical
     /// callback budget has no remaining slot.
     /// Its authored points and PCM are preserved; no host point was injected.
@@ -146,6 +172,13 @@ impl NativeWorker {
         Ok(match terminal {
             Some(Terminal::Processed(value)) => NativeWorkerParameterProgress::Processed(value),
             Some(Terminal::Flushed) => NativeWorkerParameterProgress::Flushed,
+            Some(Terminal::Released {
+                sequence,
+                first_frame,
+            }) => NativeWorkerParameterProgress::Released {
+                sequence,
+                first_frame,
+            },
             Some(Terminal::Refused) => NativeWorkerParameterProgress::Refused,
             Some(Terminal::Withdrawn) => NativeWorkerParameterProgress::Withdrawn,
             None => NativeWorkerParameterProgress::Failed,
@@ -180,6 +213,54 @@ impl NativeWorker {
         normalized: f64,
         idle: bool,
     ) -> Result<NativeWorkerParameterChange, &'static str> {
+        self.queue_parameter_change(
+            id,
+            normalized,
+            if idle { Intent::Idle } else { Intent::Point },
+        )
+    }
+
+    /// Begin one live manual hold on a target in this worker's authored program.
+    /// Keep this operation token after observing its successful terminal. It
+    /// also names the hold for all updates and for the explicit release. A
+    /// caller must release a successful hold or retire its original source.
+    pub fn hold_parameter_on_control(
+        &mut self,
+        id: u32,
+        normalized: f64,
+    ) -> Result<NativeWorkerParameterChange, &'static str> {
+        self.queue_parameter_change(id, normalized, Intent::Hold)
+    }
+
+    pub fn update_held_parameter_on_control(
+        &mut self,
+        hold: &NativeWorkerParameterChange,
+        normalized: f64,
+    ) -> Result<NativeWorkerParameterChange, &'static str> {
+        self.require_parameter_change_source(hold)?;
+        let id = hold
+            .hold_id
+            .ok_or("native parameter token does not own a hold")?;
+        self.queue_parameter_change(id, normalized, Intent::Update(hold.ordinal))
+    }
+
+    pub fn release_held_parameter_on_control(
+        &mut self,
+        hold: &NativeWorkerParameterChange,
+    ) -> Result<NativeWorkerParameterChange, &'static str> {
+        self.require_parameter_change_source(hold)?;
+        let id = hold
+            .hold_id
+            .ok_or("native parameter token does not own a hold")?;
+        self.queue_parameter_change(id, 0.0, Intent::Release(hold.ordinal))
+    }
+
+    fn queue_parameter_change(
+        &mut self,
+        id: u32,
+        normalized: f64,
+        intent: Intent,
+    ) -> Result<NativeWorkerParameterChange, &'static str> {
         let point = ParameterPoint {
             frame: 0,
             id,
@@ -207,7 +288,7 @@ impl NativeWorker {
             .ok_or("native parameter input ordinal exhausted")?;
         slot.ordinal = ordinal;
         slot.point = point;
-        slot.idle = idle;
+        slot.intent = intent;
         slot.phase = Phase::Queued;
         slot.result = None;
         self.reaper
@@ -218,6 +299,7 @@ impl NativeWorker {
             source: Arc::downgrade(&self.reaper.completed),
             binding: self.binding,
             ordinal,
+            hold_id: (intent == Intent::Hold).then_some(id),
         })
     }
     /// Withdraw only an exact queued operation. False means it already crossed
@@ -283,6 +365,13 @@ impl NativeWorker {
         Ok(match result {
             Terminal::Processed(value) => NativeWorkerParameterProgress::Processed(value),
             Terminal::Flushed => NativeWorkerParameterProgress::Flushed,
+            Terminal::Released {
+                sequence,
+                first_frame,
+            } => NativeWorkerParameterProgress::Released {
+                sequence,
+                first_frame,
+            },
             Terminal::Refused => NativeWorkerParameterProgress::Refused,
             Terminal::Withdrawn => NativeWorkerParameterProgress::Withdrawn,
         })
@@ -325,6 +414,14 @@ fn merge_parameter_input(
     }
     Ok(Some(merged))
 }
+fn without_parameter(points: &Parameters, id: u32) -> Result<Parameters, Fault> {
+    let mut filtered = Parameters::default();
+    for point in points.as_slice().iter().filter(|point| point.id != id) {
+        filtered.push(*point)?;
+    }
+    Ok(filtered)
+}
+
 impl State {
     /// Serialized with PCM on the native worker. Idle points never enter a
     /// PCM block and use the same exact mailbox/token as live input.
@@ -347,7 +444,7 @@ impl State {
                 }
             };
             let slot = &mut mailbox.parameter_change;
-            if slot.phase != Phase::Queued || !slot.idle {
+            if slot.phase != Phase::Queued || slot.intent != Intent::Idle {
                 return Ok(());
             }
             slot.phase = Phase::InFlight;
@@ -371,10 +468,18 @@ impl State {
         signal: &Signal,
         block: &mut Block,
         parameter_capacity: usize,
+        authored: bool,
     ) -> Result<Option<ParameterPoint>, Fault> {
-        if self.parameter_change.ordinal.is_some()
-            || !signal.parameter_change_requested.load(Acquire)
-        {
+        let work = &mut self.parameter_change;
+        let pending = work.ordinal.is_none() && signal.parameter_change_requested.load(Acquire);
+        if !pending && (!authored || work.hold.is_none()) {
+            return Ok(None);
+        }
+        let original = block.parameters;
+        if authored && let Some(hold) = work.hold {
+            block.parameters = without_parameter(&original, hold.id)?;
+        }
+        if !pending {
             return Ok(None);
         }
         let mut mailbox = match signal.capture.try_lock() {
@@ -385,22 +490,63 @@ impl State {
         let slot = &mut mailbox.parameter_change;
         // Withdrawal may win after the worker's atomic observation and before
         // this lock. It must not become a source fault or a late mutation.
-        if slot.phase != Phase::Queued || slot.idle {
+        if slot.phase != Phase::Queued || slot.intent == Intent::Idle {
             return Ok(None);
         }
-        self.parameter_change.ordinal = Some(slot.ordinal);
-        self.parameter_change.point = slot.point;
+        let (ordinal, point, intent) = (slot.ordinal, slot.point, slot.intent);
+        work.ordinal = Some(ordinal);
         slot.phase = Phase::InFlight;
         signal.parameter_change_requested.store(false, Release);
         drop(mailbox);
-        let point = self.parameter_change.point;
-        let Some(merged) = merge_parameter_input(&block.parameters, point, parameter_capacity)?
-        else {
-            self.parameter_change.result = Some(Terminal::Refused);
+
+        let holds = |ordinal| {
+            work.hold
+                .is_some_and(|hold| hold.ordinal == ordinal && hold.id == point.id)
+        };
+        let start = match intent {
+            Intent::Point if work.hold.is_none_or(|hold| hold.id != point.id) => None,
+            Intent::Hold
+                if work.hold.is_none()
+                    && authored
+                    && matches!(&self.processor, Some(Processor::Native(instance))
+                    if instance.has_armed_authored_parameter(point.id)) =>
+            {
+                Some(Hold {
+                    ordinal,
+                    id: point.id,
+                })
+            }
+            Intent::Update(lease) if holds(lease) => None,
+            Intent::Release(lease) if holds(lease) => {
+                work.hold = None;
+                work.releasing = true;
+                work.input = Some((block.sequence, block.first_frame));
+                block.parameters = original;
+                return Ok(None);
+            }
+            _ => {
+                work.result = Some(Terminal::Refused);
+                return Ok(None);
+            }
+        };
+
+        let parameters = match start {
+            Some(hold) => without_parameter(&original, hold.id)?,
+            None => block.parameters,
+        };
+        // Removed points were counted by this physical callback. Reclaim those
+        // slots only after admitting the exact hold and accepting the new point.
+        let capacity = parameter_capacity + original.as_slice().len() - parameters.as_slice().len();
+        let Some(merged) = merge_parameter_input(&parameters, point, capacity)? else {
+            work.result = Some(Terminal::Refused);
             return Ok(None);
         };
+        if let Some(hold) = start {
+            work.hold = Some(hold);
+        }
         block.parameters = merged;
-        self.parameter_change.input = Some((block.sequence, block.first_frame));
+        work.point = point;
+        work.input = Some((block.sequence, block.first_frame));
         Ok(Some(point))
     }
     pub(super) fn complete_parameter_change(&mut self, reply: &Block) -> Result<(), Fault> {
@@ -408,11 +554,18 @@ impl State {
             if sequence != reply.sequence || first_frame != reply.first_frame {
                 return Err(Fault::Protocol);
             }
-            self.parameter_change.result = Some(Terminal::Processed(ProcessedParameterChange {
-                point: self.parameter_change.point,
-                sequence,
-                first_frame,
-            }));
+            self.parameter_change.result = Some(if self.parameter_change.releasing {
+                Terminal::Released {
+                    sequence,
+                    first_frame,
+                }
+            } else {
+                Terminal::Processed(ProcessedParameterChange {
+                    point: self.parameter_change.point,
+                    sequence,
+                    first_frame,
+                })
+            });
             self.parameter_change.input = None;
         }
         Ok(())
@@ -432,7 +585,10 @@ impl State {
         }
         slot.result = Some(result);
         slot.phase = Phase::Complete;
-        self.parameter_change = Work::default();
+        self.parameter_change = Work {
+            hold: self.parameter_change.hold,
+            ..Work::default()
+        };
         Ok(())
     }
 }
