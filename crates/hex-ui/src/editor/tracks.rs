@@ -2229,12 +2229,9 @@ impl EditorView {
             );
             let midi_drag_payload =
                 self.midi_drag_payload(state, track_id, clip, start, end, viewport);
-            let fill = theme::clip_activity_fill(
-                track.color(),
-                clip.flavor(),
-                selected_clip,
-                clip.active(),
-            );
+            let header_fill =
+                theme::clip_activity_fill(track.color(), clip.flavor(), false, clip.active());
+            let fill = theme::arrangement_clip_body_fill(header_fill, selected_clip);
             let stroke = 1.0 / scale_factor.max(1.0);
             let border = hex_widgets::rectangle_border_width(pixel_width) > 0.0;
             let mut midi = hex_widgets::rectangle_surface(left as f32, width as f32, pixel_width)
@@ -2356,7 +2353,13 @@ impl EditorView {
                     clip.looping(),
                 ));
             }
-            midi = midi.child(self.clip_name_header(track_id, clip.id(), clip.name(), fill, cx));
+            midi = midi.child(self.clip_name_header(
+                track_id,
+                clip.id(),
+                clip.name(),
+                header_fill,
+                cx,
+            ));
             midi = midi.when(clip.looping(), |midi| {
                 midi.child(loop_handles::midi_markers(
                     clip,
@@ -2679,15 +2682,16 @@ impl EditorView {
                     lane,
                 )
             });
-        let fill = theme::clip_activity_fill(
+        let header_fill = theme::clip_activity_fill(
             state
                 .project
                 .track(track)
                 .map_or(hex_project::ElementColor::default(), |t| t.color()),
             clip.flavor(),
-            selected,
+            false,
             clip.active(),
         );
+        let fill = theme::arrangement_clip_body_fill(header_fill, selected);
         let clip_pixel_width = self.drag_lanes.get(&track).map_or(0.0, |lane| {
             super::trim::rendered_clip_width(lane.width, width)
         });
@@ -2790,7 +2794,7 @@ impl EditorView {
         );
         let hover_generation = self.project_generation;
         let mut content = content
-            .child(self.clip_name_header(track, clip.id(), clip.name(), fill, cx))
+            .child(self.clip_name_header(track, clip.id(), clip.name(), header_fill, cx))
             .when(!active_trim_preview && looping, |content| {
                 content.child(loop_handles::audio_markers(
                     clip,
