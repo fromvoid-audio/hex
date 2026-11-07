@@ -128,6 +128,7 @@ mod tests {
             Some(source),
             "an unchanged callback publication must not cancel a live source reader"
         );
+        assert_eq!(status.native_effect_source(), Some(source));
     }
 
     #[test]
