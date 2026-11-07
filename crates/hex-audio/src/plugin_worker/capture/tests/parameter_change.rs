@@ -743,6 +743,7 @@ fn actual_parameter_hold_replaces_one_lane_until_matching_release() {
     let (mut owner, mut endpoint) = NativeWorker::start_on_control(instance).unwrap();
     let mut render = |owner: &NativeWorker, sequence: u64, expected: f32| {
         let mut output = [[9.0; 2]; 8];
+        let mut accepted = None;
         let stage = || {
             endpoint.begin_physical_callback(8).unwrap();
             endpoint
@@ -761,7 +762,9 @@ fn actual_parameter_hold_replaces_one_lane_until_matching_release() {
                     },
                 )
                 .unwrap();
+            assert_eq!(endpoint.take_accepted_manual_parameter(), None);
             endpoint.finish(true).unwrap();
+            accepted = endpoint.take_accepted_manual_parameter();
         };
         #[cfg(feature = "allocation-probe")]
         {
@@ -791,6 +794,25 @@ fn actual_parameter_hold_replaces_one_lane_until_matching_release() {
             thread::yield_now();
         }
         assert_eq!(output, [[expected, -expected / 2.0]; 8]);
+        let expected_marker = match sequence {
+            3 => Some((1, 0.75)),
+            5 => Some((2, 0.5)),
+            _ => None,
+        };
+        assert_eq!(
+            accepted.map(|receipt| {
+                assert_eq!(receipt.binding, endpoint.binding());
+                assert_eq!(receipt.sequence, sequence - 2);
+                assert_eq!(receipt.first_frame, (sequence - 2) * 8);
+                assert_eq!(receipt.callback_offset, 0);
+                assert_eq!((receipt.input.point.frame, receipt.input.point.id), (0, 7));
+                (
+                    receipt.input.operation.get(),
+                    receipt.input.point.normalized,
+                )
+            }),
+            expected_marker
+        );
     };
     let processed =
         |owner: &mut NativeWorker, request: &NativeWorkerParameterChange, sequence, normalized| {

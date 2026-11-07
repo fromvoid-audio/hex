@@ -18,8 +18,8 @@ pub struct ConstructorStorage {
 /// no source, worker or publication authority.
 pub fn channel_storage_bound() -> Option<ConstructorStorage> {
     let reply_ring = QUEUE_CAPACITY
-        .checked_mul(std::mem::size_of::<Block>())?
-        .checked_add(std::mem::size_of::<RingBuffer<Block>>())?;
+        .checked_mul(std::mem::size_of::<OutputReply>())?
+        .checked_add(std::mem::size_of::<RingBuffer<OutputReply>>())?;
     let request_ring = QUEUE_CAPACITY
         .checked_mul(std::mem::size_of::<InputRequest>())?
         .checked_add(std::mem::size_of::<RingBuffer<InputRequest>>())?;
