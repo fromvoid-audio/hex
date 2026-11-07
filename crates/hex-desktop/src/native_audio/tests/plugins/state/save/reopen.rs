@@ -493,7 +493,7 @@ fn live_reading_vst3_drag_cancels_or_commits_exact_lane_and_preserves_other_read
         block[0][0]
     };
     let original_pcm = render_steady(&h);
-    assert_eq!(original_pcm, 0.25);
+    assert_eq!(original_pcm, 0.5);
 
     let send = |h: &mut ResidentHarness, client: &mut GestureClient| {
         let request = client.next_request().unwrap();
@@ -520,13 +520,13 @@ fn live_reading_vst3_drag_cancels_or_commits_exact_lane_and_preserves_other_read
         }
     };
     let mut client = GestureClient::default();
-    let manual = PluginParameterValue::new(0.75).unwrap();
+    let manual = PluginParameterValue::new(0.5).unwrap();
     client.begin_plugin(first).unwrap();
     send(&mut h, &mut client);
     client.change_plugin(manual).unwrap();
     let preview = send(&mut h, &mut client);
     assert_eq!(preview.state.project.as_ref(), &before);
-    assert_eq!(render_steady(&h), original_pcm * 3.0);
+    assert_eq!(render_steady(&h), original_pcm * 2.0);
     client.cancel().unwrap();
     assert_eq!(send(&mut h, &mut client).state.project.as_ref(), &before);
     assert_eq!(render_steady(&h), original_pcm);
@@ -536,7 +536,7 @@ fn live_reading_vst3_drag_cancels_or_commits_exact_lane_and_preserves_other_read
     send(&mut h, &mut client);
     client.change_plugin(manual).unwrap();
     send(&mut h, &mut client);
-    assert_eq!(render_steady(&h), original_pcm * 3.0);
+    assert_eq!(render_steady(&h), original_pcm * 2.0);
     client.finish_plugin(manual).unwrap();
     let committed = send(&mut h, &mut client);
     let (revision, _) = h.applied(original_revision);
@@ -552,8 +552,8 @@ fn live_reading_vst3_drag_cancels_or_commits_exact_lane_and_preserves_other_read
         result.automation_target(other_target),
         original.automation_target(other_target)
     );
-    assert_eq!(captured_gain(result.state()), 3.0);
-    assert_eq!(render_steady(&h), original_pcm * 3.0);
+    assert_eq!(captured_gain(result.state()), 2.0);
+    assert_eq!(render_steady(&h), original_pcm * 2.0);
 
     let history = |h: &mut ResidentHarness, request| {
         h.service.submit(request).unwrap();
