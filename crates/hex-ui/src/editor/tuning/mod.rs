@@ -1287,7 +1287,7 @@ impl EditorView {
                 .id("tuning-overlay")
                 .absolute()
                 .inset_0()
-                .pt(px(super::header::TITLE_HEIGHT))
+                .pt(px(super::header::WINDOW_CONTROL_HEIGHT))
                 .bg(rgb(theme::color(theme::PaletteRole::Background)))
                 .child(content),
         )

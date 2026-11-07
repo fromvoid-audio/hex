@@ -163,6 +163,29 @@ impl EditorView {
         }));
     }
 
+    fn project_title_label(&self) -> gpui::Stateful<gpui::Div> {
+        let title = super::header::project_title(
+            self.state()
+                .and_then(|state| state.document_path.as_deref()),
+        );
+        let full_title = theme::text(&title);
+        div()
+            .id("project-title-label")
+            .debug_selector(|| "project-title-label".into())
+            .w(px(120.0))
+            .min_w(px(32.0))
+            .line_clamp(1)
+            .text_ellipsis()
+            .tooltip(move |_, cx| {
+                cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
+                    description: full_title.clone(),
+                })
+                .into()
+            })
+            .child(theme::text(title))
+    }
+
     fn status_bar(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let mut bar = div()
             .id("editor-status-bar")
@@ -177,7 +200,8 @@ impl EditorView {
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .text_xs()
-            .child(self.browser_toggle_button(cx));
+            .child(self.browser_toggle_button(cx))
+            .child(self.project_title_label());
         let scan_status = self.plugin_scan_status();
         let plugin_status = self
             .pending_plugin_effect
@@ -1714,7 +1738,6 @@ impl Render for EditorView {
             .on_action(cx.trace(|view, _: &super::CancelUpdate, _, cx| {
                 view.cancel_requested_update(cx);
             }))
-            .child(self.title_bar(cx))
             .child(self.transport(window, cx))
             .child(workspace)
             .child(self.status_bar(cx))
