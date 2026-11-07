@@ -254,7 +254,7 @@ fn operator_tab_cycle(cx: &mut TestAppContext, saved_places: bool) {
     browser.assert_bounded(&editor, cx);
     let coarse = visual
         .debug_bounds(Box::leak(
-            format!("device-{}-parameter-10-knob", device.value()).into_boxed_str(),
+            format!("device-{}-parameter-10-slider", device.value()).into_boxed_str(),
         ))
         .unwrap();
     visual.simulate_click(coarse.center(), Modifiers::default());

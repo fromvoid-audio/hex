@@ -33,6 +33,7 @@ mod operator_harmonic_ui_tests;
 mod operator_navigation_tests;
 mod operator_preview_navigation_tests;
 mod operator_tab_tests;
+mod operator_tuning_ui_tests;
 mod overdrive_ui_tests;
 mod parameter_rows_tests;
 mod reverb_ui_tests;
@@ -1835,7 +1836,7 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     );
     let shell = visual
         .debug_bounds(Box::leak(
-            format!("device-{}-parameter-1-knob", instrument_id.value()).into_boxed_str(),
+            format!("device-{}-parameter-1-slider", instrument_id.value()).into_boxed_str(),
         ))
         .unwrap();
     visual.simulate_click(shell.center(), Modifiers::default());
@@ -2672,7 +2673,7 @@ fn operator_shell_controls_select_their_oscillator_without_losing_the_edit(
     assert!(visual.debug_bounds(oscillator_tab).is_none());
     let shell = visual
         .debug_bounds(Box::leak(
-            format!("device-{}-parameter-1-knob", operator.value()).into_boxed_str(),
+            format!("device-{}-parameter-1-slider", operator.value()).into_boxed_str(),
         ))
         .unwrap();
     visual.simulate_click(shell.center(), Modifiers::default());
@@ -3010,13 +3011,27 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                         .into_boxed_str(),
                 );
                 let bounds = visual.debug_bounds(field).expect("fixed-mode control");
-                assert_eq!(
-                    bounds.size.width,
-                    px(if parameter == level_id {
-                        60.0
-                    } else {
-                        hex_widgets::MICRO_DIAL_WIDTH
-                    })
+                assert_eq!(bounds.size.width, px(60.0));
+                let slider = visual
+                    .debug_bounds(Box::leak(
+                        format!(
+                            "device-{}-parameter-{parameter}-slider",
+                            instrument_id.value()
+                        )
+                        .into_boxed_str(),
+                    ))
+                    .unwrap();
+                assert_eq!(slider.size, size(px(58.0), px(14.0)));
+                assert!(
+                    visual
+                        .debug_bounds(Box::leak(
+                            format!(
+                                "device-{}-parameter-{parameter}-knob",
+                                instrument_id.value()
+                            )
+                            .into_boxed_str()
+                        ))
+                        .is_none()
                 );
                 assert!(bounds.origin.x >= row_bounds.origin.x + px(4.0));
                 assert!(
@@ -3115,10 +3130,11 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
     // A keyboard edit must follow the focused fixed-frequency field too.
     let frequency = visual
         .debug_bounds(Box::leak(
-            format!("device-{}-parameter-66-knob", instrument_id.value()).into_boxed_str(),
+            format!("device-{}-parameter-66-slider", instrument_id.value()).into_boxed_str(),
         ))
         .expect("operator b fixed frequency");
     visual.simulate_click(frequency.center(), Modifiers::default());
+    visual.simulate_keystrokes("escape");
     editor.update(cx, |view, cx| {
         view.device_panel.operator_pages.insert(
             instrument_id,

@@ -166,7 +166,7 @@ impl Fixture {
         for index in 0..numbers {
             let oscillator_level = entry == Entry::Vector && index < 12 && index % 3 == 2;
             let (appearance, width, height) = match entry {
-                Entry::Vector if oscillator_level => {
+                Entry::Vector if index < 12 => {
                     (NumericControlPresentation::FilledSlider, 60.0, 18.0)
                 }
                 Entry::Vector if index >= 24 => {
@@ -205,6 +205,25 @@ impl Fixture {
                     ),
                     0.5,
                 )
+            } else if entry == Entry::Vector && index < 12 {
+                if index % 3 == 0 {
+                    (
+                        NumericSpec::new(
+                            1.0 / 128.0,
+                            128.0,
+                            1.0,
+                            NumericScale::Logarithmic,
+                            2,
+                            None::<&str>,
+                        ),
+                        [1.0, 2.0, 8.0, 10.0][index / 3],
+                    )
+                } else {
+                    (
+                        NumericSpec::new(-1000.0, 1000.0, 0.0, NumericScale::Linear, 2, Some("hz")),
+                        if index == 4 { 0.75 } else { 0.0 },
+                    )
+                }
             } else {
                 (
                     NumericSpec::new(0.0, 100.0, 50.0, NumericScale::Linear, 2, Some("%")),

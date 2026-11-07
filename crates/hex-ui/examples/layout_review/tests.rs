@@ -65,8 +65,7 @@ fn catalog_fixture_track_return_labels_reuse_production_geometry_in_bounded_view
             assert_eq!(body.origin.x, header.right());
             assert_eq!(body.origin.y, header.origin.y);
             if entry == Entry::Vector {
-                for operator in 0..4 {
-                    let index = operator * 3 + 2;
+                for index in 0..12 {
                     let slider = visual
                         .debug_bounds(number_id(entry, index, "-slider"))
                         .unwrap();

@@ -268,7 +268,7 @@ fn operator_row(
         parameters,
         operator,
         id(primary_id),
-        ControlPresentation::MicroDial,
+        ControlPresentation::FilledSlider,
         Some(if fixed { "freq" } else { "coarse" }),
     );
     let fine = compact_control_with_codec(
@@ -1044,6 +1044,7 @@ fn shell_control(
         match label {
             Some("level") => Some(super::numeric_display::NumericDisplayCodec::AmplitudeDb),
             Some("coarse") => Some(super::numeric_display::NumericDisplayCodec::Number),
+            Some("freq") => Some(super::numeric_display::NumericDisplayCodec::Hertz),
             _ => None,
         },
     );
