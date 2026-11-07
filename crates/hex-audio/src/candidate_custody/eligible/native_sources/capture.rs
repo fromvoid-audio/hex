@@ -173,11 +173,26 @@ impl Custody {
         normalized: f64,
         idle: bool,
     ) -> Result<crate::plugin_worker::NativeWorkerParameterChange, &'static str> {
-        self.with_live_capture(binding, |owner| match owner {
-            Owner::Effect(owner) => owner.begin_parameter_change(id, normalized, idle),
-            Owner::Loaned(owner) => owner.begin_parameter_change(id, normalized, idle),
-            _ => Err("native parameter input owner differs"),
-        })
+        self.parameter_change_admission(binding, id, normalized, idle, || {})
+    }
+    fn parameter_change_admission(
+        &self,
+        binding: Binding,
+        id: u32,
+        normalized: f64,
+        idle: bool,
+        after_admission: impl FnOnce(),
+    ) -> Result<NativeWorkerParameterChange, &'static str> {
+        self.admit_live_operation(
+            binding,
+            |owner| match owner {
+                Owner::Effect(owner) => owner.begin_parameter_change(id, normalized, idle),
+                Owner::Loaned(owner) => owner.begin_parameter_change(id, normalized, idle),
+                _ => Err("native parameter input owner differs"),
+            },
+            after_admission,
+            "native parameter point was not admitted",
+        )
     }
     pub(in crate::candidate_custody) fn withdraw_native_parameter_change(
         &self,
@@ -491,12 +506,9 @@ impl CandidateRoot {
         idle: bool,
     ) -> Result<crate::plugin_worker::NativeWorkerParameterChange, &'static str> {
         self.require_native_source_control_open()?;
-        let result = self
-            .0
+        self.0
             .eligible
-            .begin_native_parameter_change(binding, id, normalized, idle)?;
-        self.require_native_source_control_open()?;
-        Ok(result)
+            .begin_native_parameter_change(binding, id, normalized, idle)
     }
     pub(crate) fn withdraw_native_parameter_change(
         &self,
