@@ -150,26 +150,12 @@ impl EditorView {
                 ruler_width,
                 self.snap_grid,
             );
-            let overview = super::overview::widget(
-                super::overview::cached(
-                    &self.overview_cache,
-                    self.project_generation,
-                    &state,
-                    self.viewport_horizon(state.timeline_frames),
-                    self.arrangement_focus_ranges(),
-                    self.arrangement_revealed_track(),
-                ),
-                empty_viewport,
-                self.track_header_width(),
-                cx.entity(),
-            );
             let upper = div()
                 .flex_1()
                 .min_h_0()
                 .flex()
                 .flex_col()
                 .bg(rgb(theme::color(theme::PaletteRole::Background)))
-                .children([overview])
                 .child(self.ruler(&state, ruler_width, clip_move_guide, cx))
                 .child(super::loop_rail::view(
                     self,
@@ -223,19 +209,6 @@ impl EditorView {
             viewport,
             ruler_width,
             self.snap_grid,
-        );
-        let overview = super::overview::widget(
-            super::overview::cached(
-                &self.overview_cache,
-                self.project_generation,
-                &state,
-                self.viewport_horizon(state.timeline_frames),
-                self.arrangement_focus_ranges(),
-                self.arrangement_revealed_track(),
-            ),
-            viewport,
-            self.track_header_width(),
-            cx.entity(),
         );
         let rows_viewport = viewport;
         let rows_grid = grid.clone();
@@ -317,7 +290,6 @@ impl EditorView {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .children([overview])
             .child(self.ruler(&state, ruler_width, clip_move_guide, cx))
             .child(super::loop_rail::view(self, &state, viewport, &grid, cx))
             .children([self.arrangement_body(content, cx)])
