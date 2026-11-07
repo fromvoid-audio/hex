@@ -1405,3 +1405,92 @@ fn narrow_clip_hides_hover_and_f_targets_until_zoomed_in(cx: &mut TestAppContext
         assert_eq!(v.state.as_ref().unwrap().project.as_ref(), &original)
     });
 }
+
+#[gpui::test]
+fn body_hover_hides_at_the_header_and_f_keeps_its_existing_override(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    let (project, _, _, clip) = super::super::clip_drag_ui_test::audio_project();
+    let (handle, _) = super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let header = visual
+        .debug_bounds(Box::leak(
+            format!("clip-name-{}", clip.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let controls = Box::leak(format!("{}-{}", Handle::InTop.name(), clip.value()).into_boxed_str());
+    visual.simulate_mouse_move(header.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds(controls).is_none(),
+        "header hover cannot reveal fades"
+    );
+    hover_clip(&mut visual, clip);
+    assert!(visual.debug_bounds(controls).is_some());
+    visual.simulate_mouse_move(header.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds(controls).is_none(),
+        "body to header hides fades"
+    );
+    key(&mut visual, true, "f");
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds(controls).is_some(),
+        "held f works over the header"
+    );
+    key(&mut visual, false, "f");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(controls).is_none());
+    visual.simulate_keystrokes("h");
+    visual.run_until_parked();
+    let compact = visual
+        .debug_bounds(Box::leak(
+            format!("clip-visual-{}", clip.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    visual.simulate_mouse_move(
+        point(compact.center().x, compact.bottom() - px(1.0)),
+        None,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds(controls).is_none(),
+        "header-only rows have no body hover targets"
+    );
+}
+
+#[gpui::test]
+fn fade_capture_stays_visible_when_dragging_into_the_header(cx: &mut TestAppContext) {
+    let (project, _, _, clip) = super::super::clip_drag_ui_test::audio_project();
+    let (handle, editor) =
+        super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    hover_clip(&mut visual, clip);
+    let selector = Box::leak(format!("{}-{}", Handle::InTop.name(), clip.value()).into_boxed_str());
+    let knob = visual.debug_bounds(selector).unwrap();
+    let header = visual
+        .debug_bounds(Box::leak(
+            format!("clip-name-{}", clip.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let end = point(knob.center().x + header.size.width * 0.1, header.center().y);
+    visual.simulate_mouse_down(knob.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| assert!(view.active_fade_drag.is_some()));
+    assert!(
+        visual.debug_bounds(selector).is_some(),
+        "held fade survives header crossing"
+    );
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert!(view.active_fade_drag.is_none());
+        assert!(matches!(
+            view.last_enqueued_edit,
+            Some(Command::SetClipFadeEnvelope { .. })
+        ));
+        assert!(view.active_clip_drag.is_none());
+    });
+}
