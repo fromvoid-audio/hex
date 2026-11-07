@@ -1548,71 +1548,74 @@ fn verify_instrument_takeover(
     };
     if author {
         let binding = h.plugin_progress.lock().unwrap().binding.unwrap();
-        h.service
-            .submit(Request::DeviceAutomation {
-                project_generation: context.project_generation,
-                revision,
-                device,
-                target: DeviceAutomationTarget::Vst3 { parameter: 7 },
-                vst3_class: Some(class),
-                points: vec![AutomationPoint {
-                    beat: BeatTime::ZERO,
-                    value: AutomationValue::new(0.25).unwrap(),
-                    outgoing: AutomationInterpolation::Step,
-                }],
-            })
-            .unwrap();
-        let until = Instant::now() + Duration::from_secs(3);
-        let mut fragment = 0;
-        let mut step = |h: &mut ResidentHarness| {
-            render_takeover_partial(h, [3, 5, 117, 1, 130][fragment % 5], true);
-            fragment += 1;
+        for value in [0.5, 0.25] {
+            h.service
+                .submit(Request::DeviceAutomation {
+                    project_generation: context.project_generation,
+                    revision,
+                    device,
+                    target: DeviceAutomationTarget::Vst3 { parameter: 7 },
+                    vst3_class: Some(class),
+                    points: vec![AutomationPoint {
+                        beat: BeatTime::ZERO,
+                        value: AutomationValue::new(value).unwrap(),
+                        outgoing: AutomationInterpolation::Step,
+                    }],
+                })
+                .unwrap();
+            let until = Instant::now() + Duration::from_secs(3);
+            let mut fragment = 0;
+            let mut step = |h: &mut ResidentHarness| {
+                render_takeover_partial(h, [3, 5, 117, 1, 130][fragment % 5], true);
+                fragment += 1;
+                while h
+                    .callback
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .native_workers_idle_on_control()
+                    != Some(true)
+                {
+                    assert!(Instant::now() < until);
+                    std::thread::yield_now();
+                }
+                assert!(Instant::now() < until, "live lane authoring timed out");
+            };
+            let event = loop {
+                h.pump();
+                if let Ok(event) = h.service.try_event() {
+                    break event;
+                }
+                step(h);
+            };
+            assert!(event.error.is_none(), "{:?}", event.error);
             while h
-                .callback
-                .lock()
+                .audio
+                .as_ref()
                 .unwrap()
-                .as_mut()
+                .status()
                 .unwrap()
-                .native_workers_idle_on_control()
-                != Some(true)
+                .applied_revision
+                .load(Acquire)
+                <= applied
             {
-                assert!(Instant::now() < until);
-                std::thread::yield_now();
+                h.pump();
+                step(h);
             }
-            assert!(Instant::now() < until, "live lane authoring timed out");
-        };
-        let event = loop {
-            h.pump();
-            if let Ok(event) = h.service.try_event() {
-                break event;
-            }
-            step(h);
-        };
-        assert!(event.error.is_none(), "{:?}", event.error);
-        while h
-            .audio
-            .as_ref()
-            .unwrap()
-            .status()
-            .unwrap()
-            .applied_revision
-            .load(Acquire)
-            <= applied
-        {
-            h.pump();
-            step(h);
+            applied = h.applied(applied).0;
+            before = (*event.state.project).clone();
+            revision = event.state.revision;
+            assert_eq!(
+                h.plugin_progress.lock().unwrap().binding,
+                Some(binding),
+                "new lane must retain the original SDK instrument"
+            );
+            assert!(
+                (peak(h) - baseline * value / 0.25).abs() < 0.0001,
+                "live authoring must deliver the new value on the held gate"
+            );
         }
-        applied = h.applied(applied).0;
-        before = (*event.state.project).clone();
-        assert_eq!(
-            h.plugin_progress.lock().unwrap().binding,
-            Some(binding),
-            "new lane must retain the original SDK instrument"
-        );
-        assert!(
-            (peak(h) - baseline).abs() < 0.0001,
-            "live authoring must preserve the held gate"
-        );
     }
     let query = |h: &mut ResidentHarness, request_id| {
         let context = h.submitted.unwrap().1.context;
