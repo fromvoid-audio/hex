@@ -78,6 +78,22 @@ fn reverb_output_case(retain_frozen: bool) -> Result<(), Box<dyn Error>> {
     editor.execute(lane(0.5)?)?;
     assert!(editor.undo());
     assert!(editor.redo());
+    // This canonical change leaves an active mix ramp for the first authored
+    // smoothing sample to retime inside the measured publication callback.
+    let state = editor
+        .project()
+        .device(device)
+        .ok_or("missing reverb")?
+        .state();
+    let state = {
+        use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+        hex_devices::reverb::REVERB_DEFINITION.patch_parameter(
+            state,
+            p::DRY_WET,
+            ParameterValue::Float(25.0),
+        )?
+    };
+    editor.execute(Command::ReplaceDeviceState { device, state })?;
     // Change controls at sample density. Keep predelay within the short
     // source so the recorded decay touch reaches an excited feedback network.
     let end = editor
@@ -211,9 +227,11 @@ fn reverb_output_case(retain_frozen: bool) -> Result<(), Box<dyn Error>> {
     let recorded_pcm = render_take(&reopened)?;
     let base_pcm = render_take(&before_take)?;
     assert!(
-        base_pcm
-            .iter()
-            .any(|frame| (frame[0] - 0.00005).abs() > 1e-10 || (frame[1] + 0.00005).abs() > 1e-10),
+        base_pcm.iter().enumerate().any(|(i, frame)| {
+            let wet = 0.1 + 0.8 * i as f32 / (BLOCK * 3) as f32;
+            let dry = 0.0001 * (1.0 - wet);
+            (frame[0] - dry).abs() > 1e-9 || (frame[1] + dry).abs() > 1e-9
+        }),
         "the fixture must excite the wet network"
     );
     assert!(
