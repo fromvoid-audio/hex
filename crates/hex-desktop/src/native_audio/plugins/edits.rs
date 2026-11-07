@@ -73,7 +73,11 @@ impl Plugins {
             })
         {
             let previous = desired.effect_preparation();
-            changed_state = !input.same_authored_plugin_program(&previous, device);
+            changed_state = !input.same_authored_plugin_program(
+                &previous,
+                device,
+                control.plugin_callback_quantum_on_control(),
+            );
             previous.visit_plugin_devices(|old_owner, old_device, old| {
                 changed_state |= old_device == device
                     && (old_owner.owner() != owner || !old.processing_eq(state));
@@ -129,9 +133,6 @@ impl Plugins {
             return Ok(());
         }
         let authored = AuthoredSelection::from_targets(input.authored_plugin_targets(device))?;
-        if destination.is_instrument() && authored.is_some() {
-            return Err("authored vst3 instrument automation is not prepared".into());
-        }
         let identity = Hosting::saved_identity_on_control(state)?;
         // Resolve code only: provider identity is class + binary hashes, not a
         // path or another device's instance (hex-plugin-state owns that contract).

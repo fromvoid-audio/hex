@@ -118,6 +118,16 @@ pub(super) fn operation(
                     )
                 })
             });
+        if matches!(operation, PluginGesturePreparation::Begin { .. })
+            && isolated_effect_class.is_none()
+            && source
+                .reading_automation()
+                .any(|lane| matches!(lane.target, DeviceAutomationTarget::Vst3 { .. }))
+        {
+            return Err(SessionError::Invalid(
+                "manual vst3 automation takeover is unavailable for this device",
+            ));
+        }
         let result = sink
             .prepare_plugin_parameter_gesture(PluginParameterGestureInput {
                 context,

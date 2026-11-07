@@ -311,9 +311,15 @@ impl NativeEffectReference<'_> {
     pub(crate) fn binding(&self) -> Binding {
         self.configuration().binding
     }
-    pub(crate) fn matches_canonical_effect(&self, state: &NativeDeviceState) -> bool {
-        let configuration = self.configuration();
-        !configuration.prepared.is_instrument_profile() && configuration.state.processing_eq(state)
+    pub(crate) fn matches_canonical_state(&self, state: &NativeDeviceState) -> bool {
+        self.configuration().state.processing_eq(state)
+    }
+    pub(crate) fn profile(&self) -> PluginProfile {
+        if self.configuration().prepared.is_instrument_profile() {
+            PluginProfile::Instrument
+        } else {
+            PluginProfile::Effect
+        }
     }
     pub(crate) fn identity(&self) -> ProcessorInstanceIdentity {
         self.configuration().identity

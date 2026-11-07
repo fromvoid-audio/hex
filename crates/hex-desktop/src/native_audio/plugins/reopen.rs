@@ -251,9 +251,6 @@ impl Plugins {
         })();
         let binding = selected.and_then(|selected| {
             let authored = AuthoredSelection::from_targets(input.authored_plugin_targets(device))?;
-            if destination.is_instrument() && authored.is_some() {
-                return Err("authored vst3 instrument automation is not prepared".into());
-            }
 
             self.host
                 .as_ref()

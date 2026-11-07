@@ -243,16 +243,20 @@ pub(crate) fn validate_project_with_registry(
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
 ) -> Result<(), Invalid> {
     if project.native_sources().iter().any(|source| {
-        source
-            .devices()
-            .any(|device| !device.automation().is_empty())
+        source.devices().any(|device| {
+            device.automation().iter().any(|lane| {
+                device.id() != source.instrument().id()
+                    || !crate::compile::is_vst3_instrument(device)
+                    || !matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
+            })
+        })
     }) {
         return Err(Invalid(DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED));
     }
     for device in effect_devices(project) {
         if device.automation().iter().any(|lane| {
-            // Exact foreign capabilities belong to the Arrangement effect
-            // compiler, not the shared Session instrument inventory.
+            // The Arrangement compiler verifies exact foreign capabilities
+            // for both effect chains and instrument sources.
             !matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
                 && !target_supported(registry, device.state(), lane.target)
         }) {

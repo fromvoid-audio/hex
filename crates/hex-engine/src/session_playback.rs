@@ -1559,7 +1559,7 @@ impl SessionPlayback {
         let chain_has_foreign_automation = arrangement
             .tracks
             .iter()
-            .flat_map(|track| track.device_chain.iter())
+            .flat_map(|track| track.device_chain.iter().chain(&track.foreign_instrument))
             .chain(
                 arrangement
                     .return_buses

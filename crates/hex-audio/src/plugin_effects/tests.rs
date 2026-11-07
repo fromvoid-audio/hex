@@ -1277,26 +1277,35 @@ fn actual_tail_drain_waits_for_final_acceptance_and_preserves_last_bridge_sample
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 #[cfg(feature = "allocation-probe")]
 fn actual_arrangement_instrument_renders_authored_notes_at_compensated_offsets() {
+    use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime};
+
     const NAME: &str = "plugin_effects::tests::actual_arrangement_instrument_renders_authored_notes_at_compensated_offsets";
     const CHILD: &str = "HEX_ARRANGEMENT_INSTRUMENT_TEST_CHILD";
-    if std::env::var_os(CHILD).is_none() {
-        for variant in ["115", "120"] {
+    let Some(scenario) = std::env::var_os(CHILD) else {
+        for (variant, scenario) in [
+            ("115", "notes"),
+            ("120", "notes"),
+            ("145", "automation"),
+            ("145", "loop-seek"),
+        ] {
             let result = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", NAME, "--ignored"])
-                .env(CHILD, "1")
+                .env(CHILD, scenario)
                 .env("HEX_ORIGINAL_INSTANCE_VARIANT", variant)
                 .output()
                 .unwrap();
             assert!(
                 result.status.success()
                     && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
-                "variant {variant}\n{}\n{}",
+                "variant {variant}, {scenario}\n{}\n{}",
                 String::from_utf8_lossy(&result.stdout),
                 String::from_utf8_lossy(&result.stderr),
             );
         }
         return;
-    }
+    };
+    let loop_seek = scenario == "loop-seek";
+    let authored = scenario == "automation" || loop_seek;
 
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
@@ -1321,7 +1330,14 @@ fn actual_arrangement_instrument_renders_authored_notes_at_compensated_offsets()
         },
         0,
     );
-    let effect = NativeEffect::prepare_on_control(identity, source).unwrap();
+    let class = source.configuration().identity.class;
+    let effect = NativeEffect::prepare_retained_with_authored_selection_on_control(
+        identity,
+        source,
+        usize::MAX,
+        authored.then_some((class, &[7])),
+    )
+    .unwrap();
     editor
         .execute(Command::InsertInstrument {
             track,
@@ -1348,12 +1364,56 @@ fn actual_arrangement_instrument_renders_authored_notes_at_compensated_offsets()
             velocity: 127,
         })
         .unwrap();
+    let project = if authored {
+        let device = editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        editor
+            .execute(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target: hex_project::DeviceAutomationTarget::Vst3 { parameter: 7 },
+                points: [
+                    (BeatTime::ZERO, 0.25),
+                    (BeatTime::from_ratio(1, 12_000).unwrap(), 0.5),
+                ]
+                .map(|(beat, normalized)| AutomationPoint {
+                    beat,
+                    value: AutomationValue::new(normalized).unwrap(),
+                    outgoing: AutomationInterpolation::Step,
+                })
+                .to_vec(),
+            })
+            .unwrap();
+        if loop_seek {
+            editor
+                .execute(Command::SetLoopRegion {
+                    start: 0,
+                    end: 320,
+                    enabled: true,
+                })
+                .unwrap();
+        }
+        let path = std::env::temp_dir().join(format!(
+            "hex-authored-instrument-{}.hex",
+            std::process::id()
+        ));
+        hex_storage::save_new(&path, editor.project()).unwrap();
+        let reopened = hex_storage::load(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        reopened
+    } else {
+        editor.project().clone()
+    };
     let revision = {
         let definition = NativeEffectDefinition::new(std::slice::from_ref(&effect)).unwrap();
         let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
         let registry = NativeDeviceRegistry::new(&definitions).unwrap();
         hex_engine::PreparedRevision::prepare_with_effect_registry(
-            editor.project(),
+            &project,
             &BTreeMap::new(),
             Arc::new(hex_engine::SineTable::new()),
             None,
@@ -1366,10 +1426,15 @@ fn actual_arrangement_instrument_renders_authored_notes_at_compensated_offsets()
     let mut runtime = hex_engine::SessionPlayback::new(Arc::new(revision)).unwrap();
     let (mut workers, mut endpoints) =
         NativeEffectCallbacks::from_effects_on_control(vec![effect]).unwrap();
+    if loop_seek {
+        runtime
+            .apply(hex_engine::SessionPlaybackCommand::Seek(304))
+            .unwrap();
+    }
     runtime
         .apply(hex_engine::SessionPlaybackCommand::Play)
         .unwrap();
-    let mut output = [[0.0; 2]; 32];
+    let mut output = [[0.0; 2]; 48];
     for (index, block) in output.chunks_exact_mut(8).enumerate() {
         let measured = allocation_counter::measure(|| {
             endpoints.begin_host_callback(block.len()).unwrap();
@@ -1386,12 +1451,19 @@ fn actual_arrangement_instrument_renders_authored_notes_at_compensated_offsets()
             std::thread::yield_now();
         }
     }
-    let mut expected = [[0.0; 2]; 32];
-    expected[latency + 1..latency + 3].fill([0.5; 2]);
+    let mut expected = [[0.0; 2]; 48];
+    let onset = latency + if loop_seek { 17 } else { 1 };
+    // The fixture adds 0.125 per SDK call. Seeking near the wrap starts
+    // the note in the third eight-frame call, after two silent calls.
+    let unity = if loop_seek { 0.75 } else { 0.5 };
+    expected[onset..onset + 2].fill([unity; 2]);
+    if authored {
+        expected[onset + 1] = [unity * 2.0; 2];
+    }
     assert_eq!(output, expected);
     let retired = workers[0].retire_on_control().unwrap();
     assert!(retired.failure.is_none() && retired.native.status.success());
-    assert_eq!(retired.native.terminal.unwrap().blocks, 4);
+    assert_eq!(retired.native.terminal.unwrap().blocks, 6);
 }
 
 #[test]
