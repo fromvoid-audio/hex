@@ -1053,22 +1053,53 @@ mod tests {
                 let input = signal(frames + 17);
                 let mut wet = input.clone();
                 wet_reference.process_block(&mut wet, &R);
+                let start = 17.0 / smoothing_frames(rate, prior) as f32;
+                let mut oracle_settings = settings;
+                oracle_settings.0[crate::reverb::index(p::SMOOTH).unwrap()] = mode as f32;
+                oracle_settings.0[crate::reverb::index(p::DRY_WET).unwrap()] = start * 100.0;
+                let mut canonical_source = PreparedReverb::new(rate, oracle_settings)
+                    .unwrap()
+                    .runtime();
+                canonical_source.copy_history_from(&actual);
+                canonical_source.parameters[crate::reverb::index(p::DRY_WET).unwrap()] =
+                    Ramp::steady(start * 100.0);
+                oracle_settings.0[crate::reverb::index(p::DRY_WET).unwrap()] = 100.0;
+                let mut canonical = PreparedReverb::new(rate, oracle_settings)
+                    .unwrap()
+                    .runtime();
+                canonical.copy_history_from(&canonical_source);
+                let mut expected_canonical = input.clone();
+                canonical.process_block(&mut expected_canonical, &R);
                 let mut output = input.clone();
                 values.values[0] = Some(ParameterValue::Choice(mode));
                 actual.process_automation(&mut output, &values).unwrap();
-                let start = 17.0 / smoothing_frames(rate, prior) as f32;
+                assert!(
+                    output
+                        .iter()
+                        .zip(&expected_canonical)
+                        .all(|(a, b)| (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6),
+                    "canonical retiming {mode} at {rate}"
+                );
+                let mut maximum_ideal_error = 0.0_f32;
                 for (i, ((frame, dry), wet)) in output.iter().zip(&input).zip(&wet).enumerate() {
                     let fraction = ((i + 1) as f32 / frames as f32).min(1.0);
                     let mix = start + (1.0 - start) * fraction;
                     for c in 0..2 {
                         let expected = (1.0 - mix) * dry[c] + mix * wet[c];
-                        assert!(
-                            (frame[c] - expected).abs() < 2e-5,
-                            "mode {mode} rate {rate} frame {i}"
-                        );
+                        maximum_ideal_error = maximum_ideal_error.max((frame[c] - expected).abs());
                     }
                 }
-                // A newly admitted slower mode starts another canonical edit.
+                // Existing canonical f32 ramps accumulate rounding at 96kHz.
+                // Preserve their 1e-4 ideal-line tolerance; the independently
+                // prepared canonical PCM comparison above remains tight.
+                assert!(
+                    maximum_ideal_error < 1e-4,
+                    "mode {mode} rate {rate}: {maximum_ideal_error}"
+                );
+                eprintln!(
+                    "smoothing mode={mode} rate={rate} maximum_ideal_pcm_error={maximum_ideal_error}"
+                );
+                // The admitted mode starts another canonical edit.
                 settings.0[crate::reverb::index(p::DRY_WET).unwrap()] = 0.0;
                 let mut next = automated_prepared(rate, settings).unwrap().runtime();
                 next.copy_history_from(&actual);
