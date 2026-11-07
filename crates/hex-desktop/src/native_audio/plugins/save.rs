@@ -241,6 +241,7 @@ impl Plugins {
                             &entry.expected,
                             selection,
                             Some(cancellation),
+                            None,
                         )?)
                     };
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);

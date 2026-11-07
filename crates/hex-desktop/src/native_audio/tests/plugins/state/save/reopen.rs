@@ -190,24 +190,23 @@ fn idle_vst3_drag_survives_undo_save_reopen() {
 
 fn gesture_fixture() -> SavedEffectFixture {
     // Keep resident backing below this harness's 8192-frame source budget.
-    // Reusing the same source gives native control work a longer audible run.
+    // A long loop of the same source keeps native control work audible even
+    // when headless callback driving runs much faster than wall time.
     let mut fixture = nondefault_fixture_with_frames(8192);
     let track = fixture.project.tracks()[0].id();
     let asset = fixture.project.assets().next().unwrap().id();
     let mut editor = hex_project::Editor::new(fixture.project.clone(), 8).unwrap();
-    for start in [8192, 16384] {
-        editor
-            .execute(Command::PlaceClip {
-                track,
-                asset,
-                start,
-                duration: 8192,
-                source_offset: 0,
-                source_length: 8192,
-                looping: false,
-            })
-            .unwrap();
-    }
+    editor
+        .execute(Command::PlaceClip {
+            track,
+            asset,
+            start: 8192,
+            duration: 8192 * 256,
+            source_offset: 0,
+            source_length: 8192,
+            looping: true,
+        })
+        .unwrap();
     fixture.project = editor.project().clone();
     fixture.path = fixture.files.0.join("gesture.hex");
     hex_storage::save_new(&fixture.path, &fixture.project).unwrap();

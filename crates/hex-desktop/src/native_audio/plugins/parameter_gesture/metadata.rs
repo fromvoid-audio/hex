@@ -29,9 +29,16 @@ pub(super) fn extend(
     .map_err(refused)?
     .ok_or_else(lost)?;
     let original = edits::original_state(control, binding, cancellation).map_err(refused)?;
-    let constructor =
-        edits::canonical_bases(host, control, binding, &original, &selection, cancellation)
-            .map_err(refused)?;
+    let constructor = edits::canonical_bases(
+        host,
+        control,
+        binding,
+        &original,
+        &selection,
+        cancellation,
+        None,
+    )
+    .map_err(refused)?;
     edits::check_cancel(cancellation).map_err(refused)?;
     let (_, revision) = validate_current_parameter(control, binding, origin, steps, false)?;
     let query = ParameterPageQuery {

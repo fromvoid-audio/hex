@@ -67,10 +67,11 @@ impl Plugins {
     ) -> Result<Option<Binding>, String> {
         let owner = destination.owner();
         let retain_instrument = destination.is_instrument()
-            && control
-                .status
-                .playing
-                .load(std::sync::atomic::Ordering::Acquire);
+            && (self.restore.is_some()
+                || control
+                    .status
+                    .playing
+                    .load(std::sync::atomic::Ordering::Acquire));
         let authored = AuthoredSelection::from_targets(input.authored_plugin_targets(device))?;
         let mut changed_state = false;
         if input.preparing_edit()
@@ -360,21 +361,36 @@ pub(super) fn canonical_bases(
     state: &NativeDeviceState,
     selection: &AuthoredSelection,
     cancellation: Option<&RequestCancellation>,
+    stopped: Option<(
+        hex_audio::prepared::AppliedAudioSource,
+        hex_audio::prepared::StoppedEditFence,
+    )>,
 ) -> Result<hex_audio::plugin_effects::CapturedCanonicalBases, String> {
     let playing = control
         .status
         .playing
         .load(std::sync::atomic::Ordering::Acquire);
-    let source = control
-        .status
-        .native_parameter_source(playing)
-        .ok_or("vst3 canonical source is not ready")?
-        .0;
+    let source = match stopped {
+        Some((source, _)) => source,
+        None => {
+            control
+                .status
+                .native_parameter_source(playing)
+                .ok_or("vst3 canonical source is not ready")?
+                .0
+        }
+    };
     let mut query = loop {
         check_cancel(cancellation)?;
-        match host.begin_canonical_bases_capture_on_control(
-            control, source, binding, state, selection, playing,
-        ) {
+        let result = match stopped {
+            Some((_, fence)) => host.begin_stopped_canonical_bases_capture_on_control(
+                control, source, fence, binding, state, selection,
+            ),
+            None => host.begin_canonical_bases_capture_on_control(
+                control, source, binding, state, selection, playing,
+            ),
+        };
+        match result {
             Err(error) if error == "native preparation is busy" => poll_control(control),
             result => break result?,
         }
