@@ -13,6 +13,29 @@ let pointStates = 0, loopStates = 0;
 for (const state of Object.keys(doc.states)) {
   const visible = frame.layout(doc, project.viewport, state).filter(node => node.visible);
   const nodes = new Map(visible.map(node => [node.id, node]));
+  const amount = nodes.get('filter-envelope-amount');
+  assert(amount && /hz$/.test(amount.value), state + ': display the peak destination frequency');
+  assert(!amount.action, state + ': editing depth must not select an envelope');
+  const amountLabel = nodes.get('filter-envelope-amount-label');
+  const settings = visible.find(node => node.type === 'button' && node.label === 'device settings' && node.parentId === 'core-controls');
+  assert(amountLabel.bounds.x + amountLabel.bounds.width + 2 <= settings.bounds.x,
+    state + ': depth label must stay clear of the settings button');
+  const filterSelected = nodes.get('filter-section').style.stroke !== 'none';
+  if (filterSelected) {
+    assert.equal(nodes.get('adsr-2').value, '50%', state + ': filter sustain uses percent');
+    const curve = visible.find(node => /^env-curve-filter-.*-active$/.test(node.id));
+    assert(curve);
+    assert.equal(curve.points[49][1], 76, state + ': graph sustain matches 50% readout');
+  }
+  if (state === 'default') assert.equal(amount.value, nodes.get('cutoff').value);
+  if (state === 'filter-depth-positive') assert.equal(amount.value, '2 khz');
+  if (state === 'filter-depth-negative') assert.equal(amount.value, '125 hz');
+  if (state === 'device-menu') {
+    const menuItems = visible.filter(node => node.type === 'button' && node.parentId === 'device-popup');
+    assert.equal(new Set(menuItems.map(node => node.bounds.x)).size, 1, 'preset menu items align');
+    assert.equal(new Set(menuItems.map(node => node.bounds.width)).size, 1, 'preset menu items share a width');
+    assert.equal(new Set(menuItems.map(node => node.bounds.height)).size, 1, 'preset menu items share a height');
+  }
   const readout = nodes.get('selected-level');
   if (readout) {
     const title = nodes.get('envelope-title');
@@ -21,6 +44,8 @@ for (const state of Object.keys(doc.states)) {
       state + ': point name and value must have separate reserved areas');
     assert(title.text.length * title.style.fontSize * 0.6 <= title.bounds.width,
       state + ': point name must fit its monospace area');
+    if (filterSelected && /initial|peak|decay-sustain/.test(state))
+      assert(/%/.test(readout.value) && !/db|—/.test(readout.value), state + ': normalized filter point readout');
     pointStates++;
   }
   const loop = nodes.get('loop-visual');
