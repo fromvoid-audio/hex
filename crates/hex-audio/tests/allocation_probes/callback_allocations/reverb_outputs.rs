@@ -6,6 +6,10 @@ use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue};
 #[test]
 fn reverb_output_automation_callback_publication_history_and_save_reopen()
 -> Result<(), Box<dyn Error>> {
+    reverb_output_case(false)?;
+    reverb_output_case(true)
+}
+fn reverb_output_case(retain_frozen: bool) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
     let Created::Imported { track, asset, .. } =
         editor.execute(Command::ImportPreparedAudioTrack {
@@ -87,6 +91,9 @@ fn reverb_output_automation_callback_publication_history_and_save_reopen()
         p::HIGH,
         p::LOW,
         p::CHORUS,
+        p::FREEZE,
+        p::FLAT,
+        p::CUT,
         p::DECAY,
         p::SIZE,
         p::HIGH_RATIO,
@@ -235,7 +242,15 @@ fn reverb_output_automation_callback_publication_history_and_save_reopen()
         editor.execute(Command::ReplaceDeviceAutomation {
             device,
             parameter,
-            points: vec![],
+            points: if retain_frozen && parameter == p::FREEZE {
+                vec![AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: AutomationValue::new(1.0)?,
+                    outgoing: AutomationInterpolation::Step,
+                }]
+            } else {
+                vec![]
+            },
         })?;
     }
     control
@@ -259,7 +274,8 @@ fn reverb_output_automation_callback_publication_history_and_save_reopen()
             .flatten()
             .all(|s| s.is_finite() && s.abs() < 1.0)
     );
-    // The source clip has ended: only the retained canonical room is audible.
+    // The source clip has ended: only the retained room is audible. The two
+    // cases remove all lanes or hold an authored freeze in an unbounded tail.
     assert!(output.iter().flatten().any(|s| s.abs() > 1e-10));
     control.request_shutdown();
     measured_shutdown(&mut callback, &mut output);

@@ -704,7 +704,7 @@ mod tests {
     use crate::audio_preparation::*;
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
     #[test]
-    fn reverb_decay_live_input_uses_scoped_closed_factory_and_tail_quote() {
+    fn reverb_feedback_live_input_uses_scoped_closed_factory_and_tail_quote() {
         use hex_devices::reverb::{REVERB_DEFINITION as D, parameter as p};
         use hex_lattice_contract::DeviceAutomationTarget;
         let (project, _) = crate::audio_preparation::tests::fixture(2);
@@ -724,12 +724,12 @@ mod tests {
         let track = &project.tracks()[0];
         let device = &track.devices()[0];
         let registry = hex_devices::native_registry().unwrap();
-        for armed in [false, true] {
-            let input = armed.then(|| {
+        for target in [None, Some(p::DECAY), Some(p::FREEZE)] {
+            let input = target.map(|parameter| {
                 crate::device_automation::native_parameter_input_target(
                     &project,
                     device.id(),
-                    DeviceAutomationTarget::Parameter(p::DECAY),
+                    DeviceAutomationTarget::Parameter(parameter),
                 )
                 .unwrap()
             });
@@ -750,13 +750,24 @@ mod tests {
             assert!(custody.bytes(&chain).unwrap() <= quoted);
             assert!(custody.construction_overlap() <= overlap);
             let factory = chain[0].definition.as_ref().unwrap();
-            assert_eq!(factory.supports_parameter_automation(p::DECAY), armed);
+            assert_eq!(
+                factory.supports_parameter_automation(p::DECAY),
+                target == Some(p::DECAY)
+            );
+            assert_eq!(
+                factory.supports_parameter_automation(p::FREEZE),
+                target == Some(p::FREEZE)
+            );
             assert_eq!(
                 factory.output_tail(),
-                hex_lattice::OutputTail::Finite {
-                    max_tail_frames: u64::from(project.sample_rate())
-                        * (if armed { 181 } else { 8 })
-                        + u64::from(project.sample_rate()).div_ceil(10)
+                if target == Some(p::FREEZE) {
+                    hex_lattice::OutputTail::Unbounded
+                } else {
+                    hex_lattice::OutputTail::Finite {
+                        max_tail_frames: u64::from(project.sample_rate())
+                            * (if target == Some(p::DECAY) { 181 } else { 8 })
+                            + u64::from(project.sample_rate()).div_ceil(10),
+                    }
                 }
             );
         }
