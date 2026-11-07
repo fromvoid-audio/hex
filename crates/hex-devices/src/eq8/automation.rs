@@ -181,6 +181,7 @@ impl Eq8Runtime {
                         self.smooth_remaining = coefficient_smooth_frames(self.sample_rate);
                     }
                     self.automated_target = Some(target);
+                    self.refresh_active_bands();
                     self.band_targets_pending = false;
                 }
                 self.retarget_gain(f64::from(next_values.gain));
@@ -638,6 +639,30 @@ mod tests {
         }
     }
     #[test]
+    fn band_ranges_are_rejected_before_audio_or_targets_change() {
+        let base = all_bands(0);
+        for (id, value) in [
+            (parameter::frequency(0, 0), 0.0),
+            (parameter::q(0, 0), f32::NAN),
+            (parameter::gain(0, 0), 25.0),
+        ] {
+            let mut actual = prepare(&base, 8000, &[id]).unwrap().runtime();
+            let source = Values {
+                ids: vec![id],
+                value: Some(ParameterValue::Float(value)),
+                dense: false,
+                start: 0,
+            };
+            let mut output = [[0.25; 2]];
+            assert!(
+                actual
+                    .process_automation(&mut output, &source, false)
+                    .is_err()
+            );
+            assert_eq!(output, [[0.25; 2]]);
+        }
+    }
+    #[test]
     fn gain_requires_admission_and_rejects_bad_values_without_touching_audio() {
         let base = state(0, false);
         let mut plain = room(&base, 8000, false);
@@ -674,16 +699,51 @@ mod tests {
         use std::{hint::black_box, time::Instant};
         assert!(!black_box(cfg!(debug_assertions)), "run with --release");
         let state = state(0, false);
-        for mode in 0..3 {
+        for mode in 0..5 {
             let mut source = values(Some(2.0));
             source.dense = mode == 2;
-            let mut runtime = room(&state, 48000, mode != 0);
+            let band_source = BandDense {
+                ids: BINDINGS.iter().map(|b| b.descriptor.id).collect(),
+                start: 0,
+            };
+            let band_state = all_bands(1);
+            let mut runtime = if mode >= 3 {
+                prepare(&band_state, 48000, &band_source.ids)
+                    .unwrap()
+                    .runtime()
+            } else {
+                room(&state, 48000, mode != 0)
+            };
             let mut block = [[0.125, -0.25]; 128];
             let mut run = || {
                 for _ in 0..128 {
                     block.fill([0.125, -0.25]);
                     if mode == 0 {
                         runtime.process_block(&mut block, &R);
+                    } else if mode >= 3 {
+                        if mode == 3 {
+                            // Frame-independent source for the held program.
+                            struct Held<'a>(&'a BandDense);
+                            impl NativeParameterAutomation for Held<'_> {
+                                fn parameter_ids(&self) -> &[ParameterId] {
+                                    self.0.parameter_ids()
+                                }
+                                fn value_at(
+                                    &self,
+                                    id: ParameterId,
+                                    _: usize,
+                                ) -> Option<ParameterValue> {
+                                    self.0.value_at(id, 0)
+                                }
+                            }
+                            runtime
+                                .process_automation(&mut block, &Held(&band_source), false)
+                                .unwrap();
+                        } else {
+                            runtime
+                                .process_automation(&mut block, &band_source, false)
+                                .unwrap();
+                        }
                     } else {
                         runtime
                             .process_automation(&mut block, &source, false)
