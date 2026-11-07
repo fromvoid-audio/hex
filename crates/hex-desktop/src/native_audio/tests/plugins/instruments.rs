@@ -694,9 +694,12 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
     };
     (applied, _) = harness.applied(applied);
     let (clip_length, note_duration) = if takeover {
+        // The headless control driver can render far faster than wall time
+        // while waiting for SDK work. Keep its held note alive throughout
+        // these operations without adding processing to the test.
         (
-            BeatTime::from_quarters(16).unwrap(),
-            BeatTime::from_quarters(16).unwrap(),
+            BeatTime::from_quarters(256).unwrap(),
+            BeatTime::from_quarters(256).unwrap(),
         )
     } else if automation_parameter.is_some() {
         (

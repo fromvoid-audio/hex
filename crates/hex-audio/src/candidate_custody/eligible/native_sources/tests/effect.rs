@@ -5,21 +5,8 @@ use super::*;
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_root_effect_cannot_spend_beyond_its_native_pool_cell() {
     let root = root();
-    let (build, source, _) = input();
-    let limit = source
-        .preparation_storage_bound_on_control(&build, None)
-        .unwrap()
-        .max_retained_data_bytes();
-    root.configure_native_sources(
-        1,
-        NativeSourceDataReservation {
-            max_retained_data_bytes: limit,
-            // Admit the checked startup bound, then refuse the larger actual
-            // worker/queue construction at this same retained allowance.
-            max_construction_peak_data_bytes: source_reservation().max_construction_peak_data_bytes,
-        },
-    )
-    .unwrap();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
     let binding = start(&root);
     root.complete_native_source(
         binding,
@@ -29,18 +16,26 @@ fn actual_root_effect_cannot_spend_beyond_its_native_pool_cell() {
         }),
     )
     .unwrap();
-    {
+    let limit = {
         let work = root.work.try_lock().unwrap();
         let Some(Owner::Prepared(instance)) = work.sources.cells[0].owner.as_ref() else {
             panic!("original prepared source");
         };
-        assert!(instance.retained_storage_on_control().unwrap().data_bytes < limit);
-        assert!(
+        let limit =
             crate::plugin_worker::NativeWorker::preconstruction_data_bytes_on_control(instance)
                 .unwrap()
-                > limit
-        );
-    }
+                - 1;
+        assert!(instance.retained_storage_on_control().unwrap().data_bytes < limit);
+        limit
+    };
+    // Fault-inject the later construction allowance after admitted startup.
+    // Root must recheck this boundary, independently of its startup preflight.
+    lock(&root.bank)
+        .sources
+        .limits
+        .as_mut()
+        .unwrap()
+        .max_retained_data_bytes = limit;
     let held = root.usage();
     root.start_native_effect(binding).unwrap();
     assert_eq!(
