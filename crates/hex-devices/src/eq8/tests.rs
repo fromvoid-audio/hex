@@ -113,8 +113,10 @@ fn each_filter_shape_has_finite_prepared_response_and_expected_gain_or_cut() {
 
 #[test]
 fn prepared_processor_is_fixed_bounded_zero_latency_and_rate_safe() {
-    // Fixed inline storage, including the channel-mode crossfade (Pulse #4106).
-    const { assert!(EQ8_RUNTIME_BYTES <= 8_192) };
+    println!("fixed eq8 runtime bytes: {EQ8_RUNTIME_BYTES}");
+    // Fixed histories, one outgoing routing, 121 cached controls and inline
+    // coefficient targets fit in 16 KiB; factories report their actual size.
+    const { assert!(EQ8_RUNTIME_BYTES <= 16_384) };
     for rate in [8_000, 22_050, 44_100, 48_000, 96_000, 192_000] {
         let settings = decode(&EQ8_DEFINITION.default_state().unwrap()).unwrap();
         let prepared = PreparedEq8::new(settings, rate).unwrap();
@@ -641,8 +643,9 @@ fn changing_audition_selection_crossfades_through_normal_and_resets_history() {
 
 #[test]
 fn audition_history_crossfades_copies_and_partitions_with_live_coefficients() {
-    // Fixed inline storage, including the channel-mode crossfade (Pulse #4106).
-    const { assert!(EQ8_RUNTIME_BYTES <= 8_192) };
+    // Fixed histories, one outgoing routing, 121 cached controls and inline
+    // coefficient targets fit in 16 KiB; factories report their actual size.
+    const { assert!(EQ8_RUNTIME_BYTES <= 16_384) };
     let mut old_state = EQ8_DEFINITION.default_state().unwrap();
     old_state = patch_band(old_state, 0, 1, 0, 450.0, 8.0);
     old_state = patch_band(old_state, 0, 5, 0, 3_200.0, -5.0);
