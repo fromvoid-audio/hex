@@ -8,6 +8,7 @@ const frame = require(path.join(path.resolve(process.argv[2]), 'design-document.
 const project = JSON.parse(fs.readFileSync(path.join(__dirname, 'vector-device.frame.json')));
 const doc = project.archive.revisions[0].document;
 const started = performance.now();
+const near = (actual, expected, message) => assert(Math.abs(actual - expected) < 1e-8, message);
 frame.validate(doc);
 let pointStates = 0, loopStates = 0;
 for (const state of Object.keys(doc.states)) {
@@ -58,6 +59,33 @@ for (const state of Object.keys(doc.states)) {
     const release = visible.find(node => /^release-(a|b|c|d|filter)-/.test(node.id));
     const noteOffLabel = visible.find(node => node.id.endsWith('-release-label'));
     assert(noteOff && cycle && release && noteOffLabel);
+    const active = visible.find(node => /^env-curve-(a|b|c|d|filter)-.*-active$/.test(node.id));
+    assert(active && active.points.length > 75, state + ': show a second attack/decay cycle');
+    near(active.points[50][0], active.points[49][0], state + ': reset adds no cycle time');
+    assert.equal(active.points[50][1], active.points[0][1], state + ': reset reaches initial level');
+    assert.equal(active.points[75][1], active.points[24][1], state + ': repeated attack reaches the same peak');
+    const reset = visible.find(node => node.id.endsWith('-loop-end'));
+    assert(reset && reset.points.length > 2, state + ': show the reset arrow');
+    near(reset.bounds.x + reset.points[0][0], active.bounds.x + active.points[49][0], state + ': reset starts at decay end');
+    near(reset.bounds.y + reset.points[0][1], active.bounds.y + active.points[49][1], state + ': reset starts at sustain level');
+    near(reset.bounds.y + reset.points[1][1], active.bounds.y + active.points[0][1], state + ': reset ends at initial level');
+    assert(nodes.get('loop-repeat-label').text.includes('reset to initial'));
+    if (/-tempo-|-pitch-/.test(active.id))
+      assert(Math.abs(release.points[0][1] - active.points[49][1]) < 1e-8, state + ': note-off wins over boundary reset');
+    const releaseHandle = visible.find(node => node.label === 'edit release curve envelope');
+    assert(Math.abs(releaseHandle.bounds.y + releaseHandle.bounds.height / 2 -
+      (release.bounds.y + release.points[12][1])) < 1e-8, state + ': release handle follows current level');
+    const toSeconds = x => Math.expm1((x - 6) / 280 * Math.log1p(140 / 0.001)) * 0.001;
+    const cycleTime = toSeconds(active.points[49][0]);
+    const attackTime = toSeconds(active.points[24][0]);
+    const offTime = toSeconds(noteOff.bounds.x - active.bounds.x);
+    const turns = offTime / cycleTime;
+    const phase = Math.abs(turns - Math.round(turns)) < 1e-8 ? cycleTime : offTime % cycleTime;
+    const expected = phase <= attackTime
+      ? active.points[0][1] + (active.points[24][1] - active.points[0][1]) * Math.pow(phase / attackTime, 0.7)
+      : active.points[24][1] + (active.points[49][1] - active.points[24][1]) *
+        Math.pow((phase - attackTime) / (cycleTime - attackTime), 2);
+    assert(Math.abs(release.points[0][1] - expected) < 1e-7, state + ': release begins at the repeated shape’s current level');
     assert.equal(noteOffLabel.text, 'note off', state + ': identify the loop exit');
     assert.equal(held.bounds.x + held.bounds.width, noteOff.bounds.x,
       state + ': held region ends exactly at note-off');
