@@ -11,6 +11,8 @@ widgets = (
     'self.track(', 'self.mixer_strip(', 'self.mixer(', 'self.transport(', 'self.controller_input_row(', 'self.controller_input_settings(', 'self.clip_detail_view(',
     'self.browser(', 'self.inspector(', 'self.status_bar(', 'theme::text(', 'crate::theme::text(',
     'self.icon(', 'self.control_icon(', 'self.control_icon_description(',
+    # Workspace navigation components route their glyphs/tooltips through theme::text.
+    'self.browser_toggle_button(', 'self.workspace_view_toggle(',
     'self.arrangement(', 'self.ruler(', 'self.clip_view(',
     # Query clear-slot composition contains a themed action and native input semantics.
     'self.clear_search_slot(',
