@@ -232,9 +232,27 @@ fn sdk_extension_preserves_existing_bases_and_backing_while_pcm_continues() {
             .is_err(),
         "an old epoch cannot grant capability to its successor"
     );
+    let quoted = instance
+        .storage_with_authored_capacity_on_control(2)
+        .unwrap();
+    instance
+        .reserve_authored_parameter_capacity_on_control(2)
+        .unwrap();
+    assert_eq!(instance.retained_storage_on_control(), Some(quoted));
+    assert!(!instance.has_armed_authored_parameter(7));
+    instance
+        .begin_authored_parameter_extension_on_worker(class(), 11, 0, q)
+        .unwrap();
+    assert!(matches!(
+        poll_extension(&mut instance),
+        Progress::Armed { id: 11, .. }
+    ));
+    assert!(!instance.has_armed_authored_parameter(7));
     let renewed = instance
         .read_authored_parameter_metadata_on_control(class(), &[7, 11])
         .unwrap();
+    assert_eq!(renewed.initial_normalized(7), Some(0.25));
+    assert_eq!(renewed.initial_normalized(11), None);
     instance
         .arm_authored_parameter_metadata_on_control(renewed)
         .unwrap();

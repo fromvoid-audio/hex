@@ -26,8 +26,7 @@ impl Prepared {
         &self,
         limit: usize,
     ) -> Option<crate::native::PreparedStorage> {
-        if self.sequence != 0
-            || self.parameter_page.is_some()
+        if self.parameter_page.is_some()
             || limit == 0
             || limit > usize::from(MAX_CONTROLLER_PARAMETERS)
         {
@@ -35,14 +34,20 @@ impl Prepared {
         }
         let mut storage = self.retained_storage_on_control()?;
         let previous = if let Some(metadata) = &self.authored_parameter_metadata {
-            if !metadata.matches(self)
+            if !metadata.retains_lease(self)
                 || metadata.parameters.len() > limit
                 || metadata.extension_limit.is_some_and(|old| old > limit)
+                || (self.sequence != 0
+                    && (metadata.extension_limit != Some(limit)
+                        || metadata.parameters.capacity() < limit))
             {
                 return None;
             }
             metadata.parameters.capacity()
         } else {
+            if self.sequence != 0 {
+                return None;
+            }
             storage.shared_handle_bound = storage.shared_handle_bound.checked_add(1)?;
             0
         };
@@ -53,21 +58,25 @@ impl Prepared {
         Some(storage)
     }
 
-    /// Reserve before PCM transfer; the exact retained Vec capacity is charged
+    /// Grow only before the first PCM transfer; acknowledged epoch renewal may
+    /// reuse the same reservation without allocation. Exact Vec capacity is charged
     /// by the existing source storage inventory. Live extension never allocates
     /// or increases this logical limit. An empty reservation arms no target.
     pub fn reserve_authored_parameter_capacity_on_control(&mut self, limit: usize) -> Result<()> {
         self.require_live_epoch()?;
-        if self.sequence != 0 || self.parameter_page.is_some() {
+        if self
+            .storage_with_authored_capacity_on_control(limit)
+            .is_none()
+        {
             return Err(Error::Protocol(
-                "authored reservation requires an unused PCM source",
+                "authored reservation requires unused or already reserved capacity",
             ));
         }
         if limit == 0 || limit > usize::from(MAX_CONTROLLER_PARAMETERS) {
             return Err(Error::Protocol("invalid authored parameter reservation"));
         }
         if let Some(metadata) = self.authored_parameter_metadata.as_ref()
-            && (!metadata.matches(self)
+            && (!metadata.retains_lease(self)
                 || metadata.parameters.len() > limit
                 || metadata.extension_limit.is_some_and(|old| old > limit))
         {
@@ -93,6 +102,15 @@ impl Prepared {
                 "authored parameter reservation disappeared",
             ));
         };
+        if metadata.binding != self.config.binding {
+            // Resuming the same lease invalidates eligibility, not historical
+            // base observations. Only a fresh SDK query can arm the new epoch.
+            metadata.binding = self.config.binding;
+            metadata.revision = 0;
+            for parameter in &mut metadata.parameters {
+                parameter.steps = None;
+            }
+        }
         metadata
             .parameters
             .try_reserve_exact(limit - metadata.parameters.len())
@@ -130,7 +148,12 @@ impl Prepared {
         let limit = metadata.extension_limit.ok_or(Error::Protocol(
             "authored parameter capacity was not reserved",
         ))?;
-        if metadata.step_count(id).is_none() && metadata.parameters.len() >= limit {
+        if metadata
+            .parameters
+            .binary_search_by_key(&id, |parameter| parameter.id)
+            .is_err()
+            && metadata.parameters.len() >= limit
+        {
             return Err(Error::Protocol("authored parameter capacity is full"));
         }
         self.begin_parameter_page_on_worker(query)?;
@@ -204,6 +227,10 @@ impl AuthoredParameterMetadata {
             .parameters
             .binary_search_by_key(&target.id, |parameter| parameter.id)
         {
+            Ok(index) if self.parameters[index].steps.is_none() => {
+                self.parameters[index].steps = Some(target.steps);
+                Ok(())
+            }
             Ok(index) if self.parameters[index].steps == Some(target.steps) => Ok(()),
             Ok(_) => Err("armed authored parameter steps changed"),
             Err(index) => {
