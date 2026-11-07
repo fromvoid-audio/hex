@@ -526,7 +526,7 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     visual.simulate_mouse_up(tab_point, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let panel = visual.debug_bounds("device-panel").expect("device panel");
-    assert_eq!(panel.size.height, px(213.0));
+    assert_eq!(panel.size.height, px(229.0));
     assert!(visual.debug_bounds("device-panel-header").is_some());
     assert!(visual.debug_bounds("device-add-toggle").is_some());
     let chain = visual
@@ -545,8 +545,14 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     assert_eq!(instrument_card.size.height, chain.size.height - px(6.0));
     assert_eq!(effect_card.size.height, instrument_card.size.height);
     // Each card ends in the 11px passive stereo output meter.
-    assert_eq!(instrument_card.size.width, px(286.0 + 11.0));
-    assert_eq!(effect_card.size.width, px(144.0 + 11.0));
+    assert_eq!(
+        instrument_card.size.width,
+        px(286.0 + hex_widgets::DEVICE_FRAME_HEADER_WIDTH + 11.0)
+    );
+    assert_eq!(
+        effect_card.size.width,
+        px(144.0 + hex_widgets::DEVICE_FRAME_HEADER_WIDTH + 11.0)
+    );
     assert!(
         instrument_card.origin.x < effect_card.origin.x,
         "instrument is first"
