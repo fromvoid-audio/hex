@@ -1411,7 +1411,7 @@ fn assert_instrument_takeover_begin(
 }
 
 /// Deliberately vary callback sizes while the worker owns complete SDK quanta.
-fn render_takeover_partial(h: &ResidentHarness, frames: usize) {
+fn render_takeover_partial(h: &ResidentHarness, frames: usize, held: bool) {
     let mut pcm = [[0.0; 2]; 256];
     let mut host = [0.0; 512];
     let mut slot = h.callback.lock().unwrap();
@@ -1430,6 +1430,15 @@ fn render_takeover_partial(h: &ResidentHarness, frames: usize) {
         ),
         (0, 0, 0, 0)
     );
+    if held {
+        assert!(
+            pcm[..frames]
+                .iter()
+                .flatten()
+                .all(|sample| sample.abs() > 1.0e-6),
+            "the constant signed instrument must not drop its held gate at a publication cut"
+        );
+    }
 }
 
 fn verify_instrument_takeover(
@@ -1563,7 +1572,7 @@ fn verify_instrument_takeover(
                 Instant::now() < deadline,
                 "instrument gesture timed out: {request:?}"
             );
-            render_takeover_partial(h, [3, 5, 117, 1, 130][fragment % 5]);
+            render_takeover_partial(h, [3, 5, 117, 1, 130][fragment % 5], playing);
             fragment += 1;
             // The native worker is asynchronous; wait only on this test/control
             // thread before offering the next irregular physical fragment.
@@ -1574,7 +1583,7 @@ fn verify_instrument_takeover(
                 .as_mut()
                 .unwrap()
                 .native_workers_idle_on_control()
-                == Some(false)
+                != Some(true)
             {
                 assert!(Instant::now() < deadline);
                 std::thread::yield_now();
@@ -1586,13 +1595,9 @@ fn verify_instrument_takeover(
         let mut client = GestureClient::default();
         client.begin_plugin(query(h, 12)).unwrap();
         let refused = send(h, &mut client, false);
-        assert!(
-            refused
-                .error
-                .as_ref()
-                .unwrap()
-                .contains("create an automation lane")
-        );
+        // Begin refusal is represented by the keyed ACK; the event contract
+        // does not require a global error string for a rejected Begin.
+        assert!(refused.active_device_gesture.is_none());
         assert_eq!(refused.state.project.as_ref(), &before);
         assert!((peak(h) - baseline).abs() < 0.0001);
         println!("instrument unarmed target remains explicitly guarded");

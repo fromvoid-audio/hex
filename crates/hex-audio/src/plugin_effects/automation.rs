@@ -287,6 +287,25 @@ mod tests {
             .unwrap();
         assert_eq!(selection.parameters().0.bytes(), [3; 16]);
         assert_eq!(selection.parameters().1, &[0, 2, 17]);
+        assert!(selection.contains([3; 16], 0));
+        assert!(!selection.contains([4; 16], 0));
+        assert!(selection.covers(None));
+        let subset = AuthoredSelection::from_targets([(0, class), (2, class)]).unwrap();
+        assert!(selection.covers(subset.as_ref()));
+        assert!(
+            !selection.covers(
+                AuthoredSelection::from_targets([(99, class)])
+                    .unwrap()
+                    .as_ref()
+            )
+        );
+        assert!(
+            !selection.covers(
+                AuthoredSelection::from_targets([(0, Some([4; 16]))])
+                    .unwrap()
+                    .as_ref()
+            )
+        );
         assert!(AuthoredSelection::from_targets([]).unwrap().is_none());
         assert!(AuthoredSelection::from_targets([(0, class), (0, class)]).is_err());
         assert!(AuthoredSelection::from_targets([(0, class), (1, Some([4; 16]))]).is_err());
