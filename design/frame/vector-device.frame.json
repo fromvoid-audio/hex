@@ -5,18 +5,18 @@
   "archive": {
     "version": 1,
     "designId": "hex-vector-device",
-    "sourceRevisionId": "vector-device-r10",
-    "currentRevisionId": "vector-device-r10",
+    "sourceRevisionId": "vector-device-r11",
+    "currentRevisionId": "vector-device-r11",
     "revisions": [
       {
-        "revisionId": "vector-device-r10",
+        "revisionId": "vector-device-r11",
         "parentRevisionId": null,
-        "capturedAt": "2026-11-07T08:49:47.184Z",
+        "capturedAt": "2026-11-07T09:08:38.169Z",
         "document": {
           "version": 1,
           "id": "hex-vector-device",
           "name": "hex / vector",
-          "revisionId": "vector-device-r10",
+          "revisionId": "vector-device-r11",
           "width": 930,
           "height": 200,
           "background": "#242424",
@@ -537,7 +537,7 @@
               "bounds": {
                 "x": 28,
                 "y": 6,
-                "width": 181,
+                "width": 165,
                 "height": 43.75
               },
               "style": {
@@ -581,7 +581,7 @@
               "bounds": {
                 "x": 56,
                 "y": 13,
-                "width": 72,
+                "width": 56,
                 "height": 12
               },
               "style": {
@@ -597,7 +597,7 @@
               "bounds": {
                 "x": 58,
                 "y": 15,
-                "width": 68,
+                "width": 52,
                 "height": 8
               },
               "style": {
@@ -613,7 +613,7 @@
               "bounds": {
                 "x": 58,
                 "y": 15,
-                "width": 4.25,
+                "width": 3.25,
                 "height": 8
               },
               "style": {
@@ -630,7 +630,7 @@
               "bounds": {
                 "x": 60,
                 "y": 13,
-                "width": 64,
+                "width": 48,
                 "height": 12
               },
               "style": {
@@ -652,7 +652,7 @@
               "bounds": {
                 "x": 56,
                 "y": 30,
-                "width": 72,
+                "width": 56,
                 "height": 12
               },
               "style": {
@@ -668,7 +668,7 @@
               "bounds": {
                 "x": 58,
                 "y": 32,
-                "width": 68,
+                "width": 52,
                 "height": 8
               },
               "style": {
@@ -701,7 +701,7 @@
               "bounds": {
                 "x": 60,
                 "y": 30,
-                "width": 64,
+                "width": 48,
                 "height": 12
               },
               "style": {
@@ -770,7 +770,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 136,
+                "x": 120,
                 "y": 18,
                 "width": 20,
                 "height": 20
@@ -792,7 +792,7 @@
               "type": "line",
               "parentId": "compact-content",
               "bounds": {
-                "x": 136,
+                "x": 120,
                 "y": 18,
                 "width": 20,
                 "height": 20
@@ -948,7 +948,7 @@
               "type": "line",
               "parentId": "compact-content",
               "bounds": {
-                "x": 136,
+                "x": 120,
                 "y": 18,
                 "width": 20,
                 "height": 20
@@ -980,7 +980,7 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 163,
+                "x": 147,
                 "y": 16,
                 "width": 36,
                 "height": 9
@@ -1002,7 +1002,7 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 163,
+                "x": 147,
                 "y": 29,
                 "width": 36,
                 "height": 10
@@ -1026,7 +1026,7 @@
               "bounds": {
                 "x": 28,
                 "y": 53.75,
-                "width": 181,
+                "width": 165,
                 "height": 43.75
               },
               "style": {
@@ -1070,7 +1070,7 @@
               "bounds": {
                 "x": 56,
                 "y": 60.75,
-                "width": 72,
+                "width": 56,
                 "height": 12
               },
               "style": {
@@ -1086,7 +1086,7 @@
               "bounds": {
                 "x": 58,
                 "y": 62.75,
-                "width": 68,
+                "width": 52,
                 "height": 8
               },
               "style": {
@@ -1102,7 +1102,7 @@
               "bounds": {
                 "x": 58,
                 "y": 62.75,
-                "width": 8.5,
+                "width": 6.5,
                 "height": 8
               },
               "style": {
@@ -1119,7 +1119,7 @@
               "bounds": {
                 "x": 60,
                 "y": 60.75,
-                "width": 64,
+                "width": 48,
                 "height": 12
               },
               "style": {
@@ -1141,7 +1141,7 @@
               "bounds": {
                 "x": 56,
                 "y": 77.75,
-                "width": 72,
+                "width": 56,
                 "height": 12
               },
               "style": {
@@ -1157,7 +1157,7 @@
               "bounds": {
                 "x": 58,
                 "y": 79.75,
-                "width": 68,
+                "width": 52,
                 "height": 8
               },
               "style": {
@@ -1173,7 +1173,7 @@
               "bounds": {
                 "x": 58,
                 "y": 79.75,
-                "width": 51,
+                "width": 39,
                 "height": 8
               },
               "style": {
@@ -1190,7 +1190,7 @@
               "bounds": {
                 "x": 60,
                 "y": 77.75,
-                "width": 64,
+                "width": 48,
                 "height": 12
               },
               "style": {
@@ -1259,7 +1259,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 136,
+                "x": 120,
                 "y": 65.75,
                 "width": 20,
                 "height": 20
@@ -1281,7 +1281,7 @@
               "type": "line",
               "parentId": "compact-content",
               "bounds": {
-                "x": 136,
+                "x": 120,
                 "y": 65.75,
                 "width": 20,
                 "height": 20
@@ -1437,7 +1437,7 @@
               "type": "line",
               "parentId": "compact-content",
               "bounds": {
-                "x": 136,
+                "x": 120,
                 "y": 65.75,
                 "width": 20,
                 "height": 20
@@ -1469,7 +1469,7 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 163,
+                "x": 147,
                 "y": 63.75,
                 "width": 36,
                 "height": 9
@@ -1491,7 +1491,7 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 163,
+                "x": 147,
                 "y": 76.75,
                 "width": 36,
                 "height": 10
@@ -1515,7 +1515,7 @@
               "bounds": {
                 "x": 28,
                 "y": 101.5,
-                "width": 181,
+                "width": 165,
                 "height": 43.75
               },
               "style": {
@@ -1559,7 +1559,7 @@
               "bounds": {
                 "x": 56,
                 "y": 108.5,
-                "width": 72,
+                "width": 56,
                 "height": 12
               },
               "style": {
@@ -1575,7 +1575,7 @@
               "bounds": {
                 "x": 58,
                 "y": 110.5,
-                "width": 68,
+                "width": 52,
                 "height": 8
               },
               "style": {
@@ -1591,7 +1591,7 @@
               "bounds": {
                 "x": 58,
                 "y": 110.5,
-                "width": 34,
+                "width": 26,
                 "height": 8
               },
               "style": {
@@ -1608,7 +1608,7 @@
               "bounds": {
                 "x": 60,
                 "y": 108.5,
-                "width": 64,
+                "width": 48,
                 "height": 12
               },
               "style": {
@@ -1630,7 +1630,7 @@
               "bounds": {
                 "x": 56,
                 "y": 125.5,
-                "width": 72,
+                "width": 56,
                 "height": 12
               },
               "style": {
@@ -1646,7 +1646,7 @@
               "bounds": {
                 "x": 58,
                 "y": 127.5,
-                "width": 68,
+                "width": 52,
                 "height": 8
               },
               "style": {
@@ -1679,7 +1679,7 @@
               "bounds": {
                 "x": 60,
                 "y": 125.5,
-                "width": 64,
+                "width": 48,
                 "height": 12
               },
               "style": {
@@ -1748,7 +1748,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 136,
+                "x": 120,
                 "y": 113.5,
                 "width": 20,
                 "height": 20
@@ -1770,7 +1770,7 @@
               "type": "line",
               "parentId": "compact-content",
               "bounds": {
-                "x": 136,
+                "x": 120,
                 "y": 113.5,
                 "width": 20,
                 "height": 20
@@ -1926,7 +1926,7 @@
               "type": "line",
               "parentId": "compact-content",
               "bounds": {
-                "x": 136,
+                "x": 120,
                 "y": 113.5,
                 "width": 20,
                 "height": 20
@@ -1958,7 +1958,7 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 163,
+                "x": 147,
                 "y": 111.5,
                 "width": 36,
                 "height": 9
@@ -1980,7 +1980,7 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 163,
+                "x": 147,
                 "y": 124.5,
                 "width": 36,
                 "height": 10
@@ -2004,7 +2004,7 @@
               "bounds": {
                 "x": 28,
                 "y": 149.25,
-                "width": 181,
+                "width": 165,
                 "height": 43.75
               },
               "style": {
@@ -2048,7 +2048,7 @@
               "bounds": {
                 "x": 56,
                 "y": 156.25,
-                "width": 72,
+                "width": 56,
                 "height": 12
               },
               "style": {
@@ -2064,7 +2064,7 @@
               "bounds": {
                 "x": 58,
                 "y": 158.25,
-                "width": 68,
+                "width": 52,
                 "height": 8
               },
               "style": {
@@ -2080,7 +2080,7 @@
               "bounds": {
                 "x": 58,
                 "y": 158.25,
-                "width": 42.5,
+                "width": 32.5,
                 "height": 8
               },
               "style": {
@@ -2097,7 +2097,7 @@
               "bounds": {
                 "x": 60,
                 "y": 156.25,
-                "width": 64,
+                "width": 48,
                 "height": 12
               },
               "style": {
@@ -2119,7 +2119,7 @@
               "bounds": {
                 "x": 56,
                 "y": 173.25,
-                "width": 72,
+                "width": 56,
                 "height": 12
               },
               "style": {
@@ -2135,7 +2135,7 @@
               "bounds": {
                 "x": 58,
                 "y": 175.25,
-                "width": 68,
+                "width": 52,
                 "height": 8
               },
               "style": {
@@ -2168,7 +2168,7 @@
               "bounds": {
                 "x": 60,
                 "y": 173.25,
-                "width": 64,
+                "width": 48,
                 "height": 12
               },
               "style": {
@@ -2221,7 +2221,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 136,
+                "x": 120,
                 "y": 161.25,
                 "width": 20,
                 "height": 20
@@ -2243,7 +2243,7 @@
               "type": "line",
               "parentId": "compact-content",
               "bounds": {
-                "x": 136,
+                "x": 120,
                 "y": 161.25,
                 "width": 20,
                 "height": 20
@@ -2399,7 +2399,7 @@
               "type": "line",
               "parentId": "compact-content",
               "bounds": {
-                "x": 136,
+                "x": 120,
                 "y": 161.25,
                 "width": 20,
                 "height": 20
@@ -2431,7 +2431,7 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 163,
+                "x": 147,
                 "y": 159.25,
                 "width": 36,
                 "height": 9
@@ -2453,7 +2453,7 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 163,
+                "x": 147,
                 "y": 172.25,
                 "width": 36,
                 "height": 10
@@ -129441,7 +129441,7 @@
             "oscillators": "Four compact oscillators with ratio, frequency offset, level/modulation depth and independent keytrack sliders. Keytrack examples are 100%, 100%, 50% and 0%.",
             "keytrack": "Slim vertical keytrack sliders have no numeric readout. Colored fill grows upward from the bottom of each inset channel.",
             "oscillatorSwitches": "Oscillator on/off buttons are one third of their previous width, have no visible label and use their full oscillator color when enabled.",
-            "oscillatorControls": "Compact ratio and frequency-offset fields fill left to right. Smaller level knobs use Hex’s dark face, thin blue arc and light pointer, with level readouts beside them. Fill amounts are illustrative previews."
+            "oscillatorControls": "Ratio and Hz fields are 56 pixels wide, with level knobs and readouts pulled closer to keep the oscillator rows compact."
           },
           "assets": [
             {
