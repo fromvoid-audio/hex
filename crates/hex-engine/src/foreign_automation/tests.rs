@@ -267,24 +267,22 @@ fn bound_program_requires_the_source_rate_and_preserves_the_worker_revision() {
         epoch: 4,
     };
     let capabilities = [ParameterCapability { id: 0, steps: 0 }];
+    let revision = std::num::NonZeroU64::new(7).unwrap();
     let source = hex_lattice::ForeignAutomationSource {
         binding,
+        revision,
         class: CLASS,
         sample_rate: 8000,
         quantum_frames: 8,
         parameters: &capabilities,
     };
     let tempo = tempo();
-    let revision = std::num::NonZeroU64::new(7).unwrap();
     let wrong_rate = hex_lattice::ForeignAutomationSource {
         sample_rate: 48_000,
         ..source
     };
-    assert!(
-        BoundProgram::prepare(std::slice::from_ref(&lane), wrong_rate, &tempo, 1, revision)
-            .is_err()
-    );
-    let program = BoundProgram::prepare(&[lane], source, &tempo, 1, revision)
+    assert!(BoundProgram::prepare(std::slice::from_ref(&lane), wrong_rate, &tempo, 1).is_err());
+    let program = BoundProgram::prepare(&[lane], source, &tempo, 1)
         .unwrap()
         .unwrap();
     assert_eq!(program.borrow().binding, binding);

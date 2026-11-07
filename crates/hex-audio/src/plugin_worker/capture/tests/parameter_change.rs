@@ -1119,7 +1119,6 @@ fn compiled_saved_vst3_lane_reaches_the_signed_worker_without_callback_allocatio
         AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, Command, Created,
         DeviceAutomationTarget, Editor, Project,
     };
-    use std::num::NonZeroU64;
 
     const NAME: &str = "plugin_worker::capture::tests::parameter_change::compiled_saved_vst3_lane_reaches_the_signed_worker_without_callback_allocations";
     if fixture_child(91, NAME) {
@@ -1229,7 +1228,6 @@ fn compiled_saved_vst3_lane_reaches_the_signed_worker_without_callback_allocatio
         source,
         reopened.tempo_map(),
         2,
-        NonZeroU64::MIN,
     )
     .unwrap()
     .unwrap();

@@ -165,9 +165,11 @@ impl SourceCapabilities {
         binding: hex_lattice_contract::ForeignProcessorBinding,
         sample_rate: u32,
         quantum_frames: u16,
+        revision: std::num::NonZeroU64,
     ) -> Option<hex_lattice::ForeignAutomationSource<'_>> {
         Some(hex_lattice::ForeignAutomationSource {
             binding,
+            revision,
             class: self.class?.bytes(),
             sample_rate,
             quantum_frames,

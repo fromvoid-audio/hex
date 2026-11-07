@@ -126,6 +126,12 @@ impl NativeEffect {
     }
 }
 impl NativeEffectControl {
+    pub(crate) fn reserve_program_revision_on_control(
+        &mut self,
+    ) -> Result<std::num::NonZeroU64, &'static str> {
+        self.configuration.reserve_program_revision_on_control()
+    }
+
     pub(crate) fn parameter_hold(
         &mut self,
         command: NativeParameterHold<'_>,
@@ -252,11 +258,12 @@ impl NativeEffectControl {
     #[allow(clippy::result_large_err)] // A mismatched original return remains wholly owned by the caller.
     pub(crate) fn reunite(
         self,
-        callback: NativeEffectCallback,
+        mut callback: NativeEffectCallback,
     ) -> Result<NativeEffect, (Self, NativeEffectCallback)> {
         if !self.matches_callback(&callback) {
             return Err((self, callback));
         }
+        callback.configuration.program_revision = self.configuration.program_revision;
         Ok(NativeEffect {
             worker: self.worker,
             callback,
@@ -270,6 +277,22 @@ pub(crate) enum NativeEffectReference<'a> {
     Loaned(&'a NativeEffectControl),
 }
 impl NativeEffectReference<'_> {
+    pub(crate) fn received_program_on_control(
+        &self,
+    ) -> Option<crate::plugin_worker::ReceivedProgram> {
+        match self {
+            Self::Unsplit(effect) => effect.worker.received_program_on_control(),
+            Self::Loaned(control) => control.worker.received_program_on_control(),
+        }
+    }
+    pub(crate) fn processed_program_on_control(
+        &self,
+    ) -> Option<crate::plugin_worker::ReceivedProgram> {
+        match self {
+            Self::Unsplit(effect) => effect.worker.processed_program_on_control(),
+            Self::Loaned(control) => control.worker.processed_program_on_control(),
+        }
+    }
     pub(crate) fn source_metadata(&self) -> &EffectSourceMetadata {
         match self {
             Self::Unsplit(effect) => &effect.source_metadata,

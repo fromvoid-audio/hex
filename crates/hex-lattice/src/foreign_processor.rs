@@ -106,6 +106,8 @@ pub struct ForeignParameterCapability {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ForeignAutomationSource<'a> {
     pub binding: ForeignProcessorBinding,
+    /// Unique immutable program revision issued by this original source owner.
+    pub revision: NonZeroU64,
     pub class: [u8; 16],
     pub sample_rate: u32,
     pub quantum_frames: u16,

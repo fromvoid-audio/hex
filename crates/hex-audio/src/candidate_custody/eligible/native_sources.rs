@@ -913,6 +913,22 @@ impl CandidateRoot {
             (loaned, endpoint.transport_is_live_on_control())
         })
     }
+    pub(crate) fn native_source_received_program(
+        &self,
+        binding: Binding,
+    ) -> Option<crate::plugin_worker::ReceivedProgram> {
+        self.with_native_source_endpoint(binding, |_, endpoint| {
+            endpoint.received_program_on_control()
+        })?
+    }
+    pub(crate) fn native_source_processed_program(
+        &self,
+        binding: Binding,
+    ) -> Option<crate::plugin_worker::ReceivedProgram> {
+        self.with_native_source_endpoint(binding, |_, endpoint| {
+            endpoint.processed_program_on_control()
+        })?
+    }
     pub(crate) fn take_native_source_failure_diagnostic(&self, binding: Binding) -> Option<String> {
         self.with_native_source_endpoint(binding, |_, endpoint| {
             endpoint.take_failure_diagnostic_on_control()

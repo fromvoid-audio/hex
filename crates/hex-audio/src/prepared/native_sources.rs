@@ -851,6 +851,41 @@ impl PublicationControl {
         }
         self.candidate_root.native_source_metadata(binding)
     }
+    /// Reserve a fresh graph-program key on the actual original source. This
+    /// does not alter DSP, grant a new endpoint or authorize canonical state.
+    /// Unused or concurrently cancelled reservations may leave monotonic gaps.
+    pub fn reserve_native_source_program_revision_on_control(
+        &self,
+        binding: Binding,
+    ) -> Result<std::num::NonZeroU64, String> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native source control is closing".into());
+        }
+        self.candidate_root
+            .reserve_native_program_revision(binding)
+            .map_err(str::to_owned)
+    }
+    /// Exact original worker pickup, not successful SDK processing or final
+    /// Main delivery. A busy, revoked or replaced source has no observation.
+    pub fn native_source_received_program_on_control(
+        &self,
+        binding: Binding,
+    ) -> Option<crate::plugin_worker::ReceivedProgram> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return None;
+        }
+        self.candidate_root.native_source_received_program(binding)
+    }
+    /// Exact worker reply publication, still distinct from final Main delivery.
+    pub fn native_source_processed_program_on_control(
+        &self,
+        binding: Binding,
+    ) -> Option<crate::plugin_worker::ReceivedProgram> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return None;
+        }
+        self.candidate_root.native_source_processed_program(binding)
+    }
     pub fn native_source_preparation_progress(
         &self,
         binding: Binding,
