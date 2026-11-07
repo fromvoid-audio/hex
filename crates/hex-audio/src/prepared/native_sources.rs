@@ -13,37 +13,49 @@ pub(super) enum NativeEpochRuntimeTarget {
     Ordinary(AppliedAudioSource),
 }
 
+impl Status {
+    /// The ordinary source and epoch eligible for new live parameter input.
+    /// Priority Stop invalidates admission before the callback consumes it.
+    pub fn live_native_parameter_source(&self) -> Option<(AppliedAudioSource, u64)> {
+        let epoch = self.transport_epoch.load(Acquire);
+        let source = self.native_effect_source()?;
+        (self.playing.load(Acquire)
+            && self.pending_stop_marker.load(Acquire) == 0
+            && self.applied_audio_source().is_none()
+            && !self.closing.load(Acquire)
+            && self.transport_epoch.load(Acquire) == epoch)
+            .then_some((source, epoch))
+    }
+}
+
 impl PublicationControl {
     pub(crate) fn native_base_capture_source(
         &self,
         expected: AppliedAudioSource,
         binding: Binding,
         canonical: &NativeDeviceState,
-    ) -> Result<(u32, crate::plugin_effects::BaseCaptureSource), String> {
-        if !self.native_base_capture_is_current(expected)
-            || binding.root != expected.output_identity
-        {
-            return Err("native base capture requires the applied ordinary effect".into());
-        }
+    ) -> Result<(u32, u64, crate::plugin_effects::BaseCaptureSource), String> {
+        let (_, epoch) = self
+            .status
+            .live_native_parameter_source()
+            .filter(|(source, _)| *source == expected)
+            .filter(|_| {
+                self.native_custody && self.output_identity() == Some(expected.output_identity)
+            })
+            .filter(|_| binding.root == expected.output_identity)
+            .ok_or("native base capture requires the applied ordinary effect")?;
         let source = self
             .candidate_root
             .native_source_for_base_capture(binding, canonical)?;
-        Ok((self.rate, source))
-    }
-
-    pub(crate) fn native_base_capture_is_current(&self, expected: AppliedAudioSource) -> bool {
-        self.native_custody
-            && !self.status.closing.load(Acquire)
-            && self.output_identity() == Some(expected.output_identity)
-            && self.status.playing.load(Acquire)
-            && self.status.applied_audio_source().is_none()
-            && self.status.native_effect_source() == Some(expected)
+        Ok((self.rate, epoch, source))
     }
 
     /// Queue a live hold on the selected original worker. A begin/change
     /// requires the exact applied ordinary source and a running transport.
     /// Release stays with the original worker even if its editor revision
-    /// changed. A returned token keeps its ordinary progress/drain custody
+    /// changed or playback is paused. A release queued while paused is
+    /// consumed before authored delivery in the next actual PCM quantum.
+    /// A returned token keeps its ordinary progress/drain custody
     /// if the output starts closing after admission.
     pub fn native_source_parameter_hold_on_control(
         &mut self,
@@ -59,15 +71,19 @@ impl PublicationControl {
         {
             return Err("native parameter hold output differs or is closing");
         }
-        if !self.status.playing.load(Acquire) {
-            return Err("native parameter hold requires running playback");
-        }
-        if !matches!(command, NativeParameterHold::Release { .. })
-            && (self.status.applied_audio_source().is_some()
-                || self.status.native_effect_source() != Some(expected)
-                || self.native_source_endpoint_installed(binding) != Some(true))
-        {
-            return Err("native parameter hold source is not applied");
+        if !matches!(command, NativeParameterHold::Release { .. }) {
+            if !self.status.playing.load(Acquire) {
+                return Err("native parameter hold requires running playback");
+            }
+            if self
+                .status
+                .live_native_parameter_source()
+                .map(|(source, _)| source)
+                != Some(expected)
+                || self.native_source_endpoint_installed(binding) != Some(true)
+            {
+                return Err("native parameter hold source is not applied");
+            }
         }
         self.candidate_root.native_parameter_hold(binding, command)
     }

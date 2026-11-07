@@ -33,6 +33,7 @@ enum Phase {
 pub struct ManualBaseCapture {
     binding: Binding,
     source: AppliedAudioSource,
+    transport_epoch: u64,
     identity: hex_plugin_state::Identity,
     presentation: PresentationPlan,
     id: u32,
@@ -51,17 +52,20 @@ impl Hosting {
         source: AppliedAudioSource,
         binding: Binding,
         canonical: &NativeDeviceState,
-        point: ParameterPoint,
+        id: u32,
+        normalized: f64,
     ) -> Result<ManualBaseCapture, String> {
-        if point.frame != 0 {
-            return Err("native manual base input requires frame zero".into());
-        }
         let mut parameters = Parameters::default();
         parameters
-            .push(point)
+            .push(ParameterPoint {
+                id,
+                frame: 0,
+                normalized,
+            })
             .map_err(|_| "native manual base input is invalid")?;
         let identity = Self::saved_identity_on_control(canonical)?;
-        let (rate, original) = output.native_base_capture_source(source, binding, canonical)?;
+        let (rate, transport_epoch, original) =
+            output.native_base_capture_source(source, binding, canonical)?;
         let scratch = self.begin_on_control(
             output,
             original.metadata.selection(),
@@ -75,9 +79,10 @@ impl Hosting {
         Ok(ManualBaseCapture {
             binding: scratch,
             source,
+            transport_epoch,
             identity,
             presentation: original.presentation,
-            id: point.id,
+            id,
             parameters,
             phase: Phase::Prepare,
         })
@@ -99,7 +104,9 @@ impl ManualBaseCapture {
             return None;
         }
         if !matches!(self.phase, Phase::Retire(Some(Err(_))))
-            && (is_cancelled() || !output.native_base_capture_is_current(self.source))
+            && (is_cancelled()
+                || output.status.live_native_parameter_source()
+                    != Some((self.source, self.transport_epoch)))
         {
             self.phase = Phase::Retire(Some(Err("native manual base capture cancelled".into())));
         }
@@ -124,7 +131,9 @@ impl ManualBaseCapture {
             let result = match (report.error.or(report.cleanup_error), result.take()) {
                 (Some(error), _) => Err(error.to_string()),
                 (None, Some(Ok(_)))
-                    if is_cancelled() || !output.native_base_capture_is_current(self.source) =>
+                    if is_cancelled()
+                        || output.status.live_native_parameter_source()
+                            != Some((self.source, self.transport_epoch)) =>
                 {
                     Err("native manual base capture cancelled".into())
                 }
@@ -140,8 +149,8 @@ impl ManualBaseCapture {
         let status = std::sync::Arc::clone(&output.status);
         let mut cancelled = || {
             is_cancelled()
-                || !status.playing.load(std::sync::atomic::Ordering::Acquire)
-                || status.native_effect_source() != Some(self.source)
+                || status.live_native_parameter_source()
+                    != Some((self.source, self.transport_epoch))
         };
         let next = match (&self.phase, progress) {
             (Phase::Prepare, Some(Progress::Facts(_))) => output
