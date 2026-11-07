@@ -169,6 +169,22 @@ fn reverb_outputs_match_independent_gain_and_width_oracles_on_all_effect_owners(
                 }],
             })
             .unwrap();
+        for parameter in [p::LO_CUT, p::HI_CUT, p::SPIN, p::HIGH, p::LOW, p::CHORUS] {
+            changed = D
+                .patch_parameter(&changed, parameter, ParameterValue::Bool(false))
+                .unwrap();
+            authored
+                .execute(Command::ReplaceDeviceAutomation {
+                    device,
+                    parameter,
+                    points: vec![AutomationPoint {
+                        beat: BeatTime::ZERO,
+                        value: AutomationValue::new(0.0).unwrap(),
+                        outgoing: Shape::Step,
+                    }],
+                })
+                .unwrap();
+        }
         let mut canonical = Editor::new(editor.project().clone(), 4).unwrap();
         canonical
             .execute(Command::ReplaceDeviceState {
