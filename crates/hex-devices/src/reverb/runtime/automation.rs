@@ -3,7 +3,8 @@
 //! Input filter and shelf-frequency conversions are cached. Boolean overrides
 //! switch existing paths without resetting their history or oscillator phase;
 //! decay shaping uses the effective mode in the fixed feedback cache. Ring
-//! capacity and declared tail bounds remain unchanged.
+//! capacity stays fixed. Freeze input requires control-side admission of an
+//! unbounded output tail before publication.
 use super::*;
 use crate::parameter_binding::{Binding, SCALAR_ENVELOPE};
 use hex_lattice_contract::ParameterSemantics;
@@ -1467,6 +1468,12 @@ mod benchmark {
                 .unwrap()
                 .with_automation(&[p::DECAY, p::FREEZE])
                 .runtime();
+            // Excite the room before held freeze+cut can suppress new input.
+            // Construction and this seed are outside every timed interval.
+            runtime.process_block(
+                &mut [[0.125, -0.25]; 8192],
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            );
             let mut block = [[0.125, -0.25]; 128];
             let mut run = || {
                 for _ in 0..128 {
