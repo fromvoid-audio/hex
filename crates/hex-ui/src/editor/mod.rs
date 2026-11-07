@@ -157,6 +157,7 @@ mod track_defaults;
 mod user_errors;
 #[cfg(feature = "ui-test-support")]
 pub(crate) use midi_recording::pressure_fixture::exercise as midi_pressure_fixture;
+mod arrangement_map;
 mod midi_loop_notes;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod midi_loop_profile;
@@ -997,6 +998,7 @@ pub(super) struct EditorView {
     scrub: scrub::ScrubState,
     zoom_wheel_accum: f32,
     overview_cache: std::cell::RefCell<Option<Rc<overview::OverviewCache>>>,
+    arrangement_map_cache: std::cell::RefCell<Option<Rc<arrangement_map::MapCache>>>,
     audio_point_page: usize,
     overview_waveform_cache: Rc<std::cell::RefCell<overview_waveform::Cache>>,
     pub(in crate::editor) waveform_geometry_cache:
@@ -1765,6 +1767,7 @@ impl EditorView {
             scrub: scrub::ScrubState::default(),
             zoom_wheel_accum: 0.0,
             overview_cache: std::cell::RefCell::new(None),
+            arrangement_map_cache: std::cell::RefCell::new(None),
             audio_point_page: 0,
             overview_waveform_cache: Rc::new(std::cell::RefCell::new(
                 overview_waveform::Cache::default(),
