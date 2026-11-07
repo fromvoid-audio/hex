@@ -10,18 +10,26 @@ fn larger_unbound_vst3_instrument_round_trips_without_group_mutes() {
         vec![42; 9_357],
     )
     .unwrap();
+    let authority = hex_lattice_contract::Vst3StateAuthority::new_on_control().unwrap();
+    let verifier = authority.verifier();
+    let state = authority.approve_on_control(state).unwrap();
     let mut editor = Editor::new(Project::new(44_100).unwrap(), 8).unwrap();
     editor
         .execute(Command::CreateNativeSource {
             name: "unbound instrument".into(),
-            devices: vec![state],
+            devices: vec![state.clone()],
             instrument_index: 0,
         })
         .unwrap();
     let project = editor.project();
     let saved = encode(project).unwrap();
     assert_eq!(crate::schema_version_for(project), 75);
-    assert_eq!(decode(&saved).unwrap().snapshot(), project.snapshot());
+    let reopened = decode(&saved).unwrap();
+    assert_eq!(reopened.snapshot(), project.snapshot());
+    let reopened_state = reopened.native_sources()[0].instrument().state();
+    assert!(verifier.approves(&state));
+    assert!(!verifier.approves(reopened_state));
+    assert_eq!(encode(&reopened).unwrap(), saved);
 }
 
 /// Historical schemas could describe only identity and sinc v1 conversion, so

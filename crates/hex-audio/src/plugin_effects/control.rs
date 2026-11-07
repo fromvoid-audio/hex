@@ -8,9 +8,10 @@ use crate::plugin_worker::{
 
 pub(crate) struct NativeEffectControl {
     worker: NativeWorker,
-    configuration: Configuration,
+    pub(super) configuration: Configuration,
     storage: NativeEffectStorage,
     source_metadata: EffectSourceMetadata,
+    pub(super) state_authority: hex_lattice_contract::Vst3StateAuthority,
 }
 impl NativeEffect {
     pub(crate) fn parameter_hold(
@@ -121,6 +122,7 @@ impl NativeEffect {
             worker: self.worker,
             storage,
             source_metadata: self.source_metadata,
+            state_authority: self.state_authority,
         };
         Ok((control, self.callback))
     }
@@ -254,6 +256,7 @@ impl NativeEffectControl {
         callback.matches_worker(&self.worker)
             && callback.binding() == self.binding()
             && callback.identity() == self.identity()
+            && callback.configuration.state_verifier == self.configuration.state_verifier
     }
     #[allow(clippy::result_large_err)] // A mismatched original return remains wholly owned by the caller.
     pub(crate) fn reunite(
@@ -268,6 +271,7 @@ impl NativeEffectControl {
             worker: self.worker,
             callback,
             source_metadata: self.source_metadata,
+            state_authority: self.state_authority,
         })
     }
 }
@@ -347,7 +351,7 @@ impl NativeEffectReference<'_> {
     pub(crate) fn identity(&self) -> ProcessorInstanceIdentity {
         self.configuration().identity
     }
-    fn configuration(&self) -> &Configuration {
+    pub(super) fn configuration(&self) -> &Configuration {
         match self {
             Self::Unsplit(effect) => &effect.callback.configuration,
             Self::Loaned(control) => &control.configuration,

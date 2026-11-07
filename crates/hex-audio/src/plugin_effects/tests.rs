@@ -94,12 +94,25 @@ fn actual_effect_storage_counts_spare_dry_capacity_and_retains_the_original_stat
         graph: 3,
         epoch: 4,
     };
-    let mut effect = NativeEffect::prepare_on_control(
+    let effect = NativeEffect::prepare_on_control(
         ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, binding.instance).unwrap(),
         original_instance_for_binding(binding),
     )
     .unwrap();
     let before = effect.constructor_storage_on_control().unwrap();
+    let approved = effect
+        .approve_captured_state_on_control(effect.configuration())
+        .unwrap();
+    assert!(NativeEffectReference::Unsplit(&effect).approves_captured_state_on_control(&approved));
+    let (control, callback) = effect
+        .loan_on_control()
+        .unwrap_or_else(|_| panic!("original loan"));
+    assert!(NativeEffectReference::Loaned(&control).approves_captured_state_on_control(&approved));
+    let mut effect = control
+        .reunite(callback)
+        .unwrap_or_else(|_| panic!("original reunion"));
+    assert!(NativeEffectReference::Unsplit(&effect).approves_captured_state_on_control(&approved));
+    assert_eq!(effect.constructor_storage_on_control(), Some(before));
     let capacity = effect.callback.dry.capacity();
     effect.callback.dry.reserve_exact(17);
     let after = effect.constructor_storage_on_control().unwrap();

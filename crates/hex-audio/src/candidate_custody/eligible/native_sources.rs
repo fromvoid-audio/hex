@@ -21,6 +21,7 @@ mod epoch;
 pub(super) mod ordinary;
 mod program;
 mod references;
+mod state_approval;
 pub(crate) use ordinary::OrdinaryNativeReferences;
 mod resources;
 pub(crate) use endpoints::{NativeEndpointBank, NativeEndpointEnvelope};

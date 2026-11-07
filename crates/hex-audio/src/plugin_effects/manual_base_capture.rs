@@ -24,6 +24,7 @@ enum Phase {
     Flush,
     Capture,
     Retire(Option<Result<NativeDeviceState, String>>),
+    Approve(CompletedManualBase),
     Finished,
 }
 
@@ -35,10 +36,30 @@ pub struct ManualBaseCapture {
     binding: Binding,
     output_identity: u64,
     source: Option<(AppliedAudioSource, u64, bool)>,
+    original_binding: Option<Binding>,
     identity: hex_plugin_state::Identity,
     presentation: PresentationPlan,
     parameters: Parameters,
     phase: Phase,
+}
+
+/// Constructed only after this module has completed and reaped the actual
+/// scratch capture. Its fields cannot be assembled by adapters or Root callers.
+pub(crate) struct CompletedManualBase {
+    binding: Binding,
+    source: (AppliedAudioSource, u64, bool),
+    state: NativeDeviceState,
+}
+impl CompletedManualBase {
+    pub(crate) fn binding(&self) -> Binding {
+        self.binding
+    }
+    pub(crate) fn state(&self) -> &NativeDeviceState {
+        &self.state
+    }
+    pub(crate) fn matches_source(&self, status: &crate::prepared::Status) -> bool {
+        status.native_parameter_source(self.source.2) == Some((self.source.0, self.source.1))
+    }
 }
 
 impl Hosting {
@@ -124,6 +145,7 @@ impl Hosting {
             binding: scratch,
             output_identity: source.output_identity,
             source: Some((source, transport_epoch, playing)),
+            original_binding: Some(binding),
             identity,
             presentation: original.presentation,
             parameters,
@@ -181,6 +203,7 @@ impl Hosting {
             binding: scratch,
             output_identity: binding.root,
             source: None,
+            original_binding: None,
             identity,
             presentation: original.presentation,
             parameters,
@@ -208,6 +231,25 @@ impl ManualBaseCapture {
             || output.output_identity() != Some(self.output_identity)
         {
             return None;
+        }
+        if let Phase::Approve(captured) = &self.phase {
+            if is_cancelled() || !captured.matches_source(&output.status) {
+                self.phase = Phase::Finished;
+                return Some(Err("native manual base capture cancelled".into()));
+            }
+            let result = output.approve_native_manual_base_on_control(captured);
+            if matches!(result, Err("native preparation is busy")) {
+                return None;
+            }
+            let result = result.map_err(str::to_owned).and_then(|state| {
+                if is_cancelled() || !captured.matches_source(&output.status) {
+                    Err("native manual base capture cancelled".into())
+                } else {
+                    Ok(state)
+                }
+            });
+            self.phase = Phase::Finished;
+            return Some(result);
         }
         if !matches!(self.phase, Phase::Retire(Some(Err(_))))
             && (is_cancelled() || !self.source_matches(&output.status))
@@ -240,8 +282,20 @@ impl ManualBaseCapture {
                 (None, Some(result)) => result,
                 (None, None) => Err("native manual base capture result is unavailable".into()),
             };
-            self.phase = Phase::Finished;
-            return Some(result);
+            match (result, self.original_binding, self.source) {
+                (Ok(state), Some(binding), Some(source)) => {
+                    self.phase = Phase::Approve(CompletedManualBase {
+                        binding,
+                        source,
+                        state,
+                    });
+                    return None;
+                }
+                (result, _, _) => {
+                    self.phase = Phase::Finished;
+                    return Some(result);
+                }
+            }
         }
 
         // Recheck source changes during bounded native I/O without taking
