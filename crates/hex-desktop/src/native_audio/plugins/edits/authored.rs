@@ -39,8 +39,7 @@ impl Plugins {
         }
         let binding = self.sources[index].binding;
         if !original_state(control, binding, cancellation)?.processing_eq(state)
-            && control.native_source_approves_captured_state_on_control(binding, state)
-                != Some(true)
+            && !captured_state_approved(control, binding, state, cancellation)?
         {
             // An actual processor-state replacement keeps its existing fresh
             // preparation path; equal class alone cannot retain this worker.
@@ -48,20 +47,7 @@ impl Plugins {
         }
         for (id, class) in input.authored_plugin_targets(device) {
             check_cancel(cancellation)?;
-            let armed = loop {
-                match armed_selection(control, binding) {
-                    Err(reason)
-                        if matches!(
-                            reason.as_str(),
-                            "native preparation is busy" | "native source is busy"
-                        ) =>
-                    {
-                        poll_control(control)
-                    }
-                    result => break result?,
-                }
-                check_cancel(cancellation)?;
-            };
+            let armed = armed_selection(control, binding, cancellation)?;
             let class = class.ok_or("authored vst3 class is missing")?;
             if armed
                 .as_ref()
