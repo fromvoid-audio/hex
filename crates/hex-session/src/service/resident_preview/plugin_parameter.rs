@@ -70,7 +70,7 @@ pub(super) fn operation(
                 PluginGesturePreparation::Commit(_),
                 PluginParameterGestureResult::Captured(mut capture),
             ) => {
-                let bind = |captured: NativeDeviceState| bind_capture(state, &captured);
+                let bind = |captured: NativeDeviceState| bind_capture(state, captured);
                 capture.before = bind(capture.before.clone())?;
                 capture.after = bind(capture.after.clone())?;
                 PluginParameterCommit::Captured { device, capture }
@@ -125,9 +125,9 @@ pub(super) fn operation(
 
 fn bind_capture(
     state: &NativeDeviceState,
-    captured: &NativeDeviceState,
+    captured: NativeDeviceState,
 ) -> Result<NativeDeviceState, SessionError> {
-    super::super::plugin_state_save::validate_capture(state, captured)
+    super::super::plugin_state_save::validate_capture(state, &captured)
         .map_err(SessionError::Invalid)?;
     captured
         .with_host_metadata_from(state)
@@ -165,7 +165,7 @@ fn override_command(
     }
     Ok(Command::ManualDeviceEdit {
         device,
-        state: bind_capture(source.state(), &capture.base)?,
+        state: bind_capture(source.state(), capture.base.clone())?,
         targets: vec![target],
     })
 }
