@@ -361,6 +361,88 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
             },
         ]
     );
+    // The first query deliberately inspected an extra parameter. It cannot
+    // expand the original worker's fixed armed selection during compilation.
+    f.control
+        .with_native_effect_definition(&[binding], |definition| {
+            let selected = definition.including_unavailable(&[]).unwrap();
+            assert!(
+                selected
+                    .including_canonical_bases(std::slice::from_ref(&bases))
+                    .is_err()
+            );
+            Ok(())
+        })
+        .unwrap();
+    let original_selection = crate::plugin_effects::AuthoredSelection::from_targets([(
+        7,
+        Some(selected.parameters().0.bytes()),
+    )])
+    .unwrap()
+    .unwrap();
+    let mut exact = start_bases(&mut f, &captured_state, &original_selection).unwrap();
+    let exact = poll_bases(&mut f.control, &mut exact, false).unwrap();
+    f.control
+        .with_native_effect_definition(&[binding], |definition| {
+            use hex_lattice::{
+                NativeDeviceDefinition, PreparedProcessorFactory, ProcessorChainOwner,
+                ProcessorInstanceIdentity,
+            };
+            let identity =
+                ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, device.value()).unwrap();
+            let context = hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            };
+            assert!(
+                definition
+                    .prepare_instance_state(identity, exact.canonical_state(), &context,)
+                    .is_err()
+            );
+            let definition = definition
+                .including_unavailable(&[])
+                .unwrap()
+                .including_canonical_bases(std::slice::from_ref(&exact))
+                .unwrap();
+            for unqualified in [&reconstructed, &independent] {
+                assert!(
+                    definition
+                        .prepare_instance_state(identity, unqualified, &context,)
+                        .is_err()
+                );
+            }
+            // Canonical history retains capture correspondence. Runtime-only
+            // processing approval comes from the completed matching facts.
+            let state = definition
+                .prepare_instance_state(identity, &captured_state, &context)
+                .unwrap();
+            assert!(state.shares_payload_storage_with(exact.canonical_state()));
+            let factory = definition
+                .prepare_instance_runtime_factory(identity, &state, &context)
+                .unwrap();
+            assert!(matches!(factory,
+                Some(PreparedProcessorFactory::Foreign(prepared)) if prepared == exact.prepared()
+            ));
+            let source = definition
+                .foreign_automation_source(identity, &captured_state, &context)
+                .unwrap()
+                .unwrap();
+            assert_eq!(source.binding, binding);
+            assert_eq!(source.parameters.len(), 1);
+            assert_eq!(source.parameters[0].id, 7);
+            assert_eq!(source.parameters[0].normalized_base_bits, 0.75f64.to_bits());
+            let original = definition
+                .foreign_automation_source(identity, &initial, &context)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                original.parameters[0].normalized_base_bits,
+                0.25f64.to_bits()
+            );
+            Ok(())
+        })
+        .unwrap();
     let wrong = crate::plugin_effects::AuthoredSelection::from_targets([(
         63,
         Some(original.identity.class.bytes()),

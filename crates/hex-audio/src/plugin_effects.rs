@@ -57,6 +57,12 @@ struct Configuration {
 }
 
 impl Configuration {
+    fn matches_processing_state(&self, state: &NativeDeviceState) -> bool {
+        self.state_verifier
+            .is_some_and(|verifier| verifier.approves_processing(state))
+            || state.processing_eq(&self.state)
+    }
+
     fn reserve_program_revision_on_control(
         &mut self,
     ) -> Result<std::num::NonZeroU64, &'static str> {
@@ -564,7 +570,7 @@ impl NativeEffectCallback {
             && node.device_type == config.state.type_id()
             && node.sample_rate == config.sample_rate
             && node.prepared == config.prepared
-            && node.configuration.processing_eq(&config.state)
+            && config.matches_processing_state(node.configuration)
     }
 }
 impl ForeignProcessors for NativeEffectCallback {

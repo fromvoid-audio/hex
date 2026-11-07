@@ -230,6 +230,75 @@ fn instance_state_provenance_distinguishes_equal_payloads_and_preserves_host_met
     }
 }
 
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn changed_state_matching_requires_the_original_private_processing_approval() {
+    let binding = Binding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    };
+    let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 2).unwrap();
+    let mut effect =
+        NativeEffect::prepare_on_control(identity, original_instance_for_binding(binding)).unwrap();
+    let source = hex_plugin_state::decode(effect.configuration()).unwrap();
+    let changed = hex_plugin_state::encode(hex_plugin_state::State {
+        identity: source.identity,
+        component: Some(&[9; 16]),
+        controller: None,
+    })
+    .unwrap();
+    let captured = effect.approve_captured_state_on_control(&changed).unwrap();
+    let foreign = hex_lattice_contract::Vst3StateAuthority::new_on_control()
+        .unwrap()
+        .approve_processing_on_control(changed.clone())
+        .unwrap();
+    // This unit fixture exercises admission classification. Actual isolated
+    // restoration and metadata qualification have their signed query regression.
+    let qualified = effect
+        .state_authority
+        .approve_processing_on_control(changed.clone())
+        .unwrap();
+    for state in [&changed, &captured, &foreign, &qualified] {
+        let node = ForeignProcessorNode {
+            owner: identity.owner(),
+            device_id: identity.device_id(),
+            device_type: hex_plugin_state::TYPE_ID,
+            sample_rate: 48_000,
+            configuration: state,
+            prepared: effect.prepared(),
+            automation: None,
+            bypassed: false,
+            input_gain: 1.0,
+            output_gain: 1.0,
+        };
+        let check = || {
+            assert_eq!(
+                effect.callback.matches(node),
+                std::ptr::eq(state, &qualified)
+            );
+            assert!(!effect.callback.matches(ForeignProcessorNode {
+                device_id: 3,
+                ..node
+            }));
+            assert!(!effect.callback.matches(ForeignProcessorNode {
+                sample_rate: 44_100,
+                ..node
+            }));
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let measured = allocation_counter::measure(check);
+            assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+            assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        check();
+    }
+    assert!(effect.retire_on_control().unwrap().failure.is_none());
+}
+
 struct Fixture {
     editor: Editor,
     media: BTreeMap<hex_project::AssetId, hex_engine::Audio>,

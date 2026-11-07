@@ -23,8 +23,7 @@ pub struct CapturedCanonicalBases {
     canonical: NativeDeviceState,
     prepared: PreparedForeignProcessor,
     sample_rate: u32,
-    steps: [u32; hex_plugin_host::transport::MAX_PARAMETER_POINTS],
-    values: automation::CanonicalParameterBases,
+    pub(super) capabilities: automation::SourceCapabilities,
 }
 impl CapturedCanonicalBases {
     pub fn binding(&self) -> Binding {
@@ -40,27 +39,17 @@ impl CapturedCanonicalBases {
         self.sample_rate
     }
     pub fn parameters(&self) -> impl Iterator<Item = hex_lattice::ForeignParameterCapability> + '_ {
-        self.values
-            .iter()
-            .zip(&self.steps)
-            .filter_map(|(value, &steps)| {
-                value.map(
-                    |(id, normalized_base_bits)| hex_lattice::ForeignParameterCapability {
-                        id,
-                        steps,
-                        normalized_base_bits,
-                    },
-                )
-            })
+        self.capabilities.parameters().iter().copied()
     }
+
     pub fn source(&self) -> (AppliedAudioSource, u64, bool) {
         self.source
     }
     pub fn values(&self) -> impl Iterator<Item = (u32, f64)> + '_ {
-        self.values
+        self.capabilities
+            .parameters()
             .iter()
-            .flatten()
-            .map(|&(id, bits)| (id, f64::from_bits(bits)))
+            .map(|parameter| (parameter.id, f64::from_bits(parameter.normalized_base_bits)))
     }
 }
 
@@ -241,8 +230,17 @@ impl CanonicalBasesCapture {
             canonical: canonical.clone(),
             prepared: self.prepared,
             sample_rate: self.sample_rate,
-            steps: self.steps,
-            values: self.values,
+            capabilities: match automation::SourceCapabilities::from_canonical(
+                self.selection.parameters().0,
+                &self.values,
+                &self.steps,
+            ) {
+                Ok(capabilities) => capabilities,
+                Err(error) => {
+                    self.phase = Phase::Finished;
+                    return Some(Err(error.into()));
+                }
+            },
         };
         match output.approve_native_canonical_processing_on_control(&facts) {
             Err("native preparation is busy") => None,
