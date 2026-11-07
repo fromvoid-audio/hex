@@ -157,6 +157,7 @@ impl PreparedReverb {
                 [true; 4],
             ),
             output_values: OutputValues::default(),
+            tail_controls_frozen: false,
             rate: self.rate,
             factor: self.factor,
             tank_rate: self.tank_rate,
@@ -341,6 +342,7 @@ pub const RUNTIME_HEAP_ALLOCATIONS: usize = 14;
 pub struct ReverbRuntime {
     output_controls: crate::parameter_binding::Controls<OutputSettings, 4>,
     output_values: OutputValues,
+    tail_controls_frozen: bool,
     rate: u32,
     factor: u32,
     tank_rate: f32,
@@ -375,6 +377,7 @@ impl ReverbRuntime {
         let Self {
             output_controls,
             output_values,
+            tail_controls_frozen,
             rate,
             factor,
             tank_rate,
@@ -403,6 +406,7 @@ impl ReverbRuntime {
         fn inline<T: Copy>(_: &T) {}
         output_controls.check_inline(OutputSettings::check_inline);
         output_values.check_inline();
+        inline(tail_controls_frozen);
         inline(rate);
         inline(factor);
         inline(tank_rate);
@@ -681,8 +685,15 @@ fn scatter(mut output: [f32; 8], rotations: Rotations) -> [f32; 8] {
 impl NativeProcessorRuntime for ReverbRuntime {
     fn process_block(&mut self, frames: &mut [StereoFrame], _: &dyn hex_lattice::DeviceResources) {
         for frame in frames {
-            self.frame(frame, None);
+            if self.tail_controls_frozen {
+                self.frame_outputs(frame, self.output_values);
+            } else {
+                self.frame(frame, None);
+            }
         }
+    }
+    fn begin_output_tail(&mut self) {
+        self.tail_controls_frozen = true;
     }
     fn supports_parameter_automation(&self, parameter: ParameterId) -> bool {
         output_automation::supports(parameter)
@@ -700,6 +711,7 @@ impl NativeProcessorRuntime for ReverbRuntime {
     fn reset(&mut self) {
         self.output_controls.reset();
         self.output_values = OutputValues::default();
+        self.tail_controls_frozen = false;
         self.clear();
         for v in &mut self.parameters {
             *v = Ramp::steady(v.target);
@@ -731,6 +743,8 @@ impl NativeProcessorRuntime for ReverbRuntime {
         };
         self.output_controls.inherit(&old.output_controls);
         self.output_values = old.output_values;
+        // Tail admission belongs to the host, not inherited DSP history. Fresh
+        // canonical successors must ignore overrides from removed lanes.
         for (to, from) in self
             .inputs
             .iter_mut()

@@ -102,6 +102,21 @@ fn reverb_output_automation_callback_publication_history_and_save_reopen()
     measured_block(&mut callback, &mut output);
     assert!(output.iter().flatten().all(|s| s.is_finite()));
     assert!(output.iter().flatten().any(|s| s.abs() > 0.0));
+    control.reclaim();
+    editor.execute(Command::RemoveDevice(device))?;
+    control
+        .publish(Playback::try_from_prepared_with_session(prepare(
+            editor.project(),
+        )?)?)
+        .map_err(|_| "tail handoff")?;
+    measured_block(&mut callback, &mut output);
+    assert!(
+        output
+            .iter()
+            .flatten()
+            .all(|s| s.is_finite() && s.abs() < 1.0)
+    );
+    assert!(output.iter().any(|frame| *frame != [0.0001, -0.0001]));
     control.request_shutdown();
     measured_shutdown(&mut callback, &mut output);
     control.reclaim();
