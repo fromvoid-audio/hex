@@ -79,6 +79,7 @@ fn eq8_gain_automation_callback_publication_history_and_save_reopen() -> Result<
     for bank in 0..5 {
         for band in 0..8 {
             for parameter in [
+                p::enabled(bank, band),
                 p::kind(bank, band),
                 p::frequency(bank, band),
                 p::gain(bank, band),

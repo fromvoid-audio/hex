@@ -2,8 +2,8 @@
 //! A fixed Copy model retains every bank. Derived coefficient targets are staged
 //! before controls install; immutable canonical coefficient Arcs never change.
 use super::*;
-use crate::parameter_binding::{Binding, CHOICE_ENVELOPE, SCALAR_ENVELOPE};
-pub(super) const COUNT: usize = 161;
+use crate::parameter_binding::{BOOLEAN_ENVELOPE, Binding, CHOICE_ENVELOPE, SCALAR_ENVELOPE};
+pub(super) const COUNT: usize = 201;
 pub(super) const GAIN_SLOT: usize = COUNT - 1;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct ControlValues {
@@ -31,10 +31,20 @@ const CHOICE: hex_lattice_contract::ParameterSemantics = hex_lattice_contract::P
     smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
     ..CHOICE_ENVELOPE
 };
+const BOOLEAN: hex_lattice_contract::ParameterSemantics =
+    hex_lattice_contract::ParameterSemantics {
+        smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+        ..BOOLEAN_ENVELOPE
+    };
 macro_rules! band_bindings {
     ($(($bank:literal, $band:literal)),* $(,)?) => {
         const BINDINGS: [Binding<ControlValues>; COUNT] = [
-            $(Binding::choice(
+            $(Binding::boolean(
+                DESCRIPTORS[$bank * 40 + $band * 5], BOOLEAN,
+                |s| s.banks[$bank][$band].enabled,
+                |s, v| s.banks[$bank][$band].enabled = v,
+            ),
+            Binding::choice(
                 DESCRIPTORS[$bank * 40 + $band * 5 + 1], CHOICE,
                 |s| u32::from(s.banks[$bank][$band].kind),
                 |s, v| {
@@ -161,8 +171,45 @@ impl Eq8Runtime {
             .as_ref()
             .unwrap_or(self.target.as_ref())
     }
+    fn enable_admitted(&self, bank: usize, band: usize) -> bool {
+        slot(parameter::enabled(bank, band)).is_some_and(|i| self.controls.admitted(i))
+    }
+    pub(super) fn enabled_layout_compatible(&self, previous: &Self) -> bool {
+        let base = self.controls.base();
+        let old = previous.controls.base();
+        selected(self.mode).into_iter().all(|bank| {
+            (0..BAND_COUNT).all(|band| {
+                base.banks[bank][band].enabled == old.banks[bank][band].enabled
+                    || self.enable_admitted(bank, band)
+                    || previous.enable_admitted(bank, band)
+            })
+        })
+    }
+    pub(super) fn inherit_enabled_bands(&mut self, previous: &Self) {
+        for (channel, bank) in selected(self.mode).into_iter().enumerate() {
+            for band in 0..BAND_COUNT {
+                if self.enable_admitted(bank, band) || previous.enable_admitted(bank, band) {
+                    self.enabled_bands[channel][band] = previous.enabled_bands[channel][band];
+                }
+            }
+        }
+    }
+    pub(super) fn install_enabled_bands(&mut self, banks: &[[Band; BAND_COUNT]; 5]) {
+        for (channel, bank) in selected(self.mode).into_iter().enumerate() {
+            self.enabled_bands[channel] = std::array::from_fn(|i| banks[bank][i].enabled);
+        }
+        if self
+            .audition_request
+            .is_some_and(|s| !self.selection_is_enabled(s))
+        {
+            // Keep the existing outgoing audition and its history until its
+            // ordinary fade reaches zero. New auditions validate the new mask.
+            self.audition_request = None;
+        }
+    }
     pub(super) fn restore_canonical_controls(&mut self) {
         self.controls.reset();
+        self.install_enabled_bands(&self.controls.base().banks);
         if let Some(previous) = self.automated_target.take() {
             if previous != *self.target {
                 self.smooth_remaining = coefficient_smooth_frames(self.sample_rate);
@@ -202,6 +249,7 @@ impl Eq8Runtime {
                     None
                 };
                 self.controls.install(next);
+                self.install_enabled_bands(&next_values.banks);
                 if let Some(target) = target {
                     if target != *self.current_target() {
                         self.smooth_remaining = coefficient_smooth_frames(self.sample_rate);
@@ -381,6 +429,9 @@ mod tests {
         fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
             let f = ((self.start + offset) * 7 + id.value() as usize * 3) % 65;
             let t = f as f32 / 64.0;
+            if id != parameter::OUTPUT_GAIN && (id.value() - 1).is_multiple_of(5) {
+                return Some(ParameterValue::Bool(f.is_multiple_of(2)));
+            }
             if id != parameter::OUTPUT_GAIN && (id.value() - 1) % 5 == 1 {
                 return Some(ParameterValue::Choice((f % 8) as u32));
             }
@@ -440,6 +491,139 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+    #[test]
+    fn every_enable_matches_canonical_filter_handoffs_in_both_directions() {
+        for rate in [8000, 96000] {
+            for mode in 0..3 {
+                let all = all_bands(mode);
+                for bank in selected(decode(&all).unwrap().mode) {
+                    for band in 0..BAND_COUNT {
+                        let id = parameter::enabled(bank, band);
+                        let binding = &BINDINGS[slot(id).unwrap()];
+                        binding.semantics.validate(binding.descriptor).unwrap();
+                        for enabled in [false, true] {
+                            let base = EQ8_DEFINITION
+                                .patch_parameter(&all, id, ParameterValue::Bool(!enabled))
+                                .unwrap();
+                            let mut source = room(&base, rate, false);
+                            source.process_block(&mut signal(513), &R);
+                            let value = ParameterValue::Bool(enabled);
+                            let authored = Values {
+                                ids: vec![id],
+                                value: Some(value),
+                                dense: false,
+                                start: 0,
+                            };
+                            let changed = EQ8_DEFINITION.patch_parameter(&base, id, value).unwrap();
+                            let mut actual = prepare(&base, rate, &[id]).unwrap().runtime();
+                            actual.inherit_history_from(&source);
+                            let mut canonical = room(&changed, rate, false);
+                            canonical.inherit_history_from(&source);
+                            let mut out = signal(513);
+                            let mut reference = out.clone();
+                            actual
+                                .process_automation(&mut out, &authored, false)
+                                .unwrap();
+                            canonical.process_block(&mut reference, &R);
+                            assert_eq!(out, reference, "id {id:?} enabled {enabled} rate {rate}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn enable_handoffs_are_precise_and_audition_cancellation_keeps_its_fade() {
+        for rate in [8000, 96000] {
+            let base = state(0, false);
+            let id = parameter::enabled(0, 1);
+            let held = Values {
+                ids: vec![id],
+                value: Some(ParameterValue::Bool(true)),
+                dense: false,
+                start: 0,
+            };
+            let absent = Values {
+                ids: vec![id],
+                value: None,
+                dense: false,
+                start: 0,
+            };
+            let mut source = prepare(&base, rate, &[id]).unwrap().runtime();
+            source
+                .process_automation(&mut signal(1024), &held, false)
+                .unwrap();
+            let selection = Eq8AuditionSelection::new(1, 0).unwrap();
+            source.set_audition_selection(Some(selection)).unwrap();
+            source
+                .process_automation(&mut signal(256), &held, false)
+                .unwrap();
+            let mut copied = prepare(&base, rate, &[id]).unwrap().runtime();
+            assert!(copied.can_retarget_parameters_from(&source));
+            copied.inherit_history_from(&source);
+            assert_eq!(copied.audition_selection, Some(selection));
+            copied.process_automation(&mut [], &absent, false).unwrap();
+            assert!(copied.selection_is_enabled(selection));
+            // Disabling cancels through the existing 256-frame audition fade;
+            // bypass advances that history while preserving the dry input.
+            let mut first = signal(17);
+            let mut reference = first.clone();
+            let dry = first.clone();
+            copied
+                .process_automation(&mut first, &absent, true)
+                .unwrap();
+            source
+                .process_automation(&mut reference, &absent, false)
+                .unwrap();
+            assert_eq!(first, dry);
+            assert_eq!(copied.audition_request, None);
+            assert_eq!(copied.audition_selection, Some(selection));
+            assert!(copied.audition_mix > 0.0 && copied.audition_mix < 1.0);
+            assert!(copied.set_audition_selection(Some(selection)).is_err());
+            let mut out = signal(239);
+            let mut reference = out.clone();
+            copied.process_automation(&mut out, &absent, false).unwrap();
+            source
+                .process_automation(&mut reference, &absent, false)
+                .unwrap();
+            assert_eq!(out, reference);
+            assert_eq!(copied.audition_selection, None);
+            assert_eq!(copied.audition_mix, 0.0);
+            copied
+                .process_automation(&mut signal(1024), &held, false)
+                .unwrap();
+            let mut live = prepare(&base, rate, &[id]).unwrap().runtime();
+            live.inherit_history_from(&copied);
+            copied.begin_output_tail();
+            out = vec![[0.0; 2]; 64];
+            reference = out.clone();
+            copied.process_block(&mut out, &R);
+            live.process_automation(&mut reference, &held, false)
+                .unwrap();
+            assert_eq!(out, reference);
+            copied.reset();
+            assert!(!copied.selection_is_enabled(selection));
+            assert_eq!(copied.audition_selection, None);
+            let changed = EQ8_DEFINITION
+                .patch_parameter(&base, id, ParameterValue::Bool(true))
+                .unwrap();
+            let mut bound = prepare(&changed, rate, &[id]).unwrap().runtime();
+            assert!(bound.can_retarget_parameters_from(&live));
+            let mut plain = room(&changed, rate, false);
+            assert!(!plain.can_retarget_parameters_from(&room(&base, rate, false)));
+            assert!(plain.can_retarget_parameters_from(&live));
+            plain.inherit_history_from(&live);
+            let other = EQ8_DEFINITION
+                .patch_parameter(
+                    &changed,
+                    parameter::enabled(0, 2),
+                    ParameterValue::Bool(true),
+                )
+                .unwrap();
+            bound = prepare(&other, rate, &[id]).unwrap().runtime();
+            assert!(!bound.can_retarget_parameters_from(&live));
         }
     }
     #[test]
@@ -753,6 +937,7 @@ mod tests {
             (parameter::gain(0, 0), ParameterValue::Float(25.0)),
             (parameter::kind(0, 0), ParameterValue::Choice(8)),
             (parameter::kind(0, 0), ParameterValue::Float(0.0)),
+            (parameter::enabled(0, 0), ParameterValue::Float(0.0)),
         ] {
             let mut actual = prepare(&base, 8000, &[id]).unwrap().runtime();
             let source = Values {
@@ -841,7 +1026,13 @@ mod tests {
                                     id: ParameterId,
                                     _: usize,
                                 ) -> Option<ParameterValue> {
-                                    self.0.value_at(id, 0)
+                                    if id != parameter::OUTPUT_GAIN
+                                        && (id.value() - 1).is_multiple_of(5)
+                                    {
+                                        Some(ParameterValue::Bool(true))
+                                    } else {
+                                        self.0.value_at(id, 0)
+                                    }
                                 }
                             }
                             runtime

@@ -2,10 +2,9 @@
 //!
 //! Canonical coefficients are prepared on control from the RBJ audio-EQ
 //! cookbook equations. The callback retains fixed coefficient banks and
-//! transposed-direct-form-II histories. Shared gain, frequency, Q and filter-type automation
+//! transposed-direct-form-II histories. Shared gain, frequency, Q, enable and filter-type automation
 //! designs active-bank targets in fixed inline storage and reuses the rate-scaled
-//! coefficient/gain smoother. Band enable and routing automation remain
-//! unsupported. Compatible copies retain admitted trajectories; missing views
+//! coefficient/gain smoother. Routing automation remains unsupported. Compatible copies retain admitted trajectories; missing views
 //! restore canonical controls, and detached tails freeze their targets.
 mod automation;
 use hex_lattice::{
@@ -825,10 +824,12 @@ impl Eq8Runtime {
         self.audition_request = None;
         self.audition_mix = 0.0;
         self.mode_fade = ModeFade::INACTIVE;
+        self.install_enabled_bands(&self.controls.base().banks);
     }
 
     pub fn inherit_history_from(&mut self, previous: &Self) -> bool {
         if self.sample_rate == previous.sample_rate && self.mode == previous.mode {
+            self.inherit_enabled_bands(previous);
             if (self.band_automation_admitted || self.controls.admitted(automation::GAIN_SLOT))
                 && (previous.band_automation_admitted
                     || previous.controls.admitted(automation::GAIN_SLOT))
@@ -1077,14 +1078,16 @@ impl NativeProcessorRuntime for Eq8Runtime {
     /// A channel-mode change retargets through `ModeFade` instead of a reset,
     /// so session playback keeps one chain rather than detaching the old
     /// suffix as a ringing tail beside a fresh EQ. Within one mode, the
-    /// enabled-band set must still match.
+    /// canonical enabled-band set must match except where either runtime has
+    /// admitted that exact enable control. Its fixed-stage smoother owns the
+    /// transition, including lane removal and canonical fallback.
     fn can_retarget_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
         previous
             .as_any()
             .downcast_ref::<Self>()
             .is_some_and(|previous| {
                 self.sample_rate == previous.sample_rate
-                    && (self.mode != previous.mode || self.enabled_bands == previous.enabled_bands)
+                    && (self.mode != previous.mode || self.enabled_layout_compatible(previous))
             })
     }
     fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {
