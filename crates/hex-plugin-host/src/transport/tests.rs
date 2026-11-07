@@ -439,7 +439,7 @@ fn bounded_input_validation_and_queue_independent_stop() {
                         .push(InputRequest {
                             block: Block::empty(BINDING, 8),
                             parameter_capacity: MAX_PARAMETER_POINTS,
-                            authored: false,
+                            authored_program: None,
                             manual_origin: None,
                         })
                         .unwrap();
@@ -454,7 +454,7 @@ fn bounded_input_validation_and_queue_independent_stop() {
                         .push(InputRequest {
                             block: Block::empty(BINDING, 8),
                             parameter_capacity: MAX_PARAMETER_POINTS,
-                            authored: false,
+                            authored_program: None,
                             manual_origin: None,
                         })
                         .unwrap();
@@ -1166,4 +1166,60 @@ fn malformed_or_late_manual_marker_cannot_escape_its_reply() {
     let on_time = worker.receive().unwrap().unwrap();
     worker.complete(on_time).unwrap();
     stage(&mut callback);
+}
+
+#[test]
+fn received_program_snapshot_is_coherent_during_worker_slot_reuse() {
+    use std::sync::{Barrier, atomic::AtomicBool};
+    let (control, _callback, _worker) = channel(BINDING, 8).unwrap();
+    assert_eq!(control.received_program(), None);
+    let barrier = Barrier::new(2);
+    let finished = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let revoked = &control.revoked;
+        scope.spawn(|| {
+            for sequence in 0..32768 {
+                revoked
+                    .record_received_program(sequence, NonZeroU64::new(sequence + 17))
+                    .unwrap();
+                if sequence == 1024 {
+                    barrier.wait();
+                    barrier.wait();
+                }
+            }
+            finished.store(true, Release);
+        });
+        barrier.wait();
+        assert_eq!(
+            control.received_program(),
+            Some(ReceivedProgram {
+                binding: BINDING,
+                sequence: 1024,
+                program: NonZeroU64::new(1041)
+            })
+        );
+        barrier.wait();
+        while !finished.load(Acquire) {
+            if let Some(snapshot) = control.received_program() {
+                assert_eq!(snapshot.binding, BINDING);
+                assert_eq!(snapshot.program.unwrap().get(), snapshot.sequence + 17);
+            }
+            std::hint::spin_loop();
+        }
+    });
+    assert_eq!(
+        control.received_program(),
+        Some(ReceivedProgram {
+            binding: BINDING,
+            sequence: 32767,
+            program: NonZeroU64::new(32784)
+        })
+    );
+    control
+        .revoked
+        .record_received_program(32768, None)
+        .unwrap();
+    assert_eq!(control.received_program().unwrap().program, None);
+    control.revoke();
+    assert_eq!(control.received_program(), None);
 }

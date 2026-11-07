@@ -382,9 +382,10 @@ fn transport_runner_with_setup(
                 Ok(Some(hex_plugin_host::transport::WorkerRequest {
                     block,
                     parameter_capacity,
-                    authored,
+                    authored_program,
                     manual_origin_available,
                 })) => {
+                    let authored = authored_program.is_some();
                     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
                     let _ = (parameter_capacity, manual_origin_available);
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -579,6 +580,21 @@ impl NativeWorker {
             )
         })
     }
+    /// Actual original request pickup, distinct from successful processing.
+    /// The copied observation grants no graph, canonical or final-output ACK.
+    pub fn received_program_on_control(&self) -> Option<ReceivedProgram> {
+        self.transport_is_live_on_control()
+            .then(|| self.reaper.control.received_program())
+            .flatten()
+    }
+
+    /// Latest pickup only when its matching reply was successfully published
+    /// by this native joining worker. Final Main delivery remains separate.
+    pub fn processed_program_on_control(&self) -> Option<ReceivedProgram> {
+        let received = self.received_program_on_control()?;
+        (self.reaper.completed_blocks() > received.sequence).then_some(received)
+    }
+
     /// Diagnostic publication progress only; never native/root/graph readiness.
     pub fn published_blocks_on_control(&self) -> u64 {
         self.reaper.completed_blocks()

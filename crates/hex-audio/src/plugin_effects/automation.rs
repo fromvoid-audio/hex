@@ -293,7 +293,7 @@ mod retained_tests {
         stage(&mut callback, 3, 5, &third);
         for expected in [0.25, 0.75] {
             let request = worker.receive_request().unwrap().unwrap();
-            assert!(request.authored);
+            assert!(request.authored_program.is_some());
             assert_eq!(request.parameter_capacity, 62);
             assert_eq!(
                 request.block.parameters.as_slice(),

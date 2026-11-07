@@ -79,6 +79,7 @@ struct Revocation {
     revoked: AtomicBool,
     callback_fault: AtomicU8,
     received_prefix: AtomicU64,
+    received_programs: [AtomicU64; 2],
     processed_prefix: AtomicU64,
     missed_reply: AtomicU64,
     missed_phase: AtomicU8,
@@ -99,6 +100,28 @@ impl Revocation {
             .callback_fault
             .compare_exchange(0, fault as u8, Release, Relaxed);
         self.revoke();
+    }
+
+    fn record_received_program(
+        &self,
+        sequence: u64,
+        program: Option<NonZeroU64>,
+    ) -> Result<(), Fault> {
+        let prefix = sequence.checked_add(1).ok_or(Fault::Exhausted)?;
+        self.received_programs[(sequence & 1) as usize]
+            .store(program.map_or(0, NonZeroU64::get), Release);
+        self.received_prefix.store(prefix, Release);
+        Ok(())
+    }
+
+    fn received_program(&self) -> Option<(u64, Option<NonZeroU64>)> {
+        let prefix = self.received_prefix.load(Acquire);
+        let sequence = prefix.checked_sub(1)?;
+        // The next request writes the other slot. Reusing this slot requires
+        // publishing an intermediate prefix first. Acquire on the slot makes
+        // that prefix visible to the final prefix check, rejecting a torn read.
+        let key = self.received_programs[(sequence & 1) as usize].load(Acquire);
+        (prefix == self.received_prefix.load(Acquire)).then_some((sequence, NonZeroU64::new(key)))
     }
 
     fn record_deadline_miss(&self, sequence: u64) {
@@ -378,7 +401,17 @@ impl Block {
 /// Queue-independent revocation. Retain this control lease through worker join
 /// and callback terminal return; neither endpoint may be destroyed on callback.
 pub struct Control {
+    binding: Binding,
     revoked: Arc<Revocation>,
+}
+
+/// Actual pickup of one accepted original transport request. This is neither
+/// successful SDK processing, final Main delivery nor publication authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReceivedProgram {
+    pub binding: Binding,
+    pub sequence: u64,
+    pub program: Option<NonZeroU64>,
 }
 impl Control {
     pub fn revoke(&self) {
@@ -387,6 +420,21 @@ impl Control {
     pub fn is_revoked(&self) -> bool {
         self.revoked.is_revoked()
     }
+    /// One bounded coherent observation from this constructor-paired worker.
+    /// A concurrent publication or revocation returns no observation; retry on
+    /// a later control poll. No input/current-graph key is substituted.
+    pub fn received_program(&self) -> Option<ReceivedProgram> {
+        if self.is_revoked() {
+            return None;
+        }
+        let (sequence, program) = self.revoked.received_program()?;
+        (!self.is_revoked()).then_some(ReceivedProgram {
+            binding: self.binding,
+            sequence,
+            program,
+        })
+    }
+
     /// Retained observation for the terminal MissingOutput of this exact pair.
     pub fn deadline_miss(&self) -> Option<DeadlineMiss> {
         let worker_phase = match self.revoked.missed_phase.load(Acquire) {
@@ -446,14 +494,15 @@ struct InputRequest {
     // Minimum spare capacity of every physical callback contributing to this
     // quantum. Control-originated input may consume it only after acceptance.
     parameter_capacity: usize,
-    authored: bool,
+    authored_program: Option<NonZeroU64>,
     manual_origin: Option<ManualParameterOrigin>,
 }
 
 pub struct WorkerRequest {
     pub block: Block,
     pub parameter_capacity: usize,
-    pub authored: bool,
+    /// Program frozen at the accepted physical quantum opening.
+    pub authored_program: Option<NonZeroU64>,
     /// The exact accepted quantum starts on a known compensated Arrangement
     /// origin. The copied clock stays with the transport's in-flight request.
     /// This observation grants no publication or parameter input authority.
@@ -649,6 +698,7 @@ fn channel_with_policy(
     let empty = Block::empty(binding, quantum);
     Ok((
         Control {
+            binding,
             revoked: Arc::clone(&revoked),
         },
         Callback {
@@ -1137,7 +1187,7 @@ impl Callback {
                 stage.request = Some(InputRequest {
                     block: stage.state.input,
                     parameter_capacity: stage.state.parameter_capacity,
-                    authored: authored.is_some(),
+                    authored_program: self.authored_origins.program,
                     manual_origin: stage.state.input_manual_origin,
                 });
             }
@@ -1272,7 +1322,9 @@ impl Worker {
     /// still be checked before adding input.
     pub fn receive_with_parameter_capacity(&mut self) -> Result<Option<(Block, usize)>, Fault> {
         match self.receive_request()? {
-            Some(request) if request.authored => self.fail(Fault::InvalidParameters),
+            Some(request) if request.authored_program.is_some() => {
+                self.fail(Fault::InvalidParameters)
+            }
             Some(request) => Ok(Some((request.block, request.parameter_capacity))),
             None => Ok(None),
         }
@@ -1297,16 +1349,19 @@ impl Worker {
         if let Err(fault) = block.valid(self.binding, self.quantum, self.sequence) {
             return self.fail(fault);
         }
-        self.revoked
-            .received_prefix
-            .store(self.sequence.saturating_add(1), Release);
+        if let Err(fault) = self
+            .revoked
+            .record_received_program(self.sequence, request.authored_program)
+        {
+            return self.fail(fault);
+        }
         self.in_flight = Some(InFlight {
             manual_origin: request.manual_origin,
         });
         Ok(Some(WorkerRequest {
             block,
             parameter_capacity: request.parameter_capacity,
-            authored: request.authored,
+            authored_program: request.authored_program,
             manual_origin_available: request.manual_origin.is_some(),
         }))
     }

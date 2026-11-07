@@ -222,7 +222,7 @@ mod tests {
             }
             assert_eq!(program.calls.get(), 1);
             let request = worker.receive_request().unwrap().unwrap();
-            assert!(request.authored);
+            assert!(request.authored_program.is_some());
             assert_eq!(
                 request.parameter_capacity,
                 super::super::MAX_PARAMETER_POINTS - request.block.parameters.as_slice().len()
@@ -343,7 +343,7 @@ mod tests {
     #[test]
     fn graph_revisions_keep_the_opening_step_or_linear_program_until_next_quantum() {
         for linear in [false, true] {
-            let (_control, mut callback, mut worker) = channel(binding(), 8).unwrap();
+            let (control, mut callback, mut worker) = channel(binding(), 8).unwrap();
             let programs = [1, 2, 3].map(|key| RetainedProgram {
                 current: NonZeroU64::new(key).unwrap(),
                 linear,
@@ -402,8 +402,24 @@ mod tests {
                     assert!(worker.receive_request().unwrap().is_none());
                     continue;
                 }
+                if part == 3 {
+                    assert_eq!(
+                        control.received_program(),
+                        None,
+                        "queue admission is not worker pickup"
+                    );
+                }
                 let request = worker.receive_request().unwrap().unwrap();
-                assert!(request.authored);
+                let expected_key = NonZeroU64::new(if part == 3 { 1 } else { 3 }).unwrap();
+                assert_eq!(request.authored_program, Some(expected_key));
+                assert_eq!(
+                    control.received_program(),
+                    Some(crate::transport::ReceivedProgram {
+                        binding: binding(),
+                        sequence: if part == 3 { 0 } else { 1 },
+                        program: Some(expected_key)
+                    })
+                );
                 assert_eq!(request.parameter_capacity, 0);
                 let key = if part == 3 { 1.0 } else { 3.0 };
                 let first = if part == 3 { 0 } else { 8 };

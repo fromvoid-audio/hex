@@ -571,6 +571,8 @@ fn actual_authored_parameter_input_refuses_competing_host_point_without_replacin
         .arm_authored_parameter_metadata_on_control(facts)
         .unwrap();
     let (mut owner, mut endpoint) = NativeWorker::start_on_control(instance).unwrap();
+    assert_eq!(owner.received_program_on_control(), None);
+    assert_eq!(owner.processed_program_on_control(), None);
     let request = begin_change(&mut owner, 7, 0.75);
     // Force the first quantum to encounter the control mailbox. The native
     // worker must defer the request, while authored audio still progresses.
@@ -623,6 +625,13 @@ fn actual_authored_parameter_input_refuses_competing_host_point_without_replacin
             assert!(Instant::now() < until, "authored collision quantum");
             thread::yield_now();
         }
+        let expected = ReceivedProgram {
+            binding: owner.binding(),
+            sequence,
+            program: Some(NonZeroU64::MIN),
+        };
+        assert_eq!(owner.received_program_on_control(), Some(expected));
+        assert_eq!(owner.processed_program_on_control(), Some(expected));
         if sequence == 0 {
             assert_eq!(output, [[0.0; 2]; 8]);
             drop(contention.take());
@@ -652,7 +661,10 @@ fn actual_authored_parameter_input_refuses_competing_host_point_without_replacin
             .unwrap()[8..12],
         &2.0_f32.to_le_bytes()
     );
+    assert_eq!(owner.processed_program_on_control().unwrap().program, None);
     owner.revoke_on_control();
+    assert_eq!(owner.received_program_on_control(), None);
+    assert_eq!(owner.processed_program_on_control(), None);
     let retired = owner.retire_on_control().unwrap();
     assert!(retired.failure.is_none() && retired.native.status.success());
 }
