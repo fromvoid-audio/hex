@@ -110,7 +110,7 @@ pub(super) fn overlay(
             "audio clip state references a non-audio clip",
         ));
     }
-    Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+    Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }
 pub(crate) fn refuse_legacy_audio(project: &Project) -> Result<(), StorageError> {
     if project.tracks().iter().flat_map(|t|t.clips()).any(|c|c.gain()!=hex_project::ClipGain::UNITY || c.audio_edit().is_some() || c.fade().has_shape())
@@ -166,7 +166,13 @@ impl DocumentV25 {
         })
     }
     pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-        let doc: Self = serde_json::from_slice(bytes)?;
+        Self::decode_document(serde_json::from_slice(bytes)?)
+    }
+    /// Decode the envelope an upper migration layer already parsed and adapted.
+    pub(super) fn decode_value(value: serde_json::Value) -> Result<Project, StorageError> {
+        Self::decode_document(serde_json::from_value(value)?)
+    }
+    fn decode_document(doc: Self) -> Result<Project, StorageError> {
         if doc.format != "hex-project" || doc.version != 25 {
             return Err(StorageError::Invalid(
                 "unsupported project format or version",

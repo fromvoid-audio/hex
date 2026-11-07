@@ -157,7 +157,7 @@ impl DocumentV22 {
     }
     pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         let doc: Self = serde_json::from_slice(bytes)?;
-        Project::from_snapshot(doc.into_snapshot()?).map_err(|e| StorageError::Invalid(e.0))
+        Project::from_legacy_snapshot(doc.into_snapshot()?).map_err(|e| StorageError::Invalid(e.0))
     }
     pub(super) fn into_snapshot(self) -> Result<hex_project::Snapshot, StorageError> {
         let doc = self;

@@ -2,7 +2,7 @@
 //! finite outer PCM as filter context; tempo and occurrence seams never create
 //! new isolated inputs. Only the actual finite base edges are zero padded.
 use super::*;
-use hex_project::{AudioClipEdit, AudioViewOccurrence, AudioViewProjection, TempoMap};
+use hex_project::{AudioClipEdit, AudioViewOccurrence, AudioViewProjection};
 const Q32: i128 = 1_i128 << 32;
 pub(super) struct Span {
     pub(super) first: u64,
@@ -12,36 +12,32 @@ pub(super) struct Span {
 pub(super) fn prepare(
     projection: &AudioViewProjection<'_>,
     edit: &AudioClipEdit,
-    clip: &hex_project::Clip,
-    project_tempo: &TempoMap,
     occurrence: AudioViewOccurrence,
 ) -> Result<Option<Span>, Invalid> {
-    let view = edit
-        .content_view
+    let window = projection
+        .content_window()
         .ok_or(Invalid("directed audio view missing"))?;
-    let begin = occurrence.elapsed_start.max(view.window.start);
-    let end = occurrence.elapsed_end.min(view.window.end);
+    let begin = occurrence.elapsed_start.max(window.start);
+    let end = occurrence.elapsed_end.min(window.end);
     if begin >= end {
         return Ok(None);
     }
-    let (a, b) = if view.window.reversed {
-        (view.window.end - end, view.window.end - begin)
+    let (a, b) = if window.reversed {
+        (window.end - end, window.end - begin)
     } else {
-        (begin - view.window.start, end - view.window.start)
+        (begin - window.start, end - window.start)
     };
-    let first = projection.frame_at_elapsed(a)?.max(clip.start());
-    let last = projection.frame_at_elapsed(b)?.min(
-        clip.start()
-            .checked_add(clip.duration())
-            .ok_or(Invalid("directed output end overflow"))?,
-    );
+    let first = projection
+        .frame_at_elapsed(a)?
+        .max(projection.outer_frame_bounds().0);
+    let last = projection
+        .frame_at_elapsed(b)?
+        .min(projection.outer_frame_bounds().1);
     if first >= last {
         return Ok(None);
     }
-    let tempo = edit.effective_tempo(project_tempo);
-    let current = edit
-        .reference_start_raw()
-        .ok_or(Invalid("directed musical reference missing"))?;
+    let tempo = projection.placement_tempo();
+    let current = projection.placement_reference();
     let mut boundaries = Vec::new();
     boundaries
         .try_reserve_exact(
@@ -62,10 +58,10 @@ pub(super) fn prepare(
         }
         let source = i128::from(point.beat().raw()) - projection.base_reference_start();
         if source > i128::from(begin) && source < i128::from(end) {
-            let elapsed = if view.window.reversed {
-                i128::from(view.window.end) - source
+            let elapsed = if window.reversed {
+                i128::from(window.end) - source
             } else {
-                source - i128::from(view.window.start)
+                source - i128::from(window.start)
             };
             boundaries.push(
                 u64::try_from(elapsed).map_err(|_| Invalid("directed reflected seam overflow"))?,
@@ -75,14 +71,14 @@ pub(super) fn prepare(
     boundaries.sort_unstable();
     boundaries.dedup();
     let at_elapsed = |elapsed: u64| -> Result<i128, Invalid> {
-        let read = if view.window.reversed {
-            view.window.end - elapsed
+        let read = if window.reversed {
+            window.end - elapsed
         } else {
-            view.window.start + elapsed
+            window.start + elapsed
         };
         let frame = projection.base_frame_q32_at_elapsed(read)?;
         let (base_start, base_end) = base_bounds(projection, edit)?;
-        if view.window.reversed {
+        if window.reversed {
             i128::from(base_end)
                 .checked_mul(Q32)
                 .and_then(|n| n.checked_sub(frame))

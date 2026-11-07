@@ -13,13 +13,56 @@ struct PeriodicSpan {
     start: u64,
 }
 
+/// Admit one track's periodic stream. With `steals_releasing_voices` the
+/// declared slots bound held density only. The returned envelope still counts
+/// releases, because live input shares the per-track proof ledger with them.
 pub(super) fn admit_track(
     track: &Track,
     region: LoopRegion,
     release_tail_frames: u64,
     declared_max_events: usize,
     declared_max_voices: usize,
-) -> Result<(), SessionPlaybackError> {
+    steals_releasing_voices: bool,
+) -> Result<usize, SessionPlaybackError> {
+    admit_streams(
+        &[track],
+        region,
+        release_tail_frames,
+        declared_max_events,
+        declared_max_voices,
+        steals_releasing_voices,
+    )
+}
+
+/// Admit all contributors that feed one shared source runtime as a single
+/// periodic voice/event stream. The returned voice envelope includes release
+/// spans that cross transport seams.
+pub(super) fn admit_tracks(
+    tracks: &[&Track],
+    region: LoopRegion,
+    release_tail_frames: u64,
+    declared_max_events: usize,
+    declared_max_voices: usize,
+) -> Result<usize, SessionPlaybackError> {
+    // Shared sources keep the conservative releases-included envelope.
+    admit_streams(
+        tracks,
+        region,
+        release_tail_frames,
+        declared_max_events,
+        declared_max_voices,
+        false,
+    )
+}
+
+fn admit_streams(
+    tracks: &[&Track],
+    region: LoopRegion,
+    release_tail_frames: u64,
+    declared_max_events: usize,
+    declared_max_voices: usize,
+    steals_releasing_voices: bool,
+) -> Result<usize, SessionPlaybackError> {
     let period = region
         .end()
         .checked_sub(region.start())
@@ -32,72 +75,74 @@ pub(super) fn admit_track(
     let mut intro = Vec::new();
     let mut repeats = Vec::new();
     let mut arithmetic_failure = false;
-    track
-        .for_each_mutable_midi_span(0, region.end(), |span| {
-            if span.start >= region.end() {
-                return;
-            }
-            let gate_end = span.gate_end.min(region.end());
-            if span.start > gate_end {
-                arithmetic_failure = true;
-                return;
-            }
-            let Some(end) = gate_end.checked_add(release_tail_frames) else {
-                arithmetic_failure = true;
-                return;
-            };
-            push_bounded(
-                &mut intro,
-                crate::midi_template::TransportDensitySpan {
-                    start: span.start,
-                    gate_end,
-                    raw_end: u128::from(end),
-                },
-                &mut span_overflow,
-                &mut allocation_failure,
-            );
-            let chased_at_start = span.start < region.start() && span.gate_end > region.start();
-            if span.start < region.start() && !chased_at_start {
-                return;
-            }
-            let repeat_start = if chased_at_start {
-                region.start()
-            } else {
-                span.start
-            };
-            let Some(gate_end_relative) = gate_end.checked_sub(region.start()) else {
-                arithmetic_failure = true;
-                return;
-            };
-            let repeat_start = repeat_start - region.start();
-            if repeat_start > gate_end_relative || gate_end_relative > period {
-                arithmetic_failure = true;
-                return;
-            }
-            let Some(repeat_end) = gate_end_relative.checked_add(release_tail_frames) else {
-                arithmetic_failure = true;
-                return;
-            };
-            push_bounded(
-                &mut onsets,
-                PeriodicSpan {
-                    start: repeat_start,
-                },
-                &mut span_overflow,
-                &mut allocation_failure,
-            );
-            push_bounded(
-                &mut repeats,
-                crate::midi_template::TransportDensitySpan {
-                    start: repeat_start,
-                    gate_end: gate_end_relative,
-                    raw_end: u128::from(repeat_end),
-                },
-                &mut span_overflow,
-                &mut allocation_failure,
-            );
-        })
-        .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
+    for track in tracks {
+        track
+            .for_each_mutable_midi_span(0, region.end(), |span| {
+                if span.start >= region.end() {
+                    return;
+                }
+                let gate_end = span.gate_end.min(region.end());
+                if span.start > gate_end {
+                    arithmetic_failure = true;
+                    return;
+                }
+                let Some(end) = gate_end.checked_add(release_tail_frames) else {
+                    arithmetic_failure = true;
+                    return;
+                };
+                push_bounded(
+                    &mut intro,
+                    crate::midi_template::TransportDensitySpan {
+                        start: span.start,
+                        gate_end,
+                        raw_end: u128::from(end),
+                    },
+                    &mut span_overflow,
+                    &mut allocation_failure,
+                );
+                let chased_at_start = span.start < region.start() && span.gate_end > region.start();
+                if span.start < region.start() && !chased_at_start {
+                    return;
+                }
+                let repeat_start = if chased_at_start {
+                    region.start()
+                } else {
+                    span.start
+                };
+                let Some(gate_end_relative) = gate_end.checked_sub(region.start()) else {
+                    arithmetic_failure = true;
+                    return;
+                };
+                let repeat_start = repeat_start - region.start();
+                if repeat_start > gate_end_relative || gate_end_relative > period {
+                    arithmetic_failure = true;
+                    return;
+                }
+                let Some(repeat_end) = gate_end_relative.checked_add(release_tail_frames) else {
+                    arithmetic_failure = true;
+                    return;
+                };
+                push_bounded(
+                    &mut onsets,
+                    PeriodicSpan {
+                        start: repeat_start,
+                    },
+                    &mut span_overflow,
+                    &mut allocation_failure,
+                );
+                push_bounded(
+                    &mut repeats,
+                    crate::midi_template::TransportDensitySpan {
+                        start: repeat_start,
+                        gate_end: gate_end_relative,
+                        raw_end: u128::from(repeat_end),
+                    },
+                    &mut span_overflow,
+                    &mut allocation_failure,
+                );
+            })
+            .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
+    }
     if arithmetic_failure {
         return Err(SessionPlaybackError::ArithmeticOverflow);
     }
@@ -138,20 +183,27 @@ pub(super) fn admit_track(
     }
     let first_seam_edge_max =
         maximum_first_seam_event_edges(&intro, &repeated_edges, first_pass, period, event_limit)?;
-    if first_seam_edge_max > event_limit
-        || crate::midi_template::admit_transport_loop_density(
-            &intro,
-            &repeats,
-            first_pass,
-            period,
-            release_tail_frames,
+    let max_voices = crate::midi_template::admit_transport_loop_density(
+        &intro,
+        &repeats,
+        first_pass,
+        period,
+        release_tail_frames,
+    )
+    .map_err(|_| SessionPlaybackError::MutableInstrumentLoopDensity)?;
+    let admitted_voices = if steals_releasing_voices {
+        crate::midi_template::admit_held_transport_loop_density(
+            &intro, &repeats, first_pass, period,
         )
         .map_err(|_| SessionPlaybackError::MutableInstrumentLoopDensity)?
-            > voice_limit
-    {
+    } else {
+        max_voices
+    };
+    if first_seam_edge_max > event_limit || admitted_voices > voice_limit {
         return Err(SessionPlaybackError::MutableInstrumentLoopDensity);
     }
-    Ok(())
+    // The envelope keeps releases: live input shares the proof ledger.
+    Ok(max_voices)
 }
 
 fn maximum_linear_event_edges(

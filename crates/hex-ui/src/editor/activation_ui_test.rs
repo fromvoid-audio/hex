@@ -59,7 +59,7 @@ fn split_midi_trim_preview_keeps_the_retained_source_window() {
     let tail = &project.track(track).unwrap().midi_clips()[2];
     let trim = tail.preview_edge_trim(TrimEdge::Right, b(12)).unwrap();
     assert_eq!(
-        super::tracks::midi_trim_note_shapes(project, tail, trim, 192_000, 288_000),
+        super::tracks::midi_trim_note_shapes(project, tail, trim, 192_000, 288_000, 0),
         vec![(0.0, 0.5, 60), (0.75, 0.25, 60)]
     );
 }
@@ -202,6 +202,16 @@ fn activation_session_cells_and_typing_focus_do_not_fall_back_to_track(cx: &mut 
             cx.notify();
             clip
         });
+        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        visual.simulate_keystrokes("a");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+            assert!(
+                !v.automation_view.enabled,
+                "console focus does not toggle arranger mode"
+            );
+        });
         visual.simulate_keystrokes("c");
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
@@ -222,6 +232,108 @@ fn activation_session_cells_and_typing_focus_do_not_fall_back_to_track(cx: &mut 
     });
     visual.run_until_parked();
     visual.simulate_keystrokes("a c 0");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
+}
+
+#[gpui::test]
+fn activation_header_mute_applies_selection_atomically_and_rejects_deselected_focus(
+    cx: &mut TestAppContext,
+) {
+    use gpui::Modifiers;
+    use hex_project::Command;
+    use hex_session::service::Request;
+    let (handle, editor, _, _, _files) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::AddTrack {
+            name: "empty".into()
+        })));
+    });
+    pump(&editor, &mut visual);
+    let tracks = editor.read_with(&visual, |v, _| {
+        v.state
+            .as_ref()
+            .unwrap()
+            .project
+            .tracks()
+            .iter()
+            .map(|t| t.id())
+            .collect::<Vec<_>>()
+    });
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::Mute {
+            track: tracks[2],
+            muted: true
+        })));
+    });
+    pump(&editor, &mut visual);
+    let names = [tracks[0], tracks[2]]
+        .map(|id| Box::leak(format!("track-name-{}", id.value()).into_boxed_str()) as &'static str);
+    let first = visual.debug_bounds(names[0]).unwrap().center();
+    let last = visual.debug_bounds(names[1]).unwrap().center();
+    visual.simulate_click(first, Modifiers::default());
+    visual.simulate_click(
+        last,
+        Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        },
+    );
+    visual.run_until_parked();
+    let before = editor.read_with(&visual, |v, _| {
+        assert_eq!(v.selected_track_ids(), [tracks[0], tracks[2]]);
+        v.state.as_ref().unwrap().project.snapshot()
+    });
+    visual.simulate_keystrokes("c");
+    pump(&editor, &mut visual);
+    let muted = editor.read_with(&visual, |v, _| {
+        let p = &v.state.as_ref().unwrap().project;
+        assert!(p.track(tracks[0]).unwrap().muted());
+        assert!(!p.track(tracks[1]).unwrap().muted());
+        assert!(p.track(tracks[2]).unwrap().muted());
+        p.snapshot()
+    });
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
+    visual.simulate_keystrokes("cmd-shift-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), muted)
+    });
+    visual.simulate_keystrokes("0");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .tracks()
+                .iter()
+                .all(|t| !t.muted())
+        )
+    });
+    // Command-click leaves keyboard focus on a header excluded from membership.
+    visual.simulate_click(
+        last,
+        Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        },
+    );
+    visual.run_until_parked();
+    let before = editor.read_with(&visual, |v, _| {
+        assert_eq!(v.selected_track_ids(), [tracks[0]]);
+        v.state.as_ref().unwrap().project.snapshot()
+    });
+    visual.simulate_keystrokes("c");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)

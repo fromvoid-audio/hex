@@ -160,6 +160,9 @@ pub struct DelayPair {
 }
 
 impl DelayPair {
+    pub(super) fn history_is_silent(&self) -> bool {
+        self.ring.committed.iter().all(|frame| *frame == [0.0; 2])
+    }
     pub(super) fn owned_data_bytes(&self) -> Result<usize, CompensationError> {
         let Self {
             ring,

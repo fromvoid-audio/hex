@@ -43,9 +43,48 @@ pub(crate) fn render_with_config(
         request.start(),
         request.frames(),
         request.signal().clone(),
+        request.format(),
         request.control(),
         request.publication(),
         &mut pages,
+    )
+}
+/// [`hex_session::StreamedBouncer`]: one isolated bounce item through the same
+/// independent verification, bounded pool and joining worker as export. File
+/// facts come from the document's captured bindings; the worker is joined and
+/// every file re-hashed before the bounce file is published. Nothing native is
+/// borrowed, so a bounce never waits on or disturbs the playing transport.
+pub(super) fn bounce(
+    request: &hex_session::StreamedBounceRequest<'_>,
+) -> Result<ExportReport, String> {
+    bounce_with_config(request, StreamConfig::initial()).map_err(|error| error.to_string())
+}
+
+pub(crate) fn bounce_with_config(
+    request: &hex_session::StreamedBounceRequest<'_>,
+    config: StreamConfig,
+) -> Result<ExportReport, ExportError> {
+    check(request.control())?;
+    let mut pages = VerifiedPages::capture_files(
+        request.prepared(),
+        |key| {
+            request.file(key.asset()).ok_or(ExportError::Invalid(
+                "verified bounce source binding is missing",
+            ))
+        },
+        Some(request.path()),
+        config,
+        request.control(),
+    )?;
+    hex_export::render_arrangement_bounce_with_pages(
+        request.path(),
+        Arc::clone(request.prepared()),
+        request.resources(),
+        request.start(),
+        request.frames(),
+        request.include_tails(),
+        request.control(),
+        Some(&mut pages),
     )
 }
 trait Cancellation {
@@ -114,6 +153,11 @@ impl VerifiedPages {
         config: StreamConfig,
         control: &impl Cancellation,
     ) -> Result<Self, ExportError> {
+        if prepared.scalar_automation_binding().is_some() {
+            return Err(ExportError::Invalid(
+                "offline scalar source capture is not prepared",
+            ));
+        }
         // These private composition inputs must be bounded before reserving Vecs.
         // The original stream constructor still validates its complete configuration.
         let maximum = StreamConfig::initial();
@@ -176,7 +220,8 @@ impl VerifiedPages {
                             file.path().to_path_buf(),
                             metadata.clone(),
                             file.reader_limits(),
-                        ),
+                        )
+                        .with_verified_manifest(file.verified_manifest().clone()),
                     );
                     files.insert(index, (metadata.key(), file.clone()));
                 }
@@ -215,10 +260,9 @@ impl VerifiedPages {
                 "offline media preparation exceeds its fixed resources"
             }
         };
-        match self
-            .files
-            .binary_search_by_key(&failure.key, |(key, _)| *key)
-        {
+        match self.files.binary_search_by_key(&failure.key, |(key, _)| {
+            hex_engine::StreamResourceKey::Audio(*key)
+        }) {
             Ok(index) => ExportError::Media(format!(
                 "{reason}: {}",
                 self.files[index].1.path().display()
@@ -264,7 +308,7 @@ impl VerifiedPages {
                     let key = self.keys.first().map(|key| key.source);
                     if let Some(key) = key {
                         let mut failures = [StreamFailure {
-                            key,
+                            key: key.into(),
                             page_index: 0,
                             kind,
                         }];
@@ -336,7 +380,18 @@ impl VerifiedPages {
         self.missed = false;
         let maximum = self.config.page_buffers;
         let extents = &mut self.extents;
-        let mut visit = |extent: StreamPageExtent| {
+        let mut visit = |extent: hex_engine::StreamResourceExtent| {
+            let hex_engine::StreamResourceKey::Audio(source) = extent.source else {
+                return Err(hex_engine::Invalid(
+                    "offline scalar source capture is not prepared",
+                ));
+            };
+            let extent = StreamPageExtent {
+                source,
+                page_index: extent.page_index,
+                start: extent.start,
+                end: extent.end,
+            };
             if control.is_cancelled() {
                 return Err(hex_engine::Invalid("export cancelled"));
             }
@@ -429,7 +484,7 @@ impl VerifiedPages {
             runtime.wake_worker();
             runtime.pump_ready(self.config.max_ready_pages_per_pump);
             let mut failures = [StreamFailure {
-                key: first_key.source,
+                key: first_key.source.into(),
                 page_index: 0,
                 kind: StreamFailureKind::Cancelled,
             }];
@@ -681,4 +736,9 @@ pub(super) fn prepare_resident_seek(
 }
 
 #[cfg(all(test, feature = "allocation-probe"))]
+#[path = "streamed_export/test_support.rs"]
 pub(crate) mod test_support;
+
+#[cfg(test)]
+#[path = "streamed_export/tests.rs"]
+mod tests;

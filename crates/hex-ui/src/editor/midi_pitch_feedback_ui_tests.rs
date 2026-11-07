@@ -121,7 +121,7 @@ fn decoder_and_computer_chord_paint_matches_right_arrow_after_real_ack(cx: &mut 
     ] {
         editor.update(&mut visual, |view, cx| {
             view.midi_marker = Some(cursor);
-            view.piano_beat_start = BeatTime::from_raw(start);
+            view.piano_beat_start = i128::from(start);
             view.piano_beat_span = BeatTime::from_raw(span);
             view.piano_pitch_low = low;
             view.piano_pitch_rows = rows;
@@ -166,6 +166,7 @@ fn decoder_and_computer_chord_paint_matches_right_arrow_after_real_ack(cx: &mut 
                 .notes()
                 .iter()
                 .map(|n| MidiNoteInsert {
+                    active: true,
                     start: n.start(),
                     duration: n.duration(),
                     pitch: n.pitch(),

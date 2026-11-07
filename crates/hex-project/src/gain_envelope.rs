@@ -52,7 +52,22 @@ impl Project {
     pub(crate) fn refuse_automation_transform(&self, tracks: &[TrackId]) -> Result<(), Invalid> {
         for &id in tracks {
             let track = self.track(id).ok_or(Invalid("track no longer exists"))?;
-            if !track.gain_envelope().is_empty() || !track.gain_lane.spans.is_empty() {
+            if !track.gain_envelope().is_empty()
+                || !track.gain_lane.spans.is_empty()
+                || track
+                    .devices()
+                    .iter()
+                    .chain(track.instrument())
+                    .any(|device| !device.automation().is_empty())
+                || track
+                    .source_id()
+                    .and_then(|id| self.native_source(id))
+                    .is_some_and(|source| {
+                        source
+                            .devices()
+                            .any(|device| !device.automation().is_empty())
+                    })
+            {
                 return Err(Invalid(AUTOMATION_EDIT_UNSUPPORTED));
             }
         }
@@ -123,14 +138,12 @@ impl Project {
         let index = points
             .binary_search_by_key(&from, |point| point.beat)
             .map_err(|_| Invalid("gain point no longer exists"))?;
-        if from != to && points.binary_search_by_key(&to, |point| point.beat).is_ok() {
-            return Err(Invalid("gain point destination is occupied"));
-        }
         let mut point = points.remove(index);
         point.beat = to;
-        let index = points
-            .binary_search_by_key(&to, |point| point.beat)
-            .unwrap_err();
+        let index = match points.binary_search_by_key(&to, |point| point.beat) {
+            Ok(_) => return Err(Invalid("gain point destination is occupied")),
+            Err(index) => index,
+        };
         points.insert(index, point);
         self.replace_gain_envelope(track, points)
     }

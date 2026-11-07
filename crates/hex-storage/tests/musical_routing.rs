@@ -161,7 +161,7 @@ fn schema25_combines_roots_session_gain_routes_lanes_provenance_and_host_trims()
         .unwrap()
         .with_output_gain_millidb(-2_000)
         .unwrap();
-    let project = Project::from_snapshot(snapshot).unwrap();
+    let project = Project::from_legacy_snapshot(snapshot).unwrap();
     let bytes = encode(&project).unwrap();
     assert_eq!(decode(&bytes).unwrap(), project);
     assert!(encode_schema20(&project).is_err());

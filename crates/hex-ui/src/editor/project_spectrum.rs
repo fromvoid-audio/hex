@@ -74,8 +74,8 @@ impl EditorView {
             .as_ref()
             .map_or(0, |s| s.project.return_tracks().len());
         // Title22, responsive transport, status22, overview24, arrangement header42,
-        // main track44, mixer26 and detail tabs22. Routing owns its own height.
-        202.0
+        // main track44 and mixer26. Routing owns its own height.
+        180.0
             + super::header::toolbar_height(f32::from(window.viewport_size().width))
             + if self.clip_view_open && !self.device_panel_active {
                 4.0
@@ -144,7 +144,9 @@ impl EditorView {
             self.audio_admission
                 .published_audio_revision(generation, state.revision)
         });
-        let expanded = self.project_spectrum.expanded && !self.opening_project;
+        let expanded = self.project_spectrum.expanded
+            && !self.opening_project
+            && !self.sample_recorder.visible;
         let mut result = None;
         let mut output_identity = None;
         if let Some(audio) = self.audio.as_mut() {
@@ -352,33 +354,25 @@ impl EditorView {
             cache.theme = palette;
             return cache.layers.clone();
         }
-        let points = |frame: &hex_audio::spectrum::SpectrumFrame| {
+        let curves = |frame: &hex_audio::spectrum::SpectrumFrame| {
             let upper = 20_000.0_f32.min(frame.sample_rate_hz as f32 / 2.0);
             let span = (upper / 20.0).ln();
-            frame
-                .bins_dbfs
-                .iter()
-                .enumerate()
-                .filter_map(|(index, db)| {
-                    let (low, high) =
-                        hex_audio::spectrum::band_bounds_hz(frame.sample_rate_hz, index)?;
-                    Some([
-                        (((low * high).sqrt() / 20.0).ln() / span).clamp(0.0, 1.0),
-                        super::device_panel::spectrum_display::level(*db),
-                    ])
-                })
-                .collect()
+            super::device_panel::spectrum_display::curves(frame, |hz| (hz / 20.0).ln() / span)
         };
         let mut layers = Vec::with_capacity(result.selection.layer_count());
         for (index, color) in colors[..ids.len()].iter().enumerate() {
             layers.push(SpectrumPlotLayer {
-                points: points(&result.frames()[index + 1]),
+                points: curves(&result.frames()[index + 1]).level,
+                peak: None,
                 color: *color,
             });
         }
-        // Real master stays contrasting and above every independent track layer.
+        // Real master stays contrasting and above every independent track
+        // layer, and alone carries a held-peak line to keep dense views legible.
+        let master = curves(&result.frames()[0]);
         layers.push(SpectrumPlotLayer {
-            points: points(&result.frames()[0]),
+            points: master.level,
+            peak: Some(master.peak),
             color: theme::device_analyzer_style().output,
         });
         let layers = SpectrumPlotLayers::new(layers).unwrap_or_default();
@@ -405,6 +399,9 @@ impl EditorView {
         }
         let expanded = self.project_spectrum.expanded;
         let height = self.project_spectrum_height(window);
+        if self.sample_recorder.visible {
+            return self.sample_recorder_panel(height, cx);
+        }
         let style = theme::device_style(theme::DeviceStyleRole::Display);
         let available = self
             .audio
@@ -449,6 +446,7 @@ impl EditorView {
                     .on_click(cx.listener(|view, _, _, cx| view.toggle_project_spectrum(cx))),
             )
             .child(theme::text("spectrum"))
+            .child(self.sample_recorder_mode_button(cx))
             .child(
                 div()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))

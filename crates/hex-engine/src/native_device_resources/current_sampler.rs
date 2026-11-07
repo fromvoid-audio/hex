@@ -180,6 +180,8 @@ pub(crate) struct CurrentSamplerConfiguration {
     pub(crate) input_gain: f32,
     pub(crate) output_gain: f32,
     pub(crate) prepared: hex_devices::sampler::PreparedSamplerRuntime,
+    /// Any sampler-supported saved version; `prepared` was decoded from it.
+    state_version: u32,
     payload: Vec<u8>,
     references: Vec<hex_lattice_contract::DeviceAssetReference>,
     scope: DeviceResourceScope,
@@ -187,7 +189,7 @@ pub(crate) struct CurrentSamplerConfiguration {
 impl CurrentSamplerConfiguration {
     pub(crate) fn matches_state(&self, state: &NativeDeviceState) -> bool {
         state.type_id() == hex_devices::sampler::state::TYPE_ID
-            && state.state_version() == hex_devices::sampler::state::STATE_VERSION
+            && state.state_version() == self.state_version
             && state.payload() == self.payload
             && state.asset_references() == self.references
             && state.input_gain_linear().to_bits() == self.input_gain.to_bits()
@@ -237,6 +239,16 @@ pub(crate) fn validate_project_with_effects(
     let present = requires_private_sampler_sources(project);
     if !present {
         return Ok(false);
+    }
+    // This closed constructor has one track-local generator/configuration per
+    // row. Shared sources use ordinary PreparedDeviceResources publication,
+    // whose receiver owns the single factory and source lease.
+    if project
+        .tracks()
+        .iter()
+        .any(|track| track.source_id().is_some() && !track.receives_source_audio())
+    {
+        return Err(AudioStorageError::UnsupportedGraph);
     }
     if project.loop_region().is_some_and(|r| r.enabled())
         || (!effects && !project.main_devices().is_empty())
@@ -407,6 +419,7 @@ impl CurrentSamplerMetadata {
                 input_gain: state.input_gain_linear(),
                 output_gain: state.output_gain_linear(),
                 prepared,
+                state_version: state.state_version(),
                 payload,
                 references,
                 scope,

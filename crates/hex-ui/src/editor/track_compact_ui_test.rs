@@ -139,8 +139,18 @@ fn resize_all(f: &mut Fixture, delta: f32) {
     f.visual
         .simulate_mouse_down(edge, MouseButton::Left, option);
     f.visual.simulate_mouse_move(end, MouseButton::Left, option);
-    f.visual.simulate_mouse_up(end, MouseButton::Left, option);
+    // A real held repaint may cache a compact body without editing controls.
+    // Release must invalidate that admission state without a project mutation.
     f.visual.run_until_parked();
+    f.editor
+        .read_with(&f.visual, |v, _| assert!(v.track_resize_active()));
+    f.visual.simulate_mouse_up(end, MouseButton::Left, option);
+    for _ in 0..3 {
+        f.visual.run_until_parked();
+        f.editor.update(&mut f.visual, |_, cx| cx.notify());
+    }
+    f.editor
+        .read_with(&f.visual, |v, _| assert!(!v.track_resize_active()));
 }
 
 fn compact(f: &mut Fixture) {
@@ -176,7 +186,10 @@ fn assert_no_bodies(f: &mut Fixture) {
             super::midi_thumbnail::rendered_notes(&mut f.visual, f.clips[1], dragging).is_empty()
         );
     }
-    assert!(f.visual.debug_bounds("midi-trim-preview-note-60").is_none());
+    assert!(
+        super::midi_thumbnail::rendered_note_layer(&mut f.visual, "midi-trim-preview-notes")
+            .is_empty()
+    );
     for prefix in [
         "fade-in-top",
         "fade-in-bottom",
@@ -244,8 +257,8 @@ fn compact_rows_preserve_canonical_titles_selection_and_restore_body_on_expansio
     assert!(
         f.visual
             .debug_bounds(selector("midi-preview-count", f.clips[1].value()))
-            .is_some(),
-        "fixture has a genuine capped-preview count badge"
+            .is_none(),
+        "expanded rows draw every note and never a sample-count badge"
     );
     let before = f.editor.read_with(&f.visual, |view, _| {
         view.state.as_ref().unwrap().project.snapshot()
@@ -269,6 +282,14 @@ fn compact_rows_preserve_canonical_titles_selection_and_restore_body_on_expansio
         let surface = bounds(&mut f.visual, prefix, clip.value());
         assert_eq!(surface.size.height, px(23.0));
         assert_title(&mut f.visual, "clip-name", clip, surface);
+        let (_, divider, _) = f
+            .visual
+            .rendered_border(selector("clip-name", clip.value()))
+            .unwrap();
+        assert!(
+            divider.bottom > gpui::ScaledPixels::default(),
+            "compact clip title retains its divider"
+        );
         let (color, widths, _) = f
             .visual
             .rendered_border(selector(prefix, clip.value()))
@@ -279,7 +300,28 @@ fn compact_rows_preserve_canonical_titles_selection_and_restore_body_on_expansio
         );
         let zero = gpui::ScaledPixels::default();
         assert!(
-            widths.top > zero && widths.bottom > zero && widths.left > zero && widths.right > zero
+            widths.top > zero && widths.bottom > zero && widths.left > zero && widths.right == zero
+        );
+        // The right edge is a separately painted physical pixel, not a layout
+        // border. Keep its scene coverage alongside the three native edges.
+        let edge_prefix = if prefix == "midi-clip-visual" {
+            "midi-clip-selected-trailing"
+        } else {
+            "clip-selected-trailing"
+        };
+        let edge_selector = selector(edge_prefix, clip.value());
+        let edge = f.visual.debug_bounds(edge_selector).unwrap();
+        let scale = f.visual.update(|window, _| window.scale_factor());
+        assert_eq!(edge.left(), surface.right());
+        assert_eq!(f64::from(edge.scale(scale).size.width), 1.0);
+        assert_eq!(
+            f.visual.rendered_background(edge_selector),
+            Some(gpui::rgb(theme::color(theme::PaletteRole::Primary)).into())
+        );
+        assert!(
+            !f.visual
+                .rendered_quad_paint_layers(edge_selector, false)
+                .is_empty()
         );
         let move_hit = bounds(&mut f.visual, "clip-drag-surface", clip.value());
         assert_title_rail_height(move_hit, "clip-drag-surface");
@@ -291,12 +333,11 @@ fn compact_rows_preserve_canonical_titles_selection_and_restore_body_on_expansio
     f.visual.run_until_parked();
     assert_no_bodies(&mut f);
     f.editor.read_with(&f.visual, |view, _| {
-        assert!(
-            !view.pointer_hits_fade_control(
-                f32::from(audio.center().x),
-                f32::from(audio.center().y)
-            )
-        );
+        assert!(!view.pointer_hits_priority_clip_control(
+            f32::from(audio.center().x),
+            f32::from(audio.center().y),
+            false,
+        ));
         assert_eq!(view.selected_clip_ids(), f.clips);
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
         assert!(!view.track_resize_active());
@@ -520,3 +561,6 @@ fn compact_time_range_copy_projects_named_audio_and_midi_fragments_without_mutat
         assert!(view.pending_requests.is_empty() && view.worker_requests_pending == 0);
     });
 }
+
+#[path = "track_header_name_ui_tests.rs"]
+mod header_name_tests;

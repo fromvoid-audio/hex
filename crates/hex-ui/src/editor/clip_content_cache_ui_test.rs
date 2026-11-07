@@ -811,10 +811,11 @@ fn cold_main_selection_reuses_clip_scene_with_current_geometry(cx: &mut TestAppC
     );
     assert_eq!(content.read_with(cx, |content, _| content.builds), builds);
     // The first scene's cached handle still captures an ordinary trim drag.
-    let down = visual
-        .debug_bounds(trim_selector)
-        .expect("reused trim handle")
-        .center();
+    let down = crate::editor::clip_drag_ui_test::trim_grab_point(
+        visual
+            .debug_bounds(trim_selector)
+            .expect("reused trim handle"),
+    );
     visual.simulate_mouse_move(down, None, Modifiers::default());
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(
@@ -879,5 +880,140 @@ fn track_color_repaints_inherited_clips_while_flavor_stays_independent(cx: &mut 
                 Some(gpui::rgb(theme::clip_fill(owner.color(), clip.flavor(), false)).into())
             );
         }
+    }
+}
+
+#[gpui::test]
+fn deep_element_id_paths_keep_distinct_click_state_and_focus_across_repaints(
+    cx: &mut TestAppContext,
+) {
+    use gpui::{Context, FocusHandle, Render, Window, div, prelude::*, px, rgb};
+    struct IdentityFixture {
+        depth: usize,
+        counts: [usize; 2],
+        focus: [FocusHandle; 2],
+    }
+    impl Render for IdentityFixture {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+            let mut row = div().flex().pl(px(theme::TITLEBAR_LEADING_INSET));
+            for index in 0..2 {
+                let control = div()
+                    // Identical leaf names remain distinct through their full
+                    // ancestor path, including ancestors past inline storage.
+                    .id("leaf")
+                    .debug_selector(move || format!("identity-leaf-{index}"))
+                    .track_focus(&self.focus[index])
+                    .w(px(160.0))
+                    .h(px(40.0))
+                    .bg(rgb(theme::color(theme::PaletteRole::Grid)))
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        view.counts[index] += 1;
+                        view.focus[index].focus(window);
+                        cx.notify();
+                    }))
+                    .on_key_down(cx.listener(move |view, event: &gpui::KeyDownEvent, _, cx| {
+                        if event.keystroke.key == "up" {
+                            view.counts[index] += 1;
+                            cx.stop_propagation();
+                            cx.notify();
+                        }
+                    }))
+                    .child(theme::text(format!(
+                        "identity {index} · {}",
+                        self.counts[index]
+                    )));
+                row = row.child(div().id(("branch", index)).child(control));
+            }
+            let mut content = row.into_any_element();
+            for level in 0..self.depth {
+                content = div()
+                    .id(("ancestor", level))
+                    .w_full()
+                    .child(content)
+                    .into_any_element();
+            }
+            content
+        }
+    }
+    for depth in [0, 40, 80] {
+        let handle = cx.add_window(|_, cx| IdentityFixture {
+            depth,
+            counts: [0; 2],
+            focus: std::array::from_fn(|_| cx.focus_handle()),
+        });
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.run_until_parked();
+        let left = visual.debug_bounds("identity-leaf-0").unwrap().center();
+        let right = visual.debug_bounds("identity-leaf-1").unwrap().center();
+        visual.simulate_click(left, Modifiers::default());
+        visual.simulate_keystrokes("up");
+        visual.run_until_parked();
+        assert_eq!(view.read_with(cx, |view, _| view.counts), [2, 0]);
+        for _ in 0..3 {
+            view.update(cx, |_, cx| cx.notify());
+            visual.run_until_parked();
+        }
+        visual.update(|window, cx| assert!(view.read(cx).focus[0].is_focused(window)));
+        visual.simulate_click(right, Modifiers::default());
+        visual.simulate_keystrokes("up");
+        visual.run_until_parked();
+        assert_eq!(view.read_with(cx, |view, _| view.counts), [2, 2]);
+        visual.update(|window, cx| assert!(view.read(cx).focus[1].is_focused(window)));
+        // GPUI must find the same pending click after rebuilding all ancestors;
+        // retaining just entity-local counters would not establish this.
+        visual.simulate_mouse_down(left, MouseButton::Left, Modifiers::default());
+        view.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+        visual.simulate_mouse_up(left, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(view.read_with(cx, |view, _| view.counts), [3, 2]);
+    }
+}
+
+#[test]
+fn element_identity_keys_use_the_complete_path_independent_of_storage() {
+    use gpui::{ElementId, GlobalElementId};
+    use std::{
+        collections::hash_map::DefaultHasher,
+        hash::{Hash, Hasher},
+    };
+    let hash = |key: &GlobalElementId| {
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        hasher.finish()
+    };
+    for depth in [0, 1, 8, 9, 32, 33, 80] {
+        let path = (0..depth)
+            .map(|index| ElementId::Integer(index as u64))
+            .collect::<Vec<_>>();
+        let mut ordinary = GlobalElementId::default();
+        let mut reserved = GlobalElementId::default();
+        // Force dynamic storage even for an empty/shallow identity. Hashing and
+        // equality must depend on the path, never its current allocation mode.
+        reserved.reserve(128);
+        for id in &path {
+            ordinary.push(id.clone());
+            reserved.push(id.clone());
+        }
+        assert_eq!(ordinary.as_slice(), path.as_slice());
+        assert_eq!(ordinary, reserved);
+        assert_eq!(hash(&ordinary), hash(&reserved));
+        assert_eq!(
+            ordinary.to_string(),
+            path.iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(".")
+        );
+        reserved.push(ElementId::Integer(999));
+        assert_ne!(
+            ordinary, reserved,
+            "a suffix beyond inline storage belongs to the identity"
+        );
+        let mut map = std::collections::HashMap::new();
+        map.insert(ordinary, "first");
+        map.insert(reserved, "second");
+        assert_eq!(map.len(), 2);
     }
 }

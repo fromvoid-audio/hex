@@ -43,6 +43,10 @@ pub enum StreamHandleLocation {
     FailureProducer,
     FailureConsumer,
     KernelPlan(usize),
+    ScalarSource(usize),
+    ScalarProjection(usize),
+    ScalarCursorSource,
+    ScalarCursorProjection,
     CallerLeaseOwner(usize),
     CallerLeaseCatalog(usize),
     CallerLeasePair(usize),
@@ -245,6 +249,8 @@ impl Domain<'_> {
         let VerifiedCatalog {
             footprint: _,
             sources: _,
+            scalar_sources: _,
+            scalar_shared_data: _,
             data,
         } = catalog.as_ref();
         if Arc::weak_count(catalog) != 0 || Arc::weak_count(&self.control.owner.stop) != 0 {
@@ -454,12 +460,43 @@ impl<'a> AudioStreamStorageLedger<'a> {
                         0
                     }
                 });
-                fixed.chain((0..kernel_handles).map(move |i| {
-                    Ok(StreamOwningHandleObligation {
-                        domain: index,
-                        location: StreamHandleLocation::KernelPlan(i),
-                    })
-                }))
+                fixed
+                    .chain((0..kernel_handles).map(move |i| {
+                        Ok(StreamOwningHandleObligation {
+                            domain: index,
+                            location: StreamHandleLocation::KernelPlan(i),
+                        })
+                    }))
+                    .chain(
+                        (0..data.map_or(0, |d| d.worker.scalar_source_handles))
+                            .flat_map(move |i| {
+                                [
+                                    StreamHandleLocation::ScalarSource(i),
+                                    StreamHandleLocation::ScalarProjection(i),
+                                ]
+                            })
+                            .map(move |location| {
+                                Ok(StreamOwningHandleObligation {
+                                    domain: index,
+                                    location,
+                                })
+                            }),
+                    )
+                    .chain(
+                        (data.map_or(0, |d| d.worker.scalar_cursor_handle_bound) != 0)
+                            .then_some([
+                                StreamHandleLocation::ScalarCursorSource,
+                                StreamHandleLocation::ScalarCursorProjection,
+                            ])
+                            .into_iter()
+                            .flatten()
+                            .map(move |location| {
+                                Ok(StreamOwningHandleObligation {
+                                    domain: index,
+                                    location,
+                                })
+                            }),
+                    )
             })
             .chain(
                 self.leases
@@ -592,7 +629,12 @@ impl<'a> AudioStreamStorageLedger<'a> {
                         })
                         .and_then(|n| {
                             n.checked_add(if data.worker.constructor_complete {
-                                data.worker.kernel_handles
+                                data.worker
+                                    .kernel_handles
+                                    .checked_add(data.worker.scalar_source_handles.checked_mul(2)?)
+                                    .and_then(|n| {
+                                        n.checked_add(data.worker.scalar_cursor_handle_bound)
+                                    })?
                             } else {
                                 0
                             })

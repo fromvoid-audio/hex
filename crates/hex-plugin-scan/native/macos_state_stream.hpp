@@ -9,19 +9,22 @@
 #include <cstring>
 #include <cstdint>
 #include <limits>
+#include <vector>
 
 namespace hex_instance {
 class StateStream final : public Steinberg::IBStream,public Steinberg::ISizeableStream {
     using int32=Steinberg::int32;using int64=Steinberg::int64;using uint32=Steinberg::uint32;
     std::atomic<uint32> references{1};
     std::atomic<bool> refused{false};
+    uint32_t overflow_bytes=0;
     size_t limit=0,position=0,length=0;
     bool read_only=false;
     bool control() { if ([NSThread isMainThread]) return true;refused.store(true);return false; }
     Steinberg::tresult invalid() { refused.store(true);return Steinberg::kInvalidArgument; }
     ~StateStream() = default;
 public:
-    static constexpr size_t capacity=4000;
+    static constexpr size_t envelope_capacity=512*1024;
+    static constexpr size_t capacity=envelope_capacity-96;
     std::array<unsigned char,capacity> bytes{};
     explicit StateStream(size_t maximum):limit(std::min(maximum,capacity)) {}
     // Restore owns a fixed copied extent. Foreign code may read/seek it but
@@ -53,7 +56,12 @@ public:
     }
     bool exclusive() const { return references.load()==1; }
     bool valid() const { return !refused.load(); }
+    uint32_t overflow() const { return overflow_bytes; }
     size_t size() const { return length; }
+    bool reset_write_on_control(size_t maximum) {
+        if (!control() || !valid() || !exclusive() || maximum>capacity) return false;
+        bytes.fill(0);limit=maximum;position=length=0;read_only=false;overflow_bytes=0;return true;
+    }
     bool rewind_read_only_on_control() {
         if (!control() || !valid() || !exclusive()) return false;
         read_only=true;position=0;limit=length;return true;
@@ -73,7 +81,14 @@ public:
     }
     Steinberg::tresult PLUGIN_API write(void* buffer,int32 count,int32* done) override {
         if (done) *done=0;
-        if (!control() || read_only || count<0 || (count && !buffer) || static_cast<size_t>(count)>limit-position) return invalid();
+        if (!control() || read_only || count<0 || (count && !buffer)) return invalid();
+        if (static_cast<size_t>(count)>limit-position) {
+            // Include the component's reserved prefix for controller captures.
+            // This is a lower bound, not a claim that the SDK finished writing.
+            const auto observed=capacity-limit+position+static_cast<size_t>(count);
+            overflow_bytes=std::max(overflow_bytes,static_cast<uint32_t>(std::min(observed,static_cast<size_t>(std::numeric_limits<uint32_t>::max()))));
+            return Steinberg::kInvalidArgument;
+        }
         if (count) std::memcpy(bytes.data()+position,buffer,static_cast<size_t>(count));
         position+=static_cast<size_t>(count);length=std::max(length,position);
         if (done) *done=count;return Steinberg::kResultOk;
@@ -107,7 +122,7 @@ public:
     }
 };
 struct CapturedState {
-    std::array<unsigned char,StateStream::capacity> bytes{};
+    std::vector<unsigned char> bytes;
     uint32_t component_bytes=0,controller_bytes=0;
     bool component=false,controller=false;
 };

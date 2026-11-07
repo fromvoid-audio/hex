@@ -32,17 +32,18 @@ impl OverviewCache {
     pub(super) fn for_state(
         generation: u64,
         state: &ViewState,
+        horizon: u64,
         focus_ranges: Rc<[(u64, u64)]>,
         revealed_track: Option<TrackId>,
     ) -> Self {
         Self {
             generation,
             revision: state.revision,
-            horizon: state.timeline_frames.max(1),
+            horizon: horizon.max(1),
             track_count: state.project.tracks().len(),
             cells: filtered_cells(
                 &state.project,
-                state.timeline_frames.max(1),
+                horizon.max(1),
                 &focus_ranges,
                 revealed_track,
             ),
@@ -55,6 +56,7 @@ impl OverviewCache {
         &self,
         generation: u64,
         state: &ViewState,
+        horizon: u64,
         focus_ranges: &[(u64, u64)],
         revealed_track: Option<TrackId>,
     ) -> bool {
@@ -62,7 +64,7 @@ impl OverviewCache {
             && self.revealed_track == revealed_track
             && self.generation == generation
             && self.revision == state.revision
-            && self.horizon == state.timeline_frames.max(1)
+            && self.horizon == horizon.max(1)
             && self.track_count == state.project.tracks().len()
     }
 
@@ -279,7 +281,7 @@ impl EditorView {
         if !fraction.is_finite() || state.timeline_frames == 0 {
             return;
         }
-        let horizon = state.timeline_frames;
+        let horizon = self.viewport_horizon(state.timeline_frames);
         let current = self.visible_viewport(horizon);
         let length = current.length.max(1).min(horizon);
         let center = (f64::from(fraction.clamp(0.0, 1.0)) * horizon as f64)
@@ -290,7 +292,7 @@ impl EditorView {
             length,
         }
         .clamp(horizon);
-        self.viewport = (next != Viewport::fit(horizon)).then_some(next);
+        self.install_arranger_navigation(next);
     }
 }
 
@@ -298,19 +300,20 @@ pub(super) fn cached(
     cache: &RefCell<Option<Rc<OverviewCache>>>,
     generation: u64,
     state: &ViewState,
+    horizon: u64,
     focus_ranges: Rc<[(u64, u64)]>,
     revealed_track: Option<TrackId>,
 ) -> Rc<OverviewCache> {
     let mut cache = cache.borrow_mut();
-    if let Some(current) = cache
-        .as_ref()
-        .filter(|current| current.matches(generation, state, &focus_ranges, revealed_track))
-    {
+    if let Some(current) = cache.as_ref().filter(|current| {
+        current.matches(generation, state, horizon, &focus_ranges, revealed_track)
+    }) {
         return Rc::clone(current);
     }
     let next = Rc::new(OverviewCache::for_state(
         generation,
         state,
+        horizon,
         focus_ranges,
         revealed_track,
     ));
@@ -390,19 +393,54 @@ mod tests {
         );
         let state = view_state(project, 1, 300_000);
         let cache = std::cell::RefCell::new(None);
-        let all = super::cached(&cache, 1, &state, Rc::from([]), None);
-        let focused = super::cached(&cache, 1, &state, Rc::from([(1, 100)]), None);
+        let all = super::cached(&cache, 1, &state, state.timeline_frames, Rc::from([]), None);
+        let focused = super::cached(
+            &cache,
+            1,
+            &state,
+            state.timeline_frames,
+            Rc::from([(1, 100)]),
+            None,
+        );
         assert!(!Rc::ptr_eq(&all, &focused));
-        let with_revealed = super::cached(&cache, 1, &state, Rc::from([(1, 100)]), Some(revealed));
+        let with_revealed = super::cached(
+            &cache,
+            1,
+            &state,
+            state.timeline_frames,
+            Rc::from([(1, 100)]),
+            Some(revealed),
+        );
         assert!(!Rc::ptr_eq(&focused, &with_revealed));
         assert!(!Rc::ptr_eq(
             &with_revealed,
-            &super::cached(&cache, 1, &state, Rc::from([(1, 100)]), None)
+            &super::cached(
+                &cache,
+                1,
+                &state,
+                state.timeline_frames,
+                Rc::from([(1, 100)]),
+                None
+            )
         ));
-        let focused = super::cached(&cache, 1, &state, Rc::from([(1, 100)]), None);
+        let focused = super::cached(
+            &cache,
+            1,
+            &state,
+            state.timeline_frames,
+            Rc::from([(1, 100)]),
+            None,
+        );
         assert!(Rc::ptr_eq(
             &focused,
-            &super::cached(&cache, 1, &state, Rc::from([(1, 100)]), None)
+            &super::cached(
+                &cache,
+                1,
+                &state,
+                state.timeline_frames,
+                Rc::from([(1, 100)]),
+                None
+            )
         ));
     }
 
@@ -460,25 +498,55 @@ mod tests {
         let cache = std::cell::RefCell::new(Some(Rc::new(OverviewCache::for_state(
             3,
             &first,
+            first.timeline_frames,
             Rc::from([]),
             None,
         ))));
-        assert!(
-            cache
-                .borrow()
-                .as_ref()
-                .is_some_and(|cache| cache.matches(3, &first, &[], None))
-        );
+        assert!(cache.borrow().as_ref().is_some_and(|cache| cache.matches(
+            3,
+            &first,
+            first.timeline_frames,
+            &[],
+            None
+        )));
         // Viewport state is deliberately not part of the cache key.
         let unchanged = view_state(project.clone(), 7, 192_000);
-        let first_read = super::cached(&cache, 3, &first, Rc::from([]), None);
-        let after_pan = super::cached(&cache, 3, &unchanged, Rc::from([]), None);
+        let first_read =
+            super::cached(&cache, 3, &first, first.timeline_frames, Rc::from([]), None);
+        let after_pan = super::cached(
+            &cache,
+            3,
+            &unchanged,
+            unchanged.timeline_frames,
+            Rc::from([]),
+            None,
+        );
         assert!(Rc::ptr_eq(&first_read, &after_pan));
+        let retired = super::cached(&cache, 3, &unchanged, 96_000, Rc::from([]), None);
+        assert_eq!(retired.horizon(), 96_000);
+        assert!(
+            !Rc::ptr_eq(&after_pan, &retired),
+            "retiring view extent invalidates the raster even without a project edit"
+        );
         let changed_revision = view_state(project.clone(), 8, 192_000);
-        let next_revision = super::cached(&cache, 3, &changed_revision, Rc::from([]), None);
+        let next_revision = super::cached(
+            &cache,
+            3,
+            &changed_revision,
+            changed_revision.timeline_frames,
+            Rc::from([]),
+            None,
+        );
         assert!(!Rc::ptr_eq(&first_read, &next_revision));
         let changed_generation = view_state(project, 7, 192_000);
-        let next_generation = super::cached(&cache, 4, &changed_generation, Rc::from([]), None);
+        let next_generation = super::cached(
+            &cache,
+            4,
+            &changed_generation,
+            changed_generation.timeline_frames,
+            Rc::from([]),
+            None,
+        );
         assert!(!Rc::ptr_eq(&next_revision, &next_generation));
     }
 }

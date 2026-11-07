@@ -99,8 +99,10 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
 }
 
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?)
+}
+/// Decode an envelope parsed once by [`super::audio_events::parse_unique`].
+pub(crate) fn decode_value(mut value: serde_json::Value) -> Result<Project, StorageError> {
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid midi policy envelope"))?;
@@ -113,7 +115,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             .ok_or(StorageError::Invalid("midi one-shot policies are missing"))?,
     )?;
     object.insert("version".into(), 38.into());
-    let project = super::fade_curve_positions::decode(&serde_json::to_vec(&value)?)?;
+    let project = super::fade_curve_positions::decode_value(value)?;
     let mut rows = BTreeMap::new();
     for row in policies.0 {
         if rows.insert(row.clip, row.boundary.into()).is_some() {
@@ -145,7 +147,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "midi one-shot policy references a missing midi clip",
         ));
     }
-    Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+    Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }
 
 #[cfg(test)]
@@ -251,7 +253,7 @@ mod tests {
             panic!("midi")
         };
         clip.source.one_shot_boundary = boundary;
-        Project::from_snapshot(s).unwrap()
+        Project::from_legacy_snapshot(s).unwrap()
     }
     #[test]
     fn policy39_roundtrip_preserves_retained_notes_and_all_frozen38_fields() {
@@ -352,7 +354,7 @@ mod tests {
                 panic!("hybrid")
             };
             midi_clips[0].one_shot_boundary = MidiOneShotBoundary::LoopEnd;
-            let loop_end = Project::from_snapshot(snapshot).unwrap();
+            let loop_end = Project::from_legacy_snapshot(snapshot).unwrap();
             assert!(matches!(
                 writer(&loop_end),
                 Err(StorageError::Invalid(

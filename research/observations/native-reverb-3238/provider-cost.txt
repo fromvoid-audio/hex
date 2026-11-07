@@ -1,0 +1,8 @@
+rate=48000 instances=1 frames=128 decay=2.5s wet=55% density=0 warmups=200 samples=1000 input_copy=included construction=excluded runtime_bytes=250384 p50_us=97.82 p95_us=174.30 max_us=1156.63
+rate=48000 instances=16 frames=128 decay=2.5s wet=55% density=0 warmups=200 samples=1000 input_copy=included construction=excluded runtime_bytes=250384 p50_us=1750.77 p95_us=2299.61 max_us=4744.10
+rate=192000 instances=1 frames=128 decay=2.5s wet=55% density=0 warmups=200 samples=1000 input_copy=included construction=excluded runtime_bytes=250384 p50_us=27.24 p95_us=48.66 max_us=410.03
+rate=192000 instances=16 frames=128 decay=2.5s wet=55% density=0 warmups=200 samples=1000 input_copy=included construction=excluded runtime_bytes=250384 p50_us=483.09 p95_us=709.43 max_us=5317.55
+rate=48000 instances=1 frames=128 decay=2.5s wet=55% density=2 warmups=200 samples=1000 input_copy=included construction=excluded runtime_bytes=250384 p50_us=100.03 p95_us=210.04 max_us=5942.88
+rate=48000 instances=16 frames=128 decay=2.5s wet=55% density=2 warmups=200 samples=1000 input_copy=included construction=excluded runtime_bytes=250384 p50_us=1798.10 p95_us=2338.00 max_us=5862.61
+rate=192000 instances=1 frames=128 decay=2.5s wet=55% density=2 warmups=200 samples=1000 input_copy=included construction=excluded runtime_bytes=250384 p50_us=27.87 p95_us=47.38 max_us=305.95
+rate=192000 instances=16 frames=128 decay=2.5s wet=55% density=2 warmups=200 samples=1000 input_copy=included construction=excluded runtime_bytes=250384 p50_us=481.98 p95_us=686.99 max_us=1833.51

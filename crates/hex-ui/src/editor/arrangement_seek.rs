@@ -1,4 +1,4 @@
-//! Admission helpers for history-preserving Arrangement seeks.
+//! Admission helpers for stateful Arrangement seeks (empty-tail interactive law).
 //!
 //! Preroll runs on the session service worker. This module only validates the
 //! exact source and captures a control-side runtime fence; it never prepares a
@@ -12,7 +12,6 @@ use hex_engine::{PreparedRevision, SessionCapabilityStatus};
 use hex_project::Project;
 use hex_session::arrangement_seek::{
     ArrangementSeekMode, ArrangementSeekResult, ArrangementSeekSpec, ArrangementSeekSubmitError,
-    MAX_SEEK_WORK_FRAMES,
 };
 use hex_session::service::DevicePreviewIdentity;
 use std::sync::{Arc, atomic::AtomicBool};
@@ -148,7 +147,9 @@ fn seek_source_matches(
 impl SeekIntent {
     pub fn spec(&self) -> Option<ArrangementSeekSpec> {
         let prepared = self.prepared_revision.as_ref()?;
-        (self.destination_frame <= MAX_SEEK_WORK_FRAMES).then(|| ArrangementSeekSpec {
+        // Interactive seeks and sections replay no prefix; the engine applies
+        // the replay budget only to private control-sampler owners.
+        Some(ArrangementSeekSpec {
             mode: self
                 .section
                 .map_or(ArrangementSeekMode::Interactive, |section| {
@@ -512,6 +513,7 @@ impl EditorView {
         start_playing: bool,
         section: Option<hex_session::arrangement_seek::SectionLaunch>,
     ) {
+        self.wake_poll();
         if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
             self.error = Some(
                 if section.is_some() {
@@ -550,10 +552,6 @@ impl EditorView {
         };
         if intent.section.is_some() && self.prepared_seek.is_some() {
             self.invalidate_prepared_seek();
-        }
-        if intent.destination_frame > MAX_SEEK_WORK_FRAMES {
-            self.error = Some("seek exceeds the bounded arrangement preroll range".into());
-            return;
         }
         if self.retired_seek_result.is_some() {
             latch_latest_intent(&mut self.latched_seek_intent, intent);
@@ -598,7 +596,6 @@ impl EditorView {
             || self.retired_seek_result.is_some()
             || self.latched_seek_intent.is_some()
             || self.recovery.seek_needed(true) != Some(position)
-            || position > MAX_SEEK_WORK_FRAMES
         {
             return None;
         }
@@ -691,7 +688,7 @@ impl EditorView {
             return;
         }
         let Some(spec) = intent.spec() else {
-            self.error = Some("seek exceeds the bounded arrangement preroll range".into());
+            self.error = Some("arrangement seek requires a prepared graph".into());
             return;
         };
         match self.service.request_arrangement_seek(spec) {
@@ -715,9 +712,11 @@ impl EditorView {
             }
             Err(error) => {
                 self.error = Some(
-                    format!("could not prepare arrangement seek: {error:?}")
-                        .to_lowercase()
-                        .into(),
+                    format!(
+                        "could not prepare arrangement seek · {}",
+                        super::user_errors::seek_submit(&error)
+                    )
+                    .into(),
                 );
             }
         }
@@ -750,6 +749,7 @@ impl EditorView {
                 active_audio_revision: fence.expected_active_revision(),
                 route_generation: fence.route_state_generation(),
                 admitted_command_ticket: fence.admitted_command_ticket(),
+                output_fault_epoch: fence.output_fault_epoch(),
             },
             device_preview: intent.device_preview_identity,
             tuning_preview: None,
@@ -773,8 +773,8 @@ impl EditorView {
             Err(hex_session::service::SubmitError::Closed(_)) => {
                 self.error = Some("arrangement seek worker is unavailable".into());
             }
-            Err(hex_session::service::SubmitError::Busy(_)) => {
-                self.error = Some("arrangement seek worker is busy".into());
+            Err(hex_session::service::SubmitError::Busy(_, reason)) => {
+                self.error = Some(super::user_errors::busy(reason).into());
             }
         }
     }
@@ -911,12 +911,11 @@ impl EditorView {
             .prepared_seek
             .as_mut()
             .filter(|pending| pending.cancellation_retry)
+            && let Some(audio) = self.audio.as_ref()
         {
-            if let Some(audio) = self.audio.as_ref() {
-                let result = cancel_published_seek(Some(&audio.control), pending);
-                pending.cancellation_retry = result == Some(FreshRuntimeCancellationResult::Busy);
-                changed = !pending.cancellation_retry;
-            }
+            let result = cancel_published_seek(Some(&audio.control), pending);
+            pending.cancellation_retry = result == Some(FreshRuntimeCancellationResult::Busy);
+            changed = !pending.cancellation_retry;
         }
         if let Some(result) = self.retired_seek_result.take() {
             changed |= self.retire_seek_result(result);
@@ -1024,9 +1023,12 @@ impl EditorView {
             Err(error) => {
                 self.prepared_seek = None;
                 self.error = Some(
-                    format!("arrangement seek failed: {error:?}")
-                        .to_lowercase()
-                        .into(),
+                    format!(
+                        "arrangement seek failed · {}",
+                        super::user_errors::seek_preparation(&error)
+                    )
+                    .to_lowercase()
+                    .into(),
                 );
                 changed = true;
             }
@@ -1264,7 +1266,6 @@ impl Drop for EditorView {
 pub(super) enum ToggleAction {
     Pause,
     PlayFrom(u64),
-    PreparedPlayFrom(u64),
     Unavailable,
 }
 
@@ -1279,8 +1280,10 @@ fn toggle_action(
         ToggleAction::Pause
     } else {
         match requires_preroll {
-            Some(true) => ToggleAction::PreparedPlayFrom(start_frame),
-            Some(false) => ToggleAction::PlayFrom(start_frame),
+            // Interactive starts reset effect history and chase held notes in
+            // the already prepared runtime. Exact-history seeks retain their
+            // separate worker path; Play must never replay the song prefix.
+            Some(_) => ToggleAction::PlayFrom(start_frame),
             None => ToggleAction::Unavailable,
         }
     }

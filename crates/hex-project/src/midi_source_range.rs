@@ -57,6 +57,7 @@ impl Range {
             return Ok(None);
         }
         Ok(Some(MidiNoteInsert {
+            active: note.active(),
             start: BeatTime::from_raw(
                 start
                     .checked_add(self.delta)

@@ -1,6 +1,7 @@
 //! Captured splitter input with caller-owned local sizing snapshots. A binding
-//! paints one handle and installs frame-scoped native window listeners; it is
-//! not a global capture manager. The host retains the sole active gesture and
+//! paints one handle and renews its shared Window pointer lease; it is
+//! not a separate global capture manager. The host retains the sole active
+//! gesture and
 //! decides focus, source-generation, collapse, viewport and persistence policy.
 //! Only finite pixel displacement and typed local intents cross this boundary.
 use gpui::{
@@ -44,7 +45,7 @@ impl SplitterHandleConfig {
 
 /// Pointer origin retained inside the host's baseline snapshot, rather than in
 /// a second widget/entity state owner. A gesture belongs to exactly one window.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SplitterGesture {
     axis: SplitterAxis,
     origin: Point<Pixels>,
@@ -60,6 +61,12 @@ impl SplitterGesture {
     }
     pub fn matches_window(self, window: &Window) -> bool {
         self.window == window.window_handle().window_id()
+    }
+    fn cursor(self) -> gpui::CursorStyle {
+        match self.axis {
+            SplitterAxis::Horizontal => gpui::CursorStyle::ResizeLeftRight,
+            SplitterAxis::Vertical => gpui::CursorStyle::ResizeUpDown,
+        }
     }
     fn displacement(self, position: Point<Pixels>) -> Option<f32> {
         if !finite(position) {
@@ -88,7 +95,8 @@ fn finite(point: Point<Pixels>) -> bool {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SplitterCancel {
-    ButtonLost,
+    /// The shared pointer lease lost its button, window activation or paint witness.
+    CaptureLost,
     Escape,
     InvalidPosition,
     WindowChanged,
@@ -133,7 +141,7 @@ impl<V: 'static> SplitterInput<V> {
             event,
         }
     }
-    fn send(&self, event: SplitterEvent, window: &mut Window, cx: &mut App) {
+    fn send(&self, event: SplitterEvent, window: &mut Window, cx: &mut App) -> bool {
         let handled = self
             .owner
             .update(cx, |owner, cx| (self.event)(owner, event, window, cx));
@@ -141,14 +149,65 @@ impl<V: 'static> SplitterInput<V> {
             cx.stop_propagation();
             window.refresh();
         }
+        handled
     }
     fn current(&self, cx: &App) -> Option<SplitterGesture> {
         (self.gesture)(self.owner.read(cx))
     }
+    fn capture(&self, gesture: SplitterGesture, window: &mut Window, cx: &App) -> bool {
+        let owner = self.owner.downgrade();
+        let cancelled = owner.clone();
+        let current = self.gesture;
+        let event = self.event;
+        window.capture_pointer(
+            self.owner.entity_id(),
+            MouseButton::Left,
+            gesture.cursor(),
+            move |input, window, cx| {
+                let intent = if let Some(moved) = input.downcast_ref::<MouseMoveEvent>() {
+                    Some(gesture.event(moved.position, window, false))
+                } else if let Some(up) = input.downcast_ref::<MouseUpEvent>() {
+                    (up.button == MouseButton::Left)
+                        .then(|| gesture.event(up.position, window, true))
+                } else {
+                    None
+                };
+                let Some(intent) = intent else {
+                    return;
+                };
+                let handled = owner
+                    .update(cx, |owner, cx| {
+                        current(owner) == Some(gesture) && event(owner, intent, window, cx)
+                    })
+                    .unwrap_or(false);
+                if handled {
+                    cx.stop_propagation();
+                    window.refresh();
+                }
+            },
+            move |window, cx| {
+                let handled = cancelled
+                    .update(cx, |owner, cx| {
+                        current(owner) == Some(gesture)
+                            && event(
+                                owner,
+                                SplitterEvent::Cancel(SplitterCancel::CaptureLost),
+                                window,
+                                cx,
+                            )
+                    })
+                    .unwrap_or(false);
+                if handled {
+                    window.refresh();
+                }
+            },
+            cx,
+        )
+    }
     /// Optional local Escape route, installed once on the focused ancestor with
     /// `capture_key_down`. Hosts with a broader cancel action dispatch the same
     /// `Cancel` intent there, retaining other gesture owners' cancellation order.
-    /// A window mouse listener is global; key listeners follow the focus tree,
+    /// Owned mouse input is window-wide; key listeners follow the focus tree,
     /// so the mouse-only overlay must not own this cancellation route.
     pub fn escape_listener(&self) -> impl Fn(&KeyDownEvent, &mut Window, &mut App) + use<V> {
         let keys = self.clone();
@@ -183,7 +242,14 @@ impl<V: 'static> SplitterInput<V> {
             MouseButton::Left,
             move |event: &MouseDownEvent, window, cx| {
                 if let Some(gesture) = SplitterGesture::start(config.axis, event.position, window) {
-                    binding.send(SplitterEvent::Begin(gesture), window, cx);
+                    if !binding.capture(gesture, window, cx) {
+                        return;
+                    }
+                    if !binding.send(SplitterEvent::Begin(gesture), window, cx)
+                        || binding.current(cx) != Some(gesture)
+                    {
+                        window.cancel_pointer_capture_for(binding.owner.entity_id(), cx);
+                    }
                 }
             },
         )
@@ -195,29 +261,39 @@ impl<V: 'static> SplitterInput<V> {
         let binding = self.clone();
         canvas(
             |_, _, _| (),
-            move |_, _, window, _| {
+            move |_, _, window, cx| {
+                if let Some(gesture) = binding.current(cx)
+                    && gesture.matches_window(window)
+                {
+                    window.renew_pointer_capture(binding.owner.entity_id(), gesture.cursor());
+                }
+                // A shared host may also be rendered in another window. Only
+                // that foreign-window input may use the frame listener; held
+                // input in the owning window goes exclusively through the lease.
                 let moved = binding.clone();
-                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-                    if !phase.capture() {
-                        return;
+                window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
+                    if phase.capture()
+                        && moved.current(cx).is_some_and(|g| !g.matches_window(window))
+                    {
+                        moved.send(
+                            SplitterEvent::Cancel(SplitterCancel::WindowChanged),
+                            window,
+                            cx,
+                        );
                     }
-                    let Some(gesture) = moved.current(cx) else {
-                        return;
-                    };
-                    let intent = if event.pressed_button != Some(MouseButton::Left) {
-                        SplitterEvent::Cancel(SplitterCancel::ButtonLost)
-                    } else {
-                        gesture.event(event.position, window, false)
-                    };
-                    moved.send(intent, window, cx);
                 });
                 let released = binding.clone();
-                window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-                    if !phase.capture() || event.button != MouseButton::Left {
-                        return;
-                    }
-                    if let Some(gesture) = released.current(cx) {
-                        released.send(gesture.event(event.position, window, true), window, cx);
+                window.on_mouse_event(move |_: &MouseUpEvent, phase, window, cx| {
+                    if phase.capture()
+                        && released
+                            .current(cx)
+                            .is_some_and(|g| !g.matches_window(window))
+                    {
+                        released.send(
+                            SplitterEvent::Cancel(SplitterCancel::WindowChanged),
+                            window,
+                            cx,
+                        );
                     }
                 });
             },

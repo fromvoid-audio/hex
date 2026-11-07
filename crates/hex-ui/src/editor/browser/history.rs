@@ -119,7 +119,7 @@ impl EditorView {
         let count = self.browser_visible_entries(cx).len()
             + self.browser_visible_devices(cx).len()
             + self.browser_visible_plugins(cx).len();
-        let top = self.browser_history_top_index(count);
+        let top = self.browser_history_top_index(count, cx);
         Entry {
             location: Location {
                 section: self.browser.section.clone(),
@@ -133,7 +133,7 @@ impl EditorView {
         }
     }
 
-    fn browser_history_top_index(&self, count: usize) -> usize {
+    fn browser_history_top_index(&self, count: usize, cx: &App) -> usize {
         let scroll = self.browser.scroll.0.borrow();
         // Both browser UniformLists have zero vertical padding and fixed
         // ROW_HEIGHT rows. Generic ScrollHandle child indexes do not describe
@@ -149,7 +149,17 @@ impl EditorView {
             },
             |pending| pending.item_index,
         );
-        index.min(count.saturating_sub(1))
+        if self.browser.section == BrowserSection::Plugins {
+            match super::plugins::PluginGroups::new(&self.browser_visible_plugins(cx)).line(index) {
+                Some(
+                    super::plugins::PluginLine::Heading(_, logical)
+                    | super::plugins::PluginLine::Plugin(logical),
+                ) => logical,
+                None => count.saturating_sub(1),
+            }
+        } else {
+            index.min(count.saturating_sub(1))
+        }
     }
 
     // Synchronize before navigation as well as from the observer: a queued observer
@@ -287,32 +297,52 @@ impl EditorView {
 
     pub(super) fn browser_item_at(&self, index: usize, cx: &App) -> Option<BrowserItemKey> {
         let files = self.browser_visible_entries(cx);
-        if let Some(entry) = files.get(index) {
-            return Some(BrowserItemKey::File(entry.path.clone()));
-        }
         let devices = self.browser_visible_devices(cx);
-        let index = index.checked_sub(files.len())?;
-        if let Some((class, entry)) = devices.get(index) {
-            return Some(BrowserItemKey::Device(*class, entry.type_id));
+        let plugins = self.browser_visible_plugins(cx);
+        let rows = BrowserRows::new(
+            files.len(),
+            devices.len(),
+            plugins.len(),
+            self.browser_devices_first(cx),
+        );
+        if rows.files.contains(&index) {
+            return files
+                .get(index - rows.files.start)
+                .map(|entry| BrowserItemKey::File(entry.path.clone()));
         }
-        self.browser_visible_plugins(cx)
-            .get(index.checked_sub(devices.len())?)
+        if rows.devices.contains(&index) {
+            return devices
+                .get(index - rows.devices.start)
+                .map(|(class, entry)| BrowserItemKey::Device(*class, entry.type_id));
+        }
+        plugins
+            .get(index.checked_sub(rows.plugins.start)?)
             .map(|row| BrowserItemKey::Plugin(row.module.clone(), row.cid))
     }
+
     pub(super) fn browser_history_index(&self, key: &BrowserItemKey, cx: &App) -> Option<usize> {
         let files = self.browser_visible_entries(cx);
         let devices = self.browser_visible_devices(cx);
+        let plugins = self.browser_visible_plugins(cx);
+        let rows = BrowserRows::new(
+            files.len(),
+            devices.len(),
+            plugins.len(),
+            self.browser_devices_first(cx),
+        );
         match key {
-            BrowserItemKey::File(path) => files.iter().position(|entry| &entry.path == path),
+            BrowserItemKey::File(path) => files
+                .iter()
+                .position(|entry| &entry.path == path)
+                .map(|i| rows.files.start + i),
             BrowserItemKey::Device(class, id) => devices
                 .iter()
                 .position(|(candidate, entry)| candidate == class && entry.type_id == *id)
-                .map(|i| files.len() + i),
-            BrowserItemKey::Plugin(path, id) => self
-                .browser_visible_plugins(cx)
+                .map(|i| rows.devices.start + i),
+            BrowserItemKey::Plugin(path, id) => plugins
                 .iter()
                 .position(|row| &row.module == path && row.cid == *id)
-                .map(|i| files.len() + devices.len() + i),
+                .map(|i| rows.plugins.start + i),
         }
     }
 
@@ -364,7 +394,7 @@ impl EditorView {
             .unwrap_or(0);
         self.browser
             .scroll
-            .scroll_to_item_strict(top, gpui::ScrollStrategy::Top);
+            .scroll_to_item_strict(self.browser_scroll_row(top, cx), gpui::ScrollStrategy::Top);
     }
 }
 

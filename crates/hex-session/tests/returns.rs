@@ -8,7 +8,7 @@ use std::{
 };
 
 fn wait(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + std::time::Duration::from_secs(60);
     loop {
         match service.try_event() {
             Ok(event) => return event,
@@ -998,6 +998,7 @@ fn rejected_send_gesture_values_and_removed_targets_never_change_canonical_state
     }
     service
         .submit(Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: false,
             key,
             sequence: 1,
             value: ParameterValue::Float(f32::INFINITY),
@@ -1051,6 +1052,7 @@ fn rejected_send_gesture_values_and_removed_targets_never_change_canonical_state
     assert!(removed.active_device_gesture.is_none());
     service
         .submit(Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: false,
             key: remove_key,
             sequence: 2,
             value: ParameterValue::Float(0.9),

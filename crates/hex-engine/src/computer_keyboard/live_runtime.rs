@@ -153,10 +153,7 @@ impl ComputerKeyboardRuntime {
         let pitch = ((event.word & 255) - 1) as u8;
         let velocity = ((event.word >> 8) & 255) as u8;
         let sampler = self.input.sampler_index(event.key, pitch, velocity)?;
-        let capacity = self
-            .mutable
-            .as_ref()
-            .map_or(VOICES, NativeInstrumentRuntimePair::max_active_occurrences);
+        let capacity = self.voice_capacity();
         if !self.supported.get(sampler).copied().unwrap_or(false)
             || self.scratch.iter().flatten().count() >= capacity
         {
@@ -253,10 +250,7 @@ impl ComputerKeyboardRuntime {
         // Repeated same-key on releases the prior occurrence before retriggering.
         self.release_hardware(Some(source), events, len);
         let sampler = (usize::from(velocity) - 1) * 128 + usize::from(pitch);
-        let capacity = self
-            .mutable
-            .as_ref()
-            .map_or(VOICES, NativeInstrumentRuntimePair::max_active_occurrences);
+        let capacity = self.voice_capacity();
         if !self.supported.get(sampler).copied().unwrap_or(false)
             || self.scratch.iter().flatten().count() >= capacity
         {
@@ -265,10 +259,9 @@ impl ComputerKeyboardRuntime {
                 .input
                 .lease()
                 .and_then(|input| input.live_notes.as_ref())
+                && let Some(batch) = &self.live_batch
             {
-                if let Some(batch) = &self.live_batch {
-                    let _ = input.fail_activation(batch.activation);
-                }
+                let _ = input.fail_activation(batch.activation);
             }
             self.release_hardware(None, events, len);
             return Ok(());

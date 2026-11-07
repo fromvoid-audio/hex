@@ -4,6 +4,7 @@
 use hex_project::{Command, Editor};
 use hex_storage::{CURRENT_SCHEMA_VERSION, decode, encode, load_with_token, save_new};
 use serde_json::{Value, json};
+mod common;
 
 const FIXTURES: [&[u8]; 13] = [
     include_bytes!("fixtures/earlier/schema30-tuning-ac29a1ad.json"),
@@ -117,7 +118,8 @@ fn original_30_to_33_writers_keep_all_saved_values_roundtrip_and_history() {
         let old = value(fixture);
         let project = decode(fixture).unwrap();
         let encoded = encode(&project).unwrap();
-        let current = value(&encoded);
+        let mut current = value(&encoded);
+        common::restore_pre_binding_instruments(&mut current);
         assert_eq!(current["version"], CURRENT_SCHEMA_VERSION);
         saved_values(&old, &current, "");
         assert_eq!(decode(&encoded).unwrap(), project);
@@ -378,7 +380,8 @@ fn original_explicit20_and22_midi_writers_preserve_policy_and_reject_mixed_layou
         let original = value(fixture);
         let project = decode(fixture).unwrap();
         let encoded = encode(&project).unwrap();
-        let current = value(&encoded);
+        let mut current = value(&encoded);
+        common::restore_pre_binding_instruments(&mut current);
         saved_values(&original, &current, "");
         saved_boundaries(&original, &current);
         assert_eq!(decode(&encoded).unwrap(), project);

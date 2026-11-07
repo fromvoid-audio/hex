@@ -62,6 +62,7 @@ impl EditorView {
                 let originals = capture_selected_notes(
                     source.notes().iter().map(|note| GroupNote {
                         id: note.id(),
+                        active: note.active(),
                         start: note.start().raw(),
                         duration: note.duration().raw(),
                         pitch: note.pitch(),

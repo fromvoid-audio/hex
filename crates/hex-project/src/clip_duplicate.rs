@@ -11,6 +11,22 @@ use crate::{
 use std::collections::BTreeSet;
 
 pub(crate) fn apply(project: &mut Project, ids: Vec<ClipId>) -> Result<Created, Invalid> {
+    apply_mode(project, ids, false)
+}
+pub(crate) fn apply_alias(project: &mut Project, ids: Vec<ClipId>) -> Result<Created, Invalid> {
+    apply_mode(project, ids, true)
+}
+pub(crate) fn apply_alias_at(
+    project: &mut Project,
+    ids: Vec<ClipId>,
+    anchor: ClipId,
+    track: crate::TrackId,
+    position: ClipGroupPosition,
+) -> Result<Created, Invalid> {
+    let incoming = project.preview_clip_group_move(&ids, anchor, track, position)?;
+    place_incoming(project, incoming, true, true)
+}
+fn apply_mode(project: &mut Project, ids: Vec<ClipId>, alias: bool) -> Result<Created, Invalid> {
     if ids.is_empty() || ids.len() > MAX_CLIPS {
         return Err(Invalid("clip duplication exceeds project limits"));
     }
@@ -128,7 +144,104 @@ pub(crate) fn apply(project: &mut Project, ids: Vec<ClipId>) -> Result<Created, 
         }
         incoming
     };
+    place_incoming(project, incoming, alias, false)
+}
+
+fn place_incoming(
+    project: &mut Project,
+    mut incoming: Vec<ClipGroupPreview>,
+    alias: bool,
+    protect_originals: bool,
+) -> Result<Created, Invalid> {
+    let originals: Vec<_> = incoming.iter().map(|member| member.id()).collect();
+    if alias {
+        for member in &mut incoming {
+            let original = member.id();
+            crate::clip_alias_commands::source(project, original)?;
+            match &mut member.content {
+                ClipGroupContent::Midi(clip) => {
+                    std::sync::Arc::make_mut(&mut clip.source).content =
+                        std::sync::Arc::new(crate::MidiContent {
+                            source_length: clip.source_length(),
+                            notes: Vec::new(),
+                        });
+                }
+                ClipGroupContent::Audio(clip) => {
+                    if clip.edit.is_none() {
+                        clip.edit = project
+                            .clip(original)
+                            .and_then(|original| original.edit.clone());
+                    }
+                }
+            }
+        }
+    }
+    // Capture after alias admission, which may install an equivalent audio root.
+    // A copy is refused if overwrite planning would trim or remove any source.
+    let protected: Vec<_> = if protect_originals {
+        originals
+            .iter()
+            .map(|id| {
+                let track = project
+                    .tracks()
+                    .iter()
+                    .find(|track| {
+                        track.clips().iter().any(|clip| clip.id() == *id)
+                            || track.midi_clips().iter().any(|clip| clip.id() == *id)
+                    })
+                    .map(|track| track.id());
+                (
+                    *id,
+                    track,
+                    project.clip(*id).cloned(),
+                    project.midi_clip(*id).cloned(),
+                )
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let created = crate::clip_group::place_batch(project, incoming, &[])?;
+    for (id, track, audio, midi) in protected {
+        let still_on_track = project.tracks().iter().any(|row| {
+            Some(row.id()) == track
+                && (row.clips().iter().any(|clip| clip.id() == id)
+                    || row.midi_clips().iter().any(|clip| clip.id() == id))
+        });
+        if !still_on_track
+            || project.clip(id) != audio.as_ref()
+            || project.midi_clip(id) != midi.as_ref()
+        {
+            return Err(Invalid(
+                "alias destination would overwrite an original clip",
+            ));
+        }
+    }
+    if alias {
+        let Created::Clips { first, last } = created else {
+            return Err(Invalid("alias duplication returned no placements"));
+        };
+        let mut copied: Vec<_> = project
+            .tracks()
+            .iter()
+            .flat_map(|track| {
+                track
+                    .clips()
+                    .iter()
+                    .map(|clip| clip.id())
+                    .chain(track.midi_clips().iter().map(|clip| clip.id()))
+            })
+            .filter(|id| *id >= first && *id <= last)
+            .collect();
+        copied.sort_unstable();
+        if copied.len() != originals.len() {
+            return Err(Invalid("alias duplication member count differs"));
+        }
+        for (original, copied) in originals.into_iter().zip(copied) {
+            crate::clip_alias_commands::bind_copy(project, original, copied)?;
+        }
+    }
+    crate::clip_alias_commands::prune(project);
     Project::from_snapshot(project.snapshot())?;
     Ok(created)
 }

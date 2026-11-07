@@ -48,6 +48,10 @@ pub struct PreparedSamplerPlan<'a> {
 }
 
 impl<'a> PreparedSamplerPlan<'a> {
+    pub(super) const fn output_rate(self) -> u32 {
+        self.output_rate
+    }
+
     pub fn new(
         sample: SampleShape,
         output_rate: u32,
@@ -61,6 +65,7 @@ impl<'a> PreparedSamplerPlan<'a> {
             || !finite_range(settings.gain, 0.0, 4.0)
             || !finite_range(settings.pan, -1.0, 1.0)
             || !finite_range(settings.velocity_amount, 0.0, 1.0)
+            || !finite_range(settings.loop_crossfade_ms, 0.0, MAX_LOOP_CROSSFADE_MS)
         {
             return Err(Invalid("sampler settings are outside their finite domain"));
         }
@@ -90,6 +95,9 @@ impl<'a> PreparedSamplerPlan<'a> {
             }
             _ => {}
         }
+        // Static reconstruction tables are built here, on control, never on
+        // first render.
+        super::interpolation::warm();
         Ok(Self {
             sample,
             output_rate,
@@ -199,13 +207,23 @@ impl<'a> PreparedSamplerPlan<'a> {
                 )
             }
         });
+        // Source-time milliseconds become whole source frames here, limited to
+        // the loop length and the pre-roll before the loop start in playback
+        // (offset) order. The bounded ms domain keeps this product finite.
+        let loop_crossfade = loop_offsets.map_or(0, |(start, end)| {
+            let frames = (settings.loop_crossfade_ms * f64::from(self.sample.sample_rate) / 1000.0)
+                .round() as usize;
+            frames.min(end - start).min(start)
+        });
         Ok(Some(VoiceCoefficients {
             expected_frames: self.sample.frames,
             channels: self.sample.channels,
             region,
             loop_offsets,
+            loop_crossfade,
             reverse: settings.reverse,
             step: step as u64,
+            kernel: super::interpolation::Kernel::for_rate(step / ONE as f64),
             channel_gain,
             gate,
             envelope: self.envelope,

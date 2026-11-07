@@ -119,15 +119,9 @@ fn browser_picker_compact_heading_paint_retains_every_source_row_and_settings_sl
         let before_rows = rows.map(|name| visual.debug_bounds(name).unwrap());
         let before_glyphs = glyphs.map(|name| visual.debug_bounds(name).unwrap());
         let names = if settings {
-            vec![
-                "collections",
-                "collections pending",
-                "library",
-                "sections · session",
-                "places",
-            ]
+            vec!["collections", "library", "sections · session", "places"]
         } else {
-            vec!["collections", "collections pending", "library", "places"]
+            vec!["collections", "library", "places"]
         };
         let headings = names
             .iter()
@@ -286,7 +280,7 @@ fn help_toggle_preserves_collapsed_source_identification_query_focus_and_changel
     visual.run_until_parked();
     let minimum = f32::from(visual.debug_bounds("browser-control-⚙").unwrap().size.width) + 1.0;
     resize(visual, minimum);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     while editor.read_with(visual, |view, _| view.state.is_none()) {
         editor.update(visual, |view, cx| {
             view.tick(cx);
@@ -419,8 +413,14 @@ fn help_toggle_preserves_collapsed_source_identification_query_focus_and_changel
     visual.simulate_keystrokes("space");
     visual.run_until_parked();
     assert!(
+        !visual.update(|_, cx| crate::tooltips::enabled(cx)),
+        "Space remains the global transport shortcut"
+    );
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert!(
         visual.update(|_, cx| crate::tooltips::enabled(cx)),
-        "tab returns to the help toggle"
+        "Enter activates the focused help toggle"
     );
     visual.simulate_keystrokes("shift-tab enter");
     visual.run_until_parked();

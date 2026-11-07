@@ -92,7 +92,7 @@ fn shared_splitters_cancel_button_loss_and_replaced_source_without_edits(cx: &mu
 }
 
 #[gpui::test]
-fn starting_spectrum_splitter_retires_detail_capture_before_new_preview(cx: &mut TestAppContext) {
+fn held_splitter_isolates_second_press_until_cancellation(cx: &mut TestAppContext) {
     let (project, track, _, clip) = audio_project();
     let (handle, editor) = editor_window(cx, project, Arc::default());
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -121,6 +121,15 @@ fn starting_spectrum_splitter_retires_detail_capture_before_new_preview(cx: &mut
         .debug_bounds("project-spectrum-resize")
         .unwrap()
         .center();
+    visual.simulate_mouse_down(spectrum, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |view, _| {
+        assert!(view.clip_detail_resize.is_active());
+        assert!(!view.project_spectrum.resize_is_active());
+    });
+    // A second press cannot steal a held gesture. After actual button loss,
+    // the next independent press starts the other sizing owner normally.
+    visual.simulate_mouse_move(spectrum, None, Modifiers::default());
+    visual.simulate_mouse_up(spectrum, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_down(spectrum, MouseButton::Left, Modifiers::default());
     editor.read_with(&visual, |view, _| {
         assert!(!view.clip_detail_resize.is_active());
@@ -441,4 +450,55 @@ fn clip_detail_small_window_returns_scroll_useful_piano_instead_of_crushing_trac
             .height
             >= px(44.0)
     );
+}
+
+#[gpui::test]
+fn editor_picker_fits_bottom_right_and_closed_pane_has_no_header(cx: &mut TestAppContext) {
+    let (project, track, _, clip) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    for mode in [EditorMode::Arrangement, EditorMode::Session] {
+        for (width, height) in [(880.0, 540.0), (1280.0, 800.0)] {
+            visual.simulate_resize(gpui::size(px(width), px(height)));
+            editor.update(&mut visual, |view, cx| {
+                view.mode = mode;
+                view.selected_track = Some(track);
+                view.selected_clip = Some(clip);
+                view.device_panel_active = false;
+                view.clip_view_open = false;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let status = visual.debug_bounds("editor-status-bar").unwrap();
+            let picker = visual.debug_bounds("clip-view-toggle-row").unwrap();
+            assert!(picker.top() >= status.top() && picker.bottom() <= status.bottom());
+            assert!(
+                picker.right() <= status.right(),
+                "picker={picker:?}, status={status:?}"
+            );
+            assert!(picker.left() > status.center().x);
+            assert_eq!(
+                visual.debug_bounds("clip-view").unwrap().size.height,
+                px(0.0)
+            );
+            for selector in ["device-detail-tab", "clip-detail-tab"] {
+                let target = visual.debug_bounds(selector).unwrap().center();
+                visual.simulate_click(target, Modifiers::default());
+                editor.read_with(&visual, |view, _| {
+                    assert!(view.clip_view_open);
+                    assert_eq!(view.device_panel_active, selector == "device-detail-tab");
+                });
+                let toggle = visual.debug_bounds("clip-view-toggle").unwrap().center();
+                visual.simulate_click(toggle, Modifiers::default());
+                assert_eq!(
+                    visual.debug_bounds("clip-view").unwrap().size.height,
+                    px(0.0)
+                );
+            }
+            editor.read_with(&visual, |view, _| {
+                assert!(view.last_enqueued_edit.is_none());
+                assert!(view.pending_requests.is_empty());
+            });
+        }
+    }
 }

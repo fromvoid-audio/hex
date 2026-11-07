@@ -350,7 +350,7 @@ fn registered_operator_matches_independent_arrangement_session_seek_and_loop_pcm
         .iter()
         .find(|entry| entry.type_id == OPERATOR)
         .expect("Operator catalog entry");
-    assert_eq!(operator.parameters.len(), 424);
+    assert_eq!(operator.parameters.len(), 428);
     let enables: Vec<_> = operator
         .parameters
         .iter()
@@ -608,7 +608,7 @@ fn operator_feedback_class_changes_keep_old_audio_while_canonical_state_changes(
     let before = active.performance_frame();
     assert_eq!(
         refused.try_inherit_state_from(&mut active),
-        Err(hex_engine::SessionPlaybackError::MutableInstrumentChase)
+        Err(hex_engine::SessionPlaybackError::SourceHistoryUnavailable)
     );
     assert_eq!(active.performance_frame(), before);
     let mut after_refusal = [[0.0; 2]; 64];
@@ -726,7 +726,11 @@ fn operator_feedback_class_change_refusal_covers_other_route_directions() {
         let frame_before = active.performance_frame();
         assert_eq!(
             candidate.try_inherit_state_from(&mut active),
-            Err(hex_engine::SessionPlaybackError::MutableInstrumentChase),
+            Err(if old_feedback {
+                hex_engine::SessionPlaybackError::SourceHistoryUnavailable
+            } else {
+                hex_engine::SessionPlaybackError::MutableInstrumentChase
+            }),
             "route={session_route}, old feedback={old_feedback}"
         );
         assert_eq!(active.performance_frame(), frame_before);

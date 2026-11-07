@@ -46,6 +46,7 @@ fn sampler_composition_current_arrange_console_history_and_save_roundtrip() {
         Command::AddMidiNotes {
             clip,
             notes: vec![hex_project::MidiNoteInsert {
+                active: true,
                 start: BeatTime::ZERO,
                 duration: BeatTime::ONE,
                 pitch: 60,
@@ -218,7 +219,13 @@ fn sampler_composition_stale_playing_cancel_seal_budget_and_noop_preserve_curren
     ))));
     h.render();
     let refused = h.next();
-    assert!(refused.error.as_ref().unwrap().contains("stop playback"));
+    assert!(
+        refused
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("sampler edit audio changed")
+    );
     gain::unchanged(&before, &refused);
     h.audio.as_ref().unwrap().control.stop();
     h.render();

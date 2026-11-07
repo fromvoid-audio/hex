@@ -10,6 +10,9 @@ publish.workspace = true
 allocation-probe = ["hex-audio/allocation-probe", "hex-ui/ui-test-support"]
 
 [dependencies]
+fs2 = "=0.4.3"
+serde_json = "=1.0.151"
+sha2 = "=0.11.0"
 hex-mts = { path = "../hex-mts" }
 hex-midi = { path = "../hex-midi" }
 hex-diagnostics = { path = "../hex-diagnostics" }
@@ -20,9 +23,15 @@ hex-export = { path = "../hex-export" }
 hex-session = { path = "../hex-session" }
 hex-stream = { path = "../hex-stream" }
 hex-media = { path = "../hex-media" }
+hex-plugin-catalog = { path = "../hex-plugin-catalog" }
+hex-preferences = { path = "../hex-preferences" }
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "macos-blade"] }
 
+[target.'cfg(unix)'.dependencies]
+nix = { version = "=0.31.3", features = ["signal", "process"] }
+
 [dev-dependencies]
+hex-plugin-state = { path = "../hex-plugin-state" }
 hex-storage = { path = "../hex-storage" }
 hex-tuning = { path = "../hex-tuning" }
 hex-project = { path = "../hex-project" }

@@ -14,6 +14,7 @@ use hex_lattice_contract::{
 use hex_project::{Command, Created};
 
 struct BorrowedDefinition {
+    binding_epoch: Option<u64>,
     instances: Vec<(ProcessorInstanceIdentity, u32)>,
 }
 impl NativeDeviceMetadata for BorrowedDefinition {
@@ -83,9 +84,22 @@ impl NativeDeviceDefinition for BorrowedDefinition {
             .find(|(key, _)| *key == identity)
             .map(|(_, latency)| *latency)
             .ok_or(DeviceContractError::InvalidId)?;
-        Ok(Some(PreparedProcessorFactory::Foreign(
-            PreparedForeignProcessor::new(8, latency, 16)?,
-        )))
+        let prepared = PreparedForeignProcessor::new(8, latency, 16)?;
+        let prepared = if let Some(epoch) = self.binding_epoch {
+            prepared
+                .with_output_tail(hex_lattice::OutputTail::Finite {
+                    max_tail_frames: u64::from(latency) + 16,
+                })
+                .with_binding(hex_lattice_contract::ForeignProcessorBinding {
+                    root: 1,
+                    instance: identity.device_id(),
+                    graph: 1,
+                    epoch,
+                })?
+        } else {
+            prepared
+        };
+        Ok(Some(PreparedProcessorFactory::Foreign(prepared)))
     }
 }
 
@@ -166,6 +180,14 @@ impl ForeignProcessors for Borrowed {
 }
 
 fn prepared(location: usize, bypassed: bool) -> (Arc<PreparedRevision>, Borrowed, Vec<Frame>) {
+    prepared_with_latency(location, bypassed, 3, None)
+}
+fn prepared_with_latency(
+    location: usize,
+    bypassed: bool,
+    latency: u32,
+    binding_epoch: Option<u64>,
+) -> (Arc<PreparedRevision>, Borrowed, Vec<Frame>) {
     let mut f = fixture(&[&[]], 64);
     let (command, owner) = match location {
         0 => (
@@ -217,9 +239,10 @@ fn prepared(location: usize, bypassed: bool) -> (Arc<PreparedRevision>, Borrowed
         .execute(Command::SetDeviceBypass { device, bypassed })
         .unwrap();
     let definition = BorrowedDefinition {
+        binding_epoch,
         instances: vec![(
             ProcessorInstanceIdentity::new(owner, device.value()).unwrap(),
-            3,
+            latency,
         )],
     };
     let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
@@ -374,12 +397,14 @@ fn foreign_preparation_distinguishes_equal_states_by_actual_device_and_owner() {
     // absent device and a matching numeric ID under the wrong owner refuse.
     assert!(
         prepare(&BorrowedDefinition {
+            binding_epoch: None,
             instances: vec![(identities[0], 3)]
         })
         .is_err()
     );
     assert!(
         prepare(&BorrowedDefinition {
+            binding_epoch: None,
             instances: vec![
                 (identities[0], 3),
                 (
@@ -395,6 +420,7 @@ fn foreign_preparation_distinguishes_equal_states_by_actual_device_and_owner() {
         .is_err()
     );
     let project = prepare(&BorrowedDefinition {
+        binding_epoch: None,
         instances: vec![(identities[0], 3), (identities[1], 7)],
     })
     .unwrap();
@@ -417,3 +443,119 @@ fn foreign_preparation_distinguishes_equal_states_by_actual_device_and_owner() {
     assert!(ProcessorInstanceIdentity::new(ProcessorChainOwner::Return(0), 1).is_err());
     assert!(ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 0).is_err());
 }
+
+#[test]
+fn stopped_zero_foreign_main_replacement_uses_full_handoff_and_pure_stream_preview() {
+    // Borrowed planner fixture only; actual source/endpoint/SDK admission is
+    // covered by the Desktop replacement regression and Audio Root tests.
+    let mut old = SessionPlayback::new(prepared_with_latency(2, false, 3, Some(1)).0).unwrap();
+    let mut candidate =
+        SessionPlayback::new(prepared_with_latency(2, false, 4, Some(2)).0).unwrap();
+    let before = (
+        old.capture_epoch,
+        candidate.capture_epoch,
+        old.performance_frame,
+        candidate.performance_frame,
+        candidate.candidate_admission_open,
+    );
+    let mut extents = Vec::new();
+    let window = candidate
+        .preview_stream_handoff_with_scope(
+            &mut old,
+            64,
+            None,
+            &mut |extent| {
+                extents.push(extent);
+                Ok(())
+            },
+            true,
+        )
+        .unwrap();
+    assert_eq!(window.frames, 0);
+    assert!(extents.is_empty());
+    assert_eq!(
+        (
+            old.capture_epoch,
+            candidate.capture_epoch,
+            old.performance_frame,
+            candidate.performance_frame,
+            candidate.candidate_admission_open
+        ),
+        before
+    );
+    candidate.try_inherit_state_from(&mut old).unwrap();
+    assert_eq!(
+        (candidate.performance_frame, candidate.arrangement_frame),
+        (0, 0)
+    );
+    assert!(!candidate.playing);
+    assert!(!candidate.candidate_admission_open);
+}
+
+#[test]
+fn completed_foreign_main_suffix_can_be_replaced_without_retaining_it() {
+    // Pure engine boundary: completion comes from the borrowed processor
+    // oracle after processing zeros, not from a native admission/Root witness.
+    struct Quiet;
+    impl ForeignProcessors for Quiet {
+        fn process_segment(
+            &mut self,
+            _: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            assert!(frames.iter().all(|frame| *frame == [0.0; 2]));
+            Ok(())
+        }
+        fn committed_tail_is_drained(&self, _: ForeignProcessorNode<'_>) -> bool {
+            true
+        }
+        fn reject_callback(&mut self) {
+            panic!("quiet planner fixture rejected");
+        }
+    }
+    let mut old = SessionPlayback::new(prepared_with_latency(2, false, 3, Some(1)).0).unwrap();
+    let mut candidate =
+        SessionPlayback::new(prepared_with_latency(2, false, 3, Some(2)).0).unwrap();
+    old.main_chain.begin_block();
+    old.main_chain
+        .process_range_with_foreign(
+            0..old.main_chain.len(),
+            &mut [[0.0; 2]; 64],
+            0,
+            None,
+            None,
+            &mut Quiet,
+        )
+        .unwrap();
+    old.main_chain.commit_block();
+    assert!(
+        old.main_chain
+            .committed_range_is_quiescent(0..old.main_chain.len())
+    );
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
+    assert!(candidate.playing);
+    assert!(
+        candidate
+            .return_effect_tails
+            .slots()
+            .iter()
+            .all(Option::is_none)
+    );
+    assert_eq!(
+        candidate
+            .main_chain
+            .foreign_bindings()
+            .flatten()
+            .next()
+            .unwrap()
+            .epoch,
+        2
+    );
+}
+
+mod shared_source_release;
+
+mod instruments;

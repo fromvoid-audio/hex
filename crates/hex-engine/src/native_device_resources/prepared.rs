@@ -3,6 +3,8 @@
 //! Providers receive only borrowed inventories. Runtime leases are created on control and move
 //! with their runtime, including into an outgoing tail; configuration equality never rebinds a
 //! carried voice. The revision carries a nonowning set identity, not a source owner.
+//! A retained source contributes one configuration at its explicit audio receiver;
+//! contributor tracks borrow its provider and never create a second resource lease.
 use super::{resident::NativeBankLoan, *};
 use crate::{AudioRootStorageLedger, owned_shared::OwnedShared};
 use hex_lattice::{DevicePreparationContext, NativeInstrumentRegistry, PreparedNativeInstrument};
@@ -161,12 +163,16 @@ impl PreparedDeviceResources {
         let registry = hex_devices::native_instrument_registry()
             .map_err(|_| ResourcePreparationError::InvalidScope)?;
         let devices = || {
-            project.tracks().iter().filter_map(|track| {
-                track
-                    .instrument()
-                    .filter(|device| !device.state().asset_references().is_empty())
-                    .map(|device| (track.id(), device))
-            })
+            project
+                .tracks()
+                .iter()
+                .filter(|track| track.receives_source_audio())
+                .filter_map(|track| {
+                    track
+                        .instrument()
+                        .filter(|device| !device.state().asset_references().is_empty())
+                        .map(|device| (track.id(), device))
+                })
         };
         let count = devices().count();
         let (configuration_bytes, overhead) = OwnedShared::<Configuration>::declared_parts()
@@ -375,8 +381,9 @@ impl PreparedDeviceResources {
             .map(|configuration| configuration.factory_inline_bound)
     }
     /// Finite compiler scratch overlap from each resource definition's inline-only factory bound.
-    /// Registry preparation and its mutable-factory copy may coexist; retained factories are
-    /// separately selected from the actual compiled revision in the same control union.
+    /// Registry preparation, its mutable-factory copy and the audited sampler
+    /// proof may coexist. Retained owners are selected separately from the
+    /// actual compiled revision in the same control union.
     pub fn compiler_construction_allowance_bytes(&self) -> Result<usize, ResourcePreparationError> {
         self.configurations
             .iter()
@@ -386,6 +393,11 @@ impl PreparedDeviceResources {
                         configuration
                             .factory_inline_bound
                             .checked_mul(2)
+                            .and_then(|bytes| bytes.checked_add(
+                                if configuration.type_id == hex_devices::sampler::state::TYPE_ID {
+                                    hex_devices::sampler::PreparedSamplerRuntime::history_retarget_inline_bound()
+                                } else { 0 }
+                            ))
                             .ok_or(AudioStorageError::Overflow)?,
                     )
                     .ok_or(AudioStorageError::Overflow.into())
@@ -430,7 +442,11 @@ impl PreparedDeviceResources {
             ));
         }
         let mut count = 0usize;
-        for track in project.tracks() {
+        for track in project
+            .tracks()
+            .iter()
+            .filter(|track| track.receives_source_audio())
+        {
             let Some(device) = track
                 .instrument()
                 .filter(|device| !device.state().asset_references().is_empty())

@@ -72,8 +72,10 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
 }
 
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?)
+}
+/// Decode an envelope parsed once by [`super::audio_events::parse_unique`].
+pub(crate) fn decode_value(mut value: serde_json::Value) -> Result<Project, StorageError> {
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid fade position envelope"))?;
@@ -86,7 +88,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             .ok_or(StorageError::Invalid("fade curve positions are missing"))?,
     )?;
     object.insert("version".into(), 37.into());
-    let project = super::tuning::decode_version(&serde_json::to_vec(&value)?, 37)?;
+    let project = super::tuning::decode_version_value(value, 37)?;
     let mut rows = BTreeMap::new();
     for row in positions.0 {
         if rows.insert(row.clip, row).is_some() {
@@ -117,7 +119,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "fade curve position references a non-arrangement audio clip",
         ));
     }
-    Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+    Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }
 
 #[cfg(test)]
@@ -169,7 +171,13 @@ mod tests {
             assert_eq!(std::fs::read(&path).unwrap(), bytes);
             std::fs::remove_dir_all(directory).unwrap();
             let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(value["version"], crate::CURRENT_SCHEMA_VERSION);
+            // The edited fixture's pitch renders with the v2 warp resampler.
+            let version = if edited {
+                crate::WARP_RESAMPLER_SCHEMA_VERSION
+            } else {
+                crate::CURRENT_SCHEMA_VERSION
+            };
+            assert_eq!(value["version"], version);
             for mutation in 0..9 {
                 let mut bad = value.clone();
                 match mutation {
@@ -209,7 +217,8 @@ mod tests {
     #[test]
     fn actual_schema37_encoder_opens_with_sample_exact_centered_defaults() {
         for edited in [false, true] {
-            let project = fixture(edited, 500);
+            // A schema37-era project rendered its pitch with the v1 law.
+            let project = super::super::warp_resampler::with_implied_laws(&fixture(edited, 500));
             // Frozen genuine prior encoder, rather than changing a current version tag.
             let old = crate::encode_document(
                 &super::super::tuning::DocumentV37::from_project(&project).unwrap(),

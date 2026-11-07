@@ -55,12 +55,17 @@ pub(crate) fn require_legacy_compatible(project: &Project) -> Result<(), Storage
     Ok(())
 }
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
-    if !project.native_sources().is_empty() {
+    if project.native_sources().iter().any(|source| {
+        project
+            .tracks()
+            .iter()
+            .all(|track| track.source_id() != Some(source.id()))
+    }) {
         return Err(StorageError::Invalid(
-            "schema44 cannot save retained native sources",
+            "schema44 core cannot represent unassigned native sources",
         ));
     }
-    Project::from_snapshot(project.snapshot()).map_err(invalid)?;
+    Project::from_legacy_snapshot(project.snapshot()).map_err(invalid)?;
     let mut snapshot = project.snapshot();
     let mut rows = Vec::new();
     for track in &mut snapshot.tracks {
@@ -72,7 +77,7 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
         track.kind = TrackKind::Ordinary;
         track.parent_group = None;
     }
-    let core = Project::from_snapshot(snapshot).map_err(invalid)?;
+    let core = Project::from_legacy_snapshot(snapshot).map_err(invalid)?;
     let mut value = super::grouped_audio::encode(&core)?;
     let object = value
         .as_object_mut()
@@ -82,8 +87,10 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
     Ok(value)
 }
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?)
+}
+/// Decode an envelope parsed once by [`super::audio_events::parse_unique`].
+pub(crate) fn decode_value(mut value: serde_json::Value) -> Result<Project, StorageError> {
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid track hierarchy envelope"))?;
@@ -96,7 +103,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             .ok_or(StorageError::Invalid("track hierarchy inventory missing"))?,
     )?;
     object.insert("version".into(), 43.into());
-    let mut snapshot = super::grouped_audio::decode(&serde_json::to_vec(&value)?)?.snapshot();
+    let mut snapshot = super::grouped_audio::decode_value(value)?.snapshot();
     if rows.len() != snapshot.tracks.len() {
         return Err(StorageError::Invalid(
             "track hierarchy inventory is incomplete",
@@ -115,5 +122,5 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         };
         track.parent_group = row.parent;
     }
-    Project::from_snapshot(snapshot).map_err(invalid)
+    Project::from_legacy_snapshot(snapshot).map_err(invalid)
 }

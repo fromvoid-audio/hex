@@ -41,6 +41,15 @@ struct AudioView {
     base_placement: Option<Placement>,
     base_start_delta: String,
     window: Window,
+    /// Schema66 read law, present only when it differs from
+    /// [`AudioContentView::implied_read_resampler`]; older layouts never
+    /// contain it (see `schema::content_view_resampler`).
+    #[serde(
+        default,
+        deserialize_with = "crate::audio_edit::present_warp_resampler",
+        skip_serializing_if = "Option::is_none"
+    )]
+    read_resampler: Option<u8>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -55,8 +64,8 @@ fn required_placement<'de, D: serde::Deserializer<'de>>(
 ) -> Result<Option<Placement>, D::Error> {
     Option::deserialize(d)
 }
-impl From<AudioContentView> for AudioView {
-    fn from(v: AudioContentView) -> Self {
+impl AudioView {
+    fn new(v: AudioContentView, clock: AudioDomainClock) -> Self {
         Self {
             restore_plain: v.restore_plain,
             base_view_start: v.base_view_start,
@@ -69,11 +78,21 @@ impl From<AudioContentView> for AudioView {
             }),
             base_start_delta: v.base_start_delta.to_string(),
             window: v.window.into(),
+            read_resampler: v
+                .has_explicit_read_resampler(clock)
+                .then_some(crate::audio_edit::warp_resampler_tag(v.read_resampler)),
         }
     }
-}
-impl AudioView {
-    fn checked(self) -> Result<AudioContentView, StorageError> {
+    fn checked(self, clock: AudioDomainClock) -> Result<AudioContentView, StorageError> {
+        let implied = AudioContentView::implied_read_resampler(clock);
+        let read_resampler = self
+            .read_resampler
+            .map_or(Ok(implied), crate::audio_edit::warp_resampler_from_tag)?;
+        if self.read_resampler.is_some() && read_resampler == implied {
+            return Err(StorageError::Invalid(
+                "redundant read resampler version in directed audio view",
+            ));
+        }
         Ok(AudioContentView {
             restore_plain: self.restore_plain,
             base_view_start: self.base_view_start,
@@ -96,6 +115,7 @@ impl AudioView {
                 .parse()
                 .map_err(|_| StorageError::Invalid("invalid audio content base displacement"))?,
             window: self.window.checked()?,
+            read_resampler,
         })
     }
 }
@@ -202,12 +222,13 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
     visit(
         &mut snapshot,
         |c| {
-            let view = c.edit.as_mut().and_then(|edit| edit.content_view.take());
+            let view = c.edit.as_mut().and_then(|edit| {
+                let clock = edit.domain.clock;
+                edit.content_view.take().map(|v| AudioView::new(v, clock))
+            });
             audio_rows.push(Row {
                 clip: c.id,
-                view: View::Audio {
-                    view: view.map(Into::into),
-                },
+                view: View::Audio { view },
             });
             Ok(())
         },
@@ -222,7 +243,7 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
         },
     )?;
     audio_rows.extend(midi_rows);
-    let legacy = Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))?;
+    let legacy = Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))?;
     let mut value = super::clip_activation::encode(&legacy)?;
     let object = value
         .as_object_mut()
@@ -231,9 +252,12 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
     object.insert("content_views".into(), serde_json::to_value(audio_rows)?);
     Ok(value)
 }
+#[cfg(test)]
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?)
+}
+/// Decode an envelope parsed once by [`super::audio_events::parse_unique`].
+pub(crate) fn decode_value(mut value: serde_json::Value) -> Result<Project, StorageError> {
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid directed content envelope"))?;
@@ -244,7 +268,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         StorageError::Invalid("directed content inventory is missing"),
     )?)?;
     object.insert("version".into(), 40.into());
-    let legacy = super::clip_activation::decode(&serde_json::to_vec(&value)?)?;
+    let legacy = super::clip_activation::decode_value(value)?;
     let mut rows = BTreeMap::new();
     for row in inventory.0 {
         if rows.insert(row.clip, row.view).is_some() {
@@ -274,12 +298,10 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
                 ));
             };
             if let Some(view) = view {
-                c.edit
-                    .as_mut()
-                    .ok_or(StorageError::Invalid(
-                        "directed audio view requires a retained domain",
-                    ))?
-                    .content_view = Some(view.checked()?);
+                let edit = c.edit.as_mut().ok_or(StorageError::Invalid(
+                    "directed audio view requires a retained domain",
+                ))?;
+                edit.content_view = Some(view.checked(edit.domain.clock)?);
             }
         }
         for c in midi {
@@ -299,7 +321,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "directed content references a missing arrangement clip",
         ));
     }
-    Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+    Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }
 
 #[cfg(test)]
@@ -346,7 +368,7 @@ mod tests {
             outer_length: AudioDomainClock::Frames(8_000),
             cycle_phase: 0,
         });
-        let project = Project::from_snapshot(snapshot).unwrap();
+        let project = Project::from_legacy_snapshot(snapshot).unwrap();
         let original = crate::encode(&project).unwrap();
         let document: serde_json::Value = serde_json::from_slice(&original).unwrap();
         for delta in [i128::MIN + 1, -2 * i128::from(u64::MAX) - 1, i128::MAX] {

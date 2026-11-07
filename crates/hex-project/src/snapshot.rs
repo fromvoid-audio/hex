@@ -14,14 +14,23 @@ use std::{
 /// Transport representation of an editable project, without decoded PCM.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
+    pub aliases: crate::ClipAliasesSnapshot,
     pub native_sources: Vec<crate::NativeSourceSnapshot>,
     pub arrangement_sections: Vec<crate::ArrangementSectionSnapshot>,
     pub tuning: hex_tuning::ProjectTuning,
     pub return_feeds: Vec<crate::ReturnFeedSnapshot>,
+    /// Strictly ascending IDs of tracks whose name is automatic (hex-generated
+    /// default or device-derived). Every listed ID must name a track; omitted
+    /// tracks carry user-set names.
+    pub automatic_track_names: Vec<u64>,
+    /// Strictly ascending receiver track IDs with a retained source path.
+    pub retained_source_paths: Vec<u64>,
     pub audio_feeds: Vec<crate::AudioFeedSnapshot>,
     pub midi_routes: Vec<crate::MidiRouteSnapshot>,
+    pub sidechains: Vec<crate::SidechainRouteSnapshot>,
     pub import_provenance: Option<crate::ImportProvenance>,
     pub sample_rate: u32,
+    pub sample_rate_mode: crate::SampleRateMode,
     pub next_id: u64,
     pub assets: Vec<AssetSnapshot>,
     pub tracks: Vec<TrackSnapshot>,
@@ -65,6 +74,7 @@ pub struct SessionAudioClipSnapshot {
     pub asset: u64,
     pub source_start: u64,
     pub source_end: u64,
+    pub loop_range: Option<crate::SessionAudioLoop>,
     pub gain: crate::ClipGain,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,6 +112,8 @@ pub struct AssetSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackSnapshot {
+    pub group_output_mutes: Vec<crate::GroupOutputMuteRange>,
+    pub tags: Vec<String>,
     pub kind: crate::TrackKind,
     pub parent_group: Option<u64>,
     pub color: crate::ElementColor,
@@ -115,6 +127,11 @@ pub struct TrackSnapshot {
     pub muted: bool,
     pub soloed: bool,
     pub devices: Vec<DeviceSnapshot>,
+    /// Resolved read projection of the bound source instrument. Identity, state,
+    /// bypass and comparison must match its registry device; `automation` must be
+    /// empty. NativeSourceSnapshot is the sole source-envelope transport owner,
+    /// avoiding one curve copy per shared binding. This is never a second state
+    /// owner. Historical inline projections use the explicit legacy adapter.
     pub instrument: Option<DeviceSnapshot>,
     /// Number of effects before `instrument`; required exactly when present.
     pub instrument_position: Option<usize>,
@@ -139,6 +156,7 @@ pub struct SendLevelSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceSnapshot {
+    pub automation: Vec<crate::DeviceAutomation>,
     pub comparison: Option<crate::DeviceComparison>,
     pub id: u64,
     pub bypassed: bool,
@@ -202,6 +220,7 @@ pub struct MidiClipSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiNoteSnapshot {
     pub id: u64,
+    pub active: bool,
     pub start_raw: u64,
     pub duration_raw: u64,
     pub pitch: u8,
@@ -231,6 +250,7 @@ impl Project {
     /// Copy editable metadata for a control-side storage or interchange adapter.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
+            aliases: self.aliases.snapshot(),
             native_sources: self
                 .native_sources
                 .iter()
@@ -252,6 +272,14 @@ impl Project {
                     gain: f.gain(),
                 })
                 .collect(),
+            sidechains: self
+                .sidechains
+                .iter()
+                .map(|route| crate::SidechainRouteSnapshot {
+                    device: route.device.value(),
+                    source: route.source.value(),
+                })
+                .collect(),
             midi_routes: self
                 .midi_routes
                 .iter()
@@ -271,8 +299,25 @@ impl Project {
                     gain: feed.gain,
                 })
                 .collect(),
+            automatic_track_names: self
+                .tracks
+                .iter()
+                .filter(|track| track.automatic_name)
+                .map(|track| track.id.0)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            retained_source_paths: self
+                .tracks
+                .iter()
+                .filter(|track| track.retained_source_path)
+                .map(|track| track.id.0)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
             import_provenance: self.import_provenance.clone(),
             sample_rate: self.sample_rate,
+            sample_rate_mode: self.sample_rate_mode,
             next_id: self.next_id,
             assets: self
                 .assets
@@ -291,6 +336,12 @@ impl Project {
                 .tracks
                 .iter()
                 .map(|track| TrackSnapshot {
+                    group_output_mutes: track.group_output_mutes().to_vec(),
+                    tags: track
+                        .tags
+                        .iter()
+                        .map(|tag| tag.as_str().to_owned())
+                        .collect(),
                     kind: track.kind,
                     parent_group: track.parent_group.map(TrackId::value),
                     color: track.color,
@@ -307,6 +358,7 @@ impl Project {
                         .devices
                         .iter()
                         .map(|device| DeviceSnapshot {
+                            automation: device.automation().to_vec(),
                             comparison: device.comparison.clone(),
                             id: device.id.value(),
                             bypassed: device.bypassed,
@@ -314,6 +366,7 @@ impl Project {
                         })
                         .collect(),
                     instrument: track.instrument.as_ref().map(|instrument| DeviceSnapshot {
+                        automation: Vec::new(),
                         comparison: instrument.comparison.clone(),
                         id: instrument.id.value(),
                         bypassed: instrument.bypassed,
@@ -366,8 +419,10 @@ impl Project {
                                     .source
                                     .notes
                                     .iter()
+                                    .filter(|_| self.clip_alias(clip.id).is_none())
                                     .map(|note| MidiNoteSnapshot {
                                         id: note.id.0,
+                                        active: note.active,
                                         start_raw: note.start.raw(),
                                         duration_raw: note.duration.raw(),
                                         pitch: note.pitch,
@@ -400,6 +455,7 @@ impl Project {
                         .devices
                         .iter()
                         .map(|device| DeviceSnapshot {
+                            automation: device.automation().to_vec(),
                             comparison: device.comparison.clone(),
                             id: device.id.value(),
                             bypassed: device.bypassed,
@@ -446,8 +502,10 @@ impl Project {
                                             .source
                                             .notes
                                             .iter()
+                                            .filter(|_| self.clip_alias(clip.id).is_none())
                                             .map(|note| MidiNoteSnapshot {
                                                 id: note.id.value(),
+                                                active: note.active,
                                                 start_raw: note.start.raw(),
                                                 duration_raw: note.duration.raw(),
                                                 pitch: note.pitch,
@@ -467,6 +525,7 @@ impl Project {
                                     asset: clip.asset().value(),
                                     source_start: clip.source_start(),
                                     source_end: clip.source_end(),
+                                    loop_range: clip.loop_range(),
                                     gain: clip.gain(),
                                 })
                             }
@@ -479,6 +538,7 @@ impl Project {
                 .main_devices
                 .iter()
                 .map(|device| DeviceSnapshot {
+                    automation: device.automation().to_vec(),
                     comparison: device.comparison.clone(),
                     id: device.id.value(),
                     bypassed: device.bypassed,
@@ -492,6 +552,163 @@ impl Project {
     }
 
     /// Validate untrusted snapshot metadata before constructing a live model.
+    /// Explicit in-memory adapter for historical inline-instrument snapshots.
+    /// Frozen codec layers may edit their resolved instrument projection before
+    /// the next layer validates it. Only this adapter treats that legacy field as
+    /// authoritative. Current-format callers use strict `from_snapshot` instead.
+    /// Original DeviceIds and source membership/order survive; fresh SourceIds
+    /// are reserved after the old identity cursor, without writing any file.
+    /// Generic device envelopes did not exist in these historical formats;
+    /// snapshots containing them must use strict `from_snapshot` so an inline
+    /// projection cannot replace their canonical source owner.
+    pub fn from_legacy_snapshot(mut snapshot: Snapshot) -> Result<Self, Invalid> {
+        if snapshot
+            .tracks
+            .iter()
+            .flat_map(|track| track.devices.iter().chain(track.instrument.iter()))
+            .chain(
+                snapshot
+                    .return_tracks
+                    .iter()
+                    .flat_map(|track| track.devices.iter()),
+            )
+            .chain(snapshot.main_devices.iter())
+            .chain(
+                snapshot
+                    .native_sources
+                    .iter()
+                    .flat_map(|source| source.devices.iter()),
+            )
+            .any(|device| !device.automation.is_empty())
+        {
+            return Err(Invalid(
+                "legacy snapshots cannot carry device automation; use strict current snapshots",
+            ));
+        }
+        let mut max_id = 0;
+        let mut note_id = |id: u64| {
+            max_id = max_id.max(id);
+        };
+        for section in &snapshot.arrangement_sections {
+            note_id(section.id);
+        }
+        for asset in &snapshot.assets {
+            note_id(asset.id);
+        }
+        for source in &snapshot.native_sources {
+            note_id(source.id);
+            for d in &source.devices {
+                note_id(d.id);
+            }
+        }
+        for d in &snapshot.main_devices {
+            note_id(d.id);
+        }
+        for t in &snapshot.return_tracks {
+            note_id(t.id);
+            for d in &t.devices {
+                note_id(d.id);
+            }
+        }
+        for t in &snapshot.tracks {
+            note_id(t.id);
+            for d in t.devices.iter().chain(t.instrument.iter()) {
+                note_id(d.id);
+            }
+            let (audio, midi): (&[_], &[_]) = match &t.content {
+                TrackContentSnapshot::Audio(a) => (a, &[]),
+                TrackContentSnapshot::Instrument(m) => (&[], m),
+                TrackContentSnapshot::Hybrid {
+                    audio_clips,
+                    midi_clips,
+                } => (audio_clips, midi_clips),
+            };
+            for c in audio {
+                note_id(c.id);
+            }
+            for c in midi {
+                note_id(c.id);
+                for n in &c.notes {
+                    note_id(n.id);
+                }
+            }
+        }
+        for scene in &snapshot.session.scenes {
+            note_id(scene.id);
+        }
+        for cell in &snapshot.session.cells {
+            match &cell.content {
+                SessionCellContentSnapshot::Audio(c) => note_id(c.id),
+                SessionCellContentSnapshot::Midi(c) => {
+                    note_id(c.id);
+                    for n in &c.source.notes {
+                        note_id(n.id);
+                    }
+                }
+                SessionCellContentSnapshot::Stop => {}
+            }
+        }
+        for feed in &snapshot.return_feeds {
+            note_id(feed.id);
+        }
+        for feed in &snapshot.audio_feeds {
+            note_id(feed.id);
+        }
+        for route in &snapshot.midi_routes {
+            note_id(route.id);
+        }
+        if snapshot.next_id <= max_id {
+            return Err(Invalid("next project id must exceed all existing ids"));
+        }
+        // Historical inline formats did not carry a receiver. Reconstruct it
+        // from their authoritative singleton binding, including removed/moved
+        // inline instruments between frozen migration layers.
+        for source in &mut snapshot.native_sources {
+            source.receiver = None;
+        }
+        let mut legacy_bindings = BTreeSet::new();
+        for track in &snapshot.tracks {
+            let Some(instrument) = &track.instrument else {
+                continue;
+            };
+            if let Some(source) = snapshot
+                .native_sources
+                .iter_mut()
+                .find(|s| s.devices.iter().any(|d| d.id == instrument.id))
+            {
+                if !legacy_bindings.insert(source.id) {
+                    return Err(Invalid("legacy snapshots cannot share source bindings"));
+                }
+                if source.devices.len() != 1 || source.instrument_index != 0 {
+                    return Err(Invalid(
+                        "legacy instrument does not identify a singleton source",
+                    ));
+                }
+                source.devices[0] = instrument.clone();
+                if source.receiver.is_none() {
+                    source.receiver = Some(track.id);
+                }
+            } else {
+                if snapshot.native_sources.len() >= crate::MAX_NATIVE_SOURCES {
+                    return Err(Invalid("native source limit reached"));
+                }
+                let id = snapshot.next_id;
+                snapshot.next_id = id
+                    .checked_add(1)
+                    .ok_or(Invalid("project id space exhausted"))?;
+                snapshot.native_sources.push(crate::NativeSourceSnapshot {
+                    id,
+                    name: track.name.clone(),
+                    devices: vec![instrument.clone()],
+                    instrument_index: 0,
+                    receiver: Some(track.id),
+                });
+                legacy_bindings.insert(id);
+            }
+        }
+        Self::from_snapshot(snapshot)
+    }
+
     pub fn from_snapshot(mut snapshot: Snapshot) -> Result<Self, Invalid> {
         if snapshot.audio_feeds.len() > crate::MAX_AUDIO_FEEDS
             || snapshot.midi_routes.len() > crate::MAX_MIDI_ROUTES
@@ -502,7 +719,31 @@ impl Project {
         let return_feeds = std::mem::take(&mut snapshot.return_feeds);
         let audio_feeds = std::mem::take(&mut snapshot.audio_feeds);
         let midi_routes = std::mem::take(&mut snapshot.midi_routes);
+        let sidechains = std::mem::take(&mut snapshot.sidechains);
+        let automatic_track_names = std::mem::take(&mut snapshot.automatic_track_names);
+        let retained_source_paths = std::mem::take(&mut snapshot.retained_source_paths);
+        if retained_source_paths.len() > MAX_TRACKS
+            || retained_source_paths
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(Invalid(
+                "retained source paths must be unique ascending track ids",
+            ));
+        }
+        let mut retained_source_paths: BTreeSet<u64> = retained_source_paths.into_iter().collect();
+        if automatic_track_names.len() > MAX_TRACKS
+            || automatic_track_names
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(Invalid(
+                "automatic track names must be unique ascending track ids",
+            ));
+        }
+        let mut automatic_track_names: BTreeSet<u64> = automatic_track_names.into_iter().collect();
         let mut project = Project::new(snapshot.sample_rate)?;
+        project.sample_rate_mode = snapshot.sample_rate_mode;
         project.tuning = snapshot.tuning;
         project.import_provenance = snapshot.import_provenance;
         project.tempo_map = crate::TempoMap::new(snapshot.sample_rate, snapshot.tempo_points)?;
@@ -531,6 +772,9 @@ impl Project {
 
         let mut ids = BTreeSet::new();
         let mut max_id = 0_u64;
+        let (aliases, alias_note_count) =
+            crate::clip_alias::ClipAliases::from_snapshot(snapshot.aliases, &mut ids, &mut max_id)?;
+        project.aliases = aliases;
         if snapshot.arrangement_sections.len() > crate::MAX_ARRANGEMENT_SECTIONS {
             return Err(Invalid("arrangement section limit reached"));
         }
@@ -577,6 +821,7 @@ impl Project {
         for device in snapshot.main_devices {
             insert_id(device.id, &mut ids, &mut max_id)?;
             main_devices.push(Device {
+                automation: device.automation,
                 comparison: device.comparison,
                 id: DeviceId(device.id),
                 state: device.state,
@@ -607,20 +852,22 @@ impl Project {
                     comparison.validate(&device.state)?;
                 }
                 devices.push(Device {
+                    automation: device.automation,
                     id: DeviceId(device.id),
                     state: device.state,
                     bypassed: device.bypassed,
                     comparison: device.comparison,
                 });
             }
-            project.native_sources.push(crate::NativeSource {
-                id: crate::SourceId(source.id),
-                name: source.name,
+            project.native_sources.push(crate::NativeSource::from_parts(
+                crate::SourceId(source.id),
+                source.name,
                 devices,
-                instrument_index: source.instrument_index,
-            });
+                source.instrument_index,
+                source.receiver.map(TrackId),
+            )?);
         }
-        let mut total_notes = 0_usize;
+        let mut total_notes = alias_note_count;
         let mut return_ids = BTreeSet::new();
         let mut returns = Vec::with_capacity(snapshot.return_tracks.len());
         for return_track in snapshot.return_tracks {
@@ -643,6 +890,7 @@ impl Project {
                     return Err(Invalid("project device limit reached"));
                 }
                 devices.push(Device {
+                    automation: device.automation,
                     comparison: device.comparison,
                     id: DeviceId(device.id),
                     state: device.state,
@@ -693,6 +941,7 @@ impl Project {
             for device in track.devices {
                 insert_id(device.id, &mut ids, &mut max_id)?;
                 devices.push(Device {
+                    automation: device.automation,
                     comparison: device.comparison,
                     id: DeviceId(device.id),
                     state: device.state,
@@ -700,19 +949,22 @@ impl Project {
                 });
             }
             let instrument = if let Some(instrument) = track.instrument {
-                total_devices = total_devices
-                    .checked_add(1)
-                    .ok_or(Invalid("device count overflow"))?;
-                if total_devices > MAX_DEVICES {
-                    return Err(Invalid("project device limit reached"));
+                let source = project
+                    .native_sources
+                    .iter()
+                    .find(|source| source.instrument().id().value() == instrument.id)
+                    .ok_or(Invalid("track instrument has no retained source"))?;
+                let expected = source.instrument();
+                if !instrument.automation.is_empty()
+                    || expected.state() != &instrument.state
+                    || expected.bypassed() != instrument.bypassed
+                    || expected.comparison() != instrument.comparison.as_ref()
+                {
+                    return Err(Invalid(
+                        "track instrument projection differs from retained source",
+                    ));
                 }
-                insert_id(instrument.id, &mut ids, &mut max_id)?;
-                Some(Device {
-                    comparison: instrument.comparison,
-                    id: DeviceId(instrument.id),
-                    state: instrument.state,
-                    bypassed: instrument.bypassed,
-                })
+                Some(source.binding()?)
             } else {
                 None
             };
@@ -783,6 +1035,14 @@ impl Project {
                     clip.looping,
                     clip.one_shot_boundary,
                 )?;
+                let alias_content = project.aliases.midi_content(ClipId(clip.id))?;
+                if let Some(content) = &alias_content
+                    && (!clip.notes.is_empty() || content.source_length != source_length)
+                {
+                    return Err(Invalid(
+                        "alias midi member contains inline notes or wrong extent",
+                    ));
+                }
                 total_notes = total_notes
                     .checked_add(clip.notes.len())
                     .ok_or(Invalid("note count overflow"))?;
@@ -804,6 +1064,7 @@ impl Project {
                     )?;
                     notes.push(MidiNote {
                         id: NoteId(note.id),
+                        active: note.active,
                         start: note_start,
                         duration,
                         pitch: note.pitch,
@@ -816,10 +1077,10 @@ impl Project {
                 clip.playback_offset_raw
                     .checked_add(length.raw())
                     .ok_or(Invalid("midi playback window end overflow"))?;
-                if let Some(view) = clip.content_view {
-                    if view.length()? != length.raw() {
-                        return Err(Invalid("midi content window differs from placement"));
-                    }
+                if let Some(view) = clip.content_view
+                    && view.length()? != length.raw()
+                {
+                    return Err(Invalid("midi content window differs from placement"));
                 }
                 compiled_midi.push(MidiClip {
                     content_view: clip.content_view,
@@ -832,13 +1093,17 @@ impl Project {
                     start,
                     length,
                     source: std::sync::Arc::new(crate::MidiSource {
+                        content: alias_content.unwrap_or_else(|| {
+                            std::sync::Arc::new(crate::MidiContent {
+                                source_length,
+                                notes,
+                            })
+                        }),
                         one_shot_boundary: clip.one_shot_boundary,
-                        source_length,
                         source_start,
                         loop_start,
                         loop_end,
                         looping: clip.looping,
-                        notes,
                     }),
                 });
             }
@@ -869,6 +1134,11 @@ impl Project {
                 });
             }
             tracks.push(Track {
+                group_output_mutes: crate::group_output_mute::snapshot_ranges(
+                    track.kind,
+                    track.group_output_mutes,
+                )?,
+                tags: crate::track_tags::snapshot_list(track.tags)?,
                 kind: track.kind,
                 parent_group: track.parent_group.map(TrackId),
                 color: track.color,
@@ -879,18 +1149,26 @@ impl Project {
                 )?,
                 id: TrackId(track.id),
                 name: track.name,
+                automatic_name: automatic_track_names.remove(&track.id),
                 gain: track.gain,
                 balance: track.balance,
                 muted: track.muted,
                 soloed: track.soloed,
                 devices,
                 instrument,
+                retained_source_path: retained_source_paths.remove(&track.id),
                 instrument_position: track.instrument_position,
                 content,
                 sends,
             });
         }
 
+        if !automatic_track_names.is_empty() {
+            return Err(Invalid("automatic track name owner is missing"));
+        }
+        if !retained_source_paths.is_empty() {
+            return Err(Invalid("retained source path owner is missing"));
+        }
         let mut scenes = Vec::with_capacity(snapshot.session.scenes.len());
         let mut scene_ids = BTreeSet::new();
         for scene in snapshot.session.scenes {
@@ -943,6 +1221,14 @@ impl Project {
                         clip.source.looping,
                         clip.source.one_shot_boundary,
                     )?;
+                    let alias_content = project.aliases.midi_content(ClipId(clip.id))?;
+                    if let Some(content) = &alias_content
+                        && (!clip.source.notes.is_empty() || content.source_length != source_length)
+                    {
+                        return Err(Invalid(
+                            "alias midi member contains inline notes or wrong extent",
+                        ));
+                    }
                     total_notes = total_notes
                         .checked_add(clip.source.notes.len())
                         .ok_or(Invalid("note count overflow"))?;
@@ -964,6 +1250,7 @@ impl Project {
                         )?;
                         notes.push(MidiNote {
                             id: NoteId(note.id),
+                            active: note.active,
                             start,
                             duration,
                             pitch: note.pitch,
@@ -981,13 +1268,17 @@ impl Project {
                         id: ClipId(clip.id),
                         name: clip.name,
                         source: std::sync::Arc::new(crate::MidiSource {
+                            content: alias_content.unwrap_or_else(|| {
+                                std::sync::Arc::new(crate::MidiContent {
+                                    source_length,
+                                    notes,
+                                })
+                            }),
                             one_shot_boundary: clip.source.one_shot_boundary,
-                            source_length,
                             source_start,
                             loop_start,
                             loop_end,
                             looping: clip.source.looping,
-                            notes,
                         }),
                     })
                 }
@@ -1011,6 +1302,9 @@ impl Project {
                     if total_clips > MAX_CLIPS {
                         return Err(Invalid("clip limit reached"));
                     }
+                    if let Some(range) = clip.loop_range {
+                        range.validate_source(clip.source_start, clip.source_end)?;
+                    }
                     crate::SessionCellContent::Audio(crate::SessionAudioClip {
                         active: clip.active,
                         flavor: clip.flavor,
@@ -1019,6 +1313,7 @@ impl Project {
                         asset: AssetId(clip.asset),
                         source_start: clip.source_start,
                         source_end: clip.source_end,
+                        loop_range: clip.loop_range,
                         gain: clip.gain,
                     })
                 }
@@ -1060,8 +1355,12 @@ impl Project {
                 comparison.validate(device.state())?;
             }
         }
+        let aliases = std::mem::take(&mut project.aliases);
+        aliases.validate_and_bind(&mut project)?;
+        project.aliases = aliases;
         project.validate_retained_audio_roots()?;
         project.validate_device_asset_references()?;
+        project.validate_device_automation()?;
         for track in &project.tracks {
             for clip in track.clips() {
                 if let Some(edit) = &clip.edit {
@@ -1073,6 +1372,7 @@ impl Project {
                 }
             }
         }
+        project.validate_source_bindings()?;
         project.validate_track_hierarchy()?;
         if !return_feeds.is_empty() || !audio_feeds.is_empty() || !midi_routes.is_empty() {
             let mut candidate = project.snapshot();
@@ -1082,13 +1382,20 @@ impl Project {
             project.routing = Self::validate_return_feed_snapshot(&candidate)?;
             project.adopt_playable_snapshot(&candidate)?;
         }
+        if !sidechains.is_empty() {
+            project.adopt_sidechains(sidechains)?;
+        }
         project.validate_arrangement_occupancy()?;
         project.validate_midi_volumes()?;
         Ok(project)
     }
 }
 
-fn insert_id(id: u64, seen: &mut BTreeSet<u64>, max_id: &mut u64) -> Result<(), Invalid> {
+pub(crate) fn insert_id(
+    id: u64,
+    seen: &mut BTreeSet<u64>,
+    max_id: &mut u64,
+) -> Result<(), Invalid> {
     if id == 0 {
         return Err(Invalid("project ids must be nonzero"));
     }
@@ -1100,6 +1407,62 @@ fn insert_id(id: u64, seen: &mut BTreeSet<u64>, max_id: &mut u64) -> Result<(), 
 }
 
 impl Snapshot {
+    /// Keep automatic-name origins aligned after an intentional render
+    /// projection removed tracks. Surviving tracks keep their origin. Like the
+    /// alias projection below, this is not a decoder repair; admit the result
+    /// through Project::from_snapshot.
+    pub fn retain_automatic_track_names_after_projection(&mut self) {
+        let live: BTreeSet<u64> = self.tracks.iter().map(|track| track.id).collect();
+        self.automatic_track_names.retain(|id| live.contains(id));
+    }
+
+    /// Keep alias references aligned after an intentional render projection of
+    /// a snapshot captured from a validated Project. Removed placements release
+    /// membership; a surviving source keeps its original identity and payload.
+    /// This is not a decoder repair or validation substitute. Admit the resulting
+    /// snapshot through Project::from_snapshot before preparing playback.
+    pub fn retain_clip_aliases_after_projection(&mut self) {
+        if self.aliases.members.is_empty() {
+            return;
+        }
+        let mut live = BTreeSet::new();
+        for track in &self.tracks {
+            match &track.content {
+                TrackContentSnapshot::Audio(clips) => live.extend(clips.iter().map(|c| c.id)),
+                TrackContentSnapshot::Instrument(clips) => live.extend(clips.iter().map(|c| c.id)),
+                TrackContentSnapshot::Hybrid {
+                    audio_clips,
+                    midi_clips,
+                } => {
+                    live.extend(audio_clips.iter().map(|c| c.id));
+                    live.extend(midi_clips.iter().map(|c| c.id));
+                }
+            }
+        }
+        live.extend(
+            self.session
+                .cells
+                .iter()
+                .filter_map(|cell| match &cell.content {
+                    SessionCellContentSnapshot::Audio(clip) => Some(clip.id),
+                    SessionCellContentSnapshot::Midi(clip) => Some(clip.id),
+                    SessionCellContentSnapshot::Stop => None,
+                }),
+        );
+        self.aliases
+            .members
+            .retain(|member| live.contains(&member.clip));
+        let sources: BTreeSet<_> = self
+            .aliases
+            .members
+            .iter()
+            .map(|member| member.source)
+            .collect();
+        self.aliases
+            .sources
+            .retain(|source| sources.contains(&source.id));
+    }
+
     /// Structural proposal validation is separate from live Project admission.
     pub fn validate_gain_lanes(&self) -> Result<(), Invalid> {
         let mut units = 0_usize;

@@ -9,7 +9,9 @@ use gpui::{Context, Div, div, prelude::*, px, rgb};
 use hex_preferences::AudioImportPreferences;
 use hex_project::AudioImportWarp;
 use hex_session::{
-    import_batch::AudioBatchDestination, import_batch_decode::AudioBatchContext, service::Request,
+    import_batch::{AudioBatchDestination, ConsoleDestination},
+    import_batch_decode::AudioBatchContext,
+    service::Request,
 };
 use std::path::PathBuf;
 
@@ -130,14 +132,44 @@ fn capture(
 
 impl EditorView {
     pub(super) fn capture_audio_import_policy(&self, request: Request) -> Result<Request, String> {
-        self.audio_import_settings.capture(
+        let mut request = self.audio_import_settings.capture(
             request,
             AudioBatchContext {
                 project_generation: self.project_generation,
                 revision: self.state.as_ref().map_or(0, |state| state.revision),
                 active_gesture: self.device_gesture.snapshot().is_some(),
             },
-        )
+        )?;
+        if let Request::ImportAudioBatch {
+            destination:
+                AudioBatchDestination::NewTracks { .. }
+                | AudioBatchDestination::Console(ConsoleDestination::NewTrack { .. }),
+            options,
+            ..
+        } = &mut request
+        {
+            options.new_track_gain =
+                Some(self.track_defaults.captured_gain().map_err(str::to_owned)?);
+        }
+        match request {
+            Request::Import(path) => Ok(Request::ImportToNewTrackWithGain {
+                path,
+                before_track: None,
+                start: 0,
+                gain: self.track_defaults.captured_gain().map_err(str::to_owned)?,
+            }),
+            Request::ImportToNewTrack {
+                path,
+                before_track,
+                start,
+            } => Ok(Request::ImportToNewTrackWithGain {
+                path,
+                before_track,
+                start,
+                gain: self.track_defaults.captured_gain().map_err(str::to_owned)?,
+            }),
+            request => Ok(request),
+        }
     }
 
     pub(super) fn start_audio_import_preferences_load(&mut self, cx: &mut Context<Self>) {
@@ -163,7 +195,9 @@ impl EditorView {
                         state.writable = false;
                         state.error = Some(format!(
                             "could not load audio import settings · {}",
-                            error.to_string().to_lowercase()
+                            hex_session::service::text::lowercase_outside_verbatim(
+                                &error.to_string()
+                            )
                         ));
                     }
                 }
@@ -204,7 +238,9 @@ impl EditorView {
                     Err(error) => {
                         state.error = Some(format!(
                             "could not save audio import settings · {}",
-                            error.to_string().to_lowercase()
+                            hex_session::service::text::lowercase_outside_verbatim(
+                                &error.to_string()
+                            )
                         ))
                     }
                 }

@@ -120,7 +120,20 @@ impl EditorView {
                 .flex_shrink_0();
         };
         let returns = state.project.return_tracks();
-        let height = section_height(returns.len());
+        let viewport = self.visible_viewport(state.timeline_frames);
+        let extra = if self.automation_view.enabled {
+            returns
+                .iter()
+                .map(|track| {
+                    self.automation_view
+                        .devices
+                        .extra_height(super::device_panel::DevicePanelOwner::Return(track.id()))
+                })
+                .sum::<f32>()
+        } else {
+            0.0
+        };
+        let height = (section_height(returns.len()) + extra).min(RETURN_SECTION_MAX_HEIGHT);
         let mut rows = div()
             .id("pinned-return-tracks")
             .debug_selector(|| "pinned-return-tracks".to_owned())
@@ -212,6 +225,10 @@ impl EditorView {
                 .items_center()
                 .gap(px(3.0))
                 .child(gain_control)
+                .child(self.sample_arm_button(
+                    super::sample_recorder::Arm::Output(hex_engine::OutputCaptureId::Return(id)),
+                    cx,
+                ))
                 .child(
                     return_button(
                         format!("return-mute-{}", id.value()),
@@ -258,16 +275,34 @@ impl EditorView {
                 self.track_header_width(),
                 RETURN_ROW_HEIGHT,
                 selected,
+                None,
             )
             .debug_selector(move || format!("return-track-header-{}", id.value()))
             .child(
                 div()
                     .w_full()
                     .flex()
-                    .flex_col()
+                    .items_center()
                     .gap(px(2.0))
-                    .child(track_name_view)
-                    .child(controls),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
+                            .child(track_name_view)
+                            .child(controls),
+                    )
+                    .children(
+                        self.track_performance_indicator(hex_engine::OutputCaptureId::Return(id)),
+                    )
+                    .children(self.track_latency_indicator(super::track_latency::Owner::Return(id)))
+                    .children([super::track_meters::render_return(
+                        id,
+                        self.track_meters.return_level(id),
+                        RETURN_ROW_HEIGHT,
+                    )]),
             )
             .children(selected.then(|| {
                 super::track_header::selection_outline(format!(
@@ -275,6 +310,13 @@ impl EditorView {
                     id.value()
                 ))
             }));
+            let automation = super::device_automation::overlay(
+                self,
+                &state,
+                super::device_panel::DevicePanelOwner::Return(id),
+                viewport,
+                cx,
+            );
             let row = div()
                 .id(ElementId::Name(
                     format!("return-track-{}", id.value()).into(),
@@ -288,7 +330,9 @@ impl EditorView {
                     div()
                         .flex_1()
                         .min_w_0()
+                        .relative()
                         .h_full()
+                        .children(automation)
                         .border_b_1()
                         .border_color(rgb(theme::color(theme::PaletteRole::Border))),
                 )
@@ -300,7 +344,14 @@ impl EditorView {
                         view.open_return_name_context_menu(event.position, id, window, cx);
                     }),
                 );
-            rows = rows.child(row);
+            let panel = super::device_automation::rows(
+                self,
+                &state,
+                super::device_panel::DevicePanelOwner::Return(id),
+                viewport,
+                cx,
+            );
+            rows = rows.child(row).child(panel);
         }
         rows
     }

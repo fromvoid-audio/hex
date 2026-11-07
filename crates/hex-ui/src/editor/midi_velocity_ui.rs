@@ -1,5 +1,11 @@
 //! Compact velocity-lane view. The pure model owns geometry/preview validation;
 //! this adapter captures GPUI input and submits one canonical batch on release.
+//! Accepted velocity values remain with midi_pending_drag until its exact reply.
+#[path = "midi_velocity_pointer.rs"]
+mod pointer;
+#[path = "midi_velocity_size.rs"]
+mod sizing;
+
 use super::{
     EditorView,
     midi_group_drag::{GroupNote, capture_selected_notes},
@@ -8,11 +14,10 @@ use super::{
 };
 use crate::theme;
 use gpui::{
-    Bounds, Context as ViewContext, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Bounds, Context as ViewContext, Div, MouseButton, MouseDownEvent, MouseMoveEvent,
     ScrollWheelEvent, canvas, div, fill, point, prelude::*, px, rgb, size,
 };
-use hex_project::{Command, NoteId};
-use hex_session::service::Request;
+use hex_project::NoteId;
 use std::sync::Arc;
 
 pub(super) struct State {
@@ -21,7 +26,7 @@ pub(super) struct State {
     scene: Option<Arc<Scene>>,
     pub(super) gesture: Option<Gesture>,
     marquee: Option<super::midi_selection::Marquee>,
-    resize: Option<(f32, f32)>,
+    resize: Option<sizing::Resize>,
     hover: Option<NoteId>,
     cycle: Option<(SceneKey, [f32; 2], NoteId)>,
 }
@@ -40,6 +45,16 @@ impl Default for State {
     }
 }
 impl State {
+    pub(super) fn is_open(&self) -> bool {
+        self.open
+    }
+    pub(super) fn marquee(&self) -> Option<&super::midi_selection::Marquee> {
+        self.marquee.as_ref()
+    }
+    pub(super) fn install_marquee(&mut self, marquee: super::midi_selection::Marquee) {
+        self.marquee = Some(marquee);
+    }
+
     pub(super) fn take_marquee(&mut self) -> Option<super::midi_selection::Marquee> {
         self.marquee.take()
     }
@@ -72,7 +87,7 @@ impl EditorView {
                 generation: self.project_generation,
                 revision: state.revision,
                 clip,
-                start: self.piano_beat_start.raw(),
+                start: self.piano_beat_start,
                 span: self.piano_beat_span.raw(),
             },
             bounds,
@@ -80,7 +95,7 @@ impl EditorView {
             selection_epoch: self.midi_selection.epoch(),
         })
     }
-    fn velocity_marquee_context(
+    pub(super) fn velocity_marquee_context(
         &self,
         bounds: CanvasBounds,
     ) -> Option<super::midi_selection::MarqueeContext> {
@@ -117,7 +132,7 @@ impl EditorView {
             generation: self.project_generation,
             revision: state.revision,
             clip,
-            start: self.piano_beat_start.raw(),
+            start: self.piano_beat_start,
             span: self.piano_beat_span.raw(),
         };
         if self
@@ -298,6 +313,7 @@ impl EditorView {
             return Some(row);
         }
         let gesture = self.midi_velocity.gesture.clone();
+        let pending = self.pending_midi_velocity(clip).cloned();
         let marquee = self.midi_velocity.marquee.clone();
         let time_selection = self.midi_time_selection_bounds();
         let selection = self
@@ -311,12 +327,6 @@ impl EditorView {
         let content = div()
             .id("midi-velocity-lane")
             .debug_selector(|| "midi-velocity-lane".into())
-            .children(self.arrange_midi_highlights(
-                self.piano_beat_start.raw(),
-                self.piano_beat_span.raw(),
-                0.0,
-                "arrange-reflected-velocity-range",
-            ))
             .relative()
             .flex_1()
             .h_full()
@@ -328,7 +338,7 @@ impl EditorView {
             .child(
                 canvas(
                     |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
-                    move |bounds, hitbox, window, _| {
+                    move |bounds, hitbox, window, cx| {
                         let captured = Context {
                             scene: key,
                             bounds: bounds_of(bounds),
@@ -338,11 +348,30 @@ impl EditorView {
                         if !captured.bounds.is_valid() {
                             return;
                         }
+                        entity.read(cx).renew_midi_marquee_pointer(
+                            true,
+                            captured.bounds,
+                            key.clip,
+                            entity.entity_id(),
+                            window,
+                        );
+                        entity.read(cx).renew_velocity_pointer(
+                            captured,
+                            entity.entity_id(),
+                            window,
+                        );
+                        entity.read(cx).renew_midi_time_selection_capture(
+                            captured.bounds,
+                            key.clip,
+                            entity.entity_id(),
+                            window,
+                        );
                         let width = captured.bounds.width;
                         let height = captured.bounds.height;
                         let gesture = gesture
                             .as_ref()
                             .filter(|gesture| gesture.is_current(captured));
+                        let preview = gesture.or(pending.as_ref());
                         let marquee = marquee.as_ref().filter(|m| {
                             let context = m.context();
                             context.bounds == captured.bounds
@@ -378,8 +407,9 @@ impl EditorView {
                             &hitbox,
                         );
                         if let Some((first, last)) = time_selection {
-                            let first = first.max(key.start);
-                            let last = last.min(key.start.saturating_add(key.span));
+                            let first = i128::from(first).max(key.start);
+                            let last = i128::from(last)
+                                .min(key.start.saturating_add(i128::from(key.span)));
                             if first < last {
                                 let left =
                                     ((first - key.start) as f64 / key.span as f64) as f32 * width;
@@ -390,10 +420,8 @@ impl EditorView {
                                         point(bounds.origin.x + px(left), bounds.origin.y),
                                         size(px(right - left), bounds.size.height),
                                     ),
-                                    gpui::Hsla::from(rgb(theme::color(
-                                        theme::PaletteRole::Secondary,
-                                    )))
-                                    .opacity(theme::TIME_SELECTION_OPACITY),
+                                    gpui::Hsla::from(rgb(theme::time_selection_fill()))
+                                        .opacity(theme::TIME_SELECTION_OPACITY),
                                 ));
                             }
                         }
@@ -423,7 +451,7 @@ impl EditorView {
                                 }))
                         {
                             let selected = selection.binary_search(&point.note.id).is_ok();
-                            let velocity = gesture
+                            let velocity = preview
                                 .and_then(|gesture| gesture.preview(point.note.id))
                                 .unwrap_or(point.note.velocity);
                             let Some(y) = midi_velocity::handle_y(velocity, height) else {
@@ -503,6 +531,21 @@ impl EditorView {
                                 {
                                     return;
                                 }
+                                if view.time_selection_key_held {
+                                    view.cancel_all_midi_marquees();
+                                    view.midi_focus.focus(window);
+                                    if view.begin_midi_velocity_time_selection(
+                                        captured.bounds,
+                                        f32::from(event.position.x),
+                                        event.modifiers.platform,
+                                        window,
+                                        cx,
+                                    ) {
+                                        cx.stop_propagation();
+                                        cx.notify();
+                                    }
+                                    return;
+                                }
                                 let position = [
                                     f32::from(event.position.x - bounds.origin.x),
                                     f32::from(event.position.y - bounds.origin.y),
@@ -523,7 +566,7 @@ impl EditorView {
                                     if event.modifiers.shift {
                                         view.cancel_midi_audition();
                                         view.clear_midi_time_selection();
-                                        view.midi_velocity.marquee = view
+                                        if let Some(marquee) = view
                                             .velocity_marquee_context(captured.bounds)
                                             .and_then(|context| {
                                                 super::midi_selection::Marquee::begin(
@@ -532,12 +575,25 @@ impl EditorView {
                                                     true,
                                                     &view.midi_selection,
                                                 )
-                                            });
+                                            })
+                                            && view.capture_midi_marquee_pointer(
+                                                &marquee,
+                                                super::midi_marquee::Surface::Velocity(Arc::clone(
+                                                    &down_scene,
+                                                )),
+                                                window,
+                                                cx,
+                                            )
+                                        {
+                                            view.midi_velocity.install_marquee(marquee);
+                                        }
                                     } else {
                                         view.begin_midi_velocity_time_selection(
                                             captured.bounds,
                                             f32::from(event.position.x),
                                             event.modifiers.platform,
+                                            window,
+                                            cx,
                                         );
                                     }
                                     cx.stop_propagation();
@@ -572,6 +628,7 @@ impl EditorView {
                                             capture_selected_notes(
                                                 source.notes().iter().map(|note| GroupNote {
                                                     id: note.id(),
+                                                    active: note.active(),
                                                     start: note.start().raw(),
                                                     duration: note.duration().raw(),
                                                     pitch: note.pitch(),
@@ -590,7 +647,14 @@ impl EditorView {
                                             )
                                         }) {
                                             Ok(gesture) => {
-                                                view.midi_velocity.gesture = Some(gesture)
+                                                if view.capture_velocity_pointer(
+                                                    context,
+                                                    f32::from(event.position.y),
+                                                    window,
+                                                    cx,
+                                                ) {
+                                                    view.midi_velocity.gesture = Some(gesture);
+                                                }
                                             }
                                             Err(error) => view.error = Some(error.into()),
                                         }
@@ -603,22 +667,12 @@ impl EditorView {
                         let movement = entity.clone();
                         let hover_scene = Arc::clone(&event_scene);
                         window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-                            if !event.dragging() {
-                                if !phase.capture() {
-                                    return;
-                                }
-                                movement.update(cx, |view, cx| {
-                                    if view.midi_velocity_time_selection_active() {
-                                        view.midi_time_selection.cancel();
-                                        cx.notify();
-                                    }
-                                    if let Some(marquee) = view.midi_velocity.marquee.take() {
-                                        view.cancel_live_midi_marquee(marquee);
-                                        cx.notify();
-                                    }
-                                    let hover = if bounds.contains(&event.position)
-                                        && !view.edit_pending()
-                                    {
+                            if event.dragging() || !phase.capture() {
+                                return;
+                            }
+                            movement.update(cx, |view, cx| {
+                                let hover =
+                                    if bounds.contains(&event.position) && !view.edit_pending() {
                                         hover_scene.hit(
                                             [
                                                 f32::from(event.position.x - bounds.origin.x),
@@ -630,168 +684,10 @@ impl EditorView {
                                     } else {
                                         None
                                     };
-                                    if view.midi_velocity.hover != hover {
-                                        view.midi_velocity.hover = hover;
-                                        cx.notify();
-                                    }
-                                });
-                                return;
-                            }
-                            if !phase.bubble() {
-                                return;
-                            }
-                            movement.update(cx, |view, cx| {
-                                if view.midi_velocity_time_selection_active() {
-                                    if event.pressed_button == Some(MouseButton::Left) {
-                                        view.update_midi_time_selection(
-                                            captured.bounds,
-                                            f32::from(event.position.x),
-                                            event.modifiers.platform,
-                                        );
-                                    } else {
-                                        view.midi_time_selection.cancel();
-                                    }
-                                    cx.stop_propagation();
+                                if view.midi_velocity.hover != hover {
+                                    view.midi_velocity.hover = hover;
                                     cx.notify();
-                                    return;
                                 }
-                                if let Some(mut marquee) = view.midi_velocity.marquee.take() {
-                                    let last = [
-                                        f32::from(event.position.x - bounds.origin.x),
-                                        f32::from(event.position.y - bounds.origin.y),
-                                    ];
-                                    let previous = marquee.hits();
-                                    let result = (event.pressed_button == Some(MouseButton::Left))
-                                        .then(|| view.velocity_marquee_context(captured.bounds))
-                                        .flatten()
-                                        .ok_or("velocity marquee context changed")
-                                        .and_then(|context| {
-                                            marquee.update_with_hits(
-                                                context,
-                                                &view.midi_selection,
-                                                last,
-                                                |first, last| {
-                                                    hover_scene
-                                                        .marquee_hits(first, last, width, height)
-                                                },
-                                            )
-                                        })
-                                        .and_then(|_| {
-                                            view.apply_live_midi_marquee(&mut marquee, &previous)
-                                        });
-                                    match result {
-                                        Ok(_) => view.midi_velocity.marquee = Some(marquee),
-                                        Err(error) => {
-                                            view.cancel_live_midi_marquee(marquee);
-                                            view.error = Some(error.into());
-                                        }
-                                    }
-                                    cx.stop_propagation();
-                                    cx.notify();
-                                    return;
-                                }
-                                if let Some((start, initial)) = view.midi_velocity.resize {
-                                    let next = (initial + start - f32::from(event.position.y))
-                                        .clamp(40.0, 128.0);
-                                    if next.is_finite() {
-                                        view.midi_velocity.height = next;
-                                        cx.notify();
-                                    }
-                                    cx.stop_propagation();
-                                    return;
-                                }
-                                let Some(mut gesture) = view.midi_velocity.gesture.take() else {
-                                    return;
-                                };
-                                let current = view
-                                    .velocity_context(captured.bounds)
-                                    .filter(|_| !view.edit_pending());
-                                if let Some(current) = current {
-                                    match gesture.update(current, f32::from(event.position.y)) {
-                                        Ok(_) => view.midi_velocity.gesture = Some(gesture),
-                                        Err(error) => view.error = Some(error.into()),
-                                    }
-                                }
-                                cx.stop_propagation();
-                                cx.notify();
-                            });
-                        });
-                        let release = entity.clone();
-                        let release_scene = Arc::clone(&event_scene);
-                        window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
-                            if !phase.bubble() || event.button != MouseButton::Left {
-                                return;
-                            }
-                            release.update(cx, |view, cx| {
-                                if view.midi_velocity_time_selection_active() {
-                                    view.finish_midi_time_selection(
-                                        captured.bounds,
-                                        f32::from(event.position.x),
-                                        event.modifiers.platform,
-                                    );
-                                    cx.stop_propagation();
-                                    cx.notify();
-                                    return;
-                                }
-                                if let Some(mut marquee) = view.midi_velocity.marquee.take() {
-                                    let last = [
-                                        f32::from(event.position.x - bounds.origin.x),
-                                        f32::from(event.position.y - bounds.origin.y),
-                                    ];
-                                    let previous = marquee.hits();
-                                    let result = view
-                                        .velocity_marquee_context(captured.bounds)
-                                        .ok_or("velocity marquee context changed")
-                                        .and_then(|context| {
-                                            marquee.update_with_hits(
-                                                context,
-                                                &view.midi_selection,
-                                                last,
-                                                |first, last| {
-                                                    release_scene
-                                                        .marquee_hits(first, last, width, height)
-                                                },
-                                            )
-                                        })
-                                        .and_then(|_| {
-                                            view.apply_live_midi_marquee(&mut marquee, &previous)
-                                        });
-                                    if let Err(error) = result {
-                                        view.cancel_live_midi_marquee(marquee);
-                                        view.error = Some(error.into());
-                                    }
-                                    cx.stop_propagation();
-                                    cx.notify();
-                                    return;
-                                }
-                                if view.midi_velocity.resize.take().is_some() {
-                                    cx.stop_propagation();
-                                    cx.notify();
-                                    return;
-                                }
-                                let Some(mut gesture) = view.midi_velocity.gesture.take() else {
-                                    return;
-                                };
-                                if let Some(current) = view
-                                    .velocity_context(captured.bounds)
-                                    .filter(|_| !view.edit_pending())
-                                {
-                                    match gesture
-                                        .update(current, f32::from(event.position.y))
-                                        .and_then(|_| gesture.updates(current))
-                                    {
-                                        Ok(Some(notes)) => {
-                                            view.enqueue(Request::Edit(Command::UpdateMidiNotes {
-                                                clip,
-                                                notes,
-                                            }));
-                                        }
-                                        Ok(None) => {}
-                                        Err(error) => view.error = Some(error.into()),
-                                    }
-                                }
-                                cx.stop_propagation();
-                                cx.notify();
                             });
                         });
                     },
@@ -799,30 +695,24 @@ impl EditorView {
                 .absolute()
                 .inset_0(),
             );
+        let content = content.children(self.time_selection_cursor_layer());
         row = row.child(content);
+        let splitter = self.velocity_size_input(cx);
+        let pointer_layer = splitter.pointer_layer();
+        let handle = hex_widgets::SplitterHandleConfig::new(
+            hex_widgets::SplitterAxis::Vertical,
+            3.0,
+            theme::color(theme::PaletteRole::Border),
+        )
+        .map(|config| splitter.handle("midi-velocity-resize".into(), config));
         Some(
             div()
+                .relative()
                 .flex()
                 .flex_col()
                 .flex_shrink_0()
-                .child(
-                    div()
-                        .id("midi-velocity-resize")
-                        .debug_selector(|| "midi-velocity-resize".into())
-                        .h(px(3.0))
-                        .cursor(gpui::CursorStyle::ResizeUpDown)
-                        .bg(rgb(theme::color(theme::PaletteRole::Border)))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|view, event: &MouseDownEvent, _, cx| {
-                                view.cancel_midi_note_gesture();
-                                view.midi_velocity.resize =
-                                    Some((f32::from(event.position.y), view.midi_velocity.height));
-                                cx.stop_propagation();
-                                cx.notify();
-                            }),
-                        ),
-                )
+                .children([pointer_layer])
+                .children(handle)
                 .child(row),
         )
     }

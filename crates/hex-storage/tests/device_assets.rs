@@ -191,6 +191,22 @@ fn device_asset_manifest_rejects_incomplete_duplicate_unknown_and_unbounded_bind
     editor
         .execute(replacement(&editor, device, vec![reference(asset)]))
         .unwrap();
+    let track = editor.project().tracks()[0].id();
+    let effect = NativeDeviceState::new(
+        hex_lattice_contract::DeviceTypeId::new("test.asset-effect").unwrap(),
+        7,
+        vec![1],
+    )
+    .unwrap()
+    .with_asset_references(vec![reference(asset)])
+    .unwrap();
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: effect,
+        })
+        .unwrap();
     let bytes = hex_storage::encode(editor.project()).unwrap();
     let source: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     for case in 0..9 {

@@ -45,9 +45,6 @@ pub(crate) fn validate_constructor_project_with_effects(
     project: &hex_project::Project,
     effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
 ) -> Result<(), AudioStorageError> {
-    if project.has_group_tracks() {
-        return Err(AudioStorageError::UnsupportedGraph);
-    }
     let supported = |d: &hex_project::Device| {
         d.state().asset_references().is_empty()
             && (d.state().type_id() == hex_devices::utility::UTILITY_TYPE_ID
@@ -167,6 +164,7 @@ pub struct AudioArrangementStartRefusal {
 struct ConstructorResources<'a> {
     sampler: Option<(u64, &'a std::sync::atomic::AtomicBool)>,
     effects: Option<&'a hex_lattice::NativeDeviceRegistry<'a>>,
+    native_input: Option<crate::device_automation::NativeParameterInputTarget>,
 }
 struct ReservedStages {
     slots: Vec<SourceSlot>,
@@ -202,6 +200,7 @@ pub struct AudioArrangementInput<'a> {
     stages: Stages,
     source_context: Option<AudioSourceContext>,
     effects: Option<&'a hex_lattice::NativeDeviceRegistry<'a>>,
+    native_input: Option<crate::device_automation::NativeParameterInputTarget>,
 }
 impl<'a> AudioArrangementInput<'a> {
     pub fn sample_rate(&self) -> u32 {
@@ -219,6 +218,7 @@ impl<'a> AudioArrangementInput<'a> {
             stages: Stages::default(),
             source_context: None,
             effects: None,
+            native_input: None,
         }
     }
     /// Borrow foreign effect facts for the same closed constructor. No provider
@@ -228,6 +228,15 @@ impl<'a> AudioArrangementInput<'a> {
         effects: &'a hex_lattice::NativeDeviceRegistry<'a>,
     ) -> Self {
         self.effects = Some(effects);
+        self
+    }
+    /// Select one already validated native input for this exact canonical project.
+    /// The constructor revalidates it before reservation or source-bank consumption.
+    pub fn with_native_parameter_input(
+        mut self,
+        input: crate::device_automation::NativeParameterInputTarget,
+    ) -> Self {
+        self.native_input = Some(input);
         self
     }
     /// Low-level correlation bridge. Prefer a Session-owned immutable snapshot
@@ -327,6 +336,8 @@ struct SourceSlot {
     owner: Option<OwnedAudioSource>,
     // Fresh constructor root stays here after its distinct graph alias moves.
     prepared_origin: Option<OwnedAudioSource>,
+    sparse_frames: Option<usize>,
+    sparse: Option<std::sync::Arc<crate::SparseFrameMap>>,
     transformed: bool,
     disposal: Disposal,
     #[cfg(test)]
@@ -505,6 +516,7 @@ impl AudioPreparationCustody {
             input.inputs,
             input.stages,
             input.effects,
+            input.native_input,
         );
         if result.is_ok() {
             self.source_context = input.source_context;
@@ -565,7 +577,7 @@ impl AudioPreparationCustody {
         generation: u64,
         inputs: OwnedAudioInputs,
     ) -> Result<AudioPreparationToken, Box<AudioArrangementRefusal>> {
-        self.begin_stages_on_control(project, generation, inputs, Stages::default(), None)
+        self.begin_stages_on_control(project, generation, inputs, Stages::default(), None, None)
     }
     fn begin_stages_on_control(
         &mut self,
@@ -574,6 +586,7 @@ impl AudioPreparationCustody {
         inputs: OwnedAudioInputs,
         stages: Stages,
         effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
+        native_input: Option<crate::device_automation::NativeParameterInputTarget>,
     ) -> Result<AudioPreparationToken, Box<AudioArrangementRefusal>> {
         match self.reserve_stages_with_resources(
             project,
@@ -583,6 +596,7 @@ impl AudioPreparationCustody {
             ConstructorResources {
                 sampler: None,
                 effects,
+                native_input,
             },
         ) {
             Ok(reserved) => Ok(self.construct_reserved_on_control(
@@ -599,7 +613,8 @@ impl AudioPreparationCustody {
             })),
         }
     }
-    /// Build only the closed audio/Utility prepared class. The caller reserves a
+    /// Build only the closed audio/Utility prepared class; registered effects
+    /// use the explicit effect-aware constructor companion. The caller reserves a
     /// persistent bank destination before invoking this route; it remains there
     /// throughout fallible reservation. The final move into this custodian is
     /// nonfallible, followed by the existing persistent caught construction.
@@ -647,6 +662,7 @@ impl AudioPreparationCustody {
             ConstructorResources {
                 sampler: Some((work, cancel)),
                 effects: None,
+                native_input: None,
             },
             || {},
         )
@@ -660,6 +676,21 @@ impl AudioPreparationCustody {
         sampler: Option<(u64, &std::sync::atomic::AtomicBool)>,
         effects: &hex_lattice::NativeDeviceRegistry<'_>,
     ) -> Result<AudioPreparationToken, Box<AudioArrangementStartRefusal>> {
+        self.begin_effect_revision_with_input_in_place_on_control(
+            project, generation, context, inputs, sampler, effects, None,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn begin_effect_revision_with_input_in_place_on_control(
+        &mut self,
+        project: &hex_project::Project,
+        generation: u64,
+        context: AudioSourceContext,
+        inputs: &mut Option<OwnedAudioInputs>,
+        sampler: Option<(u64, &std::sync::atomic::AtomicBool)>,
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+        native_input: Option<crate::device_automation::NativeParameterInputTarget>,
+    ) -> Result<AudioPreparationToken, Box<AudioArrangementStartRefusal>> {
         self.begin_prepared_revision_with_resources(
             project,
             generation,
@@ -668,6 +699,7 @@ impl AudioPreparationCustody {
             ConstructorResources {
                 sampler,
                 effects: Some(effects),
+                native_input,
             },
             || {},
         )
@@ -731,7 +763,11 @@ impl AudioPreparationCustody {
         stages: Stages,
         resources: ConstructorResources<'_>,
     ) -> Result<ReservedStages, Box<AudioArrangementStartRefusal>> {
-        let ConstructorResources { sampler, effects } = resources;
+        let ConstructorResources {
+            sampler,
+            effects,
+            native_input,
+        } = resources;
         let Stages {
             include_session,
             assemble_session,
@@ -744,6 +780,16 @@ impl AudioPreparationCustody {
         } = stages;
         let mut slots = Vec::new();
         let mut capacity = AudioArrangementCapacity::default();
+        let foreign_bytes = match crate::foreign_automation::candidate::quote(project) {
+            Ok((bytes, _)) => bytes,
+            Err(reason) => return Err(Box::new(AudioArrangementStartRefusal { reason, capacity })),
+        };
+        if foreign_bytes != 0 && (!assemble_revision || effects.is_none()) {
+            return Err(Box::new(AudioArrangementStartRefusal {
+                reason: AudioStorageError::UnsupportedGraph,
+                capacity,
+            }));
+        }
         let result = self.preflight(
             project,
             generation,
@@ -758,6 +804,26 @@ impl AudioPreparationCustody {
                 return Err(Box::new(AudioArrangementStartRefusal { reason, capacity }));
             }
         };
+        if capacity
+            .retained_stage_bytes
+            .checked_add(foreign_bytes)
+            .is_none_or(|bytes| bytes > inputs.reservation.max_prepared_data_bytes)
+            || capacity
+                .construction_peak_bytes
+                .checked_add(foreign_bytes)
+                .is_none_or(|bytes| bytes > inputs.reservation.max_construction_data_bytes)
+        {
+            return Err(Box::new(AudioArrangementStartRefusal {
+                reason: AudioStorageError::ReservationExceeded,
+                capacity,
+            }));
+        }
+        if native_input.is_some() && !assemble_revision {
+            return Err(Box::new(AudioArrangementStartRefusal {
+                reason: AudioStorageError::UnsupportedGraph,
+                capacity,
+            }));
+        }
         let transformed_workspace = capacity.native_compiler_workspace_bytes;
         self.source_context = None;
         if include_session {
@@ -833,12 +899,14 @@ impl AudioPreparationCustody {
                             project,
                             Some(metadata.id),
                             effects.is_some(),
+                            native_input,
                         )?;
                     } else {
                         self.revision.reserve_with_sampler_and_effects(
                             project,
                             None,
                             effects.is_some(),
+                            native_input,
                         )?;
                     }
                 }
@@ -859,7 +927,14 @@ impl AudioPreparationCustody {
                         .chain(project.return_tracks().iter().map(|r| r.devices()))
                         .chain(std::iter::once(project.main_devices()))
                         .try_fold(0usize, |n, devices| {
-                            n.checked_add(devices.len().checked_mul(4)?)
+                            n.checked_add(devices.len().checked_mul(4)?)?.checked_add(
+                                devices
+                                    .iter()
+                                    .filter(|device| {
+                                        crate::foreign_automation::candidate::has_authored(device)
+                                    })
+                                    .count(),
+                            )
                         })
                         .ok_or(AudioStorageError::Overflow)?
                 } else {
@@ -940,8 +1015,15 @@ impl AudioPreparationCustody {
                         })
                         .transpose()?;
 
-                    self.arrangement_clips
-                        .reserve_with_effects(&slots, inputs, project, stages, samplers, effects)?;
+                    self.arrangement_clips.reserve_with_effects(
+                        &slots,
+                        inputs,
+                        project,
+                        stages,
+                        samplers,
+                        effects,
+                        native_input,
+                    )?;
                 }
                 Ok(())
             }));
@@ -989,7 +1071,7 @@ impl AudioPreparationCustody {
                     if assemble_project {
                         // Quote the actual selected Main chain BEFORE its birth.
                         capacity.arrangement_clips.root.main_prepared_bytes =
-                            self.arrangement_clips.main_quote(project)?.0;
+                            self.arrangement_clips.main_quote(project, native_input)?.0;
                     }
                     capacity.native_source_metadata_bytes = self.current_sampler.bytes()?;
                     let mut current = capacity
@@ -1086,7 +1168,7 @@ impl AudioPreparationCustody {
                         capacity.arrangement_clips = self.arrangement_clips.capacity(true)?;
                         if assemble_project {
                             capacity.arrangement_clips.root.main_prepared_bytes =
-                                self.arrangement_clips.main_quote(project)?.0;
+                                self.arrangement_clips.main_quote(project, native_input)?.0;
                         }
                         current = current
                             .checked_sub(old)
@@ -1097,7 +1179,7 @@ impl AudioPreparationCustody {
                         .arrangement_clips
                         .root
                         .main_construction_overlap_bytes =
-                        self.arrangement_clips.main_quote(project)?.1;
+                        self.arrangement_clips.main_quote(project, native_input)?.1;
                     capacity.retained_stage_bytes = capacity
                         .retained_stage_bytes
                         .checked_sub(previous_session_bytes?)
@@ -1157,8 +1239,11 @@ impl AudioPreparationCustody {
                         return Err(AudioStorageError::ReservationExceeded);
                     }
                     if assemble_project {
-                        self.arrangement_clips
-                            .reserve_main_carrier(project, effects)?;
+                        self.arrangement_clips.reserve_main_carrier(
+                            project,
+                            effects,
+                            native_input,
+                        )?;
                     }
                     Ok(())
                 }),
@@ -1198,7 +1283,7 @@ impl AudioPreparationCustody {
             slots,
             capacity,
             next,
-            signal_graph: effects.is_some(),
+            signal_graph: effects.is_some() || project.has_group_tracks(),
         })
     }
     fn construct_reserved_on_control(
@@ -1282,8 +1367,12 @@ impl AudioPreparationCustody {
                 )?;
             }
             if assemble_revision {
-                self.revision
-                    .construct(&mut self.arrangement_clips, &mut self.assembly)?;
+                self.revision.construct(
+                    &mut self.arrangement_clips,
+                    &mut self.assembly,
+                    crate::PreparedSourceRouting::prepare(project)
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                )?;
             }
 
             let view = self.revision.storage_view()?;
@@ -1366,6 +1455,18 @@ impl AudioPreparationCustody {
         resources: ConstructorResources<'_>,
     ) -> Result<u64, AudioStorageError> {
         let effects = resources.effects;
+        if let Some(input) = resources.native_input
+            && crate::device_automation::native_parameter_input_target(
+                project,
+                input.device(),
+                input.target(),
+            )
+            .map_err(|_| AudioStorageError::UnsupportedGraph)?
+                != input
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+
         let allow_sampler = resources.sampler.is_some();
         if self.phase != AudioPreparationPhase::Vacant
             || self.bank.is_some()
@@ -1500,7 +1601,7 @@ impl AudioPreparationCustody {
         {
             return Err(AudioStorageError::ReservationExceeded);
         }
-        if effects.is_some() {
+        if effects.is_some() || resources.native_input.is_some() {
             let mut retained = 0usize;
             let mut overlap = 0usize;
             for devices in project
@@ -1511,7 +1612,7 @@ impl AudioPreparationCustody {
                 .chain(std::iter::once(project.main_devices()))
             {
                 let (data, scratch) = arrangement_clips::chains::ChainCustody::default()
-                    .quote(devices, project.sample_rate())?;
+                    .quote_with_input(devices, project.sample_rate(), resources.native_input)?;
                 retained = retained
                     .checked_add(data)
                     .ok_or(AudioStorageError::Overflow)?;
@@ -1548,15 +1649,14 @@ impl AudioPreparationCustody {
                 {
                     return Err(AudioStorageError::SourceMismatch);
                 }
-                if let SourceKind::Streamed(meta) = &owner.kind {
-                    if meta.key().generation() != generation
+                if let SourceKind::Streamed(meta) = &owner.kind
+                    && (meta.key().generation() != generation
                         || meta.key().asset() != asset.id()
                         || meta.source_rate() != asset.source_sample_rate()
                         || meta.source_frames() != asset.source_frames()
-                        || meta.conversion_version() != asset.conversion_version()
-                    {
-                        return Err(AudioStorageError::SourceMismatch);
-                    }
+                        || meta.conversion_version() != asset.conversion_version())
+                {
+                    return Err(AudioStorageError::SourceMismatch);
                 }
                 let transformed = clip.audio_edit().is_some();
                 transformed::validate_sources(project, inputs, clip)?;
@@ -1610,6 +1710,10 @@ impl AudioPreparationCustody {
                     },
                     owner: None,
                     prepared_origin: None,
+                    sparse_frames: crate::audio_transform::sparse_group_plan(clip)
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?
+                        .map(|(_, frames, _)| frames),
+                    sparse: None,
                     transformed,
                     disposal: Disposal::Unstarted,
                     #[cfg(test)]
@@ -1700,6 +1804,7 @@ impl AudioPreparationCustody {
             let result = catch_unwind(AssertUnwindSafe(|| {
                 drop(self.slots[index].owner.take());
                 drop(self.slots[index].prepared_origin.take());
+                drop(self.slots[index].sparse.take());
                 #[cfg(test)]
                 drop(self.slots[index].probe.take());
             }));
@@ -2003,7 +2108,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
     #[test]
-    fn group_tracks_refuse_compilation_and_native_admission_until_submix_support() {
+    fn group_tracks_admit_compilation_and_supported_native_preparation() {
         use hex_project::{Command, Created, Editor, Project, TrackSelectionIds};
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Track(track) = editor
@@ -2022,16 +2127,12 @@ mod tests {
                 name: "group".into(),
             })
             .unwrap();
-        assert!(matches!(
-            validate_constructor_project(editor.project()),
-            Err(AudioStorageError::UnsupportedGraph)
-        ));
-        assert!(crate::compile::project(editor.project(), &Default::default()).is_err());
+        assert!(validate_constructor_project(editor.project()).is_ok());
+        assert!(crate::compile::project(editor.project(), &Default::default()).is_ok());
         let effects = hex_devices::native_registry().unwrap();
-        assert!(matches!(
-            validate_constructor_project_with_effects(editor.project(), Some(&effects)),
-            Err(AudioStorageError::UnsupportedGraph)
-        ));
+        assert!(
+            validate_constructor_project_with_effects(editor.project(), Some(&effects)).is_ok()
+        );
     }
     #[test]
     fn rooted_bank_reservation_refusal_preserves_exact_bank_then_success_transfers_once() {

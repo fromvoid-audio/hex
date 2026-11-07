@@ -66,6 +66,7 @@ pub(crate) struct PreparedMidiClipVolume {
     source_offset: u64,
     reversed: bool,
     constant: Option<f64>,
+    clip_gain: f64,
     sample_rate: u32,
     max_micro_bpm: u64,
     source_boundaries: usize,
@@ -84,6 +85,7 @@ impl VolumePreparationIdentity {
             && old.source_offset == program.source_offset
             && old.reversed == program.reversed
             && old.constant == program.constant
+            && old.clip_gain == program.clip_gain
             && old.sample_rate == program.sample_rate
             && old.max_micro_bpm == program.max_micro_bpm
             && old.source_boundaries == program.source_boundaries
@@ -113,7 +115,7 @@ impl PreparedMidiClipVolume {
         clip: &hex_project::SessionMidiClip,
         timing: &T,
     ) -> Result<Option<Self>, Invalid> {
-        if clip.volume().points().is_empty() {
+        if clip.volume().is_unity() {
             return Ok(None);
         }
         let data = clip.source();
@@ -146,6 +148,7 @@ impl PreparedMidiClipVolume {
         if timing.sample_rate() == 0 || timing.max_micro_bpm() == 0 {
             return Err(Invalid("invalid clip volume timing admission"));
         }
+        let clip_gain = f64::from(volume.clip_gain().linear());
         let constant = if let Some(first) = volume.points().first() {
             volume
                 .points()
@@ -154,7 +157,8 @@ impl PreparedMidiClipVolume {
                 .then_some(first.incoming.linear())
         } else {
             Some(1.0)
-        };
+        }
+        .map(|gain| gain * clip_gain);
         let source_boundaries = if constant.is_some() {
             2
         } else {
@@ -211,6 +215,7 @@ impl PreparedMidiClipVolume {
             source_offset,
             reversed,
             constant,
+            clip_gain,
             sample_rate: timing.sample_rate(),
             max_micro_bpm: timing.max_micro_bpm(),
             source_boundaries,
@@ -610,7 +615,7 @@ impl PreparedMidiClipVolume {
         let phase = if before {
             if let Some((start, end)) = self.source.loop_range() {
                 let first = end.raw() - self.source.source_start().raw();
-                if raw >= first && (raw - first) % (end.raw() - start.raw()) == 0 {
+                if raw >= first && (raw - first).is_multiple_of(end.raw() - start.raw()) {
                     Some(end)
                 } else {
                     self.source.source_phase_at_elapsed(BeatTime::from_raw(raw))
@@ -629,7 +634,8 @@ impl PreparedMidiClipVolume {
         } else {
             self.volume.gain_at(phase)
         }
-        .linear())
+        .linear()
+            * self.clip_gain)
     }
 }
 fn project(origin: SessionMidiOrigin, elapsed: u64) -> Result<u64, Invalid> {

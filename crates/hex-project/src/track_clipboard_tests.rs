@@ -149,19 +149,27 @@ fn fixture() -> (Project, [TrackId; 3]) {
     .unwrap();
     let mut p = e.project().clone();
     // Exercise complete metadata copying rather than just visible defaults.
-    let t = p.track_mut(b).unwrap();
-    let instrument = t.instrument.as_mut().unwrap();
-    instrument.bypassed = true;
-    instrument.comparison = Some(crate::DeviceComparison::new(
-        crate::DeviceVariant::B,
-        hex_lattice_contract::NativeDeviceState::new(instrument.state.type_id(), 1, vec![1, 2, 3])
+    let device = p.track(b).unwrap().instrument().unwrap().id();
+    p.edit_device(device, |instrument| {
+        instrument.bypassed = true;
+        instrument.comparison = Some(crate::DeviceComparison::new(
+            crate::DeviceVariant::B,
+            hex_lattice_contract::NativeDeviceState::new(
+                instrument.state.type_id(),
+                1,
+                vec![1, 2, 3],
+            )
             .unwrap()
             .with_asset_references(vec![hex_lattice_contract::DeviceAssetReference {
                 slot: hex_lattice_contract::DeviceAssetSlot::new(1).unwrap(),
                 asset: hex_lattice_contract::DeviceAssetKey::new(asset.value()).unwrap(),
             }])
             .unwrap(),
-    ));
+        ));
+        Ok(())
+    })
+    .unwrap();
+    let t = p.track_mut(b).unwrap();
     t.gain = 0.37;
     t.balance = -0.25;
     t.muted = true;
@@ -171,14 +179,20 @@ fn fixture() -> (Project, [TrackId; 3]) {
 fn normalize_copy(copy: &Track, original: &Track) -> Track {
     let mut t = copy.clone();
     t.id = original.id;
-    for (d, old) in t
-        .devices
-        .iter_mut()
-        .chain(t.instrument.iter_mut())
-        .zip(original.devices.iter().chain(original.instrument.iter()))
-    {
+    for (d, old) in t.devices.iter_mut().zip(&original.devices) {
         d.id = old.id;
     }
+    if let (Some(copy), Some(old)) = (t.instrument(), original.instrument()) {
+        let mut copy = copy.clone();
+        copy.id = old.id;
+        assert_eq!(
+            &copy, old,
+            "explicit duplication retains complete source device state"
+        );
+    } else {
+        assert_eq!(t.instrument.is_some(), original.instrument.is_some());
+    }
+    t.instrument = original.instrument.clone();
     for (clip, old) in t.content.audio_clips.iter_mut().zip(original.clips()) {
         clip.id = old.id;
     }

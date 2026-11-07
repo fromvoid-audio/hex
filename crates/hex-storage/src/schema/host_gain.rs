@@ -223,7 +223,7 @@ fn install_gains(project: Project, mut gains: BTreeMap<u64, i32>) -> Result<Proj
     if !gains.is_empty() {
         return Err(StorageError::Invalid("unknown host gain device"));
     }
-    Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+    Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }
 
 pub(super) fn take_both_gains(
@@ -284,7 +284,7 @@ pub(super) fn install_both_gains(
     if !gains.is_empty() {
         return Err(StorageError::Invalid("unknown host gain device"));
     }
-    Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+    Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }
 pub(super) fn decode23(bytes: &[u8]) -> Result<Project, StorageError> {
     let doc: Document23 = serde_json::from_slice(bytes)?;

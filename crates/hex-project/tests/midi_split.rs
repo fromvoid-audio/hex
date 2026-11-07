@@ -212,7 +212,10 @@ fn split_refuses_project_clip_limit_and_note_duplication_limit() {
             notes: Vec::new(),
         })
         .collect();
-    let full_project = Project::from_snapshot(Snapshot {
+    let full_project = Project::from_legacy_snapshot(Snapshot {
+        automatic_track_names: Vec::new(),
+        retained_source_paths: Vec::new(),
+        aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
@@ -220,11 +223,15 @@ fn split_refuses_project_clip_limit_and_note_duplication_limit() {
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
+        sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
+        sample_rate_mode: Default::default(),
         next_id: 2 + MAX_CLIPS as u64,
         assets: Vec::new(),
         tracks: vec![TrackSnapshot {
+            group_output_mutes: Vec::new(),
+            tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),
@@ -276,6 +283,7 @@ fn split_refuses_project_clip_limit_and_note_duplication_limit() {
     let (mut editor, clip) = editor_with_clip(false, 0, 2, 2);
     let notes = (0..(MAX_NOTES / 2 + 1))
         .map(|_| hex_project::MidiNoteInsert {
+            active: true,
             start: BeatTime::ZERO,
             duration: beat(2),
             pitch: 60,

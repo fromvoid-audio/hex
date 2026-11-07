@@ -115,12 +115,12 @@ fn seed(playback: &mut SessionPlayback, slot: usize, entries: usize, bounds: &[u
 fn finite_tail_horizon_and_overflow_refuse_without_moving_live_owners() {
     for (bounds, accepted, error) in [
         (
-            vec![400_000, 80_000],
+            vec![28_000_000, 800_000],
             true,
             SessionPlaybackError::ReleaseBankFull,
         ),
         (
-            vec![400_000, 80_001],
+            vec![28_000_000, 800_001],
             false,
             SessionPlaybackError::ReleaseBankFull,
         ),
@@ -173,6 +173,20 @@ fn retained_entry_work_cap_counts_memoryless_entries_and_is_retryable() {
             seed(&mut reference, 64, 1, &[4]);
         }
         let mut candidate = SessionPlayback::new(Arc::clone(&previous.revision)).unwrap();
+        let preview = candidate.preview_stream_handoff_with_scope(
+            &mut previous,
+            2,
+            None,
+            &mut |_| Ok(()),
+            true,
+        );
+        if extra {
+            assert_eq!(preview, Err(SessionPlaybackError::ReleaseBankFull));
+            assert_eq!(previous.tail_groups.iter().flatten().count(), 65);
+            assert!(candidate.tail_groups.iter().all(Option::is_none));
+        } else {
+            assert!(preview.is_ok());
+        }
         let result = candidate.try_inherit_state_from(&mut previous);
         let mut expected = [[0.0; 2]; 2];
         let mut actual = expected;
@@ -186,6 +200,17 @@ fn retained_entry_work_cap_counts_memoryless_entries_and_is_retryable() {
             let mut drain = [[0.0; 2]; 2];
             previous.render(&mut drain).unwrap();
             assert!(previous.tail_output_active.iter().all(|active| !active));
+            assert!(
+                candidate
+                    .preview_stream_handoff_with_scope(
+                        &mut previous,
+                        2,
+                        None,
+                        &mut |_| Ok(()),
+                        true,
+                    )
+                    .is_ok()
+            );
             assert!(candidate.try_inherit_state_from(&mut previous).is_ok());
         } else {
             assert!(result.is_ok());

@@ -110,10 +110,10 @@ impl SpectrumTargets {
         }
         let mut next = Self::empty();
         for (slot, target) in self.iter() {
-            if requests.contains(&SpectrumTargetRequest::from(target)) {
-                if let Some(entry) = next.slots.get_mut(slot) {
-                    *entry = Some(target);
-                }
+            if requests.contains(&SpectrumTargetRequest::from(target))
+                && let Some(entry) = next.slots.get_mut(slot)
+            {
+                *entry = Some(target);
             }
         }
         for request in requests {

@@ -25,7 +25,7 @@ fn scratch() -> Scratch {
     Scratch(path)
 }
 fn next(editor: &Entity<EditorView>, cx: &TestAppContext) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         match editor.read_with(cx, |view, _| view.service.try_event()) {
             Ok(event) => return event,
@@ -87,7 +87,7 @@ fn preview(editor: &Entity<EditorView>, cx: &mut TestAppContext) {
     });
 }
 fn settle(editor: &Entity<EditorView>, cx: &mut TestAppContext) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(cx, |view, cx| {
             view.tick(cx);
@@ -318,6 +318,7 @@ fn review_final_period_refusal_preserves_the_draft_and_reports_recovery(cx: &mut
             NumericControlEvent {
                 phase: NumericEventPhase::Commit,
                 value: 600.0,
+                gesture: None,
             },
             cx,
         );
@@ -332,6 +333,7 @@ fn review_final_period_refusal_preserves_the_draft_and_reports_recovery(cx: &mut
             NumericControlEvent {
                 phase: NumericEventPhase::Commit,
                 value: 1800.0,
+                gesture: None,
             },
             cx,
         );
@@ -495,7 +497,7 @@ fn review_audition_worker_failure_survives_the_normal_tick(cx: &mut TestAppConte
             })
         })
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     while !input.is_cancelled() {
         assert!(Instant::now() < deadline, "worker did not refuse audition");
         std::thread::sleep(Duration::from_millis(2));

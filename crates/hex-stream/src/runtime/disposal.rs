@@ -230,9 +230,16 @@ impl PreparedStreamDisposal {
             return Err(StreamDisposalError::Incomplete);
         }
         let bytes = self
-            .expected_pages
-            .checked_mul(hex_engine::STREAM_PAGE_FRAMES)
-            .and_then(|n| n.checked_mul(std::mem::size_of::<hex_engine::Frame>()))
+            .control
+            .as_ref()
+            .map(|control| &control.owner.transport_data)
+            .and_then(|data| {
+                crate::footprint::sum([
+                    data.pcm_boxes,
+                    data.scalar_boxes,
+                    data.scalar_coverage_boxes,
+                ])
+            })
             .ok_or(StreamDisposalError::Capacity)?;
         self.phase = StreamDisposalPhase::Destroying;
         let result = catch_unwind(AssertUnwindSafe(|| {
