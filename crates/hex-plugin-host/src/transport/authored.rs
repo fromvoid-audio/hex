@@ -3,6 +3,10 @@
 use super::{Fault, MAX_FRAMES, Parameters, TimingChanges};
 use std::num::NonZeroU64;
 
+#[cfg(test)]
+#[path = "authored/empty.rs"]
+mod empty;
+
 /// Borrowed, control-prepared program. This callback query must be bounded by
 /// the physical extent, allocation-free, and independent of worker ownership.
 /// Callers must prove that every admitted origin window fits the point limit.
@@ -10,6 +14,8 @@ pub trait AuthoredParameterProgram {
     /// Match the same immutable program across fragments of one quantum.
     /// A new graph program needs a new key. An unfinished quantum retains
     /// its opening key and requires an explicit retained version below.
+    /// A quantum opened without a programme keeps that absence until the next
+    /// boundary, even when its later fragments first supply an authored view.
     fn quantum_program_key(&self) -> NonZeroU64;
 
     /// Query an immutable version retained by the graph owner. This is a

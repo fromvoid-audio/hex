@@ -38,9 +38,9 @@ impl RenderOnce for Housing {
         let mut controls = div()
             .flex()
             .flex_col()
+            .flex_shrink_0()
             .items_center()
-            .gap(px(crate::DEVICE_FRAME_HEADER_GAP))
-            .child(self.leading);
+            .gap(px(crate::DEVICE_FRAME_HEADER_GAP));
         for (index, (id, glyph, label)) in [
             ("device-macro-toggle", "m", "macro edit panel · placeholder"),
             (
@@ -123,12 +123,10 @@ impl RenderOnce for Housing {
             .flex_1()
             .min_w_0()
             .min_h_0()
-            .child(crate::device_header(
-                self.title,
-                self.style,
-                controls,
-                self.actions,
-            ))
+            .child(
+                crate::device_header(self.title, self.style, self.leading, self.actions)
+                    .child(controls),
+            )
             .child(body)
     }
 }
