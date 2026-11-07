@@ -4094,6 +4094,7 @@ pub use playback::{
 };
 pub use prepared_revision::PreparedRevision;
 pub use prepared_revision::assembly::{AudioPreparedRevisionMetadata, AudioRevisionRootCapacity};
+pub use prepared_revision::foreign_programs::ForeignProgramFrontier;
 pub use prepared_tempo::{
     MAX_PREPARED_TEMPO_POINTS, MidiTiming, PreparedTempoError, PreparedTempoMap, SessionClockAnchor,
 };

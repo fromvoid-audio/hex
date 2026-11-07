@@ -1292,14 +1292,21 @@ impl WorkerAudioSink for NativeAudioSink {
     fn received_foreign_program_on_control(
         &mut self,
         binding: hex_audio::plugin_effects::EffectBinding,
-    ) -> Option<std::num::NonZeroU64> {
-        self.output
-            .as_mut()?
-            .publication
-            .control()?
-            .native_source_received_program_on_control(binding)
-            .filter(|received| received.binding == binding)?
-            .program
+    ) -> hex_engine::ForeignProgramFrontier {
+        use hex_engine::ForeignProgramFrontier;
+        let received = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .and_then(|control| control.native_source_received_program_on_control(binding))
+            .filter(|received| received.binding == binding);
+        match received {
+            None => ForeignProgramFrontier::Unknown,
+            Some(received) => received.program.map_or(
+                ForeignProgramFrontier::Empty,
+                ForeignProgramFrontier::Program,
+            ),
+        }
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn prepare_offline_bounce(
