@@ -145,6 +145,10 @@ pub enum PaletteRole {
     Text,
     Muted,
     Primary,
+    /// Recording is red independently of the editable interaction highlight.
+    Recording,
+    /// Validation must remain recognizable when the highlight is changed.
+    Error,
     PrimaryDark,
     Waveform,
     WaveBackground,
@@ -167,6 +171,7 @@ struct ThemeTokens {
     clip_outline: u32,
     muted: u32,
     primary_dark: u32,
+    error: u32,
     waveform: u32,
 }
 
@@ -193,6 +198,10 @@ impl ThemeTokens {
             clip_outline: mix(0x000000, darken(background, 42), 0.25),
             muted: mix(background, text, 0.68),
             primary_dark: mix(background, primary, 0.08),
+            error: [0xe35c5c, 0xb32828, 0x7a1111, 0x4c0000, 0xffcccc]
+                .into_iter()
+                .find(|red| contrast_ratio(*red, background) >= 4.5)
+                .unwrap_or_else(|| contrast_text(background, 0xe35c5c)),
             waveform: contrast_text(mix(primary, text, 0.15), text),
         }
     }
@@ -212,6 +221,8 @@ impl ThemeTokens {
             PaletteRole::Text => self.colors.text.packed(),
             PaletteRole::Muted => self.muted,
             PaletteRole::Primary => self.colors.primary.packed(),
+            PaletteRole::Recording => 0xc33737,
+            PaletteRole::Error => self.error,
             PaletteRole::PrimaryDark => self.primary_dark,
             PaletteRole::Waveform => self.waveform,
             PaletteRole::Secondary => self.colors.secondary.packed(),
@@ -547,6 +558,42 @@ mod tests {
                 color(PaletteRole::SecondaryText)
             ) >= 4.5
         );
+    }
+
+    #[test]
+    fn graphite_defaults_are_neutral_and_recording_errors_ignore_custom_highlights() {
+        let _restore = RestoreTheme(preferences());
+        let defaults = hex_preferences::ThemePreferences::default();
+        apply_preferences(defaults);
+        for role in [
+            PaletteRole::Background,
+            PaletteRole::Surface,
+            PaletteRole::Raised,
+            PaletteRole::Hover,
+            PaletteRole::Border,
+            PaletteRole::Text,
+            PaletteRole::Muted,
+        ] {
+            let rgb = color(role);
+            assert_eq!((rgb >> 16) & 255, (rgb >> 8) & 255);
+            assert_eq!((rgb >> 8) & 255, rgb & 255);
+        }
+        assert_eq!(color(PaletteRole::Primary), 0x3b95df);
+        assert_eq!(color(PaletteRole::Secondary), 0x75baff);
+        let recording = color(PaletteRole::Recording);
+        let error = color(PaletteRole::Error);
+        assert!(contrast_ratio(recording, color(PaletteRole::Background)) >= 3.0);
+        assert!(contrast_ratio(error, color(PaletteRole::Raised)) >= 4.5);
+        let custom = hex_preferences::ThemePreferences {
+            primary: hex_preferences::RgbColor::new(0x90, 0xdd, 0x60),
+            ..defaults
+        };
+        apply_preferences(custom);
+        assert_eq!(preferences(), custom);
+        assert_eq!(color(PaletteRole::Recording), recording);
+        assert_eq!(color(PaletteRole::Error), error);
+        assert_ne!(color(PaletteRole::Primary), recording);
+        assert_eq!(control_style().invalid, error);
     }
 
     #[test]

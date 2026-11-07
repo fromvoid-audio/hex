@@ -34,7 +34,7 @@ pub(crate) fn device_style(role: DeviceStyleRole) -> ControlStyle {
         dial_rail: color(PaletteRole::Border),
         hover: color(PaletteRole::Hover),
         selection: color(PaletteRole::Secondary),
-        invalid: color(PaletteRole::Primary),
+        invalid: color(PaletteRole::Error),
         font_size: 9.0,
         text_case: hex_widgets::TextCase::Lowercase,
     };
@@ -55,7 +55,7 @@ pub(crate) fn device_style(role: DeviceStyleRole) -> ControlStyle {
             if role == DeviceStyleRole::Readout {
                 style.text = readable_text(display, style.accent);
             } else if role == DeviceStyleRole::ErrorDisplay {
-                style.text = readable_text(display, color(PaletteRole::Primary));
+                style.text = readable_text(display, color(PaletteRole::Error));
             }
         }
     }
@@ -133,7 +133,7 @@ mod tests {
             assert_eq!(control.hover, color(PaletteRole::Hover));
             assert_eq!(control.focus_marker, palette.text.packed());
             assert_eq!(control.accent, palette.secondary.packed());
-            assert_eq!(control.invalid, palette.primary.packed());
+            assert_eq!(control.invalid, color(PaletteRole::Error));
             assert_ne!(control.selection, control.raised);
             assert!(super::super::contrast_ratio(control.selection, control.text) >= 4.5);
             assert_eq!(oscillator_identity_color(0), Some(0xe2cf25));

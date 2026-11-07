@@ -118,7 +118,7 @@ impl EditorView {
                 .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
                 .text_color(rgb(theme::color(
                     if self.midi_recorder.blocks_edits() {
-                        theme::PaletteRole::Primary
+                        theme::PaletteRole::Recording
                     } else {
                         theme::PaletteRole::Muted
                     },
