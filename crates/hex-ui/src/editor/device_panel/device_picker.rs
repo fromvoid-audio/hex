@@ -10,6 +10,7 @@ pub(super) struct Search {
     selected: usize,
     scroll: gpui::ScrollHandle,
     _subscription: Subscription,
+    modal_scope: Option<(u64, DevicePanelOwner)>,
 }
 struct Entry {
     class: NativeDeviceClass,
@@ -40,6 +41,8 @@ pub(in crate::editor) fn bind_keys(cx: &mut App) {
             "cmd-shift-m",
             "cmd-alt-t",
             "cmd-,",
+            "tab",
+            "shift-tab",
         ]
         .map(|key| gpui::KeyBinding::new(key, gpui::NoAction, Some("hex_device_picker"))),
     );
@@ -61,6 +64,7 @@ fn ensure(view: &mut EditorView, cx: &mut Context<EditorView>) {
         selected: 0,
         scroll: gpui::ScrollHandle::new(),
         _subscription: subscription,
+        modal_scope: None,
     });
 }
 pub(super) fn open(view: &mut EditorView, window: &mut Window, cx: &mut Context<EditorView>) {
@@ -71,6 +75,10 @@ pub(super) fn open(view: &mut EditorView, window: &mut Window, cx: &mut Context<
         .as_mut()
         .expect("search initialized above");
     search.selected = 0;
+    search.modal_scope = view
+        .device_panel
+        .owner
+        .map(|owner| (view.project_generation, owner));
     search.scroll.set_offset(gpui::point(px(0.0), px(0.0)));
     let input = search.input.clone();
     input.update(cx, |input, cx| input.set_text("", cx));
@@ -216,8 +224,7 @@ pub(super) fn render(
     let (rows, errors) = entries(view, owner, input.read(cx).text());
     let selected = search.selected.min(rows.len().saturating_sub(1));
     let empty = rows.is_empty() && errors.is_empty();
-    let list_height = ((rows.len() + errors.len()).max(1) as f32 * ROW_HEIGHT)
-        .min(crate::device_composition::BODY_HEIGHT - 30.0);
+    let list_height = ((rows.len() + errors.len()).max(1) as f32 * ROW_HEIGHT).min(240.0);
     let mut list = div()
         .id("device-picker-list")
         .debug_selector(|| "device-picker-list".into())
@@ -282,12 +289,8 @@ pub(super) fn render(
     div()
         .id("device-add-menu")
         .debug_selector(|| "device-add-menu".into())
-        .absolute()
-        .top(px(DEVICE_PANEL_HEADER_HEIGHT))
-        .left(px(4.0))
-        .right(px(4.0))
-        .max_w(px(360.0))
-        .max_h(px(crate::device_composition::BODY_HEIGHT))
+        .w(px(360.0))
+        .max_w_full()
         .overflow_hidden()
         .occlude()
         .flex()
@@ -295,8 +298,41 @@ pub(super) fn render(
         .gap(px(2.0))
         .p(px(4.0))
         .rounded(px(3.0))
+        .border_1()
+        .border_color(rgb(theme::color(theme::PaletteRole::Border)))
         .bg(rgb(theme::color(theme::PaletteRole::Raised)))
         .key_context("hex_device_picker hex_text_editing")
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|view, _, window, cx| {
+                if let Some(search) = &view.device_panel.add_search {
+                    search.input.read(cx).focus(window);
+                }
+                cx.stop_propagation();
+            }),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .h(px(20.0))
+                .flex_shrink_0()
+                .child(
+                    div()
+                        .flex_1()
+                        .text_xs()
+                        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                        .child(theme::text("add device")),
+                )
+                .child(
+                    hex_widgets::action(theme::text("×"), theme::action_style())
+                        .id("device-picker-close")
+                        .debug_selector(|| "device-picker-close".into())
+                        .size(px(18.0))
+                        .rounded_full()
+                        .on_click(cx.listener(|view, _, window, cx| close(view, window, cx))),
+                ),
+        )
         .child(input)
         .child(list)
         .on_action(cx.listener(move |view, _: &Close, window, cx| {
@@ -335,6 +371,7 @@ fn step(
     let Some(search) = view.device_panel.add_search.as_mut() else {
         return;
     };
+    search.selected = search.selected.min(rows.len().saturating_sub(1));
     search.selected = if forward {
         search
             .selected
@@ -354,4 +391,61 @@ fn step(
     };
     search.scroll.set_offset(gpui::point(px(0.0), px(-next)));
     cx.notify();
+}
+
+/// One visible modal owner; a hidden detail pane never blocks the workspace.
+pub(in crate::editor) fn is_open(view: &EditorView) -> bool {
+    view.clip_view_open
+        && view.device_panel_active
+        && view.device_panel.add_menu_is_open(view.state.as_deref())
+}
+pub(in crate::editor) fn overlay(
+    view: &mut EditorView,
+    window: &mut Window,
+    cx: &mut Context<EditorView>,
+) -> Option<Stateful<Div>> {
+    if !is_open(view) {
+        if let Some(search) = &mut view.device_panel.add_search {
+            search.modal_scope = None;
+        }
+        return None;
+    }
+    let owner = view.device_panel.owner?;
+    ensure(view, cx);
+    let scope = (view.project_generation, owner);
+    let search = view.device_panel.add_search.as_mut()?;
+    if search.modal_scope.is_some_and(|current| current != scope) {
+        search.modal_scope = None;
+        close(view, window, cx);
+        return None;
+    }
+    if search.modal_scope.is_none() {
+        search.modal_scope = Some(scope);
+        search.input.read(cx).focus(window);
+    }
+    let card = render(view, owner, cx);
+    Some(
+        div()
+            .id("device-picker-modal")
+            .debug_selector(|| "device-picker-modal".into())
+            .absolute()
+            .inset_0()
+            .occlude()
+            .flex()
+            .items_center()
+            .justify_center()
+            .p_4()
+            .bg(gpui::rgba(0x00000077))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, _, window, cx| {
+                    close(view, window, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .child(card),
+    )
 }

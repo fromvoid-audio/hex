@@ -170,7 +170,10 @@ fn meter_add_inserts_at_middle_and_end_with_one_undo_in_all_owners(cx: &mut Test
     let before = editor.read_with(&visual, |view, _| {
         view.state.as_ref().unwrap().project.snapshot()
     });
-    click(&mut visual, catalog_entry(DevicePanelOwner::Main));
+    assert!(
+        visual.debug_bounds("device-add-menu").is_none(),
+        "changing the owner cancels the modal before any choice can run"
+    );
     pump(&editor, &mut visual);
     editor.read_with(&visual, |view, _| {
         assert!(!view.device_panel.add_menu_open);

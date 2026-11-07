@@ -208,13 +208,7 @@ pub(super) fn render(
     let chain = super::return_drag::render_chain(view, window, cx, owner, &devices);
     let chain = navigation::rail(view, chain);
     root = root.child(header).child(chain);
-    if add_open {
-        let panel_owner = match owner {
-            EffectBusOwner::Main => DevicePanelOwner::Main,
-            EffectBusOwner::Return(id) => DevicePanelOwner::Return(id),
-        };
-        root = root.child(device_picker::render(view, panel_owner, cx));
-    } else if catalog.is_err() {
+    if catalog.is_err() {
         root = root.child(menu_message("device catalog unavailable"));
     }
     root

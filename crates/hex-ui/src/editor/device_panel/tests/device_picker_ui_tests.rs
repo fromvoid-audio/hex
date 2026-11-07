@@ -19,7 +19,7 @@ fn native_picker_search_clear_keyboard_cancel_and_one_insertion(cx: &mut TestApp
             view.state.as_ref().unwrap().project.snapshot()
         });
         click(&mut visual, "device-add-toggle");
-        let panel = visual.debug_bounds("device-panel").unwrap();
+        let panel = visual.debug_bounds("device-picker-modal").unwrap();
         let popup = visual.debug_bounds("device-add-menu").unwrap();
         let input = visual.debug_bounds("device-picker-search").unwrap();
         assert!(popup.size.width <= px(360.0));

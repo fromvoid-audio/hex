@@ -14,6 +14,7 @@ impl EditorView {
         };
         if self.mode != super::EditorMode::Arrangement
             || self.context_menu.is_some()
+            || super::device_panel::picker_is_open(self)
             || self.active_clip_drag.is_some()
             || self.active_browser_audio_drag.is_some()
             || self.active_native_device_drag.is_some()
@@ -356,9 +357,14 @@ impl EditorView {
                         if !delta_y.is_finite() || delta_y == 0.0 {
                             return;
                         }
+                        if super::device_panel::picker_is_open(zoom_entity.read(cx)) {
+                            return;
+                        }
                         cx.stop_propagation();
                         let did_zoom = zoom_entity.update(cx, |view, _| {
-                            if view.context_menu.is_some() {
+                            if view.context_menu.is_some()
+                                || super::device_panel::picker_is_open(view)
+                            {
                                 return false;
                             }
                             view.zoom_timeline_wheel_at(
@@ -441,7 +447,9 @@ impl EditorView {
                         let (started, moving) = cursor_down_entity.update(cx, |view, cx| {
                             // An open menu paints above this body; its rows
                             // own the press, never a section or range gesture.
-                            if view.context_menu.is_some() {
+                            if view.context_menu.is_some()
+                                || super::device_panel::picker_is_open(view)
+                            {
                                 return (false, false);
                             }
                             if view.time_selection_key_held {
@@ -1003,9 +1011,14 @@ impl EditorView {
                         if !delta_y.is_finite() || delta_y == 0.0 {
                             return;
                         }
+                        if super::device_panel::picker_is_open(wheel_entity.read(cx)) {
+                            return;
+                        }
                         cx.stop_propagation();
                         let did_zoom = wheel_entity.update(cx, |view, _| {
-                            if view.context_menu.is_some() {
+                            if view.context_menu.is_some()
+                                || super::device_panel::picker_is_open(view)
+                            {
                                 return false;
                             }
                             view.zoom_timeline_wheel_at(

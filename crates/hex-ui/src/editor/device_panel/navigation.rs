@@ -273,6 +273,9 @@ pub(in crate::editor) fn bottom_bar(
                         if !phase.capture() || !open || !bounds.contains(&event.position) {
                             return;
                         }
+                        if super::picker_is_open(entity.read(cx)) {
+                            return;
+                        }
                         let delta = event.delta.pixel_delta(px(24.0));
                         wheel_entity.update(cx, |view, _| {
                             let navigation = &view.device_panel.navigation;
@@ -310,7 +313,7 @@ pub(in crate::editor) fn capture_pointer_down(
     window: &mut Window,
     cx: &mut Context<EditorView>,
 ) {
-    if view.context_menu.is_some() || view.theme_settings.open {
+    if view.context_menu.is_some() || view.theme_settings.open || super::picker_is_open(view) {
         return;
     }
     let open = view.clip_view_open && view.device_panel_active;
