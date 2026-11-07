@@ -30,13 +30,24 @@ impl AuthoredParameterMetadata {
     }
 
     pub(in crate::native) fn matches(&self, instance: &Prepared) -> bool {
-        self.binding == instance.config.binding
-            && self.class == instance.config.identity.class
+        self.binding == instance.config.binding && self.retains_lease(instance)
+    }
+
+    fn retains_lease(&self, instance: &Prepared) -> bool {
+        self.class == instance.config.identity.class
             && self.source.as_ptr() == Arc::as_ptr(&instance.lease.cancellation.cancelled)
     }
 
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// Exact controller base first observed before worker transfer. Renewal
+    /// on the same lease preserves it. IDs first selected after the initial
+    /// arm have no base witness until a fresh canonical restoration.
+    pub fn initial_normalized(&self, id: u32) -> Option<f64> {
+        let index = self.parameters.binary_search_by_key(&id, |p| p.id).ok()?;
+        self.parameters[index].normalized.map(f64::from_bits)
     }
 
     /// Zero steps means continuous. Raw ParamID zero is a valid key.
@@ -95,6 +106,7 @@ impl Prepared {
 struct Parameter {
     id: u32,
     steps: Option<u32>,
+    normalized: Option<u64>,
 }
 
 struct Selection {
@@ -115,7 +127,11 @@ impl Selection {
         parameters
             .try_reserve_exact(ids.len())
             .map_err(|_| Error::Protocol("authored parameter metadata allocation refused"))?;
-        parameters.extend(ids.iter().map(|&id| Parameter { id, steps: None }));
+        parameters.extend(ids.iter().map(|&id| Parameter {
+            id,
+            steps: None,
+            normalized: None,
+        }));
         Ok(Self {
             parameters,
             total: None,
@@ -127,19 +143,7 @@ impl Selection {
             return Err(Error::Protocol("authored parameter inventory changed"));
         }
         for parameter in page.as_slice() {
-            let Ok(index) = self
-                .parameters
-                .binary_search_by_key(&parameter.id, |p| p.id)
-            else {
-                continue;
-            };
-            let selection = &mut self.parameters[index];
-            if !parameter.supports_authored_automation() || selection.steps.is_some() {
-                return Err(Error::Protocol(
-                    "authored parameter is ineligible or duplicated",
-                ));
-            }
-            selection.steps = Some(parameter.step_count);
+            self.accept_parameter(parameter)?;
         }
         // The decoder bounds the whole extent to MAX_CONTROLLER_PARAMETERS.
         let first = page.first + page.as_slice().len() as u16;
@@ -150,9 +154,44 @@ impl Selection {
         }))
     }
 
-    fn finish(self, instance: &Prepared, revision: u64) -> Result<AuthoredParameterMetadata> {
+    fn accept_parameter(&mut self, parameter: &protocol::ControllerParameter) -> Result<()> {
+        let Ok(index) = self
+            .parameters
+            .binary_search_by_key(&parameter.id, |p| p.id)
+        else {
+            return Ok(());
+        };
+        let selection = &mut self.parameters[index];
+        if !parameter.supports_authored_automation() || selection.steps.is_some() {
+            return Err(Error::Protocol(
+                "authored parameter is ineligible or duplicated",
+            ));
+        }
+        selection.steps = Some(parameter.step_count);
+        selection.normalized = Some(parameter.normalized.to_bits());
+        Ok(())
+    }
+
+    fn retain_initial_values(&mut self, previous: &AuthoredParameterMetadata) {
+        for parameter in &mut self.parameters {
+            parameter.normalized = previous.initial_normalized(parameter.id).map(f64::to_bits);
+        }
+    }
+
+    fn finish(mut self, instance: &Prepared, revision: u64) -> Result<AuthoredParameterMetadata> {
         if self.parameters.iter().any(|p| p.steps.is_none()) {
             return Err(Error::Protocol("authored parameter is missing"));
+        }
+        // Epoch renewal refreshes capabilities on the same loaded lease. Its
+        // current controller values may already be authored or manually held.
+        // Carry the first canonical observations across that renewal. A newly
+        // selected ID has no base witness until a fresh canonical restoration.
+        if let Some(previous) = instance
+            .authored_parameter_metadata
+            .as_ref()
+            .filter(|previous| previous.retains_lease(instance))
+        {
+            self.retain_initial_values(previous);
         }
         Ok(AuthoredParameterMetadata {
             binding: instance.config.binding,
@@ -161,5 +200,80 @@ impl Selection {
             revision,
             parameters: self.parameters,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_selected_controller_values_are_lossless_and_refused_rows_cannot_replace_them() {
+        let mut selection = Selection::new(&[0, 7]).unwrap();
+        let value = 0.12345678901234566;
+        let parameter = protocol::ControllerParameter {
+            id: 0,
+            flags: 1,
+            normalized: value,
+            ..Default::default()
+        };
+        selection.accept_parameter(&parameter).unwrap();
+        assert!(
+            selection
+                .accept_parameter(&protocol::ControllerParameter {
+                    normalized: 0.75,
+                    ..parameter
+                })
+                .is_err()
+        );
+        assert!(
+            selection
+                .accept_parameter(&protocol::ControllerParameter {
+                    id: 7,
+                    flags: 3,
+                    ..parameter
+                })
+                .is_err()
+        );
+        selection
+            .accept_parameter(&protocol::ControllerParameter {
+                id: 100,
+                ..parameter
+            })
+            .unwrap();
+        let class = ClassId::new([1; 16]).unwrap();
+        let metadata = AuthoredParameterMetadata {
+            binding: Binding {
+                root: 1,
+                instance: 2,
+                graph: 3,
+                epoch: 4,
+            },
+            source: std::sync::Weak::new(),
+            class,
+            revision: 1,
+            parameters: selection.parameters,
+        };
+        assert_eq!(metadata.initial_normalized(0), Some(value));
+        assert_eq!(metadata.initial_normalized(7), None);
+        assert_eq!(metadata.initial_normalized(100), None);
+        assert_eq!(metadata.step_count(0), Some(0));
+        let mut renewed = Selection::new(&[0, 7]).unwrap();
+        renewed
+            .accept_parameter(&protocol::ControllerParameter {
+                normalized: 0.75,
+                ..parameter
+            })
+            .unwrap();
+        renewed
+            .accept_parameter(&protocol::ControllerParameter {
+                id: 7,
+                normalized: 0.5,
+                ..parameter
+            })
+            .unwrap();
+        renewed.retain_initial_values(&metadata);
+        assert_eq!(renewed.parameters[0].normalized, Some(value.to_bits()));
+        assert_eq!(renewed.parameters[1].normalized, None);
     }
 }

@@ -246,6 +246,12 @@ public:
         if (restoration.component_set && restoration.phase!=1) {++observed.violations;return kResultFalse;}
         std::memcpy(&component_gain,data.data()+8,4);
         if(!std::isfinite(component_gain) || component_gain<0 || component_gain>4)return kResultFalse;
+        if(fault==144) {
+            double restored_manual=1.0;
+            const auto result=stream->read(&restored_manual,8,&read);
+            if(read && (result!=kResultOk || read!=8 || !std::isfinite(restored_manual) || restored_manual<0 || restored_manual>4)) return kResultFalse;
+            drag_axis=restored_manual/4.0;
+        }
         if((fault==110 || fault==111) && handler->restartComponent(kLatencyChanged)!=kResultOk) return kResultFalse;
         if(fault==123) handler->restartComponent(kParamValuesChanged|kParamIDMappingChanged);
         if(fault==53)stream->write(data.data(),1,nullptr); // ignored illegal write must still invalidate stream

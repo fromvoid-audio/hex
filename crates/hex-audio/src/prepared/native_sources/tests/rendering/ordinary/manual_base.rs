@@ -26,6 +26,18 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
 
     let _serial = serial();
     let mut f = fixture_with_authored("processing", 2, 8, &[7]);
+    let device = f.editor.project().main_devices()[0].id();
+    f.editor
+        .execute(Command::ReplaceDeviceAutomationTarget {
+            device,
+            target: hex_project::DeviceAutomationTarget::Vst3 { parameter: 7 },
+            points: vec![hex_project::AutomationPoint {
+                beat: hex_project::BeatTime::ZERO,
+                value: hex_project::AutomationValue::new(0.5).unwrap(),
+                outgoing: hex_project::AutomationInterpolation::Step,
+            }],
+        })
+        .unwrap();
     let canonical = f.editor.project().clone();
     let initial = f.control.native_source_prepared_state(f.binding).unwrap();
     let (build, _, preparation) = crate::candidate_custody::native_source_test_fixture::input_for(
@@ -157,10 +169,17 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
     );
     assert_eq!(f.control.status.native_effect_source(), Some(source));
 
-    // Playback remains on the live authored 0.25 normalized lane throughout.
-    assert_eq!(block(&mut f), [[0.25, -0.5]; 8]);
+    // Both Root metadata copies retain canonical .25 while actual authored
+    // processing runs at .5 on the same source.
+    let metadata = f.control.native_source_metadata(binding).unwrap();
+    assert_eq!(
+        metadata.authored_base_values().collect::<Vec<_>>(),
+        vec![(7, 0.25)]
+    );
+    // Playback remains on the live authored 0.5 normalized lane throughout.
+    assert_eq!(block(&mut f), [[0.5, -1.0]; 8]);
     replacement::wait_for_blocks(&root, binding, 3);
-    assert_eq!(block(&mut f), [[0.25, -0.5]; 8]);
+    assert_eq!(block(&mut f), [[0.5, -1.0]; 8]);
     replacement::wait_for_blocks(&root, binding, 4);
     assert_eq!(f.editor.project(), &canonical);
     dispose(f);
