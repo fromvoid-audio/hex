@@ -363,7 +363,7 @@ mod tests {
             }
         );
         callback.finish(None, source, 132, 30, true, true);
-        assert!(control.receipts.is_empty() && callback.target().is_none());
+        assert!(control.receipts.is_empty() && callback.prepare_target().is_none());
     }
 
     #[test]
@@ -408,7 +408,7 @@ mod tests {
             control.receipts.pop().unwrap(),
             Receipt::Delivered {
                 target,
-                normalized: marker.input.point.normalized,
+                normalized: marker.input.point().unwrap().normalized,
                 origin: marker.origin.unwrap(),
                 delivery_performance_frame: 130,
             }
@@ -425,10 +425,10 @@ mod tests {
             first_frame: marker.first_frame + 8,
             input: ManualParameterInput {
                 operation: NonZeroU64::new(2).unwrap(),
-                point: ParameterPoint {
+                action: ManualParameterAction::Point(ParameterPoint {
                     normalized: 0.75,
-                    ..marker.input.point
-                },
+                    ..marker.input.point().unwrap()
+                }),
             },
             origin: Some(ManualParameterOrigin {
                 arrangement_frame: 79,
@@ -447,7 +447,7 @@ mod tests {
             control.receipts.pop().unwrap(),
             Receipt::Delivered {
                 target,
-                normalized: marker.input.point.normalized,
+                normalized: marker.input.point().unwrap().normalized,
                 origin: marker.origin.unwrap(),
                 delivery_performance_frame: 130,
             }
@@ -549,14 +549,40 @@ mod tests {
 
     #[test]
     fn final_receipt_callback_neither_allocates_nor_frees_and_storage_is_bounded() {
-        let (mut control, mut callback, target, marker) = fixture();
-        let quote = constructor_storage_quote().unwrap();
-        assert_eq!(
-            callback.constructor_channel_storage().unwrap().data_bytes,
-            quote
-        );
-        #[cfg(feature = "allocation-probe")]
-        let measured = allocation_counter::measure(|| {
+        for release in [false, true] {
+            let (mut control, mut callback, target, mut marker) = fixture();
+            if release {
+                marker.input.action = ManualParameterAction::Release {
+                    parameter: target.parameter,
+                };
+            }
+            let quote = constructor_storage_quote().unwrap();
+            assert_eq!(
+                callback.constructor_channel_storage().unwrap().data_bytes,
+                quote
+            );
+            #[cfg(feature = "allocation-probe")]
+            let measured = allocation_counter::measure(|| {
+                callback.finish(
+                    Some(marker),
+                    Some((target.source, target.transport_epoch)),
+                    131,
+                    30,
+                    true,
+                    true,
+                );
+            });
+            #[cfg(feature = "allocation-probe")]
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            #[cfg(not(feature = "allocation-probe"))]
             callback.finish(
                 Some(marker),
                 Some((target.source, target.transport_epoch)),
@@ -565,29 +591,10 @@ mod tests {
                 true,
                 true,
             );
-        });
-        #[cfg(feature = "allocation-probe")]
-        assert_eq!(
-            (
-                measured.count_total,
-                measured.bytes_total,
-                measured.count_current,
-                measured.bytes_current
-            ),
-            (0, 0, 0, 0)
-        );
-        #[cfg(not(feature = "allocation-probe"))]
-        callback.finish(
-            Some(marker),
-            Some((target.source, target.transport_epoch)),
-            131,
-            30,
-            true,
-            true,
-        );
-        assert!(matches!(
-            control.receipts.pop().unwrap(),
-            Receipt::Delivered { .. }
-        ));
+            assert!(matches!(
+                (control.receipts.pop().unwrap(), release),
+                (Receipt::Delivered { .. }, false) | (Receipt::Released { .. }, true)
+            ));
+        }
     }
 }
