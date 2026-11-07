@@ -14,6 +14,8 @@ widgets = (
     # Workspace navigation components route their glyphs/tooltips through theme::text.
     'self.browser_toggle_button(', 'self.workspace_view_toggle(',
     'self.arrangement(', 'self.ruler(', 'self.clip_view(',
+    # Main's arrangement map paints cached geometry without text.
+    'super::arrangement_map::view(',
     # Query clear-slot composition contains a themed action and native input semantics.
     'self.clear_search_slot(',
     # Pinned browser collections compose themed heading, labels and icons.
