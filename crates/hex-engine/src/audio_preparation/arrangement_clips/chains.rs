@@ -749,14 +749,15 @@ mod tests {
                 .unwrap();
             assert!(custody.bytes(&chain).unwrap() <= quoted);
             assert!(custody.construction_overlap() <= overlap);
-            let runtime = hex_lattice::NativeRuntimeChain::new_prepared(chain).unwrap();
+            let factory = chain[0].definition.as_ref().unwrap();
+            assert_eq!(factory.supports_parameter_automation(p::DECAY), armed);
             assert_eq!(
-                runtime.output_tail_for_range(0..1),
-                Some(hex_lattice::OutputTail::Finite {
+                factory.output_tail(),
+                hex_lattice::OutputTail::Finite {
                     max_tail_frames: u64::from(project.sample_rate())
                         * (if armed { 181 } else { 8 })
                         + u64::from(project.sample_rate()).div_ceil(10)
-                })
+                }
             );
         }
     }
