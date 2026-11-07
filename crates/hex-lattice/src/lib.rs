@@ -118,6 +118,19 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
         })
     }
 
+    /// Prepare runtime-only state for the exact device instance. The provider
+    /// may attach nonowning provenance from its actual prepared source; copied
+    /// identities alone grant no endpoint or publication custody. Canonical
+    /// state and save/history remain owned by the caller.
+    fn prepare_instance_state(
+        &self,
+        _identity: ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        _context: &DevicePreparationContext<'_>,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        self.migrate_state(state)
+    }
+
     /// Control-side selection for one canonical chain/device. Instance-bound
     /// providers must validate this identity against their already prepared
     /// configuration and refuse missing instances. The identity alone grants
@@ -3292,6 +3305,25 @@ impl<'a> NativeDeviceRegistry<'a> {
                 .with_host_metadata_from(state)?,
         )
     }
+    /// Validate instance-bound runtime state without changing canonical state.
+    pub fn prepare_instance_state(
+        &self,
+        identity: ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &DevicePreparationContext<'_>,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        state.require_asset_free_processing()?;
+        context.validate_for(state)?;
+        let definition = self
+            .definition(state.type_id())
+            .ok_or(DeviceContractError::WrongDeviceType)?;
+        self.validate_current(
+            definition,
+            definition
+                .prepare_instance_state(identity, state, context)?
+                .with_host_metadata_from(state)?,
+        )
+    }
     pub fn patch_parameters(
         &self,
         state: &NativeDeviceState,
@@ -3480,12 +3512,10 @@ impl<'a> NativeDeviceRegistry<'a> {
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self.validate_current(
-            definition,
-            definition
-                .migrate_state(state)?
-                .with_host_metadata_from(state)?,
-        )?;
+        let current = match identity {
+            Some(identity) => self.prepare_instance_state(identity, state, context)?,
+            None => self.migrate_state(state)?,
+        };
         Ok(PreparedRuntimeDevice {
             matrix: definition.prepare_effect_matrix(&current)?,
             processor: match identity {

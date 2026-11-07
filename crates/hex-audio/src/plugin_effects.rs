@@ -192,6 +192,16 @@ impl NativeEffect {
                 ));
             }
         };
+        configuration.state =
+            match state_authority.approve_processing_on_control(configuration.state.clone()) {
+                Ok(state) => state,
+                Err(_) => {
+                    return Err(NativeWorkerStartFailure::retain_source_on_control(
+                        Error::Protocol("native original processing approval refused"),
+                        instance,
+                    ));
+                }
+            };
         configuration.state_verifier = Some(state_authority.verifier());
         // Preserve an already known lease refusal before considering the
         // budget. Worker transfer validates again against a later close/exit.

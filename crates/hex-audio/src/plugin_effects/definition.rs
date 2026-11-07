@@ -204,6 +204,19 @@ impl NativeDeviceMetadata for NativeEffectDefinition<'_> {
     }
 }
 impl NativeDeviceDefinition for NativeEffectDefinition<'_> {
+    fn prepare_instance_state(
+        &self,
+        identity: ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &DevicePreparationContext<'_>,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        self.migrate_state(state)?;
+        match self.exact_configuration(identity, state, context.sample_rate)? {
+            Some(effect) => effect.state.clone().with_host_metadata_from(state),
+            None => Ok(state.clone()),
+        }
+    }
+
     fn prepare_processor(
         &self,
         _: &NativeDeviceState,

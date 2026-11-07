@@ -155,7 +155,7 @@ fn prepare_foreign_instrument(
     let identity = hex_lattice::ProcessorInstanceIdentity::new(owner, device.id().value())
         .map_err(|_| Invalid("invalid vst3 instrument identity"))?;
     let migrated = registry
-        .migrate_state(device.state())
+        .prepare_instance_state(identity, device.state(), context)
         .map_err(|_| Invalid("vst3 instrument state is unsupported or malformed"))?;
     let prepared = registry
         .prepare_runtime_instance(identity, &migrated, context)
@@ -1188,7 +1188,7 @@ fn compile_effect_devices(
         let identity = hex_lattice::ProcessorInstanceIdentity::new(owner, device.id().value())
             .map_err(|_| Invalid("invalid prepared device identity"))?;
         let migrated = registry
-            .migrate_state(device.state())
+            .prepare_instance_state(identity, device.state(), context)
             .map_err(|_| Invalid("native device state is unsupported or malformed"))?;
         let has_vst3_lane = device.automation().iter().any(|lane| {
             matches!(
