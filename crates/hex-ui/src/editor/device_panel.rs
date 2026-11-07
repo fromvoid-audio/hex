@@ -3193,6 +3193,50 @@ fn binding_policy(
     }
 }
 
+/// The Arrangement lane uses the existing numeric binding for its typed trim.
+pub(super) fn render_automation_trim(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    target: super::device_automation::Target,
+) -> Option<Div> {
+    use hex_lattice_contract::DeviceAutomationTarget;
+    let descriptor = match target.kind {
+        DeviceAutomationTarget::HostInputGain => hex_engine::DEVICE_INPUT_GAIN,
+        DeviceAutomationTarget::HostOutputGain => hex_engine::DEVICE_OUTPUT_GAIN,
+        _ => return None,
+    };
+    if view.device_panel.owner != Some(target.owner) {
+        return None;
+    }
+    let state = view.state.as_ref()?;
+    let device = target.current(&state.project, view.project_generation)?;
+    let identity = DeviceControlIdentity {
+        class: target.class,
+        type_id: device.state().type_id(),
+    };
+    let value =
+        hex_engine::native_device_parameter_for_class(target.class, device.state(), descriptor.id)
+            .ok()?;
+    Some(bindings::render_parameter(
+        view,
+        cx,
+        target.device,
+        identity,
+        &NativeDeviceParameterView {
+            descriptor,
+            semantics: None,
+            value,
+            enabled: true,
+        },
+        bindings::BindingPresentation {
+            kind: ControlPresentation::InlineValue,
+            text: ControlText::default(),
+            policy: binding_policy,
+            compact_toggle_width: 0.0,
+        },
+    ))
+}
+
 fn parameter_control(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,

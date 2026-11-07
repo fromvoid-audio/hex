@@ -1345,3 +1345,66 @@ fn clearing_a_recorded_only_lane_removes_the_take_with_one_undo(cx: &mut TestApp
         assert_eq!(lane.touch, touch);
     });
 }
+
+#[gpui::test]
+fn host_trim_lane_controls_edit_their_exact_stage_and_offer_record_arm(cx: &mut TestAppContext) {
+    let (mut visual, editor, owner, _, device) = window(cx, "hex.utility", Slot::Track);
+    for (kind, descriptor, text) in [
+        (
+            DeviceAutomationTarget::HostInputGain,
+            hex_engine::DEVICE_INPUT_GAIN,
+            "6",
+        ),
+        (
+            DeviceAutomationTarget::HostOutputGain,
+            hex_engine::DEVICE_OUTPUT_GAIN,
+            "-4",
+        ),
+    ] {
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                let state = view.state.as_ref().unwrap();
+                let entry =
+                    Entry::read(&state.project, view.project_generation, owner, device, kind).unwrap();
+                assert!(matches!(
+                    view.native_automation_arm_action(&entry),
+                    Some(("arm automation recording", Action::ToggleNativeArm(target))) if target.kind == kind
+                ));
+                view.automation_menu_action(Action::Show(entry, true), window, cx);
+            });
+        });
+        pump(&mut visual, &editor);
+        let selector = Box::leak(
+            format!(
+                "device-{}-parameter-{}-value",
+                device.value(),
+                descriptor.id.value()
+            )
+            .into_boxed_str(),
+        );
+        let center = visual.debug_bounds(selector).unwrap().center();
+        visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input(text);
+        visual.simulate_keystrokes("enter");
+        pump(&mut visual, &editor);
+    }
+    let read = |visual: &VisualTestContext| {
+        editor.read_with(visual, |view, _| {
+            let state = view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .state();
+            (state.input_gain_db(), state.output_gain_db())
+        })
+    };
+    assert_eq!(read(&visual), (6.0, -4.0));
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump(&mut visual, &editor);
+    assert_eq!(read(&visual), (6.0, 0.0));
+}

@@ -32,12 +32,7 @@ pub(super) struct BindingPresentation {
     pub(super) compact_toggle_width: f32,
 }
 
-// Bound controls are device-owned parameters; host trim has no bound control.
-fn automation_target(
-    parameter: hex_lattice_contract::ParameterId,
-) -> hex_lattice_contract::DeviceAutomationTarget {
-    hex_lattice_contract::DeviceAutomationTarget::Parameter(parameter)
-}
+use super::super::native_automation_recording::automation_target;
 
 #[derive(Clone, Copy)]
 pub(super) struct CapturedBinding {
@@ -93,6 +88,21 @@ impl CapturedBinding {
         };
         if device.state().type_id() != self.identity.type_id {
             return false;
+        }
+        // Reserved trims are owned by the host and are absent from the
+        // provider descriptor inventory.
+        let kind = automation_target(self.key.parameter);
+        if matches!(
+            kind,
+            hex_lattice_contract::DeviceAutomationTarget::HostInputGain
+                | hex_lattice_contract::DeviceAutomationTarget::HostOutputGain
+        ) {
+            return hex_engine::native_parameter_input_target(
+                &state.project,
+                self.key.device,
+                kind,
+            )
+            .is_ok();
         }
         if let Some((class, cached_state, cached_view)) =
             view.device_panel.views.get(&self.key.device)

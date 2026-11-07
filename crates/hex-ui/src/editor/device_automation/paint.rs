@@ -154,6 +154,7 @@ pub(in crate::editor) fn rows(
             entry.format(value),
             if overridden { " · overridden" } else { "" }
         );
+        let trim = super::super::device_panel::render_automation_trim(view, cx, target);
         let header = div()
             .w(px(view.track_header_width()))
             .flex_shrink_0()
@@ -169,6 +170,7 @@ pub(in crate::editor) fn rows(
                 div()
                     .flex()
                     .gap(px(2.0))
+                    .children(trim)
                     .child(
                         lane_button(
                             "…",
@@ -504,6 +506,13 @@ impl EditorView {
             == Some(hex_project::AutomationReadSelection::Base)
         {
             actions.push(("re-enable automation", Action::Reenable(target)));
+        }
+        if !main
+            && self.device_panel.owner == Some(target.owner)
+            && let Some(entry) = self.automation_view.devices.entry(target)
+            && matches!(entry.metadata, EntryMetadata::HostGain)
+        {
+            actions.extend(self.native_automation_arm_action(entry));
         }
         actions.push(("clear automation", Action::Clear(target)));
         actions.push((

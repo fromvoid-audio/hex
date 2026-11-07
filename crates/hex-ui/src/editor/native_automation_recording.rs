@@ -233,7 +233,9 @@ impl Touch {
     }
 }
 
-fn automation_target(parameter: hex_lattice_contract::ParameterId) -> DeviceAutomationTarget {
+pub(super) fn automation_target(
+    parameter: hex_lattice_contract::ParameterId,
+) -> DeviceAutomationTarget {
     if parameter == hex_engine::DEVICE_INPUT_GAIN.id {
         DeviceAutomationTarget::HostInputGain
     } else if parameter == hex_engine::DEVICE_OUTPUT_GAIN.id {
