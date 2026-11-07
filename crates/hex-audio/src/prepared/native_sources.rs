@@ -82,26 +82,80 @@ impl PublicationControl {
         Ok((self.rate, source))
     }
 
-    /// Observe one already admitted original worker operation at final direct
-    /// output. Register before rendering its reply. Drain the exact terminal
-    /// before another observation or canonical publication, including on cancel.
-    pub fn begin_native_source_parameter_delivery_on_control(
+    /// Admit one actual PCM point and reserve its final Main delivery witness
+    /// before the worker request becomes visible. Failed reservation admits no
+    /// point. Both returned handles retain exact terminal custody through late
+    /// close. Drain the witness before another observation or publication.
+    pub fn begin_native_source_parameter_change_with_delivery_on_control(
         &mut self,
         source: AppliedAudioSource,
         binding: Binding,
-        request: &crate::plugin_worker::NativeWorkerParameterChange,
-    ) -> Result<crate::foreign_parameter_delivery::Target, &'static str> {
-        let (original, operation, parameter) = request
-            .delivery_identity()
-            .ok_or("vst3 delivery requires a PCM parameter point")?;
+        id: u32,
+        normalized: f64,
+    ) -> Result<
+        (
+            crate::plugin_worker::NativeWorkerParameterChange,
+            crate::foreign_parameter_delivery::Target,
+        ),
+        &'static str,
+    > {
+        self.require_parameter_delivery_source(source, binding)?;
+        let status = &self.status;
+        let delivery = &mut self.foreign_parameter_delivery;
+        self.candidate_root.native_parameter_change_with_before(
+            binding,
+            id,
+            normalized,
+            |request| {
+                let (binding, operation, parameter) = request
+                    .delivery_identity()
+                    .ok_or("vst3 delivery requires a PCM parameter point")?;
+                delivery.begin(status, source, binding, operation, parameter)
+            },
+        )
+    }
+
+    /// Atomically reserve final Main delivery for a held target's Begin/Change.
+    /// Release has no delivery marker in this contract and refuses before any
+    /// worker mutation; its ordinary release operation remains with its caller.
+    pub fn native_source_parameter_hold_with_delivery_on_control(
+        &mut self,
+        source: AppliedAudioSource,
+        binding: Binding,
+        command: crate::plugin_worker::NativeParameterHold<'_>,
+    ) -> Result<
+        (
+            crate::plugin_worker::NativeWorkerParameterChange,
+            crate::foreign_parameter_delivery::Target,
+        ),
+        &'static str,
+    > {
+        self.require_parameter_delivery_source(source, binding)?;
+        let status = &self.status;
+        let delivery = &mut self.foreign_parameter_delivery;
+        self.candidate_root
+            .native_parameter_hold_with_before(binding, command, |request| {
+                let (binding, operation, parameter) = request
+                    .delivery_identity()
+                    .ok_or("vst3 delivery requires a PCM parameter point")?;
+                delivery.begin(status, source, binding, operation, parameter)
+            })
+    }
+
+    fn require_parameter_delivery_source(
+        &self,
+        source: AppliedAudioSource,
+        binding: Binding,
+    ) -> Result<(), &'static str> {
         if !self.native_custody
-            || original != binding
+            || self.status.closing.load(Acquire)
+            || self.output_identity() != Some(source.output_identity)
+            || binding.root != source.output_identity
             || self.native_source_endpoint_installed(binding) != Some(true)
         {
-            return Err("vst3 delivery operation source differs");
+            return Err("vst3 delivery source differs or is closing");
         }
-        self.foreign_parameter_delivery
-            .begin(&self.status, source, binding, operation, parameter)
+        Ok(())
     }
 
     pub fn cancel_native_source_parameter_delivery_on_control(

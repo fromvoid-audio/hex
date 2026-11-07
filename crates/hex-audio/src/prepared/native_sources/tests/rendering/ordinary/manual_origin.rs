@@ -7,6 +7,16 @@ use hex_plugin_host::transport::ManualParameterOrigin;
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_manual_parameter_waits_for_final_main_delivery_across_compensated_cuts() {
+    verify_delivery(true);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_plain_parameter_reserves_delivery_before_input_and_keeps_busy_refusal_atomic() {
+    verify_delivery(false);
+}
+
+fn verify_delivery(held: bool) {
     const CHILD: &str = "HEX_ORDINARY_MANUAL_ORIGIN_DRIVER";
     if std::env::var_os(CHILD).is_none() {
         let name = std::thread::current().name().unwrap().to_owned();
@@ -28,11 +38,11 @@ fn actual_manual_parameter_waits_for_final_main_delivery_across_compensated_cuts
 
     let _serial = serial();
     for location in 0..3 {
-        verify_location(location);
+        verify_location(location, held);
     }
 }
 
-fn verify_location(location: usize) {
+fn verify_location(location: usize, held: bool) {
     let mut f = fixture_with_authored("processing", location, 8, &[7]);
     let upstream = &hex_devices::overdrive::OVERDRIVE_DEFINITION;
     let state = upstream
@@ -81,36 +91,61 @@ fn verify_location(location: usize) {
 
     let expected = f.control.status.native_effect_source().unwrap();
     let until = Instant::now() + Duration::from_secs(3);
-    let hold = loop {
-        match f.control.native_source_parameter_hold_on_control(
-            expected,
-            f.binding,
-            NativeParameterHold::Begin {
-                id: 7,
-                normalized: 0.75,
-            },
-        ) {
-            Ok(token) => break token,
+    let id = if held { 7 } else { 11 };
+    let (hold, target) = loop {
+        let result = if held {
+            f.control
+                .native_source_parameter_hold_with_delivery_on_control(
+                    expected,
+                    f.binding,
+                    NativeParameterHold::Begin {
+                        id,
+                        normalized: 0.75,
+                    },
+                )
+        } else {
+            f.control
+                .begin_native_source_parameter_change_with_delivery_on_control(
+                    expected, f.binding, id, 0.75,
+                )
+        };
+        match result {
+            Ok(pair) => break pair,
             Err("native preparation is busy" | "native parameter mailbox is busy") => {}
-            Err(error) => panic!("manual input: {error}"),
+            Err(error) => panic!("observed manual input: {error}"),
         }
         assert!(Instant::now() < until);
         std::thread::yield_now();
     };
-
-    let target = loop {
-        match f
-            .control
-            .begin_native_source_parameter_delivery_on_control(expected, f.binding, &hold)
-        {
-            Ok(target) => break target,
-            Err(_) if Instant::now() < until => std::thread::yield_now(),
-            Err(error) => panic!("delivery observation: {error}"),
-        }
-    };
     physical_block::<5>(&mut f);
     physical_block::<3>(&mut f);
     replacement::wait_for_blocks(&root, f.binding, 3);
+    processed(&mut f, &hold);
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        let refused = if held {
+            f.control
+                .native_source_parameter_hold_with_delivery_on_control(
+                    expected,
+                    f.binding,
+                    NativeParameterHold::Change {
+                        hold: &hold,
+                        normalized: 0.5,
+                    },
+                )
+        } else {
+            f.control
+                .begin_native_source_parameter_change_with_delivery_on_control(
+                    expected, f.binding, id, 0.5,
+                )
+        };
+        match refused {
+            Err("drain the previous vst3 delivery witness first") => break,
+            Err("native preparation is busy" | "native parameter mailbox is busy") => {}
+            _ => panic!("busy witness must refuse before another input is admitted"),
+        }
+        assert!(Instant::now() < until);
+    }
     assert!(
         f.control
             .try_native_source_parameter_delivery_on_control()
@@ -156,5 +191,96 @@ fn verify_location(location: usize) {
             .try_native_source_parameter_delivery_on_control()
             .is_none()
     );
+    assert_eq!(hold.delivery_identity().unwrap().1, target.operation);
+    assert_eq!(target.parameter, id);
+    if held {
+        // Release cannot produce a point witness. Refusal must retain the
+        // original hold and leave its next operation ordinal untouched.
+        assert!(
+            f.control
+                .native_source_parameter_hold_with_delivery_on_control(
+                    expected,
+                    f.binding,
+                    NativeParameterHold::Release { hold: &hold },
+                )
+                .is_err()
+        );
+    }
+    let until = Instant::now() + Duration::from_secs(3);
+    let (update, next) = loop {
+        let result = if held {
+            f.control
+                .native_source_parameter_hold_with_delivery_on_control(
+                    expected,
+                    f.binding,
+                    NativeParameterHold::Change {
+                        hold: &hold,
+                        normalized: 0.5,
+                    },
+                )
+        } else {
+            f.control
+                .begin_native_source_parameter_change_with_delivery_on_control(
+                    expected, f.binding, id, 0.5,
+                )
+        };
+        match result {
+            Ok(pair) => break pair,
+            Err("native preparation is busy" | "native parameter mailbox is busy") => {}
+            Err(error) => panic!("observed update: {error}"),
+        }
+        assert!(Instant::now() < until);
+    };
+    assert_eq!(next.operation, target.operation + 1);
+    assert_eq!(update.delivery_identity().unwrap().1, next.operation);
+    let mut cursor = 44;
+    let mut delivered = false;
+    for quantum in 0..8 {
+        let output = physical_block::<8>(&mut f);
+        replacement::wait_for_blocks(&root, f.binding, 6 + quantum);
+        if let Some(receipt) = f.control.try_native_source_parameter_delivery_on_control() {
+            let crate::foreign_parameter_delivery::Receipt::Delivered {
+                target,
+                normalized,
+                origin,
+                delivery_performance_frame,
+            } = receipt
+            else {
+                panic!("actual update must reach final Main: {receipt:?}")
+            };
+            assert_eq!(target, next);
+            assert_eq!(normalized, 0.5);
+            assert_eq!(origin.arrangement_frame, origin.performance_frame);
+            assert_eq!(delivery_performance_frame, origin.performance_frame + 38);
+            let offset = usize::try_from(delivery_performance_frame - cursor).unwrap();
+            assert!(offset < output.len());
+            assert_eq!(output[offset], [0.5 + dry, -1.0 - 2.0 * dry]);
+            delivered = true;
+            break;
+        }
+        cursor += 8;
+    }
+    assert!(
+        delivered,
+        "actual update must produce its bounded output witness"
+    );
+    processed(&mut f, &update);
     dispose(f);
+}
+
+fn processed(f: &mut OrdinaryFixture, request: &crate::plugin_worker::NativeWorkerParameterChange) {
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        match f
+            .control
+            .poll_native_source_parameter_change_on_control(f.binding, request)
+        {
+            Ok(crate::plugin_worker::NativeWorkerParameterProgress::Processed(_)) => return,
+            Ok(crate::plugin_worker::NativeWorkerParameterProgress::Pending)
+            | Err("native preparation is busy") => {}
+            result => panic!("actual SDK point terminal: {result:?}"),
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    }
 }

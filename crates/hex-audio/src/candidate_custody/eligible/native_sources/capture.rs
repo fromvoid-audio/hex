@@ -135,6 +135,45 @@ impl Custody {
         )
     }
 
+    pub(in crate::candidate_custody) fn native_parameter_hold_with_before<T>(
+        &self,
+        binding: Binding,
+        command: NativeParameterHold<'_>,
+        before_publish: impl FnOnce(&NativeWorkerParameterChange) -> Result<T, &'static str>,
+    ) -> Result<(NativeWorkerParameterChange, T), &'static str> {
+        self.admit_live_operation(
+            binding,
+            |owner| match owner {
+                Owner::Effect(owner) => owner.parameter_hold_with_before(command, before_publish),
+                Owner::Loaned(owner) => owner.parameter_hold_with_before(command, before_publish),
+                _ => Err("native parameter input owner differs"),
+            },
+            || {},
+            "native parameter hold was not admitted",
+        )
+    }
+    pub(in crate::candidate_custody) fn native_parameter_change_with_before<T>(
+        &self,
+        binding: Binding,
+        id: u32,
+        normalized: f64,
+        before_publish: impl FnOnce(&NativeWorkerParameterChange) -> Result<T, &'static str>,
+    ) -> Result<(NativeWorkerParameterChange, T), &'static str> {
+        self.admit_live_operation(
+            binding,
+            |owner| match owner {
+                Owner::Effect(owner) => {
+                    owner.parameter_change_with_before(id, normalized, before_publish)
+                }
+                Owner::Loaned(owner) => {
+                    owner.parameter_change_with_before(id, normalized, before_publish)
+                }
+                _ => Err("native parameter input owner differs"),
+            },
+            || {},
+            "native parameter point was not admitted",
+        )
+    }
     pub(in crate::candidate_custody) fn native_parameter_edits(
         &self,
         binding: Binding,
@@ -498,6 +537,29 @@ impl CandidateRoot {
         self.0.eligible.native_parameter_hold(binding, command)
     }
 
+    pub(crate) fn native_parameter_hold_with_before<T>(
+        &self,
+        binding: Binding,
+        command: NativeParameterHold<'_>,
+        before_publish: impl FnOnce(&NativeWorkerParameterChange) -> Result<T, &'static str>,
+    ) -> Result<(NativeWorkerParameterChange, T), &'static str> {
+        self.require_native_source_control_open()?;
+        self.0
+            .eligible
+            .native_parameter_hold_with_before(binding, command, before_publish)
+    }
+    pub(crate) fn native_parameter_change_with_before<T>(
+        &self,
+        binding: Binding,
+        id: u32,
+        normalized: f64,
+        before_publish: impl FnOnce(&NativeWorkerParameterChange) -> Result<T, &'static str>,
+    ) -> Result<(NativeWorkerParameterChange, T), &'static str> {
+        self.require_native_source_control_open()?;
+        self.0
+            .eligible
+            .native_parameter_change_with_before(binding, id, normalized, before_publish)
+    }
     pub(crate) fn begin_native_parameter_change(
         &self,
         binding: Binding,

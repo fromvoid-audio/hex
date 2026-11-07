@@ -276,7 +276,7 @@ impl NativeWorker {
         id: u32,
         normalized: f64,
     ) -> Result<NativeWorkerParameterChange, &'static str> {
-        self.queue_parameter_change(id, normalized, Intent::Hold)
+        self.parameter_hold_on_control(NativeParameterHold::Begin { id, normalized })
     }
 
     pub fn update_held_parameter_on_control(
@@ -284,37 +284,56 @@ impl NativeWorker {
         hold: &NativeWorkerParameterChange,
         normalized: f64,
     ) -> Result<NativeWorkerParameterChange, &'static str> {
-        self.require_parameter_change_source(hold)?;
-        let id = hold
-            .hold_id
-            .ok_or("native parameter token does not own a hold")?;
-        self.queue_parameter_change(id, normalized, Intent::Update(hold.ordinal))
+        self.parameter_hold_on_control(NativeParameterHold::Change { hold, normalized })
     }
 
     pub fn release_held_parameter_on_control(
         &mut self,
         hold: &NativeWorkerParameterChange,
     ) -> Result<NativeWorkerParameterChange, &'static str> {
-        self.require_parameter_change_source(hold)?;
-        let id = hold
-            .hold_id
-            .ok_or("native parameter token does not own a hold")?;
-        self.queue_parameter_change(id, 0.0, Intent::Release(hold.ordinal))
+        self.parameter_hold_on_control(NativeParameterHold::Release { hold })
     }
 
     pub(crate) fn parameter_hold_on_control(
         &mut self,
         command: NativeParameterHold<'_>,
     ) -> Result<NativeWorkerParameterChange, &'static str> {
-        match command {
-            NativeParameterHold::Begin { id, normalized } => {
-                self.hold_parameter_on_control(id, normalized)
-            }
+        self.parameter_hold_with_before(command, |_| Ok(()))
+            .map(|(request, ())| request)
+    }
+
+    pub(crate) fn parameter_hold_with_before<T>(
+        &mut self,
+        command: NativeParameterHold<'_>,
+        before_publish: impl FnOnce(&NativeWorkerParameterChange) -> Result<T, &'static str>,
+    ) -> Result<(NativeWorkerParameterChange, T), &'static str> {
+        let (id, normalized, intent) = match command {
+            NativeParameterHold::Begin { id, normalized } => (id, normalized, Intent::Hold),
             NativeParameterHold::Change { hold, normalized } => {
-                self.update_held_parameter_on_control(hold, normalized)
+                self.require_parameter_change_source(hold)?;
+                let id = hold
+                    .hold_id
+                    .ok_or("native parameter token does not own a hold")?;
+                (id, normalized, Intent::Update(hold.ordinal))
             }
-            NativeParameterHold::Release { hold } => self.release_held_parameter_on_control(hold),
-        }
+            NativeParameterHold::Release { hold } => {
+                self.require_parameter_change_source(hold)?;
+                let id = hold
+                    .hold_id
+                    .ok_or("native parameter token does not own a hold")?;
+                (id, 0.0, Intent::Release(hold.ordinal))
+            }
+        };
+        self.queue_parameter_change_with_before(id, normalized, intent, before_publish)
+    }
+
+    pub(crate) fn parameter_change_with_before<T>(
+        &mut self,
+        id: u32,
+        normalized: f64,
+        before_publish: impl FnOnce(&NativeWorkerParameterChange) -> Result<T, &'static str>,
+    ) -> Result<(NativeWorkerParameterChange, T), &'static str> {
+        self.queue_parameter_change_with_before(id, normalized, Intent::Point, before_publish)
     }
 
     fn queue_parameter_change(
@@ -323,6 +342,20 @@ impl NativeWorker {
         normalized: f64,
         intent: Intent,
     ) -> Result<NativeWorkerParameterChange, &'static str> {
+        self.queue_parameter_change_with_before(id, normalized, intent, |_| Ok(()))
+            .map(|(request, ())| request)
+    }
+
+    /// Reserve copied control data while the exact request is still private.
+    /// Refusal leaves the slot/ordinal intact. After this hook succeeds, queue
+    /// publication cannot fail and carries both handles through late close.
+    fn queue_parameter_change_with_before<T>(
+        &mut self,
+        id: u32,
+        normalized: f64,
+        intent: Intent,
+        before_publish: impl FnOnce(&NativeWorkerParameterChange) -> Result<T, &'static str>,
+    ) -> Result<(NativeWorkerParameterChange, T), &'static str> {
         let point = ParameterPoint {
             frame: 0,
             id,
@@ -354,6 +387,15 @@ impl NativeWorker {
             .ordinal
             .checked_add(1)
             .ok_or("native parameter input ordinal exhausted")?;
+        let request = NativeWorkerParameterChange {
+            source: Arc::downgrade(&self.reaper.completed),
+            binding: self.binding,
+            ordinal,
+            parameter: id,
+            pcm_point: matches!(intent, Intent::Point | Intent::Hold | Intent::Update(_)),
+            hold_id: (intent == Intent::Hold).then_some(id),
+        };
+        let reserved = before_publish(&request)?;
         slot.ordinal = ordinal;
         slot.point = point;
         slot.intent = intent;
@@ -363,15 +405,9 @@ impl NativeWorker {
             .completed
             .parameter_change_requested
             .store(true, Release);
-        Ok(NativeWorkerParameterChange {
-            source: Arc::downgrade(&self.reaper.completed),
-            binding: self.binding,
-            ordinal,
-            parameter: id,
-            pcm_point: matches!(intent, Intent::Point | Intent::Hold | Intent::Update(_)),
-            hold_id: (intent == Intent::Hold).then_some(id),
-        })
+        Ok((request, reserved))
     }
+
     /// Withdraw only an exact queued operation. False means it already crossed
     /// into processing or has a terminal to consume; callers must observe that
     /// actual result, not pretend an admitted mutation was cancelled.
