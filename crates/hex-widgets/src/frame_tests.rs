@@ -643,7 +643,9 @@ impl Render for HousingFixture {
         let order = if self.reverse { ["b", "a"] } else { ["a", "b"] };
         div().flex().children(order.map(|id| {
             device_frame(
-                "device",
+                div()
+                    .debug_selector(move || format!("title-{id}"))
+                    .child(vertical_device_name("device")),
                 STYLE,
                 div(),
                 crate::device_action(
@@ -687,6 +689,16 @@ fn shared_housing_panels_toggle_independently_and_follow_device_identity(cx: &mu
     let b = visual.debug_bounds("b").unwrap();
     let macro_b = visual.debug_bounds("device-macro-toggle").unwrap();
     let mod_b = visual.debug_bounds("device-modulator-toggle").unwrap();
+    let title_b = visual.debug_bounds("title-b").unwrap();
+    let action_b = visual.debug_bounds("action-b").unwrap();
+    assert!(action_b.bottom() <= title_b.top());
+    assert!(title_b.bottom() <= macro_b.top());
+    assert_eq!(macro_b.bottom() + px(DEVICE_FRAME_HEADER_GAP), mod_b.top());
+    assert_eq!(
+        mod_b.bottom() + px(DEVICE_FRAME_HEADER_PADDING + DEVICE_FRAME_BORDER_WIDTH),
+        b.bottom(),
+        "panel toggles stay at the foot of the sidebar"
+    );
     let macro_a = macro_b.center() + point(a.left() - b.left(), px(0.0));
     visual.simulate_click(macro_a, Modifiers::default());
     visual.run_until_parked();
