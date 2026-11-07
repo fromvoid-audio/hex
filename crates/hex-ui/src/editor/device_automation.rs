@@ -102,6 +102,7 @@ pub(super) enum Action {
     Clear(Target),
     Reenable(Target),
     Override(Target),
+    ToggleNativeArm(Target),
     Shape(Target, AutomationInterpolation),
 }
 
@@ -676,6 +677,27 @@ impl EditorView {
         {
             actions.push(("re-enable automation", Action::Reenable(entry.target)));
         }
+        if matches!(
+            entry.metadata,
+            EntryMetadata::Provider {
+                descriptor: ParameterDescriptor {
+                    kind: ParameterKind::Float { .. },
+                    ..
+                },
+                ..
+            }
+        ) && self.state.as_ref().is_some_and(|state| {
+            hex_engine::native_parameter_input_target(&state.project, device, kind).is_ok()
+        }) {
+            actions.push((
+                if self.native_automation_arm_selected(device, kind) {
+                    "disarm automation recording"
+                } else {
+                    "arm automation recording"
+                },
+                Action::ToggleNativeArm(entry.target),
+            ));
+        }
         self.open_automation_menu(position, actions, window, cx);
         if utility_mode {
             self.append_utility_mode_choice(
@@ -809,6 +831,7 @@ impl EditorView {
             | Action::Clear(target)
             | Action::Reenable(target)
             | Action::Override(target)
+            | Action::ToggleNativeArm(target)
             | Action::Shape(target, _) => self.state.as_ref().is_none_or(|state| {
                 target
                     .identity_current(&state.project, self.project_generation)
@@ -1072,6 +1095,9 @@ impl EditorView {
                 hex_project::AutomationReadSelection::Base,
                 cx,
             ),
+            Action::ToggleNativeArm(target) => {
+                self.toggle_native_automation_arm(target.device, target.kind);
+            }
             Action::Clear(target) => {
                 self.commit_device_automation(target, Vec::new(), cx);
             }
@@ -1263,9 +1289,11 @@ impl EditorView {
         let canonical = state
             .project
             .device(target.device)
-            .and_then(|device| device.automation_target(target.kind))
-            .map_or(&[][..], |lane| lane.points.as_slice());
-        if canonical == points {
+            .and_then(|device| device.automation_target(target.kind));
+        let unchanged = canonical.map_or(points.is_empty(), |lane| {
+            lane.points == points && (!points.is_empty() || lane.touch.is_empty())
+        });
+        if unchanged {
             return;
         }
         let revision = state.revision;

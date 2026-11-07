@@ -219,6 +219,7 @@ impl EditorView {
         }
         self.midi_take_not_submitted(request);
         self.gain_take_not_submitted(request);
+        self.native_automation_request_not_submitted(request);
         if refusal == Refusal::Closed {
             visible |= self.cancel_new_preparation();
         }

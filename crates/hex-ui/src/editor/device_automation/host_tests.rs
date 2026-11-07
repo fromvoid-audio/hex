@@ -1281,3 +1281,68 @@ fn touching_an_automated_parameter_shows_its_envelope_unmoved(cx: &mut TestAppCo
     );
     pump(&mut visual, &editor);
 }
+
+#[gpui::test]
+fn clearing_a_recorded_only_lane_removes_the_take_with_one_undo(cx: &mut TestAppContext) {
+    use hex_project::{DeviceAutomationTouchSpan, DeviceAutomationTouchStep};
+    let (mut visual, editor, owner, _, device) = window(cx, "hex.utility", Slot::Track);
+    let kind = DeviceAutomationTarget::HostOutputGain;
+    let start = BeatTime::from_ratio(1, 64).unwrap();
+    let touch = vec![DeviceAutomationTouchSpan {
+        start,
+        end: BeatTime::from_ratio(1, 32).unwrap(),
+        steps: vec![DeviceAutomationTouchStep {
+            beat: start,
+            value: AutomationValue::new(0.25).unwrap(),
+        }],
+    }];
+    editor.update(&mut visual, |view, _| {
+        assert!(
+            view.enqueue(Request::Edit(Command::SpliceDeviceAutomationTouch {
+                device,
+                target: kind,
+                spans: touch.clone(),
+            }))
+        );
+    });
+    pump(&mut visual, &editor);
+    editor.update(&mut visual, |view, cx| {
+        let state = view.state.as_ref().unwrap();
+        let lane = state
+            .project
+            .device(device)
+            .unwrap()
+            .automation_target(kind)
+            .unwrap();
+        assert!(lane.points.is_empty());
+        assert_eq!(lane.touch, touch);
+        let entry =
+            Entry::read(&state.project, view.project_generation, owner, device, kind).unwrap();
+        view.commit_device_automation(entry.target, Vec::new(), cx);
+    });
+    pump(&mut visual, &editor);
+    editor.update(&mut visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert!(
+            state
+                .project
+                .device(device)
+                .unwrap()
+                .automation_target(kind)
+                .is_none()
+        );
+        assert!(view.enqueue(Request::Undo));
+    });
+    pump(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        let lane = state
+            .project
+            .device(device)
+            .unwrap()
+            .automation_target(kind)
+            .unwrap();
+        assert!(lane.points.is_empty());
+        assert_eq!(lane.touch, touch);
+    });
+}
