@@ -445,7 +445,7 @@ mod ui_tests {
     }
 
     #[gpui::test]
-    fn compact_toolbar_keeps_names_status_and_controls_visible_in_both_workspaces(
+    fn compact_toolbar_keeps_view_toggle_status_and_controls_visible_in_both_workspaces(
         cx: &mut TestAppContext,
     ) {
         let _output_fixture_guard = crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
@@ -525,12 +525,7 @@ mod ui_tests {
                     visual.run_until_parked();
                     let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
                     assert_eq!(toolbar.size.height, px(super::toolbar_height(width)));
-                    let name = visual
-                        .debug_bounds(match mode {
-                            EditorMode::Arrangement => "arrange view",
-                            EditorMode::Session => "console view",
-                        })
-                        .unwrap();
+                    let name = visual.debug_bounds("workspace-view-toggle").unwrap();
                     let status = visual.debug_bounds("audio output status").unwrap();
                     let restart = visual
                         .debug_bounds("restart default audio output · stays stopped")
@@ -538,18 +533,18 @@ mod ui_tests {
                     // Ioskeley Mono: enough actual shaped width for all seven
                     // characters of 'offline', not an invisible sliver.
                     assert!(
-                        status.size.width >= name.size.width * (7.0 / 12.0),
+                        status.size.width >= px(80.0) * (7.0 / 12.0),
                         "{width} {mode:?}: status={status:?} name={name:?}"
                     );
-                    assert!(name.size.width >= px(80.0), "full canonical view name");
-                    assert!(name.right() <= restart.left());
+                    assert_eq!(name.size.width, px(super::CONTROL_SIZE));
+                    assert!(status.right() <= name.left());
                     assert!(restart.right() <= status.left());
                     assert!(status.right() <= toolbar.right() - px(8.0));
                     assert!(status.size.height <= toolbar.size.height);
                     let policy = visual.debug_bounds("input-quantization").unwrap();
                     let label_chars = format!("in {} ▾", input.label()).chars().count();
                     assert!(
-                        policy.size.width >= name.size.width * (label_chars as f32 / 12.0),
+                        policy.size.width >= px(80.0) * (label_chars as f32 / 12.0),
                         "the complete input policy label remains visible"
                     );
                     for selector in [
@@ -574,8 +569,7 @@ mod ui_tests {
                     for selector in [
                         "project tuning · cmd+alt+t",
                         "import audio · cmd+i",
-                        "show arrange view · tab",
-                        "show console view · tab",
+                        "workspace-view-toggle",
                         "restart default audio output · stays stopped",
                     ] {
                         let control = visual.debug_bounds(selector).unwrap();
@@ -724,12 +718,7 @@ mod ui_tests {
                     visual.simulate_resize(size(px(width), px(540.0)));
                     visual.run_until_parked();
                     let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
-                    let name = visual
-                        .debug_bounds(match mode {
-                            EditorMode::Arrangement => "arrange view",
-                            EditorMode::Session => "console view",
-                        })
-                        .unwrap();
+                    let name = visual.debug_bounds("workspace-view-toggle").unwrap();
                     let status = visual.debug_bounds("audio output status").unwrap();
                     let restart = visual
                         .debug_bounds("restart default audio output · stays stopped")
@@ -738,7 +727,7 @@ mod ui_tests {
                     eprintln!(
                         "actual startup loading={loading} width={width} mode={mode:?} status={status:?} name={name:?} restart={restart:?}"
                     );
-                    let seven_chars = name.size.width * (7.0 / 12.0);
+                    let seven_chars = px(80.0) * (7.0 / 12.0);
                     assert!(
                         status.size.width >= seven_chars,
                         "both project loading and full offline status must remain visible: {width} {mode:?} loading={loading} status={status:?}"
@@ -746,11 +735,11 @@ mod ui_tests {
                     let readout = visual.debug_bounds("project position").unwrap();
                     assert!(readout.size.width >= seven_chars);
                     assert!(readout.right() <= restart.left());
-                    assert!(name.right() <= readout.left());
+                    assert!(readout.right() <= restart.left());
                     assert!(restart.right() <= status.left());
                     assert!(status.right() <= toolbar.right() - px(8.0));
                     assert!(status.size.height <= toolbar.size.height);
-                    assert!(name.size.width >= px(80.0));
+                    assert_eq!(name.size.width, px(super::CONTROL_SIZE));
                     // The real None branch omits the bound tempo field; the
                     // appended loading label does not compete with a loaded row.
                     let tempo = visual.debug_bounds("project-tempo-field");
@@ -768,8 +757,7 @@ mod ui_tests {
                     }
                     for selector in [
                         "import audio · cmd+i",
-                        "show arrange view · tab",
-                        "show console view · tab",
+                        "workspace-view-toggle",
                         "restart default audio output · stays stopped",
                     ] {
                         let control = visual.debug_bounds(selector).unwrap();

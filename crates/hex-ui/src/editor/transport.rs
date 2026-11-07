@@ -78,10 +78,6 @@ impl EditorView {
                 cx,
             ))
             .child(self.icon("↓", "import audio · cmd+i", ImportAudio, cx))
-            .child(
-                self.icon("▤", "toggle browser · cmd+alt+b", ToggleBrowser, cx)
-                    .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
-            )
             .child(self.control_icon(
                 "↑",
                 "export wav · cmd+shift+e",
@@ -298,45 +294,6 @@ impl EditorView {
             .min_w_0()
             .flex_1()
             .child(
-                self.control_icon(
-                    "▤",
-                    "show arrange view · tab",
-                    |view, _, _| view.set_mode(EditorMode::Arrangement),
-                    cx,
-                )
-                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
-                .text_color(rgb(if self.mode == EditorMode::Arrangement {
-                    theme::color(theme::PaletteRole::SecondaryText)
-                } else {
-                    theme::color(theme::PaletteRole::Muted)
-                })),
-            )
-            .child(
-                self.control_icon(
-                    "▦",
-                    "show console view · tab",
-                    |view, _, _| view.set_mode(EditorMode::Session),
-                    cx,
-                )
-                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
-                .text_color(rgb(if self.mode == EditorMode::Session {
-                    theme::color(theme::PaletteRole::SecondaryText)
-                } else {
-                    theme::color(theme::PaletteRole::Muted)
-                })),
-            )
-            .child(
-                div()
-                    .debug_selector({
-                        let name = self.workspace_view_name();
-                        move || name.to_owned()
-                    })
-                    .flex_shrink_0()
-                    .whitespace_nowrap()
-                    .text_xs()
-                    .child(theme::text(self.workspace_view_name())),
-            )
-            .child(
                 div()
                     .debug_selector(|| "project position".into())
                     // Size the short readout to its text; retain the existing
@@ -393,6 +350,7 @@ impl EditorView {
                     .child(theme::text("loading")),
             );
         }
+        status = status.child(self.workspace_view_toggle(cx));
         let narrow = f32::from(window.viewport_size().width) < header::WIDE_TOOLBAR_MIN_WIDTH;
         let row = header::toolbar_row().h(px(header::toolbar_height(f32::from(
             window.viewport_size().width,
@@ -408,6 +366,36 @@ impl EditorView {
         } else {
             row.children([controls, status])
         }
+    }
+
+    pub(super) fn browser_toggle_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        self.icon("▤", "toggle browser · cmd+alt+b", ToggleBrowser, cx)
+            .size(px(18.0))
+            .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+            .text_color(rgb(theme::color(if self.browser.open {
+                theme::PaletteRole::Primary
+            } else {
+                theme::PaletteRole::Muted
+            })))
+    }
+
+    fn workspace_view_toggle(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let (glyph, next, next_name) = match self.mode {
+            EditorMode::Arrangement => ("▤", EditorMode::Session, "console view"),
+            EditorMode::Session => ("▦", EditorMode::Arrangement, "arrange view"),
+        };
+        self.control_icon_description(
+            glyph,
+            "workspace-view-toggle",
+            theme::text(format!(
+                "{} · switch to {next_name} · tab",
+                self.workspace_view_name()
+            )),
+            theme::action_style(),
+            move |view, _, _| view.set_mode(next),
+            cx,
+        )
+        .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
     }
 
     pub(super) fn title_bar(&self, cx: &mut Context<Self>) -> Stateful<Div> {
