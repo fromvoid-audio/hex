@@ -120,6 +120,63 @@ fn reverb_output_automation_callback_publication_history_and_save_reopen()
             ],
         })?;
     }
+    // Native recorded touches carry no VST3 class stamp in schema79.
+    // Exercise the current take command, history and half-open fallback before
+    // reopening and delivering this take through the actual callback.
+    let start = editor.project().tempo_map().frame_to_beat(BLOCK as u64)?;
+    let middle = editor
+        .project()
+        .tempo_map()
+        .frame_to_beat((BLOCK + BLOCK / 2) as u64)?;
+    let finish = editor
+        .project()
+        .tempo_map()
+        .frame_to_beat((BLOCK * 2) as u64)?;
+    let before_take = editor.project().clone();
+    let base_end = before_take
+        .device(device)
+        .ok_or("missing reverb")?
+        .automation_lane(p::DECAY)
+        .ok_or("missing decay lane")?
+        .value_at(finish);
+    editor.execute(Command::SpliceDeviceAutomationTouch {
+        device,
+        target: hex_project::DeviceAutomationTarget::Parameter(p::DECAY),
+        vst3_class: None,
+        spans: vec![hex_project::DeviceAutomationTouchSpan {
+            start,
+            end: finish,
+            steps: vec![
+                hex_project::DeviceAutomationTouchStep {
+                    beat: start,
+                    value: AutomationValue::new(0.75)?,
+                },
+                hex_project::DeviceAutomationTouchStep {
+                    beat: middle,
+                    value: AutomationValue::new(0.25)?,
+                },
+            ],
+        }],
+    })?;
+    let lane = editor
+        .project()
+        .device(device)
+        .ok_or("missing reverb")?
+        .automation_lane(p::DECAY)
+        .ok_or("missing recorded lane")?;
+    assert_eq!(lane.vst3_class, None);
+    assert_eq!(lane.value_at(start), Some(AutomationValue::new(0.75)?));
+    assert_eq!(lane.value_at(middle), Some(AutomationValue::new(0.25)?));
+    assert_eq!(
+        lane.value_at(finish),
+        base_end,
+        "touch end resumes the base curve"
+    );
+    let recorded = editor.project().clone();
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &before_take);
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &recorded);
     let path = std::env::temp_dir().join(format!(
         "hex-reverb_outputs-automation-{}.hex",
         std::process::id()
