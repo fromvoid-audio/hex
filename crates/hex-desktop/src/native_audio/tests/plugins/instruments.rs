@@ -314,16 +314,44 @@ fn verify_saved_instrument_automation(
         during > 0.01 && resumed > 0.01 && before < during * 0.05 && after < during * 0.05,
         "saved output automation must mute, open, and mute again across playback: {peaks:?}"
     );
-    harness.run(Request::Edit(Command::SetLoopRegion {
-        start: 0,
-        end: 49_152,
-        enabled: true,
-    }));
+    harness
+        .service
+        .submit(Request::Edit(Command::SetLoopRegion {
+            start: 0,
+            end: 98_304,
+            enabled: true,
+        }))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        harness.pump();
+        harness.render_worker_step();
+        if let Ok(event) = harness.service.try_event()
+            && event.request_complete
+        {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            break;
+        }
+        assert!(Instant::now() < deadline, "live loop edit did not complete");
+        std::thread::sleep(Duration::from_millis(1));
+    }
     harness.applied(revision);
-    let loop_peak = (0..110).map(|_| render_peak(harness)).fold(0.0, f32::max);
-    println!("instrument automation live loop peak={loop_peak}");
+    let status = harness.audio.as_ref().unwrap().status().unwrap();
+    let mut position = status.position.load(Acquire);
+    let mut wrapped = false;
     assert!(
-        loop_peak > 0.01,
+        (0..512).any(|_| {
+            let peak = render_peak(harness);
+            let current = status.position.load(Acquire);
+            wrapped |= current < position;
+            position = current;
+            if wrapped && peak > 0.01 {
+                println!("instrument automation live loop peak={peak}");
+                true
+            } else {
+                false
+            }
+        }),
         "the edited loop must return to the audible step"
     );
 }
