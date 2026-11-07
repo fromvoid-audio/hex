@@ -5,6 +5,7 @@
 use super::*;
 use hex_audio::prepared::PublicationControl;
 use hex_session::service::RequestCancellation;
+mod authored;
 
 impl Plugins {
     pub(in crate::native_audio) fn received_foreign_program_on_control(
@@ -167,6 +168,7 @@ impl Plugins {
         let context = input.context();
         let owner = destination.owner();
         let control = output.publication.control().ok_or("native output closed")?;
+        self.extend_edit_targets(control, input, destination, device, state, cancellation)?;
         if self
             .matching_edit_source(
                 control,
