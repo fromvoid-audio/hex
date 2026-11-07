@@ -53,11 +53,12 @@ impl Custody {
         cell.pending = true;
         let result = catch_unwind(AssertUnwindSafe(|| match cell.owner.take() {
             Some(Owner::Prepared(owner)) => {
-                match NativeEffect::prepare_retained_with_authored_selection_on_control(
+                match NativeEffect::prepare_with_renewal_on_control(
                     identity,
                     owner,
                     max_data_bytes,
                     authored.map(AuthoredSelection::parameters),
+                    cell.renewal.take(),
                 ) {
                     Ok(owner) => cell.owner = Some(Owner::Effect(owner)),
                     Err(owner) => {

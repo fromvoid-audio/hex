@@ -87,6 +87,17 @@ pub struct NativeEffect {
     source_metadata: EffectSourceMetadata,
     state_authority: hex_lattice_contract::Vst3StateAuthority,
 }
+
+/// Private original-source facts retained by Root while the SDK lease renews.
+/// No copied metadata or external caller can construct this authority packet.
+pub(crate) struct NativeEffectRenewal {
+    binding: Binding,
+    identity: ProcessorInstanceIdentity,
+    sample_rate: u32,
+    prepared: PreparedForeignProcessor,
+    authored: automation::SourceCapabilities,
+    state_authority: hex_lattice_contract::Vst3StateAuthority,
+}
 /// Listed constructor backing of the original unsplit effect. Inline effect
 /// storage belongs to the host cell. The configuration state aliases the actual
 /// worker source's restored/captured payload, so it adds one handle, no payload
@@ -120,12 +131,13 @@ impl NativeEffect {
     #[allow(clippy::result_large_err)]
     pub(crate) fn into_quiescent_on_control(
         self,
-    ) -> Result<hex_plugin_host::native::Quiescent, NativeWorkerStartFailure> {
+    ) -> Result<(hex_plugin_host::native::Quiescent, NativeEffectRenewal), NativeWorkerStartFailure>
+    {
         let Self {
             worker,
             callback,
             source_metadata,
-            state_authority: _,
+            state_authority,
         } = self;
         let NativeEffectCallback {
             transport,
@@ -133,8 +145,18 @@ impl NativeEffect {
             dry,
             ..
         } = callback;
-        drop((configuration, dry, source_metadata));
-        worker.into_quiescent_on_control(transport)
+        let renewal = NativeEffectRenewal {
+            binding: configuration.binding,
+            identity: configuration.identity,
+            sample_rate: configuration.sample_rate,
+            prepared: configuration.prepared,
+            authored: configuration.authored,
+            state_authority,
+        };
+        drop((configuration.state, dry, source_metadata));
+        worker
+            .into_quiescent_on_control(transport)
+            .map(|owner| (owner, renewal))
     }
     pub fn prepare_on_control(
         identity: ProcessorInstanceIdentity,
@@ -195,9 +217,20 @@ impl NativeEffect {
     #[allow(clippy::result_large_err)]
     pub fn prepare_retained_with_authored_selection_on_control(
         identity: ProcessorInstanceIdentity,
+        instance: Prepared,
+        max_data_bytes: usize,
+        authored: Option<(hex_plugin_state::ClassId, &[u32])>,
+    ) -> Result<Self, NativeWorkerStartFailure> {
+        Self::prepare_with_renewal_on_control(identity, instance, max_data_bytes, authored, None)
+    }
+
+    #[allow(clippy::result_large_err)] // Refusal retains the actual source.
+    pub(crate) fn prepare_with_renewal_on_control(
+        identity: ProcessorInstanceIdentity,
         mut instance: Prepared,
         max_data_bytes: usize,
         authored: Option<(hex_plugin_state::ClassId, &[u32])>,
+        renewal: Option<NativeEffectRenewal>,
     ) -> Result<Self, NativeWorkerStartFailure> {
         let mut configuration = match Self::configuration_on_control(identity, &instance) {
             Ok(configuration) => configuration,
@@ -207,7 +240,34 @@ impl NativeEffect {
                 ));
             }
         };
-        let state_authority = match hex_lattice_contract::Vst3StateAuthority::new_on_control() {
+        if renewal.as_ref().is_some_and(|old| {
+            old.identity != identity
+                || old.sample_rate != configuration.sample_rate
+                || old.binding.root != configuration.binding.root
+                || old.binding.instance != configuration.binding.instance
+                || old.binding.graph != configuration.binding.graph
+                || old.binding.epoch >= configuration.binding.epoch
+        }) {
+            return Err(NativeWorkerStartFailure::retain_source_on_control(
+                Error::Protocol("native renewal source differs"),
+                instance,
+            ));
+        }
+        let (retained, authority) = match renewal {
+            Some(old) => {
+                // A changed processing profile must be qualified again before
+                // old isolated states can reuse this worker.
+                let authority = (old.prepared.with_binding(configuration.binding).ok()
+                    == Some(configuration.prepared))
+                .then_some(old.state_authority);
+                (Some(old.authored), authority)
+            }
+            None => (None, None),
+        };
+        let state_authority = match authority
+            .map(Ok)
+            .unwrap_or_else(hex_lattice_contract::Vst3StateAuthority::new_on_control)
+        {
             Ok(authority) => authority,
             Err(_) => {
                 return Err(NativeWorkerStartFailure::retain_source_on_control(
@@ -248,15 +308,19 @@ impl NativeEffect {
         }
         let mut authored_bases = [None; hex_plugin_host::transport::MAX_PARAMETER_POINTS];
         if let Some((class, ids)) = authored {
-            let (capabilities, bases) =
-                match automation::SourceCapabilities::arm(&mut instance, class, ids) {
-                    Ok(observed) => observed,
-                    Err(cause) => {
-                        return Err(NativeWorkerStartFailure::retain_source_on_control(
-                            cause, instance,
-                        ));
-                    }
-                };
+            let (capabilities, bases) = match automation::SourceCapabilities::arm(
+                &mut instance,
+                class,
+                ids,
+                retained.as_ref(),
+            ) {
+                Ok(observed) => observed,
+                Err(cause) => {
+                    return Err(NativeWorkerStartFailure::retain_source_on_control(
+                        cause, instance,
+                    ));
+                }
+            };
             configuration.authored = capabilities;
             authored_bases = bases;
         }

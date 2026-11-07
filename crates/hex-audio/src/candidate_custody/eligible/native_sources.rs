@@ -250,6 +250,8 @@ enum Owner {
 #[derive(Default)]
 struct Execution {
     owner: Option<Owner>,
+    // Unique source facts survive only the original quiescence/resume carrier.
+    renewal: Option<crate::plugin_effects::NativeEffectRenewal>,
     error: Option<hex_plugin_host::Error>,
     cleanup_error: Option<hex_plugin_host::Error>,
     // Constructor refusals retain their original cause in the actual owner
@@ -697,6 +699,7 @@ impl Custody {
                         // is allocated and disposal custody stays in the owner.
                         cell.take_constructor_cause();
                         drop(cell.owner.take());
+                        drop(cell.renewal.take());
                         drop(cancellation);
                     }
                     Ok(disposed)
