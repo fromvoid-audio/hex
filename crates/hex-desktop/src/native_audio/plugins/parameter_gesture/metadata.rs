@@ -216,7 +216,7 @@ fn find_target(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "allocation-probe"))]
 impl Plugins {
     pub(in crate::native_audio) fn lookup_authored_target_for_test(
         control: &mut PublicationControl,
