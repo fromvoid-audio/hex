@@ -5,7 +5,7 @@ use super::*;
 use crate::theme;
 use gpui::{
     Bounds, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, canvas,
-    div, point, prelude::*, px, rgb,
+    div, point, prelude::*, px, rgb, size,
 };
 
 fn lane_button(
@@ -224,6 +224,13 @@ pub(in crate::editor) fn rows(
     body
 }
 
+fn recorded_spans(project: &Project, target: Target) -> &[hex_project::DeviceAutomationTouchSpan] {
+    target
+        .identity_current(project, target.generation)
+        .and_then(|device| device.automation_target(target.kind))
+        .map_or(&[], |lane| lane.touch.as_slice())
+}
+
 fn plot(
     view: &mut EditorView,
     state: &ViewState,
@@ -235,11 +242,12 @@ fn plot(
     let target = entry.target;
     // The paint closure re-borrows the displayed lane at paint time, so render
     // neither copies nor traverses its points (#4097).
-    let dotted = view
-        .automation_view
-        .devices
-        .points_ref(&state.project, target)
-        .is_empty();
+    let dotted = recorded_spans(&state.project, target).is_empty()
+        && view
+            .automation_view
+            .devices
+            .points_ref(&state.project, target)
+            .is_empty();
     let project = state.project.clone();
     let revision = state.revision;
     let base = view.live_device_automation_base(&entry);
@@ -277,84 +285,137 @@ fn plot(
                     if rect[2] <= 0.0 || rect[3] <= 0.0 {
                         return;
                     }
+                    let tempo = project.tempo_map();
+                    let frame = |beat| tempo.beat_to_frame(beat).ok();
+                    let x = |frame: u64| {
+                        rect[0]
+                            + ((frame as f64 - viewport.start as f64)
+                                / viewport.length.max(1) as f64)
+                                as f32
+                                * rect[2]
+                    };
+                    let y = |value: f32| rect[1] + (1.0 - value) * (rect[3] - 8.0) + 4.0;
                     let xy = |beat: BeatTime, value: f32| -> Option<Point<Pixels>> {
-                        let frame = project.tempo_map().beat_to_frame(beat).ok()?;
-                        Some(point(
-                            px(rect[0]
-                                + ((frame as f64 - viewport.start as f64)
-                                    / viewport.length.max(1) as f64)
-                                    as f32
-                                    * rect[2]),
-                            px(rect[1] + (1.0 - value) * (rect[3] - 8.0) + 4.0),
-                        ))
+                        Some(point(px(x(frame(beat)?)), px(y(value))))
                     };
                     let color = rgb(theme::color(theme::PaletteRole::Secondary));
                     let lanes = &entity.read(cx).automation_view.devices;
                     let all_points = lanes.points_ref(&project, target);
-                    let tempo = project.tempo_map();
-                    let range = super::plot_geometry::visible_range(
-                        all_points,
-                        viewport.start,
-                        viewport.end().unwrap_or(u64::MAX),
-                        |point| tempo.beat_to_frame(point.beat).ok(),
-                    );
-                    let points = all_points.get(range).unwrap_or_default();
-                    if let Some(first) = points.first() {
-                        let selected = lanes.selected.as_ref();
-                        let paths = super::plot_geometry::reduce(
-                            points.iter().filter_map(|value| {
-                                let position = xy(value.beat, value.value.get())?;
-                                Some(super::plot_geometry::PlotPoint {
-                                    x: f32::from(position.x),
-                                    y: f32::from(position.y),
-                                    step: value.outgoing == AutomationInterpolation::Step,
-                                    selected: selected.is_some_and(|selected| {
-                                        selected.contains(target, value.beat)
-                                    }),
-                                })
-                            }),
-                            entry.is_discrete(),
-                            window.scale_factor(),
+                    let paint_base = |section: std::ops::Range<u64>, window: &mut Window| {
+                        let range = super::plot_geometry::visible_range(
+                            all_points,
+                            section.start,
+                            section.end,
+                            |point| frame(point.beat),
                         );
-                        let mut path = PathBuilder::stroke(px(1.5));
-                        path.move_to(point(
-                            px(rect[0]),
-                            px(rect[1] + (1.0 - first.value.get()) * (rect[3] - 8.0) + 4.0),
-                        ));
-                        for &(x, y) in &paths.line {
-                            path.line_to(point(px(x), px(y)));
-                        }
-                        if let Some(&(_, y)) = paths.line.last() {
-                            path.line_to(point(px(rect[0] + rect[2]), px(y)));
-                        }
-                        if let Ok(path) = path.build() {
-                            window.paint_path(path, color);
-                        }
-                        for &(x, y, selected) in &paths.markers {
-                            let position = point(px(x), px(y));
-                            if !bounds.contains(&position) {
-                                continue;
+                        let points = all_points.get(range).unwrap_or_default();
+                        if let Some(first) = points.first() {
+                            let selected = lanes.selected.as_ref();
+                            let paths = super::plot_geometry::reduce(
+                                points.iter().filter_map(|value| {
+                                    let position = xy(value.beat, value.value.get())?;
+                                    Some(super::plot_geometry::PlotPoint {
+                                        x: f32::from(position.x),
+                                        y: f32::from(position.y),
+                                        step: value.outgoing == AutomationInterpolation::Step,
+                                        selected: selected.is_some_and(|selected| {
+                                            selected.contains(target, value.beat)
+                                        }),
+                                    })
+                                }),
+                                entry.is_discrete(),
+                                window.scale_factor(),
+                            );
+                            let mut path = PathBuilder::stroke(px(1.5));
+                            path.move_to(point(
+                                px(rect[0]),
+                                px(rect[1] + (1.0 - first.value.get()) * (rect[3] - 8.0) + 4.0),
+                            ));
+                            for &(x, y) in &paths.line {
+                                path.line_to(point(px(x), px(y)));
                             }
-                            let mut marker =
-                                PathBuilder::stroke(px(if selected { 3.0 } else { 2.0 }));
-                            marker.move_to(point(position.x - px(2.0), position.y));
-                            marker.line_to(point(position.x + px(2.0), position.y));
-                            if let Ok(marker) = marker.build() {
-                                window.paint_path(marker, color);
+                            if let Some(&(_, y)) = paths.line.last() {
+                                path.line_to(point(px(rect[0] + rect[2]), px(y)));
                             }
-                        }
-                    } else {
-                        let y = rect[1] + (1.0 - base) * (rect[3] - 8.0) + 4.0;
-                        let mut x = 0.0;
-                        while x < rect[2] {
-                            let mut path = PathBuilder::stroke(px(1.0));
-                            path.move_to(point(px(rect[0] + x), px(y)));
-                            path.line_to(point(px(rect[0] + (x + 5.0).min(rect[2])), px(y)));
                             if let Ok(path) = path.build() {
                                 window.paint_path(path, color);
                             }
-                            x += 9.0;
+                            for &(x, y, selected) in &paths.markers {
+                                let position = point(px(x), px(y));
+                                if !bounds.contains(&position) {
+                                    continue;
+                                }
+                                let mut marker =
+                                    PathBuilder::stroke(px(if selected { 3.0 } else { 2.0 }));
+                                marker.move_to(point(position.x - px(2.0), position.y));
+                                marker.line_to(point(position.x + px(2.0), position.y));
+                                if let Ok(marker) = marker.build() {
+                                    window.paint_path(marker, color);
+                                }
+                            }
+                        } else {
+                            let y = y(base);
+                            let mut dash = ((x(section.start) - rect[0]) / 9.0).floor() * 9.0;
+                            while dash < x(section.end) - rect[0] {
+                                let mut path = PathBuilder::stroke(px(1.0));
+                                path.move_to(point(px(rect[0] + dash), px(y)));
+                                path.line_to(point(px(rect[0] + (dash + 5.0).min(rect[2])), px(y)));
+                                if let Ok(path) = path.build() {
+                                    window.paint_path(path, color);
+                                }
+                                dash += 9.0;
+                            }
                         }
+                    };
+                    let recorded = recorded_spans(&project, target);
+                    let visible = viewport.start..viewport.end().unwrap_or(u64::MAX);
+                    if recorded.is_empty() {
+                        paint_base(visible, window);
+                    } else {
+                        super::plot_geometry::visible_sections(
+                            recorded,
+                            visible,
+                            frame,
+                            |section, span| {
+                                let start = x(section.start);
+                                let end = x(section.end);
+                                if end <= start {
+                                    return;
+                                }
+                                let clip = Bounds::new(
+                                    point(px(start), bounds.origin.y),
+                                    size(px(end - start), bounds.size.height),
+                                );
+                                window.with_content_mask(
+                                    Some(gpui::ContentMask { bounds: clip }),
+                                    |window| {
+                                        let Some(span) = span else {
+                                            paint_base(section, window);
+                                            return;
+                                        };
+                                        let mut knots = super::plot_geometry::recorded_knots(
+                                            span, section, frame,
+                                        );
+                                        let Some((at, value)) = knots.next() else {
+                                            return;
+                                        };
+                                        let mut held = y(value.get());
+                                        let mut path = PathBuilder::stroke(px(1.5));
+                                        path.move_to(point(px(x(at)), px(held)));
+                                        for (at, value) in knots {
+                                            let at = px(x(at));
+                                            path.line_to(point(at, px(held)));
+                                            held = y(value.get());
+                                            path.line_to(point(at, px(held)));
+                                        }
+                                        path.line_to(point(px(end), px(held)));
+                                        if let Ok(path) = path.build() {
+                                            window.paint_path(path, color);
+                                        }
+                                    },
+                                );
+                            },
+                        );
                     }
                     {
                         let view = entity.read(cx);
@@ -480,11 +541,15 @@ impl EditorView {
     ) {
         let mut actions = Vec::new();
         if self
-            .automation_view
-            .devices
-            .selected
+            .state
             .as_ref()
-            .is_some_and(|selected| selected.target == target)
+            .is_some_and(|state| recorded_spans(&state.project, target).is_empty())
+            && self
+                .automation_view
+                .devices
+                .selected
+                .as_ref()
+                .is_some_and(|selected| selected.target == target)
             && self
                 .automation_view
                 .devices
@@ -534,10 +599,15 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return false;
         };
-        if target
-            .current(&state.project, self.project_generation)
-            .is_none()
+        let Some(device) = target.current(&state.project, self.project_generation) else {
+            return false;
+        };
+        if device
+            .automation_target(target.kind)
+            .is_some_and(|lane| !lane.touch.is_empty())
         {
+            self.error = Some("clear recorded automation before editing this lane".into());
+            cx.notify();
             return false;
         }
         let Some(entry) = self.automation_view.devices.entry(target).cloned() else {

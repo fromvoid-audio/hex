@@ -18,6 +18,64 @@
 
 use std::ops::Range;
 
+use hex_project::{AutomationValue, BeatTime, DeviceAutomationTouchSpan};
+
+/// Visit the visible half-open regions of a canonical device envelope in order.
+/// Each recorded span replaces the base only over its own frame interval.
+pub(super) fn visible_sections<'a>(
+    touch: &'a [DeviceAutomationTouchSpan],
+    visible: Range<u64>,
+    frame: impl Fn(BeatTime) -> Option<u64>,
+    mut visit: impl FnMut(Range<u64>, Option<&'a DeviceAutomationTouchSpan>),
+) {
+    let first =
+        touch.partition_point(|span| frame(span.end).is_some_and(|end| end <= visible.start));
+    let mut cursor = visible.start;
+    for span in &touch[first..] {
+        let (Some(start), Some(end)) = (frame(span.start), frame(span.end)) else {
+            continue;
+        };
+        if start >= visible.end {
+            break;
+        }
+        let start = start.max(cursor);
+        let end = end.min(visible.end);
+        if start >= end {
+            continue;
+        }
+        if cursor < start {
+            visit(cursor..start, None);
+        }
+        visit(start..end, Some(span));
+        cursor = end;
+    }
+    if cursor < visible.end {
+        visit(cursor..visible.end, None);
+    }
+}
+
+/// Each visible recorded region starts at the value held at its left edge.
+/// Following steps exclude the right boundary, where the base or next span owns
+/// playback. The caller extends the last held value to that boundary.
+pub(super) fn recorded_knots(
+    span: &DeviceAutomationTouchSpan,
+    visible: Range<u64>,
+    frame: impl Fn(BeatTime) -> Option<u64>,
+) -> impl Iterator<Item = (u64, AutomationValue)> {
+    let first = span
+        .steps
+        .partition_point(|step| frame(step.beat).is_some_and(|at| at <= visible.start));
+    let held = first
+        .checked_sub(1)
+        .map(|index| (visible.start, span.steps[index].value));
+    held.into_iter().chain(
+        span.steps[first..]
+            .iter()
+            .filter_map(move |step| Some((frame(step.beat)?, step.value)))
+            .take_while(move |(at, _)| *at < visible.end),
+    )
+}
+
 /// Indices of the points whose frames intersect `start..=end`, plus one
 /// neighbour on each side. Points must be ordered by frame. A point whose
 /// frame cannot be resolved counts as neither before `start` nor within
@@ -173,7 +231,8 @@ pub(super) fn reduce(
 
 #[cfg(test)]
 mod tests {
-    use super::{PlotPoint, reduce, visible_range};
+    use super::{PlotPoint, recorded_knots, reduce, visible_range, visible_sections};
+    use hex_project::{AutomationValue, BeatTime, DeviceAutomationTouchSpan};
     use std::{cell::Cell, collections::BTreeMap};
 
     /// Unreduced reference polyline: every point, with held segments drawn as
@@ -241,6 +300,65 @@ mod tests {
                 selected: index == 500,
             })
             .collect()
+    }
+
+    fn span(start: u64, end: u64, knots: &[(u64, f32)]) -> DeviceAutomationTouchSpan {
+        DeviceAutomationTouchSpan {
+            start: BeatTime::from_raw(start),
+            end: BeatTime::from_raw(end),
+            steps: knots
+                .iter()
+                .map(|&(at, value)| hex_project::DeviceAutomationTouchStep {
+                    beat: BeatTime::from_raw(at),
+                    value: AutomationValue::new(value).unwrap(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn recorded_sections_leave_exact_base_gaps_and_clip_both_edges() {
+        let spans = [
+            span(4, 20, &[(4, 0.25), (7, 0.5), (11, 0.75)]),
+            span(30, 40, &[(30, 1.0), (34, 0.0)]),
+            span(40, 50, &[(40, 0.0)]),
+        ];
+        let frame = |beat: BeatTime| Some(beat.raw());
+        let mut sections = Vec::new();
+        visible_sections(&spans, 9..34, frame, |range, span| {
+            let steps = span.map(|span| {
+                recorded_knots(span, range.clone(), frame)
+                    .map(|(at, value)| (at, value.get()))
+                    .collect::<Vec<_>>()
+            });
+            sections.push((range, steps));
+        });
+        assert_eq!(
+            sections,
+            [
+                (9..20, Some(vec![(9, 0.5), (11, 0.75)])),
+                (20..30, None),
+                (30..34, Some(vec![(30, 1.0)])),
+            ]
+        );
+
+        sections.clear();
+        visible_sections(&spans, 39..52, frame, |range, span| {
+            let steps = span.map(|span| {
+                recorded_knots(span, range.clone(), frame)
+                    .map(|(at, value)| (at, value.get()))
+                    .collect::<Vec<_>>()
+            });
+            sections.push((range, steps));
+        });
+        assert_eq!(
+            sections,
+            [
+                (39..40, Some(vec![(39, 0.0)])),
+                (40..50, Some(vec![(40, 0.0)])),
+                (50..52, None)
+            ]
+        );
     }
 
     #[test]
