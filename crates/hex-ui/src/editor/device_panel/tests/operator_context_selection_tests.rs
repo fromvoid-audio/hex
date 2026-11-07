@@ -14,29 +14,8 @@ pub(super) fn row_background(
             device.value()
         )))
         .unwrap();
-    let ratio = 1 + operator as u32 * 3;
-    let primary = visual
-        .debug_bounds(selector(format!(
-            "device-{}-parameter-{ratio}",
-            device.value()
-        )))
-        .or_else(|| {
-            visual.debug_bounds(selector(format!(
-                "device-{}-parameter-{}",
-                device.value(),
-                63 + operator as u32 * 3
-            )))
-        })
-        .unwrap();
-    let fine = visual
-        .debug_bounds(selector(format!(
-            "device-{}-parameter-{}",
-            device.value(),
-            609 + operator as u32
-        )))
-        .unwrap();
-    assert!(primary.right() < fine.left());
-    point((primary.right() + fine.left()) / 2.0, row.center().y)
+    // The bottom inset is a real section-selection target outside every control.
+    point(row.center().x, row.bottom() - px(1.0))
 }
 
 #[gpui::test]

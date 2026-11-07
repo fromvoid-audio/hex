@@ -116,7 +116,8 @@ pub(super) fn select_routing(view: &mut EditorView, cx: &mut Context<EditorView>
     select_page(view, cx, owner, OperatorPage::Routing);
 }
 
-// Section containers track descendant focus, but are never keyboard targets.
+// Oscillator section backgrounds are explicit keyboard selection targets.
+// Other containers only track descendant focus.
 pub(in crate::editor::device_panel) struct SectionFocus {
     pub(in crate::editor::device_panel) handle: FocusHandle,
     pub(in crate::editor::device_panel) focused: bool,
@@ -134,7 +135,10 @@ pub(super) fn section_focus(
         .operator_section_focus
         .entry((device, section))
         .or_insert_with(|| SectionFocus {
-            handle: cx.focus_handle().tab_stop(false),
+            handle: cx
+                .focus_handle()
+                .tab_index(0)
+                .tab_stop(matches!(section, super::Section::Oscillator(_))),
             focused: false,
             subscriptions: None,
         });
