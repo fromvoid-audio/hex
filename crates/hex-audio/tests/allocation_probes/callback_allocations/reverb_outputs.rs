@@ -22,7 +22,18 @@ fn reverb_output_automation_callback_publication_history_and_save_reopen()
     let Created::Device(device) = editor.execute(Command::InsertDevice {
         track,
         before: None,
-        state: hex_engine::default_native_device_state(REVERB_TYPE_ID)?,
+        state: {
+            use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+            let mut state = hex_engine::default_native_device_state(REVERB_TYPE_ID)?;
+            for parameter in [p::LO_CUT, p::HI_CUT, p::HIGH, p::LOW] {
+                state = hex_devices::reverb::REVERB_DEFINITION.patch_parameter(
+                    &state,
+                    parameter,
+                    ParameterValue::Bool(true),
+                )?;
+            }
+            state
+        },
     })?
     else {
         return Err("expected reverb_outputs".into());
@@ -69,6 +80,12 @@ fn reverb_output_automation_callback_publication_history_and_save_reopen()
         .tempo_map()
         .frame_to_beat((BLOCK * 3) as u64)?;
     for parameter in [
+        p::LO_FREQ,
+        p::HI_FREQ,
+        p::HIGH_FREQ,
+        p::LOW_FREQ,
+        p::LO_Q,
+        p::HI_Q,
         p::PREDELAY,
         p::SPIN_AMOUNT,
         p::SPIN_RATE,

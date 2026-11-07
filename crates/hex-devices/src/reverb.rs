@@ -18,8 +18,8 @@
 //! and explicit admission backpressure. Unfrozen rooms hard-clear at their
 //! declared zero-input deadline (including up to 100 ms of copied smoothing).
 //! The shared Arrangement adapter supplies authored dry/wet at host rate and
-//! output, predelay, reflection shape, diffusion scale and spin/chorus controls
-//! at the existing tank evaluations. Canonical edits retain their smoothing.
+//! output, predelay, reflection shape, diffusion scale, spin/chorus and filter
+//! frequency/Q controls at the existing tank evaluations. Canonical edits retain their smoothing.
 //! Delay capacities, feedback and tail bounds stay unchanged. Detached tails
 //! retain the last validated values after the host freezes their clock.
 mod runtime;
