@@ -229,7 +229,10 @@ impl PublicationControl {
     > {
         self.require_parameter_delivery_source(source, binding)?;
         let status = &self.status;
-        let delivery = &mut self.foreign_parameter_delivery;
+        let delivery = self
+            .foreign_parameter_delivery
+            .as_mut()
+            .ok_or("vst3 delivery reader is retired")?;
         self.candidate_root.native_parameter_change_with_before(
             binding,
             id,
@@ -263,7 +266,10 @@ impl PublicationControl {
     > {
         self.require_parameter_delivery_source(source, binding)?;
         let status = &self.status;
-        let delivery = &mut self.foreign_parameter_delivery;
+        let delivery = self
+            .foreign_parameter_delivery
+            .as_mut()
+            .ok_or("vst3 delivery reader is retired")?;
         self.candidate_root
             .native_parameter_hold_with_before(binding, command, |request| {
                 let (binding, operation, parameter) = request
@@ -278,6 +284,9 @@ impl PublicationControl {
         source: AppliedAudioSource,
         binding: Binding,
     ) -> Result<(), &'static str> {
+        if self.foreign_parameter_delivery.is_none() {
+            return Err("vst3 delivery reader is retired");
+        }
         if !self.native_custody
             || self.status.closing.load(Acquire)
             || self.output_identity() != Some(source.output_identity)
@@ -293,13 +302,30 @@ impl PublicationControl {
         &mut self,
         target: crate::foreign_parameter_delivery::Target,
     ) -> bool {
-        self.foreign_parameter_delivery.cancel(target)
+        self.foreign_parameter_delivery
+            .as_mut()
+            .is_some_and(|delivery| delivery.cancel(target))
     }
 
     pub fn try_native_source_parameter_delivery_on_control(
         &mut self,
     ) -> Option<crate::foreign_parameter_delivery::Receipt> {
-        self.foreign_parameter_delivery.try_receipt(&self.status)
+        self.foreign_parameter_delivery
+            .as_mut()?
+            .try_receipt(&self.status)
+    }
+
+    /// Detach the one outstanding witness before relinquishing this output.
+    /// New confirmed inputs on this publication are permanently refused. The
+    /// non-Clone reader retains bounded Copy receipt channels and status only,
+    /// never Root, SDK workers, PCM or a native output lease. Its poll/drop and
+    /// final channel destruction belong on control, after callback activity.
+    pub fn retire_native_source_parameter_delivery_on_control(
+        &mut self,
+    ) -> Option<crate::foreign_parameter_delivery::Retired> {
+        self.foreign_parameter_delivery.as_ref()?.target()?;
+        let delivery = self.foreign_parameter_delivery.take()?;
+        delivery.retire(Arc::clone(&self.status))
     }
 
     /// Queue a live hold on the selected original worker. A begin/change
@@ -1285,3 +1311,6 @@ mod parameter_source_tests {
         assert_eq!(status.native_parameter_source(false), None);
     }
 }
+
+#[cfg(test)]
+mod retired_delivery_tests;
