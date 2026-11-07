@@ -8,6 +8,7 @@ use hex_lattice_contract::ParameterSemantics;
 
 #[derive(Clone, Copy, PartialEq)]
 pub(super) struct AutomatedSettings {
+    decay: f32,
     dry_wet: f32,
     lo_freq: f32,
     hi_freq: f32,
@@ -16,9 +17,12 @@ pub(super) struct AutomatedSettings {
     spin_rate: f32,
     shape: f32,
     high_freq: f32,
+    high_ratio: f32,
     low_freq: f32,
+    low_ratio: f32,
     diffusion: f32,
     scale: f32,
+    size: f32,
     chorus_amount: f32,
     chorus_rate: f32,
     density: u32,
@@ -31,6 +35,7 @@ pub(super) struct AutomatedSettings {
 impl AutomatedSettings {
     pub(super) fn new(settings: Settings) -> Self {
         Self {
+            decay: settings.get(p::DECAY),
             dry_wet: settings.get(p::DRY_WET),
             lo_freq: settings.get(p::LO_FREQ),
             hi_freq: settings.get(p::HI_FREQ),
@@ -39,9 +44,12 @@ impl AutomatedSettings {
             spin_rate: settings.get(p::SPIN_RATE),
             shape: settings.get(p::SHAPE),
             high_freq: settings.get(p::HIGH_FREQ),
+            high_ratio: settings.get(p::HIGH_RATIO),
             low_freq: settings.get(p::LOW_FREQ),
+            low_ratio: settings.get(p::LOW_RATIO),
             diffusion: settings.get(p::DIFFUSION),
             scale: settings.get(p::SCALE),
+            size: settings.get(p::SIZE),
             chorus_amount: settings.get(p::CHORUS_AMOUNT),
             chorus_rate: settings.get(p::CHORUS_RATE),
             density: settings.get(p::DENSITY) as u32,
@@ -54,6 +62,7 @@ impl AutomatedSettings {
     }
     pub(super) fn check_inline(&self) {
         let Self {
+            decay,
             dry_wet,
             lo_freq,
             hi_freq,
@@ -62,9 +71,12 @@ impl AutomatedSettings {
             spin_rate,
             shape,
             high_freq,
+            high_ratio,
             low_freq,
+            low_ratio,
             diffusion,
             scale,
+            size,
             chorus_amount,
             chorus_rate,
             density,
@@ -74,7 +86,8 @@ impl AutomatedSettings {
             lo_q,
             hi_q,
         } = self;
-        let _: [&f32; 18] = [
+        let _: [&f32; 22] = [
+            decay,
             dry_wet,
             lo_freq,
             hi_freq,
@@ -83,9 +96,12 @@ impl AutomatedSettings {
             spin_rate,
             shape,
             high_freq,
+            high_ratio,
             low_freq,
+            low_ratio,
             diffusion,
             scale,
+            size,
             chorus_amount,
             chorus_rate,
             stereo,
@@ -109,7 +125,13 @@ const CHOICE_SEMANTICS: ParameterSemantics = ParameterSemantics {
     smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
     ..crate::parameter_binding::CHOICE_ENVELOPE
 };
-const BINDINGS: [Binding<AutomatedSettings>; 19] = [
+const BINDINGS: [Binding<AutomatedSettings>; 23] = [
+    Binding::float(
+        crate::reverb::DESCRIPTORS[0],
+        LOG_SEMANTICS,
+        |s| s.decay,
+        |s, v| s.decay = v,
+    ),
     Binding::float(
         crate::reverb::DESCRIPTORS[1],
         SEMANTICS,
@@ -159,10 +181,22 @@ const BINDINGS: [Binding<AutomatedSettings>; 19] = [
         |s, v| s.high_freq = v,
     ),
     Binding::float(
+        crate::reverb::DESCRIPTORS[13],
+        LOG_SEMANTICS,
+        |s| s.high_ratio,
+        |s, v| s.high_ratio = v,
+    ),
+    Binding::float(
         crate::reverb::DESCRIPTORS[15],
         LOG_SEMANTICS,
         |s| s.low_freq,
         |s, v| s.low_freq = v,
+    ),
+    Binding::float(
+        crate::reverb::DESCRIPTORS[16],
+        LOG_SEMANTICS,
+        |s| s.low_ratio,
+        |s, v| s.low_ratio = v,
     ),
     Binding::float(
         crate::reverb::DESCRIPTORS[17],
@@ -175,6 +209,12 @@ const BINDINGS: [Binding<AutomatedSettings>; 19] = [
         SEMANTICS,
         |s| s.scale,
         |s, v| s.scale = v,
+    ),
+    Binding::float(
+        crate::reverb::DESCRIPTORS[19],
+        LOG_SEMANTICS,
+        |s| s.size,
+        |s, v| s.size = v,
     ),
     Binding::float(
         crate::reverb::DESCRIPTORS[21],
@@ -245,6 +285,7 @@ pub(in crate::reverb) fn validate_ids(ids: &[ParameterId]) -> Result<(), DeviceC
 }
 #[derive(Clone, Copy, Default)]
 pub(super) struct AutomatedValues {
+    pub decay: Option<f32>,
     pub dry_wet: Option<f32>,
     pub lo_g: Option<f32>,
     pub hi_g: Option<f32>,
@@ -253,9 +294,12 @@ pub(super) struct AutomatedValues {
     pub spin_rate: Option<f32>,
     pub shape: Option<f32>,
     pub high_alpha: Option<f32>,
+    pub high_ratio: Option<f32>,
     pub low_alpha: Option<f32>,
+    pub low_ratio: Option<f32>,
     pub diffusion: Option<f32>,
     pub scale: Option<f32>,
+    pub size: Option<f32>,
     pub chorus_amount: Option<f32>,
     pub chorus_rate: Option<f32>,
     pub density: Option<f32>,
@@ -268,6 +312,7 @@ pub(super) struct AutomatedValues {
 impl AutomatedValues {
     pub(super) fn check_inline(&self) {
         let Self {
+            decay,
             dry_wet,
             lo_g,
             hi_g,
@@ -276,9 +321,12 @@ impl AutomatedValues {
             spin_rate,
             shape,
             high_alpha,
+            high_ratio,
             low_alpha,
+            low_ratio,
             diffusion,
             scale,
+            size,
             chorus_amount,
             chorus_rate,
             density,
@@ -288,7 +336,8 @@ impl AutomatedValues {
             lo_damping,
             hi_damping,
         } = self;
-        let _: [&Option<f32>; 19] = [
+        let _: [&Option<f32>; 23] = [
+            decay,
             dry_wet,
             lo_g,
             hi_g,
@@ -297,9 +346,12 @@ impl AutomatedValues {
             spin_rate,
             shape,
             high_alpha,
+            high_ratio,
             low_alpha,
+            low_ratio,
             diffusion,
             scale,
+            size,
             chorus_amount,
             chorus_rate,
             density,
@@ -350,74 +402,82 @@ impl ReverbRuntime {
                     (std::f32::consts::PI * hz.min(self.tank_rate * 0.45) / self.tank_rate).tan()
                 };
                 let output = AutomatedValues {
-                    dry_wet: present(0).then_some(settings.dry_wet),
+                    decay: present(0).then_some(settings.decay),
+                    dry_wet: present(1).then_some(settings.dry_wet),
                     lo_g: converted(
-                        present(1),
+                        present(2),
                         settings.lo_freq,
                         old.lo_freq,
                         self.automated_values.lo_g,
                         g,
                     ),
                     hi_g: converted(
-                        present(2),
+                        present(3),
                         settings.hi_freq,
                         old.hi_freq,
                         self.automated_values.hi_g,
                         g,
                     ),
-                    predelay: present(3).then_some(settings.predelay),
-                    spin_amount: present(4).then_some(settings.spin_amount),
-                    spin_rate: present(5).then_some(settings.spin_rate),
-                    shape: present(6).then_some(settings.shape),
+                    predelay: present(4).then_some(settings.predelay),
+                    spin_amount: present(5).then_some(settings.spin_amount),
+                    spin_rate: present(6).then_some(settings.spin_rate),
+                    shape: present(7).then_some(settings.shape),
                     high_alpha: converted(
-                        present(7),
+                        present(8),
                         settings.high_freq,
                         old.high_freq,
                         self.automated_values.high_alpha,
                         |v| alpha(v, self.tank_rate),
                     ),
+                    high_ratio: present(9).then_some(settings.high_ratio),
                     low_alpha: converted(
-                        present(8),
+                        present(10),
                         settings.low_freq,
                         old.low_freq,
                         self.automated_values.low_alpha,
                         |v| alpha(v, self.tank_rate),
                     ),
-                    diffusion: present(9).then_some(settings.diffusion),
-                    scale: present(10).then_some(settings.scale),
-                    chorus_amount: present(11).then_some(settings.chorus_amount),
-                    chorus_rate: present(12).then_some(settings.chorus_rate),
-                    density: present(13).then_some(settings.density as f32),
-                    stereo: present(14).then_some(settings.stereo),
+                    low_ratio: present(11).then_some(settings.low_ratio),
+                    diffusion: present(12).then_some(settings.diffusion),
+                    scale: present(13).then_some(settings.scale),
+                    size: present(14).then_some(settings.size),
+                    chorus_amount: present(15).then_some(settings.chorus_amount),
+                    chorus_rate: present(16).then_some(settings.chorus_rate),
+                    density: present(17).then_some(settings.density as f32),
+                    stereo: present(18).then_some(settings.stereo),
                     reflect: converted(
-                        present(15),
+                        present(19),
                         settings.reflect,
                         old.reflect,
                         self.automated_values.reflect,
                         |v| 10.0_f32.powf(v / 20.0),
                     ),
                     diffuse: converted(
-                        present(16),
+                        present(20),
                         settings.diffuse,
                         old.diffuse,
                         self.automated_values.diffuse,
                         |v| 10.0_f32.powf(v / 20.0),
                     ),
                     lo_damping: converted(
-                        present(17),
+                        present(21),
                         settings.lo_q,
                         old.lo_q,
                         self.automated_values.lo_damping,
                         |v| 1.0 / v,
                     ),
                     hi_damping: converted(
-                        present(18),
+                        present(22),
                         settings.hi_q,
                         old.hi_q,
                         self.automated_values.hi_damping,
                         |v| 1.0 / v,
                     ),
                 };
+                self.silence_limit = silence_deadline_frames(
+                    self.rate,
+                    output.decay.unwrap_or(self.settings.get(p::DECAY)),
+                );
                 self.automated_values = output;
             }
             self.frame_outputs(frame, self.automated_values);
@@ -446,6 +506,12 @@ mod tests {
                 .and_then(|i| self.values[i])
         }
     }
+    fn automated_prepared(
+        rate: u32,
+        settings: Settings,
+    ) -> Result<PreparedReverb, DeviceContractError> {
+        PreparedReverb::new(rate, settings).map(|p| p.with_automation(&[p::DECAY]))
+    }
     fn enabled_settings() -> Settings {
         let mut settings = Settings::default_values();
         for id in [p::LO_CUT, p::HI_CUT, p::HIGH, p::LOW] {
@@ -455,13 +521,13 @@ mod tests {
     }
     fn held_values() -> Values {
         let mut values: Vec<_> = [
-            100.0, 250.0, 3000.0, 50.0, 80.0, 2.0, 0.1, 2000.0, 500.0, 10.0, 90.0, 3.0, 5.0, 0.0,
-            0.0, -12.0, -12.0, 2.0, 1.0,
+            2.0, 100.0, 250.0, 3000.0, 50.0, 80.0, 2.0, 0.1, 2000.0, 1.4, 500.0, 1.5, 10.0, 90.0,
+            150.0, 3.0, 5.0, 0.0, 0.0, -12.0, -12.0, 2.0, 1.0,
         ]
         .into_iter()
         .map(|v| Some(ParameterValue::Float(v)))
         .collect();
-        values[13] = Some(ParameterValue::Choice(1));
+        values[17] = Some(ParameterValue::Choice(1));
         Values {
             ids: BINDINGS.iter().map(|b| b.descriptor.id).collect(),
             values,
@@ -483,12 +549,16 @@ mod tests {
         let settings = enabled_settings();
         for rate in [8000, 96000] {
             let mut baseline = signal(8192);
-            PreparedReverb::new(rate, settings)
+            automated_prepared(rate, settings)
                 .unwrap()
                 .runtime()
                 .process_block(&mut baseline, &R);
             for (id, value) in [
                 (p::DRY_WET, 100.0),
+                (p::DECAY, 2.0),
+                (p::SIZE, 150.0),
+                (p::HIGH_RATIO, 1.4),
+                (p::LOW_RATIO, 1.5),
                 (p::DIFFUSION, 10.0),
                 (p::LO_FREQ, 250.0),
                 (p::HI_FREQ, 3000.0),
@@ -513,8 +583,8 @@ mod tests {
                 };
                 let mut changed = settings;
                 changed.0[crate::reverb::index(id).unwrap()] = value;
-                let mut actual = PreparedReverb::new(rate, settings).unwrap().runtime();
-                let mut reference = PreparedReverb::new(rate, changed).unwrap().runtime();
+                let mut actual = automated_prepared(rate, settings).unwrap().runtime();
+                let mut reference = automated_prepared(rate, changed).unwrap().runtime();
                 let mut output = signal(8192);
                 let mut expected = output.clone();
                 reference.process_block(&mut expected, &R);
@@ -574,7 +644,7 @@ mod tests {
         for rate in [8000, 96000] {
             let mut settings = enabled_settings();
             settings.0[crate::reverb::index(p::SMOOTH).unwrap()] = 0.0;
-            let prepared = PreparedReverb::new(rate, settings).unwrap();
+            let prepared = automated_prepared(rate, settings).unwrap();
             let mut actual = prepared.runtime();
             actual.process_block(&mut signal(8193), &R);
             let mut reference = prepared.runtime();
@@ -591,7 +661,7 @@ mod tests {
                 }
                 // Public canonical handoff law with one-sample smoothing is
                 // an independent delivery oracle; no authored cache is used.
-                let mut next = PreparedReverb::new(rate, changed).unwrap().runtime();
+                let mut next = automated_prepared(rate, changed).unwrap().runtime();
                 next.copy_history_from(&reference);
                 next.process_block(std::slice::from_mut(frame), &R);
                 reference = next;
@@ -606,6 +676,105 @@ mod tests {
         }
     }
     #[test]
+    fn decay_admission_reserves_deadline_and_canonical_render_drops_override() {
+        use hex_lattice::PreparedNativeProcessor;
+        use hex_lattice_contract::ParameterNormalization;
+        let state = crate::reverb::REVERB_DEFINITION.default_state().unwrap();
+        for rate in [8000, 96000] {
+            let canonical =
+                crate::reverb::ReverbDefinition::prepare_owned_room(&state, rate).unwrap();
+            assert!(!canonical.supports_parameter_automation(p::DECAY));
+            let mut unprepared = canonical.runtime();
+            assert!(!unprepared.supports_parameter_automation(p::DECAY));
+            let values = Values {
+                ids: vec![p::DECAY],
+                values: vec![Some(ParameterValue::Float(60.0))],
+            };
+            let mut frame = [[0.125; 2]];
+            assert!(unprepared.process_automation(&mut frame, &values).is_err());
+            assert_eq!(frame, [[0.125; 2]]);
+            assert_eq!(
+                canonical.output_tail(),
+                hex_lattice::OutputTail::Finite {
+                    max_tail_frames: u64::from(rate) * 8 + u64::from(rate).div_ceil(10)
+                }
+            );
+            let admitted = crate::reverb::ReverbDefinition::prepare_owned_room_for_parameters(
+                &state,
+                rate,
+                &[p::DECAY],
+            )
+            .unwrap();
+            assert_eq!(
+                admitted.output_tail(),
+                hex_lattice::OutputTail::Finite {
+                    max_tail_frames: u64::from(rate) * 181 + u64::from(rate).div_ceil(10)
+                }
+            );
+            let mut runtime = admitted.runtime();
+            runtime
+                .process_automation(&mut signal(8193), &values)
+                .unwrap();
+            assert_eq!(runtime.silence_limit, u64::from(rate) * 181);
+            let mut inherited = admitted.runtime();
+            inherited.copy_history_from(&runtime);
+            assert_eq!(inherited.silence_limit, runtime.silence_limit);
+            // Existing real-render deadline regressions cover clock advance;
+            // place this long admitted deadline at its last frame to verify
+            // terminal clearing without rendering181seconds in a unit test.
+            inherited.silent_frames = inherited.silence_limit - 1;
+            inherited
+                .process_automation(&mut [[0.0; 2]], &values)
+                .unwrap();
+            assert!(inherited.is_quiescent());
+            runtime.process_block(&mut [[0.0; 2]], &R);
+            assert_eq!(runtime.silence_limit, u64::from(rate) * 8);
+        }
+        for id in [p::DECAY, p::SIZE, p::HIGH_RATIO, p::LOW_RATIO] {
+            assert_eq!(
+                semantics(id).unwrap().normalization,
+                ParameterNormalization::PositiveLogarithmic
+            );
+        }
+    }
+    #[test]
+    fn authored_feedback_cache_tracks_canonical_ramps_and_reaches_static_law() {
+        for rate in [8000, 96000] {
+            let settings = enabled_settings();
+            let mut old = automated_prepared(rate, settings).unwrap().runtime();
+            old.process_block(&mut signal(8193), &R);
+            let mut changed = settings;
+            changed.0[crate::reverb::index(p::DECAY).unwrap()] = 0.4;
+            let prepared = automated_prepared(rate, changed).unwrap();
+            let mut whole = prepared.runtime();
+            whole.copy_history_from(&old);
+            let mut split = prepared.runtime();
+            split.copy_history_from(&old);
+            let values = Values {
+                ids: vec![p::HIGH_RATIO],
+                values: vec![Some(ParameterValue::Float(0.2))],
+            };
+            let mut output = signal(4096);
+            let mut expected = output.clone();
+            whole.process_automation(&mut output, &values).unwrap();
+            for block in expected.chunks_mut(13) {
+                split.process_automation(block, &values).unwrap();
+            }
+            assert_eq!(output, expected);
+            changed.0[crate::reverb::index(p::HIGH_RATIO).unwrap()] = 0.2;
+            changed.0[crate::reverb::index(p::SMOOTH).unwrap()] = 0.0;
+            let mut reference = automated_prepared(rate, changed).unwrap().runtime();
+            reference.copy_history_from(&whole);
+            output = signal(4096);
+            expected = output.clone();
+            whole.process_automation(&mut output, &values).unwrap();
+            reference.process_block(&mut expected, &R);
+            for (a, b) in output.iter().zip(&expected) {
+                assert!((a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6);
+            }
+        }
+    }
+    #[test]
     fn partial_filter_automation_preserves_canonical_coefficient_ramps() {
         for rate in [8000, 96000] {
             for (authored, canonical, value) in [
@@ -615,7 +784,7 @@ mod tests {
                 (p::HI_Q, p::HI_FREQ, 3000.0),
             ] {
                 let settings = enabled_settings();
-                let mut source = PreparedReverb::new(rate, settings).unwrap().runtime();
+                let mut source = automated_prepared(rate, settings).unwrap().runtime();
                 source.process_block(&mut signal(8193), &R);
                 let mut expected_settings = settings;
                 expected_settings.0[crate::reverb::index(canonical).unwrap()] = value;
@@ -626,11 +795,9 @@ mod tests {
                     } else {
                         1500.0
                     };
-                let mut actual = PreparedReverb::new(rate, actual_settings)
-                    .unwrap()
-                    .runtime();
+                let mut actual = automated_prepared(rate, actual_settings).unwrap().runtime();
                 actual.copy_history_from(&source);
-                let mut reference = PreparedReverb::new(rate, expected_settings)
+                let mut reference = automated_prepared(rate, expected_settings)
                     .unwrap()
                     .runtime();
                 reference.copy_history_from(&source);
@@ -660,8 +827,8 @@ mod tests {
             for choice in 0..3 {
                 let mut changed = settings;
                 changed.0[crate::reverb::index(p::DENSITY).unwrap()] = choice as f32;
-                let mut actual = PreparedReverb::new(rate, settings).unwrap().runtime();
-                let mut reference = PreparedReverb::new(rate, changed).unwrap().runtime();
+                let mut actual = automated_prepared(rate, settings).unwrap().runtime();
+                let mut reference = automated_prepared(rate, changed).unwrap().runtime();
                 let values = Values {
                     ids: vec![p::DENSITY],
                     values: vec![Some(ParameterValue::Choice(choice))],
@@ -691,16 +858,14 @@ mod tests {
                 (p::DENSITY, p::DIFFUSION, 10.0, 2.0),
             ] {
                 let settings = enabled_settings();
-                let mut source = PreparedReverb::new(rate, settings).unwrap().runtime();
+                let mut source = automated_prepared(rate, settings).unwrap().runtime();
                 source.process_block(&mut signal(8193), &R);
                 let mut expected_settings = settings;
                 expected_settings.0[crate::reverb::index(canonical).unwrap()] = target;
                 let mut actual_settings = expected_settings;
                 actual_settings.0[crate::reverb::index(authored).unwrap()] = override_target;
-                let mut actual = PreparedReverb::new(rate, actual_settings)
-                    .unwrap()
-                    .runtime();
-                let mut reference = PreparedReverb::new(rate, expected_settings)
+                let mut actual = automated_prepared(rate, actual_settings).unwrap().runtime();
+                let mut reference = automated_prepared(rate, expected_settings)
                     .unwrap()
                     .runtime();
                 actual.copy_history_from(&source);
@@ -741,8 +906,8 @@ mod tests {
                 let settings = enabled_settings();
                 let mut changed = settings;
                 changed.0[crate::reverb::index(binding.descriptor.id).unwrap()] = value;
-                let mut actual = PreparedReverb::new(8000, settings).unwrap().runtime();
-                let mut reference = PreparedReverb::new(8000, changed).unwrap().runtime();
+                let mut actual = automated_prepared(8000, settings).unwrap().runtime();
+                let mut reference = automated_prepared(8000, changed).unwrap().runtime();
                 let values = Values {
                     ids: vec![binding.descriptor.id],
                     values: vec![Some(ParameterValue::Float(value))],
@@ -769,15 +934,15 @@ mod tests {
     #[test]
     fn malformed_atomic_delivery_history_bypass_reset_and_storage_are_preserved() {
         let settings = enabled_settings();
-        let prepared = PreparedReverb::new(8000, settings).unwrap();
+        let prepared = automated_prepared(8000, settings).unwrap();
         let mut source = prepared.runtime();
         let mut reference = prepared.runtime();
         let mut values = held_values();
-        values.values[3] = Some(ParameterValue::Float(f32::NAN));
+        values.values[4] = Some(ParameterValue::Float(f32::NAN));
         let mut output = [[0.125; 2]; 17];
         assert!(source.process_automation(&mut output, &values).is_err());
         assert_eq!(output, [[0.125; 2]; 17]);
-        values.values[3] = Some(ParameterValue::Float(25.0));
+        values.values[4] = Some(ParameterValue::Float(25.0));
         let mut expected = output;
         source.process_automation(&mut output, &values).unwrap();
         reference
@@ -816,7 +981,7 @@ mod tests {
         let storage = copied.control_storage().unwrap();
         assert_eq!(storage.inline_bytes, std::mem::size_of::<ReverbRuntime>());
         assert_eq!(storage.heap_bytes.len(), 14);
-        assert!(validate_ids(&[p::DECAY]).is_err());
+        assert!(validate_ids(&[p::SMOOTH]).is_err());
         assert!(validate_ids(&[p::STEREO, p::DRY_WET]).is_err());
         assert!(
             crate::reverb::REVERB_DEFINITION
@@ -831,7 +996,7 @@ mod tests {
     fn clock_free_tail_does_not_resurrect_removed_automation() {
         for rate in [8000, 96000] {
             for frozen in [false, true] {
-                let mut prepared = PreparedReverb::new(rate, enabled_settings()).unwrap();
+                let mut prepared = automated_prepared(rate, enabled_settings()).unwrap();
                 let mut source = prepared.runtime();
                 let values = held_values();
                 // Fill beyond the authored 50ms predelay even at 96kHz.
@@ -844,7 +1009,7 @@ mod tests {
                         settings.0[crate::reverb::index(id).unwrap()] = 1.0;
                     }
                     settings.0[crate::reverb::index(p::SMOOTH).unwrap()] = 0.0;
-                    prepared = PreparedReverb::new(rate, settings).unwrap();
+                    prepared = automated_prepared(rate, settings).unwrap();
                     let mut next = prepared.runtime();
                     next.copy_history_from(&source);
                     source = next;
@@ -972,6 +1137,9 @@ mod benchmark {
                 ));
             }
             Some(hex_lattice_contract::ParameterValue::Float(match id {
+                p::DECAY => 0.1 + 59.9 * t,
+                p::SIZE => 1.0 + 199.0 * t,
+                p::HIGH_RATIO | p::LOW_RATIO => 0.1 + 1.9 * t,
                 p::DRY_WET => 25.0 + 50.0 * t,
                 p::LO_FREQ | p::HI_FREQ | p::HIGH_FREQ | p::LOW_FREQ => 20.0 + 19980.0 * t,
                 p::LO_Q | p::HI_Q => 0.1 + 9.9 * t,
@@ -1032,6 +1200,7 @@ mod benchmark {
             };
             let mut runtime = PreparedReverb::new(48000, Settings::default_values())
                 .unwrap()
+                .with_automation(&[p::DECAY])
                 .runtime();
             let mut block = [[0.125, -0.25]; 128];
             let mut run = || {
