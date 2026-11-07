@@ -1,5 +1,5 @@
 //! Bounded FDN history; preparation owns allocation and tank/filter coefficients.
-//! Authored output gains use bounded conversion in automation.
+//! Authored output/filter coefficients use bounded cached conversion in automation.
 pub(super) mod automation;
 use super::{PARAMETER_COUNT, Settings, parameter as p};
 use automation::{AutomatedSettings, AutomatedValues};
@@ -154,7 +154,7 @@ impl PreparedReverb {
         ReverbRuntime {
             automation_controls: crate::parameter_binding::Controls::new(
                 AutomatedSettings::new(self.settings),
-                [true; 11],
+                [true; 17],
             ),
             automated_values: AutomatedValues::default(),
             tail_controls_frozen: false,
@@ -340,7 +340,7 @@ pub struct ReverbRuntimeStorage {
 }
 pub const RUNTIME_HEAP_ALLOCATIONS: usize = 14;
 pub struct ReverbRuntime {
-    automation_controls: crate::parameter_binding::Controls<AutomatedSettings, 11>,
+    automation_controls: crate::parameter_binding::Controls<AutomatedSettings, 17>,
     automated_values: AutomatedValues,
     tail_controls_frozen: bool,
     rate: u32,
@@ -504,6 +504,24 @@ impl ReverbRuntime {
                 InputFilter::new(self.coefficients[25].current, self.coefficients[31].current),
             ]
         };
+        let high_filter = if output.lo_g.is_some() || output.lo_damping.is_some() {
+            InputFilter::new(
+                output.lo_g.unwrap_or(self.coefficients[24].current),
+                output.lo_damping.unwrap_or(self.coefficients[30].current),
+            )
+        } else {
+            high_filter
+        };
+        let low_filter = if output.hi_g.is_some() || output.hi_damping.is_some() {
+            InputFilter::new(
+                output.hi_g.unwrap_or(self.coefficients[25].current),
+                output.hi_damping.unwrap_or(self.coefficients[31].current),
+            )
+        } else {
+            low_filter
+        };
+        let lo_alpha = output.low_alpha.unwrap_or(self.coefficients[26].current);
+        let hi_alpha = output.high_alpha.unwrap_or(self.coefficients[27].current);
         let mut late_input = [0.0; 2];
         let mut early = [0.0; 2];
         for c in 0..2 {
@@ -546,8 +564,6 @@ impl ReverbRuntime {
         };
         let feedback = scatter(delayed, rotations);
         for (i, sample) in feedback.into_iter().enumerate() {
-            let lo_alpha = self.coefficients[26].current;
-            let hi_alpha = self.coefficients[27].current;
             self.feedback_low[i] =
                 clean(lo_alpha * self.feedback_low[i] + (1.0 - lo_alpha) * sample);
             // Cascaded shelves have a conservative product-gain bound. Keep

@@ -51,6 +51,11 @@ fn reverb_outputs_match_independent_gain_and_width_oracles_on_all_effect_owners(
             panic!("track");
         };
         let mut state = D.default_state().unwrap();
+        for id in [p::LO_CUT, p::HI_CUT, p::HIGH, p::LOW] {
+            state = D
+                .patch_parameter(&state, id, ParameterValue::Bool(true))
+                .unwrap();
+        }
         for (id, value) in [
             (p::DRY_WET, 100.0),
             (p::STEREO, 100.0),
@@ -110,6 +115,12 @@ fn reverb_outputs_match_independent_gain_and_width_oracles_on_all_effect_owners(
         // Held authored controls must reproduce a separately prepared room,
         // including delay positions and oscillator phase at each effect owner.
         let settings = [
+            (p::LO_FREQ, 250.0),
+            (p::HI_FREQ, 3000.0),
+            (p::HIGH_FREQ, 2000.0),
+            (p::LOW_FREQ, 500.0),
+            (p::LO_Q, 2.0),
+            (p::HI_Q, 1.0),
             (p::PREDELAY, 50.0),
             (p::SPIN_AMOUNT, 80.0),
             (p::SPIN_RATE, 2.0),
