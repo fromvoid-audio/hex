@@ -103,6 +103,10 @@ pub(super) enum Step {
 }
 
 impl Lane {
+    pub(super) fn busy(&self) -> bool {
+        self.active.is_some()
+    }
+
     pub(super) fn begin(
         &mut self,
         session: &Session,

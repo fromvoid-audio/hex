@@ -29,7 +29,7 @@ impl Drop for Scratch {
 }
 
 #[test]
-fn delivered_native_take_is_one_undo_and_refusals_keep_the_recovery_file() {
+fn successive_native_takes_keep_the_arm_and_refusals_keep_the_recovery_file() {
     use NativeAutomationTakeAction as Action;
     use NativeAutomationTakeProgress as Progress;
     let scratch = Scratch::new();
@@ -157,12 +157,12 @@ fn delivered_native_take_is_one_undo_and_refusals_keep_the_recovery_file() {
             performance_frame: frame + 20,
             remaining_latency_frames: 7,
         };
-    let record = |scope| {
+    let record = |scope, frame| {
         assert_eq!(send(scope, Action::Begin).1, Progress::Started);
         let value = NativeTransientValue::HostOutputGain(HostGain::from_normalized(0.25).unwrap());
         let points = Arc::from([(
             1,
-            application(scope, 8, NativeTransientOperation::Set(value)),
+            application(scope, frame, NativeTransientOperation::Set(value)),
         )]);
         let wrong_target = NativeAutomationTakeScope {
             target: hex_engine::native_parameter_input_target(
@@ -180,7 +180,17 @@ fn delivered_native_take_is_one_undo_and_refusals_keep_the_recovery_file() {
         assert_eq!(send(scope, Action::Append(points)).1, Progress::Appended);
     };
 
-    record(initial_scope);
+    record(initial_scope, 8);
+    let blocked_disarm = submit(Request::ArmNativeParameterRecording {
+        project_generation: 0,
+        revision,
+        target: None,
+    });
+    assert!(blocked_disarm.error.is_some());
+    assert_eq!(
+        *observed.native_parameter_input.lock().unwrap(),
+        Some(initial_scope.target)
+    );
     assert_eq!(
         send(initial_scope, Action::Abort(DraftAbortReason::Cancelled)).1,
         Progress::Sealing
@@ -199,14 +209,14 @@ fn delivered_native_take_is_one_undo_and_refusals_keep_the_recovery_file() {
     ));
 
     let refused_scope = scope();
-    record(refused_scope);
-    let finish = |scope| {
+    record(refused_scope, 8);
+    let finish = |scope, frame| {
         assert_eq!(
             send(
                 scope,
                 Action::Finish(application(
                     scope,
-                    12,
+                    frame,
                     NativeTransientOperation::Clear(target)
                 ))
             )
@@ -214,7 +224,7 @@ fn delivered_native_take_is_one_undo_and_refusals_keep_the_recovery_file() {
             Progress::Sealing,
         );
     };
-    finish(refused_scope);
+    finish(refused_scope, 12);
     observed.refuse.store(true, Ordering::Release);
     let (refused, result) = wait(refused_scope);
     let Progress::Retained(path) = result else {
@@ -226,8 +236,8 @@ fn delivered_native_take_is_one_undo_and_refusals_keep_the_recovery_file() {
 
     observed.refuse.store(false, Ordering::Release);
     let final_scope = scope();
-    record(final_scope);
-    finish(final_scope);
+    record(final_scope, 8);
+    finish(final_scope, 12);
     let (committed, result) = wait(final_scope);
     assert_eq!(result, Progress::Committed, "{:?}", committed.error);
     assert_eq!(committed.state.revision, revision + 1);
@@ -243,13 +253,51 @@ fn delivered_native_take_is_one_undo_and_refusals_keep_the_recovery_file() {
             expected
         );
     }
+    assert_eq!(send(final_scope, Action::Begin).1, Progress::Refused);
+    assert_eq!(
+        *observed.native_parameter_input.lock().unwrap(),
+        Some(final_scope.target)
+    );
+    let audio_revision = observed.publications.lock().unwrap().len() as u64;
+    let second_scope = NativeAutomationTakeScope {
+        stamp: DraftProvenance {
+            editor_revision: committed.state.revision,
+            audio_revision,
+            gesture_serial: final_scope.stamp.gesture_serial + 1,
+            ..final_scope.stamp
+        },
+        ..final_scope
+    };
+    let unapplied = NativeAutomationTakeScope {
+        stamp: DraftProvenance {
+            audio_revision: final_scope.stamp.audio_revision,
+            ..second_scope.stamp
+        },
+        ..second_scope
+    };
+    assert_eq!(send(unapplied, Action::Begin).1, Progress::Refused);
+    record(second_scope, 16);
+    finish(second_scope, 20);
+    let (second, result) = wait(second_scope);
+    assert_eq!(result, Progress::Committed, "{:?}", second.error);
+    assert_eq!(
+        second.state.project.main_devices()[0]
+            .automation_target(target)
+            .unwrap()
+            .touch
+            .len(),
+        2
+    );
+    assert_eq!(submit(Request::Undo).state.project, committed.state.project);
+    assert_eq!(*observed.native_parameter_input.lock().unwrap(), None);
     assert_eq!(submit(Request::Undo).state.project, authored.state.project);
     assert_eq!(submit(Request::Redo).state.project, committed.state.project);
+    assert_eq!(submit(Request::Redo).state.project, second.state.project);
     assert_eq!(
         discover_on_control(&draft_directory, 8)
             .unwrap()
             .candidates
             .len(),
-        3
+        4
     );
 }

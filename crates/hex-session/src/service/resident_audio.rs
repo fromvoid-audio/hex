@@ -1258,6 +1258,10 @@ pub(super) fn relink_files(
 
 enum Transition {
     Command(Box<Command>),
+    NativeAutomationTake {
+        command: Box<Command>,
+        target: hex_engine::NativeParameterInputTarget,
+    },
     PluginParameter {
         device: hex_project::DeviceId,
         capture: Box<PluginParameterCapture>,
@@ -2099,6 +2103,34 @@ impl Session {
             "resident command produced no transition",
         ))
     }
+
+    /// Keep the same input only across adoption of its delivered take. A
+    /// replacement output must publish the exact target at its new revision.
+    pub(super) fn native_take_resident_snapshot(
+        &mut self,
+        command: Command,
+        target: hex_engine::NativeParameterInputTarget,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+    ) -> Result<(Created, Snapshot), SessionError> {
+        self.resident_transition(
+            Transition::NativeAutomationTake {
+                command: Box::new(command),
+                target,
+            },
+            context,
+            sink,
+            admission,
+            current,
+            None,
+        )?
+        .ok_or(SessionError::Invalid(
+            "native automation take produced no transition",
+        ))
+    }
+
     #[allow(clippy::too_many_arguments)] // Exact native capture plus the existing publication owners.
     pub(super) fn plugin_parameter_resident_snapshot(
         &mut self,
@@ -2263,6 +2295,7 @@ impl Session {
         let mut prepare_time = Duration::ZERO;
         let mut publish_time = Duration::ZERO;
         if let Transition::Command(command)
+        | Transition::NativeAutomationTake { command, .. }
         | Transition::PluginEffect { command, .. }
         | Transition::MidiCommand(command)
         | Transition::SectionCommand { command, .. } = &transition
@@ -2279,8 +2312,12 @@ impl Session {
             Transition::PluginEffect { control, .. } => Some(Arc::clone(control)),
             _ => None,
         };
+        let native_parameter_input = match &transition {
+            Transition::NativeAutomationTake { target, .. } => Some(*target),
+            _ => None,
+        };
         let inputs = Inputs {
-            native_parameter_input: None,
+            native_parameter_input,
             plugin_effect: plugin_control.as_deref(),
             restoring_plugin_state: false,
             preparing_edit: !matches!(&transition, Transition::PluginEffect { .. }),
@@ -2410,6 +2447,7 @@ impl Session {
                     .map(|snapshot| Some((Created::None, snapshot)))
             }
             Transition::Command(command)
+            | Transition::NativeAutomationTake { command, .. }
             | Transition::PluginEffect { command, .. }
             | Transition::SectionCommand { command, .. } => self
                 .editor
