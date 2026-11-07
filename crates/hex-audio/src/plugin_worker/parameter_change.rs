@@ -82,6 +82,9 @@ impl NativeWorkerParameterChange {
 
 /// A live hold command always refers to the exact original worker. The
 /// opening operation token doubles as the hold identity after SDK acceptance.
+/// Begin requires an SDK-armed target, including before any programme contains
+/// that target. Release only unmasks subsequent authored points; when none can
+/// restore the target, Cancel must first Change this hold to its Begin value.
 #[derive(Clone, Copy)]
 pub enum NativeParameterHold<'a> {
     Begin {
@@ -643,7 +646,6 @@ impl State {
             Intent::Point if work.hold.is_none_or(|hold| hold.id != point.id) => None,
             Intent::Hold
                 if work.hold.is_none()
-                    && authored
                     && matches!(&self.processor, Some(Processor::Native(instance))
                     if instance.has_armed_authored_parameter(point.id)) =>
             {
