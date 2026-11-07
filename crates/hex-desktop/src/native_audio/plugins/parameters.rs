@@ -65,13 +65,13 @@ impl Plugins {
             })
             .ok_or("vst3 parameters need an active hosted instance")?
             .binding;
+        let class = edits::source_metadata(control, binding, None)?
+            .selection()
+            .cid;
         self.parameters = Some(Inventory {
             query,
             binding,
-            class: control
-                .native_source_metadata(binding)
-                .ok()
-                .map(|source| source.selection().cid),
+            class: Some(class),
             token: None,
             revision: 0,
             total: None,

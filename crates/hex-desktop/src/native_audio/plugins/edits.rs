@@ -320,6 +320,26 @@ pub(super) fn poll_control(control: &mut PublicationControl) {
     // native ACK, timeout-based acceptance or an audio callback wait.
     std::thread::sleep(std::time::Duration::from_millis(5));
 }
+pub(super) fn source_metadata(
+    control: &mut PublicationControl,
+    binding: Binding,
+    cancellation: Option<&RequestCancellation>,
+) -> Result<hex_audio::plugin_effects::EffectSourceMetadata, String> {
+    loop {
+        check_cancel(cancellation)?;
+        match control.native_source_metadata(binding) {
+            Err(reason)
+                if matches!(
+                    reason.as_str(),
+                    "native preparation is busy" | "native source is busy"
+                ) =>
+            {
+                poll_control(control)
+            }
+            result => return result,
+        }
+    }
+}
 pub(super) fn original_state(
     control: &mut PublicationControl,
     binding: Binding,
@@ -356,7 +376,7 @@ pub(super) fn armed_selection(
     control: &mut PublicationControl,
     binding: Binding,
 ) -> Result<Option<AuthoredSelection>, String> {
-    let metadata = control.native_source_metadata(binding)?;
+    let metadata = source_metadata(control, binding, None)?;
     let class = metadata.selection().cid;
     AuthoredSelection::from_targets(
         metadata
