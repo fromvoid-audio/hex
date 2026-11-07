@@ -326,6 +326,34 @@ impl PreparedParameterAutomation {
         self.foreign.as_ref()
     }
 
+    /// Carry the exact predecessor's immutable foreign quantum programs while
+    /// preparing a new graph on control. Native/host envelopes stay unchanged.
+    /// The host must obtain the optional frontier from this original worker.
+    pub fn retain_foreign_history_on_control(
+        &mut self,
+        previous: &Self,
+        received: Option<std::num::NonZeroU64>,
+    ) -> Result<(), Error> {
+        let current = self
+            .foreign
+            .as_mut()
+            .ok_or(Error::ForeignProcessingFailed)?;
+        let previous = previous
+            .foreign
+            .as_ref()
+            .ok_or(Error::ForeignProcessingFailed)?;
+        if current.shares_storage_with(previous) {
+            return Ok(());
+        }
+        if current.borrow().revision <= previous.borrow().revision {
+            return Err(Error::ForeignProcessingFailed);
+        }
+        match received {
+            Some(received) => current.retain_received_on_control(previous, received),
+            None => current.retain_previous_on_control(previous),
+        }
+    }
+
     pub fn new(
         lanes: Vec<ParameterAutomationLane>,
         points: Vec<ParameterAutomationPoint>,
