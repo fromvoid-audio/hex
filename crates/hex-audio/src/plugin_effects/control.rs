@@ -2,8 +2,8 @@
 //! existing carrier. There is no public constructor, clone or worker extraction.
 use super::*;
 use crate::plugin_worker::{
-    NativeWorkerCapture, NativeWorkerCaptureProgress, NativeWorkerControllerProgress,
-    NativeWorkerControllerQuery,
+    NativeParameterHold, NativeWorkerCapture, NativeWorkerCaptureProgress,
+    NativeWorkerControllerProgress, NativeWorkerControllerQuery, NativeWorkerParameterChange,
 };
 
 pub(crate) struct NativeEffectControl {
@@ -13,6 +13,12 @@ pub(crate) struct NativeEffectControl {
     source_metadata: EffectSourceMetadata,
 }
 impl NativeEffect {
+    pub(crate) fn parameter_hold(
+        &mut self,
+        command: NativeParameterHold<'_>,
+    ) -> Result<NativeWorkerParameterChange, &'static str> {
+        self.worker.parameter_hold_on_control(command)
+    }
     pub(crate) fn begin_parameter_change(
         &mut self,
         id: u32,
@@ -103,6 +109,12 @@ impl NativeEffect {
     }
 }
 impl NativeEffectControl {
+    pub(crate) fn parameter_hold(
+        &mut self,
+        command: NativeParameterHold<'_>,
+    ) -> Result<NativeWorkerParameterChange, &'static str> {
+        self.worker.parameter_hold_on_control(command)
+    }
     pub(crate) fn begin_parameter_change(
         &mut self,
         id: u32,

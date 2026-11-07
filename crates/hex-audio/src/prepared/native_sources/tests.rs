@@ -130,6 +130,17 @@ fn source_for_profile(
     quantum: u16,
     restore: Option<hex_lattice_contract::NativeDeviceState>,
 ) -> Binding {
+    source_for_profile_with_authored(control, identity, fixture, quantum, restore, &[])
+}
+
+fn source_for_profile_with_authored(
+    control: &mut Control,
+    identity: hex_lattice::ProcessorInstanceIdentity,
+    fixture: &str,
+    quantum: u16,
+    restore: Option<hex_lattice_contract::NativeDeviceState>,
+    ids: &[u32],
+) -> Binding {
     let (build, source, mut preparation) =
         crate::candidate_custody::native_source_test_fixture::input_for(
             fixture,
@@ -173,7 +184,14 @@ fn source_for_profile(
             }),
         )
         .unwrap();
-    control.start_native_effect(binding).unwrap();
+    let authored = crate::plugin_effects::AuthoredSelection::from_targets(
+        ids.iter()
+            .map(|id| (*id, Some(identity_bytes.class.bytes()))),
+    )
+    .unwrap();
+    control
+        .start_native_effect_with_authored_selection(binding, authored.as_ref())
+        .unwrap();
     binding
 }
 fn hex_digest(bytes: [u8; 32]) -> String {

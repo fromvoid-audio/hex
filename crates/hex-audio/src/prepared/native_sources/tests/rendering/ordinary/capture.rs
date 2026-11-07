@@ -237,6 +237,126 @@ fn actual_ordinary_track_return_main_host_input_changes_pcm_without_claiming_can
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_ordinary_hold_requires_the_matching_applied_output_and_restores_read() {
+    use crate::plugin_worker::{
+        NativeParameterHold as Hold, NativeWorkerParameterProgress as Progress,
+    };
+    if std::env::var_os("HEX_ORDINARY_HOLD_DRIVER").is_none() {
+        let name = std::thread::current().name().unwrap().to_owned();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--test-threads=1"])
+            .env("HEX_ORDINARY_HOLD_DRIVER", "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "144")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"));
+        return;
+    }
+    let _serial = serial();
+    let mut f = fixture_with_authored("processing", 2, 8, &[7, 11]);
+    let canonical = f.editor.project().clone();
+    let root = f.control.native_candidate_root();
+    let playback = compile(&f, true);
+    let revision = publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+    let source = AppliedAudioSource {
+        context: context(),
+        audio_revision: revision,
+        output_identity: f.control.output_identity().unwrap(),
+    };
+    let begin = Hold::Begin {
+        id: 7,
+        normalized: 0.75,
+    };
+    assert!(
+        f.control
+            .native_source_parameter_hold_on_control(source, f.binding, begin)
+            .is_err()
+    );
+    f.control.command(PlaybackCommand::Play).unwrap();
+    assert_eq!(block(&mut f), [[0.0; 2]; 8]);
+    replacement::wait_for_blocks(&root, f.binding, 1);
+    assert_eq!(f.control.status.native_effect_source(), Some(source));
+    let stale = AppliedAudioSource {
+        audio_revision: revision + 1,
+        ..source
+    };
+    assert!(
+        f.control
+            .native_source_parameter_hold_on_control(stale, f.binding, begin)
+            .is_err()
+    );
+    let foreign = Binding {
+        epoch: f.binding.epoch + 1,
+        ..f.binding
+    };
+    assert!(
+        f.control
+            .native_source_parameter_hold_on_control(source, foreign, begin)
+            .is_err()
+    );
+
+    let send = |f: &mut OrdinaryFixture, command| {
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            match f
+                .control
+                .native_source_parameter_hold_on_control(source, f.binding, command)
+            {
+                Ok(token) => break token,
+                Err("native preparation is busy" | "native parameter mailbox is busy") => {}
+                Err(reason) => panic!("hold refused: {reason}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        }
+    };
+    let receive = |f: &mut OrdinaryFixture, token| {
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            match f
+                .control
+                .poll_native_source_parameter_change_on_control(f.binding, token)
+            {
+                Ok(Progress::Pending) | Err("native preparation is busy") => {}
+                Ok(terminal) => break terminal,
+                Err(reason) => panic!("hold terminal: {reason}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        }
+    };
+    let hold = send(&mut f, begin);
+    assert_eq!(block(&mut f), [[0.0; 2]; 8]);
+    replacement::wait_for_blocks(&root, f.binding, 2);
+    assert!(
+        matches!(receive(&mut f, &hold), Progress::Processed(value) if value.sequence == 1 && value.point.id == 7)
+    );
+    assert_eq!(block(&mut f), [[0.5, -1.0]; 8]);
+    replacement::wait_for_blocks(&root, f.binding, 3);
+    let release = send(&mut f, Hold::Release { hold: &hold });
+    for (index, expected) in [(3, [1.5, -3.0]), (4, [1.5, -3.0]), (5, [0.5, -1.0])] {
+        assert_eq!(block(&mut f), [expected; 8]);
+        replacement::wait_for_blocks(&root, f.binding, index + 1);
+    }
+    assert_eq!(
+        receive(&mut f, &release),
+        Progress::Released {
+            sequence: 3,
+            first_frame: 24
+        }
+    );
+    assert_eq!(f.editor.project(), &canonical);
+    dispose(f);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_ordinary_track_return_main_controller_queries_preserve_installed_pcm_and_project() {
     use crate::plugin_worker::NativeWorkerControllerProgress;
     use hex_plugin_host::protocol::ParameterPageQuery;
