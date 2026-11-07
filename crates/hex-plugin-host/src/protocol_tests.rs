@@ -987,6 +987,46 @@ fn controller_pages_preserve_sdk_ids_text_and_explicit_conversion_states() {
     body.extend(0_u16.to_le_bytes());
     body.push(1);
     record(&mut body, 0, 1);
+    let selected = ControllerRequest::SelectedParameters { first: 8 };
+    let encoded = parameter_page_request(&config, 1, 7, selected, false).unwrap();
+    assert_eq!(&encoded[72..74], &8_u16.to_le_bytes());
+    assert!(encoded[74..82].iter().all(|byte| *byte == 0));
+    assert_eq!(encoded[82], 8);
+    assert!(encoded[83..].iter().all(|byte| *byte == 0));
+    let mut fresh = body.clone();
+    fresh[59..67].copy_from_slice(&11_u64.to_le_bytes());
+    fresh[67..69].copy_from_slice(&9_u16.to_le_bytes());
+    fresh[69..71].copy_from_slice(&8_u16.to_le_bytes());
+    let ParameterPageProgress::Page(selected_page) =
+        parameter_page(&fresh, &config, 1, 7, selected).unwrap()
+    else {
+        panic!("fresh selected page")
+    };
+    assert_eq!((selected_page.revision, selected_page.first), (11, 8));
+    assert_eq!(selected_page.as_slice()[0].id, 0);
+    assert!(parameter_page(&fresh, &config, 1, 7, query).is_err());
+    assert!(
+        parameter_page(
+            &fresh,
+            &config,
+            1,
+            7,
+            ControllerRequest::SelectedParameters { first: 4 }
+        )
+        .is_err()
+    );
+    assert!(
+        parameter_page_request(
+            &config,
+            1,
+            7,
+            ControllerRequest::SelectedParameters {
+                first: MAX_CONTROLLER_PARAMETERS + 1
+            },
+            false
+        )
+        .is_err()
+    );
     let ParameterPageProgress::Page(page) = parameter_page(&body, &config, 1, 7, query).unwrap()
     else {
         panic!("completed metadata page")
