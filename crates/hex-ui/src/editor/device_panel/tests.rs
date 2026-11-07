@@ -4688,6 +4688,23 @@ fn command_f_preserves_invalid_device_draft_then_finalizes_repaired_value(cx: &m
     visual.run_until_parked();
     enter_typed_value(&mut visual, device, parameter, "invalid");
     let focus = visual.update(|window, cx| window.focused(cx).unwrap());
+    for selector in ["clip-detail-tab", "device-detail-tab", "clip-view-toggle"] {
+        let target = visual
+            .debug_bounds(selector)
+            .expect("footer control")
+            .center();
+        visual.simulate_click(target, Modifiers::default());
+        visual.update(|window, cx| {
+            assert!(
+                focus.is_focused(window),
+                "{selector} must retain invalid draft focus"
+            );
+            editor.read_with(cx, |view, _| {
+                assert!(view.clip_view_open && view.device_panel_active);
+                assert_eq!(view.state.as_ref().unwrap().revision, initial_revision);
+            });
+        });
+    }
     visual.simulate_keystrokes("cmd-f");
     visual.run_until_parked();
     visual.update(|window, cx| {
