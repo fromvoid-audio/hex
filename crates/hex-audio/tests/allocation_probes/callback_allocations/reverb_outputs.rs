@@ -133,6 +133,32 @@ fn reverb_output_automation_callback_publication_history_and_save_reopen()
     assert!(output.iter().flatten().all(|s| s.is_finite()));
     assert!(output.iter().flatten().any(|s| s.abs() > 0.0));
     control.reclaim();
+    let targets: Vec<_> = editor
+        .project()
+        .device(device)
+        .ok_or("missing reverb")?
+        .automation()
+        .iter()
+        .map(|lane| lane.target)
+        .collect();
+    for target in targets {
+        let hex_project::DeviceAutomationTarget::Parameter(parameter) = target else {
+            return Err("expected provider lane".into());
+        };
+        editor.execute(Command::ReplaceDeviceAutomation {
+            device,
+            parameter,
+            points: vec![],
+        })?;
+    }
+    control
+        .publish(Playback::try_from_prepared_with_session(prepare(
+            editor.project(),
+        )?)?)
+        .map_err(|_| "canonical handoff")?;
+    measured_block(&mut callback, &mut output);
+    assert!(output.iter().flatten().all(|s| s.is_finite()));
+    control.reclaim();
     editor.execute(Command::RemoveDevice(device))?;
     control
         .publish(Playback::try_from_prepared_with_session(prepare(
@@ -146,7 +172,8 @@ fn reverb_output_automation_callback_publication_history_and_save_reopen()
             .flatten()
             .all(|s| s.is_finite() && s.abs() < 1.0)
     );
-    assert!(output.iter().any(|frame| *frame != [0.0001, -0.0001]));
+    // The source clip has ended: only the retained canonical room is audible.
+    assert!(output.iter().flatten().any(|s| s.abs() > 1e-10));
     control.request_shutdown();
     measured_shutdown(&mut callback, &mut output);
     control.reclaim();

@@ -828,7 +828,7 @@ mod tests {
         );
     }
     #[test]
-    fn clock_free_tail_holds_last_validated_automation_controls() {
+    fn clock_free_tail_does_not_resurrect_removed_automation() {
         for rate in [8000, 96000] {
             for frozen in [false, true] {
                 let mut prepared = PreparedReverb::new(rate, enabled_settings()).unwrap();
@@ -870,6 +870,20 @@ mod tests {
                     }
                 }
                 assert!(output.iter().flatten().any(|v| v.abs() > 1e-6));
+                // Empty canonical calls do not install a new audible control
+                // state; a subsequent tail still freezes the last delivery.
+                let mut empty = prepared.runtime();
+                empty.copy_history_from(&source);
+                let mut empty_reference = prepared.runtime();
+                empty_reference.copy_history_from(&source);
+                empty.process_block(&mut [], &R);
+                empty.begin_output_tail();
+                empty_reference.begin_output_tail();
+                let mut empty_output = [[0.0; 2]; 17];
+                let mut empty_expected = empty_output;
+                empty.process_block(&mut empty_output, &R);
+                empty_reference.process_block(&mut empty_expected, &R);
+                assert_eq!(empty_output, empty_expected);
                 // A new active graph inherits DSP history, not tail admission or
                 // the detached graph's override mode after lane removal.
                 let mut canonical = prepared.runtime();
@@ -879,8 +893,44 @@ mod tests {
                 output.fill([0.0; 2]);
                 expected.fill([0.0; 2]);
                 canonical.process_block(&mut output, &R);
-                canonical_reference.process_block(&mut expected, &R);
+                let absent = Values {
+                    ids: vec![],
+                    values: vec![],
+                };
+                canonical_reference
+                    .process_automation(&mut expected, &absent)
+                    .unwrap();
                 assert_eq!(output, expected);
+                // Identical authored values must be sampled again after an
+                // ordinary canonical render, even if their old cache matches.
+                let mut resumed = prepared.runtime();
+                resumed.copy_history_from(&canonical);
+                let mut resumed_reference = prepared.runtime();
+                resumed_reference.copy_history_from(&canonical_reference);
+                let mut resumed_output = signal(128);
+                let mut resumed_expected = resumed_output.clone();
+                resumed
+                    .process_automation(&mut resumed_output, &values)
+                    .unwrap();
+                resumed_reference
+                    .process_automation(&mut resumed_expected, &values)
+                    .unwrap();
+                assert_eq!(
+                    resumed_output, resumed_expected,
+                    "resumed rate {rate} frozen {frozen}"
+                );
+                // Removing this now-canonical device must retain its current
+                // controls, not resurrect the previously removed lanes.
+                canonical.begin_output_tail();
+                canonical_reference.begin_output_tail();
+                output.fill([0.0; 2]);
+                expected.fill([0.0; 2]);
+                canonical.process_block(&mut output, &R);
+                canonical_reference.process_block(&mut expected, &R);
+                assert_eq!(
+                    output, expected,
+                    "canonical tail rate {rate} frozen {frozen}"
+                );
                 source.reset();
                 output.fill([0.0; 2]);
                 source.process_block(&mut output, &R);
@@ -956,11 +1006,22 @@ mod benchmark {
             runtime.frame(frame, wet);
         }
     }
+    // The pre-fix ordinary process_block body, paired with the repaired path
+    // in one run to reduce machine-load differences between source revisions.
+    fn previous_canonical(runtime: &mut ReverbRuntime, frames: &mut [StereoFrame]) {
+        for frame in frames {
+            if runtime.tail_controls_frozen {
+                runtime.frame_outputs(frame, runtime.automated_values);
+            } else {
+                runtime.frame(frame, None);
+            }
+        }
+    }
     #[test]
     #[ignore = "release-only targeted delivery microbenchmark"]
     fn output_delivery_cost_against_legacy_scalar_loop() {
         assert!(!black_box(cfg!(debug_assertions)), "run with --release");
-        for mode in 0..4 {
+        for mode in 0..6 {
             let source = Source {
                 ids: if mode < 2 {
                     vec![p::DRY_WET]
@@ -976,10 +1037,14 @@ mod benchmark {
             let mut run = || {
                 for _ in 0..128 {
                     block.fill([0.125, -0.25]);
-                    if mode == 0 {
-                        legacy(&mut runtime, &mut block, &source);
-                    } else {
-                        runtime.process_automation(&mut block, &source).unwrap();
+                    match mode {
+                        0 => legacy(&mut runtime, &mut block, &source),
+                        1..=3 => runtime.process_automation(&mut block, &source).unwrap(),
+                        4 => {
+                            runtime.process_block(&mut block, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                        }
+                        5 => previous_canonical(&mut runtime, &mut block),
+                        _ => panic!("bounded benchmark mode"),
                     }
                     black_box(&block);
                 }
