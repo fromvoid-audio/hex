@@ -676,6 +676,14 @@ fn actual_manual_input_coexists_with_another_authored_parameter() {
         stage();
     }
     assert_eq!(output, [[0.0; 2]; 8]);
+    // Polling the control mailbox before the first worker quantum can itself
+    // defer its try-lock input admission. This fixture proves offset zero in
+    // that first quantum, so let it publish before consuming the terminal.
+    let until = Instant::now() + Duration::from_secs(3);
+    while owner.published_blocks_on_control() == 0 {
+        assert!(Instant::now() < until, "first mixed parameter quantum");
+        thread::yield_now();
+    }
     let progress = terminal(&mut owner, &request);
     let NativeWorkerParameterProgress::Processed(receipt) = progress else {
         panic!(
@@ -1248,4 +1256,69 @@ fn unavailable_authored_parameter_refuses_worker_and_retains_original_disposal()
         assert!(Instant::now() < deadline, "original source disposal");
         thread::yield_now();
     }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_canonical_parameter_base_survives_the_same_native_lease_epoch() {
+    const NAME: &str = "plugin_worker::capture::tests::parameter_change::actual_canonical_parameter_base_survives_the_same_native_lease_epoch";
+    if fixture_child(91, NAME) {
+        return;
+    }
+    let mut instance = original_instance();
+    let class = instance.configuration().identity.class;
+    let original = instance.configuration().binding;
+    let metadata = instance
+        .read_authored_parameter_metadata_on_control(class, &[7])
+        .unwrap();
+    assert_eq!(metadata.initial_normalized(7), Some(0.25));
+    instance
+        .arm_authored_parameter_metadata_on_control(metadata)
+        .unwrap();
+    let mut parameters = Parameters::default();
+    parameters
+        .push(ParameterPoint {
+            id: 7,
+            frame: 0,
+            normalized: 0.75,
+        })
+        .unwrap();
+    let quiescent = instance.quiesce_on_control().unwrap();
+    let (quiescent, flushed) = quiescent
+        .flush_parameters_retained_on_control(&parameters)
+        .unwrap();
+    assert_eq!(flushed.as_slice()[0].normalized, 0.75);
+    let renewed = Binding {
+        graph: original.graph + 1,
+        epoch: original.epoch + 1,
+        ..original
+    };
+    let mut instance = quiescent
+        .resume_on_control(
+            renewed,
+            Some(hex_plugin_host::protocol::PresentationLatency {
+                input_frames: 77,
+                output_frames: 91,
+            }),
+        )
+        .unwrap();
+    assert!(!instance.has_armed_authored_parameter(7));
+    let metadata = instance
+        .read_authored_parameter_metadata_on_control(class, &[7])
+        .unwrap();
+    assert_eq!(metadata.binding(), renewed);
+    assert_eq!(metadata.initial_normalized(7), Some(0.25));
+    instance
+        .arm_authored_parameter_metadata_on_control(metadata)
+        .unwrap();
+    assert!(instance.has_armed_authored_parameter(7));
+    assert!(
+        instance
+            .quiesce_on_control()
+            .unwrap()
+            .retire_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
 }

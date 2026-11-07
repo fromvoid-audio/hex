@@ -168,16 +168,19 @@ impl NativeEffect {
                 cause, instance,
             ));
         }
+        let mut authored_bases = [None; hex_plugin_host::transport::MAX_PARAMETER_POINTS];
         if let Some((class, ids)) = authored {
-            configuration.authored =
+            let (capabilities, bases) =
                 match automation::SourceCapabilities::arm(&mut instance, class, ids) {
-                    Ok(capabilities) => capabilities,
+                    Ok(observed) => observed,
                     Err(cause) => {
                         return Err(NativeWorkerStartFailure::retain_source_on_control(
                             cause, instance,
                         ));
                     }
                 };
+            configuration.authored = capabilities;
+            authored_bases = bases;
         }
         let dry_frames = configuration.prepared.total_latency_frames() as usize;
         // Reserve the actual retirement diagnostics before starting the worker;
@@ -196,7 +199,7 @@ impl NativeEffect {
                 instance,
             ));
         }
-        let source_metadata =
+        let mut source_metadata =
             match EffectSourceMetadata::from_configuration(instance.configuration()) {
                 Ok(source) => source,
                 Err(cause) => {
@@ -205,6 +208,7 @@ impl NativeEffect {
                     ));
                 }
             };
+        source_metadata.authored_bases = authored_bases;
         let mut dry = Vec::new();
         if dry.try_reserve_exact(dry_frames).is_err() || dry.capacity() != dry_frames {
             return Err(NativeWorkerStartFailure::retain_source_on_control(
