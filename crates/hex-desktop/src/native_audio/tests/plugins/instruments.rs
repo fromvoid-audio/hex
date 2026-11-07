@@ -1605,10 +1605,22 @@ fn verify_instrument_takeover(
     assert!(undone.error.is_none(), "{:?}", undone.error);
     assert_eq!(undone.state.project.as_ref(), &before);
     applied = h.applied(applied).0;
+    if playing {
+        assert!(
+            (peak(h) - baseline).abs() < 0.0001,
+            "undo must restore audible authored input"
+        );
+    }
     let redone = super::automation::edit_with_running_callback(h, Request::Redo);
     assert!(redone.error.is_none(), "{:?}", redone.error);
     assert_eq!(redone.state.project, committed.state.project);
     applied = h.applied(applied).0;
+    if playing {
+        assert!(
+            (peak(h) - baseline * 2.0).abs() < 0.0001,
+            "redo must restore audible manual base"
+        );
+    }
     let enabled = super::automation::edit_with_running_callback(
         h,
         Request::DeviceAutomationControl {
@@ -1619,6 +1631,12 @@ fn verify_instrument_takeover(
     );
     assert!(enabled.error.is_none(), "{:?}", enabled.error);
     h.applied(applied);
+    if playing {
+        assert!(
+            (peak(h) - baseline).abs() < 0.0001,
+            "re-enable must release the original worker hold"
+        );
+    }
     let files = Files::new();
     let path = files.0.join("instrument-takeover.hex");
     let saved = h.run(Request::SaveNew(path.clone()));
