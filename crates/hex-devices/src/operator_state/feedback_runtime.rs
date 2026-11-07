@@ -812,6 +812,7 @@ pub(super) fn export_harmonic_history(
     };
     let spectrum = builtin_spectrum(&base)?;
     Some(Legacy {
+        fine_offsets: runtime.configuration.fine_offsets_hz(),
         tuning: None,
         rate: runtime.sample_rate,
         companion: super::companion::Settings::default(),
@@ -938,13 +939,13 @@ mod tests {
         let factory = factory(0.4);
         let declared = factory.declared_twin_bytes();
         assert_eq!(declared, size_of::<OperatorFeedbackRuntime>());
-        assert_eq!(declared, 4_072, "actual twin storage {declared}");
+        assert_eq!(declared, 4_088, "actual twin storage {declared}");
         assert!(
             2 * declared <= 8_192,
             "paired runtime storage {}",
             2 * declared
         );
-        assert_eq!(2 * declared, 8_144, "actual paired runtime storage");
+        assert_eq!(2 * declared, 8_176, "actual paired runtime storage");
         let pair = NativeInstrumentRuntimePair::new(
             &factory,
             NativeInstrumentRuntimeLimits {
@@ -955,7 +956,7 @@ mod tests {
             },
         )
         .expect("actual prepared pair remains within the fixed ceiling");
-        assert_eq!(pair.fixed_storage_pair_bytes(), Some(8_144));
+        assert_eq!(pair.fixed_storage_pair_bytes(), Some(8_176));
         let runtime = factory.create_runtime();
         let mut events = Vec::with_capacity(17);
         for occurrence_id in 1..=17 {

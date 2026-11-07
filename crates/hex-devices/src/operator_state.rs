@@ -1209,6 +1209,7 @@ struct PreparedOperatorInstrument {
 impl PreparedNativeInstrument for PreparedOperatorInstrument {
     fn prefers_mutable_continuation(&self) -> bool {
         self.harmonic_runtime.tuning.is_some()
+            || self.harmonic_runtime.settings.fine.values() != [0.0; OPERATORS]
             || self
                 .harmonic_runtime
                 .settings
