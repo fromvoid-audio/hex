@@ -8,7 +8,7 @@
 //! Graph coefficients are modulation depth in turns.
 pub mod device;
 mod operator;
-pub(crate) use operator::OperatorFeedbackRetargetFrame;
+pub(crate) use operator::{FINE_LIMIT_HZ, OperatorFeedbackRetargetFrame};
 pub use operator::{
     OperatorFeedbackParameters, OperatorTuning, PreparedOperatorConfiguration,
     PreparedOperatorFeedbackRetarget, PreparedOperatorFeedbackVoice, PreparedOperatorFm4,
