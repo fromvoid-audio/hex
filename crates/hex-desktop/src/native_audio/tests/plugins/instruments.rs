@@ -304,13 +304,14 @@ fn verify_saved_instrument_automation(
     let peak = |blocks: std::ops::Range<usize>| peaks[blocks].iter().copied().fold(0.0, f32::max);
     // The real instrument smooths output changes. Measure away from each
     // transition while the same Arrangement note is still held.
-    let (before, during, after) = (peak(25..40), peak(84..102), peak(170..180));
+    let (before, during, resumed, after) =
+        (peak(25..40), peak(84..90), peak(97..104), peak(170..180));
     println!(
-        "instrument automation parameter={} id={} before={before} during={during} after={after}",
+        "instrument automation parameter={} id={} before={before} during={during} resumed={resumed} after={after}",
         parameter.name, parameter.id
     );
     assert!(
-        during > 0.01 && before < during * 0.05 && after < during * 0.05,
+        during > 0.01 && resumed > 0.01 && before < during * 0.05 && after < during * 0.05,
         "saved output automation must mute the same held note before and after the step: {peaks:?}"
     );
     harness.run(Request::Edit(Command::SetLoopRegion {
