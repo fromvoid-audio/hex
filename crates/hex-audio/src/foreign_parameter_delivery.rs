@@ -8,7 +8,9 @@ use crate::{
     prepared::{AppliedAudioSource, Status},
 };
 use hex_lattice_contract::ForeignProcessorBinding as Binding;
-use hex_plugin_host::transport::{AcceptedManualParameter, ManualParameterOrigin};
+use hex_plugin_host::transport::{
+    AcceptedManualParameter, ManualParameterAction, ManualParameterOrigin,
+};
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::sync::{
     Arc,
@@ -44,6 +46,13 @@ pub enum Receipt {
         /// The final direct Main sample's processing-clock position.
         delivery_performance_frame: u64,
     },
+    /// Exclusive end of the manual target at the first final Main sample
+    /// produced by the successful SDK quantum with its authored read restored.
+    Released {
+        target: Target,
+        origin: ManualParameterOrigin,
+        delivery_performance_frame: u64,
+    },
     Aborted {
         target: Target,
         reason: AbortReason,
@@ -52,7 +61,9 @@ pub enum Receipt {
 impl Receipt {
     fn target(self) -> Target {
         match self {
-            Self::Delivered { target, .. } | Self::Aborted { target, .. } => target,
+            Self::Delivered { target, .. }
+            | Self::Released { target, .. }
+            | Self::Aborted { target, .. } => target,
         }
     }
 }
@@ -220,7 +231,7 @@ impl Callback {
             && marker.input.operation.get() >= target.operation
         {
             if marker.input.operation.get() != target.operation
-                || marker.input.point.id != target.parameter
+                || marker.input.parameter() != target.parameter
             {
                 self.complete(Receipt::Aborted {
                     target,
@@ -245,15 +256,20 @@ impl Callback {
                 });
                 return;
             };
-            self.pending = Some((
-                due,
-                Receipt::Delivered {
+            let receipt = match marker.input.action {
+                ManualParameterAction::Point(point) => Receipt::Delivered {
                     target,
-                    normalized: marker.input.point.normalized,
+                    normalized: point.normalized,
                     origin,
                     delivery_performance_frame: due,
                 },
-            ));
+                ManualParameterAction::Release { .. } => Receipt::Released {
+                    target,
+                    origin,
+                    delivery_performance_frame: due,
+                },
+            };
+            self.pending = Some((due, receipt));
         }
         if let Some((due, receipt)) = self.pending
             && due < end
@@ -276,7 +292,7 @@ impl Callback {
 mod tests {
     use super::*;
     use hex_engine::AudioSourceContext;
-    use hex_plugin_host::transport::{ManualParameterInput, ParameterPoint};
+    use hex_plugin_host::transport::{ManualParameterAction, ManualParameterInput, ParameterPoint};
     use std::num::NonZeroU64;
 
     fn fixture() -> (Control, Callback, Target, AcceptedManualParameter) {
@@ -313,11 +329,11 @@ mod tests {
             callback_offset: 2,
             input: ManualParameterInput {
                 operation: NonZeroU64::MIN,
-                point: ParameterPoint {
+                action: ManualParameterAction::Point(ParameterPoint {
                     id: 0,
                     frame: 0,
                     normalized: 0.12345678901234566,
-                },
+                }),
             },
             origin: Some(ManualParameterOrigin {
                 arrangement_frame: 71,
@@ -341,7 +357,29 @@ mod tests {
             control.receipts.pop().unwrap(),
             Receipt::Delivered {
                 target,
-                normalized: marker.input.point.normalized,
+                normalized: marker.input.point().unwrap().normalized,
+                origin: marker.origin.unwrap(),
+                delivery_performance_frame: 130,
+            }
+        );
+        callback.finish(None, source, 132, 30, true, true);
+        assert!(control.receipts.is_empty() && callback.target().is_none());
+    }
+
+    #[test]
+    fn release_is_exclusive_at_the_first_resumed_output_sample_and_delivers_once() {
+        let (mut control, mut callback, target, mut marker) = fixture();
+        marker.input.action = ManualParameterAction::Release {
+            parameter: target.parameter,
+        };
+        let source = Some((target.source, target.transport_epoch));
+        callback.finish(Some(marker), source, 130, 30, true, true);
+        assert!(control.receipts.is_empty());
+        callback.finish(None, source, 131, 30, true, true);
+        assert_eq!(
+            control.receipts.pop().unwrap(),
+            Receipt::Released {
+                target,
                 origin: marker.origin.unwrap(),
                 delivery_performance_frame: 130,
             }
@@ -418,55 +456,67 @@ mod tests {
 
     #[test]
     fn refusal_stale_clock_cancel_and_unknown_origin_cannot_acknowledge_delivery() {
-        for expected in [
-            AbortReason::Cancelled,
-            AbortReason::SourceChanged,
-            AbortReason::TransportChanged,
-            AbortReason::OutputFailed,
-            AbortReason::UnsupportedOutput,
-            AbortReason::MissingOrigin,
-            AbortReason::MissedOperation,
-            AbortReason::ClockExhausted,
-        ] {
-            let (mut control, mut callback, target, mut marker) = fixture();
-            let mut source = Some((target.source, target.transport_epoch));
-            let mut valid = true;
-            let mut direct = true;
-            match expected {
-                AbortReason::Cancelled => assert!(control.cancel(target)),
-                AbortReason::SourceChanged => source = None,
-                AbortReason::TransportChanged => source = Some((target.source, 24)),
-                AbortReason::OutputFailed => valid = false,
-                AbortReason::UnsupportedOutput => direct = false,
-                AbortReason::MissingOrigin => marker.origin = None,
-                AbortReason::MissedOperation => {
-                    marker.input.operation = NonZeroU64::new(2).unwrap()
+        for release in [false, true] {
+            for expected in [
+                AbortReason::Cancelled,
+                AbortReason::SourceChanged,
+                AbortReason::TransportChanged,
+                AbortReason::OutputFailed,
+                AbortReason::UnsupportedOutput,
+                AbortReason::MissingOrigin,
+                AbortReason::MissedOperation,
+                AbortReason::ClockExhausted,
+            ] {
+                let (mut control, mut callback, target, mut marker) = fixture();
+                if release {
+                    marker.input.action = ManualParameterAction::Release {
+                        parameter: target.parameter,
+                    };
                 }
-                AbortReason::ClockExhausted => {
-                    marker.origin.as_mut().unwrap().performance_frame = u64::MAX;
+                let mut source = Some((target.source, target.transport_epoch));
+                let mut valid = true;
+                let mut direct = true;
+                match expected {
+                    AbortReason::Cancelled => assert!(control.cancel(target)),
+                    AbortReason::SourceChanged => source = None,
+                    AbortReason::TransportChanged => source = Some((target.source, 24)),
+                    AbortReason::OutputFailed => valid = false,
+                    AbortReason::UnsupportedOutput => direct = false,
+                    AbortReason::MissingOrigin => marker.origin = None,
+                    AbortReason::MissedOperation => {
+                        marker.input.operation = NonZeroU64::new(2).unwrap()
+                    }
+                    AbortReason::ClockExhausted => {
+                        marker.origin.as_mut().unwrap().performance_frame = u64::MAX;
+                    }
                 }
+                callback.finish(Some(marker), source, 131, 30, valid, direct);
+                assert_eq!(
+                    control.receipts.pop().unwrap(),
+                    Receipt::Aborted {
+                        target,
+                        reason: expected
+                    }
+                );
             }
-            callback.finish(Some(marker), source, 131, 30, valid, direct);
+            let (mut control, mut callback, target, mut marker) = fixture();
+            if release {
+                marker.input.action = ManualParameterAction::Release {
+                    parameter: target.parameter,
+                };
+            }
+            let source = Some((target.source, target.transport_epoch));
+            callback.finish(Some(marker), source, 120, 30, true, true);
+            assert!(control.cancel(target));
+            callback.finish(None, source, 131, 30, true, true);
             assert_eq!(
                 control.receipts.pop().unwrap(),
                 Receipt::Aborted {
                     target,
-                    reason: expected
+                    reason: AbortReason::Cancelled
                 }
             );
         }
-        let (mut control, mut callback, target, marker) = fixture();
-        let source = Some((target.source, target.transport_epoch));
-        callback.finish(Some(marker), source, 120, 30, true, true);
-        assert!(control.cancel(target));
-        callback.finish(None, source, 131, 30, true, true);
-        assert_eq!(
-            control.receipts.pop().unwrap(),
-            Receipt::Aborted {
-                target,
-                reason: AbortReason::Cancelled
-            }
-        );
     }
 
     #[cfg(not(debug_assertions))]

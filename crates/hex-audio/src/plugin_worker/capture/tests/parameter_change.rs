@@ -878,8 +878,9 @@ fn actual_parameter_hold_replaces_one_lane_until_matching_release() {
         }
         assert_eq!(output, [[expected, -expected / 2.0]; 8]);
         let expected_marker = match sequence {
-            3 => Some((1, 0.75)),
-            5 => Some((2, 0.5)),
+            3 => Some((1, Some(0.75))),
+            5 => Some((2, Some(0.5))),
+            7 => Some((4, None)),
             _ => None,
         };
         assert_eq!(
@@ -889,11 +890,12 @@ fn actual_parameter_hold_replaces_one_lane_until_matching_release() {
                 assert_eq!(receipt.first_frame, (sequence - 2) * 8);
                 assert_eq!(receipt.callback_offset, 0);
                 assert_eq!(receipt.origin, None);
-                assert_eq!((receipt.input.point.frame, receipt.input.point.id), (0, 7));
-                (
-                    receipt.input.operation.get(),
-                    receipt.input.point.normalized,
-                )
+                assert_eq!(receipt.input.parameter(), 7);
+                let value = receipt.input.point().map(|point| {
+                    assert_eq!(point.frame, 0);
+                    point.normalized
+                });
+                (receipt.input.operation.get(), value)
             }),
             expected_marker
         );

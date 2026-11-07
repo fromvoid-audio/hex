@@ -109,15 +109,15 @@ impl PublicationControl {
             |request| {
                 let (binding, operation, parameter) = request
                     .delivery_identity()
-                    .ok_or("vst3 delivery requires a PCM parameter point")?;
+                    .ok_or("vst3 delivery requires a PCM parameter operation")?;
                 delivery.begin(status, source, binding, operation, parameter)
             },
         )
     }
 
-    /// Atomically reserve final Main delivery for a held target's Begin/Change.
-    /// Release has no delivery marker in this contract and refuses before any
-    /// worker mutation; its ordinary release operation remains with its caller.
+    /// Atomically reserve final Main delivery for a held target's Begin/Change
+    /// or its exclusive Release. The release receipt carries the actual origin
+    /// of the first successful SDK quantum with authored delivery restored.
     pub fn native_source_parameter_hold_with_delivery_on_control(
         &mut self,
         source: AppliedAudioSource,
@@ -137,7 +137,7 @@ impl PublicationControl {
             .native_parameter_hold_with_before(binding, command, |request| {
                 let (binding, operation, parameter) = request
                     .delivery_identity()
-                    .ok_or("vst3 delivery requires a PCM parameter point")?;
+                    .ok_or("vst3 delivery requires a PCM parameter operation")?;
                 delivery.begin(status, source, binding, operation, parameter)
             })
     }

@@ -50,7 +50,7 @@ pub(super) struct Work {
     point: ParameterPoint,
     input: Option<(u64, u64)>,
     hold: Option<Hold>,
-    releasing: bool,
+    releasing: Option<u32>,
     result: Option<Terminal>,
 }
 
@@ -63,12 +63,12 @@ pub struct NativeWorkerParameterChange {
     binding: Binding,
     ordinal: u64,
     parameter: u32,
-    pcm_point: bool,
+    pcm_delivery: bool,
     hold_id: Option<u32>,
 }
 impl NativeWorkerParameterChange {
     pub(crate) fn delivery_identity(&self) -> Option<(Binding, u64, u32)> {
-        self.pcm_point
+        self.pcm_delivery
             .then_some((self.binding, self.ordinal, self.parameter))
     }
 }
@@ -392,7 +392,10 @@ impl NativeWorker {
             binding: self.binding,
             ordinal,
             parameter: id,
-            pcm_point: matches!(intent, Intent::Point | Intent::Hold | Intent::Update(_)),
+            pcm_delivery: matches!(
+                intent,
+                Intent::Point | Intent::Hold | Intent::Update(_) | Intent::Release(_)
+            ),
             hold_id: (intent == Intent::Hold).then_some(id),
         };
         let reserved = before_publish(&request)?;
@@ -626,7 +629,7 @@ impl State {
             Intent::Update(lease) if holds(lease) => None,
             Intent::Release(lease) if holds(lease) => {
                 work.hold = None;
-                work.releasing = true;
+                work.releasing = Some(point.id);
                 work.input = Some((block.sequence, block.first_frame));
                 block.parameters = original;
                 return Ok(None);
@@ -667,12 +670,19 @@ impl State {
         if sequence != reply.sequence || first_frame != reply.first_frame {
             return Err(Fault::Protocol);
         }
-        if work.releasing {
+        let operation = work
+            .ordinal
+            .and_then(std::num::NonZeroU64::new)
+            .ok_or(Fault::Protocol)?;
+        if let Some(parameter) = work.releasing {
             work.result = Some(Terminal::Released {
                 sequence,
                 first_frame,
             });
-            return Ok(None);
+            return Ok(Some(ManualParameterInput {
+                operation,
+                action: ManualParameterAction::Release { parameter },
+            }));
         }
         let point = work.point;
         work.result = Some(Terminal::Processed(ProcessedParameterChange {
@@ -680,12 +690,12 @@ impl State {
             sequence,
             first_frame,
         }));
-        let operation = work
-            .ordinal
-            .and_then(std::num::NonZeroU64::new)
-            .ok_or(Fault::Protocol)?;
-        Ok(Some(ManualParameterInput { operation, point }))
+        Ok(Some(ManualParameterInput {
+            operation,
+            action: ManualParameterAction::Point(point),
+        }))
     }
+
     pub(super) fn publish_parameter_change(&mut self, signal: &Signal) -> Result<(), Fault> {
         let Some(result) = self.parameter_change.result else {
             return Ok(());
