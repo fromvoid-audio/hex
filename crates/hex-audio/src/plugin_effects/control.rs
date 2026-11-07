@@ -267,6 +267,7 @@ impl NativeEffectControl {
             return Err((self, callback));
         }
         callback.configuration.program_revision = self.configuration.program_revision;
+        callback.configuration.authored = self.configuration.authored;
         Ok(NativeEffect {
             worker: self.worker,
             callback,

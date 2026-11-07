@@ -302,12 +302,12 @@ fn canonical_input_target_resolves_each_effect_owner_and_exact_current_value_dom
 fn native_input_refuses_unsupported_foreign_and_source_owners() {
     let (mut editor, track, _) = fixture();
     for state in [
-        hex_devices::overdrive::OVERDRIVE_DEFINITION
+        hex_devices::compressor::COMPRESSOR_DEFINITION
             .default_state()
             .unwrap(),
         NativeDeviceState::new(DeviceTypeId::from_static("test.foreign"), 1, vec![]).unwrap(),
     ] {
-        let unsupported = state.type_id() == hex_devices::overdrive::OVERDRIVE_TYPE_ID;
+        let unsupported = state.type_id() == hex_devices::compressor::COMPRESSOR_TYPE_ID;
         let Created::Device(device) = editor
             .execute(Command::InsertDevice {
                 track,
@@ -322,7 +322,7 @@ fn native_input_refuses_unsupported_foreign_and_source_owners() {
             native_parameter_input_target(
                 editor.project(),
                 device,
-                DeviceAutomationTarget::Parameter(ParameterId::from_static(1))
+                DeviceAutomationTarget::Parameter(hex_devices::compressor::parameter::DETECTOR)
             )
             .is_err()
         );

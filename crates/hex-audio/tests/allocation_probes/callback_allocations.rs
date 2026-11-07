@@ -10,6 +10,8 @@ mod finite_bounce;
 mod gate;
 #[path = "callback_allocations/output_capture.rs"]
 mod output_capture;
+#[path = "callback_allocations/overdrive.rs"]
+mod overdrive;
 #[path = "callback_allocations/probe.rs"]
 pub(super) mod probe;
 #[path = "callback_allocations/project_tuning.rs"]
