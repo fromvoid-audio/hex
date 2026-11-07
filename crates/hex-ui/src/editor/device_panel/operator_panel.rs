@@ -3,6 +3,7 @@ use super::{
     ControlPresentation, DeviceControlIdentity, EditorView, ParameterKey,
     effective_parameter_value, finalize_controls, parameter_control_with_presentation,
 };
+use crate::diagnostics::ActionTraceContext as _;
 use crate::theme;
 use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, rgb};
 use hex_engine::{NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView};
@@ -28,9 +29,7 @@ gpui::actions!(hex_operator, [ActivateRouting, ActivateSection]);
 pub(in crate::editor) fn bind_keys(cx: &mut gpui::App) {
     cx.bind_keys([
         gpui::KeyBinding::new("enter", ActivateSection, Some("hex_operator_section")),
-        gpui::KeyBinding::new("space", ActivateSection, Some("hex_operator_section")),
         gpui::KeyBinding::new("enter", ActivateRouting, Some("hex_operator_routing")),
-        gpui::KeyBinding::new("space", ActivateRouting, Some("hex_operator_routing")),
     ]);
 }
 
@@ -84,7 +83,7 @@ const fn id(value: u32) -> ParameterId {
 pub(super) fn shell_operator_for_numeric_parameter(parameter: ParameterId) -> Option<usize> {
     let value = parameter.value();
     match value {
-        1..=12 if value % 3 != 0 => Some(((value - 1) / 3) as usize),
+        1..=12 if !value.is_multiple_of(3) => Some(((value - 1) / 3) as usize),
         63..=73 if (value - 63) % 3 != 2 => Some(((value - 63) / 3) as usize),
         _ => None,
     }
@@ -388,7 +387,7 @@ fn operator_label(
             cx.notify();
         }
     }))
-    .on_action(cx.listener(move |view, _: &ActivateSection, _, cx| {
+    .on_action(cx.trace(move |view, _: &ActivateSection, _, cx| {
         if owner.is_some_and(|owner| owner.is_current(view)) {
             if finalize_controls(view, cx) {
                 let state = view.device_panel.operator_pages.entry(device).or_default();
@@ -479,7 +478,7 @@ fn page_tab(
                 cx.notify();
             }
         }))
-        .on_action(cx.listener(move |view, _: &ActivateSection, _, cx| {
+        .on_action(cx.trace(move |view, _: &ActivateSection, _, cx| {
             if owner.is_some_and(|owner| owner.is_current(view)) {
                 if finalize_controls(view, cx) {
                     view.device_panel

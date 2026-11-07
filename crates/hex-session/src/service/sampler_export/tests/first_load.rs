@@ -285,11 +285,13 @@ fn first_load_worker_commits_one_source_and_binding_and_exports_original_pcm() {
                 frames: Some(12),
                 signal: hex_session_export_signal(),
                 control: Default::default(),
+                format: hex_export::ExportFormat::Pcm16,
                 overwrite: false,
             })
             .unwrap();
         assert!(event(&service).error.is_none());
-        assert!(export_event(&service).result.is_ok());
+        let complete = export_event(&service);
+        assert!(complete.result.is_ok(), "{:?}", complete.result);
         let bytes = fs::read(&files.output).unwrap();
         let pcm = bytes[44..]
             .chunks_exact(4)
@@ -306,12 +308,14 @@ fn first_load_worker_commits_one_source_and_binding_and_exports_original_pcm() {
         } else {
             left
         };
-        assert_eq!(
-            pcm,
-            left.into_iter()
+        assert_pcm_near(
+            &pcm,
+            &left
+                .into_iter()
                 .zip(right)
                 .map(|(l, r)| [l, r])
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>(),
+            "first load pcm",
         );
     }
 }

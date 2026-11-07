@@ -498,7 +498,7 @@ impl Project {
                 child.parent_group = parent;
             }
         }
-        self.remove_track_rows(&[group]);
+        self.remove_track_rows(&[group])?;
         Ok(Created::None)
     }
 
@@ -507,11 +507,40 @@ impl Project {
     pub(crate) fn remove_track_subtrees(&mut self, ids: &[TrackId]) -> Result<Created, Invalid> {
         let selection = TrackSelectionIds::new(ids)?;
         let expanded = self.expand_track_selection(&selection)?;
-        self.remove_track_rows(expanded.ids());
+        self.remove_track_rows(expanded.ids())?;
         Ok(Created::None)
     }
-    fn remove_track_rows(&mut self, ids: &[TrackId]) {
+    fn remove_track_rows(&mut self, ids: &[TrackId]) -> Result<(), Invalid> {
+        for receiver in self
+            .tracks()
+            .iter()
+            .filter(|track| ids.contains(&track.id()) && track.retained_source_path())
+        {
+            if let Some(source) = receiver.source_id()
+                && self
+                    .tracks()
+                    .iter()
+                    .any(|track| track.source_id() == Some(source) && !ids.contains(&track.id()))
+            {
+                return Err(Invalid(
+                    "cannot delete the retained source path while linked tracks remain",
+                ));
+            }
+        }
+        let receivers = self
+            .native_sources()
+            .iter()
+            .filter_map(|source| {
+                source
+                    .receiver()
+                    .filter(|receiver| ids.contains(receiver))
+                    .map(|_| source.id())
+            })
+            .collect::<Vec<_>>();
         self.tracks.retain(|track| !ids.contains(&track.id()));
+        for source in receivers {
+            self.set_native_source_receiver(source, None)?;
+        }
         self.audio_feeds.retain(|route| {
             !matches!(route.source(), crate::RoutingOwner::Track(id) if ids.contains(&id))
                 && !ids.contains(&route.destination())
@@ -521,5 +550,6 @@ impl Project {
         self.session
             .cells
             .retain(|cell| !ids.contains(&cell.track()));
+        Ok(())
     }
 }

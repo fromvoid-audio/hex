@@ -1,19 +1,30 @@
-//! Bundled picker glyphs and path-keyed assignment; persistence stays off the UI thread.
+//! Embedded picker icons and path-keyed assignment; persistence stays off the UI thread.
 use super::super::context_menu::EditorContextAction;
 use super::*;
 use crate::context_menu::{MenuItem, PopupMenu};
 use gpui::{Pixels, Point};
 
-// Existing browser glyphs, rendered in bundled Ioskeley Mono. Font provenance
-// and license: assets/fonts/ioskeley-mono/source.json and OFL.txt.
+// Stable preference IDs and labels remain independent of the editable artwork.
 const ICONS: [(&str, &str, &str); 7] = [
-    ("folder", "□", "folder · □"),
-    ("samples", "♫", "samples · ♫"),
-    ("devices", "⌘", "devices · ⌘"),
-    ("projects", "▤", "projects · ▤"),
-    ("collection", "◈", "collection · ◈"),
-    ("waveform", "≋", "waveform · ≋"),
-    ("search", "⌕", "search · ⌕"),
+    ("folder", "icons/browser-place/folder.svg", "folder · □"),
+    ("samples", "icons/browser-place/samples.svg", "samples · ♫"),
+    ("devices", "icons/browser-place/devices.svg", "devices · ⌘"),
+    (
+        "projects",
+        "icons/browser-place/projects.svg",
+        "projects · ▤",
+    ),
+    (
+        "collection",
+        "icons/browser-place/collection.svg",
+        "collection · ◈",
+    ),
+    (
+        "waveform",
+        "icons/browser-place/waveform.svg",
+        "waveform · ≋",
+    ),
+    ("search", "icons/browser-place/search.svg", "search · ⌕"),
 ];
 
 pub(super) fn known(id: &str) -> bool {
@@ -21,10 +32,10 @@ pub(super) fn known(id: &str) -> bool {
 }
 
 impl EditorView {
-    pub(super) fn browser_place_glyph(&self, path: &std::path::Path) -> &'static str {
+    pub(super) fn browser_place_icon_path(&self, path: &std::path::Path) -> &'static str {
         self.browser_place_icon_id(path)
             .and_then(|id| ICONS.iter().find(|(candidate, _, _)| *candidate == id))
-            .map_or(ICONS[0].1, |(_, glyph, _)| *glyph)
+            .map_or(ICONS[0].1, |(_, path, _)| *path)
     }
 
     pub(in crate::editor) fn browser_place_icon_assignable(&self, path: &std::path::Path) -> bool {
@@ -63,8 +74,9 @@ impl EditorView {
         let focus = cx.focus_handle();
         focus.focus(window);
         self.context_menu = Some(PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
             position,
-            icon_grid: Some(ICONS.iter().map(|(_, glyph, _)| *glyph).collect()),
+            icon_grid: Some(ICONS.iter().map(|(_, path, _)| *path).collect()),
             selected,
             focus,
             previous_focus,
@@ -98,6 +110,12 @@ impl EditorView {
                 action: EditorContextAction::RemoveBrowserSource(BrowserSection::Place(
                     path.clone(),
                 )),
+            }))
+            .chain(self.browser_place_relocatable(&path).then(|| MenuItem {
+                label: "relocate…",
+                swatch: None,
+                checked: false,
+                action: EditorContextAction::RelocateBrowserPlace(path.clone()),
             }))
             .collect(),
         });
@@ -253,6 +271,7 @@ impl EditorView {
         let focus = cx.focus_handle();
         focus.focus(window);
         self.context_menu = Some(PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
             position,
             icon_grid: None,
             selected: 0,

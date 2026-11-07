@@ -601,7 +601,7 @@ fn toggle_fixture_same_root_retains_actual_catalog_job_after_view_and_caller_dro
 ) {
     use std::{
         sync::{Arc, atomic::Ordering},
-        time::{Duration, Instant},
+        time::Instant,
     };
     let (handle, editor, directory, samples) = toggle_fixture(cx);
     let root = directory.root().to_owned();
@@ -649,7 +649,7 @@ fn toggle_fixture_same_root_retains_actual_catalog_job_after_view_and_caller_dro
     assert!(gate.root_present_during_save.load(Ordering::Relaxed));
     visual.update(|_, _| {});
     assert!(weak.upgrade().is_none(), "no caller/view/job Arc leak");
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     while root.exists() {
         assert!(
             Instant::now() < until,

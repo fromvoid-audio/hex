@@ -320,3 +320,48 @@ fn minimum_frame_bar_body_keeps_move_even_when_pointer_rounds_to_end(cx: &mut Te
         LoopRegion::new(100, 101, false).unwrap()
     );
 }
+
+#[gpui::test]
+fn viewport_edge_caps_resize_the_existing_loop_instead_of_painting_a_new_range(
+    cx: &mut TestAppContext,
+) {
+    for (start, end, marker, target) in [
+        (50, 100, "arrangement-loop-end-marker", 0.25),
+        (200, 250, "arrangement-loop-start-marker", 0.75),
+    ] {
+        let cx = &mut cx.new_app();
+        let (handle, editor) = fixture(
+            cx,
+            start,
+            end,
+            Viewport {
+                start: 100,
+                length: 100,
+            },
+        );
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        editor.update(&mut visual, |v, cx| {
+            v.snap_grid = SnapGrid::Off;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let cap = visual.debug_bounds(marker).unwrap();
+        assert!(!visual.rendered_quad_paint_layers(marker, false).is_empty());
+        let rail = visual.debug_bounds("arrangement-loop-rail").unwrap();
+        let down = cap.center();
+        let up = point(rail.left() + rail.size.width * target, down.y);
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+        pump(&editor, &mut visual);
+        let changed = region(&editor, &visual);
+        if start == 50 {
+            assert_eq!(changed.start(), start);
+            assert!(changed.end() > end && changed.end() < 150);
+        } else {
+            assert_eq!(changed.end(), end);
+            assert!(changed.start() < start && changed.start() > 150);
+        }
+        editor.read_with(&visual, |v, _| assert!(v.error.is_none(), "{:?}", v.error));
+    }
+}

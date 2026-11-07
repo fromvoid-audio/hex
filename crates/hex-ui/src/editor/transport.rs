@@ -5,6 +5,41 @@ use super::{
 use crate::theme;
 use gpui::{Context, Div, Stateful, Window, div, prelude::*, px, rgb};
 
+#[derive(Clone, Copy)]
+enum TransportIcon {
+    Play,
+    Pause,
+    Stop,
+    Split,
+    Undo,
+    Redo,
+    AddTrack,
+    AddMidiClip,
+    RemoveTrack,
+}
+
+impl TransportIcon {
+    fn asset(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Play => ("icons/transport/play.svg", "transport-play-icon"),
+            Self::Pause => ("icons/transport/pause.svg", "transport-pause-icon"),
+            Self::Stop => ("icons/transport/stop.svg", "transport-stop-icon"),
+            Self::Split => ("icons/transport/split.svg", "transport-split-icon"),
+            Self::Undo => ("icons/transport/undo.svg", "transport-undo-icon"),
+            Self::Redo => ("icons/transport/redo.svg", "transport-redo-icon"),
+            Self::AddTrack => ("icons/transport/add-track.svg", "transport-add-track-icon"),
+            Self::AddMidiClip => (
+                "icons/transport/add-midi-clip.svg",
+                "transport-add-midi-icon",
+            ),
+            Self::RemoveTrack => (
+                "icons/transport/remove-track.svg",
+                "transport-remove-track-icon",
+            ),
+        }
+    }
+}
+
 impl EditorView {
     pub(super) fn transport(&mut self, window: &Window, cx: &mut Context<Self>) -> Stateful<Div> {
         let playing = self
@@ -12,6 +47,18 @@ impl EditorView {
             .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Relaxed));
         let can_undo = self.state().is_some_and(|state| state.can_undo);
         let can_redo = self.state().is_some_and(|state| state.can_redo);
+        let automation_active =
+            self.automation_view.enabled && self.mode == EditorMode::Arrangement;
+        let automation_hint = "automation view · a · all arrangement tracks · track gain";
+        let mut automation_style = theme::action_style();
+        automation_style.text = theme::color(theme::PaletteRole::Muted);
+        if automation_active {
+            let style = theme::control_style();
+            automation_style.background = style.accent;
+            automation_style.text = style.accent_text;
+            automation_style.hover_background = style.accent;
+            automation_style.hover_text = Some(style.accent_text);
+        }
         let output_label = self.output_label();
         let keyboard_description = format!(
             "computer midi keyboard · m · base midi {} · velocity {} · z/x octave · c/v velocity",
@@ -23,6 +70,7 @@ impl EditorView {
             .items_center()
             .flex_shrink_0()
             .child(field)
+            .child(super::gain_recording::retained_controls(self, cx))
             .child(self.control_icon(
                 "♯",
                 "project tuning · cmd+alt+t",
@@ -41,8 +89,12 @@ impl EditorView {
                 cx,
             ))
             .child(
-                self.icon(
-                    if playing { "Ⅱ" } else { "▶" },
+                self.vector_icon(
+                    if playing {
+                        TransportIcon::Pause
+                    } else {
+                        TransportIcon::Play
+                    },
                     "play or pause · space",
                     TogglePlay,
                     cx,
@@ -50,7 +102,7 @@ impl EditorView {
                 .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
             )
             .child(
-                self.icon("■", "stop · escape", Stop, cx)
+                self.vector_icon(TransportIcon::Stop, "stop · escape", Stop, cx)
                     .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
             )
             .child(
@@ -105,6 +157,7 @@ impl EditorView {
                     "⌨",
                     "computer midi keyboard",
                     keyboard_description.into(),
+                    theme::action_style(),
                     |view, window, cx| view.toggle_computer_keyboard(window, cx),
                     cx,
                 )
@@ -133,10 +186,11 @@ impl EditorView {
             .child(
                 self.control_icon(
                     "↻",
-                    "toggle loop · l/w/cmd+l: set selection or toggle existing loop",
+                    "toggle loop · cmd+l · l/w set selection or toggle matching loop",
                     |view, _, _| view.toggle_loop(),
                     cx,
                 )
+                .debug_selector(|| "transport-loop-toggle".into())
                 .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
                 .text_color(rgb(
                     if self
@@ -150,23 +204,33 @@ impl EditorView {
                     },
                 )),
             )
-            .child(self.icon("✂", "split at playback cursor · cmd+e", SplitClip, cx))
+            .child(self.vector_icon(
+                TransportIcon::Split,
+                "split selection edges or edit cursor · e",
+                SplitClip,
+                cx,
+            ))
             .child(
-                self.icon("↶", "undo · cmd+z", Undo, cx)
+                self.vector_icon(TransportIcon::Undo, "undo · cmd+z", Undo, cx)
                     .opacity(if can_undo { 1.0 } else { 0.45 }),
             )
             .child(
-                self.icon("↷", "redo · cmd+shift+z", Redo, cx)
+                self.vector_icon(TransportIcon::Redo, "redo · cmd+shift+z", Redo, cx)
                     .opacity(if can_redo { 1.0 } else { 0.45 }),
             )
-            .child(self.icon("+", "add track", AddTrack, cx))
-            .child(self.icon(
-                "♪",
+            .child(self.vector_icon(TransportIcon::AddTrack, "add track", AddTrack, cx))
+            .child(self.vector_icon(
+                TransportIcon::AddMidiClip,
                 "add four-beat midi clip · cmd+shift+m",
                 AddMidiClip,
                 cx,
             ))
-            .child(self.icon("−", "remove selected track", RemoveTrack, cx))
+            .child(self.vector_icon(
+                TransportIcon::RemoveTrack,
+                "remove selected track",
+                RemoveTrack,
+                cx,
+            ))
             .child(
                 div()
                     .w(px(1.0))
@@ -199,26 +263,33 @@ impl EditorView {
                 cx,
             ))
             .child(
-                self.control_icon(
+                self.control_icon_description(
                     "a",
-                    "arrangement automation view · a · track gain",
+                    automation_hint,
+                    automation_hint.into(),
+                    automation_style,
                     |view, _, cx| {
                         view.toggle_automation_view(cx);
                     },
                     cx,
                 )
                 .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
-                .debug_selector(|| "automation-view-toggle".into())
-                .text_color(rgb(theme::color(
-                    if self.automation_view.enabled && self.mode == EditorMode::Arrangement {
-                        theme::PaletteRole::Primary
-                    } else {
-                        theme::PaletteRole::Muted
-                    },
-                ))),
+                .debug_selector(|| "automation-view-toggle".into()),
             )
+            .children(self.has_overridden_device_automation().then(|| {
+                self.control_icon(
+                    "↻",
+                    "re-enable all device automation",
+                    |view, _, cx| {
+                        view.reenable_device_automation(None, cx);
+                    },
+                    cx,
+                )
+                .debug_selector(|| "reenable-device-automation".into())
+            }))
             .children([self.snap_control(cx)])
             .children([self.section_focus_toggle(cx)])
+            .children([self.track_tag_filter_control(cx)])
             .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx))
             .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, true, cx));
         let mut status = div()
@@ -312,7 +383,7 @@ impl EditorView {
                     })
                     .child(theme::text(&output_label)),
             );
-        if self.state().is_none() {
+        if self.state().is_none() && self.service.startup_failure().is_none() {
             status = status.child(
                 div()
                     .debug_selector(|| "project loading".into())
@@ -344,7 +415,58 @@ impl EditorView {
             self.state()
                 .and_then(|state| state.document_path.as_deref()),
         );
-        header::title_bar(title, |control| match control {
+        let description = theme::text(self.cpu_meter.description());
+        let cpu_meter = div()
+            .id("editor-cpu-meter")
+            .debug_selector(|| "editor-cpu-meter".into())
+            .w(px(68.0))
+            .h_full()
+            .relative()
+            .flex()
+            .items_center()
+            .justify_end()
+            .flex_shrink_0()
+            .text_xs()
+            .text_right()
+            .cursor_pointer()
+            .text_color(rgb(theme::color(if self.cpu_meter.warning() {
+                theme::PaletteRole::Primary
+            } else {
+                theme::PaletteRole::Muted
+            })))
+            .tooltip(move |_, cx| {
+                cx.new(|_| MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
+                    description: description.clone(),
+                })
+                .into()
+            })
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|view, _, _, cx| {
+                let misses = view.audio_status().map_or(0, |status| {
+                    status.cpu_meter.reset_peak();
+                    status
+                        .deadline_misses
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                });
+                view.cpu_meter.reset(misses);
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .h(px(2.0))
+                    .w(px(68.0 * self.cpu_meter.fraction()))
+                    .bg(rgb(theme::color(if self.cpu_meter.warning() {
+                        theme::PaletteRole::Primary
+                    } else {
+                        theme::PaletteRole::Secondary
+                    }))),
+            )
+            .child(theme::text(self.cpu_meter.label()));
+        header::title_bar(title, cpu_meter, |control| match control {
             header::TitlebarControl::Close => Box::new(cx.listener(|view, _, window, cx| {
                 if view.request_window_close(window, cx) {
                     window.remove_window();
@@ -363,6 +485,46 @@ impl EditorView {
                 }))
             }
         })
+    }
+
+    fn vector_icon(
+        &self,
+        icon: TransportIcon,
+        description: &'static str,
+        action: impl gpui::Action,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let (path, selector) = icon.asset();
+        let style = theme::action_style();
+        let hover_text = style.hover_text.unwrap_or(style.text);
+        hex_widgets::action_surface(style)
+            .group(description)
+            .rounded_full()
+            .child(
+                div().debug_selector(move || selector.into()).child(
+                    gpui::svg()
+                        .path(path)
+                        .size(px(14.0))
+                        .text_color(rgb(style.text))
+                        .group_hover(description, move |style| style.text_color(rgb(hover_text))),
+                ),
+            )
+            .id(description)
+            .debug_selector(move || description.into())
+            .w(px(header::CONTROL_SIZE))
+            .h(px(header::CONTROL_SIZE))
+            .text_xs()
+            .tooltip(move |_, cx| {
+                cx.new(|_| MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
+                    description: description.into(),
+                })
+                .into()
+            })
+            .on_click(cx.listener(move |_, _, window, cx| {
+                window.dispatch_action(action.boxed_clone(), cx);
+                cx.notify();
+            }))
     }
 
     fn icon(
@@ -389,7 +551,14 @@ impl EditorView {
         handler: impl Fn(&mut EditorView, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        self.control_icon_description(label, description, description.into(), handler, cx)
+        self.control_icon_description(
+            label,
+            description,
+            description.into(),
+            theme::action_style(),
+            handler,
+            cx,
+        )
     }
 
     fn control_icon_description(
@@ -397,10 +566,11 @@ impl EditorView {
         label: &'static str,
         description: &'static str,
         tooltip_description: gpui::SharedString,
+        style: hex_widgets::ActionStyle,
         handler: impl Fn(&mut EditorView, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        hex_widgets::action(theme::text(label), theme::action_style())
+        hex_widgets::action(theme::text(label), style)
             .id(description)
             .debug_selector(move || description.into())
             .w(px(header::CONTROL_SIZE))
@@ -456,6 +626,7 @@ impl EditorView {
         let previous_focus = window.focused(cx);
         focus.focus(window);
         self.context_menu = Some(crate::context_menu::PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
             position,
             icon_grid: None,
             selected: hex_engine::LaunchQuantization::GLOBAL_CHOICES

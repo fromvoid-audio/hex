@@ -501,6 +501,59 @@ fn helper_content_change_refuses_before_spawn_and_module_changes_refuse_before_l
 
 #[test]
 #[ignore = "explicit original Mac helper/fixture build required"]
+fn interactive_scan_waits_for_native_completion_and_cancels_on_disconnect() {
+    use hex_plugin_scan::macos::protocol::WAIT_FOR_PLUGIN_ARG;
+
+    let receipt = receipt();
+    let root = std::env::temp_dir().join(format!(
+        "hex-mac-interactive-{}-{}",
+        std::process::id(),
+        TEMP_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).unwrap();
+    let owned = OwnedCopy(root);
+    let delayed = owned.0.join("delayed.vst3");
+    copy_tree(&fixture(&receipt, "entry-hang"), &delayed);
+    fs::write(delayed.with_extension("vst3.entry-wait"), b"d").unwrap();
+    let timed = command(&receipt, &delayed, 1000).output().unwrap();
+    assert_eq!(refused(&timed)["interruption"], "deadline exceeded");
+    fs::remove_file(delayed.with_extension("vst3.entry-ready")).unwrap();
+
+    let mut interactive = command(&receipt, &delayed, 1000)
+        .arg(WAIT_FOR_PLUGIN_ARG)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let control = interactive.stdin.take().unwrap();
+    let result = interactive.wait_with_output().unwrap();
+    drop(control);
+    assert!(result.status.success(), "{}", report(&result));
+
+    let mut waiting = command(&receipt, &fixture(&receipt, "entry-hang"), 1000)
+        .arg(WAIT_FOR_PLUGIN_ARG)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let control = waiting.stdin.take().unwrap();
+    let mut progress = BufReader::new(waiting.stderr.take().unwrap());
+    loop {
+        let mut line = String::new();
+        assert_ne!(progress.read_line(&mut line).unwrap(), 0);
+        if line.contains("admission sent") {
+            break;
+        }
+    }
+    drop(control);
+    let result = waiting.wait_with_output().unwrap();
+    assert_eq!(refused(&result)["interruption"], "cancelled");
+}
+
+#[test]
+#[ignore = "explicit original Mac helper/fixture build required"]
 fn ordinary_termination_signals_cancel_owned_hangs_without_killing_unrelated_processes() {
     let receipt = receipt();
     let mut sentinel = Sentinel(

@@ -22,6 +22,25 @@ finally:
     sys.path.pop(0)
 
 
+@unittest.skipUnless(
+    sys.platform == "darwin" and os.environ.get("HEX_VST3_MACOS_SDK"),
+    "explicit macOS VST3 SDK required for the hidden AppKit fixture",
+)
+class EditorFrameTests(unittest.TestCase):
+    def test_editor_frame_negotiates_plugin_and_window_resizes(self):
+        sdk = Path(os.environ["HEX_VST3_MACOS_SDK"])
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "editor-resize"
+            subprocess.run(
+                ["xcrun", "clang++", "-std=c++17", "-arch", "arm64", "-I" + str(sdk),
+                 str(NATIVE / "macos_editor_resize_fixture.mm"), "-framework", "AppKit",
+                 "-o", str(binary)],
+                check=True, timeout=120,
+            )
+            result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+
 class MachHeaderTests(unittest.TestCase):
     def test_wrong_role_and_architecture_refuse(self):
         # Parser component evidence only; not an executable native fixture.
@@ -268,6 +287,13 @@ class NativeBootstrapTests(unittest.TestCase):
         self.assertEqual(value["before_value"], 0.25)
         return value
 
+    def test_actual_sdk_edit_fifo_preserves_boundaries_values_and_backpressure(self):
+        value=self.host_control(13)
+        self.assertEqual((value["edit_count"],value["edit_order"],value["edit_backpressure"],value["enqueued"]),(16,1,1,16))
+        self.assertEqual(value["refusals"],0)
+        self.assertEqual(value["before_revision"],value["after_revision"],"queue admission is not a controller refresh or DSP ACK")
+        self.assertTrue(value["closed"] and value["unloaded"])
+
     def test_real_host_messages_and_editor_metadata_refresh(self):
         value = self.host_control(0)
         self.assertEqual(value["message"], 0, value)
@@ -276,6 +302,12 @@ class NativeBootstrapTests(unittest.TestCase):
         self.assertEqual(value["after_revision"], 2)
         self.assertEqual(value["after_value"], 0.75)
         self.assertTrue(value["refusals"] & 512, "message pool exhaustion was explicit")
+        self.assertTrue(value["closed"] and value["unloaded"])
+
+    def test_background_host_message_during_processing_keeps_instance_healthy(self):
+        value = self.host_control(14)
+        self.assertEqual(value["message"], 0, value)
+        self.assertEqual(value["refusals"], 0)
         self.assertTrue(value["closed"] and value["unloaded"])
 
     def test_unknown_and_graph_restart_classes_refuse_without_partial_cache_update(self):

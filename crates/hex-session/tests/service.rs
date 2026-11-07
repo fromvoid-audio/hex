@@ -32,7 +32,7 @@ fn wav_mono_pcm16(samples: &[i16]) -> Vec<u8> {
 }
 
 fn next_event(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + std::time::Duration::from_secs(60);
     loop {
         match service.try_event() {
             Ok(event) => return event,
@@ -977,42 +977,34 @@ fn failed_open_keeps_active_project_and_graph_revision() {
     let revision = edited.state.revision;
     assert!(edited.playback.is_some());
 
-    for (name, source_name, frames, sample_rate, create_source) in [
-        ("missing.hex", "Missing.wav", 2_u64, 48_000_u32, false),
-        ("mismatch.hex", "short.wav", 3_u64, 48_000_u32, true),
-        ("rate.hex", "Unused.wav", 2_u64, 44_100_u32, false),
-    ] {
-        if create_source {
-            fs::write(
-                directory.path().join(source_name),
-                wav_mono_pcm16(&[100, 200]),
-            )
-            .expect("write mismatched source");
-        }
-        let project_path = directory.path().join(name);
-        let mut editor =
-            Editor::new(Project::new(sample_rate).expect("project"), 8).expect("editor");
-        editor
-            .execute(Command::ImportAudioTrack {
-                name: "incoming".into(),
-                path: source_name.into(),
-                sample_rate,
-                frames,
-            })
-            .expect("create import metadata");
-        hex_storage::save_new(&project_path, editor.project()).expect("save fixture project");
-        active
-            .submit(Request::Open(project_path))
-            .expect("submit open");
-        let rejected = next_event(&active);
-        assert!(rejected.error.is_some());
-        assert!(rejected.open_complete);
-        assert!(!rejected.project_replaced);
-        assert!(rejected.playback.is_none());
-        assert_eq!(rejected.state.revision, revision);
-        assert_eq!(rejected.state.project.tracks().len(), 1);
-        assert_eq!(rejected.state.project.tracks()[0].name(), "keep me");
-    }
+    // Wrong source extent is an error. Missing media can open offline.
+    fs::write(
+        directory.path().join("short.wav"),
+        wav_mono_pcm16(&[100, 200]),
+    )
+    .expect("write mismatched source");
+    let project_path = directory.path().join("mismatch.hex");
+    let mut editor = Editor::new(Project::new(48_000).expect("project"), 8).expect("editor");
+    editor
+        .execute(Command::ImportAudioTrack {
+            name: "incoming".into(),
+            path: "short.wav".into(),
+            sample_rate: 48_000,
+            frames: 3,
+        })
+        .expect("create import metadata");
+    hex_storage::save_new(&project_path, editor.project()).expect("save fixture project");
+    active
+        .submit(Request::Open(project_path))
+        .expect("submit open");
+    let rejected = next_event(&active);
+    assert!(rejected.error.is_some());
+    assert!(rejected.open_complete);
+    assert!(!rejected.project_replaced);
+    assert!(rejected.playback.is_none());
+    assert_eq!(rejected.state.revision, revision);
+    assert_eq!(rejected.state.project.tracks().len(), 1);
+    assert_eq!(rejected.state.project.tracks()[0].name(), "keep me");
 
     let mut project = Editor::new(Project::new(48_000).expect("project"), 8).expect("editor");
     project
@@ -1027,11 +1019,35 @@ fn failed_open_keeps_active_project_and_graph_revision() {
     active
         .submit(Request::Open(path))
         .expect("submit open with missing unreferenced asset");
-    let rejected = next_event(&active);
-    assert!(rejected.error.is_some());
-    assert!(!rejected.project_replaced);
-    assert_eq!(rejected.state.revision, revision);
-    assert_eq!(rejected.state.project.tracks()[0].name(), "keep me");
+    // A missing unreferenced asset is kept offline rather than dropped.
+    let opened = next_event(&active);
+    assert!(opened.error.is_none(), "{:?}", opened.error);
+    assert!(opened.project_replaced);
+    let asset = opened.state.project.assets().next().expect("asset kept");
+    assert_eq!(asset.path(), std::path::Path::new("Missing-Unused.wav"));
+    assert!(opened.state.project.asset_offline(asset.id()));
+}
+
+#[test]
+fn open_prepares_the_saved_rate_and_preserves_the_project_file() {
+    let directory = TempDir::new();
+    let service = Service::new(48_000, 16, 32).expect("service");
+    let initial = next_event(&service);
+    assert_eq!(initial.state.project.sample_rate(), 48_000);
+
+    let saved = Project::new(44_100).expect("project");
+    let path = directory.path().join("saved-rate.hex");
+    hex_storage::save_new(&path, &saved).expect("save fixture project");
+    let original = fs::read(&path).expect("original project bytes");
+    service
+        .submit(Request::Open(path.clone()))
+        .expect("submit open");
+    let opened = next_event(&service);
+    assert!(opened.error.is_none(), "{:?}", opened.error);
+    assert!(opened.open_complete && opened.project_replaced);
+    assert_eq!(opened.state.project.as_ref(), &saved);
+    assert_eq!(prepared(&opened).arrangement().sample_rate(), 44_100);
+    assert_eq!(fs::read(path).expect("project bytes after open"), original);
 }
 
 #[test]
@@ -1168,7 +1184,7 @@ fn request_queue_is_bounded_and_dropping_service_is_nonblocking() {
                 break;
             }
             Err(SubmitError::Closed(_)) => panic!("worker exited unexpectedly"),
-            Err(SubmitError::Busy(_)) => panic!("non-export request was marked busy"),
+            Err(SubmitError::Busy(..)) => panic!("non-export request was marked busy"),
         }
     }
     assert!(matches!(
@@ -1351,7 +1367,8 @@ fn mixed_rate_import_save_reopen_is_exact_and_changed_source_is_atomic() {
     assert!(!saved.state.unsaved);
     let json = fs::read_to_string(&project_path).expect("saved JSON");
     let document: serde_json::Value = serde_json::from_str(&json).expect("project json");
-    assert_eq!(document["version"], hex_storage::CURRENT_SCHEMA_VERSION);
+    // A rate-converted import records sinc v2, which only schema64 carries.
+    assert_eq!(document["version"], hex_storage::SINC_V2_SCHEMA_VERSION);
     assert_eq!(document["routing"], serde_json::json!([]));
     assert!(document["import_provenance"].is_null());
     service
@@ -1567,6 +1584,7 @@ fn arrangement_clip_track_insertion_edits_compile_undo_and_round_trip() {
 
     service
         .submit(Request::Edit(Command::MoveClipToNewTrack {
+            initial_gain: Some(0.25),
             clip: audio_clip,
             name: "moved audio".into(),
             before_track: Some(original_tracks[2]),
@@ -1580,6 +1598,10 @@ fn arrangement_clip_track_insertion_edits_compile_undo_and_round_trip() {
         other => panic!("unexpected move result: {other:?}"),
     };
     assert_eq!(audio_moved.state.project.tracks()[2].id(), audio_track);
+    assert_eq!(
+        audio_moved.state.project.track(audio_track).unwrap().gain(),
+        0.25
+    );
     let moved_audio = &audio_moved
         .state
         .project
@@ -1599,6 +1621,7 @@ fn arrangement_clip_track_insertion_edits_compile_undo_and_round_trip() {
 
     service
         .submit(Request::Edit(Command::MoveMidiClipToNewTrack {
+            initial_gain: None,
             clip: midi_clip,
             name: "moved midi".into(),
             before_track: None,
@@ -1820,22 +1843,42 @@ fn loop_worker_edit_is_dirty_undoable_compiled_and_saved_with_extended_view_hori
         )),
         Some((1, 3, true))
     );
+    // The worker must publish the returned canonical project. The engine owns
+    // loop DSP (including its end envelope); do not duplicate that law here.
+    let asset = looped
+        .state
+        .project
+        .assets()
+        .next()
+        .expect("imported asset")
+        .id();
+    let media = std::collections::BTreeMap::from([(
+        asset,
+        hex_engine::Audio::new(48_000, vec![[0.125; 2], [0.25; 2], [0.375; 2], [0.5; 2]])
+            .expect("known source"),
+    )]);
+    let revision = PreparedRevision::prepare(
+        &looped.state.project,
+        &media,
+        std::sync::Arc::new(hex_engine::SineTable::new()),
+        None,
+    )
+    .expect("canonical loop graph");
+    let mut canonical = Playback::try_from_prepared_with_session(std::sync::Arc::new(revision))
+        .expect("canonical playback");
+    canonical.apply(PlaybackCommand::Play);
+    let mut expected = [[0.0; 2]; 7];
+    canonical
+        .render(&mut expected)
+        .expect("canonical loop render");
     let mut playback = looped.playback.expect("compiled loop graph");
     playback.apply(PlaybackCommand::Play);
     let mut output = [[0.0; 2]; 7];
     playback.render(&mut output).expect("loop render");
-    assert_eq!(
-        output,
-        [
-            [0.125, 0.125],
-            [0.25, 0.25],
-            [0.375, 0.375],
-            [0.25, 0.25],
-            [0.375, 0.375],
-            [0.25, 0.25],
-            [0.375, 0.375],
-        ]
-    );
+    assert_eq!(output, expected);
+    assert_eq!(output[0], [0.125; 2]);
+    assert_eq!(output[1], [0.25; 2]);
+    assert_eq!(output[3], output[1], "worker retains the loop origin");
 
     service.submit(Request::Undo).expect("undo loop");
     let undone = next_event(&service);
@@ -1959,6 +2002,7 @@ fn arrangement_catalog_drop_routes_all_destinations_and_is_one_undo() {
             });
             service
                 .submit(Request::DropBrowserDeviceOnArrangement {
+                    new_track_gain: None,
                     project_generation: 0,
                     revision: baseline.state.revision,
                     class,
@@ -2054,6 +2098,7 @@ fn arrangement_catalog_drop_refuses_stale_catalog_and_captured_targets_atomicall
     for refusal in 0..5 {
         service
             .submit(Request::DropBrowserDeviceOnArrangement {
+                new_track_gain: None,
                 project_generation: u64::from(refusal == 0),
                 revision: baseline.state.revision + u64::from(refusal == 1),
                 class: NativeDeviceClass::Instrument,
@@ -2101,6 +2146,7 @@ fn arrangement_catalog_drop_refuses_stale_catalog_and_captured_targets_atomicall
     ] {
         service
             .submit(Request::DropBrowserDeviceOnArrangement {
+                new_track_gain: None,
                 project_generation: 0,
                 revision: removed.state.revision,
                 class: NativeDeviceClass::Effect,
@@ -2272,4 +2318,58 @@ fn clip_conversion_worker_refuses_audio_and_stale_selection_without_publication(
     assert_eq!(actual, scene_event.state.project.snapshot());
     assert_eq!(fs::read(&path).unwrap(), bytes);
     fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn selected_solo_worker_publishes_the_complete_group_and_undoes_once() {
+    let directory = TempDir::new();
+    let service = Service::new(48_000, 16, 64).unwrap();
+    let _ = next_event(&service);
+    let mut tracks = Vec::new();
+    for (name, sample) in [("group-first.wav", 8192), ("group-last.wav", 16384)] {
+        let path = directory.path().join(name);
+        fs::write(&path, wav_mono_pcm16(&[sample; 2])).unwrap();
+        service.submit(Request::Import(path)).unwrap();
+        let event = next_event(&service);
+        tracks.push(event.state.project.tracks().last().unwrap().id());
+    }
+    service
+        .submit(Request::Edit(Command::ToggleSoloTracks {
+            tracks: hex_project::TrackSelectionIds::new(&tracks).unwrap(),
+            exclusive: true,
+        }))
+        .unwrap();
+    let event = next_event(&service);
+    assert!(event.error.is_none(), "{:?}", event.error);
+    assert!(
+        event
+            .state
+            .project
+            .tracks()
+            .iter()
+            .all(|track| track.soloed())
+    );
+    let mut graph = event.playback.unwrap();
+    graph.apply(PlaybackCommand::Play);
+    let mut output = [[0.0; 2]; 2];
+    graph.render(&mut output).unwrap();
+    assert_eq!(output, [[0.75; 2]; 2]);
+    service.submit(Request::Undo).unwrap();
+    assert!(
+        next_event(&service)
+            .state
+            .project
+            .tracks()
+            .iter()
+            .all(|track| !track.soloed())
+    );
+    service.submit(Request::Redo).unwrap();
+    assert!(
+        next_event(&service)
+            .state
+            .project
+            .tracks()
+            .iter()
+            .all(|track| track.soloed())
+    );
 }

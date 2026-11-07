@@ -5,11 +5,15 @@ use super::*;
 
 /// Actual configured child with processing stopped and its completed PCM prefix
 /// acknowledged. No PCM exchange API is exposed until a matching resume ACK.
-/// Original startup capture is historical; this transition never recaptures or
-/// restores state. Component/controller/source custody stays in the same lease.
+/// Original startup capture is historical. Explicit capture returns fresh bytes;
+/// resume itself never recaptures or restores state. Component/controller/source
+/// custody stays in the same lease.
 pub struct Quiescent {
-    instance: Prepared,
+    pub(super) instance: Prepared,
     facts: Facts,
+    capture_sequence: u64,
+    flush_sequence: u64,
+    reactivate_sequence: u64,
 }
 impl Prepared {
     /// Check the actual child and cancellation state before transferring this
@@ -18,7 +22,7 @@ impl Prepared {
     pub fn validate_worker_transfer_on_control(&mut self) -> Result<()> {
         self.require_live_epoch()
     }
-    fn require_live_epoch(&mut self) -> Result<()> {
+    pub(super) fn require_live_epoch(&mut self) -> Result<()> {
         if self.faulted || self.retired.is_some() {
             return Err(Error::Protocol("instance lease is retired or faulted"));
         }
@@ -28,6 +32,76 @@ impl Prepared {
         }
         Ok(())
     }
+    /// Apply host input on the original enabled SDK processor while the
+    /// transport is idle. Controller readback is acknowledged at the same
+    /// completed PCM prefix. Only the serialized instance worker calls this.
+    pub fn flush_idle_parameters_on_worker(
+        &mut self,
+        parameters: &crate::transport::Parameters,
+    ) -> Result<protocol::FlushedParameters> {
+        let result = (|| {
+            let operation = self
+                .idle_flush_sequence
+                .checked_add(1)
+                .ok_or(Error::Protocol("idle flush operation exhausted"))?;
+            let values =
+                self.exchange_parameter_flush(operation, parameters, self.limits.exchange, || {
+                    false
+                })?;
+            self.idle_flush_sequence = operation;
+            Ok(values)
+        })();
+        if result.is_err() {
+            self.faulted = true;
+            self.lease.cancel_native();
+        }
+        result
+    }
+
+    fn exchange_parameter_flush(
+        &mut self,
+        operation: u64,
+        parameters: &crate::transport::Parameters,
+        timeout: std::time::Duration,
+        mut is_cancelled: impl FnMut() -> bool,
+    ) -> Result<protocol::FlushedParameters> {
+        self.require_live_epoch()?;
+        let request = protocol::flush_request(&self.config, self.sequence, operation, parameters)?;
+        let until = end_after(timeout)?;
+        let token = self.lease.cancellation.clone();
+        let mut check = || {
+            token.check()?;
+            if is_cancelled() {
+                Err(Error::Cancelled)
+            } else {
+                Ok(())
+            }
+        };
+        self.lease.channel.send(&request, until, &mut check)?;
+        self.lease
+            .channel
+            .read(&mut self.packet, until, &mut check)?;
+        if self.packet.magic() == b"HXVIER01" {
+            return Err(Error::Worker(protocol::error(
+                self.packet.body()?,
+                self.config.binding,
+            )?));
+        }
+        if self.packet.magic() != b"HXVIFL01" {
+            return Err(Error::Protocol("missing parameter flush acknowledgement"));
+        }
+        let values = protocol::flushed_parameters(
+            self.packet.body()?,
+            &self.config,
+            self.sequence,
+            operation,
+            parameters,
+        )?;
+        self.require_live_epoch()?;
+        check()?;
+        Ok(values)
+    }
+
     fn refuse_epoch_retained(self, cause: Error) -> PreparationFailure {
         PreparationFailure::native(cause, self.lease, self.limits.retirement)
     }
@@ -40,14 +114,33 @@ impl Prepared {
     /// Failed discontinuity keeps the exact cancelled lease in existing failure
     /// custody. The caller must observe disposal independently before destroying
     /// that owner; neither the error nor Drop acknowledges Root/callback return.
-    pub fn quiesce_retained_on_control(
+    pub fn quiesce_retained_on_control(self) -> std::result::Result<Quiescent, PreparationFailure> {
+        self.quiesce_retained(protocol::quiesce)
+    }
+
+    /// The graph and callback have returned for stopped renewal. Only the
+    /// isolated instrument's accepted gates need release before it quiesces.
+    pub fn quiesce_for_stopped_restore_on_control(
+        self,
+    ) -> std::result::Result<Quiescent, PreparationFailure> {
+        self.quiesce_retained(protocol::quiesce_for_stopped_restore)
+    }
+
+    fn quiesce_retained(
         mut self,
+        encode: impl FnOnce(&Configuration, u64) -> Result<[u8; 64]>,
     ) -> std::result::Result<Quiescent, PreparationFailure> {
         let result = (|| {
             self.require_live_epoch()?;
+            if self.live_capture.is_some() {
+                return Err(Error::Protocol("native capture is still pending"));
+            }
+            if self.parameter_page.is_some() {
+                return Err(Error::Protocol("controller page is still pending"));
+            }
             let until = end_after(self.limits.startup)?;
             let token = self.lease.cancellation.clone();
-            let request = protocol::quiesce(&self.config, self.sequence)?;
+            let request = encode(&self.config, self.sequence)?;
             self.lease
                 .channel
                 .send(&request, until, &mut || token.check())?;
@@ -60,7 +153,7 @@ impl Prepared {
                     self.config.binding,
                 )?));
             }
-            if self.packet.magic() != b"HXVIQF02" {
+            if self.packet.magic() != b"HXVIQF03" {
                 return Err(Error::Protocol("missing actual quiescent acknowledgement"));
             }
             let facts =
@@ -72,12 +165,233 @@ impl Prepared {
             Ok(facts) => Ok(Quiescent {
                 instance: self,
                 facts,
+                capture_sequence: 0,
+                flush_sequence: 0,
+                reactivate_sequence: 0,
             }),
             Err(cause) => Err(self.refuse_epoch_retained(cause)),
         }
     }
 }
 impl Quiescent {
+    /// Settle the opted-in latency request before the owner computes its next
+    /// compensation layout. Bound repeated SDK invalidations on control.
+    pub fn settle_latency_retained_on_control(
+        mut self,
+    ) -> std::result::Result<Self, PreparationFailure> {
+        for _ in 0..2 {
+            match self.poll_recovery_edits_on_control() {
+                Ok(batch) if batch.pending_latency_restart.is_none() => return Ok(self),
+                Ok(_) => self = self.reactivate_retained_on_control()?,
+                Err(error) => return Err(self.instance.refuse_epoch_retained(error)),
+            }
+        }
+        let error = match self.poll_recovery_edits_on_control() {
+            Ok(batch) if batch.pending_latency_restart.is_none() => return Ok(self),
+            Ok(_) => Error::Protocol("native latency keeps changing during reactivation"),
+            Err(error) => error,
+        };
+        Err(self.instance.refuse_epoch_retained(error))
+    }
+
+    /// Deactivate/reactivate the same stopped component on its main lane, then
+    /// refresh raw facts. This intentionally permits DSP history/tail reset;
+    /// ordinary quiescence never does so. The caller must plan compensation
+    /// from these new facts before resume/publication. No state is restored or
+    /// captured, no buses/setup repeat, and processing remains stopped.
+    /// Failure retains the exact original cancelled lease for disposal.
+    pub fn reactivate_retained_on_control(
+        mut self,
+    ) -> std::result::Result<Self, PreparationFailure> {
+        let result = (|| {
+            self.instance.require_live_epoch()?;
+            let operation = self
+                .reactivate_sequence
+                .checked_add(1)
+                .ok_or(Error::Protocol("reactivation operation exhausted"))?;
+            let request =
+                protocol::reactivate(&self.instance.config, self.instance.sequence, operation)?;
+            let until = end_after(self.instance.limits.startup)?;
+            let token = self.instance.lease.cancellation.clone();
+            self.instance
+                .lease
+                .channel
+                .send(&request, until, &mut || token.check())?;
+            self.instance
+                .lease
+                .channel
+                .read(&mut self.instance.packet, until, &mut || token.check())?;
+            if self.instance.packet.magic() == b"HXVIER01" {
+                return Err(Error::Worker(protocol::error(
+                    self.instance.packet.body()?,
+                    self.instance.config.binding,
+                )?));
+            }
+            if self.instance.packet.magic() != b"HXVIAR02" {
+                return Err(Error::Protocol(
+                    "missing component reactivation acknowledgement",
+                ));
+            }
+            let facts = protocol::reactivated_facts(
+                self.instance.packet.body()?,
+                &self.instance.config,
+                self.instance.sequence,
+                operation,
+            )?;
+            self.instance.require_live_epoch()?;
+            self.facts = facts;
+            self.reactivate_sequence = operation;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => Ok(self),
+            Err(cause) => Err(self.instance.refuse_epoch_retained(cause)),
+        }
+    }
+    /// Capture component/controller on the helper control lane while the same
+    /// actual processor is quiescent. A successful reply grants neither resume
+    /// nor publication; startup/canonical envelopes are not replaced. Failure
+    /// retains the cancelled original lease for independent disposal, so callers
+    /// must keep their last confirmed state and never substitute defaults.
+    /// Flush admitted parameter edits first. An edit admitted during this SDK
+    /// read refuses its staged snapshot through that same failure custody;
+    /// capture never invents a processing/flush call to accept changed state.
+    pub fn capture_state_retained_on_control(
+        self,
+    ) -> std::result::Result<(Self, NativeDeviceState), PreparationFailure> {
+        self.capture_state_retained_while_on_control(|| false)
+    }
+
+    /// Same exact capture with caller intent cancellation checked in the
+    /// existing bounded socket loop. Cancellation retires this original lease;
+    /// the predicate owns no helper/endpoint and starts no second waiter.
+    /// A capture refusal is terminal here, as for every failure;
+    /// callers that keep the plugin running use the refusal-aware capture.
+    pub fn capture_state_retained_while_on_control(
+        self,
+        is_cancelled: impl FnMut() -> bool,
+    ) -> std::result::Result<(Self, NativeDeviceState), PreparationFailure> {
+        match self.capture_state_or_refusal_retained_while_on_control(is_cancelled)? {
+            (stopped, Ok(state)) => Ok((stopped, state)),
+            (stopped, Err(refusal)) => Err(stopped
+                .instance
+                .refuse_epoch_retained(Error::CaptureRefused(refusal))),
+        }
+    }
+
+    /// Same exact capture, except that a valid helper refusal (state exceeds
+    /// the saved profile, or edits kept arriving) is returned with this same
+    /// quiescent epoch: nothing was captured, and the caller may capture again,
+    /// flush or resume. A malformed or mismatched refusal and every other
+    /// failure keep the terminal retained-failure custody described above.
+    pub fn capture_state_or_refusal_retained_while_on_control(
+        mut self,
+        mut is_cancelled: impl FnMut() -> bool,
+    ) -> std::result::Result<
+        (
+            Self,
+            std::result::Result<NativeDeviceState, protocol::StateCaptureRefusal>,
+        ),
+        PreparationFailure,
+    > {
+        let result = (|| {
+            self.instance.require_live_epoch()?;
+            let operation = self
+                .capture_sequence
+                .checked_add(1)
+                .ok_or(Error::Protocol("capture operation exhausted"))?;
+            let request = protocol::capture_request(
+                &self.instance.config,
+                self.instance.sequence,
+                operation,
+            )?;
+            let until = end_after(self.instance.limits.startup)?;
+            let token = self.instance.lease.cancellation.clone();
+            let mut check = || {
+                token.check()?;
+                if is_cancelled() {
+                    Err(Error::Cancelled)
+                } else {
+                    Ok(())
+                }
+            };
+            self.instance
+                .lease
+                .channel
+                .send(&request, until, &mut check)?;
+            self.instance
+                .lease
+                .channel
+                .read(&mut self.instance.packet, until, &mut check)?;
+            if self.instance.packet.magic() == b"HXVIER01" {
+                return Err(Error::Worker(protocol::error(
+                    self.instance.packet.body()?,
+                    self.instance.config.binding,
+                )?));
+            }
+            let state = if self.instance.packet.magic() == protocol::CAPTURE_REFUSAL_MAGIC {
+                Err(protocol::capture_refusal(
+                    self.instance.packet.body()?,
+                    &self.instance.config,
+                    self.instance.sequence,
+                    operation,
+                )?)
+            } else if self.instance.packet.magic() == b"HXVICS02" {
+                Ok(protocol::captured_state(
+                    self.instance.packet.body()?,
+                    &self.instance.config,
+                    self.instance.sequence,
+                    operation,
+                )?)
+            } else {
+                return Err(Error::Protocol("missing actual capture acknowledgement"));
+            };
+            self.instance.require_live_epoch()?;
+            check()?;
+            self.capture_sequence = operation;
+            Ok(state)
+        })();
+        match result {
+            Ok(state) => Ok((self, state)),
+            Err(cause) => Err(self.instance.refuse_epoch_retained(cause)),
+        }
+    }
+    /// Flush zero-frame parameter changes on the original stopped SDK worker,
+    /// then acknowledge actual controller readback on its main lane. No audio
+    /// buffers, callback reentry, PCM prefix advance or canonical mutation occurs.
+    /// Any refusal keeps the cancelled original lease in existing failure custody.
+    pub fn flush_parameters_retained_on_control(
+        self,
+        parameters: &crate::transport::Parameters,
+    ) -> std::result::Result<(Self, protocol::FlushedParameters), PreparationFailure> {
+        self.flush_parameters_retained_while_on_control(parameters, || false)
+    }
+    /// Caller intent cancellation uses the same bounded channel loop. A late
+    /// cancellation retires this actual source; it does not pretend to undo DSP.
+    pub fn flush_parameters_retained_while_on_control(
+        mut self,
+        parameters: &crate::transport::Parameters,
+        is_cancelled: impl FnMut() -> bool,
+    ) -> std::result::Result<(Self, protocol::FlushedParameters), PreparationFailure> {
+        let result = (|| {
+            let operation = self
+                .flush_sequence
+                .checked_add(1)
+                .ok_or(Error::Protocol("flush operation exhausted"))?;
+            let values = self.instance.exchange_parameter_flush(
+                operation,
+                parameters,
+                self.instance.limits.startup,
+                is_cancelled,
+            )?;
+            self.flush_sequence = operation;
+            Ok(values)
+        })();
+        match result {
+            Ok(values) => Ok((self, values)),
+            Err(cause) => Err(self.instance.refuse_epoch_retained(cause)),
+        }
+    }
     pub fn facts(&self) -> Facts {
         self.facts
     }
@@ -128,15 +442,15 @@ impl Quiescent {
     pub fn resume_retained_on_control(
         mut self,
         next: Binding,
-        presentation: Option<PresentationLatency>,
+        presentation: impl Into<protocol::PresentationPlan>,
     ) -> std::result::Result<Prepared, PreparationFailure> {
+        let presentation = presentation.into();
         let result = (|| {
             self.instance.require_live_epoch()?;
-            if self.facts.presentation_available && presentation.is_none() {
-                return Err(Error::Protocol(
-                    "actual presentation contributions are unavailable",
-                ));
+            if self.instance.parameter_page.is_some() {
+                return Err(Error::Protocol("controller page is still pending"));
             }
+            presentation.expected(self.facts.presentation_available)?;
             let request = protocol::resume_request(&self.instance.config, next, presentation)?;
             let mut config = self.instance.config.clone();
             config.binding = next;
@@ -158,7 +472,7 @@ impl Quiescent {
                     .or_else(|_| protocol::error(body, self.instance.config.binding))?;
                 return Err(Error::Worker(code));
             }
-            if self.instance.packet.magic() != b"HXVIRR02" {
+            if self.instance.packet.magic() != b"HXVIRR03" {
                 return Err(Error::Protocol("missing actual resumed acknowledgement"));
             }
             let applied = protocol::resumed(

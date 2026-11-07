@@ -105,6 +105,40 @@ fn off(id: u64, offset: usize) -> NativeInstrumentEvent {
         occurrence_id: id,
     }
 }
+
+#[test]
+fn unsynchronized_envelopes_do_not_query_beat_or_transport_during_render() {
+    use std::cell::Cell;
+    struct CountingClock {
+        beats: Cell<usize>,
+        transport: Cell<usize>,
+    }
+    impl NativeInstrumentClock for CountingClock {
+        fn beat_at_offset(&self, _offset: usize) -> Option<u64> {
+            self.beats.set(self.beats.get() + 1);
+            Some(0)
+        }
+        fn performance_frame_at_offset(&self, offset: usize) -> Option<u64> {
+            Some(offset as u64)
+        }
+        fn transport_is_running(&self) -> Option<bool> {
+            self.transport.set(self.transport.get() + 1);
+            Some(true)
+        }
+    }
+    let mut settings = settings();
+    settings.companion.words[0][5] = 1;
+    let factory = factory(settings);
+    let mut runtime = factory.create_runtime();
+    let clock = CountingClock {
+        beats: Cell::new(0),
+        transport: Cell::new(0),
+    };
+    let pcm = render(runtime.as_mut(), &[on(1, 0), off(1, 70)], 128, Some(&clock));
+    assert!(pcm.iter().any(|frame| frame[0] != 0.0));
+    assert_eq!(clock.beats.get(), 0);
+    assert_eq!(clock.transport.get(), 0);
+}
 #[test]
 fn all_loop_modes_are_partition_exact_through_tempo_jumps_and_noteoff() {
     for mode in 0..=4 {

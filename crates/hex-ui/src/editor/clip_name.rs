@@ -3,6 +3,7 @@ use super::{CancelClipName, CommitClipName, EditorMode, EditorView, RenameClip, 
 use crate::theme;
 use gpui::{
     App, AppContext, Context, Entity, KeyBinding, Subscription, Window, div, prelude::*, px, rgb,
+    rgba,
 };
 use hex_project::{ClipId, Command, SessionCellContent};
 use hex_session::service::Request;
@@ -168,6 +169,62 @@ impl EditorView {
         self.focus.focus(window);
         cx.notify();
     }
+    pub(super) fn clip_has_alias(&self, clip: ClipId) -> bool {
+        self.state
+            .as_ref()
+            .is_some_and(|s| s.project.clip_alias(clip).is_some())
+    }
+
+    pub(super) fn clip_alias_indicator(
+        &self,
+        clip: ClipId,
+        fill: u32,
+    ) -> Option<gpui::Stateful<gpui::Div>> {
+        if !self.clip_has_alias(clip) {
+            return None;
+        }
+        let ink = rgb(theme::readable_text(fill, 0x000000));
+        Some(
+            div()
+                .id(("clip-alias", clip.value()))
+                .debug_selector(move || format!("clip-alias-{}", clip.value()))
+                .absolute()
+                .right(px(2.0))
+                .top(px(2.0))
+                .w(px(10.0))
+                .h(px(10.0))
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(0.0))
+                        .top(px(3.0))
+                        .w(px(7.0))
+                        .h(px(6.0))
+                        .border_1()
+                        .border_color(ink)
+                        .rounded(px(1.0)),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(3.0))
+                        .top(px(0.0))
+                        .w(px(7.0))
+                        .h(px(6.0))
+                        .border_1()
+                        .border_color(ink)
+                        .rounded(px(1.0)),
+                )
+                .tooltip(|_, cx| {
+                    cx.new(|_| super::transport::MiniTooltip {
+                        kind: crate::tooltips::Kind::Identification,
+                        description: "alias clip · shared content".into(),
+                    })
+                    .into()
+                }),
+        )
+    }
+
     pub(super) fn clip_name_label(&self, clip: ClipId, name: &str) -> gpui::AnyElement {
         if let Some(edit) = &self.clip_name_edit
             && edit.clip == clip
@@ -254,7 +311,9 @@ impl EditorView {
                     },
                 ))
             })
+            .when(self.clip_has_alias(clip), |header| header.pr(px(15.0)))
             .child(self.clip_name_label(clip, name))
+            .children(self.clip_alias_indicator(clip, fill))
     }
 }
 
@@ -271,6 +330,8 @@ fn clip_name_surface(fill: u32) -> gpui::Div {
         .text_xs()
         .line_height(px(14.0))
         .bg(rgb(fill))
+        .border_b(px(0.5))
+        .border_color(rgba((text << 8) | 0x70))
         .text_color(rgb(text))
 }
 
@@ -409,7 +470,11 @@ mod tests {
                 scene: audio_scene,
             })
             .unwrap();
-        for (track, scene) in [(track, midi_scene), (audio_track, audio_scene)] {
+        // Each installed snapshot gets a new revision, as real project updates do,
+        // so the Session projection rebuilds and includes the imported track.
+        for (revision, (track, scene)) in
+            (2..).zip([(track, midi_scene), (audio_track, audio_scene)])
+        {
             visual.update(|window, cx| {
                 editor.update(cx, |v, cx| {
                     v.state = Some(Arc::new(hex_session::service::ViewState {
@@ -424,7 +489,7 @@ mod tests {
                         timeline_frames: 384_000,
                         can_undo: false,
                         can_redo: false,
-                        revision: 1,
+                        revision,
                         unsaved: false,
                         document_path: None,
                     }));

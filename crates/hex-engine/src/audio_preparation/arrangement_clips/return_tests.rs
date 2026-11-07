@@ -108,7 +108,9 @@ fn actual_return_buses_and_feed_plan_match_legacy_order_edges_and_propagation() 
             assert_eq!(bus.id, p.return_tracks()[i].id());
             assert!(bus.device_chain.is_empty());
             assert_eq!(Arc::strong_count(&bus.device_chain), 1);
+            assert_eq!(Arc::strong_count(&bus.output_meter), 1);
             assert_ne!(row.handle, 0);
+            assert_ne!(row.meter_handle, 0);
             if i > 0 {
                 assert!(!Arc::ptr_eq(
                     &bus.device_chain,
@@ -130,8 +132,8 @@ fn actual_return_buses_and_feed_plan_match_legacy_order_edges_and_propagation() 
         }
         let report = c.capacity_report().arrangement_clips.returns;
         assert_eq!(report, r.capacity(true).unwrap());
-        assert_eq!(report.independent_handle_obligations, count);
-        assert_eq!(report.reserved_handle_destinations, count);
+        assert_eq!(report.independent_handle_obligations, count * 2);
+        assert_eq!(report.reserved_handle_destinations, count * 2);
         assert_eq!(report.chain_payload_bytes, 0);
         if count > 0 {
             assert!(report.chain_declared_overhead_bytes > 0);

@@ -1,4 +1,6 @@
 //! Native project-scale editor. The worker owns tuning edits and grouped history.
+//! Pitch-line pointers use the shared Window lease only while physically held;
+//! canonical preview/terminal custody remains with TuningGestureClient until ACK.
 mod audition;
 mod broadcast;
 pub(super) mod library;
@@ -6,6 +8,8 @@ pub(super) mod library;
 mod lifecycle_tests;
 mod midi_activity;
 mod plots;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod pointer_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod ui_tests;
 use super::EditorView;
@@ -427,7 +431,7 @@ impl EditorView {
                         && std::rc::Rc::ptr_eq(&view.tuning.control_epoch, &epoch)
                         && !matches!(field, Field::Hz(i) | Field::Cents(i) if i >= view.tuning.value.scale().count())
                     {
-                        view.tuning_numeric(field, *event, cx);
+                        view.tuning_numeric(field, event.clone(), cx);
                     }
                 });
             self.tuning.controls.insert(
@@ -544,7 +548,7 @@ impl EditorView {
         match self.service.submit(Request::TuningGesture(request)) {
             Ok(()) => {
                 self.tuning.client.mark_submitted();
-                self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
+                self.worker_submitted();
                 true
             }
             Err(SubmitError::Full(_)) => false,
@@ -804,6 +808,46 @@ impl EditorView {
         })
         .detach();
     }
+    fn capture_tuning_pointer(&self, window: &mut Window, cx: &Context<Self>) -> bool {
+        let owner = cx.entity().downgrade();
+        let cancelled = owner.clone();
+        let generation = self.project_generation;
+        window.capture_pointer(
+            cx.entity_id(),
+            MouseButton::Left,
+            gpui::CursorStyle::ResizeLeftRight,
+            move |event, window, cx| {
+                let _ = owner.update(cx, |view, cx| {
+                    if view.project_generation != generation || view.tuning.drag.is_none() {
+                        return;
+                    }
+                    // Focus may change before the next completed paint/blur.
+                    // Do not let that press finish a now-unfocused edit.
+                    if !view.tuning.open || !view.tuning.focus.is_focused(window) {
+                        view.tuning_change(view.tuning.value, NumericEventPhase::Cancel);
+                        cx.notify();
+                        return;
+                    }
+                    if let Some(event) = event.downcast_ref::<MouseMoveEvent>() {
+                        view.tuning_pointer_move(event, cx);
+                    } else if let Some(event) = event.downcast_ref::<MouseUpEvent>()
+                        && event.button == MouseButton::Left
+                    {
+                        view.tuning_pointer_up(event, cx);
+                    }
+                });
+            },
+            move |_, cx| {
+                let _ = cancelled.update(cx, |view, cx| {
+                    if view.project_generation == generation && view.tuning.drag.is_some() {
+                        view.tuning_change(view.tuning.value, NumericEventPhase::Cancel);
+                        cx.notify();
+                    }
+                });
+            },
+            cx,
+        )
+    }
     fn tuning_pointer_down(
         &mut self,
         event: &MouseDownEvent,
@@ -849,6 +893,10 @@ impl EditorView {
             cx.notify();
             return;
         }
+        if self.tuning.client.has_pending_terminal() {
+            // The admitted terminal keeps canonical custody, but no pointer.
+            return;
+        }
         self.tuning.focus.focus(window);
         if event.click_count >= 2 {
             if let Some(i) = hit {
@@ -864,6 +912,9 @@ impl EditorView {
                     next,
                     self.tuning.value.audition(),
                 ) {
+                    if !self.capture_tuning_pointer(window, cx) {
+                        return;
+                    }
                     self.tuning_change(tuning, NumericEventPhase::Change);
                     self.tuning.drag = Some(Drag {
                         degree: i,
@@ -873,6 +924,9 @@ impl EditorView {
                 }
             }
         } else if let Some(i) = hit {
+            if !self.capture_tuning_pointer(window, cx) {
+                return;
+            }
             self.tuning.selected = i;
             self.tuning.pair = s.root_degree();
             self.tuning_change(self.tuning.value, NumericEventPhase::Begin);
@@ -1012,14 +1066,13 @@ impl EditorView {
                     cx.listener(move |view, _, _, cx| {
                         let a = view.tuning.value.audition();
                         if let Ok(a) = Audition::new(wave, a.level(), a.attack_ms(), a.release_ms())
-                        {
-                            if let Ok(next) = ProjectTuning::new(
+                            && let Ok(next) = ProjectTuning::new(
                                 view.tuning.value.enabled(),
                                 view.tuning.value.scale(),
                                 a,
-                            ) {
-                                view.tuning_change(next, NumericEventPhase::Commit);
-                            }
+                            )
+                        {
+                            view.tuning_change(next, NumericEventPhase::Commit);
                         }
                         cx.notify();
                     }),
@@ -1037,15 +1090,6 @@ impl EditorView {
             .relative()
             .on_mouse_down(MouseButton::Left, cx.listener(Self::tuning_pointer_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::tuning_pointer_down))
-            .on_mouse_move(cx.listener(|v, e, _, cx| v.tuning_pointer_move(e, cx)))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|v, e, _, cx| v.tuning_pointer_up(e, cx)),
-            )
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(|v, e, _, cx| v.tuning_pointer_up(e, cx)),
-            )
             .child(
                 canvas(
                     {
@@ -1057,7 +1101,18 @@ impl EditorView {
                     {
                         let activity =
                             std::array::from_fn(|degree| self.tuning.degree_activity(degree));
+                        let owner = cx.entity();
                         move |bounds, _, window, cx| {
+                            let view = owner.read(cx);
+                            if view.tuning.drag.is_some()
+                                && view.tuning.open
+                                && view.tuning.focus.is_focused(window)
+                            {
+                                window.renew_pointer_capture(
+                                    owner.entity_id(),
+                                    gpui::CursorStyle::ResizeLeftRight,
+                                );
+                            }
                             plots::pitch(bounds, s, selected, activity, window, cx)
                         }
                     },

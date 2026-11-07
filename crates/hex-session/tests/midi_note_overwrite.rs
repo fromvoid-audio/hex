@@ -26,7 +26,7 @@ fn fraction(n: u64, d: u64) -> BeatTime {
     BeatTime::from_ratio(n, d).unwrap()
 }
 fn receive(service: &Service) -> Event {
-    let until = Instant::now() + Duration::from_secs(10);
+    let until = Instant::now() + std::time::Duration::from_secs(60);
     loop {
         if let Ok(event) = service.try_event() {
             return event;
@@ -132,6 +132,7 @@ impl Fixture {
                 clip,
                 notes: vec![
                     MidiNoteInsert {
+                        active: true,
                         start: BeatTime::ZERO,
                         duration: beat(3),
                         pitch: 60,
@@ -139,6 +140,7 @@ impl Fixture {
                         velocity: 91,
                     },
                     MidiNoteInsert {
+                        active: true,
                         start: fraction(7, 2),
                         duration: fraction(1, 4),
                         pitch: 60,
@@ -146,6 +148,7 @@ impl Fixture {
                         velocity: 103,
                     },
                     MidiNoteInsert {
+                        active: true,
                         start: beat(2),
                         duration: fraction(1, 4),
                         pitch: 64,
@@ -415,6 +418,7 @@ fn source_range_worker_prepares_literal_pcm_history_and_saved_extent_in_both_con
             Command::AddMidiNotes {
                 clip: other,
                 notes: vec![MidiNoteInsert {
+                    active: true,
                     start: fraction(1, 2),
                     duration: fraction(1, 4),
                     pitch: 72,
@@ -501,6 +505,7 @@ fn source_range_worker_prepares_literal_pcm_history_and_saved_extent_in_both_con
             (2, beat(5), fraction(1, 4)),
         ] {
             notes(&mut literal, console).push(MidiNoteSnapshot {
+                active: true,
                 id: first + index as u64,
                 start_raw: start.raw(),
                 duration_raw: duration.raw(),

@@ -87,18 +87,20 @@ pub(super) fn exercise_blocked_sampler_keyboard(
                 [-0.125, -0.125],
                 [0.0, 0.0],
             ],
-            [
-                [0.125, 0.125],
-                [-0.125, -0.125],
-                [0.125, 0.125],
-                [-0.125, -0.125],
-            ],
+            // The mono octave plays faster than unity, so it is band-limited
+            // (#4089): its decimated loop is DC plus a tone at the output
+            // Nyquist, which the kernel's stopband removes. Its steady state
+            // (after the first loop wrap) is the loop mean.
+            [[0.125, 0.125]; 4],
         )
     };
-    for i in 0..64 {
+    // Stereo voices both play at unity and stay literal; the band-limited mono
+    // octave is checked against its steady state within the kernel stopband.
+    let (tolerance, settled) = if stereo { (1e-6, 0) } else { (2e-3, 8) };
+    for i in settled..64 {
         for c in 0..2 {
             assert!(
-                (both[i][c] - root[i % 8][c] - octave[i % 4][c]).abs() < 1e-6,
+                (both[i][c] - root[i % 8][c] - octave[i % 4][c]).abs() < tolerance,
                 "both {i}: {:?}",
                 both[i]
             );
@@ -112,35 +114,55 @@ pub(super) fn exercise_blocked_sampler_keyboard(
     let released = render(h, true);
     for i in 0..64 {
         for c in 0..2 {
-            let tail = if i == 0 {
-                root[0][c]
-            } else if i == 1 {
-                root[1][c] * 0.5
-            } else {
-                0.0
-            };
+            // The authored 2-frame release is raised to the prepared floor.
+            let tail = root[i % 8][c] * super::floored_release_level(i, 2);
             assert!(
-                (released[i][c] - octave[i % 4][c] - tail).abs() < 1e-6,
+                (released[i][c] - octave[i % 4][c] - tail).abs() < tolerance,
                 "release {i}: {:?}",
                 released[i]
             );
         }
     }
     key(visual, "a", true);
+    // The held octave is past its onset here, so the first block repeats
+    // exactly from its settled frames.
+    let retriggered = render(h, true);
     assert_eq!(
-        render(h, true),
-        both,
+        retriggered[settled..],
+        both[settled..],
         "a fresh physical press retriggers alongside the held octave while Service is blocked"
     );
+    for i in 0..settled {
+        for c in 0..2 {
+            assert!(
+                (retriggered[i][c] - root[i % 8][c] - octave[i % 4][c]).abs() < tolerance,
+                "retrigger {i}: {:?}",
+                retriggered[i]
+            );
+        }
+    }
     visual.update(|w, _| w.blur());
     cx.background_executor
         .advance_clock(Duration::from_millis(16));
     visual.run_until_parked();
-    assert!(
-        render(h, true).iter().all(|f| *f == [0.0; 2]),
-        "focus cancellation must bypass the blocked worker: {:?}",
-        cx.update(|cx| hex_ui::sampler_keyboard_test_status(window, cx))
-    );
+    // Cancellation releases this input's gates through the existing source.
+    // Resetting that shared kernel would also erase other contributors/history.
+    // The fixture's release (its two authored frames raised to the prepared
+    // floor) must start in this first callback even while Service is
+    // blocked, then become exactly silent.
+    let cancelled = render(h, true);
+    for (i, frame) in cancelled.iter().enumerate() {
+        for (c, sample) in frame.iter().enumerate() {
+            let expected = (root[i % 8][c] + octave[i % 4][c]) * super::floored_release_level(i, 2);
+            assert!(
+                (sample - expected).abs() < tolerance,
+                "focus cancellation {i}: {:?}; {:?}",
+                frame,
+                cx.update(|cx| hex_ui::sampler_keyboard_test_status(window, cx))
+            );
+        }
+    }
+    assert!(render(h, true).iter().all(|f| *f == [0.0; 2]));
     release.send(()).unwrap();
     // Force the more precise race: worker passed UI cancellation checks but has
     // not yet published activation. The UI already knows this reserved epoch.
@@ -316,7 +338,8 @@ pub(super) fn exercise_blocked_sampler_keyboard(
     let capacity_started = Instant::now();
     let end = capacity_started + h.wait;
     // Seventeen simultaneously held keys exceed the authored16-voice pool.
-    // Refusal is visible without disturbing the CURRENT source or allocating.
+    // Refusal is visible without resetting the sixteen accepted source voices
+    // or allocating. The rejected physical press must not start later.
     for name in [
         "a", "w", "s", "e", "d", "f", "t", "g", "y", "h", "u", "j", "k", "o", "l", "p", ";",
     ] {
@@ -339,7 +362,7 @@ pub(super) fn exercise_blocked_sampler_keyboard(
             .unwrap();
         let rejected = state.contains("computer keyboard note refused");
         if rejected {
-            assert!(output.iter().all(|f| *f == [0.0; 2]));
+            assert!(output.iter().any(|f| *f != [0.0; 2]));
             break;
         }
         assert!(
@@ -364,4 +387,19 @@ pub(super) fn exercise_blocked_sampler_keyboard(
             .unwrap()
             .contains("computer keyboard note refused")
     );
+    for name in [
+        "a", "w", "s", "e", "d", "f", "t", "g", "y", "h", "u", "j", "k", "o", "l", "p",
+    ] {
+        key(visual, name, false);
+    }
+    // All accepted gates release in this callback. Their floored tails may
+    // finish, but the still-held rejected semicolon cannot appear.
+    assert!(
+        render(h, true)[super::RELEASE_FLOOR_FRAMES..]
+            .iter()
+            .all(|f| *f == [0.0; 2])
+    );
+    for _ in 0..3 {
+        assert!(render(h, true).iter().all(|f| *f == [0.0; 2]));
+    }
 }

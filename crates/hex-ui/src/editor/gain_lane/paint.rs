@@ -420,7 +420,8 @@ fn plot(
                             };
                             if inline {
                                 let changed = view.gain_lane.track != Some(track_id);
-                                view.select_track(track_id, window);
+                                // The foreground lane owns its target; choosing a curve
+                                // must not change the retained background clip selection.
                                 view.focus.focus(window);
                                 view.gain_lane.track = Some(track_id);
                                 view.gain_lane.plot_width = rect[2];

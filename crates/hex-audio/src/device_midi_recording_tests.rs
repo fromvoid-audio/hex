@@ -156,6 +156,38 @@ fn receipts(control: &mut prepared::Control) -> Vec<Receipt> {
     std::iter::from_fn(|| control.midi_recording.try_receipt()).collect()
 }
 #[test]
+fn sample_recording_captures_the_live_instrument_during_midi_recording() {
+    use crate::sample_recording::{End, OutputCaptureId, Reader};
+    let (mut control, mut callback, input, target) = fixture(48_000);
+    let mut take = control
+        .sample_recording
+        .start(
+            target.project_generation,
+            &[OutputCaptureId::Track(target.capture.track)],
+            false,
+        )
+        .unwrap();
+    assert!(take.ready());
+    control.midi_recording.begin(target).unwrap();
+    input.set_key(0, Some((60, 100, 1))).unwrap();
+    let mut actual = [[0.0; 2]; 64];
+    assert!(deliver(&mut callback, &mut actual, 2));
+    assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+    control.sample_recording.stop();
+    assert!(deliver(&mut callback, &mut [[0.0; 2]; 64], 2));
+    let mut delivered = false;
+    assert_eq!(
+        take.drain(|frames, _, packet| {
+            assert!(!delivered);
+            assert_eq!(Reader::source_frames(packet, frames, 0), Some(&actual[..]));
+            delivered = true;
+        }),
+        Some(End::Stopped)
+    );
+    assert!(delivered);
+}
+
+#[test]
 fn midi_recording_confirms_short_notes_only_after_real_direct_conversion_and_stop_uses_delivered_clock()
  {
     let (mut control, mut callback, input, target) = fixture(48_000);
@@ -233,6 +265,26 @@ fn midi_recording_confirms_short_notes_only_after_real_direct_conversion_and_sto
     assert_eq!(control.status.position.load(Acquire), 0);
 }
 #[test]
+fn device_error_aborts_a_queued_midi_take_before_the_next_callback() {
+    let (mut control, mut callback, _input, target) = fixture(48_000);
+    control.midi_recording.begin(target).unwrap();
+    control
+        .status
+        .device_fault
+        .store(true, std::sync::atomic::Ordering::Release);
+    counted(|| callback.begin_block());
+    assert!(matches!(
+        receipts(&mut control).as_slice(),
+        [Receipt::Aborted {
+            reason: AbortReason::OutputFailed,
+            last_delivered: None,
+            ..
+        }]
+    ));
+    assert!(control.midi_recording.begin(target).is_err());
+}
+
+#[test]
 fn midi_recording_conversion_failure_aborts_without_publishing_armed_or_notes() {
     let (mut control, mut callback, input, target) = fixture(48_000);
     control.midi_recording.begin(target).unwrap();
@@ -280,6 +332,74 @@ fn midi_recording_stop_racing_render_retains_only_previously_delivered_prefix_on
         })
     ));
 }
+#[test]
+fn midi_receipt_pressure_preserves_delivered_prefix_and_terminal_through_stop() {
+    let (mut control, mut callback, input, target) = fixture(96_000);
+    control.midi_recording.begin(target).unwrap();
+    for event in 0..=1024_u64 {
+        if event % 2 == 0 {
+            input.set_key(0, Some((60, 100, event / 2 + 1))).unwrap();
+        } else {
+            input.set_key(0, None).unwrap();
+        }
+        assert!(deliver(&mut callback, &mut [[0.0; 2]; 1], 2));
+        if event % 2 == 1 {
+            // Allow released instrument voices to retire without draining the
+            // independent recording receipt queue.
+            for _ in 0..2 {
+                assert!(deliver(&mut callback, &mut [[0.0; 2]; 64], 2));
+            }
+        }
+    }
+    let next = Target {
+        capture: hex_engine::midi_capture::MidiCaptureBinding {
+            take_id: target.capture.take_id + 1,
+            ..target.capture
+        },
+        ..target
+    };
+    assert!(control.midi_recording.begin(next).is_err());
+    control.stop();
+    counted(|| callback.begin_block());
+    let all = receipts(&mut control);
+    assert!(matches!(all.first(), Some(Receipt::Armed { .. })));
+    assert_eq!(all.len(), 1026, "terminal: {:?}", all.last());
+    for (index, receipt) in all[1..1025].iter().enumerate() {
+        let Receipt::Note {
+            target: receipt_target,
+            note,
+            content_frame,
+        } = receipt
+        else {
+            panic!("unexpected receipt at {index}: {receipt:?}");
+        };
+        let expected = if index % 2 == 0 {
+            MidiCaptureEvent::On {
+                pitch: 60,
+                velocity: 100,
+            }
+        } else {
+            MidiCaptureEvent::Off
+        };
+        assert_eq!(*receipt_target, target);
+        assert_eq!(note.event, expected);
+        assert_eq!(*content_frame, 8 + index as u64 + 128 * (index as u64 / 2));
+        assert_eq!(note.performance_frame, *content_frame);
+        assert_eq!(note.occurrence_id, index as u64 / 2 + 1);
+    }
+    assert!(
+        matches!(
+            all.last(),
+            Some(Receipt::Aborted { reason: AbortReason::ReceiptPressure, last_delivered: Some(clock), .. })
+                if clock.content_frame == 8 + 1025 + 128 * 512
+                    && clock.performance_frame == clock.content_frame
+        ),
+        "terminal: {:?}",
+        all.last()
+    );
+    assert!(control.midi_recording.begin(next).is_ok());
+}
+
 #[test]
 fn midi_recording_overflow_racing_stop_aborts_and_explicit_cancel_cannot_become_finish() {
     for cancel in [false, true] {

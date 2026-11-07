@@ -42,7 +42,7 @@ pub(super) struct StrokeContext {
     pub(super) effective_grid: MidiGrid,
     pub(super) snap_modifier: bool,
     pub(super) pitch_modifier: bool,
-    pub(super) view_start: u64,
+    pub(super) view_start: i128,
     pub(super) view_span: u64,
     pub(super) pitch_low: u8,
     pub(super) pitch_rows: u8,
@@ -56,8 +56,8 @@ impl StrokeContext {
     /// previews only; canonical growth occurs once, through the typed edit.
     pub(super) fn authoring_length(self) -> Option<u64> {
         self.view_start
-            .checked_add(self.view_span)
-            .map(|end| end.max(self.clip_length))
+            .checked_add(i128::from(self.view_span))
+            .and_then(|end| u64::try_from(end.max(i128::from(self.clip_length))).ok())
     }
 
     fn is_valid(self) -> bool {
@@ -65,9 +65,11 @@ impl StrokeContext {
             && self.view_span > 0
             && self.clip_length > 0
             && self.view_span <= super::midi_scene::zoom_limit(self.clip_length)
-            && self.view_start
-                == super::midi_scene::clamp_start(self.view_start, self.clip_length, self.view_span)
-            && self.view_start.checked_add(self.view_span).is_some()
+            && self.view_start == super::midi_scene::clamp_start(self.view_start, self.view_span)
+            && self
+                .view_start
+                .checked_add(i128::from(self.view_span))
+                .is_some()
             && super::midi_scene::valid_pitch_range(self.pitch_low, self.pitch_rows)
             && self.bounds.is_valid()
             && self.draw_mode
@@ -222,10 +224,10 @@ impl MidiStroke {
             baseline_probes: 0,
             cancelled: false,
         };
-        if let Some(id) = down_hit {
-            if !stroke.baseline_note_has_pitch(id, initial_cell.pitch) {
-                return Err(StrokeError::InvalidBaseline);
-            }
+        if let Some(id) = down_hit
+            && !stroke.baseline_note_has_pitch(id, initial_cell.pitch)
+        {
+            return Err(StrokeError::InvalidBaseline);
         }
         stroke
             .baseline_cache
@@ -280,6 +282,11 @@ impl MidiStroke {
         } else {
             Ok(false)
         }
+    }
+
+    /// Immutable frame and down anchor retained across preview/traversal updates.
+    pub(super) fn admission(&self) -> (StrokeContext, u64, u8) {
+        (self.context, self.anchor, self.down_pitch)
     }
 
     pub(super) fn shared_preview(&self) -> Arc<StrokePreview> {
@@ -490,6 +497,7 @@ impl MidiStroke {
                 return self.cancel_with(StrokeError::InvalidPoint);
             };
             let note = MidiNoteInsert {
+                active: true,
                 start: hex_project::BeatTime::from_raw(onset),
                 duration: hex_project::BeatTime::from_raw(duration),
                 pitch: cell.pitch,
@@ -536,6 +544,7 @@ impl MidiStroke {
             }
         }
         preview.removed.sort_unstable();
+        preview.removed.dedup();
         preview
             .inserted
             .sort_unstable_by_key(|note| (note.start.raw(), note.pitch));
@@ -1082,6 +1091,70 @@ mod tests {
     }
 
     #[test]
+    fn erasing_multiple_cells_of_one_note_has_unique_valid_preview_and_command() {
+        let (mut editor, clip) = fixture(beat(4));
+        let Created::Note(note) = editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_quarters(2).unwrap(),
+                pitch: 60,
+                channel: 2,
+                velocity: 93,
+            })
+            .unwrap()
+        else {
+            panic!("note expected");
+        };
+        let c = context(clip, beat(4), MidiGrid::Sixteenth, false);
+        let mut stroke = MidiStroke::begin_with_hit(
+            c,
+            beat(4),
+            baseline(&editor, clip),
+            StrokePoint {
+                beat_raw: 0,
+                pitch: 60,
+            },
+            Some(note),
+        )
+        .unwrap();
+        stroke
+            .update(
+                c,
+                false,
+                StrokePoint {
+                    beat_raw: beat(1),
+                    pitch: 60,
+                },
+            )
+            .unwrap();
+        let preview = stroke.shared_preview();
+        assert_eq!(preview.removed, [note]);
+        assert!(preview.inserted.is_empty());
+        assert!(
+            editor
+                .project()
+                .midi_source(clip)
+                .unwrap()
+                .preview_note_overwrite(&preview.removed, &preview.inserted)
+                .is_ok()
+        );
+        let command = stroke.finish(c, false).unwrap().unwrap();
+        let (_, remove, insert) = command_parts(command.clone());
+        assert_eq!(remove, preview.removed);
+        assert!(insert.is_empty());
+        editor.execute(command).unwrap();
+        assert!(
+            editor
+                .project()
+                .midi_source(clip)
+                .unwrap()
+                .notes()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn preview_snapshots_are_shared_until_a_cell_action_changes() {
         let (editor, clip) = fixture(beat(4));
         let grid = MidiGrid::Sixteenth;
@@ -1552,19 +1625,25 @@ mod tests {
         let (_, clip) = fixture(beat(1));
         let base = context(clip, beat(1), MidiGrid::Sixteenth, false);
         let blank = StrokeContext {
-            view_start: beat(8),
+            view_start: i128::from(beat(8)),
             view_span: beat(4),
             ..base
         };
         assert!(blank.is_valid());
         assert_eq!(blank.authoring_length(), Some(beat(12)));
+        let distant = StrokeContext {
+            view_start: i128::from(beat(1024)),
+            ..blank
+        };
+        assert!(distant.is_valid());
+        assert_eq!(distant.authoring_length(), Some(beat(1028)));
         for invalid in [
             StrokeContext {
-                view_start: beat(16),
+                view_span: super::super::midi_scene::zoom_limit(blank.clip_length) + 1,
                 ..blank
             },
             StrokeContext {
-                view_start: u64::MAX,
+                view_start: i128::MAX,
                 view_span: 1,
                 ..blank
             },

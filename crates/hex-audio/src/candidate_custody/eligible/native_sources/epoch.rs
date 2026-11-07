@@ -58,6 +58,9 @@ impl Custody {
             {
                 return Err("native epoch effect custody differs");
             }
+            if effect.parameter_change_pending()? {
+                return Err("native epoch requires parameter input terminal");
+            }
             let binding = Binding {
                 graph,
                 epoch: bank.sources.next_epoch,

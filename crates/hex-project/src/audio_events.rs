@@ -8,6 +8,11 @@ pub const MAX_AUDIO_EVENTS: usize = 1_024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioEvent {
+    /// Inactive events retain their source and geometry but contribute silence.
+    pub active: bool,
+    /// Independent saved amplitude after the source read/event fade and before
+    /// the container fade/outer clip gain. Unity preserves the original samples.
+    pub gain: crate::ClipGain,
     /// Zero reads an ordinary root; grouped events require a retained source ID.
     /// Nonzero source coordinates read that root's finite output in frames.
     pub source: u64,
@@ -28,8 +33,7 @@ impl AudioEvent {
 }
 
 /// Immutable full processing/source custody for one grouped event source.
-/// The captured tempo preserves the original warp/fade projection. Nested
-/// multi-root sources are refused; a group never recursively prepares groups.
+/// The captured tempo preserves the original warp/fade projection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RetainedAudioRoot {
     pub id: u64,
@@ -48,6 +52,32 @@ pub struct AudioEvents {
 /// source-window one-shots have no such root and refuse these edits explicitly.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AudioEventEdit {
+    SetGain {
+        event: u64,
+        gain: crate::ClipGain,
+    },
+    SetRetainedGain {
+        sources: Vec<u64>,
+        event: u64,
+        gain: crate::ClipGain,
+    },
+    /// Set the activation of existing event identities atomically.
+    SetActive {
+        events: Vec<u64>,
+        active: bool,
+    },
+    /// Set activation within one retained source without flattening its processing.
+    SetRetainedActive {
+        source: u64,
+        events: Vec<u64>,
+        active: bool,
+    },
+    /// Set activation inside a bounded path of retained source identities.
+    SetRetainedPathActive {
+        sources: Vec<u64>,
+        events: Vec<u64>,
+        active: bool,
+    },
     SetFade {
         event: u64,
         fade: Option<AudioEventFade>,
@@ -62,6 +92,12 @@ pub enum AudioEventEdit {
     Move {
         event: u64,
         start: u64,
+    },
+    /// Copy one event to a signed root-clock position with a fresh identity.
+    /// The destination may overwrite other events but must leave the source intact.
+    Duplicate {
+        event: u64,
+        start: i64,
     },
     MoveRange {
         start: u64,
@@ -89,6 +125,21 @@ pub enum AudioEventEdit {
         length: u64,
         events: Vec<AudioEvent>,
     },
+    /// Place one event anywhere on its clip's free event timeline. `start` is a
+    /// signed root-clock position relative to the current root origin; a frame
+    /// one-shot root first becomes a grouped timeline. A raw source loop keeps
+    /// its source phase. The destination grows within the processing budget.
+    Place {
+        event: u64,
+        start: i64,
+    },
+    /// Move a half-open selection to a signed root coordinate. Complete
+    /// events keep their IDs. A split gives the right fragment a fresh ID.
+    PlaceRange {
+        start: u64,
+        end: u64,
+        destination: i64,
+    },
 }
 impl AudioEvents {
     /// Re-express frame events in Q32.32 beats using the retained root origin.
@@ -115,6 +166,8 @@ impl AudioEvents {
             .map_err(|_| Invalid("audio event timing projection allocation failed"))?;
         for event in &self.events {
             let mut projected = AudioEvent {
+                active: event.active,
+                gain: event.gain,
                 source: event.source,
                 id: event.id,
                 start: position(event.start)?,
@@ -168,6 +221,8 @@ impl AudioEvents {
             sources: Vec::new(),
             next_id: 2,
             events: vec![AudioEvent {
+                active: true,
+                gain: crate::ClipGain::UNITY,
                 source: 0,
                 id: 1,
                 start: 0,
@@ -186,15 +241,8 @@ impl AudioEvents {
         }
         let mut ids = std::collections::BTreeSet::new();
         for source in &self.sources {
-            if source.id == 0
-                || !ids.insert(source.id)
-                || source
-                    .clip
-                    .audio_edit()
-                    .and_then(|edit| edit.domain.events.as_ref())
-                    .is_some_and(|events| !events.sources.is_empty())
-            {
-                return Err(Invalid("invalid or nested retained audio root"));
+            if source.id == 0 || !ids.insert(source.id) {
+                return Err(Invalid("invalid retained audio root identity"));
             }
         }
         self.validate_geometry(length)
@@ -285,14 +333,131 @@ impl AudioEvents {
         if self.events.len() > MAX_AUDIO_EVENTS + 2 {
             return Err(Invalid("audio event view limit reached"));
         }
+        if matches!(
+            operation,
+            AudioEventEdit::Place { .. } | AudioEventEdit::PlaceRange { .. }
+        ) {
+            return Err(Invalid(
+                "free audio event placement edits the clip's whole timeline",
+            ));
+        }
         let next = self.edited_inner(operation, length)?;
         next.validate(length)?;
         Ok(next)
+    }
+    // Retained leaf metadata keeps its original processing/source custody. The
+    // command owner validates the restored leaf against project media before commit.
+    fn edit_retained(&mut self, source: u64, operation: AudioEventEdit) -> Result<(), Invalid> {
+        let root = self
+            .sources
+            .iter_mut()
+            .find(|root| root.id == source)
+            .ok_or(Invalid("retained audio source no longer exists"))?;
+        let mut edit = root.clip.audio_event_root();
+        let original = root.clip.editable_audio_events()?;
+        let changed = original.edited(operation, edit.domain.clock.length())?;
+        if changed != original {
+            Arc::make_mut(&mut edit.domain).events = Some(Arc::new(changed));
+            root.clip.edit = Some(Arc::new(edit));
+        }
+        Ok(())
     }
     fn edited_inner(&self, operation: AudioEventEdit, length: u64) -> Result<Self, Invalid> {
         self.validate_geometry(length)?;
         let mut next = self.clone();
         match operation {
+            AudioEventEdit::Place { .. } | AudioEventEdit::PlaceRange { .. } => {
+                return Err(Invalid(
+                    "free audio event placement edits the clip's whole timeline",
+                ));
+            }
+            AudioEventEdit::SetRetainedPathActive {
+                sources,
+                events,
+                active,
+            } => {
+                if sources.is_empty()
+                    || sources.len() > crate::retained_audio::MAX_RETAINED_AUDIO_DEPTH
+                {
+                    return Err(Invalid("invalid retained audio source path"));
+                }
+                let root = next
+                    .sources
+                    .iter_mut()
+                    .find(|root| root.id == sources[0])
+                    .ok_or(Invalid("retained audio source no longer exists"))?;
+                let mut edit = root.clip.audio_event_root();
+                let original = root.clip.editable_audio_events()?;
+                let operation = if sources.len() == 1 {
+                    AudioEventEdit::SetActive { events, active }
+                } else {
+                    AudioEventEdit::SetRetainedPathActive {
+                        sources: sources[1..].to_vec(),
+                        events,
+                        active,
+                    }
+                };
+                let changed = original.edited(operation, edit.domain.clock.length())?;
+                if changed != original {
+                    Arc::make_mut(&mut edit.domain).events = Some(Arc::new(changed));
+                    root.clip.edit = Some(Arc::new(edit));
+                }
+            }
+            AudioEventEdit::SetRetainedActive {
+                source,
+                events,
+                active,
+            } => {
+                next.edit_retained(source, AudioEventEdit::SetActive { events, active })?;
+            }
+            AudioEventEdit::SetRetainedGain {
+                sources,
+                event,
+                gain,
+            } => {
+                if sources.len() > crate::MAX_RETAINED_AUDIO_DEPTH {
+                    return Err(Invalid("invalid retained audio source path"));
+                }
+                let Some((&source, rest)) = sources.split_first() else {
+                    return Err(Invalid("invalid retained audio source path"));
+                };
+                let operation = if rest.is_empty() {
+                    AudioEventEdit::SetGain { event, gain }
+                } else {
+                    AudioEventEdit::SetRetainedGain {
+                        sources: rest.to_vec(),
+                        event,
+                        gain,
+                    }
+                };
+                next.edit_retained(source, operation)?;
+            }
+            AudioEventEdit::SetGain { event, gain } => {
+                next.events
+                    .iter_mut()
+                    .find(|candidate| candidate.id == event)
+                    .ok_or(Invalid("audio event no longer exists"))?
+                    .gain = gain;
+            }
+            AudioEventEdit::SetActive { mut events, active } => {
+                if events.is_empty() || events.len() > MAX_AUDIO_EVENTS {
+                    return Err(Invalid("invalid audio event activation batch"));
+                }
+                events.sort_unstable();
+                if events.windows(2).any(|pair| pair[0] == pair[1]) {
+                    return Err(Invalid("duplicate audio event identity"));
+                }
+                let mut matched = 0;
+                for event in &mut next.events {
+                    if events.binary_search(&event.id).is_ok() {
+                        event.active = active;
+                        matched += 1;
+                    }
+                }
+                if matched != events.len() {
+                    return Err(Invalid("audio event no longer exists"));
+                }
+            }
             AudioEventEdit::SetFade { event, fade } => {
                 let index = next
                     .events
@@ -366,6 +531,31 @@ impl AudioEvents {
                     },
                     length,
                 )?;
+            }
+            AudioEventEdit::Duplicate { event, start } => {
+                let source = next
+                    .events
+                    .iter()
+                    .find(|item| item.id == event)
+                    .copied()
+                    .ok_or(Invalid("audio event no longer exists"))?;
+                let start = u64::try_from(start)
+                    .map_err(|_| Invalid("audio event duplicate precedes its container"))?;
+                let end = start
+                    .checked_add(source.length())
+                    .filter(|end| *end <= length)
+                    .ok_or(Invalid("audio event duplicate exceeds its container"))?;
+                if start < source.end && source.start < end {
+                    return Err(Invalid("audio event duplicate overlaps its source"));
+                }
+                next.carve(start, end)?;
+                let id = next.id()?;
+                next.events.push(AudioEvent {
+                    id,
+                    start,
+                    end,
+                    ..source
+                });
             }
             AudioEventEdit::Move { event, start } => {
                 let index = next
@@ -493,6 +683,30 @@ impl AudioEvents {
         next.validate_geometry(length)?;
         Ok(next)
     }
+    pub(crate) fn place_range(
+        self,
+        start: u64,
+        end: u64,
+        destination: u64,
+        length: u64,
+    ) -> Result<Self, Invalid> {
+        // Split before removing the selection so complete events and
+        // untouched left fragments keep their original identities.
+        let mut next = self.edited_inner(AudioEventEdit::SplitRange { start, end }, length)?;
+        let first = next.events.partition_point(|event| event.start < start);
+        let last = next.events.partition_point(|event| event.start < end);
+        let moved: Vec<_> = next.events.drain(first..last).collect();
+        next.carve(destination, destination + (end - start))?;
+        next.events
+            .extend(moved.into_iter().map(|event| AudioEvent {
+                start: destination + (event.start - start),
+                end: destination + (event.end - start),
+                ..event
+            }));
+        next.events.sort_by_key(|event| event.start);
+        next.validate(length)?;
+        Ok(next)
+    }
     pub fn copy_range(&self, start: u64, end: u64) -> Vec<AudioEvent> {
         self.events
             .iter()
@@ -557,14 +771,41 @@ pub(crate) fn apply(
             Invalid("clip no longer exists")
         }
     })?;
+    if matches!(
+        operation,
+        AudioEventEdit::Place { .. }
+            | AudioEventEdit::PlaceRange { .. }
+            | AudioEventEdit::Duplicate { .. }
+    ) {
+        let candidate = crate::audio_event_timeline::prepare(project, clip, &operation)?;
+        *project.clip_mut(clip)? = candidate;
+        return Ok(());
+    }
     let mut edit = original
         .audio_edit()
         .cloned()
         .unwrap_or_else(|| AudioClipEdit::capture(original));
     let events = original.editable_audio_events()?;
+    let retained_source = match &operation {
+        AudioEventEdit::SetRetainedActive { source, .. } => Some(*source),
+        AudioEventEdit::SetRetainedPathActive { sources, .. }
+        | AudioEventEdit::SetRetainedGain { sources, .. } => sources.first().copied(),
+        _ => None,
+    };
     let next = events.edited(operation, edit.domain.clock.length())?;
     if next == events {
         return Ok(());
+    }
+    // Validate retained roots against their original media and processing clock
+    // before installing any changed source into the candidate clip.
+    if let Some(root) =
+        retained_source.and_then(|id| next.sources.iter().find(|root| root.id == id))
+    {
+        project.restore_retained_audio_root(
+            root.id,
+            root.clip.retained_snapshot(),
+            Arc::clone(&root.tempo),
+        )?;
     }
     Arc::make_mut(&mut edit.domain).events = Some(Arc::new(next));
     let asset = project
@@ -578,6 +819,134 @@ pub(crate) fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn gain_is_local_atomic_and_survives_split_trim_copy_and_inactivation() {
+        let initial = AudioEvents::identity(100);
+        let gain = crate::ClipGain::new(-6_000).unwrap();
+        assert!(
+            initial
+                .edited(AudioEventEdit::SetGain { event: 99, gain }, 100)
+                .is_err()
+        );
+        assert_eq!(initial.events[0].gain, crate::ClipGain::UNITY);
+        let gained = initial
+            .edited(AudioEventEdit::SetGain { event: 1, gain }, 100)
+            .unwrap();
+        assert_eq!(gained.events[0].gain, gain);
+        assert_eq!(
+            gained
+                .edited(AudioEventEdit::SetGain { event: 1, gain }, 100)
+                .unwrap(),
+            gained
+        );
+        let split = gained
+            .edited(AudioEventEdit::Split { at: 40 }, 100)
+            .unwrap();
+        assert!(split.events.iter().all(|event| event.gain == gain));
+        let other = crate::ClipGain::new(3_000).unwrap();
+        let changed = split
+            .edited(
+                AudioEventEdit::SetGain {
+                    event: 2,
+                    gain: other,
+                },
+                100,
+            )
+            .unwrap();
+        assert_eq!(changed.events[0], split.events[0]);
+        let trimmed = changed
+            .edited(
+                AudioEventEdit::Trim {
+                    event: 2,
+                    start: 50,
+                    end: 90,
+                },
+                100,
+            )
+            .unwrap();
+        let inactive = trimmed
+            .edited(
+                AudioEventEdit::SetActive {
+                    events: vec![2],
+                    active: false,
+                },
+                100,
+            )
+            .unwrap();
+        assert_eq!(inactive.events[1].gain, other);
+        let copied = inactive.copy_range(20, 90);
+        let pasted = initial
+            .edited(
+                AudioEventEdit::Paste {
+                    at: 0,
+                    length: 70,
+                    events: copied,
+                },
+                100,
+            )
+            .unwrap();
+        assert_eq!(pasted.events[0].gain, gain);
+        assert!(
+            pasted
+                .events
+                .iter()
+                .any(|event| !event.active && event.gain == other)
+        );
+    }
+
+    #[test]
+    fn activation_is_atomic_and_survives_split_and_copy() {
+        let initial = AudioEvents::identity(100);
+        assert!(
+            initial
+                .edited(
+                    AudioEventEdit::SetActive {
+                        events: vec![1, 2],
+                        active: false
+                    },
+                    100
+                )
+                .is_err()
+        );
+        assert!(
+            initial
+                .edited(
+                    AudioEventEdit::SetActive {
+                        events: vec![1, 1],
+                        active: false
+                    },
+                    100
+                )
+                .is_err()
+        );
+        let inactive = initial
+            .edited(
+                AudioEventEdit::SetActive {
+                    events: vec![1],
+                    active: false,
+                },
+                100,
+            )
+            .unwrap();
+        let split = inactive
+            .edited(AudioEventEdit::Split { at: 40 }, 100)
+            .unwrap();
+        assert!(split.events.iter().all(|event| !event.active));
+        let copied = split.copy_range(10, 50);
+        assert_eq!(copied.len(), 2);
+        assert!(copied.iter().all(|event| !event.active));
+        let pasted = split
+            .edited(
+                AudioEventEdit::Paste {
+                    at: 50,
+                    length: 40,
+                    events: copied,
+                },
+                100,
+            )
+            .unwrap();
+        assert!(pasted.events.iter().all(|event| !event.active));
+    }
     #[test]
     fn split_move_overwrite_trim_and_range_clipboard_preserve_source_coordinates() {
         let identity = AudioEvents::identity(100);
@@ -864,6 +1233,8 @@ mod range_tests {
             next_id: MAX_AUDIO_EVENTS as u64 + 1,
             events: (0..MAX_AUDIO_EVENTS as u64)
                 .map(|i| AudioEvent {
+                    active: true,
+                    gain: crate::ClipGain::UNITY,
                     source: 0,
                     id: i + 1,
                     start: i * 4,
@@ -908,6 +1279,8 @@ mod cropped_capacity_regression {
             next_id: 1025,
             events: (0..1024)
                 .map(|i| AudioEvent {
+                    active: true,
+                    gain: crate::ClipGain::UNITY,
                     source: 0,
                     id: i + 1,
                     start: i * 4,

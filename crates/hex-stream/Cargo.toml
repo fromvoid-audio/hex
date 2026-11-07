@@ -7,6 +7,7 @@ publish.workspace = true
 
 [features]
 allocation-probe = []
+test-support = []
 
 [lints]
 workspace = true
@@ -15,6 +16,7 @@ workspace = true
 hex-engine = { path = "../hex-engine" }
 hex-media = { path = "../hex-media" }
 hex-project = { path = "../hex-project" }
+hex-storage = { path = "../hex-storage" }
 rtrb = "=0.3.4"
 
 [dev-dependencies]
@@ -22,3 +24,7 @@ allocation-counter = "=0.8.1"
 
 [build-dependencies]
 sha2 = "=0.11.0"
+
+[[test]]
+name = "callback_allocations"
+required-features = ["allocation-probe"]

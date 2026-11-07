@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 fn press(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
     visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
-    visual.simulate_keystrokes("cmd-d");
+    visual.simulate_keystrokes("d");
 }
 
 fn all_ids(view: &EditorView) -> Vec<ClipId> {
@@ -27,9 +27,7 @@ fn all_ids(view: &EditorView) -> Vec<ClipId> {
 }
 
 #[gpui::test]
-fn shift_selected_audio_group_command_d_copies_all_members_and_repeats_after_ack(
-    cx: &mut TestAppContext,
-) {
+fn shift_selected_audio_group_d_copies_all_members_and_repeats_after_ack(cx: &mut TestAppContext) {
     let (_files, handle, editor, originals) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     click(&mut visual, originals[0], false);
@@ -51,7 +49,7 @@ fn shift_selected_audio_group_command_d_copies_all_members_and_repeats_after_ack
     press(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(v.duplicate_intent.is_pending());
-        assert_eq!(v.duplicate_intent.queued_repeats, 1);
+        assert_eq!(v.duplicate_intent.queued.len(), 1);
         assert_eq!(
             v.selected_clip_ids(),
             originals,
@@ -94,9 +92,7 @@ fn shift_selected_audio_group_command_d_copies_all_members_and_repeats_after_ack
 }
 
 #[gpui::test]
-fn mixed_and_midi_only_clip_selection_command_d_selects_actual_committed_births(
-    cx: &mut TestAppContext,
-) {
+fn mixed_and_midi_only_clip_selection_d_selects_actual_committed_births(cx: &mut TestAppContext) {
     let (_files, handle, editor, originals) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     editor.update(&mut visual, |v, _| {
@@ -206,7 +202,7 @@ fn escape_and_selection_aba_cancel_repeats_but_retain_admitted_duplicate(cx: &mu
                 v.duplicate_intent.is_pending(),
                 "input cancellation cannot abandon admitted custody"
             );
-            assert_eq!(v.duplicate_intent.queued_repeats, 0);
+            assert_eq!(v.duplicate_intent.queued.len(), 0);
         });
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
@@ -248,7 +244,7 @@ fn earlier_terminal_and_refusal_without_legacy_duplicate_flag_retire_only_owned_
         assert_eq!(v.worker_requests_pending, 2);
     });
     let receive = |editor: &Entity<EditorView>, visual: &mut VisualTestContext| {
-        let until = Instant::now() + Duration::from_secs(10);
+        let until = crate::test_wait::hang_deadline();
         loop {
             let event = editor.read_with(&*visual, |v, _| v.service.try_event().ok());
             if let Some(event) = event {
@@ -283,7 +279,7 @@ fn earlier_terminal_and_refusal_without_legacy_duplicate_flag_retire_only_owned_
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert!(!v.duplicate_intent.is_pending());
-        assert_eq!(v.duplicate_intent.queued_repeats, 0);
+        assert_eq!(v.duplicate_intent.queued.len(), 0);
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), unchanged);
         assert_eq!(all_ids(v), originals);
     });
@@ -310,7 +306,10 @@ fn queued_duplicate_repeats_are_bounded_and_escape_discards_only_repeat_intentio
             v.duplicate_selected();
         }
         v.duplicate_selected();
-        assert_eq!(v.duplicate_intent.queued_repeats, MAX_QUEUED_REPEATS);
+        assert_eq!(
+            v.duplicate_intent.queued.len(),
+            usize::from(MAX_QUEUED_REPEATS)
+        );
         assert!(v.error.as_deref().unwrap().contains("maximum 32"));
     });
     visual.simulate_keystrokes("escape");
@@ -333,10 +332,11 @@ fn close_prompt_preserves_previously_accepted_duplicate_continuations(cx: &mut T
         editor.update(cx, |v, cx| {
             assert!(!v.request_window_close(window, cx));
             assert!(v.close_prompt_open);
-            assert_eq!(v.duplicate_intent.queued_repeats, 1);
+            assert_eq!(v.duplicate_intent.queued.len(), 1);
             v.duplicate_selected();
             assert_eq!(
-                v.duplicate_intent.queued_repeats, 1,
+                v.duplicate_intent.queued.len(),
+                1,
                 "modal sheet rejects new presses"
             );
         })
@@ -512,7 +512,7 @@ fn confirmed_new_project_cancels_repeats_without_stranding_future_duplication(
                 v.duplicate_intent.is_pending(),
                 "admitted edit still owns its terminal"
             );
-            assert_eq!(v.duplicate_intent.queued_repeats, 0);
+            assert_eq!(v.duplicate_intent.queued.len(), 0);
         })
     });
     pump(&editor, &mut visual);
@@ -548,4 +548,265 @@ fn confirmed_new_project_cancels_repeats_without_stranding_future_duplication(
         assert!(v.error.is_none(), "{:?}", v.error);
         assert_eq!(all_ids(v).len(), 2);
     });
+}
+
+#[gpui::test]
+fn alias_and_independent_intentions_keep_order_through_delayed_terminals(cx: &mut TestAppContext) {
+    let (_files, handle, editor, originals) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    click(&mut visual, originals[0], false);
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
+    visual.simulate_keystrokes("cmd-d d cmd-d");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.duplicate_intent.pending.as_ref().unwrap().kind,
+            DuplicateKind::Alias
+        );
+        assert_eq!(
+            v.duplicate_intent
+                .queued
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![DuplicateKind::Independent, DuplicateKind::Alias]
+        );
+        assert_eq!(v.state.as_ref().unwrap().revision, before);
+        assert_eq!(v.selected_clip, Some(originals[0]));
+    });
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().revision, before)
+        });
+    }
+    pump(&editor, &mut visual);
+    let selected = editor.read_with(&visual, |v, _| {
+        assert!(v.error.is_none(), "{:?}", v.error);
+        assert!(!v.duplicate_intent.is_pending());
+        let p = &v.state.as_ref().unwrap().project;
+        let at = |start| {
+            p.tracks()[0]
+                .clips()
+                .iter()
+                .find(|c| c.start() == start)
+                .unwrap()
+                .id()
+        };
+        let first_group = p.clip_alias(at(48_000)).unwrap();
+        assert_eq!(Some(first_group), p.clip_alias(at(72_000)));
+        let second_group = p.clip_alias(at(96_000)).unwrap();
+        assert_eq!(Some(second_group), p.clip_alias(at(120_000)));
+        assert_ne!(first_group, second_group);
+        assert_eq!(v.selected_clip, Some(at(120_000)));
+        at(120_000)
+    });
+    let marker = Box::leak(format!("clip-alias-{}", selected.value()).into_boxed_str());
+    let header = Box::leak(format!("clip-name-{}", selected.value()).into_boxed_str());
+    let icon = visual.debug_bounds(marker).unwrap();
+    let header = visual.debug_bounds(header).unwrap();
+    assert!(icon.origin.x >= header.origin.x && icon.right() <= header.right());
+    assert!(icon.origin.y >= header.origin.y && icon.bottom() <= header.bottom());
+    visual.simulate_keystrokes("i");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.error.is_none(), "{:?}", v.error);
+        assert_eq!(v.state.as_ref().unwrap().project.clip_alias(selected), None);
+        assert_eq!(v.selected_clip, Some(selected));
+    });
+    assert!(visual.debug_bounds(marker).is_none());
+}
+
+#[gpui::test]
+fn console_alias_duplicate_selects_committed_cell_and_repeats_in_order(cx: &mut TestAppContext) {
+    for midi in [false, true] {
+        let (_files, handle, editor, originals) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        let track = editor.read_with(&visual, |v, _| {
+            v.state.as_ref().unwrap().project.tracks()[0].id()
+        });
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::AddScene {
+                name: "first".into()
+            })))
+        });
+        pump(&editor, &mut visual);
+        let scene = editor.read_with(&visual, |v, _| {
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .scenes()
+                .last()
+                .unwrap()
+                .id()
+        });
+        let command = if midi {
+            Command::CreateSessionMidiClip {
+                track,
+                scene,
+                name: "midi".into(),
+                source_length: BeatTime::from_quarters(4).unwrap(),
+            }
+        } else {
+            Command::CopyArrangementAudioClipToSession {
+                source: originals[0],
+                scene,
+            }
+        };
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(command)))
+        });
+        pump(&editor, &mut visual);
+        let source = editor.read_with(&visual, |v, _| {
+            match v
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .session_cell(track, scene)
+                .unwrap()
+            {
+                SessionCellContent::Audio(c) => c.id(),
+                SessionCellContent::Midi(c) => c.id(),
+                _ => panic!("clip"),
+            }
+        });
+        visual.update(|window, cx| {
+            editor.update(cx, |v, cx| {
+                if midi {
+                    v.select_session_midi(track, scene, source);
+                } else {
+                    v.select_session_cell(track, scene);
+                }
+                v.focus.focus(window);
+                cx.notify();
+            })
+        });
+        visual.simulate_keystrokes("cmd-d cmd-d");
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(
+                v.selected_cell,
+                Some((track, scene)),
+                "source selection owns held terminal"
+            );
+            assert_eq!(v.duplicate_intent.queued.len(), 1);
+        });
+        pump(&editor, &mut visual);
+        let selected = editor.read_with(&visual, |v, _| {
+            assert!(v.error.is_none(), "{:?}", v.error);
+            assert!(!v.duplicate_intent.is_pending());
+            let p = &v.state.as_ref().unwrap().project;
+            let (owner, destination) = v.selected_cell.unwrap();
+            assert_eq!(owner, track);
+            assert_ne!(destination, scene);
+            let id = match p.session_cell(track, destination).unwrap() {
+                SessionCellContent::Audio(c) => c.id(),
+                SessionCellContent::Midi(c) => c.id(),
+                _ => panic!("copied clip"),
+            };
+            assert_eq!(p.clip_alias(source), p.clip_alias(id));
+            assert!(p.clip_alias(id).is_some());
+            id
+        });
+        let marker = Box::leak(format!("clip-alias-{}", selected.value()).into_boxed_str());
+        assert!(visual.debug_bounds(marker).is_some());
+        visual.simulate_keystrokes("d");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert!(v.error.is_none(), "{:?}", v.error);
+            let p = &v.state.as_ref().unwrap().project;
+            let (track, scene) = v.selected_cell.unwrap();
+            let id = match p.session_cell(track, scene).unwrap() {
+                SessionCellContent::Audio(c) => c.id(),
+                SessionCellContent::Midi(c) => c.id(),
+                _ => panic!("independent clip"),
+            };
+            assert_ne!(id, selected);
+            assert!(p.clip_alias(id).is_none());
+        });
+    }
+}
+
+#[gpui::test]
+fn alias_keys_leave_text_and_foreground_automation_ownership_intact(cx: &mut TestAppContext) {
+    let (_files, handle, editor, originals) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    click(&mut visual, originals[0], false);
+    visual.simulate_keystrokes("cmd-d");
+    pump(&editor, &mut visual);
+    let (clip, revision, alias) = editor.read_with(&visual, |v, _| {
+        let clip = v.selected_clip.unwrap();
+        (
+            clip,
+            v.state.as_ref().unwrap().revision,
+            v.state.as_ref().unwrap().project.clip_alias(clip).unwrap(),
+        )
+    });
+    visual.simulate_keystrokes("cmd-r");
+    visual.simulate_keystrokes("d i cmd-d");
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert!(v.clip_name_edit.is_some());
+        assert!(!v.duplicate_intent.is_pending());
+        assert_eq!(v.state.as_ref().unwrap().revision, revision);
+        assert_eq!(
+            v.state.as_ref().unwrap().project.clip_alias(clip),
+            Some(alias)
+        );
+    });
+    visual.simulate_keystrokes("escape");
+    visual.update(|window, cx| {
+        editor.update(cx, |v, cx| {
+            v.automation_view.enabled = true;
+            v.focus.focus(window);
+            cx.notify();
+        })
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("d i cmd-d");
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert!(!v.duplicate_intent.is_pending());
+        assert_eq!(v.state.as_ref().unwrap().revision, revision);
+        assert_eq!(
+            v.state.as_ref().unwrap().project.clip_alias(clip),
+            Some(alias)
+        );
+    });
+}
+
+#[gpui::test]
+fn diagnostics_reconstruct_real_pointer_shortcut_and_worker_receipt_without_text(
+    cx: &mut TestAppContext,
+) {
+    let directory =
+        std::env::temp_dir().join(format!("hex-input-action-log-{}", std::process::id()));
+    let mut log =
+        hex_diagnostics::SessionLog::start_with_context(directory.clone(), "fixture source")
+            .unwrap();
+    cx.update(|cx| {
+        crate::install_session_log(cx, Ok(log.handle()));
+        crate::install_action_diagnostics(cx, true);
+    });
+    let (_files, handle, editor, originals) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    click(&mut visual, originals[0], false);
+    press(&editor, &mut visual);
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert_ne!(view.selected_clip, Some(originals[0]));
+    });
+    log.shutdown().unwrap();
+    let text = std::fs::read_to_string(log.path()).unwrap();
+    assert!(text.contains("stage=pointer_down"), "{text}");
+    assert!(text.contains("stage=key"), "{text}");
+    assert!(text.contains("stage=handler"), "{text}");
+    assert!(text.contains("duplicate_clips"), "{text}");
+    assert!(text.contains("ui_action_id: Some("), "{text}");
+    assert!(text.contains("ClientReceived"), "{text}");
+    assert!(text.contains("stage=view_observed"), "{text}");
+    println!("diagnostic fixture log:\n{text}");
+    std::fs::remove_dir_all(directory).unwrap();
 }

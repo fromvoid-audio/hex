@@ -190,7 +190,7 @@ impl Active {
                         .ok()
                         .and_then(|p| p.inner.loan.as_ref())
                         .is_some_and(|loan| {
-                            loan.is_protected(
+                            loan.is_resource_protected(
                                 ProtectionRole::Candidate,
                                 stamp,
                                 &w.extents[token.slot],

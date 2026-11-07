@@ -9,12 +9,18 @@ fn export_pcm(service: &Service, path: PathBuf) -> Vec<[i16; 2]> {
             frames: Some(8),
             signal: ExportSignal::Main,
             control: Default::default(),
+            format: hex_export::ExportFormat::Pcm16,
             overwrite: false,
         })
         .unwrap();
     assert!(event(service).error.is_none());
     let result = export_event(service);
-    assert!(result.result.is_ok(), "{:?}", result.result);
+    assert!(
+        result.result.is_ok(),
+        "{}: {:?}",
+        path.display(),
+        result.result
+    );
     fs::read(path).unwrap()[44..]
         .chunks_exact(4)
         .map(|f| {
@@ -206,6 +212,8 @@ fn failed_original_open_preserves_document_history_media_and_existing_sound() {
         "unassigned-missing",
         "missing-facts",
         "cap-before-decode",
+        "future-project",
+        "malformed-project",
     ] {
         let files = Files::new(false);
         let unassigned = Files::new(false);
@@ -232,6 +240,7 @@ fn failed_original_open_preserves_document_history_media_and_existing_sound() {
         service.submit(Request::SaveNew(saved.clone())).unwrap();
         let before = event(&service);
         assert!(before.error.is_none());
+        let saved_bytes = fs::read(&saved).unwrap();
         let original = fs::read(&files.source).unwrap();
         let mut open_path = saved.clone();
         match case {
@@ -270,9 +279,20 @@ fn failed_original_open_preserves_document_history_media_and_existing_sound() {
                 )
                 .unwrap();
             }
+            "future-project" => {
+                let mut document: serde_json::Value = serde_json::from_slice(&saved_bytes).unwrap();
+                document["version"] = (hex_storage::NEWEST_SCHEMA_VERSION + 1).into();
+                open_path = saved.with_file_name("future.hex");
+                fs::write(&open_path, serde_json::to_vec(&document).unwrap()).unwrap();
+            }
+            "malformed-project" => {
+                open_path = saved.with_file_name("malformed.hex");
+                fs::write(&open_path, b"{ invalid project").unwrap();
+            }
             _ => panic!("case"),
         }
-        service.submit(Request::Open(open_path)).unwrap();
+        let rejected_bytes = fs::read(&open_path).unwrap();
+        service.submit(Request::Open(open_path.clone())).unwrap();
         let refused = event(&service);
         assert!(
             refused.open_complete && !refused.project_replaced && refused.error.is_some(),
@@ -300,6 +320,11 @@ fn failed_original_open_preserves_document_history_media_and_existing_sound() {
                 refused.error
             );
         }
+        if case == "future-project" {
+            assert!(refused.error.as_ref().unwrap().contains("newer schema"));
+        }
+        assert_eq!(fs::read(&open_path).unwrap(), rejected_bytes, "{case}");
+        assert_eq!(fs::read(&saved).unwrap(), saved_bytes, "{case}");
         assert_eq!(
             refused.state.project.snapshot(),
             before.state.project.snapshot(),
@@ -325,10 +350,10 @@ fn failed_original_open_preserves_document_history_media_and_existing_sound() {
         );
         assert!(refused.playback.is_none());
         let expected = [4096, 10240, 16384, 6144, -4096, -2048, 0, 0].map(|n| [n, n]);
-        assert_eq!(
-            export_pcm(&service, files.output.clone()),
-            expected,
-            "old actual sound after {case}"
+        assert_pcm_near(
+            &export_pcm(&service, files.output.clone()),
+            &expected,
+            &format!("old actual sound after {case}"),
         );
     }
 }
@@ -388,7 +413,11 @@ fn original_relative_media_and_save_as_keep_the_original_base_and_content() {
     let reopened = event(&service);
     assert!(reopened.error.is_none(), "{:?}", reopened.error);
     let expected = [4096, 10240, 16384, 6144, -4096, -2048, 0, 0].map(|n| [n, n]);
-    assert_eq!(export_pcm(&service, files.output.clone()), expected);
+    assert_pcm_near(
+        &export_pcm(&service, files.output.clone()),
+        &expected,
+        "relocated original",
+    );
 }
 
 #[test]
@@ -442,7 +471,7 @@ fn held_export_and_new_original_reconstruction_share_one_finite_union() {
         release.send(()).unwrap();
         assert!(export_event(&service).result.is_ok());
         if frames == 7 {
-            let end = Instant::now() + Duration::from_secs(2);
+            let end = Instant::now() + crate::test_wait::HANG_BOUND;
             loop {
                 service.submit(Request::Open(saved.clone())).unwrap();
                 let retried = event(&service);
@@ -488,6 +517,7 @@ fn original_open_caps_ordinary_decode_at_saved_frames_before_alias_construction(
             current: Some(snapshot.selection()),
             ..Admission::default()
         },
+        &mut Default::default(),
     )
     .unwrap();
     let saved = native.source.with_file_name("mixed.hex");
@@ -563,6 +593,7 @@ fn replacement_snapshot_counts_old_original_and_legacy_pcm_before_compiler_entry
                 old_files.source.clone(),
                 None,
                 Admission::default(),
+                &mut Default::default(),
             )
             .unwrap();
             ServiceExportSnapshot {
@@ -583,6 +614,8 @@ fn replacement_snapshot_counts_old_original_and_legacy_pcm_before_compiler_entry
         )
         .unwrap();
         let allowance = sources.compiler_factory_allowance().unwrap();
+        // This precompiler allowance includes future factory/proof owners;
+        // both the one-under refusal and exact-budget admission happen below.
         let admission = Admission {
             current: Some(old_snapshot.selection()),
             ..Admission::default()
@@ -631,4 +664,169 @@ fn replacement_snapshot_counts_old_original_and_legacy_pcm_before_compiler_entry
         assert_eq!(old.project().snapshot(), before);
         assert_eq!((old.can_undo(), old.can_redo()), history);
     }
+}
+
+#[test]
+fn retained_sampler_source_reopens_unassigned_and_rebinds_without_losing_original_pcm_or_state() {
+    let files = Files::new(true);
+    let saved = files.source.with_file_name("retained-source.hex");
+    let service = Service::with_native_reservation(16000, 32, 1024, reservation()).unwrap();
+    let (track, before) = authored(&service);
+    service
+        .submit(request(&before, track, files.source.clone()))
+        .unwrap();
+    let loaded = event(&service);
+    assert!(loaded.error.is_none(), "{:?}", loaded.error);
+    let source = loaded
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let definition = loaded.state.project.native_source(source).unwrap().clone();
+    let device = definition.instrument().id();
+    let mut expected_definition = hex_project::NativeSourceSnapshot::from(&definition);
+    expected_definition.receiver = None;
+    let expected = export_pcm(&service, files.source.with_file_name("before.wav"));
+    assert!(expected.iter().any(|f| *f != [0; 2]));
+    let unlinked = edit(
+        &service,
+        Command::BindTrackSource {
+            track,
+            source: None,
+        },
+    );
+    assert!(unlinked.error.is_none(), "{:?}", unlinked.error);
+    assert_eq!(
+        unlinked
+            .state
+            .project
+            .native_source(source)
+            .map(hex_project::NativeSourceSnapshot::from),
+        Some(expected_definition.clone())
+    );
+    assert_eq!(
+        export_pcm(&service, files.source.with_file_name("unlinked.wav")),
+        vec![[0; 2]; 8]
+    );
+    let removed = edit(&service, Command::RemoveTrack(track));
+    assert!(removed.error.is_none(), "{:?}", removed.error);
+    assert_eq!(
+        removed
+            .state
+            .project
+            .native_source(source)
+            .map(hex_project::NativeSourceSnapshot::from),
+        Some(expected_definition.clone())
+    );
+    service.submit(Request::SaveNew(saved.clone())).unwrap();
+    assert!(event(&service).error.is_none());
+    service
+        .submit(Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: None,
+        })
+        .unwrap();
+    assert!(event(&service).error.is_none());
+    service.submit(Request::Open(saved)).unwrap();
+    let reopened = event(&service);
+    assert!(reopened.error.is_none(), "{:?}", reopened.error);
+    assert_eq!(
+        reopened
+            .state
+            .project
+            .native_source(source)
+            .map(hex_project::NativeSourceSnapshot::from),
+        Some(expected_definition.clone())
+    );
+    let new_track = edit(
+        &service,
+        Command::AddMidiTrack {
+            name: "reuse".into(),
+        },
+    );
+    let Some(Created::Track(new_track)) = new_track.created else {
+        panic!("new track")
+    };
+    let rebound = edit(
+        &service,
+        Command::BindTrackSource {
+            track: new_track,
+            source: Some(source),
+        },
+    );
+    assert!(rebound.error.is_none(), "{:?}", rebound.error);
+    expected_definition.receiver = Some(new_track.value());
+    assert_eq!(
+        rebound
+            .state
+            .project
+            .native_source(source)
+            .map(hex_project::NativeSourceSnapshot::from),
+        Some(expected_definition.clone())
+    );
+    assert_eq!(
+        rebound
+            .state
+            .project
+            .track(new_track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id(),
+        device
+    );
+    assert!(
+        rebound
+            .state
+            .project
+            .track(new_track)
+            .unwrap()
+            .devices()
+            .is_empty()
+    );
+    let placed = edit(
+        &service,
+        Command::PlaceMidiClip {
+            track: new_track,
+            start: hex_project::BeatTime::ZERO,
+            length: hex_project::BeatTime::ONE,
+        },
+    );
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("clip")
+    };
+    assert!(
+        edit(
+            &service,
+            Command::AddMidiNote {
+                clip,
+                start: hex_project::BeatTime::ZERO,
+                duration: hex_project::BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 127
+            }
+        )
+        .error
+        .is_none()
+    );
+    assert_eq!(
+        export_pcm(&service, files.source.with_file_name("reused.wav")),
+        expected
+    );
+    service
+        .submit(Request::Edit(Command::RemoveNativeSource(source)))
+        .unwrap();
+    let refused = event(&service);
+    assert!(refused.error.is_some(), "bound source removal must refuse");
+    assert_eq!(
+        refused
+            .state
+            .project
+            .native_source(source)
+            .map(hex_project::NativeSourceSnapshot::from),
+        Some(expected_definition)
+    );
 }

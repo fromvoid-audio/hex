@@ -130,15 +130,16 @@ pub(crate) fn session_source_note_has_occurrence(
     offset: BeatTime,
     note: &MidiNote,
 ) -> bool {
-    source_note_has_repeat_occurrence(source, note)
-        || source_note_has_intro_occurrence(source, note)
-            && note
-                .start()
-                .raw()
-                .saturating_add(note.duration().raw())
-                .min(source.effective_end().raw())
-                .saturating_sub(source.source_start().raw())
-                > offset.raw()
+    note.active()
+        && (source_note_has_repeat_occurrence(source, note)
+            || source_note_has_intro_occurrence(source, note)
+                && note
+                    .start()
+                    .raw()
+                    .saturating_add(note.duration().raw())
+                    .min(source.effective_end().raw())
+                    .saturating_sub(source.source_start().raw())
+                    > offset.raw())
 }
 
 fn source_note_has_intro_occurrence(source: &MidiSource, note: &MidiNote) -> bool {
@@ -343,7 +344,15 @@ impl PreparedMidiSourceTemplate {
                 .map_err(|_| MidiTemplateError::LoopPeriodTooShortForAdmission)?;
         }
 
-        let note_count = if active { source_data.notes().len() } else { 0 };
+        let note_count = if active {
+            source_data
+                .notes()
+                .iter()
+                .filter(|note| note.active())
+                .count()
+        } else {
+            0
+        };
         let max_edges = note_count
             .checked_mul(4)
             .ok_or(MidiTemplateError::ArithmeticOverflow)?;
@@ -373,7 +382,11 @@ impl PreparedMidiSourceTemplate {
                     .map_err(|error| MidiTemplateError::InvalidSource(error.0))?,
             )
         };
-        for note in source_data.notes().iter().filter(|_| active) {
+        for note in source_data
+            .notes()
+            .iter()
+            .filter(|note| active && note.active())
+        {
             let note_start = note.start().raw();
             let note_end = note_start
                 .checked_add(note.duration().raw())
@@ -394,21 +407,17 @@ impl PreparedMidiSourceTemplate {
                     intro.push(SourceEdge::from_note(offset, MidiEventKind::NoteOff, note));
                 }
             }
-            if source_note_has_repeat_occurrence(source_data, note) {
-                if let Some((loop_start, loop_end)) = source.loop_range() {
-                    let gate_end = note_end.min(loop_end.raw());
-                    require_positive_frame_advance(
-                        gate_end - note_start,
-                        sample_rate,
-                        max_micro_bpm,
-                    )
+            if source_note_has_repeat_occurrence(source_data, note)
+                && let Some((loop_start, loop_end)) = source.loop_range()
+            {
+                let gate_end = note_end.min(loop_end.raw());
+                require_positive_frame_advance(gate_end - note_start, sample_rate, max_micro_bpm)
                     .map_err(|_| MidiTemplateError::GateTooShortForAdmission)?;
-                    let onset = note_start - loop_start.raw();
-                    let offset = gate_end - loop_start.raw();
-                    repeat_spans.push(SourceSpan::from_note(onset, offset, note));
-                    repeats.push(SourceEdge::from_note(onset, MidiEventKind::NoteOn, note));
-                    repeats.push(SourceEdge::from_note(offset, MidiEventKind::NoteOff, note));
-                }
+                let onset = note_start - loop_start.raw();
+                let offset = gate_end - loop_start.raw();
+                repeat_spans.push(SourceSpan::from_note(onset, offset, note));
+                repeats.push(SourceEdge::from_note(onset, MidiEventKind::NoteOn, note));
+                repeats.push(SourceEdge::from_note(offset, MidiEventKind::NoteOff, note));
             }
         }
         sort_edges(&mut intro);
@@ -787,7 +796,7 @@ impl SourceSpan {
 
 pub(crate) use spans::{
     CurrentSamplerEventCustody, MidiReleaseVoice, TransportDensitySpan,
-    admit_transport_loop_density,
+    admit_held_transport_loop_density, admit_transport_loop_density,
 };
 pub use spans::{
     MIDI_SPAN_BUFFER_CAPACITY, MidiInstrumentRenderContext, MidiRenderSpan, MidiSpanBuffer,
@@ -893,7 +902,7 @@ fn ceil_div(numerator: u128, denominator: u128) -> Result<u128, MidiTemplateErro
         return Err(MidiTemplateError::ArithmeticOverflow);
     }
     let quotient = numerator / denominator;
-    if numerator % denominator == 0 {
+    if numerator.is_multiple_of(denominator) {
         Ok(quotient)
     } else {
         quotient

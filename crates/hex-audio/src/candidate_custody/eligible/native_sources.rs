@@ -12,13 +12,17 @@ use hex_plugin_host::native::{
 };
 use hex_plugin_scan::macos::build_identity::InstanceBuild;
 
+mod capture;
 mod completion;
 mod definition;
 mod effect;
 mod endpoints;
 mod epoch;
 pub(super) mod ordinary;
+mod parameter_extension;
+mod program;
 mod references;
+mod state_approval;
 pub(crate) use ordinary::OrdinaryNativeReferences;
 mod resources;
 pub(crate) use endpoints::{NativeEndpointBank, NativeEndpointEnvelope};
@@ -131,7 +135,10 @@ struct Slot {
     starting: bool,
     retiring: bool,
     facts: Option<hex_plugin_host::protocol::Facts>,
-    presentation: Option<hex_plugin_host::protocol::Presentation>,
+    presentation: Option<(
+        hex_plugin_host::protocol::Presentation,
+        hex_plugin_host::protocol::PresentationPlan,
+    )>,
     processor: Option<hex_lattice::PreparedForeignProcessor>,
     cancellation: Option<Cancellation>,
     cancellation_requested: bool,
@@ -176,6 +183,10 @@ pub(super) struct Bank {
     resources: Option<resources::PoolResources>,
 }
 impl Bank {
+    pub(super) fn cleanup_failed(&self) -> bool {
+        self.slots.iter().any(|s| s.phase == Phase::Failed)
+    }
+
     pub(super) fn occupied(&self) -> bool {
         self.slots.iter().any(|s| s.phase != Phase::Vacant)
     }
@@ -552,7 +563,7 @@ impl Custody {
             },
             _ if slot.presentation.is_some() => NativeSourcePreparationProgress::Prepared {
                 facts: slot.facts?,
-                presentation: slot.presentation?,
+                presentation: slot.presentation?.0,
             },
             Phase::Reserved => NativeSourcePreparationProgress::Preparing,
             _ => NativeSourcePreparationProgress::Facts(slot.facts?),
@@ -820,6 +831,21 @@ fn native_pool_preflight(
 }
 
 impl CandidateRoot {
+    pub(crate) fn has_vacant_native_source_slots(&self, needed: usize) -> bool {
+        self.0.eligible.bank.try_lock().is_ok_and(|bank| {
+            !bank.closing
+                && bank.sources.limits.is_some()
+                && bank
+                    .sources
+                    .slots
+                    .iter()
+                    .filter(|slot| slot.phase == Phase::Vacant)
+                    .take(needed)
+                    .count()
+                    == needed
+        })
+    }
+
     fn require_native_source_control_open(&self) -> Result<(), &'static str> {
         let bank = lock(&self.0.bank);
         if bank.closing || bank.retiring {
@@ -886,6 +912,21 @@ impl CandidateRoot {
         )
     }
     pub(crate) fn native_source_endpoint_status(&self, binding: Binding) -> Option<(bool, bool)> {
+        self.with_native_source_endpoint(binding, |loaned, endpoint| {
+            (loaned, endpoint.transport_is_live_on_control())
+        })
+    }
+
+    pub(crate) fn take_native_source_failure_diagnostic(&self, binding: Binding) -> Option<String> {
+        self.with_native_source_endpoint(binding, |_, endpoint| {
+            endpoint.take_failure_diagnostic_on_control()
+        })?
+    }
+    fn with_native_source_endpoint<T>(
+        &self,
+        binding: Binding,
+        read: impl FnOnce(bool, NativeEffectReference<'_>) -> T,
+    ) -> Option<T> {
         let work = self.0.eligible.work.try_lock().ok()?;
         let bank = self.0.eligible.bank.try_lock().ok()?;
         let index = bank.sources.index(binding)?;
@@ -898,16 +939,12 @@ impl CandidateRoot {
         {
             return None;
         }
-        let live = match work.sources.cells.get(index)?.owner.as_ref()? {
-            Owner::Effect(effect) => {
-                NativeEffectReference::Unsplit(effect).transport_is_live_on_control()
-            }
-            Owner::Loaned(control) => {
-                NativeEffectReference::Loaned(control).transport_is_live_on_control()
-            }
+        let endpoint = match work.sources.cells.get(index)?.owner.as_ref()? {
+            Owner::Effect(effect) => NativeEffectReference::Unsplit(effect),
+            Owner::Loaned(control) => NativeEffectReference::Loaned(control),
             _ => return None,
         };
-        Some((slot.endpoint_loaned, live))
+        Some(read(slot.endpoint_loaned, endpoint))
     }
     #[cfg(feature = "allocation-probe")]
     pub(crate) fn native_source_completed_blocks(&self, binding: Binding) -> Option<u64> {

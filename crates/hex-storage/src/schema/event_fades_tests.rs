@@ -108,7 +108,7 @@ fn schema41_migration_acquires_absent_fades_and_retains_the_entire_predecessor()
         Ok(())
     })
     .unwrap();
-    let original = Project::from_snapshot(snapshot).unwrap();
+    let original = Project::from_legacy_snapshot(snapshot).unwrap();
     // The actual published schema41 codec, never a manually invented layout.
     let genuine41 =
         serde_json::to_vec(&super::super::content_views::encode(&original).unwrap()).unwrap();

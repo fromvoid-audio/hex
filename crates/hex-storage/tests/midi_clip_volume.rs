@@ -360,3 +360,36 @@ fn current_volume_limits_refuse_at_the_inventory_boundary() {
             .contains("clip volume inventory limit reached")
     );
 }
+
+#[test]
+fn consolidated_legacy_gains_and_curves_roundtrip_with_boundary_jumps() {
+    let (mut editor, first, _, second, _) = fixture();
+    for (clip, db, volume) in [
+        (first, -6000, curve(0.0, 2.0)),
+        (second, 6000, curve(2.0, 0.0)),
+    ] {
+        editor
+            .execute(Command::ReplaceMidiClipVolume { clip, volume })
+            .unwrap();
+        editor
+            .execute(Command::SetMidiClipGain {
+                clip,
+                gain: hex_project::ClipGain::new(db).unwrap(),
+            })
+            .unwrap();
+    }
+    assert_eq!(
+        decode(&encode(editor.project()).unwrap()).unwrap(),
+        *editor.project()
+    );
+    let Created::Clip(group) = editor
+        .execute(Command::GroupClips(vec![first, second]))
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    let reopened = decode(&encode(editor.project()).unwrap()).unwrap();
+    assert_eq!(reopened, *editor.project());
+    let volume = reopened.midi_clip(group).unwrap().volume();
+    assert_ne!(volume.gain_before(beat(16)), volume.gain_at(beat(16)));
+}

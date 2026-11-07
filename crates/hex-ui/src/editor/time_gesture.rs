@@ -63,6 +63,7 @@ impl EditorView {
             );
             return false;
         };
+        let horizon = self.viewport_horizon(horizon);
         let viewport = self.visible_viewport(horizon);
         let edge = edge_direction(x, lane);
         let elapsed = now

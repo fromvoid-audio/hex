@@ -7,6 +7,21 @@ pub(crate) fn command_for_snapshot(
     session: &Session,
     snapshot: GestureSnapshot,
 ) -> Result<Command, SessionError> {
+    if let Some(group) = snapshot.track_gains {
+        if snapshot.target
+            != (GestureTarget::TrackGains {
+                track: group.anchor(),
+            })
+            || snapshot.creation.is_some()
+            || snapshot.parameters.is_some()
+            || snapshot.secondary_value.is_some()
+        {
+            return Err(SessionError::Invalid("selected gain cohort target changed"));
+        }
+        return group
+            .command(session.project(), track_gain_value(snapshot.value)?)
+            .map_err(SessionError::from);
+    }
     if let Some(creation) = snapshot.creation {
         let GestureTarget::EqNodeCreation { device } = snapshot.target else {
             return Err(SessionError::Invalid("eq creation target changed"));
@@ -26,9 +41,21 @@ pub(crate) fn command_for_snapshot(
             current.state(),
             &parameters,
         )?;
-        return Ok(Command::ReplaceDeviceState { device, state });
+        return Ok(manual_device_edit(
+            session,
+            device,
+            state,
+            snapshot
+                .touched_parameters
+                .ids(&parameters)
+                .map_err(SessionError::Invalid)?,
+            snapshot.manual_edit,
+        ));
     }
     match snapshot.target {
+        GestureTarget::PluginParameter { .. } => Err(SessionError::Invalid(
+            "plugin parameter commit requires original host capture",
+        )),
         GestureTarget::TrackGain { track } => Ok(Command::Gain {
             track,
             gain: track_gain_value(snapshot.value)?,
@@ -49,19 +76,13 @@ pub(crate) fn command_for_snapshot(
             return_track,
             gain: send_gain(snapshot.value)?,
         }),
-        GestureTarget::DeviceParameter { device, parameter } => {
-            let current = session
-                .project()
-                .device(device)
-                .ok_or(SessionError::Invalid("device no longer exists"))?;
-            let state = hex_engine::patch_native_device_parameter_for_class(
-                session.native_device_class(device)?,
-                current.state(),
-                parameter,
-                snapshot.value,
-            )?;
-            Ok(Command::ReplaceDeviceState { device, state })
-        }
+        GestureTarget::DeviceParameter { device, parameter } => device_parameter_command(
+            session.project(),
+            device,
+            parameter,
+            snapshot.value,
+            snapshot.manual_edit,
+        ),
         GestureTarget::DeviceParameterPair {
             device,
             first,
@@ -92,10 +113,102 @@ pub(crate) fn command_for_snapshot(
                 second,
                 second_value,
             )?;
-            Ok(Command::ReplaceDeviceState { device, state })
+            Ok(manual_device_edit(
+                session,
+                device,
+                state,
+                [first, second],
+                snapshot.manual_edit,
+            ))
         }
-        GestureTarget::DeviceParameterSnapshot { .. } | GestureTarget::EqNodeCreation { .. } => {
+        GestureTarget::TrackGains { .. }
+        | GestureTarget::DeviceParameterSnapshot { .. }
+        | GestureTarget::EqNodeCreation { .. } => {
             Err(SessionError::Invalid("snapshot parameters are missing"))
         }
+    }
+}
+
+/// Reconstruct the same single-parameter intent against an authoritative
+/// snapshot. This owns validated command construction, never source facts.
+pub(crate) fn device_parameter_command(
+    project: &Project,
+    device: DeviceId,
+    parameter: ParameterId,
+    value: ParameterValue,
+    manual_edit: bool,
+) -> Result<Command, SessionError> {
+    let current = project
+        .device(device)
+        .ok_or(SessionError::Invalid("device no longer exists"))?;
+    let state = hex_engine::patch_native_device_parameter_for_class(
+        Session::native_device_class_for_project(project, device)?,
+        current.state(),
+        parameter,
+        value,
+    )?;
+    Ok(manual_device_edit_for_project(
+        project,
+        device,
+        state,
+        [parameter],
+        manual_edit,
+    ))
+}
+
+/// One neutral manual-selection seam for keyed gestures and trusted direct edits.
+/// Unsupported/source-owned targets retain their ordinary base-state edit behavior.
+pub(crate) fn manual_device_edit(
+    session: &Session,
+    device: DeviceId,
+    state: hex_lattice_contract::NativeDeviceState,
+    parameters: impl IntoIterator<Item = ParameterId>,
+    manual_edit: bool,
+) -> Command {
+    manual_device_edit_for_project(session.project(), device, state, parameters, manual_edit)
+}
+fn manual_device_edit_for_project(
+    project: &Project,
+    device: DeviceId,
+    state: hex_lattice_contract::NativeDeviceState,
+    parameters: impl IntoIterator<Item = ParameterId>,
+    manual_edit: bool,
+) -> Command {
+    if !manual_edit {
+        return Command::ReplaceDeviceState { device, state };
+    }
+    let mut targets: Vec<_> = parameters
+        .into_iter()
+        .map(automation_target)
+        .filter(|target| {
+            project
+                .device(device)
+                .and_then(|device| device.automation_target(*target))
+                .is_some()
+                && hex_engine::project_device_automation_target_supported(project, device, *target)
+        })
+        .collect();
+    targets.sort_unstable();
+    targets.dedup();
+    if targets.is_empty() {
+        Command::ReplaceDeviceState { device, state }
+    } else {
+        Command::ManualDeviceEdit {
+            device,
+            state,
+            targets,
+        }
+    }
+}
+pub(crate) fn automation_target(
+    parameter: ParameterId,
+) -> hex_lattice_contract::DeviceAutomationTarget {
+    use hex_lattice_contract::DeviceAutomationTarget as Target;
+    if parameter == hex_engine::DEVICE_INPUT_GAIN.id {
+        Target::HostInputGain
+    } else if parameter == hex_engine::DEVICE_OUTPUT_GAIN.id {
+        Target::HostOutputGain
+    } else {
+        Target::Parameter(parameter)
     }
 }

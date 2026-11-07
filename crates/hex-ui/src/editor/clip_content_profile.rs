@@ -106,7 +106,7 @@ fn headless_time_selection_framework_profile(cx: &mut TestAppContext) {
         view.begin_open_request(Request::Open(path));
         cx.notify();
     });
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         editor.update(cx, |view, cx| {
             view.tick(cx);

@@ -3,7 +3,10 @@ use super::*;
 use std::time::Instant;
 
 fn receive(service: &Service) -> Event {
-    service.events.recv_timeout(Duration::from_secs(5)).unwrap()
+    service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap()
 }
 fn run(service: &Service, request: Request) -> Event {
     service.submit(request).unwrap();
@@ -118,6 +121,7 @@ fn ordinary_export_source_remains_charged_through_new_cancel_and_physical_comple
                 frames: Some(12),
                 signal: hex_export::ExportSignal::Main,
                 control: control.clone(),
+                format: hex_export::ExportFormat::Pcm16,
                 overwrite: false,
             },
         );
@@ -153,7 +157,7 @@ fn ordinary_export_source_remains_charged_through_new_cancel_and_physical_comple
         release.send(()).unwrap();
         // Only the real worker's post-drop terminal (consumed by canonical control)
         // can release A. Do not poll the public ExportEvent before admission succeeds.
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         loop {
             service.submit(import()).unwrap();
             let imported = receive(&service);
@@ -167,7 +171,7 @@ fn ordinary_export_source_remains_charged_through_new_cancel_and_physical_comple
         }
         let exported = service
             .export_events
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(crate::test_wait::HANG_BOUND)
             .unwrap();
         assert_eq!(exported.result.is_err(), cancel);
         if cancel {
@@ -178,12 +182,14 @@ fn ordinary_export_source_remains_charged_through_new_cancel_and_physical_comple
                 .chunks_exact(4)
                 .map(|frame| i16::from_le_bytes([frame[0], frame[1]]))
                 .collect::<Vec<_>>();
-            assert_eq!(
-                left,
-                [
-                    4096, 6144, 8192, 10240, 12288, 14336, 16384, 12970, 9557, 6144, 2731, -683
-                ]
-            );
+            let expected = [
+                4096, 6144, 8192, 10240, 12288, 14336, 16384, 12970, 9557, 6144, 2731, -683,
+            ];
+            // PCM16 export applies ±1 LSB TPDF dither.
+            assert_eq!(left.len(), expected.len());
+            for (actual, expected) in left.iter().zip(expected) {
+                assert!((i32::from(*actual) - expected).abs() <= 1, "{left:?}");
+            }
         }
     }
 }
@@ -191,8 +197,7 @@ fn ordinary_export_source_remains_charged_through_new_cancel_and_physical_comple
 #[test]
 fn ordinary_export_scope_budget_and_failed_dispatch_refuse_without_publishing() {
     let files = sampler_export::tests::Files::new(false);
-    let (mut session, private) = sampler_export::tests::direct_sampler(&files);
-    drop(private);
+    let mut session = interactive_sampler_session(&files);
     let mut sink = OfflineSink {
         observed: Arc::new(Observed::default()),
         pending: None,
@@ -224,6 +229,14 @@ fn ordinary_export_scope_budget_and_failed_dispatch_refuse_without_publishing() 
     let (stop, wait) = mpsc::sync_channel(1);
     let worker = thread::spawn(move || wait.recv().unwrap());
     let mut lane = ExportLane::new(work, completion, worker);
+    struct StopWorker(mpsc::SyncSender<()>);
+    impl Drop for StopWorker {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+    // Release the worker before lane's joining Drop, including assertion unwinds.
+    let _stop_worker = StopWorker(stop);
     let before = session.project().clone();
     let refs = Arc::strong_count(&snapshot.prepared);
     let mut missing = sampler_export::tests::job(&source, files.output().to_owned());
@@ -307,5 +320,4 @@ fn ordinary_export_scope_budget_and_failed_dispatch_refuse_without_publishing() 
     assert_eq!(Arc::strong_count(&snapshot.prepared), refs);
     assert_eq!(session.project(), &before);
     assert!(!files.output().exists());
-    stop.send(()).unwrap();
 }

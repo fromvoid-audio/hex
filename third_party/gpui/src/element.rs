@@ -272,8 +272,13 @@ impl<C: RenderOnce> IntoElement for Component<C> {
 }
 
 /// A globally unique identifier for an element, used to track state across frames.
+///
+/// Keep short paths inline without carrying 32 entries through every draw phase
+/// and state-map operation. Longer paths spill into SmallVec's existing dynamic
+/// storage: this is not a depth limit. Equality, hashing and display retain the
+/// entire ordered path. Window's active and deferred stacks use the same capacity.
 #[derive(Deref, DerefMut, Default, Debug, Eq, PartialEq, Hash)]
-pub struct GlobalElementId(pub(crate) SmallVec<[ElementId; 32]>);
+pub struct GlobalElementId(pub(crate) SmallVec<[ElementId; 8]>);
 
 impl Display for GlobalElementId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

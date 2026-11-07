@@ -8,6 +8,7 @@ fn beat(value: u64) -> BeatTime {
 
 fn note(start: u64, duration: u64, pitch: u8, channel: u8) -> MidiNoteInsert {
     MidiNoteInsert {
+        active: true,
         start: beat(start),
         duration: beat(duration),
         pitch,
@@ -449,6 +450,7 @@ fn overwrite_at_full_note_capacity_charges_only_the_actual_final_set() {
     };
     midi_clips[0].notes = (0..MAX_NOTES)
         .map(|index| MidiNoteSnapshot {
+            active: true,
             id: first + index as u64,
             start_raw: index as u64,
             duration_raw: 1,

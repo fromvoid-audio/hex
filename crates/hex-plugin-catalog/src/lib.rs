@@ -34,14 +34,15 @@
 //! and the local `/Library/Audio/Plug-Ins/VST3`. Missing roots are empty; invalid,
 //! linked root components and traversal errors refuse the batch before code runs.
 //! Traversal never enters bundles or follows encountered links; skipped links have a
-//! visible count. Bounds are two roots,4096 entries,1024 directories,8 levels of
+//! visible count. Bounds are three roots,4096 entries,1024 directories,8 levels of
 //! folder recursion and512 bundles, with4096-byte/64-component paths. Class/JSON/output limits remain fixed. Enumeration alone does not load vendor
 //! code or establish compatibility.
 //!
 //! A batch retains at most one owned outer scanner/native helper chain at a time.
 //! Normal per-module failures are recorded alongside successful modules; missing or
-//! unconfirmed direct retirement stops the batch before another launch. This does
-//! not claim cleanup of foreign descendants, which remains unknown. Pending copied
+//! unconfirmed direct retirement stops the batch before another launch; that bundle
+//! is recorded as a failure and the results already obtained are still published.
+//! This does not claim cleanup of foreign descendants, which remains unknown. Pending copied
 //! reports are validated against class/JSON limits and diagnostics are discarded.
 //! Cancellation discards all pending batch results; publication has one atomic token
 //! boundary followed by a fresh writer-locked merge. Capacity/write/validation errors
@@ -64,8 +65,16 @@
 //! Duplicate CIDs remain distinct explicit module/CID rows in path/CID order; no
 //! arbitrary replacement is chosen when a path disappears or a binary changes.
 //! Cache data never authorizes future plugin instance admission; the processing host
-//! must verify current source and resources. Catalog version2 is the current format;
-//! unsupported older alpha files remain intact with a visible error, without migration.
+//! must verify current source and resources.
+//!
+//! Catalog version 4 records the verified discovery tools alongside the bundle
+//! identity for a failed scan. A folder scan skips a failure only when both
+//! identities match. A single-bundle scan always retries. Versions 2 and 3
+//! migrate in memory and retain last-good reports and failure diagnostics;
+//! their failures lack tool provenance and are eligible for retry. Only a
+//! catalog update publishes version 4. Version 1 and newer unsupported files
+//! remain intact. A binary change with an unchanged Info.plist still requires
+//! an explicit retry while the discovery tools remain identical.
 //! The native integration tests require an explicit signed original package through
 //! `HEX_VST3_CATALOG_TEST_APP` and original fixture directory through
 //! `HEX_VST3_CATALOG_FIXTURES`; ordinary runs keep these tests ignored. They do not
@@ -74,21 +83,30 @@
 //! Dynamic/discardable or unknown factory flags retain historical metadata only;
 //! rows explicitly require a rescan. Stored inventory never establishes future
 //! cacheable class availability or authorizes processing admission.
+mod resolve;
 pub mod roots;
 pub mod storage;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod worker;
 
-use hex_plugin_scan::{Discovery, PUBLIC_SDK, SDK, macos::report::Report};
+use hex_plugin_scan::{
+    Discovery, PUBLIC_SDK, SDK,
+    macos::{identity::Bundle, report::Report},
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Component, Path, PathBuf},
+    sync::Arc,
 };
 
 pub const MAX_MODULES: usize = 512;
 pub const MAX_CLASSES: usize = 2048;
 pub const MAX_CATALOG_BYTES: usize = 4 * 1024 * 1024;
+/// Current saved catalog format; see the crate documentation for migration.
+pub const CATALOG_VERSION: u32 = 4;
+const CATALOG_VERSION_2: u32 = 2;
+const CATALOG_VERSION_3: u32 = 3;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -97,6 +115,19 @@ pub struct Entry {
     pub last_good: Option<Report>,
     pub source: Option<String>,
     pub failure: Option<String>,
+    /// Bundle identity observed by the failed scan, when it was inspected.
+    /// Absent in version 2 files; always paired with `failure`.
+    #[serde(default)]
+    pub failed_bundle: Option<Bundle>,
+    /// Absent in older catalogs, so the old failure is eligible for retry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_tools_sha256: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct FailedScan {
+    bundle: Bundle,
+    tools_sha256: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -110,7 +141,7 @@ pub struct Catalog {
 impl Default for Catalog {
     fn default() -> Self {
         Self {
-            version: 2,
+            version: CATALOG_VERSION,
             entries: Vec::new(),
             source_errors: BTreeMap::new(),
         }
@@ -215,8 +246,31 @@ pub fn validate_report(report: &Report) -> Result<(), String> {
 }
 
 impl Catalog {
+    /// Upgrade supported older formats in memory, retaining their diagnostics.
+    pub(crate) fn migrate(&mut self) -> Result<(), String> {
+        if matches!(self.version, CATALOG_VERSION_2 | CATALOG_VERSION_3) {
+            if self.entries.iter().any(|entry| {
+                entry.failed_tools_sha256.is_some()
+                    || (self.version == CATALOG_VERSION_2 && entry.failed_bundle.is_some())
+            }) {
+                return Err("invalid historical plugin catalog; existing file preserved".into());
+            }
+            self.version = CATALOG_VERSION;
+        }
+        Ok(())
+    }
+
+    /// A remembered failure applies only to the same bundle and scan tools.
+    fn failed_unchanged(&self, path: &Path, current: &Bundle, tools_sha256: &str) -> bool {
+        self.entries.iter().any(|entry| {
+            entry.path == path
+                && entry.failed_bundle.as_ref() == Some(current)
+                && entry.failed_tools_sha256.as_deref() == Some(tools_sha256)
+        })
+    }
+
     pub fn validate(&self) -> Result<(), String> {
-        if self.version != 2 || self.entries.len() > MAX_MODULES {
+        if self.version != CATALOG_VERSION || self.entries.len() > MAX_MODULES {
             return Err("unsupported or oversized plugin catalog".into());
         }
         let mut paths = BTreeSet::new();
@@ -226,6 +280,16 @@ impl Catalog {
                 || entry.path.extension().and_then(|s| s.to_str()) != Some("vst3")
                 || !paths.insert(&entry.path)
                 || entry.failure.as_ref().is_some_and(|s| !bounded(s, 512))
+                || entry
+                    .failed_tools_sha256
+                    .as_ref()
+                    .is_some_and(|tools| entry.failed_bundle.is_none() || !digest(tools, 64))
+                || entry.failed_bundle.as_ref().is_some_and(|bundle| {
+                    entry.failure.is_none()
+                        || bundle.supplied_path != entry.path
+                        || !path_valid(&bundle.canonical_path)
+                        || !digest(&bundle.info_sha256, 64)
+                })
             {
                 return Err("invalid plugin catalog entry".into());
             }
@@ -251,10 +315,31 @@ impl Catalog {
         Ok(())
     }
 
+    /// Record a scan result. A failure recorded here has no bundle identity and
+    /// is rescanned by the next folder scan.
     pub fn record(
         &mut self,
         path: PathBuf,
         result: Result<(Report, String), String>,
+    ) -> Result<(), String> {
+        self.record_outcome(path, result, None)
+    }
+
+    /// Record a failed scan with its observed bundle and discovery tools.
+    fn record_failure(
+        &mut self,
+        path: PathBuf,
+        error: String,
+        scan: Option<FailedScan>,
+    ) -> Result<(), String> {
+        self.record_outcome(path, Err(error), scan)
+    }
+
+    fn record_outcome(
+        &mut self,
+        path: PathBuf,
+        result: Result<(Report, String), String>,
+        failed_scan: Option<FailedScan>,
     ) -> Result<(), String> {
         if !path_valid(&path) || path.extension().and_then(|s| s.to_str()) != Some("vst3") {
             return Err("absolute bounded plugin path required".into());
@@ -271,6 +356,8 @@ impl Catalog {
                     last_good: None,
                     source: None,
                     failure: None,
+                    failed_bundle: None,
+                    failed_tools_sha256: None,
                 });
                 next.entries.len() - 1
             }
@@ -287,10 +374,17 @@ impl Catalog {
                 entry.last_good = Some(report);
                 entry.source = Some(source);
                 entry.failure = None;
+                entry.failed_bundle = None;
+                entry.failed_tools_sha256 = None;
                 next.source_errors.remove(&path);
             }
             Err(error) => {
                 entry.failure = Some(error.chars().take(128).collect());
+                let (bundle, tools) = failed_scan.map_or((None, None), |scan| {
+                    (Some(scan.bundle), Some(scan.tools_sha256))
+                });
+                entry.failed_bundle = bundle;
+                entry.failed_tools_sha256 = tools;
             }
         }
         next.entries.sort_by(|a, b| a.path.cmp(&b.path));
@@ -307,13 +401,35 @@ pub struct Row {
     pub name: String,
     pub vendor: String,
     pub status: String,
+    /// Current metadata for a draggable class. Native admission is separate.
+    pub selection: Option<Arc<PluginSelection>>,
 }
-/// Exact copied metadata for an explicit effect activation request. This is
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PluginRole {
+    Effect,
+    Instrument,
+}
+
+impl PluginRole {
+    fn reported_by(self, class: &hex_plugin_scan::Class) -> bool {
+        let token = match self {
+            Self::Effect => "Fx",
+            Self::Instrument => "Instrument",
+        };
+        class
+            .subcategories
+            .as_deref()
+            .is_some_and(|categories| categories.split('|').any(|category| category == token))
+    }
+}
+
+/// Exact copied metadata for an explicit plug-in activation request. This is
 /// neither source admission nor permission to reuse a cached executable: the
 /// processing owner must inspect the selected module again, compare both
 /// digests/class and retain its actual native preparation through the terminal.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EffectSelection {
+pub struct PluginSelection {
+    pub role: PluginRole,
     pub module: PathBuf,
     pub cid: [u8; 16],
     pub class_name: String,
@@ -343,14 +459,40 @@ impl Catalog {
     /// Duplicate CIDs in different modules never select a replacement. Unknown
     /// type tokens, stale/error rows and dynamic inventories require a fresh
     /// successful scan; original last-good records remain untouched.
-    pub fn select_effect(&self, module: &Path, cid: [u8; 16]) -> Result<EffectSelection, String> {
+    pub fn select_effect(&self, module: &Path, cid: [u8; 16]) -> Result<PluginSelection, String> {
+        self.select_with_role(module, cid, Some(PluginRole::Effect))
+    }
+
+    pub fn select_plugin(&self, module: &Path, cid: [u8; 16]) -> Result<PluginSelection, String> {
+        self.select_with_role(module, cid, None)
+    }
+
+    fn select_with_role(
+        &self,
+        module: &Path,
+        cid: [u8; 16],
+        role: Option<PluginRole>,
+    ) -> Result<PluginSelection, String> {
         self.validate()?;
         let entry = self
             .entries
             .iter()
             .find(|entry| entry.path == module)
             .ok_or("selected vst3 module is no longer in the catalog")?;
-        if entry.failure.is_some() || self.source_errors.contains_key(module) {
+        let (report, discovery) = self.plugin_inventory(entry)?;
+        let class = discovery
+            .classes
+            .iter()
+            .find(|class| class.cid == cid)
+            .ok_or("selected vst3 class is no longer in the catalog")?;
+        Self::plugin_selection(entry, report, class, role)
+    }
+
+    fn plugin_inventory<'a>(
+        &self,
+        entry: &'a Entry,
+    ) -> Result<(&'a Report, &'a Discovery), String> {
+        if entry.failure.is_some() || self.source_errors.contains_key(&entry.path) {
             return Err("selected vst3 source is unavailable; rescan before insertion".into());
         }
         let report = entry
@@ -364,26 +506,34 @@ impl Catalog {
         if !discovery.cacheable() {
             return Err("selected vst3 inventory requires a rescan before insertion".into());
         }
-        let class = discovery
-            .classes
-            .iter()
-            .find(|class| class.cid == cid)
-            .ok_or("selected vst3 class is no longer in the catalog")?;
-        if class.category != "Audio Module Class"
-            || !class
-                .subcategories
-                .as_ref()
-                .is_some_and(|categories| categories.split('|').any(|token| token == "Fx"))
-        {
-            return Err("selected vst3 class is not a reported effect".into());
-        }
+        Ok((report, discovery))
+    }
+
+    fn plugin_selection(
+        entry: &Entry,
+        report: &Report,
+        class: &hex_plugin_scan::Class,
+        role: Option<PluginRole>,
+    ) -> Result<PluginSelection, String> {
+        // Preserve the existing effect choice for dual-role classes.
+        let role = role.or_else(|| {
+            [PluginRole::Effect, PluginRole::Instrument]
+                .into_iter()
+                .find(|role| role.reported_by(class))
+        });
+        let Some(role) =
+            role.filter(|role| class.category == "Audio Module Class" && role.reported_by(class))
+        else {
+            return Err("selected vst3 class does not report the requested role".into());
+        };
         let executable = report
             .executable
             .as_ref()
             .ok_or("selected vst3 executable is unavailable")?;
-        Ok(EffectSelection {
+        Ok(PluginSelection {
+            role,
             module: entry.path.clone(),
-            cid,
+            cid: class.cid,
             class_name: class.name.clone(),
             executable_relative_path: executable.relative_path.clone(),
             executable_sha256: executable.sha256.clone(),
@@ -424,14 +574,15 @@ impl Catalog {
         let mut rows = Vec::new();
         for entry in &self.entries {
             if entry.last_good.is_none() {
-                let name = entry.path.file_name().map_or_else(
-                    || "unavailable vst3 module".into(),
+                let name = entry.path.file_stem().map_or_else(
+                    || "unavailable plug-in".into(),
                     |name| name.to_string_lossy().into_owned(),
                 );
                 if query.is_empty() || name.to_lowercase().contains(&query) {
                     rows.push(Row {
                         module: entry.path.clone(),
                         cid: None,
+                        selection: None,
                         name,
                         vendor: String::new(),
                         status: entry
@@ -441,53 +592,58 @@ impl Catalog {
                     });
                 }
             }
-            if let Some(report) = &entry.last_good {
-                if let Some(discovery) = &report.discovery {
-                    for class in &discovery.classes {
-                        if class.category != "Audio Module Class" {
-                            continue;
-                        }
-                        let kind = reported_kind(class);
-                        let vendor = class
-                            .class_vendor
-                            .as_deref()
-                            .filter(|s| !s.is_empty())
-                            .unwrap_or(&discovery.vendor);
-                        if !query.is_empty()
-                            && !class.name.to_lowercase().contains(&query)
-                            && !vendor.to_lowercase().contains(&query)
-                            && !kind.contains(&query)
-                        {
-                            continue;
-                        }
-                        rows.push(Row {
-                            module: entry.path.clone(),
-                            cid: Some(class.cid),
-                            name: class.name.clone(),
-                            vendor: vendor.into(),
-                            status: {
-                                let state = if let Some(error) = &entry.failure {
-                                    format!("last good · {error} · ")
-                                } else if !discovery.cacheable() {
-                                    "prior discovery · rescan required · ".into()
-                                } else {
-                                    String::new()
-                                };
-                                let source = self.source_errors.get(&entry.path).map_or_else(
-                                    String::new,
-                                    |error| {
-                                        format!("source unavailable · rescan required · {error} · ")
-                                    },
-                                );
-                                let action = if matches!(kind, "effect" | "instrument and effect") {
-                                    "enter to insert · source validation required"
-                                } else {
-                                    "hosting unavailable"
-                                };
-                                format!("{source}{state}vst3 {kind} · {action}")
-                            },
-                        });
+            if let Some(report) = &entry.last_good
+                && let Some(discovery) = &report.discovery
+            {
+                let selectable_report = self.plugin_inventory(entry).ok().map(|(report, _)| report);
+                for class in &discovery.classes {
+                    if class.category != "Audio Module Class" {
+                        continue;
                     }
+                    let kind = reported_kind(class);
+                    let vendor = class
+                        .class_vendor
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or(&discovery.vendor);
+                    if !query.is_empty()
+                        && !class.name.to_lowercase().contains(&query)
+                        && !vendor.to_lowercase().contains(&query)
+                        && !kind.contains(&query)
+                    {
+                        continue;
+                    }
+                    let selection = selectable_report
+                        .and_then(|report| Self::plugin_selection(entry, report, class, None).ok())
+                        .map(Arc::new);
+                    rows.push(Row {
+                        module: entry.path.clone(),
+                        cid: Some(class.cid),
+                        name: class.name.clone(),
+                        vendor: vendor.into(),
+                        status: {
+                            let state = if let Some(error) = &entry.failure {
+                                format!("last good · {error} · ")
+                            } else if !discovery.cacheable() {
+                                "prior discovery · rescan required · ".into()
+                            } else {
+                                String::new()
+                            };
+                            let source = self.source_errors.get(&entry.path).map_or_else(
+                                String::new,
+                                |error| {
+                                    format!("source unavailable · rescan required · {error} · ")
+                                },
+                            );
+                            let action = if selection.is_some() {
+                                "drag or enter to insert"
+                            } else {
+                                "hosting unavailable"
+                            };
+                            format!("{source}{state}vst3 {kind} · {action}")
+                        },
+                        selection,
+                    });
                 }
             }
         }
@@ -536,7 +692,7 @@ mod tests {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
-    fn report(path: PathBuf) -> Report {
+    pub(crate) fn report(path: PathBuf) -> Report {
         Report {
             profile: "explicit-user-trusted-macos-factory-only".into(),
             request: 1,
@@ -602,6 +758,106 @@ mod tests {
     }
 
     #[test]
+    fn saved_effect_resolution_requires_exact_unique_cacheable_identity() {
+        let f = Fixture::new();
+        let first = f.module();
+        let mut catalog = Catalog::default();
+        catalog
+            .record(
+                first.clone(),
+                Ok((effect_report(first.clone(), "Fx"), "e".repeat(40))),
+            )
+            .unwrap();
+        let saved = serde_json::to_vec(&catalog).unwrap();
+        assert_eq!(
+            catalog
+                .resolve_effect([1; 16], [0xdd; 32], [0xcc; 32])
+                .unwrap()
+                .module,
+            first
+        );
+        for (cid, executable, info) in [
+            ([2; 16], [0xdd; 32], [0xcc; 32]),
+            ([1; 16], [0xee; 32], [0xcc; 32]),
+            ([1; 16], [0xdd; 32], [0xee; 32]),
+        ] {
+            assert!(catalog.resolve_effect(cid, executable, info).is_err());
+        }
+        assert_eq!(serde_json::to_vec(&catalog).unwrap(), saved);
+        let second = f.0.join("Second.vst3");
+        catalog
+            .record(
+                second.clone(),
+                Ok((effect_report(second, "Fx"), "e".repeat(40))),
+            )
+            .unwrap();
+        assert!(
+            catalog
+                .resolve_effect([1; 16], [0xdd; 32], [0xcc; 32])
+                .unwrap_err()
+                .contains("ambiguous")
+        );
+        catalog.entries.pop();
+        catalog.entries[0].failure = Some("last scan failed".into());
+        assert!(
+            catalog
+                .resolve_effect([1; 16], [0xdd; 32], [0xcc; 32])
+                .is_err()
+        );
+        catalog.entries[0].failure = None;
+        catalog.entries[0]
+            .last_good
+            .as_mut()
+            .unwrap()
+            .discovery
+            .as_mut()
+            .unwrap()
+            .factory_flags = 8;
+        assert!(
+            catalog
+                .resolve_effect([1; 16], [0xdd; 32], [0xcc; 32])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn saved_plugin_label_uses_the_exact_class_and_binary_and_failures_use_the_stem() {
+        let fixture = Fixture::new();
+        let path = fixture.module();
+        let mut catalog = Catalog::default();
+        catalog
+            .record(path.clone(), Err("unavailable".into()))
+            .unwrap();
+        assert_eq!(catalog.rows("")[0].name, "Original");
+
+        let report = effect_report(path.clone(), "Fx");
+        catalog
+            .record(path.clone(), Ok((report, "e".repeat(40))))
+            .unwrap();
+        assert_eq!(
+            catalog.saved_class_name([1; 16], [0xdd; 32], [0xcc; 32]),
+            Some("Original Processor"),
+        );
+        assert_eq!(
+            catalog.saved_class_name([2; 16], [0xdd; 32], [0xcc; 32]),
+            None
+        );
+        assert_eq!(
+            catalog.saved_class_name([1; 16], [0xde; 32], [0xcc; 32]),
+            None
+        );
+        assert_eq!(
+            catalog.saved_class_name([1; 16], [0xdd; 32], [0xcd; 32]),
+            None
+        );
+        catalog.record(path, Err("rescan failed".into())).unwrap();
+        assert_eq!(
+            catalog.saved_class_name([1; 16], [0xdd; 32], [0xcc; 32]),
+            Some("Original Processor"),
+        );
+    }
+
+    #[test]
     fn effect_selection_captures_only_the_explicit_module_and_class() {
         let f = Fixture::new();
         let first = f.module();
@@ -626,6 +882,8 @@ mod tests {
         assert_eq!(selected.executable_relative_path, "Contents/MacOS/Original");
         assert_eq!(selected.executable_sha256, "f".repeat(64));
         assert_eq!(selected.info_sha256, "c".repeat(64));
+        let rows = catalog.rows("");
+        assert_eq!(rows[1].selection.as_deref(), Some(&selected));
         assert_eq!(
             catalog
                 .select_effect(&first, [1; 16])
@@ -827,10 +1085,20 @@ mod tests {
             })
             .unwrap();
             let loaded = Catalog::load(&fixture.catalog()).unwrap();
+            let role = match categories {
+                "Instrument|Synth" => Some(PluginRole::Instrument),
+                "Fx|Delay" | "Fx|Instrument" => Some(PluginRole::Effect),
+                _ => None,
+            };
+            let rows = loaded.rows("");
             assert_eq!(
-                loaded.rows("")[0].status,
-                if matches!(categories, "Fx|Delay" | "Fx|Instrument") {
-                    format!("vst3 {expected} · enter to insert · source validation required")
+                rows[0].selection.as_ref().map(|selected| selected.role),
+                role
+            );
+            assert_eq!(
+                rows[0].status,
+                if role.is_some() {
+                    format!("vst3 {expected} · drag or enter to insert")
                 } else {
                     format!("vst3 {expected} · hosting unavailable")
                 }
@@ -1049,5 +1317,142 @@ mod tests {
                 flags
             );
         }
+    }
+
+    fn failed_identity(path: &Path, info: char) -> Bundle {
+        Bundle {
+            supplied_path: path.to_path_buf(),
+            canonical_path: path.to_path_buf(),
+            info_sha256: info.to_string().repeat(64),
+        }
+    }
+
+    #[test]
+    fn version_2_catalog_migrates_in_memory_and_rewrites_only_on_update() {
+        let fixture = Fixture::new();
+        let good = fixture.0.join("Good.vst3");
+        let bad = fixture.0.join("Bad.vst3");
+        let mut value = report(good.clone());
+        value.stdout.clear();
+        value.stderr.clear();
+        // Historical version 2 layout: entries carry no failed_bundle field.
+        let v2 = serde_json::json!({
+            "version": 2,
+            "entries": [
+                {"path": bad, "last_good": null, "source": null, "failure": "scan failed"},
+                {"path": good, "last_good": value, "source": "e".repeat(40), "failure": null},
+            ],
+        });
+        let bytes = serde_json::to_vec(&v2).unwrap();
+        fs::write(fixture.catalog(), &bytes).unwrap();
+        let loaded = Catalog::load(&fixture.catalog()).expect("migrated v2");
+        assert_eq!(loaded.version, CATALOG_VERSION);
+        assert_eq!(loaded.entries.len(), 2);
+        assert!(loaded.entries.iter().all(|e| e.failed_bundle.is_none()));
+        assert_eq!(loaded.entries[0].failure.as_deref(), Some("scan failed"));
+        assert_eq!(
+            loaded
+                .entries
+                .iter()
+                .filter(|e| e.last_good.is_some())
+                .count(),
+            1
+        );
+        assert_eq!(
+            fs::read(fixture.catalog()).unwrap(),
+            bytes,
+            "load never rewrites"
+        );
+
+        storage::update(&fixture.catalog(), |_| Ok(())).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(fixture.catalog()).unwrap()).unwrap();
+        assert_eq!(saved["version"], CATALOG_VERSION);
+        let reopened = Catalog::load(&fixture.catalog()).unwrap();
+        assert_eq!(reopened.entries.len(), 2);
+
+        // A version 2 file cannot carry the version 3 field; newer formats are refused.
+        for (version, failed) in [(2, true), (5, false)] {
+            let mut entry = serde_json::json!(
+                {"path": bad, "last_good": null, "source": null, "failure": "scan failed"}
+            );
+            if failed {
+                entry["failed_bundle"] = serde_json::to_value(failed_identity(&bad, 'c')).unwrap();
+            }
+            let bytes =
+                serde_json::to_vec(&serde_json::json!({"version": version, "entries": [entry]}))
+                    .unwrap();
+            fs::write(fixture.catalog(), &bytes).unwrap();
+            assert!(
+                Catalog::load(&fixture.catalog()).is_err(),
+                "version {version}"
+            );
+            assert_eq!(
+                fs::read(fixture.catalog()).unwrap(),
+                bytes,
+                "file preserved"
+            );
+        }
+    }
+
+    #[test]
+    fn failed_bundle_identity_round_trips_and_matches_only_unchanged_bundles() {
+        let fixture = Fixture::new();
+        let path = fixture.module();
+        let identity = failed_identity(&path, 'c');
+        let tools = "a".repeat(64);
+        storage::update(&fixture.catalog(), |catalog| {
+            catalog.record_failure(
+                path.clone(),
+                "deadline exceeded".into(),
+                Some(FailedScan {
+                    bundle: identity.clone(),
+                    tools_sha256: tools.clone(),
+                }),
+            )
+        })
+        .unwrap();
+        let saved = Catalog::load(&fixture.catalog()).unwrap();
+        assert_eq!(saved.entries[0].failed_bundle.as_ref(), Some(&identity));
+        assert!(saved.failed_unchanged(&path, &identity, &tools));
+        assert!(
+            !saved.failed_unchanged(&path, &failed_identity(&path, 'f'), &tools),
+            "changed plist"
+        );
+        let other = fixture.0.join("Other.vst3");
+        assert!(!saved.failed_unchanged(&other, &failed_identity(&other, 'c'), &tools));
+
+        // A failure without identity, or a later success, is not remembered.
+        let mut catalog = saved.clone();
+        catalog.record(path.clone(), Err("again".into())).unwrap();
+        assert!(!catalog.failed_unchanged(&path, &identity, &tools));
+        let mut catalog = saved;
+        catalog
+            .record(path.clone(), Ok((report(path.clone()), "e".repeat(40))))
+            .unwrap();
+        assert!(catalog.entries[0].failed_bundle.is_none());
+        assert!(!catalog.failed_unchanged(&path, &identity, &tools));
+
+        // The identity must belong to a recorded failure for this exact path.
+        let mut invalid = Catalog::default();
+        invalid
+            .record(path.clone(), Ok((report(path.clone()), "e".repeat(40))))
+            .unwrap();
+        invalid.validate().expect("valid success entry");
+        invalid.entries[0].failed_bundle = Some(identity.clone());
+        assert!(invalid.validate().is_err(), "identity without failure");
+        assert!(
+            Catalog::default()
+                .record_failure(
+                    path,
+                    "x".into(),
+                    Some(FailedScan {
+                        bundle: failed_identity(&other, 'c'),
+                        tools_sha256: tools,
+                    }),
+                )
+                .is_err(),
+            "identity for another path"
+        );
     }
 }

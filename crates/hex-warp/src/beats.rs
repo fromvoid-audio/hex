@@ -8,7 +8,7 @@ mod plan;
 mod stop;
 mod synthesis;
 use super::*;
-use resample::{BANK_BYTES, Bandlimited};
+use resample::{Bandlimited, bank_bytes};
 
 #[derive(Clone, Copy)]
 struct Anchor {
@@ -56,7 +56,7 @@ pub(super) fn render(
     work.scratch(
         plan_bytes
             + onsets::scratch(request.input.sample_rate)
-            + BANK_BYTES
+            + bank_bytes(work.resampler)
             + ring * 24
             + synthesis::SEARCH_BYTES,
     )?;
@@ -88,7 +88,7 @@ pub(super) fn render(
         request.output_frames,
         ring,
         work,
-        plan_bytes + BANK_BYTES + synthesis::SEARCH_BYTES,
+        plan_bytes + bank_bytes(work.resampler) + synthesis::SEARCH_BYTES,
     )?;
     let mut output = 0;
     let mut source = anchors[0].source;
@@ -99,7 +99,7 @@ pub(super) fn render(
         }
         let next = (i + 1..anchors.len())
             .find(|j| anchors[*j].attack || *j == anchors.len() - 1)
-            .unwrap();
+            .expect("the final anchor always terminates the search");
         let start = anchor.output.saturating_sub(anchor.before);
         let end = (anchor.output + anchor.after).min(request.output_frames);
         synthesis::bed(
@@ -150,7 +150,7 @@ pub(super) fn render(
             start: output,
             end: request.output_frames,
             source_start: source,
-            source_end: anchors.last().unwrap().source,
+            source_end: anchors.last().expect("anchors indexed above").source,
             locked_end: false,
         },
         pitch,

@@ -49,6 +49,7 @@ struct CellSlot {
     handle: u64,
     start: u64,
     end: u64,
+    loop_range: Option<hex_project::SessionAudioLoop>,
     gain: hex_project::ClipGain,
     name: String,
     owner: Option<OwnedAudioSource>,
@@ -269,15 +270,14 @@ impl SessionSourceConstruction {
             {
                 return Err(AudioStorageError::SourceMismatch);
             }
-            if let SourceKind::Streamed(meta) = &owner.kind {
-                if meta.key().generation() != generation
+            if let SourceKind::Streamed(meta) = &owner.kind
+                && (meta.key().generation() != generation
                     || meta.key().asset() != asset.id()
                     || meta.source_rate() != asset.source_sample_rate()
                     || meta.source_frames() != asset.source_frames()
-                    || meta.conversion_version() != asset.conversion_version()
-                {
-                    return Err(AudioStorageError::SourceMismatch);
-                }
+                    || meta.conversion_version() != asset.conversion_version())
+            {
+                return Err(AudioStorageError::SourceMismatch);
             }
             if clip.name().trim().is_empty()
                 || clip.name().len() > hex_project::MAX_NAME_BYTES
@@ -316,6 +316,7 @@ impl SessionSourceConstruction {
                 handle: handle()?,
                 start: clip.source_start(),
                 end: clip.source_end(),
+                loop_range: clip.loop_range(),
                 gain: clip.gain(),
                 name: String::new(),
                 owner: None,
@@ -548,6 +549,7 @@ impl SessionSourceConstruction {
                 handle: _,
                 start: _,
                 end: _,
+                loop_range: _,
                 gain: _,
                 name,
                 owner,

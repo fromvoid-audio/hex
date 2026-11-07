@@ -1,4 +1,5 @@
-//! View-only Arrangement insertion position, distinct from the audio playhead.
+//! View-only Arrangement insertion position and scoped canonical split dispatch.
+//! Selection normalization stays with time_selection; project/session own cuts and history.
 use super::{EditorMode, EditorView, time_selection::TimeSelection};
 use crate::theme;
 use gpui::{Context, Div, Window, div, prelude::*, px};
@@ -43,6 +44,71 @@ impl EditCursor {
 }
 
 impl EditorView {
+    pub(super) fn valid_locked_play_start(&self) -> Option<EditCursor> {
+        self.locked_play_start.filter(|cursor| {
+            cursor.generation == self.project_generation
+                && self
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.project.track(cursor.track).is_some())
+        })
+    }
+
+    pub(super) fn update_locked_play_start_from_point(&mut self) {
+        if self.locked_play_start.is_some() {
+            self.locked_play_start = self.edit_cursor;
+        }
+    }
+
+    fn toggle_play_start_lock(&mut self, cx: &mut Context<Self>) {
+        if self.mode != EditorMode::Arrangement
+            || self.context_menu.is_some()
+            || self.track_name.is_editing()
+            || self.clip_name_edit.is_some()
+            || self.sections.naming()
+            || self.sections.held()
+            || self.changelog.is_open()
+            || self.project_tempo_editing(cx)
+            || self.gain_numeric_editing(cx)
+            || self.clip_numeric_editing(cx)
+            || self.opening_project
+            || self.close_prompt_open
+            || self.save_dialog_open
+            || self.export_dialog_open
+            || self.preset_dialog_open
+            || self.theme_settings.open
+            || self.tuning.open
+            || self.controller_input_is_open()
+            || self.time_selection_gesture.is_some()
+            || self.time_range_move_gesture.is_some()
+            || self.active_clip_drag.is_some()
+            || self.active_browser_audio_drag.is_some()
+            || self.active_native_device_drag.is_some()
+            || self.active_trim_drag.is_some()
+            || self.active_midi_trim_drag.is_some()
+            || self.active_fade_drag.is_some()
+            || self.loop_rail_gesture.is_some()
+            || self.scrub_active()
+            || self.track_resize_active()
+            || self.track_reorder_active()
+            || cx.has_active_drag()
+        {
+            return;
+        }
+        if self.valid_locked_play_start().is_some() {
+            self.locked_play_start = None;
+        } else if self.normalized_time_selection().is_none() {
+            self.locked_play_start = self.edit_cursor.filter(|cursor| {
+                cursor.generation == self.project_generation
+                    && self
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.project.track(cursor.track).is_some())
+            });
+        }
+        cx.notify();
+    }
+
     pub(super) fn place_edit_cursor(
         &mut self,
         track: TrackId,
@@ -91,6 +157,7 @@ impl EditorView {
             pulse_color: theme::color(theme::PaletteRole::Text),
             pulse_started: Instant::now(),
         });
+        self.update_locked_play_start_from_point();
         self.time_selection = Some(TimeSelection {
             anchor_track: track,
             end_track: track,
@@ -98,36 +165,55 @@ impl EditorView {
             end_frame: frame,
         });
         self.time_selection_project_scope = false;
-        let selected_clip_under_pointer = state.project.track(track).is_some_and(|track_data| {
-            track_data.clips().iter().any(|clip| {
-                self.selected_clip == Some(clip.id())
-                    && frame >= clip.start()
-                    && clip
-                        .start()
-                        .checked_add(clip.duration())
-                        .is_some_and(|end| frame < end)
-            }) || {
-                let beat = state.project.tempo_map().frame_to_beat(frame).ok();
-                track_data.midi_clips().iter().any(|clip| {
-                    self.selected_clip == Some(clip.id())
-                        && beat.is_some_and(|beat| {
-                            beat >= clip.start()
-                                && beat.raw()
-                                    < clip.start().raw().saturating_add(clip.length().raw())
-                        })
-                })
-            }
-        });
+        let under_pointer = self.arrangement_clip_at(track, frame, self.selected_clip);
+        let selected_clip_under_pointer =
+            under_pointer.is_some() && under_pointer == self.selected_clip;
         self.select_lane_track(track);
+        self.edit_cursor_in_selected_clip =
+            self.selected_clip.filter(|_| selected_clip_under_pointer);
+        self.loop_start_over_clip = None;
         self.advance_selection_intent();
-        if !selected_clip_under_pointer {
+        if under_pointer.is_none() {
             self.focus_track_details(window);
+        } else if !selected_clip_under_pointer {
+            // A cursor inside a clip keeps it in the clip editor (see detail_context).
+            self.set_detail_context(under_pointer);
+            self.focus_detail_context(window, cx);
         }
         self.focus.focus(window);
         cx.notify();
     }
 
+    /// An acknowledged loop enable hands the next Play start to the loop start
+    /// by retiring a placed point cursor; a new click overrides it again. Ranges
+    /// keep precedence, and disabling the loop never restores the cursor.
+    pub(super) fn retire_point_cursor_on_loop_enable(&mut self, loop_was_enabled: bool) {
+        let loop_enabled = self
+            .state
+            .as_ref()
+            .and_then(|state| state.project.loop_region())
+            .is_some_and(|region| region.enabled());
+        if loop_was_enabled
+            || !loop_enabled
+            || self.pending_selection_loop_has_newer_intent()
+            || self.edit_cursor.is_none()
+            || self.normalized_time_selection().is_some()
+            || self.time_selection_gesture.is_some()
+            || self.time_range_move_gesture.is_some()
+        {
+            return;
+        }
+        self.loop_start_over_clip = self.edit_cursor_in_selected_clip.take();
+        self.edit_cursor = None;
+        self.time_selection = None;
+        self.time_selection_project_scope = false;
+        self.suppress_cursor_click = false;
+    }
+
     pub(super) fn tick_edit_cursor(&mut self, now: Instant) -> bool {
+        if self.locked_play_start.is_some() && self.valid_locked_play_start().is_none() {
+            self.locked_play_start = None;
+        }
         if self.context_menu.is_some()
             || self.close_prompt_open
             || (self.mode != EditorMode::Arrangement
@@ -198,7 +284,13 @@ impl EditorView {
         }
         // A completed range belongs to Arrangement even while Console is shown.
         // Its stale-source checks above still run; hidden point cursors need no pulse.
-        self.mode == EditorMode::Arrangement && cursor.pulse(now)
+        // A point cursor hidden behind a clip play start needs no pulse either.
+        self.mode == EditorMode::Arrangement
+            && self.selected_clip_play_start().is_none()
+            && self
+                .edit_cursor
+                .as_mut()
+                .is_some_and(|cursor| cursor.pulse(now))
     }
 
     /// Paint the same live range bounds above the loop rail and at the bottom
@@ -207,15 +299,19 @@ impl EditorView {
         &self,
         viewport: super::viewport::Viewport,
         edge: hex_widgets::TimeMarkerEdge,
+        guide: Option<u64>,
+        cx: &mut Context<Self>,
     ) -> Option<Div> {
         use hex_widgets::{TimeMarkerEndpoint as Endpoint, time_position_marker};
-        let cursor = self.edit_cursor?;
-        if cursor.generation != self.project_generation {
-            return None;
-        }
+        let locked = self.valid_locked_play_start();
+        let cursor = self
+            .edit_cursor
+            .filter(|cursor| cursor.generation == self.project_generation);
+        let cursor = cursor.or(locked);
+        let cursor_frame = cursor.map(|cursor| cursor.frame).or(guide)?;
         let (start, end) = self
             .time_selection
-            .map_or((cursor.frame, cursor.frame), |selection| {
+            .map_or((cursor_frame, cursor_frame), |selection| {
                 (
                     selection.anchor_frame.min(selection.end_frame),
                     selection.anchor_frame.max(selection.end_frame),
@@ -225,31 +321,89 @@ impl EditorView {
             hex_widgets::TimeMarkerEdge::Top => "top",
             hex_widgets::TimeMarkerEdge::Bottom => "bottom",
         };
-        let markers = [
-            (
-                start,
-                if start == end {
-                    Endpoint::Point
-                } else {
-                    Endpoint::Start
-                },
-                "start",
-            ),
-            (end, Endpoint::End, "end"),
-        ]
-        .into_iter()
-        .filter_map(|(frame, endpoint, name)| {
-            if start == end && endpoint == Endpoint::End {
-                return None;
+        if guide.is_none()
+            && locked.is_none()
+            && start == end
+            && self.selected_clip_play_start().is_some()
+        {
+            return None;
+        }
+        let mut markers = Vec::new();
+        if guide.is_none() && start != end {
+            for (frame, endpoint, name) in [
+                (start, Endpoint::Start, "start"),
+                (end, Endpoint::End, "end"),
+            ] {
+                if let Some(marker) = viewport.fraction(frame).and_then(|position| {
+                    time_position_marker(
+                        format!("time-marker-{edge_name}-{name}").into(),
+                        position,
+                        endpoint,
+                        edge,
+                        theme::time_position_marker_color(),
+                    )
+                }) {
+                    markers.push(marker.into_any_element());
+                }
             }
-            time_position_marker(
-                format!("time-marker-{edge_name}-{name}").into(),
-                viewport.fraction(frame)?,
-                endpoint,
-                edge,
-                theme::time_position_marker_color(),
-            )
+        }
+        if let Some(frame) = guide
+            && let Some(marker) = viewport.fraction(frame).and_then(|position| {
+                time_position_marker(
+                    format!("clip-move-guide-{edge_name}").into(),
+                    position,
+                    Endpoint::Point,
+                    edge,
+                    theme::time_position_marker_color(),
+                )
+            })
+        {
+            markers.push(marker.into_any_element());
+        }
+        let point = locked.or_else(|| {
+            (guide.is_none() && start == end && self.selected_clip_play_start().is_none())
+                .then_some(cursor)
+                .flatten()
         });
+        if let Some(point) = point
+            && let Some(marker) = viewport.fraction(point.frame).and_then(|position| {
+                time_position_marker(
+                    if locked.is_some() {
+                        format!("locked-play-start-{edge_name}").into()
+                    } else {
+                        format!("time-marker-{edge_name}-start").into()
+                    },
+                    position,
+                    Endpoint::Point,
+                    edge,
+                    if locked.is_some() {
+                        theme::locked_time_position_marker_color()
+                    } else {
+                        theme::time_position_marker_color()
+                    },
+                )
+            })
+        {
+            markers.push(
+                marker
+                    .id(if edge == hex_widgets::TimeMarkerEdge::Top {
+                        "play-start-lock-top"
+                    } else {
+                        "play-start-lock-bottom"
+                    })
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|view, event: &gpui::MouseDownEvent, _, cx| {
+                            if event.modifiers == gpui::Modifiers::default() {
+                                view.toggle_play_start_lock(cx);
+                                cx.stop_propagation();
+                            }
+                        }),
+                    )
+                    .into_any_element(),
+            );
+        }
         Some(
             div()
                 .absolute()
@@ -261,8 +415,14 @@ impl EditorView {
         )
     }
 
-    pub(super) fn edit_cursor_layer(&self, viewport: super::viewport::Viewport) -> Option<Div> {
-        let markers = self.edit_cursor_markers(viewport, hex_widgets::TimeMarkerEdge::Bottom)?;
+    pub(super) fn edit_cursor_layer(
+        &self,
+        viewport: super::viewport::Viewport,
+        guide: Option<u64>,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
+        let markers =
+            self.edit_cursor_markers(viewport, hex_widgets::TimeMarkerEdge::Bottom, guide, cx)?;
         Some(
             div()
                 .absolute()
@@ -275,9 +435,31 @@ impl EditorView {
         )
     }
 
-    pub(super) fn split_at_edit_cursor(&mut self) {
+    pub(super) fn split_arrangement_clips(&mut self, window: &Window, cx: &Context<Self>) {
         if self.mode != EditorMode::Arrangement {
             self.error = Some("split is available in arrangement".into());
+            return;
+        }
+        // Ordinary track headers belong to the same arranger editing scope.
+        let arranger_focused = self.focus.is_focused(window) || self.track_header_focused(window);
+        if (!arranger_focused && !self.midi_focus.is_focused(window))
+            || !self.arrangement_view_change_available(cx)
+            || self.device_panel.has_pending_draft(cx)
+            || (arranger_focused && self.automation_view.enabled)
+        {
+            return;
+        }
+        if arranger_focused
+            && self
+                .time_selection
+                .is_some_and(|s| s.anchor_frame != s.end_frame)
+        {
+            let Some(range) = self.normalized_time_selection() else {
+                self.error = Some("time selection is no longer available".into());
+                return;
+            };
+            self.cancel_duplicate_chain();
+            self.enqueue(Request::Edit(Command::SplitTimeRange { range }));
             return;
         }
         let Some(cursor) = self

@@ -1811,7 +1811,7 @@ fn pump_capacity_replay(
     expected: &EqState,
     device: DeviceId,
 ) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         editor.update(cx, |view, cx| {
             view.tick(cx);

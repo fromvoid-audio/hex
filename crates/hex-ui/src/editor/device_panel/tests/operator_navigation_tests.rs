@@ -551,7 +551,23 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
     visual.simulate_click(envelope.center(), Modifiers::default());
     visual.simulate_click(fine.center(), Modifiers::default());
     tab_to_routing(&mut visual, &editor, device);
+    let page_before_space = editor.update(&mut visual, |view, _| {
+        view.last_transport_command = None;
+        view.device_panel.operator_pages[&device].page
+    });
     visual.simulate_keystrokes("space");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.operator_pages[&device].page,
+            page_before_space
+        );
+        assert!(matches!(
+            view.last_transport_command,
+            Some(hex_engine::PlaybackCommand::PlayFrom(_))
+        ));
+    });
+    visual.simulate_keystrokes("enter");
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(

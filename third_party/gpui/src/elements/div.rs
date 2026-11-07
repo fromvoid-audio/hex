@@ -44,7 +44,7 @@ use util::ResultExt;
 
 use super::ImageCacheProvider;
 
-const DRAG_THRESHOLD: f64 = 2.;
+use crate::window::POINTER_DRAG_THRESHOLD;
 const TOOLTIP_SHOW_DELAY: Duration = Duration::from_millis(500);
 const HOVERABLE_TOOLTIP_HIDE_DELAY: Duration = Duration::from_millis(500);
 
@@ -1815,6 +1815,26 @@ impl Interactivity {
         cx: &mut App,
         f: impl FnOnce(&Style, &mut Window, &mut App),
     ) {
+        if self.hover_style.is_some()
+            || self.group_hover_style.is_some()
+            || self.hover_listener.is_some()
+            || self.tooltip_builder.is_some()
+        {
+            let group = self
+                .group_hover_style
+                .as_ref()
+                .and_then(|style| GroupHitboxes::dependency(&style.group, cx));
+            let group_hitbox = group.map(|(id, _)| id);
+            let painted_hover = !cx.has_active_drag()
+                && !window.is_pointer_dragging()
+                && (hitbox.is_some_and(|hitbox| hitbox.is_hovered(window))
+                    || group_hitbox.is_some_and(|id| id.is_hovered(window)));
+            window.observe_pointer_hover(
+                hitbox.map(|hitbox| hitbox.id),
+                group.map(|(_, bounds)| bounds),
+                painted_hover,
+            );
+        }
         self.hovered = hitbox.map(|hitbox| hitbox.is_hovered(window));
         window.with_optional_element_state::<InteractiveElementState, _>(
             global_id,
@@ -1870,7 +1890,7 @@ impl Interactivity {
                                             }
 
                                             if let Some(group) = self.group.clone() {
-                                                GroupHitboxes::push(group, hitbox.id, cx);
+                                                GroupHitboxes::push(group, hitbox, cx);
                                             }
 
                                             if let Some(area) = self.window_control {
@@ -2113,6 +2133,10 @@ impl Interactivity {
         let drop_listeners = mem::take(&mut self.drop_listeners);
         let click_listeners = mem::take(&mut self.click_listeners);
         let can_drop_predicate = mem::take(&mut self.can_drop_predicate);
+        let tracks_pointer_click = !click_listeners.is_empty()
+            || drag_listener.is_some()
+            || self.active_style.is_some()
+            || self.group_active_style.is_some();
 
         if !drop_listeners.is_empty() {
             let hitbox = hitbox.clone();
@@ -2184,7 +2208,7 @@ impl Interactivity {
                         let mut pending_mouse_down = pending_mouse_down.borrow_mut();
                         if let Some(mouse_down) = pending_mouse_down.clone()
                             && !cx.has_active_drag()
-                            && (event.position - mouse_down.position).magnitude() > DRAG_THRESHOLD
+                            && (event.position - mouse_down.position).magnitude() > POINTER_DRAG_THRESHOLD
                             && let Some((drag_value, drag_listener)) = drag_listener.take()
                         {
                             *clicked_state.borrow_mut() = ElementClickedState::default();
@@ -2286,12 +2310,10 @@ impl Interactivity {
                     .get_or_insert_with(Default::default)
                     .clone();
 
-                window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
-                    if phase != DispatchPhase::Bubble {
-                        return;
-                    }
+                window.on_pointer_hover_change(move |window, cx| {
                     let is_hovered = has_mouse_down.borrow().is_none()
                         && !cx.has_active_drag()
+                        && !window.is_pointer_dragging()
                         && hitbox.is_hovered(window);
                     let mut was_hovered = was_hovered.borrow_mut();
 
@@ -2300,6 +2322,9 @@ impl Interactivity {
                         drop(was_hovered);
 
                         hover_listener(&is_hovered, window, cx);
+                        true
+                    } else {
+                        false
                     }
                 });
             }
@@ -2323,14 +2348,17 @@ impl Interactivity {
                     let pending_mouse_down = pending_mouse_down.clone();
                     let source_bounds = hitbox.bounds;
                     move |window: &Window| {
-                        pending_mouse_down.borrow().is_none()
+                        !window.is_pointer_dragging()
+                            && pending_mouse_down.borrow().is_none()
                             && source_bounds.contains(&window.mouse_position())
                     }
                 });
                 let check_is_hovered = Rc::new({
                     let hitbox = hitbox.clone();
                     move |window: &Window| {
-                        pending_mouse_down.borrow().is_none() && hitbox.is_hovered(window)
+                        !window.is_pointer_dragging()
+                            && pending_mouse_down.borrow().is_none()
+                            && hitbox.is_hovered(window)
                     }
                 });
                 register_tooltip_mouse_handlers(
@@ -2347,6 +2375,27 @@ impl Interactivity {
                 .clicked_state
                 .get_or_insert_with(Default::default)
                 .clone();
+            if tracks_pointer_click {
+                let pending = element_state.pending_mouse_down.clone();
+                let clicked = active_state.clone();
+                window.on_pointer_hover_change(move |window, _| {
+                    if !window.has_pointer_capture() {
+                        return false;
+                    }
+                    // An explicit gesture owns the press. Clear framework-only
+                    // click/drag latches after its initiating press propagates,
+                    // without delivering a mouse-up or invoking a user action.
+                    // These records replay with cached/deferred paint and run
+                    // during input, including a press/release with no repaint.
+                    let had_press = pending
+                        .as_ref()
+                        .is_some_and(|pending| pending.borrow_mut().take().is_some());
+                    let mut clicked = clicked.borrow_mut();
+                    let was_clicked = clicked.is_clicked();
+                    *clicked = ElementClickedState::default();
+                    had_press || was_clicked
+                });
+            }
             if active_state.borrow().is_clicked() {
                 window.on_mouse_event(move |_: &MouseUpEvent, phase, window, _cx| {
                     if phase == DispatchPhase::Capture {
@@ -2523,7 +2572,7 @@ impl Interactivity {
         }
 
         if let Some(hitbox) = hitbox {
-            if !cx.has_active_drag() {
+            if !cx.has_active_drag() && !window.is_pointer_dragging() {
                 if let Some(group_hover) = self.group_hover_style.as_ref()
                     && let Some(group_hitbox_id) = GroupHitboxes::get(&group_hover.group, cx)
                     && group_hitbox_id.is_hovered(window)
@@ -2784,6 +2833,12 @@ fn handle_tooltip_mouse_move(
                 async move |cx| {
                     cx.background_executor().timer(TOOLTIP_SHOW_DELAY).await;
                     cx.update(|window, cx| {
+                        // A capture listener can consume movement before this
+                        // pending tooltip receives its cancellation event.
+                        if window.is_pointer_dragging() {
+                            active_tooltip.borrow_mut().take();
+                            return;
+                        }
                         let new_tooltip =
                             build_tooltip(window, cx).map(|(view, tooltip_is_hoverable)| {
                                 let active_tooltip = active_tooltip.clone();
@@ -2900,26 +2955,34 @@ fn handle_tooltip_check_visible_and_update(
     active_tooltip.borrow().is_some()
 }
 
+// Bounds are conservative invalidation metadata only. Style calculation still
+// uses the current group's actual hitbox and ordinary occlusion rules.
+type GroupHitboxDependency = (HitboxId, Bounds<Pixels>);
+
 #[derive(Default)]
-pub(crate) struct GroupHitboxes(HashMap<SharedString, SmallVec<[HitboxId; 1]>>);
+pub(crate) struct GroupHitboxes(HashMap<SharedString, SmallVec<[GroupHitboxDependency; 1]>>);
 
 impl Global for GroupHitboxes {}
 
 impl GroupHitboxes {
     pub fn get(name: &SharedString, cx: &mut App) -> Option<HitboxId> {
+        Self::dependency(name, cx).map(|(id, _)| id)
+    }
+
+    fn dependency(name: &SharedString, cx: &mut App) -> Option<GroupHitboxDependency> {
         cx.default_global::<Self>()
             .0
             .get(name)
             .and_then(|bounds_stack| bounds_stack.last())
-            .cloned()
+            .copied()
     }
 
-    pub fn push(name: SharedString, hitbox_id: HitboxId, cx: &mut App) {
+    pub fn push(name: SharedString, hitbox: &Hitbox, cx: &mut App) {
         cx.default_global::<Self>()
             .0
             .entry(name)
             .or_default()
-            .push(hitbox_id);
+            .push((hitbox.id, hitbox.bounds.intersect(&hitbox.content_mask.bounds)));
     }
 
     pub fn pop(name: &SharedString, cx: &mut App) {

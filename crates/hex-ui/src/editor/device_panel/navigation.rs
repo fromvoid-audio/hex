@@ -1,4 +1,5 @@
 //! View-only horizontal navigation shared by track and return device rails.
+//! A Window pointer lease owns held input; cancellation keeps the last offset.
 use super::*;
 use gpui::{
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollHandle, ScrollWheelEvent, canvas, fill,
@@ -20,6 +21,33 @@ struct Gesture {
     pointer_x: f32,
     offset: f32,
     scale: f32,
+    focus: Option<gpui::FocusHandle>,
+}
+
+impl Gesture {
+    fn cursor(&self) -> gpui::CursorStyle {
+        if self.button == MouseButton::Middle {
+            gpui::CursorStyle::ClosedHand
+        } else {
+            gpui::CursorStyle::PointingHand
+        }
+    }
+}
+
+fn current(view: &EditorView, window: &Window, cx: &App) -> bool {
+    let navigation = &view.device_panel.navigation;
+    view.clip_view_open
+        && view.device_panel_active
+        && navigation.identity
+            == view
+                .device_panel
+                .owner
+                .map(|owner| (view.project_generation, owner))
+        && navigation.mode == Some(view.mode)
+        && navigation
+            .gesture
+            .as_ref()
+            .is_some_and(|g| g.focus == window.focused(cx))
 }
 
 impl Navigation {
@@ -234,49 +262,12 @@ pub(in crate::editor) fn bottom_bar(
                             ));
                         }
                     }
-                    let move_entity = entity.clone();
-                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-                        if !phase.capture() {
-                            return;
-                        }
-                        let moved =
-                            move_entity.update(cx, |view, _| {
-                                let navigation = &mut view.device_panel.navigation;
-                                if navigation.gesture.as_ref().is_some_and(|gesture| {
-                                    event.pressed_button != Some(gesture.button)
-                                }) {
-                                    return navigation.cancel();
-                                }
-                                navigation.update(f32::from(event.position.x))
-                            });
-                        if moved {
-                            cx.stop_propagation();
-                            window.refresh();
-                        }
-                    });
-                    let up_entity = entity.clone();
-                    window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-                        if !phase.capture() {
-                            return;
-                        }
-                        let ended = up_entity.update(cx, |view, _| {
-                            let navigation = &mut view.device_panel.navigation;
-                            if navigation
-                                .gesture
-                                .as_ref()
-                                .is_some_and(|gesture| gesture.button == event.button)
-                            {
-                                navigation.update(f32::from(event.position.x));
-                                navigation.cancel()
-                            } else {
-                                false
-                            }
-                        });
-                        if ended {
-                            cx.stop_propagation();
-                            window.refresh();
-                        }
-                    });
+                    let view = entity.read(cx);
+                    if current(view, window, cx)
+                        && let Some(gesture) = view.device_panel.navigation.gesture.as_ref()
+                    {
+                        window.renew_pointer_capture(entity.entity_id(), gesture.cursor());
+                    }
                     let wheel_entity = entity.clone();
                     window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
                         if !phase.capture() || !open || !bounds.contains(&event.position) {
@@ -295,6 +286,9 @@ pub(in crate::editor) fn bottom_bar(
             )
             .size_full(),
         );
+    let trim = open
+        .then(|| super::render_automation_trim(view, cx))
+        .flatten();
     let measure_entity = cx.entity();
     div()
         .id("device-chain-bottom-bar")
@@ -303,6 +297,7 @@ pub(in crate::editor) fn bottom_bar(
         .items_center()
         .gap(px(4.0))
         .flex_shrink_0()
+        .children(trim)
         .child(overview)
         .child(
             div()
@@ -373,6 +368,7 @@ pub(in crate::editor) fn bottom_bar(
 pub(in crate::editor) fn capture_pointer_down(
     view: &mut EditorView,
     event: &MouseDownEvent,
+    window: &mut Window,
     cx: &mut Context<EditorView>,
 ) {
     if view.context_menu.is_some() || view.theme_settings.open {
@@ -392,10 +388,15 @@ pub(in crate::editor) fn capture_pointer_down(
         cx.notify();
         return;
     }
-    if !open {
+    if !open
+        || view.device_panel.navigation.is_active()
+        || !f32::from(event.position.x).is_finite()
+        || !f32::from(event.position.y).is_finite()
+    {
         return;
     }
-    let navigation = &mut view.device_panel.navigation;
+    let navigation = &view.device_panel.navigation;
+    let mut jump = None;
     let scale = if event.button == MouseButton::Middle
         && navigation.scroll.bounds().contains(&event.position)
     {
@@ -421,17 +422,89 @@ pub(in crate::editor) fn capture_pointer_down(
         );
         let pointer = f32::from(event.position.x - bounds.origin.x);
         if pointer < left || pointer > left + focus_width {
-            navigation.set_offset(-(pointer - focus_width / 2.0) / width * total);
+            jump = Some(-(pointer - focus_width / 2.0) / width * total);
         }
         -total / width
     } else {
         return;
     };
+    let identity = navigation.identity;
+    let mode = navigation.mode;
+    let button = event.button;
+    let owner = cx.entity().downgrade();
+    let cancelled = owner.clone();
+    if !window.capture_pointer(
+        cx.entity_id(),
+        button,
+        if button == MouseButton::Middle {
+            gpui::CursorStyle::ClosedHand
+        } else {
+            gpui::CursorStyle::PointingHand
+        },
+        move |event, window, cx| {
+            let moved = event.downcast_ref::<MouseMoveEvent>();
+            let released = event
+                .downcast_ref::<MouseUpEvent>()
+                .filter(|e| e.button == button);
+            let Some(position) = moved
+                .map(|e| e.position)
+                .or_else(|| released.map(|e| e.position))
+            else {
+                return;
+            };
+            let _ = owner.update(cx, |view, cx| {
+                let navigation = &view.device_panel.navigation;
+                if navigation.identity != identity
+                    || navigation.mode != mode
+                    || !navigation
+                        .gesture
+                        .as_ref()
+                        .is_some_and(|g| g.button == button)
+                {
+                    return;
+                }
+                let valid = current(view, window, cx)
+                    && f32::from(position.x).is_finite()
+                    && f32::from(position.y).is_finite();
+                let navigation = &mut view.device_panel.navigation;
+                if valid {
+                    navigation.update(f32::from(position.x));
+                }
+                if !valid || released.is_some() {
+                    navigation.cancel();
+                }
+                window.refresh();
+            });
+        },
+        move |window, cx| {
+            let _ = cancelled.update(cx, |view, _| {
+                let navigation = &mut view.device_panel.navigation;
+                if navigation.identity == identity
+                    && navigation.mode == mode
+                    && navigation
+                        .gesture
+                        .as_ref()
+                        .is_some_and(|g| g.button == button)
+                {
+                    navigation.cancel();
+                    window.refresh();
+                }
+            });
+        },
+        cx,
+    ) {
+        return;
+    }
+    let navigation = &mut view.device_panel.navigation;
+    if let Some(offset) = jump {
+        navigation.set_offset(offset);
+    }
     navigation.gesture = Some(Gesture {
         button: event.button,
         pointer_x: f32::from(event.position.x),
         offset: f32::from(navigation.scroll.offset().x),
         scale,
+        focus: window.focused(cx),
     });
     cx.stop_propagation();
     cx.notify();

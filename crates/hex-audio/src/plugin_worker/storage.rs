@@ -5,13 +5,14 @@ use crate::native_callback_owner::{ChannelStorage, Guard};
 
 pub(super) fn reserved_backing(
     guard: &Guard<State>,
-    completed: &Arc<AtomicU64>,
+    completed: &Arc<Signal>,
 ) -> Option<ChannelStorage> {
     let state = guard.owner_ref()?;
     let processor_bytes = match state.processor.as_ref()? {
         Processor::Function(process) => std::mem::size_of_val(process.as_ref()),
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        Processor::Native(instance) => std::mem::size_of_val(instance.as_ref()),
+        Processor::Native(instance) => std::mem::size_of_val(instance.as_ref())
+            .checked_add(capture::MAX_RETAINED_PAYLOAD_BYTES)?,
     };
     Some(ChannelStorage {
         data_bytes: std::mem::size_of_val(state)
@@ -49,19 +50,28 @@ impl NativeWorker {
     /// are already present; their enclosing Box is additional here. Failure
     /// diagnostics, opaque std thread/allocator resources and transient exchange
     /// costs remain separate, so this is not complete Root eligibility.
+    #[cfg(test)]
     pub(crate) fn preconstruction_data_bytes_on_control(
         instance: &hex_plugin_host::native::Prepared,
     ) -> Option<usize> {
-        fn capture_bytes<R>(_: fn(Guard<State>, Arc<AtomicU64>) -> R) -> usize {
+        Self::preconstruction_data_bytes_for_source_on_control(
+            instance.retained_storage_on_control()?,
+        )
+    }
+
+    pub(crate) fn preconstruction_data_bytes_for_source_on_control(
+        source: hex_plugin_host::native::PreparedStorage,
+    ) -> Option<usize> {
+        fn capture_bytes<R>(_: fn(Guard<State>, Arc<Signal>) -> R) -> usize {
             std::mem::size_of::<R>()
         }
-        instance
-            .retained_storage_on_control()?
+        source
             .data_bytes
             .checked_add(channel_storage_bound()?.data_bytes)?
             .checked_add(ChannelStorage::owner_reservation::<State>()?.data_bytes)?
             .checked_add(std::mem::size_of::<hex_plugin_host::native::Prepared>())?
-            .checked_add(std::mem::size_of::<AtomicU64>())?
+            .checked_add(std::mem::size_of::<Signal>())?
+            .checked_add(capture::MAX_RETAINED_PAYLOAD_BYTES)?
             .checked_add(capture_bytes(transport_runner))?
             .checked_add(std::mem::size_of::<Completion>())
     }

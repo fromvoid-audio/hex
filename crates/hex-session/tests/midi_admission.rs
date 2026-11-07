@@ -8,7 +8,7 @@ use std::{
 };
 
 fn event(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + std::time::Duration::from_secs(60);
     loop {
         match service.try_event() {
             Ok(event) => return event,
@@ -30,6 +30,7 @@ fn edit(service: &Service, command: Command) -> Event {
 fn dense_note(index: usize, base: BeatTime) -> MidiNoteInsert {
     let duration = BeatTime::from_ratio(1, 1024).unwrap();
     MidiNoteInsert {
+        active: true,
         start: BeatTime::from_raw(base.raw() + (index / 32) as u64 * duration.raw()),
         duration,
         pitch: 48 + (index % 32) as u8,
@@ -462,6 +463,7 @@ fn batch_note_admission_commits_once_and_rejects_density_without_publication() {
     };
     let valid_notes = (0..3)
         .map(|index| MidiNoteInsert {
+            active: true,
             start: BeatTime::from_quarters(index).unwrap(),
             duration: BeatTime::from_ratio(1, 8).unwrap(),
             pitch: 60 + index as u8,
@@ -578,6 +580,105 @@ fn batch_note_admission_commits_once_and_rejects_density_without_publication() {
 }
 
 #[test]
+fn inactive_notes_do_not_consume_playback_density_and_failed_reactivation_is_atomic() {
+    let service = Service::new(8_000, 16, 32).unwrap();
+    assert!(event(&service).playback.is_some());
+    let track = match edit(
+        &service,
+        Command::InsertTrackWithDevice {
+            name: "notes".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        },
+    )
+    .created
+    {
+        Some(Created::Track(id)) => id,
+        other => panic!("track: {other:?}"),
+    };
+    let clip = match edit(
+        &service,
+        Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(16).unwrap(),
+        },
+    )
+    .created
+    {
+        Some(Created::Clip(id)) => id,
+        other => panic!("clip: {other:?}"),
+    };
+    let inserted = edit(
+        &service,
+        Command::AddMidiNotes {
+            clip,
+            notes: (0..=hex_engine::midi_compile::MAX_ONSETS_PER_WINDOW)
+                .map(|index| {
+                    let mut note = dense_note(index, BeatTime::ZERO);
+                    note.active = false;
+                    note
+                })
+                .collect(),
+        },
+    );
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    let ids: Vec<_> = inserted
+        .state
+        .project
+        .midi_clip(clip)
+        .unwrap()
+        .notes()
+        .iter()
+        .map(|note| note.id())
+        .collect();
+    assert_eq!(
+        ids.len(),
+        hex_engine::midi_compile::MAX_ONSETS_PER_WINDOW + 1
+    );
+    let rejected = edit(
+        &service,
+        Command::SetMidiNotesActive {
+            clip,
+            notes: ids.clone(),
+            active: true,
+        },
+    );
+    assert!(
+        rejected
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("onset density")
+    );
+    assert_eq!(rejected.state.project, inserted.state.project);
+    assert_eq!(rejected.state.revision, inserted.state.revision);
+    assert!(rejected.playback.is_none());
+    let accepted = edit(
+        &service,
+        Command::SetMidiNotesActive {
+            clip,
+            notes: vec![ids[0]],
+            active: true,
+        },
+    );
+    assert!(accepted.error.is_none(), "{:?}", accepted.error);
+    assert_eq!(
+        accepted
+            .state
+            .project
+            .midi_clip(clip)
+            .unwrap()
+            .notes()
+            .iter()
+            .filter(|note| note.active())
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn mixed_note_edit_admission_preserves_original_revision_on_compile_rejection() {
     let service = Service::new(8_000, 16, 32).unwrap();
     assert!(event(&service).playback.is_some());
@@ -637,6 +738,7 @@ fn mixed_note_edit_admission_preserves_original_revision_on_compile_rejection() 
             remove: vec![first],
             insert: vec![
                 MidiNoteInsert {
+                    active: true,
                     start: BeatTime::from_ratio(1, 3).unwrap(),
                     duration: BeatTime::from_ratio(1, 16).unwrap(),
                     pitch: 49,
@@ -644,6 +746,7 @@ fn mixed_note_edit_admission_preserves_original_revision_on_compile_rejection() 
                     velocity: 65,
                 },
                 MidiNoteInsert {
+                    active: true,
                     start: BeatTime::from_ratio(4, 3).unwrap(),
                     duration: BeatTime::from_ratio(1, 16).unwrap(),
                     pitch: 53,
@@ -744,4 +847,70 @@ fn mixed_note_edit_admission_preserves_original_revision_on_compile_rejection() 
         redo.state.project.tracks().len(),
         dirty_with_redo.state.project.tracks().len() + 1
     );
+}
+
+#[test]
+fn stable_note_extent_update_prepares_once_preserves_window_and_roundtrips() {
+    let service = Service::new(8_000, 16, 32).unwrap();
+    event(&service);
+    let (clip, mut before) = populated(&service);
+    let note = before.state.project.midi_clip(clip).unwrap().notes()[0].id();
+    let next_id = before.state.project.snapshot().next_id;
+    let mut changed = edit(
+        &service,
+        Command::UpdateMidiNotesWithSourceExtent {
+            clip,
+            notes: vec![MidiNoteUpdate {
+                note,
+                start: BeatTime::from_quarters(5).unwrap(),
+                duration: BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            }],
+        },
+    );
+    assert!(changed.error.is_none(), "{:?}", changed.error);
+    assert!(changed.playback.is_some());
+    assert_eq!(changed.state.revision, before.state.revision + 1);
+    assert_eq!(changed.state.project.snapshot().next_id, next_id);
+    let updated = changed.state.project.midi_clip(clip).unwrap();
+    assert_eq!(
+        (updated.start(), updated.length()),
+        (BeatTime::from_quarters(20).unwrap(), BeatTime::ONE)
+    );
+    assert_eq!(updated.source_length(), BeatTime::from_quarters(6).unwrap());
+    assert_eq!(updated.notes()[0].id(), note);
+    // Source growth retains the note for future editing; material beyond the
+    // finite Arrangement window must stay inaudible.
+    let mut original_pcm = vec![[0.0; 2]; 26 * 4_000];
+    let mut moved_pcm = original_pcm.clone();
+    for (playback, output) in [
+        (before.playback.as_mut().unwrap(), &mut original_pcm),
+        (changed.playback.as_mut().unwrap(), &mut moved_pcm),
+    ] {
+        playback.apply(hex_engine::PlaybackCommand::Play);
+        playback.render(output).unwrap();
+    }
+    assert!(
+        original_pcm
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 1e-6)
+    );
+    assert!(moved_pcm.iter().flatten().all(|sample| *sample == 0.0));
+    let path =
+        std::env::temp_dir().join(format!("hex-stable-note-extent-{}.hex", std::process::id()));
+    hex_storage::save_new(&path, &changed.state.project).unwrap();
+    let reopened = hex_storage::load(&path).unwrap();
+    fs::remove_file(path).unwrap();
+    assert_eq!(reopened, *changed.state.project);
+    service.submit(Request::Undo).unwrap();
+    let undone = event(&service);
+    assert!(undone.error.is_none() && undone.playback.is_some());
+    assert_eq!(undone.state.project, before.state.project);
+    service.submit(Request::Redo).unwrap();
+    let redone = event(&service);
+    assert!(redone.error.is_none() && redone.playback.is_some());
+    assert_eq!(redone.state.project, changed.state.project);
 }

@@ -25,10 +25,20 @@ impl NativeDeviceMetadata for SamplerDefinition {
         super::state::empty_state()
     }
     fn migrate_state(&self, state: &NativeDeviceState) -> Result<NativeDeviceState, Error> {
-        if !super::state::is_empty_state(state) {
-            super::state::SamplerState::from_native(state)?;
+        // Saved v1/v2 states (including the saved v2 empty marker) re-encode at
+        // the current version in memory, keeping host gains and the source
+        // binding. Projects keep their saved form; see `state::saved_form`.
+        if super::state::is_empty_state(state) {
+            if state.state_version() == super::state::STATE_VERSION {
+                return Ok(state.clone());
+            }
+            return super::state::current_empty_state()?.with_host_metadata_from(state);
         }
-        Ok(state.clone())
+        let authored = super::state::SamplerState::from_native(state)?;
+        if state.state_version() == super::state::STATE_VERSION {
+            return Ok(state.clone());
+        }
+        authored.to_current_native()?.with_host_metadata_from(state)
     }
     fn read_parameter(
         &self,

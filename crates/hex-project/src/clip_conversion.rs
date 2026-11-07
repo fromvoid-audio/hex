@@ -79,6 +79,7 @@ pub(crate) fn midi_to_audio(
         asset,
         source_start: 0,
         source_end: frames,
+        loop_range: None,
         gain: ClipGain::default(),
     });
     Ok(Created::SessionClip(id))

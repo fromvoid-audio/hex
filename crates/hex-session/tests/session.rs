@@ -113,6 +113,89 @@ fn prepared_import_compiles_exact_audio_and_waveform_summary() {
 }
 
 #[test]
+fn session_short_note_refusal_preserves_history_and_explains_recovery() {
+    let mut session = Session::new(48_000, 16, 0).unwrap();
+    let Created::Track(track) = session
+        .command(Command::AddMidiTrack {
+            name: "midi".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let Created::Scene(scene) = session
+        .command(Command::AddScene {
+            name: "scene".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    let Created::SessionClip(clip) = session
+        .command(Command::CreateSessionMidiClip {
+            track,
+            scene,
+            name: "clip".into(),
+            source_length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("session clip")
+    };
+    session
+        .command(Command::AddScene {
+            name: "redo".into(),
+        })
+        .unwrap();
+    assert!(session.undo());
+    assert!(session.can_redo());
+    let before = session.project().snapshot();
+    let result = session.command_prepared_revision(
+        Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_raw((1_u64 << 32).div_ceil(24_000)),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        },
+        None,
+    );
+    let Err(error) = result else {
+        panic!("short source note must be refused");
+    };
+    assert_eq!(
+        error.to_string(),
+        "playback compile failed: session midi note gate is too short to guarantee one frame at the admitted tempo; lengthen the note or reduce tempo"
+    );
+    assert_eq!(session.project().snapshot(), before);
+    assert!(session.can_redo());
+    session
+        .command_prepared_revision(
+            Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            },
+            None,
+        )
+        .expect("a longer note is admitted");
+    assert_eq!(
+        session
+            .project()
+            .session_midi_clip(clip)
+            .unwrap()
+            .source()
+            .notes()
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn rejected_unlaunched_session_cell_preserves_project_history_ids_and_prepared_state() {
     let mut editor = Editor::new(Project::new(48_000).expect("project"), 32).expect("editor");
     let track = match editor
@@ -790,9 +873,10 @@ fn converted_import_preserves_source_metadata_and_uses_playback_frames_for_histo
     assert_eq!(metadata.source_sample_rate(), 44_100);
     assert_eq!(metadata.source_frames(), 441);
     assert_eq!(metadata.playback_frames(), 480);
+    // New imports record and render sinc v2.
     assert_eq!(
         metadata.conversion_version(),
-        hex_project::SINC_CONVERSION_V1
+        hex_project::SINC_CONVERSION_V2
     );
     assert_eq!(
         session.project().clip(clip).expect("clip").source_length(),
@@ -804,6 +888,17 @@ fn converted_import_preserves_source_metadata_and_uses_playback_frames_for_histo
         .expect("prepared PCM")
         .frames()
         .to_vec();
+    let v2 = hex_media::resample_with_version(
+        session.source_audio(asset).unwrap(),
+        48_000,
+        hex_media::ResampleLimits {
+            max_source_frames: 441,
+            max_output_frames: 480,
+        },
+        hex_media::ResampleVersion::V2,
+    )
+    .expect("v2 oracle");
+    assert_eq!(original, v2.frames());
     assert!(session.undo());
     assert!(session.project().tracks().is_empty());
     assert_eq!(session.resident_frames(), 441 + 480);
@@ -918,6 +1013,97 @@ fn ordered_instrument_candidate_prepares_and_roundtrips_history() {
 }
 
 #[test]
+fn musical_repeat_handle_extension_prepares_pcm_history_and_reopens_without_empty_occurrences() {
+    use hex_project::AudioViewResizeOperation as Resize;
+    let directory = TempDir::new();
+    let samples: Vec<[i16; 2]> = (0..1_006)
+        .map(|i| {
+            let value = ((i % 17) as i16 - 8) * 1_000;
+            [value, -value]
+        })
+        .collect();
+    let mut session = Session::new(48_000, 32, 16_384).unwrap();
+    let (created, mut previous) = session
+        .import_prepared_revision(
+            prepare(&directory, "fractional-cycle.wav", 48_000, &samples),
+            None,
+        )
+        .unwrap();
+    let (_, asset, clip) = imported_ids(created);
+    for command in [
+        Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        },
+        Command::SetAudioClipMusical {
+            clip,
+            enabled: true,
+        },
+    ] {
+        (_, previous) = session
+            .command_prepared_revision(command, Some(&previous))
+            .unwrap();
+    }
+    for repeats in [2, 3, 8] {
+        let before = session.project().clone();
+        // Keep a genuinely audible one-frame final repeat in the last case.
+        let end = 1_006 * repeats + u64::from(repeats == 8);
+        (_, previous) = session
+            .command_prepared_revision(
+                Command::ResizeAudioClipView {
+                    clip,
+                    operation: Resize::RepeatOuterEnd { project_frame: end },
+                },
+                Some(&previous),
+            )
+            .unwrap();
+        let expected: Vec<_> = samples
+            .iter()
+            .cycle()
+            .take(end as usize)
+            .map(|frame| frame.map(|sample| f32::from(sample) / 32_768.0))
+            .collect();
+        for block in [1, 127, 257] {
+            let mut renderer = hex_engine::Renderer::new(previous.arrangement());
+            renderer.play();
+            assert_eq!(render_blocks(&mut renderer, end as usize, block), expected);
+        }
+        let after = session.project().clone();
+        previous = session
+            .undo_prepared_revision(Some(&previous))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project(), &before);
+        previous = session
+            .redo_prepared_revision(Some(&previous))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project(), &after);
+    }
+    let path = directory.path().join("musical-loop.hex");
+    hex_storage::save_new(&path, session.project()).unwrap();
+    let loaded = hex_storage::load(&path).unwrap();
+    assert_eq!(&loaded, session.project());
+    let pcm = decode_wav_file(
+        directory.path().join("fractional-cycle.wav"),
+        Limits::new(65_536, 8_192),
+    )
+    .unwrap();
+    let reopened = Session::from_loaded(loaded, 8, 16_384, vec![(asset, pcm)]).unwrap();
+    let graph = reopened.compile().unwrap();
+    let mut renderer = hex_engine::Renderer::new(&graph);
+    renderer.play();
+    let expected: Vec<_> = samples
+        .iter()
+        .cycle()
+        .take(8_049)
+        .map(|frame| frame.map(|sample| f32::from(sample) / 32_768.0))
+        .collect();
+    assert_eq!(render_blocks(&mut renderer, expected.len(), 31), expected);
+}
+
+#[test]
 fn clip_loop_resize_preserves_audio_cycle_through_render_export_reopen_and_history() {
     use hex_project::{AudioViewResizeOperation as Resize, TrimEdge};
     let directory = TempDir::new();
@@ -1017,7 +1203,8 @@ fn clip_loop_resize_preserves_audio_cycle_through_render_export_reopen_and_histo
     let decoded = decode_wav_file(&export, Limits::new(4096, 64)).unwrap();
     for (actual, expected) in decoded.audio().frames().iter().zip(&expected) {
         for channel in 0..2 {
-            assert!((actual[channel] - expected[channel]).abs() < 0.00004);
+            // Decode scale (1 LSB) plus rounding and ±1 LSB TPDF dither (1.5 LSB).
+            assert!((actual[channel] - expected[channel]).abs() < 2.6 / 32_768.0);
         }
     }
     assert!(session.undo());
@@ -1132,7 +1319,8 @@ fn clip_loop_resize_midi_trimmed_window_reopens_and_exports_the_same_prepared_no
     assert_eq!(decoded.frames(), frames);
     for (actual, expected) in decoded.audio().frames().iter().zip(&expected) {
         for channel in 0..2 {
-            assert!((actual[channel] - expected[channel]).abs() < 0.00004);
+            // Decode scale (1 LSB) plus rounding and ±1 LSB TPDF dither (1.5 LSB).
+            assert!((actual[channel] - expected[channel]).abs() < 2.6 / 32_768.0);
         }
     }
     assert!(session.undo());
@@ -1228,4 +1416,155 @@ fn retained_native_sources_survive_session_history_track_removal_and_media_reope
         Some(&retained),
         "missing files do not erase authored references"
     );
+}
+
+#[test]
+fn bound_synth_preserves_local_prefix_suffix_audio_mix_through_save_reopen_and_unlink() {
+    fn add_note(session: &mut Session, track: TrackId) {
+        let Created::Clip(clip) = session
+            .command(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ONE,
+                length: BeatTime::ONE,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        session
+            .command(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 69,
+                channel: 0,
+                velocity: 110,
+            })
+            .unwrap();
+    }
+    fn render(session: &Session) -> Vec<[f32; 2]> {
+        let graph = session.compile().unwrap();
+        let mut renderer = hex_engine::Renderer::new(&graph);
+        renderer.play();
+        let mut output = vec![[0.0; 2]; 24512];
+        renderer.render(&mut output).unwrap();
+        output
+    }
+    let directory = TempDir::new();
+    let mut session = Session::new(48000, 32, 64).unwrap();
+    let (track, asset, _) = imported_ids(
+        session
+            .import(prepare(&directory, "audio.wav", 48000, &[[8192, -4096]; 8]))
+            .unwrap(),
+    );
+    let Created::Device(instrument) = session
+        .command(Command::InsertInstrument {
+            track,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("instrument")
+    };
+    let source = session.project().track(track).unwrap().source_id().unwrap();
+    let utility = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap();
+    session
+        .command(Command::InsertDevice {
+            track,
+            before: Some(instrument),
+            state: utility.clone().with_input_gain_millidb(-6000).unwrap(),
+        })
+        .unwrap();
+    session
+        .command(Command::InsertDevice {
+            track,
+            before: None,
+            state: utility.with_input_gain_millidb(3000).unwrap(),
+        })
+        .unwrap();
+    session.command(Command::Gain { track, gain: 0.7 }).unwrap();
+    add_note(&mut session, track);
+    let mut reference = Session::new(48000, 8, 0).unwrap();
+    let Created::Track(reference_track) = reference
+        .command(Command::InsertTrackWithDevice {
+            name: "sine oracle".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("reference track")
+    };
+    add_note(&mut reference, reference_track);
+    let sine = render(&reference);
+    assert!(sine[24000..].iter().any(|f| f[0].abs() > 0.001));
+    let actual = render(&session);
+    let prefix = 10.0_f32.powf(-6.0 / 20.0);
+    let suffix = 10.0_f32.powf(3.0 / 20.0);
+    for (frame, (actual, tone)) in actual.iter().zip(&sine).enumerate() {
+        for channel in 0..2 {
+            let audio = if frame < 8 {
+                [0.25_f32, -0.125][channel]
+            } else {
+                0.0
+            };
+            let expected = (audio * prefix + tone[channel]) * suffix * 0.7;
+            assert!(
+                (actual[channel] - expected).abs() < 2.0e-6,
+                "frame{frame}/channel{channel}: {} vs {expected}",
+                actual[channel]
+            );
+        }
+    }
+    let saved = directory.path().join("bound.hex");
+    hex_storage::save_new(&saved, session.project()).unwrap();
+    let restored = hex_storage::load(&saved).unwrap();
+    assert_eq!(restored.track(track).unwrap().source_id(), Some(source));
+    assert_eq!(
+        restored.track(track).unwrap().instrument_position(),
+        Some(1)
+    );
+    let pcm = decode_wav_file(directory.path().join("audio.wav"), Limits::new(4096, 64)).unwrap();
+    let mut reopened = Session::from_loaded(restored, 32, 64, vec![(asset, pcm)]).unwrap();
+    assert_eq!(render(&reopened), actual);
+    let mut retained_sources = reopened.project().snapshot().native_sources;
+    retained_sources
+        .iter_mut()
+        .find(|entry| entry.id == source.value())
+        .unwrap()
+        .receiver = None;
+    reopened
+        .command(Command::BindTrackSource {
+            track,
+            source: None,
+        })
+        .unwrap();
+    assert_eq!(
+        reopened.project().snapshot().native_sources,
+        retained_sources
+    );
+    assert_eq!(
+        reopened.project().native_source(source).unwrap().receiver(),
+        None
+    );
+    let detached = render(&reopened);
+    assert_eq!(
+        &detached[..8],
+        &actual[..8],
+        "local audio processing is unchanged by unlink"
+    );
+    assert!(detached[8..].iter().all(|f| *f == [0.0; 2]));
+    assert!(reopened.undo());
+    assert_eq!(
+        reopened.project().native_source(source).unwrap().receiver(),
+        Some(track)
+    );
+    assert_eq!(render(&reopened), actual);
+    assert!(reopened.redo());
+    assert_eq!(render(&reopened), detached);
 }

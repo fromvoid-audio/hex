@@ -93,7 +93,7 @@ impl PreparedArrangementVolumes {
         let mut count = 0usize;
         let mut metadata = 0usize;
         for clip in track.midi_clips() {
-            if !clip.volume().points().is_empty() {
+            if !clip.volume().is_unity() {
                 count = count.checked_add(1).ok_or(AudioStorageError::Overflow)?;
                 metadata = metadata
                     .checked_add(

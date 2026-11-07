@@ -1,6 +1,12 @@
-use hex_engine::{STREAM_PAGE_FRAMES, StreamSourceKey, StreamedSourceMetadata};
-use hex_media::VerifiedWavReaderLimits;
+use hex_engine::{
+    STREAM_PAGE_FRAMES, ScalarSourceKey, ScalarSourceMetadata, StreamResourceKey, StreamSourceKey,
+    StreamedSourceMetadata,
+};
+use hex_media::{VerifiedWavManifest, VerifiedWavReaderLimits};
+use hex_project::TempoMap;
+use hex_storage::automation_draft::{PreparedAutomationTake, automation_projection_fingerprint};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StreamConfig {
@@ -99,6 +105,11 @@ pub struct SourceDefinition {
     pub path: PathBuf,
     pub metadata: StreamedSourceMetadata,
     pub reader_limits: VerifiedWavReaderLimits,
+    /// Manifest from the caller's earlier complete verification. When present,
+    /// the worker reopens under it (length/mtime check plus header pages)
+    /// instead of re-hashing the file. When absent, or when the identity changed,
+    /// it hashes the whole file and the fingerprint must still match.
+    pub verified_manifest: Option<VerifiedWavManifest>,
 }
 
 impl SourceDefinition {
@@ -112,6 +123,102 @@ impl SourceDefinition {
             path,
             metadata,
             reader_limits,
+            verified_manifest: None,
+        }
+    }
+
+    /// Reuse a manifest already captured, and accounted, by the caller's
+    /// verification. Its fingerprint must still equal the metadata's.
+    pub fn with_verified_manifest(mut self, manifest: VerifiedWavManifest) -> Self {
+        self.verified_manifest = Some(manifest);
+        self
+    }
+}
+
+/// Closed scalar source. Construction derives metadata from the retained verified
+/// reader and exact immutable projection; callers cannot substitute map facts.
+/// Ownership, descriptor destruction and cursor construction are control/worker only.
+pub struct ScalarSourceDefinition {
+    pub(crate) source: PreparedAutomationTake,
+    pub(crate) projection: Arc<TempoMap>,
+    metadata: ScalarSourceMetadata,
+}
+impl ScalarSourceDefinition {
+    pub fn new(
+        key: ScalarSourceKey,
+        source: PreparedAutomationTake,
+        projection: Arc<TempoMap>,
+    ) -> Result<Self, StreamRuntimeError> {
+        let ranges = source
+            .projected_coverage(&projection)
+            .map_err(|_| StreamRuntimeError::InvalidConfiguration)?;
+        let start = ranges.iter().flatten().map(|r| r.start).min().unwrap_or(0);
+        let end = ranges
+            .iter()
+            .flatten()
+            .map(|r| r.end)
+            .max()
+            .unwrap_or(start);
+        let identity = source.content_identity();
+        let metadata = ScalarSourceMetadata::new(
+            key,
+            match source.target() {
+                hex_storage::automation_draft::DraftTarget::TrackGain { track } => {
+                    hex_engine::ScalarSourceTarget::TrackGain { track }
+                }
+                hex_storage::automation_draft::DraftTarget::Device { device, target } => {
+                    hex_engine::ScalarSourceTarget::Device { device, target }
+                }
+            },
+            projection.sample_rate(),
+            start,
+            end,
+            hex_engine::ScalarProjectionIdentity {
+                version: hex_project::AUTOMATION_PROJECTION_VERSION,
+                fingerprint: automation_projection_fingerprint(&projection),
+            },
+            hex_engine::ScalarFileIdentity {
+                format_version: identity.version(),
+                file_bytes: identity.file_bytes(),
+                terminal_chain: identity.terminal_chain(),
+            },
+        )
+        .map_err(|_| StreamRuntimeError::InvalidConfiguration)?;
+        Ok(Self {
+            source,
+            projection,
+            metadata,
+        })
+    }
+    pub fn metadata(&self) -> &ScalarSourceMetadata {
+        &self.metadata
+    }
+}
+
+/// Nonowning shared DATA identity observations. Counts describe the worker's
+/// own handles plus its single possible cursor, never caller Arc aliases,
+/// control blocks, allocator headers or native custody. Projection DATA is
+/// charged once per actual group in WorkerData, with map backing included.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScalarSharedData {
+    pub source_identity: usize,
+    pub projection_identity: usize,
+    pub projection_data_bytes: usize,
+    pub source_handles: usize,
+    pub projection_handles: usize,
+}
+
+/// Tagged request/cache identity; PCM wrappers remain available through PageKey.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ResourcePageKey {
+    pub source: StreamResourceKey,
+    pub page_index: u64,
+}
+impl From<PageKey> for ResourcePageKey {
+    fn from(key: PageKey) -> Self {
+        Self {
+            source: key.source.into(),
+            page_index: key.page_index,
         }
     }
 }
@@ -127,7 +234,7 @@ pub enum StreamFailureKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StreamFailure {
-    pub key: StreamSourceKey,
+    pub key: StreamResourceKey,
     pub page_index: u64,
     pub kind: StreamFailureKind,
 }
@@ -156,6 +263,8 @@ pub(crate) struct VerifiedCatalog {
     pub(crate) data: crate::WorkerData,
     pub(crate) footprint: CatalogFootprint,
     pub(crate) sources: Vec<StreamedSourceMetadata>,
+    pub(crate) scalar_sources: Vec<ScalarSourceMetadata>,
+    pub(crate) scalar_shared_data: Vec<ScalarSharedData>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib.util
 from contextlib import redirect_stderr, redirect_stdout
 import io
+import errno
+import signal
 import ast
 import hashlib
 import json
@@ -58,7 +60,32 @@ echo "completed $tool $*"
 """
 
 
+def bounded_checkpoint_case(function):
+    """Keep subprocess-heavy checkpoint fixtures within the shard budget."""
+    function.__hex_shard_bounded__ = True
+    return function
+
+
 class LocalCiRunnerTests(unittest.TestCase):
+    def test_module_shard_empty_configs_require_aggregate_passes(self):
+        (self.bin / "python3").write_text(
+            '#!/bin/sh\ncase "$*" in\n'
+            '  *"--filter covered::"*) echo "test result: ok. 1 passed; 0 failed; 0 ignored;" ;;\n'
+            '  *) echo "no tests matched the selection" ;;\n'
+            'esac\n')
+        for covered in (False, True):
+            with self.subTest(covered=covered):
+                steps = tuple(local_ci.Step(
+                    f"config-{index}", ("python3", "scripts/test_shards.py", "--shards", "2",
+                    "--allow-empty", "--filter", name, "--", "cargo", "test"))
+                    for index, name in enumerate(("absent::", "covered::" if covered else "absent::")))
+                runner = local_ci.LocalCiRunner(
+                    self.repo, mode="merge", run_id=f"module-coverage-{covered}",
+                    env=self.env, steps=steps, min_free_bytes=0,
+                    target_state_dir=self.target_state_dir)
+                self.assertEqual(runner.run(), 0 if covered else 1)
+                self.assertEqual("module_scope_error" in runner.summary, not covered)
+
     def test_log_timing_estimates_label_unknown_and_overlapping_durations(self):
         text = ("    Finished `test` profile target(s) in 1m 2.50s\n"
                 "test result: ok. 2 passed; finished in 3.25s\n"
@@ -113,6 +140,13 @@ class LocalCiRunnerTests(unittest.TestCase):
             "MAKE_TARGET": "0",
         }
         self.target_state_dir = self.base / "target-ownership"
+        # Storage probing has its own real-command/metadata tests. Keep cache,
+        # ownership and pipeline fixtures independent of the host filesystem.
+        storage = patch.object(local_ci.ci_target_storage, "inspect", return_value={
+            "platform": "darwin", "status": "identified", "filesystem_type": "apfs"})
+        storage.start()
+        self.addCleanup(storage.stop)
+
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -147,6 +181,85 @@ class LocalCiRunnerTests(unittest.TestCase):
             self.release_attempt("pending")
         self.release_attempt("recovered", adopt=True)
         self.assertIsNone(runner.target_lock)
+
+    def test_release_fresh_target_accepts_only_metadata_created_during_locked_preflight(self):
+        target = self.repo / "cargo-target"
+        target.mkdir()
+        runner = self.runner("fresh-metadata")
+        scope = runner._release_scope
+
+        def metadata():
+            result = scope()
+            (target / ".rustc_info.json").write_text("cargo metadata cache")
+            return result
+
+        with patch.object(runner, "_release_scope", side_effect=metadata):
+            with runner.guarded_release() as report:
+                self.assertEqual(report["cleanup_status"], "not_needed")
+                artifact = target / "release-fixture"
+                artifact.write_bytes(b"optimized fixture")
+                argv = ["cargo", "build", "--release"]
+                report.update(build_argv=argv, build_exit_code=0,
+                              artifact=runner.identify_release_artifact(artifact, argv))
+
+    def test_release_preserves_existing_or_new_unowned_preflight_files(self):
+        target = self.repo / "cargo-target"
+        target.mkdir()
+        cache = target / ".rustc_info.json"
+        cache.write_text("preexisting")
+        runner = self.runner("existing-metadata")
+        with patch.object(runner, "_release_scope") as scope:
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "ownership is unknown"):
+                with runner.guarded_release():
+                    self.fail("preexisting metadata must not acquire release custody")
+            scope.assert_not_called()
+        self.assertEqual(cache.read_text(), "preexisting")
+        cache.unlink()
+
+        runner = self.runner("concurrent-content")
+        scope = runner._release_scope
+        def metadata():
+            result = scope()
+            (target / "foreign").write_text("preserve")
+            return result
+        with patch.object(runner, "_release_scope", side_effect=metadata):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "changed during preflight"):
+                with runner.guarded_release():
+                    self.fail("foreign content must not acquire release custody")
+        self.assertEqual((target / "foreign").read_text(), "preserve")
+        self.assertFalse(list(self.target_state_dir.glob("*.release-owner.json")))
+
+    def test_release_refuses_target_replacement_or_metadata_symlink_during_preflight(self):
+        target = self.repo / "cargo-target"
+        target.mkdir()
+        runner = self.runner("replaced-target")
+        scope = runner._release_scope
+        def replace_target():
+            result = scope()
+            target.rename(self.repo / "original-target")
+            target.mkdir()
+            return result
+        with patch.object(runner, "_release_scope", side_effect=replace_target):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "identity changed"):
+                with runner.guarded_release():
+                    self.fail("replaced target must not acquire release custody")
+        target.rmdir()
+        (self.repo / "original-target").rename(target)
+
+        runner = self.runner("symlink-metadata")
+        scope = runner._release_scope
+        foreign = self.repo / "foreign"
+        foreign.write_text("preserve")
+        def link_metadata():
+            result = scope()
+            (target / ".rustc_info.json").symlink_to(foreign)
+            return result
+        with patch.object(runner, "_release_scope", side_effect=link_metadata):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "changed during preflight"):
+                with runner.guarded_release():
+                    self.fail("metadata symlink must not acquire release custody")
+        self.assertEqual(foreign.read_text(), "preserve")
+        self.assertFalse(list(self.target_state_dir.glob("*.release-owner.json")))
 
     def test_release_cleanup_failure_and_interruption_keep_pending(self):
         _, report = self.release_attempt("first")
@@ -568,100 +681,182 @@ fi
         self.assertEqual(case.path.read_bytes(), original_bytes)
         local_ci.ci_checkpoint.validate_inheritance(case.root, resumed.summary)
 
-    def test_checkpoint_continuation_refuses_changed_inputs_before_any_stage_or_cleanup(self):
-        cases = ("source", "plan", "plan-order", "argv", "test-configuration", "toolchain", "environment", "dependency", "floor",
-                 "report", "report-metadata", "log", "missing-owner", "changed-owner", "foreign-owner", "recreated-target")
-        for change in cases:
-            with self.subTest(change=change):
-                case = self.checkpoint_fixture("checkpoint-drift-" + change)
-                kwargs = {}
-                rustc_bytes = (self.bin / "rustc").read_bytes()
-                if change == "source":
-                    (case.root / "source.rs").write_text("changed executable source\n")
-                elif change == "plan":
-                    kwargs["plan"] = {"qualifies_merge": False, "scope": "full"}
-                elif change == "plan-order":
-                    kwargs["steps"] = tuple(reversed(case.steps))
-                elif change in {"argv", "test-configuration"}:
-                    kwargs["steps"] = (case.steps[0], local_ci.Step("checkpoint-suffix",
-                        (*case.steps[1].argv, "changed") if change == "argv" else case.steps[1].argv,
-                        requires_tests=change != "test-configuration"))
-                elif change == "toolchain":
-                    (self.bin / "rustc").write_bytes(rustc_bytes + b"\n# changed compiler bytes\n")
-                elif change == "environment":
-                    kwargs["env"] = {**case.env, "RUSTFLAGS": "--cfg changed"}
-                elif change == "dependency":
-                    (case.dependency / "lib.rs").write_text("pub fn changed() {}\n")
-                elif change == "floor":
-                    kwargs["min_free_bytes"] = 1
-                elif change == "report":
-                    report = json.loads(case.path.read_text())
-                    report["steps"][0]["status"] = "failed"
-                    case.path.write_text(json.dumps(report))
-                elif change == "report-metadata":
-                    report = json.loads(case.path.read_text())
-                    report["duration_seconds"] += 1
-                    case.path.write_text(json.dumps(report))
-                elif change == "log":
-                    (case.root / case.report["steps"][0]["log"]).write_text("changed passed-stage evidence\n")
-                elif change == "missing-owner":
-                    case.owner.unlink()
-                elif change in {"changed-owner", "foreign-owner"}:
-                    owner = json.loads(case.owner.read_text())
-                    if change == "foreign-owner":
-                        owner["workspace_owner"]["git_common_dir"] = str(self.base / "foreign.git")
-                    else:
-                        owner["recorded_at"] = "changed receipt"
-                    case.owner.write_text(json.dumps(owner))
-                elif change == "recreated-target":
-                    case.target.rename(case.target.with_name("retained-original-target"))
-                    case.target.mkdir()
-                    (case.target / "preserve").write_bytes(b"foreign new target")
-                calls_before = self.call_log.read_text()
-                try:
-                    result, resumed = self.checkpoint_continue(case, **kwargs)
-                finally:
-                    (self.bin / "rustc").write_bytes(rustc_bytes)
-                self.assertNotEqual(result, 0)
-                self.assertIn("resume_error", resumed.summary)
-                calls = self.call_log.read_text()[len(calls_before):]
-                self.assertNotIn("cargo test checkpoint-", calls)
-                self.assertNotIn("cargo clean", calls)
-                self.assertTrue(all(row["status"] == "not_run" for row in resumed.summary["steps"]))
-                if change == "recreated-target":
-                    self.assertEqual((case.target / "preserve").read_bytes(), b"foreign new target")
+    def assert_checkpoint_drift_refused(self, change):
+        case = self.checkpoint_fixture("checkpoint-drift-" + change)
+        kwargs = {}
+        rustc_bytes = (self.bin / "rustc").read_bytes()
+        if change == "source":
+            (case.root / "source.rs").write_text("changed executable source\n")
+        elif change == "plan":
+            kwargs["plan"] = {"qualifies_merge": False, "scope": "full"}
+        elif change == "plan-order":
+            kwargs["steps"] = tuple(reversed(case.steps))
+        elif change in {"argv", "test-configuration"}:
+            kwargs["steps"] = (case.steps[0], local_ci.Step("checkpoint-suffix",
+                (*case.steps[1].argv, "changed") if change == "argv" else case.steps[1].argv,
+                requires_tests=change != "test-configuration"))
+        elif change == "toolchain":
+            (self.bin / "rustc").write_bytes(rustc_bytes + b"\n# changed compiler bytes\n")
+        elif change == "environment":
+            kwargs["env"] = {**case.env, "RUSTFLAGS": "--cfg changed"}
+        elif change == "dependency":
+            (case.dependency / "lib.rs").write_text("pub fn changed() {}\n")
+        elif change == "floor":
+            kwargs["min_free_bytes"] = 1
+        elif change == "report":
+            report = json.loads(case.path.read_text())
+            report["steps"][0]["status"] = "failed"
+            case.path.write_text(json.dumps(report))
+        elif change == "report-metadata":
+            report = json.loads(case.path.read_text())
+            report["duration_seconds"] += 1
+            case.path.write_text(json.dumps(report))
+        elif change == "log":
+            (case.root / case.report["steps"][0]["log"]).write_text("changed passed-stage evidence\n")
+        elif change == "missing-owner":
+            case.owner.unlink()
+        elif change in {"changed-owner", "foreign-owner"}:
+            owner = json.loads(case.owner.read_text())
+            if change == "foreign-owner":
+                owner["workspace_owner"]["git_common_dir"] = str(self.base / "foreign.git")
+            else:
+                owner["recorded_at"] = "changed receipt"
+            case.owner.write_text(json.dumps(owner))
+        elif change == "recreated-target":
+            case.target.rename(case.target.with_name("retained-original-target"))
+            case.target.mkdir()
+            (case.target / "preserve").write_bytes(b"foreign new target")
+        calls_before = self.call_log.read_text()
+        try:
+            result, resumed = self.checkpoint_continue(case, **kwargs)
+        finally:
+            (self.bin / "rustc").write_bytes(rustc_bytes)
+        self.assertNotEqual(result, 0)
+        self.assertIn("resume_error", resumed.summary)
+        calls = self.call_log.read_text()[len(calls_before):]
+        self.assertNotIn("cargo test checkpoint-", calls)
+        self.assertNotIn("cargo clean", calls)
+        self.assertTrue(all(row["status"] == "not_run" for row in resumed.summary["steps"]))
+        if change == "recreated-target":
+            self.assertEqual((case.target / "preserve").read_bytes(), b"foreign new target")
 
-    def test_checkpoint_malformed_resume_records_refuse_without_traceback_or_owner_changes(self):
-        for malformed in ("tree-list", "tree-null", "target-list", "counts-null", "checkpoint-scalar", "report-scalar"):
-            with self.subTest(malformed=malformed):
-                case = self.checkpoint_fixture("checkpoint-malformed-" + malformed)
-                report = json.loads(case.path.read_text())
-                if malformed in {"tree-list", "tree-null"}:
-                    report["start_tree"] = report["end_tree"] = [] if malformed == "tree-list" else None
-                elif malformed == "target-list":
-                    report["checkpoint"]["target"] = []
-                elif malformed == "counts-null":
-                    report["steps"][0]["test_results"] = None
-                elif malformed == "checkpoint-scalar":
-                    report["checkpoint"] = 42
-                else:
-                    report = 42
-                case.path.write_text(json.dumps(report))
-                malformed_bytes = case.path.read_bytes()
-                owner_bytes = case.owner.read_bytes()
-                calls_before = self.call_log.read_text()
-                console = io.StringIO()
-                with redirect_stdout(console), redirect_stderr(console):
-                    result, resumed = self.checkpoint_continue(case)
-                self.assertNotEqual(result, 0)
-                self.assertTrue(resumed.summary["resume_error"])
-                self.assertTrue(all(row["status"] == "not_run" for row in resumed.summary["steps"]))
-                self.assertNotIn("Traceback", console.getvalue())
-                calls = self.call_log.read_text()[len(calls_before):]
-                self.assertNotIn("cargo test checkpoint-", calls)
-                self.assertNotIn("cargo clean", calls)
-                self.assertEqual(case.owner.read_bytes(), owner_bytes)
-                self.assertEqual(case.path.read_bytes(), malformed_bytes)
+    @bounded_checkpoint_case
+    def test_checkpoint_source_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("source")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_plan_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("plan")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_plan_order_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("plan-order")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_argv_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("argv")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_test_configuration_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("test-configuration")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_toolchain_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("toolchain")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_environment_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("environment")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_dependency_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("dependency")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_floor_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("floor")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_report_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("report")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_report_metadata_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("report-metadata")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_log_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("log")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_missing_owner_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("missing-owner")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_changed_owner_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("changed-owner")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_foreign_owner_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("foreign-owner")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_recreated_target_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("recreated-target")
+
+    def assert_malformed_resume_refused(self, malformed):
+        case = self.checkpoint_fixture("checkpoint-malformed-" + malformed)
+        report = json.loads(case.path.read_text())
+        if malformed in {"tree-list", "tree-null"}:
+            report["start_tree"] = report["end_tree"] = [] if malformed == "tree-list" else None
+        elif malformed == "target-list":
+            report["checkpoint"]["target"] = []
+        elif malformed == "counts-null":
+            report["steps"][0]["test_results"] = None
+        elif malformed == "checkpoint-scalar":
+            report["checkpoint"] = 42
+        else:
+            report = 42
+        case.path.write_text(json.dumps(report))
+        malformed_bytes = case.path.read_bytes()
+        owner_bytes = case.owner.read_bytes()
+        calls_before = self.call_log.read_text()
+        console = io.StringIO()
+        with redirect_stdout(console), redirect_stderr(console):
+            result, resumed = self.checkpoint_continue(case)
+        self.assertNotEqual(result, 0)
+        self.assertTrue(resumed.summary["resume_error"])
+        self.assertTrue(all(row["status"] == "not_run" for row in resumed.summary["steps"]))
+        self.assertNotIn("Traceback", console.getvalue())
+        calls = self.call_log.read_text()[len(calls_before):]
+        self.assertNotIn("cargo test checkpoint-", calls)
+        self.assertNotIn("cargo clean", calls)
+        self.assertEqual(case.owner.read_bytes(), owner_bytes)
+        self.assertEqual(case.path.read_bytes(), malformed_bytes)
+
+    @bounded_checkpoint_case
+    def test_checkpoint_tree_list_resume_is_refused(self):
+        self.assert_malformed_resume_refused("tree-list")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_tree_null_resume_is_refused(self):
+        self.assert_malformed_resume_refused("tree-null")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_target_list_resume_is_refused(self):
+        self.assert_malformed_resume_refused("target-list")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_counts_null_resume_is_refused(self):
+        self.assert_malformed_resume_refused("counts-null")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_scalar_resume_is_refused(self):
+        self.assert_malformed_resume_refused("checkpoint-scalar")
+
+    @bounded_checkpoint_case
+    def test_checkpoint_report_scalar_resume_is_refused(self):
+        self.assert_malformed_resume_refused("report-scalar")
 
     def test_checkpoint_continuation_rejects_failed_interrupted_zero_match_and_nonresource_runs(self):
         for stop in ("failed", "interrupted", "zero", None):
@@ -849,6 +1044,7 @@ fi
             run_id="failure",
             env={**self.env, "FAIL_MATCH": "bad"},
             steps=(local_ci.Step("bad", ("bad",)), local_ci.Step("later", ("second",))),
+            min_free_bytes=0,
         )
         self.assertEqual(runner.run(), 1)
         summary = self.summary("failure")
@@ -859,12 +1055,114 @@ fi
         self.assertIsNone(summary["steps"][1]["duration_seconds"])
         self.assertIn("intentional failure", (self.repo / summary["steps"][0]["log"]).read_text())
 
+    def test_report_enospc_preserves_failed_command_and_cleanup(self):
+        self._report_enospc_cases("command", failed_command=True)
+
+    def test_report_enospc_before_command_admission_releases_target(self):
+        self._report_enospc_cases("admission", failed_command=False)
+
+    def test_transient_report_failure_stops_commands_and_records_incomplete_evidence(self):
+        runner = self.runner("transient-report", steps=(local_ci.Step("first", ("first",)), local_ci.Step("later", ("second",))))
+        original = Path.replace
+        faulted = False
+        def replace(path, target):
+            nonlocal faulted
+            if Path(target) == runner.summary_path and not faulted and any(e["status"] == "passed" for e in runner.summary["steps"]):
+                faulted = True
+                raise OSError(errno.ENOSPC, "one-off report publication refusal")
+            return original(path, target)
+        output = io.StringIO()
+        with patch.object(Path, "replace", replace), redirect_stderr(output):
+            self.assertEqual(runner.run(), 2)
+        saved = self.summary("transient-report")
+        self.assertEqual((saved["status"], saved["verification_status"]), ("incomplete", "failed"))
+        self.assertEqual([e["status"] for e in saved["steps"]], ["passed", "not_run"])
+        self.assertIn("one-off report publication refusal", saved["report_publication_error"])
+        self.assertIn("report publication failed", output.getvalue())
+        self.assertNotIn("second", self.call_log.read_text())
+
+    def test_initial_report_enospc_runs_no_commands(self):
+        self._report_enospc_cases("initial", failed_command=False)
+
+    def test_final_report_enospc_cannot_qualify_successful_commands(self):
+        self._report_enospc_cases("final", failed_command=False)
+
+    def _report_enospc_cases(self, stage, *, failed_command):
+        for operation in ("write", "replace"):
+            with self.subTest(stage=stage, operation=operation):
+                name = f"report-{stage}-{operation}"
+                runner = self.runner(name, env={**self.env, "FAIL_MATCH": "cargo build" if failed_command else "never-match"},
+                    steps=(local_ci.Step("build", ("cargo", "build")), local_ci.Step("later", ("second",))))
+                original_write, original_replace = Path.write_text, Path.replace
+                faulted = False
+                durable = None
+                def should_fail():
+                    nonlocal faulted
+                    entries = runner.summary["steps"]
+                    triggered = (stage == "initial" or
+                        stage == "admission" and any(e["status"] == "running" for e in entries) or
+                        stage == "command" and any(e["status"] == "failed" for e in entries) or
+                        stage == "final" and runner.summary.get("ended_at") is not None)
+                    faulted = faulted or triggered
+                    return faulted
+                def write(path, *args, **kwargs):
+                    if path == runner.summary_path.with_suffix(".json.tmp") and operation == "write" and should_fail():
+                        raise OSError(errno.ENOSPC, "injected report storage exhaustion")
+                    return original_write(path, *args, **kwargs)
+                def replace(path, target):
+                    nonlocal durable
+                    if Path(target) == runner.summary_path:
+                        if operation == "replace" and should_fail():
+                            raise OSError(errno.ENOSPC, "injected report storage exhaustion")
+                        result = original_replace(path, target)
+                        durable = runner.summary_path.read_bytes()
+                        return result
+                    return original_replace(path, target)
+                previous_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+                calls_before = self.call_log.read_bytes() if self.call_log.exists() else None
+                output = io.StringIO()
+                with patch.object(Path, "write_text", write), patch.object(Path, "replace", replace), redirect_stderr(output):
+                    result = runner.run()
+                self.assertTrue(faulted)
+                self.assertEqual(result, 1 if failed_command else 2)
+                self.assertEqual({sig: signal.getsignal(sig) for sig in previous_handlers}, previous_handlers)
+                self.assertIsNone(runner.target_lock)
+                self.assertNotIn(runner.summary["status"], {"passed", "partial"})
+                self.assertEqual(runner.summary["verification_status"], "failed")
+                self.assertIn("report publication failed", output.getvalue())
+                self.assertIn(str(runner.summary_path), output.getvalue())
+                self.assertNotIn("Traceback", output.getvalue())
+                if durable is None:
+                    self.assertFalse(runner.summary_path.exists())
+                else:
+                    self.assertEqual(runner.summary_path.read_bytes(), durable)
+                    self.assertNotIn(json.loads(durable)["status"], {"passed", "partial"})
+                if failed_command:
+                    step = runner.summary["steps"][0]
+                    self.assertEqual((step["status"], step["exit_code"]), ("failed", 7))
+                    log = runner.root / step["log"]
+                    self.assertIn("intentional failure", log.read_text())
+                    self.assertIn("command: cargo build", output.getvalue())
+                    self.assertIn("exit code: 7", output.getvalue())
+                    self.assertIn(str(log), output.getvalue())
+                    self.assertEqual(runner.summary["steps"][1]["status"], "not_run")
+                elif stage == "initial":
+                    self.assertEqual(self.call_log.read_bytes() if self.call_log.exists() else None, calls_before)
+                elif stage == "admission":
+                    self.assertTrue(all(e["status"] == "not_run" for e in runner.summary["steps"]))
+                    self.assertNotIn(b"cargo build", self.call_log.read_bytes()[len(calls_before or b""):])
+                else:
+                    self.assertTrue(all(e["status"] == "passed" for e in runner.summary["steps"]))
+                # The report failure cannot strand the shared target lease.
+                self.assertEqual(self.runner("after-" + name).run(), 0)
+
     def test_missing_executable_is_logged_as_failure(self) -> None:
         runner = local_ci.LocalCiRunner(
             self.repo,
             run_id="missing",
             env=self.env,
             steps=(local_ci.Step("missing", ("not-installed",)),),
+            min_free_bytes=0,
         )
         self.assertEqual(runner.run(), 1)
         summary = self.summary("missing")
@@ -1013,6 +1311,7 @@ fi
             run_id="stale",
             env={**self.env, "MUTATE_FILE": str(source), "FAKE_FILE_LIST": "source.rs"},
             steps=(local_ci.Step("mutate", ("first",)),),
+            min_free_bytes=0,
         )
         self.assertEqual(runner.run(), 3)
         summary = self.summary("stale")
@@ -1026,6 +1325,7 @@ fi
             run_id="interrupted",
             env={**self.env, "INTERRUPT_ON": "1"},
             steps=(local_ci.Step("interrupt", ("first",)), local_ci.Step("later", ("second",))),
+            min_free_bytes=0,
         )
         self.assertEqual(runner.run(), 130)
         summary = self.summary("interrupted")
@@ -1221,6 +1521,68 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         calls = self.call_log.read_text()[len(calls_before_handoff):]
         self.assertIn("cargo clean", calls)
         self.assertNotIn("cargo build", calls)
+
+    def test_exfat_refusal_preserves_owned_target_and_skips_cleanup_and_build(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"])
+        target.mkdir()
+        self.assertEqual(self.runner("storage-owner").run(), 0)
+        sentinel = target / "preserve.me"
+        sentinel.write_bytes(b"accepted artifacts")
+        owner = next(self.target_state_dir.glob("*.owner.json"))
+        before = owner.read_bytes()
+        calls = self.call_log.read_text()
+        runner = self.runner("exfat", adopt_target=True)
+        with patch.object(local_ci.ci_target_storage, "inspect", return_value={
+                "platform": "darwin", "status": "identified", "filesystem_type": "exfat"}):
+            self.assertEqual(runner.run(), 1)
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "ExFAT.*unsupported"):
+                self.release_attempt("exfat-release", adopt=True)
+        self.assertIsNone(runner.target_lock)
+        self.assertFalse(runner.target_owner_claimed)
+        self.assertEqual(owner.read_bytes(), before)
+        self.assertEqual(sentinel.read_bytes(), b"accepted artifacts")
+        self.assertFalse(list(self.target_state_dir.glob("*.release-owner.json")))
+        new_calls = self.call_log.read_text()[len(calls):]
+        self.assertNotIn("cargo clean", new_calls)
+        self.assertNotIn("cargo build", new_calls)
+        report = self.summary("exfat")
+        self.assertEqual(report["target_filesystem"]["filesystem_type"], "exfat")
+        self.assertIn("fresh APFS", report["target_cache_error"])
+        self.assertEqual(report["steps"][0]["status"], "not_run")
+        # Refusal released the same cooperative lock; ordinary APFS use resumes.
+        self.assertEqual(self.runner("storage-retry").run(), 0)
+
+    def test_unidentified_macos_storage_refuses_before_owner_claim(self):
+        runner = self.runner("storage-unknown")
+        with patch.object(local_ci.ci_target_storage, "inspect", side_effect=ValueError("probe timed out")):
+            self.assertEqual(runner.run(), 1)
+        self.assertFalse(list(self.target_state_dir.glob("*.owner.json")))
+        self.assertIsNone(runner.target_lock)
+        self.assertIn("before cleanup", self.summary("storage-unknown")["target_cache_error"])
+        self.assertNotIn("cargo build", self.call_log.read_text())
+
+    def test_cleanup_refusal_after_passing_format_reports_actual_phase(self):
+        self.assertEqual(self.runner("phase-owner").run(), 0)
+        owner = next(self.target_state_dir.glob("*.owner.json"))
+        before = owner.read_bytes()
+        runner = self.runner("phase-failure", env={**self.env, "FAIL_MATCH": "clean"},
+                             adopt_target=True,
+                             steps=(local_ci.Step("format", ("first",)),
+                                    local_ci.Step("build", ("cargo", "build"))))
+        # Force the ordinary supported cleanup path, retaining a valid owner.
+        with patch.object(runner, "_provenance_cleanup", return_value=["fixture 0.1.0"]):
+            console = io.StringIO()
+            with redirect_stdout(console):
+                self.assertEqual(runner.run(), 1)
+        summary = self.summary("phase-failure")
+        self.assertEqual([s["status"] for s in summary["steps"]], ["passed", "not_run"])
+        self.assertEqual(owner.read_bytes(), before)
+        self.assertGreaterEqual(summary["target_cache"]["cleanup_duration_seconds"], 0)
+        output = console.getvalue()
+        self.assertIn("step: cargo-target-preparation", output)
+        self.assertNotIn("step: format", output)
+        self.assertIn("target-handoff-clean.log", output)
+        self.assertIn("workspace dev-artifact cleanup failed", output)
 
     def test_target_lock_contention_refuses_before_cargo_build(self) -> None:
         target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()

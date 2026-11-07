@@ -96,7 +96,7 @@ fn actual_root_constructs_and_retires_the_original_unsplit_native_effect() {
         )
         .unwrap();
         let state = root.native_source_prepared_state(binding).unwrap();
-        root.start_native_effect_between(binding, || {
+        root.start_native_effect_between(binding, None, || {
             if close_during_construction {
                 root.close();
             }
@@ -135,8 +135,13 @@ fn actual_root_constructs_and_retires_the_original_unsplit_native_effect() {
                 assert_eq!(constructor.state_alias_handles, 1);
                 assert_eq!(
                     constructor.data_bytes(),
-                    Some(constructor.worker.data_bytes + constructor.dry_data_bytes)
+                    Some(
+                        constructor.worker.data_bytes
+                            + constructor.dry_data_bytes
+                            + constructor.source_metadata_data_bytes
+                    )
                 );
+                assert!(constructor.source_metadata_data_bytes > 128);
                 assert_eq!(
                     constructor.shared_handle_bound(),
                     Some(constructor.worker.shared_handle_bound + 1)

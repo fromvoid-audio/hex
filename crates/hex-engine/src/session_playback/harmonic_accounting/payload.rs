@@ -183,6 +183,9 @@ pub(super) struct HostOwner {
     // Mirror the actual inline optional lease header. Harmonic fixtures have no
     // resource lease; source/configuration owners use the separate resource ledger.
     resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
+    // Mirrors the source-owned live-ledger box header. The fixed ledger payload
+    // is charged separately with the occurrence ledgers in OwnerCharge.
+    live: Option<Box<()>>,
     // Mirror the actual host's new inline controller target and frozen value;
     // these bytes are additional to the provider payload and both ledgers.
     expression_identity: Option<hex_project::DeviceId>,

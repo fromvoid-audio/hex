@@ -71,6 +71,7 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
                 next_id += 1;
                 MidiNoteSnapshot {
                     id,
+                    active: true,
                     start_raw: if workload.dense_sustain {
                         0
                     } else {
@@ -84,6 +85,8 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
             })
             .collect();
         tracks.push(TrackSnapshot {
+            group_output_mutes: Vec::new(),
+            tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),
@@ -98,12 +101,14 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
             soloed: false,
             devices: vec![
                 DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: prefix_id,
                     bypassed: false,
                     state: utility_state.clone(),
                 },
                 DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: suffix_id,
                     bypassed: false,
@@ -111,6 +116,7 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
                 },
             ],
             instrument: Some(hex_project::DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: instrument_id,
                 bypassed: false,
@@ -167,7 +173,10 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
             sends: Vec::new(),
         });
     }
-    Ok(Project::from_snapshot(Snapshot {
+    Ok(Project::from_legacy_snapshot(Snapshot {
+        automatic_track_names: Vec::new(),
+        retained_source_paths: Vec::new(),
+        aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
@@ -175,8 +184,10 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
+        sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: RATE,
+        sample_rate_mode: Default::default(),
         next_id,
         assets: Vec::new(),
         tracks,

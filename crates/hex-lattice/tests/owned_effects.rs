@@ -19,6 +19,7 @@ fn chain(frames: u32, bypassed: bool) -> Result<NativeRuntimeChain, DeviceContra
         },
     )?;
     NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+        automation: Default::default(),
         meter: Default::default(),
         owner: ProcessorChainOwner::Track(1),
         device_id: 1,
@@ -200,6 +201,7 @@ fn owned_factory_failure_and_underreported_storage_refuse_before_publication() {
         ),
     ] {
         let result = NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+            automation: Default::default(),
             meter: Default::default(),
             owner: ProcessorChainOwner::Track(1),
             device_id: 1,

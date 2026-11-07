@@ -6,7 +6,8 @@
 //! No canonical edits, defaults, scheduler or native DSP runs here on callback.
 use crate::plugin_worker::{NativeWorker, NativeWorkerStartFailure};
 use hex_lattice::{
-    ForeignProcessorNode, ForeignProcessors, PreparedForeignProcessor, ProcessorInstanceIdentity,
+    ForeignNote, ForeignProcessorNode, ForeignProcessors, PreparedForeignProcessor,
+    ProcessorInstanceIdentity,
 };
 use hex_lattice_contract::{
     DeviceContractError, ForeignProcessorBinding as Binding, NativeDeviceState,
@@ -14,17 +15,32 @@ use hex_lattice_contract::{
 use hex_plugin_host::{
     Error,
     native::Prepared,
-    transport::{Callback, Fault, MAX_FRAMES},
+    transport::{
+        AcceptedManualParameter, AuthoredSegment, Callback, EffectSegmentOrigins, Fault,
+        InputEvents, MAX_FRAMES, ManualParameterOrigin, MidiEvent, ProcessTiming, SegmentTiming,
+    },
 };
 
+mod automation;
+pub use automation::AuthoredSelection;
+mod bypass;
 mod definition;
 mod tail;
-pub use definition::NativeEffectDefinition;
+pub use definition::{NativeEffectDefinition, UnavailableEffect};
 mod hosting;
+pub(crate) mod manual_base_capture;
 pub use hex_lattice_contract::ForeignProcessorBinding as EffectBinding;
-pub use hosting::{EffectPresentation, EffectSelection, Hosting};
+pub use hosting::{EffectPresentation, EffectSelection, Hosting, PluginProfile};
+pub(crate) use manual_base_capture::BaseCaptureSource;
+pub use manual_base_capture::ManualBaseCapture;
+mod canonical_bases;
+pub use canonical_bases::{CanonicalBasesCapture, CapturedCanonicalBases};
 mod control;
+mod parameter_extension;
+mod state_approval;
 pub(crate) use control::{NativeEffectControl, NativeEffectReference};
+mod source_metadata;
+pub use source_metadata::EffectSourceMetadata;
 mod callbacks;
 pub use callbacks::NativeEffectCallbacks;
 pub(crate) use callbacks::{NativeEffectCycle, NativeEffectEntry};
@@ -36,6 +52,30 @@ struct Configuration {
     sample_rate: u32,
     state: NativeDeviceState,
     prepared: PreparedForeignProcessor,
+    authored: automation::SourceCapabilities,
+    program_revision: std::num::NonZeroU64,
+    state_verifier: Option<hex_lattice_contract::Vst3StateVerifier>,
+}
+
+impl Configuration {
+    fn matches_processing_state(&self, state: &NativeDeviceState) -> bool {
+        self.state_verifier
+            .is_some_and(|verifier| verifier.approves_processing(state))
+            || state.processing_eq(&self.state)
+    }
+
+    fn reserve_program_revision_on_control(
+        &mut self,
+    ) -> Result<std::num::NonZeroU64, &'static str> {
+        let next = self
+            .program_revision
+            .get()
+            .checked_add(1)
+            .and_then(std::num::NonZeroU64::new)
+            .ok_or("native automation program revisions exhausted")?;
+        self.program_revision = next;
+        Ok(next)
+    }
 }
 
 /// One actually prepared native source and its exact constructor-paired queues.
@@ -44,20 +84,28 @@ struct Configuration {
 pub struct NativeEffect {
     worker: NativeWorker,
     callback: NativeEffectCallback,
+    source_metadata: EffectSourceMetadata,
+    state_authority: hex_lattice_contract::Vst3StateAuthority,
 }
 /// Listed constructor backing of the original unsplit effect. Inline effect
 /// storage belongs to the host cell. The configuration state aliases the actual
 /// worker source's restored/captured payload, so it adds one handle, no payload
-/// or shared group. Diagnostics and construction/exchange peaks remain separate.
+/// or shared group. Copied source paths/digests add listed control DATA and no
+/// shared handles; temporary query copies belong to their caller. Diagnostics
+/// and construction/exchange peaks remain separate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NativeEffectStorage {
     pub worker: crate::plugin_worker::NativeWorkerStorage,
     pub dry_data_bytes: usize,
+    pub source_metadata_data_bytes: usize,
     pub state_alias_handles: usize,
 }
 impl NativeEffectStorage {
     pub fn data_bytes(&self) -> Option<usize> {
-        self.worker.data_bytes.checked_add(self.dry_data_bytes)
+        self.worker
+            .data_bytes
+            .checked_add(self.dry_data_bytes)?
+            .checked_add(self.source_metadata_data_bytes)
     }
     pub fn shared_handle_bound(&self) -> Option<usize> {
         self.worker
@@ -73,14 +121,19 @@ impl NativeEffect {
     pub(crate) fn into_quiescent_on_control(
         self,
     ) -> Result<hex_plugin_host::native::Quiescent, NativeWorkerStartFailure> {
-        let Self { worker, callback } = self;
+        let Self {
+            worker,
+            callback,
+            source_metadata,
+            state_authority: _,
+        } = self;
         let NativeEffectCallback {
             transport,
             configuration,
             dry,
             ..
         } = callback;
-        drop((configuration, dry));
+        drop((configuration, dry, source_metadata));
         worker.into_quiescent_on_control(transport)
     }
     pub fn prepare_on_control(
@@ -108,10 +161,45 @@ impl NativeEffect {
     #[allow(clippy::result_large_err)]
     pub(crate) fn prepare_retained_with_data_limit_on_control(
         identity: ProcessorInstanceIdentity,
-        mut instance: Prepared,
+        instance: Prepared,
         max_data_bytes: usize,
     ) -> Result<Self, NativeWorkerStartFailure> {
-        let configuration = match Self::configuration_on_control(identity, &instance) {
+        Self::prepare_retained_with_authored_selection_on_control(
+            identity,
+            instance,
+            max_data_bytes,
+            None,
+        )
+    }
+
+    fn preconstruction_data_bytes_on_control(
+        instance: &Prepared,
+        prepared: PreparedForeignProcessor,
+    ) -> Option<usize> {
+        let source = instance.storage_with_authored_capacity_on_control(
+            hex_plugin_host::transport::MAX_PARAMETER_POINTS,
+        )?;
+        NativeWorker::preconstruction_data_bytes_for_source_on_control(source)?
+            .checked_add(
+                (prepared.total_latency_frames() as usize)
+                    .checked_mul(std::mem::size_of::<[f32; 2]>())?,
+            )?
+            .checked_add(EffectSourceMetadata::required_data_bytes(
+                instance.configuration(),
+            )?)
+    }
+
+    /// Query and arm selected raw parameters on the original source before it
+    /// moves to the worker. IDs must be sorted and unique. This control-only
+    /// preparation grants no graph admission, and refusal preserves custody.
+    #[allow(clippy::result_large_err)]
+    pub fn prepare_retained_with_authored_selection_on_control(
+        identity: ProcessorInstanceIdentity,
+        mut instance: Prepared,
+        max_data_bytes: usize,
+        authored: Option<(hex_plugin_state::ClassId, &[u32])>,
+    ) -> Result<Self, NativeWorkerStartFailure> {
+        let mut configuration = match Self::configuration_on_control(identity, &instance) {
             Ok(configuration) => configuration,
             Err(cause) => {
                 return Err(NativeWorkerStartFailure::retain_source_on_control(
@@ -119,6 +207,26 @@ impl NativeEffect {
                 ));
             }
         };
+        let state_authority = match hex_lattice_contract::Vst3StateAuthority::new_on_control() {
+            Ok(authority) => authority,
+            Err(_) => {
+                return Err(NativeWorkerStartFailure::retain_source_on_control(
+                    Error::Protocol("native state approval authorities exhausted"),
+                    instance,
+                ));
+            }
+        };
+        configuration.state =
+            match state_authority.approve_processing_on_control(configuration.state.clone()) {
+                Ok(state) => state,
+                Err(_) => {
+                    return Err(NativeWorkerStartFailure::retain_source_on_control(
+                        Error::Protocol("native original processing approval refused"),
+                        instance,
+                    ));
+                }
+            };
+        configuration.state_verifier = Some(state_authority.verifier());
         // Preserve an already known lease refusal before considering the
         // budget. Worker transfer validates again against a later close/exit.
         if let Err(cause) = instance.validate_worker_transfer_on_control() {
@@ -129,15 +237,50 @@ impl NativeEffect {
         let dry_frames = configuration.prepared.total_latency_frames() as usize;
         // Reserve the actual retirement diagnostics before starting the worker;
         // the unused allowance is not part of its resident storage inventory.
-        let known_data = NativeWorker::preconstruction_data_bytes_on_control(&instance)
-            .and_then(|n| n.checked_add(dry_frames.checked_mul(std::mem::size_of::<[f32; 2]>())?))
-            .and_then(|n| n.checked_add(hex_plugin_host::NATIVE_DIAGNOSTIC_DATA_BYTES));
+        let known_data =
+            Self::preconstruction_data_bytes_on_control(&instance, configuration.prepared)
+                .and_then(|n| n.checked_add(hex_plugin_host::NATIVE_DIAGNOSTIC_DATA_BYTES));
         if known_data.is_none_or(|bytes| bytes > max_data_bytes) {
             return Err(NativeWorkerStartFailure::retain_source_on_control(
                 Error::Protocol("native effect data reservation exceeded or unavailable"),
                 instance,
             ));
         }
+        let mut authored_bases = [None; hex_plugin_host::transport::MAX_PARAMETER_POINTS];
+        if let Some((class, ids)) = authored {
+            let (capabilities, bases) =
+                match automation::SourceCapabilities::arm(&mut instance, class, ids) {
+                    Ok(observed) => observed,
+                    Err(cause) => {
+                        return Err(NativeWorkerStartFailure::retain_source_on_control(
+                            cause, instance,
+                        ));
+                    }
+                };
+            configuration.authored = capabilities;
+            authored_bases = bases;
+        }
+        if let Err(cause) = instance.reserve_authored_parameter_capacity_on_control(
+            hex_plugin_host::transport::MAX_PARAMETER_POINTS,
+        ) {
+            return Err(NativeWorkerStartFailure::retain_source_on_control(
+                cause, instance,
+            ));
+        }
+        if authored.is_none() {
+            configuration.authored =
+                automation::SourceCapabilities::reserved(instance.configuration().identity.class);
+        }
+        let mut source_metadata =
+            match EffectSourceMetadata::from_configuration(instance.configuration()) {
+                Ok(source) => source,
+                Err(cause) => {
+                    return Err(NativeWorkerStartFailure::retain_source_on_control(
+                        cause, instance,
+                    ));
+                }
+            };
+        source_metadata.authored_bases = authored_bases;
         let mut dry = Vec::new();
         if dry.try_reserve_exact(dry_frames).is_err() || dry.capacity() != dry_frames {
             return Err(NativeWorkerStartFailure::retain_source_on_control(
@@ -153,6 +296,8 @@ impl NativeEffect {
         let (worker, callback) = NativeWorker::start_retained_on_control(instance)?;
         Ok(Self {
             worker,
+            source_metadata,
+            state_authority,
             callback: NativeEffectCallback {
                 configuration,
                 transport: callback,
@@ -161,6 +306,7 @@ impl NativeEffect {
                 dry,
                 dry_cursor: 0,
                 tail,
+                bypass: bypass::BypassMix::default(),
             },
         })
     }
@@ -196,6 +342,11 @@ impl NativeEffect {
             u32::from(config.quantum) * 2,
         )
         .map(|prepared| {
+            let prepared = if config.input_channels == 0 {
+                prepared.with_instrument_profile()
+            } else {
+                prepared
+            };
             prepared.with_output_tail(if instance.ready().tail_frames == u32::MAX {
                 hex_lattice::OutputTail::Unbounded
             } else {
@@ -221,7 +372,18 @@ impl NativeEffect {
             sample_rate: config.sample_rate as u32,
             state,
             prepared,
+            authored: automation::SourceCapabilities::default(),
+            program_revision: std::num::NonZeroU64::new(config.binding.epoch)
+                .ok_or(Error::Protocol("native automation source epoch is invalid"))?,
+            state_verifier: None,
         })
+    }
+    pub(crate) fn reserve_program_revision_on_control(
+        &mut self,
+    ) -> Result<std::num::NonZeroU64, &'static str> {
+        self.callback
+            .configuration
+            .reserve_program_revision_on_control()
     }
     pub(crate) fn retire_on_control(
         &mut self,
@@ -239,6 +401,12 @@ impl NativeEffect {
     }
     pub fn prepared(&self) -> PreparedForeignProcessor {
         self.callback.configuration.prepared
+    }
+    pub fn finite_tail_frames(&self) -> Option<u64> {
+        match self.prepared().output_tail() {
+            hex_lattice::OutputTail::Finite { max_tail_frames } => Some(max_tail_frames),
+            hex_lattice::OutputTail::Unbounded => None,
+        }
     }
     /// Borrow the actual unsplit pair's copied-channel backing. This partial
     /// inventory excludes dry history, state, worker/native owners and all
@@ -272,6 +440,7 @@ impl NativeEffect {
                 .dry
                 .capacity()
                 .checked_mul(std::mem::size_of::<[f32; 2]>())?,
+            source_metadata_data_bytes: self.source_metadata.data_bytes()?,
             state_alias_handles: 1,
         })
     }
@@ -293,6 +462,7 @@ pub struct NativeEffectCallback {
     dry: Vec<[f32; 2]>,
     dry_cursor: usize,
     tail: tail::TailDrain,
+    bypass: bypass::BypassMix,
 }
 impl NativeEffectCallback {
     pub fn binding(&self) -> Binding {
@@ -318,13 +488,25 @@ impl NativeEffectCallback {
         self.tail.commit();
         Ok(())
     }
+    /// Consume the exact operation and input clock from this accepted endpoint
+    /// callback. This is still before the mix's recording/delivery decision.
+    pub fn take_accepted_manual_parameter(&mut self) -> Option<AcceptedManualParameter> {
+        self.transport.take_accepted_manual_parameter()
+    }
+    pub(crate) fn end_staging_at_pause(&mut self, frame: usize) {
+        self.transport.end_staging_at_pause(frame);
+    }
     /// This original live epoch has accepted enough consecutive zero input to
     /// drain its source-reported tail and fixed processor/bridge latency. New
     /// staged input invalidates the view; speculative zeros cannot establish it.
     /// Infinite reports and revoked epochs return false. This is neither graph
     /// admission nor authority to drop/return an endpoint on the callback lane.
     pub fn reported_tail_is_drained(&self) -> bool {
-        !self.transport.is_revoked() && self.tail.drained()
+        // Silence at an instrument's audio input says nothing about held MIDI
+        // notes. Only the graph's future note owner can prove its release.
+        !self.configuration.prepared.is_instrument_profile()
+            && !self.transport.is_revoked()
+            && self.tail.drained()
     }
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn transport_fault_for_test(&self) -> Option<Fault> {
@@ -334,6 +516,77 @@ impl NativeEffectCallback {
     pub(crate) fn pending_requests_for_test(&self) -> usize {
         self.transport.pending_requests_for_test()
     }
+    /// Contained placeholder for a revoked endpoint (#3977): advance the dry
+    /// history exactly as bypass does and return the input delayed by the
+    /// endpoint's unchanged declared latency, so the graph stays aligned. No
+    /// transport work is staged. An oversized segment, which the graph never
+    /// produces, is silenced rather than written past fixed storage.
+    pub(crate) fn pass_through_revoked(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        frames: &mut [[f32; 2]],
+    ) {
+        if frames.len() > MAX_FRAMES || !node.output_gain.is_finite() || node.output_gain < 0.0 {
+            frames.fill([0.0; 2]);
+            return;
+        }
+        if self.configuration.prepared.is_instrument_profile() {
+            frames.fill([0.0; 2]);
+        }
+        self.advance_dry(frames);
+        frames.copy_from_slice(&self.dry_output[..frames.len()]);
+        if !node.bypassed {
+            for frame in frames {
+                frame[0] *= node.output_gain;
+                frame[1] *= node.output_gain;
+            }
+        }
+    }
+    /// Push `frames` into the dry history and record the aligned dry output.
+    fn advance_dry(&mut self, frames: &[[f32; 2]]) {
+        for (index, frame) in frames.iter().enumerate() {
+            self.dry_output[index] = self.dry[self.dry_cursor];
+            self.dry[self.dry_cursor] = *frame;
+            self.dry_cursor += 1;
+            if self.dry_cursor == self.dry.len() {
+                self.dry_cursor = 0;
+            }
+        }
+    }
+    /// A fake endpoint on a real copied transport, for containment tests that
+    /// need no SDK instance. Latency is the transport's 2Q bridge only.
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        identity: ProcessorInstanceIdentity,
+        binding: Binding,
+        state: NativeDeviceState,
+        transport: Callback,
+    ) -> Self {
+        let quantum = transport.quantum_frames() as u16;
+        let prepared = PreparedForeignProcessor::new(quantum, 0, u32::from(quantum) * 2)
+            .and_then(|prepared| prepared.with_binding(binding))
+            .expect("test latency fits");
+        let latency = prepared.total_latency_frames();
+        Self {
+            configuration: Configuration {
+                identity,
+                binding,
+                sample_rate: 48_000,
+                state,
+                prepared,
+                authored: automation::SourceCapabilities::default(),
+                program_revision: std::num::NonZeroU64::new(binding.epoch).unwrap(),
+                state_verifier: None,
+            },
+            transport,
+            input: [[0.0; 2]; MAX_FRAMES],
+            dry_output: [[0.0; 2]; MAX_FRAMES],
+            dry: vec![[0.0; 2]; latency as usize],
+            dry_cursor: 0,
+            tail: tail::TailDrain::new(0, latency),
+            bypass: bypass::BypassMix::default(),
+        }
+    }
     fn matches(&self, node: ForeignProcessorNode<'_>) -> bool {
         let config = &self.configuration;
         node.owner == config.identity.owner()
@@ -341,54 +594,168 @@ impl NativeEffectCallback {
             && node.device_type == config.state.type_id()
             && node.sample_rate == config.sample_rate
             && node.prepared == config.prepared
-            && node.configuration.processing_eq(&config.state)
+            && config.matches_processing_state(node.configuration)
     }
 }
 impl ForeignProcessors for NativeEffectCallback {
+    fn returns_post_trim(&self, _node: ForeignProcessorNode<'_>) -> bool {
+        true
+    }
     fn process_segment(
         &mut self,
         node: ForeignProcessorNode<'_>,
         offset: usize,
         frames: &mut [[f32; 2]],
-        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        self.process_segment_with_parameters(node, offset, frames, &[], clock)
+    }
+    fn process_segment_with_parameters(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        parameters: &[hex_lattice_contract::ForeignParameterPoint],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        self.process_segment_with_notes(node, offset, frames, parameters, &[], clock)
+    }
+    fn process_segment_with_notes(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        parameters: &[hex_lattice_contract::ForeignParameterPoint],
+        notes: &[ForeignNote],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
         if !self.matches(node)
+            || node.automation.is_some_and(|program| {
+                program.binding != self.configuration.binding
+                    || !self.configuration.authored.has_metadata_container()
+                    || !parameters.is_empty()
+            })
+            || (!notes.is_empty() && !self.configuration.prepared.is_instrument_profile())
             || frames.len() > MAX_FRAMES
             || !node.input_gain.is_finite()
             || node.input_gain < 0.0
+            || !node.output_gain.is_finite()
+            || node.output_gain < 0.0
         {
             self.reject_callback();
             return Err(DeviceContractError::ForeignProcessingUnavailable);
         }
+        let mut events = InputEvents::default();
+        for note in notes {
+            let status = if note.on { 0x90 } else { 0x80 };
+            if note.channel >= 16
+                || events
+                    .push(MidiEvent {
+                        frame: note.frame,
+                        bytes: [status | note.channel, note.pitch, note.velocity],
+                        len: 3,
+                        note_id: note.note_id,
+                    })
+                    .is_err()
+            {
+                self.reject_callback();
+                frames.fill([0.0; 2]);
+                return Err(DeviceContractError::ForeignProcessingFailed);
+            }
+        }
+        if self.configuration.prepared.is_instrument_profile() {
+            frames.fill([0.0; 2]);
+        }
         self.input[..frames.len()].copy_from_slice(frames);
         // Keep the untrimmed source in dry history; wet input trim must not
         // contaminate samples heard after a later aligned bypass transition.
-        for (index, frame) in frames.iter().enumerate() {
-            self.tail.input(std::slice::from_ref(frame));
-            let dry = self.dry[self.dry_cursor];
-            self.dry[self.dry_cursor] = *frame;
-            self.dry_cursor += 1;
-            if self.dry_cursor == self.dry.len() {
-                self.dry_cursor = 0;
-            }
-            if node.bypassed {
-                self.dry_output[index] = dry;
-            }
-        }
+        // The aligned dry output also serves a staging failure (#3977).
+        self.tail.input(frames);
+        self.advance_dry(frames);
         if node.input_gain != 1.0 {
             for frame in &mut self.input[..frames.len()] {
                 frame[0] *= node.input_gain;
                 frame[1] *= node.input_gain;
             }
         }
-        self.transport
-            .stage_segment(offset, &self.input[..frames.len()], &[], frames)
-            .map_err(|_| DeviceContractError::ForeignProcessingFailed)?;
+        // The original joining worker retains processor parameter observations
+        // for control queries; the native helper mirrors them to its controller.
+        // Receiving that feedback here must not revoke an otherwise valid epoch.
+        let playing = if node.prepared.is_instrument_profile() || node.automation.is_some() {
+            clock.and_then(|clock| clock.transport_is_running())
+        } else {
+            None
+        };
+        let timing = SegmentTiming {
+            playing,
+            at: |index| {
+                let clock = clock?;
+                Some(ProcessTiming {
+                    arrangement_frame: i64::try_from(clock.arrangement_frame_at_offset(index)?)
+                        .ok()?,
+                    playing: if node.automation.is_some()
+                        && clock.authored_arrangement_frame_at_offset(index).is_some()
+                    {
+                        true
+                    } else {
+                        playing.or_else(|| clock.transport_is_running())?
+                    },
+                    arrangement_beat_raw: clock.arrangement_beat_at_offset(index),
+                    tempo_micro_bpm: clock
+                        .tempo_micro_bpm_at_offset(index)
+                        .and_then(std::num::NonZeroU32::new),
+                    meter: clock.arrangement_meter_at_offset(index),
+                    cycle_beats_raw: clock.arrangement_cycle_at_offset(index),
+                })
+            },
+        };
+        let input = &self.input[..frames.len()];
+        let authored_program = node.automation.map(automation::TransportProgram);
+        let authored_origin = |index| clock?.authored_arrangement_frame_at_offset(index);
+        let manual_origin = |index| {
+            let clock = clock?;
+            Some(ManualParameterOrigin {
+                arrangement_frame: clock.authored_arrangement_frame_at_offset(index)?,
+                performance_frame: clock.performance_frame_at_offset(index)?,
+                loop_pass: clock.loop_pass_at_offset(index)?,
+            })
+        };
+        let result = self.transport.stage_effect_segment(
+            offset,
+            input,
+            events.as_slice(),
+            parameters,
+            frames,
+            timing,
+            EffectSegmentOrigins {
+                authored: authored_program.as_ref().map(|program| AuthoredSegment {
+                    program,
+                    origin: &authored_origin,
+                }),
+                manual: Some(&manual_origin),
+            },
+        );
+        if result.is_err() {
+            // The transport revoked only this endpoint's epoch. Leave the
+            // aligned dry input so a containing carrier can keep rendering.
+            frames.copy_from_slice(&self.dry_output[..frames.len()]);
+            if !node.bypassed {
+                for frame in frames.iter_mut() {
+                    frame[0] *= node.output_gain;
+                    frame[1] *= node.output_gain;
+                }
+            }
+            return Err(DeviceContractError::ForeignProcessingFailed);
+        }
         // Both paths advance. Refusal irreversibly revokes this epoch, so dry
         // and foreign history are never rolled back or replayed.
-        if node.bypassed {
-            frames.copy_from_slice(&self.dry_output[..frames.len()]);
-        }
+        self.bypass.process(
+            frames,
+            &self.dry_output[..frames.len()],
+            node.bypassed,
+            node.sample_rate,
+            node.output_gain,
+        );
         Ok(())
     }
     fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
