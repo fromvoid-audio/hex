@@ -9,6 +9,41 @@ use hex_plugin_host::native;
 use hex_plugin_scan::macos::build_identity::InstanceBuild;
 
 impl PublicationControl {
+    pub(crate) fn approve_native_canonical_processing_on_control(
+        &self,
+        facts: &crate::plugin_effects::CapturedCanonicalBases,
+    ) -> Result<NativeDeviceState, &'static str> {
+        let (source, epoch, playing) = facts.source();
+        let matches = || {
+            !self.status.closing.load(Acquire)
+                && self.output_identity() == Some(source.output_identity)
+                && self.status.native_parameter_source(playing) == Some((source, epoch))
+        };
+        if !self.native_custody || !matches() {
+            return Err("native processing approval source changed");
+        }
+        let state = self
+            .candidate_root
+            .approve_native_canonical_processing(facts)?;
+        if !matches() {
+            return Err("native processing approval source changed");
+        }
+        Ok(state)
+    }
+
+    /// Processing-profile correspondence only; native graph admission and
+    /// actual parameter/Main delivery remain separate owner checks.
+    pub fn native_source_approves_processing_state_on_control(
+        &self,
+        binding: Binding,
+        state: &NativeDeviceState,
+    ) -> Option<bool> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return None;
+        }
+        self.candidate_root
+            .native_source_approves_processing_state(binding, state)
+    }
     pub(crate) fn approve_native_manual_base_on_control(
         &self,
         captured: &crate::plugin_effects::manual_base_capture::CompletedManualBase,

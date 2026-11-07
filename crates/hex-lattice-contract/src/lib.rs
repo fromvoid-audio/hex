@@ -314,6 +314,7 @@ pub struct NativeDeviceState {
     asset_references: Option<Arc<[DeviceAssetReference]>>,
     // Process-local source provenance, never canonical or serialized state.
     source_approval: Option<std::num::NonZeroU64>,
+    processing_approval: Option<std::num::NonZeroU64>,
 }
 impl PartialEq for NativeDeviceState {
     fn eq(&self, other: &Self) -> bool {
@@ -349,6 +350,7 @@ impl NativeDeviceState {
             output_gain_millidb: 0,
             asset_references: None,
             source_approval: None,
+            processing_approval: None,
         })
     }
     pub const fn type_id(&self) -> DeviceTypeId {
@@ -371,6 +373,7 @@ impl NativeDeviceState {
             return Err(DeviceContractError::StateTooLarge);
         }
         self.source_approval = None;
+        self.processing_approval = None;
         references.sort_unstable_by_key(|reference| reference.slot);
         if references
             .windows(2)
@@ -395,6 +398,7 @@ impl NativeDeviceState {
         self.output_gain_millidb = source.output_gain_millidb;
         if self.asset_references != source.asset_references {
             self.source_approval = None;
+            self.processing_approval = None;
         }
         self.asset_references.clone_from(&source.asset_references);
         Ok(self)
@@ -476,6 +480,7 @@ impl NativeDeviceState {
             output_gain_millidb: _,
             asset_references: _,
             source_approval: _,
+            processing_approval: _,
         } = self;
         (
             payload.len(),
