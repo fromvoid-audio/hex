@@ -101,6 +101,7 @@ pub(super) enum Action {
     HidePreview(Target),
     Clear(Target),
     Reenable(Target),
+    Override(Target),
     Shape(Target, AutomationInterpolation),
 }
 
@@ -705,15 +706,13 @@ impl EditorView {
         if !super::device_panel::finalize_controls(self, cx) {
             return false;
         }
-        self.open_automation_menu(
-            position,
-            vec![
-                ("show automation", Action::Show(entry.clone(), false)),
-                ("add new automation lane", Action::Show(entry, true)),
-            ],
-            window,
-            cx,
-        );
+        let target = entry.target;
+        let mut actions = vec![
+            ("show automation", Action::Show(entry.clone(), false)),
+            ("add new automation lane", Action::Show(entry, true)),
+        ];
+        actions.extend(self.device_automation_read_action(target));
+        self.open_automation_menu(position, actions, window, cx);
         true
     }
 
@@ -809,6 +808,7 @@ impl EditorView {
             | Action::HidePreview(target)
             | Action::Clear(target)
             | Action::Reenable(target)
+            | Action::Override(target)
             | Action::Shape(target, _) => self.state.as_ref().is_none_or(|state| {
                 target
                     .identity_current(&state.project, self.project_generation)
@@ -1067,6 +1067,11 @@ impl EditorView {
                 self.track_scroll.remeasure();
             }
             Action::Reenable(target) => self.reenable_device_automation(Some(target), cx),
+            Action::Override(target) => self.select_device_automation_read(
+                Some(target),
+                hex_project::AutomationReadSelection::Base,
+                cx,
+            ),
             Action::Clear(target) => {
                 self.commit_device_automation(target, Vec::new(), cx);
             }

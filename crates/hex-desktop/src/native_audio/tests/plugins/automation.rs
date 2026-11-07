@@ -152,10 +152,81 @@ fn signed_vst3_rows_admit_only_matching_arrangement_lane_edits() {
     let redone = edit_with_running_callback(&mut h, Request::Redo);
     assert!(redone.error.is_none(), "{:?}", redone.error);
     assert_eq!(redone.state.project, event.state.project);
-    h.applied(applied);
+    let applied = h.applied(applied).0;
 
     let files = Files::new();
     let path = files.0.join("authored-vst3.hex");
     hex_storage::save_new(&path, &redone.state.project).unwrap();
     assert_eq!(hex_storage::load(&path).unwrap(), *redone.state.project);
+
+    if variant == "92" {
+        use hex_project::AutomationReadSelection as Read;
+        use hex_session::service::DeviceAutomationControlEdit as Edit;
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        h.render();
+        assert!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
+        );
+        let select = |revision, class, selection| Request::DeviceAutomationControl {
+            project_generation: metadata.context.project_generation,
+            revision,
+            edit: Edit::ReadSelection {
+                device,
+                target,
+                vst3_class: Some(class),
+                selection,
+            },
+        };
+        let refused = edit_with_running_callback(
+            &mut h,
+            select(redone.state.revision, [0x35; 16], Read::Base),
+        );
+        assert!(refused.error.is_some());
+        assert_eq!(refused.state.project, redone.state.project);
+        assert_eq!(refused.state.revision, redone.state.revision);
+        let overridden = edit_with_running_callback(
+            &mut h,
+            select(redone.state.revision, exact_class, Read::Base),
+        );
+        assert!(overridden.error.is_none(), "{:?}", overridden.error);
+        let mut expected = lane.clone();
+        expected.read_selection = Read::Base;
+        assert_eq!(
+            overridden
+                .state
+                .project
+                .device(device)
+                .unwrap()
+                .automation_target(target),
+            Some(&expected)
+        );
+        assert_eq!(overridden.state.revision, redone.state.revision + 1);
+        let applied = h.applied(applied).0;
+        let restored = edit_with_running_callback(
+            &mut h,
+            select(overridden.state.revision, exact_class, Read::Authored),
+        );
+        assert!(restored.error.is_none(), "{:?}", restored.error);
+        assert_eq!(restored.state.project, redone.state.project);
+        let applied = h.applied(applied).0;
+        let undone = edit_with_running_callback(&mut h, Request::Undo);
+        assert!(undone.error.is_none(), "{:?}", undone.error);
+        assert_eq!(undone.state.project, overridden.state.project);
+        let applied = h.applied(applied).0;
+        let redone = edit_with_running_callback(&mut h, Request::Redo);
+        assert!(redone.error.is_none(), "{:?}", redone.error);
+        assert_eq!(redone.state.project, restored.state.project);
+        h.applied(applied);
+    }
 }
