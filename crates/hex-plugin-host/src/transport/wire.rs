@@ -18,7 +18,8 @@
 //! Versions 3–6 carry up to 160 input events only when every event has a note
 //! ID. The generic event and worker reply contracts remain capped at 64.
 //! The request-only high bit of the version marks authored PCM. Each parameter
-//! record then appends its prepared SDK step count as a u32. Replies and
+//! record then appends its prepared SDK step count as a u32. The one admitted
+//! manual point, if present, leads the block at offset zero with its own tag. Replies and
 //! stopped flushes keep the original records.
 //! These records carry transport data; they do not promise SDK event admission.
 use super::*;
@@ -41,22 +42,24 @@ fn invalid() -> io::Error {
 }
 
 pub fn write(writer: &mut impl Write, block: &Block) -> io::Result<()> {
-    write_with_parameters(writer, block, None)
+    write_with_parameters(writer, block, None, None)
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) fn write_authored(
     writer: &mut impl Write,
     block: &Block,
+    manual_parameter: Option<ParameterPoint>,
     step_count: &dyn Fn(u32) -> Option<u32>,
 ) -> io::Result<()> {
-    write_with_parameters(writer, block, Some(step_count))
+    write_with_parameters(writer, block, Some(step_count), manual_parameter)
 }
 
 fn write_with_parameters(
     writer: &mut impl Write,
     block: &Block,
     step_count: Option<&dyn Fn(u32) -> Option<u32>>,
+    manual_parameter: Option<ParameterPoint>,
 ) -> io::Result<()> {
     if block.frames == 0 || usize::from(block.frames) > MAX_FRAMES {
         return Err(invalid());
@@ -98,6 +101,15 @@ fn write_with_parameters(
     } else {
         2_u16
     };
+    let points = block.parameters.as_slice();
+    if let Some(manual) = manual_parameter
+        && (step_count.is_none()
+            || manual.frame != 0
+            || points.first() != Some(&manual)
+            || points[1..].iter().any(|point| point.id == manual.id))
+    {
+        return Err(invalid());
+    }
     let authored = step_count.is_some() && !block.parameters.as_slice().is_empty();
     let wire_version = version
         | if authored {
@@ -144,15 +156,21 @@ fn write_with_parameters(
             offset += 4;
         }
     }
-    for point in block.parameters.as_slice() {
+    for (index, point) in points.iter().enumerate() {
+        let manual = index == 0 && manual_parameter.is_some();
+        packet[offset + 2] = u8::from(manual);
         packet[offset..offset + 2].copy_from_slice(&point.frame.to_le_bytes());
         packet[offset + 4..offset + 8].copy_from_slice(&point.id.to_le_bytes());
         packet[offset + 8..offset + 16].copy_from_slice(&point.normalized.to_le_bytes());
         offset += 16;
         if let Some(step_count) = step_count {
-            let steps = step_count(point.id)
-                .filter(|&steps| steps <= i32::MAX as u32)
-                .ok_or_else(invalid)?;
+            let steps = if manual {
+                0
+            } else {
+                step_count(point.id)
+                    .filter(|&steps| steps <= i32::MAX as u32)
+                    .ok_or_else(invalid)?
+            };
             packet[offset..offset + 4].copy_from_slice(&steps.to_le_bytes());
             offset += 4;
         }

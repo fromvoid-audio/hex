@@ -799,8 +799,9 @@ int main(int argc,char** argv) {
                         instance.refresh_processing_parameters(processing_parameters);
                         for(size_t n=0;n<packet.parameter_count;++n) {
                             const auto* info=processing_parameters.find(packet.parameters[n].id);
+                            const bool authored=packet.authored_parameters && (n || !packet.manual_parameter);
                             if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden)) ||
-                                (packet.authored_parameters && !info->accepts_authored(packet.authored_steps[n]))) valid=false;
+                                (authored && !info->accepts_authored(packet.authored_steps[n]))) valid=false;
                         }
                         if(!valid || (event_channels && !held_notes.stage(packet.notes,packet.note_count))) {
                             worker_failure.store(ProtocolFailure);break;
