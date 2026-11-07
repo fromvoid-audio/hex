@@ -64,7 +64,8 @@ impl Custody {
                     })))
             || source.binding() != binding
             || slot.identity != Some(source.identity())
-            || !source.matches_canonical_state(canonical)
+            || !(source.matches_canonical_state(canonical)
+                || source.approves_captured_state_on_control(canonical))
         {
             return Err("native base capture source differs from the canonical processor".into());
         }
@@ -80,6 +81,7 @@ impl Custody {
             identity: source.identity(),
             profile: source.profile(),
             presentation,
+            prepared: source.prepared(),
         })
     }
 
