@@ -943,18 +943,18 @@ impl Eq8Runtime {
             .automated_target
             .as_ref()
             .unwrap_or(self.target.as_ref());
-        for channel in 0..2 {
-            for band in 0..BAND_COUNT {
-                for stage in 0..4 {
-                    let current = &mut self.coefficients[channel][band][stage];
-                    let target = targets[channel][band][stage];
-                    current.b0 += (target.b0 - current.b0) / divisor;
-                    current.b1 += (target.b1 - current.b1) / divisor;
-                    current.b2 += (target.b2 - current.b2) / divisor;
-                    current.a1 += (target.a1 - current.a1) / divisor;
-                    current.a2 += (target.a2 - current.a2) / divisor;
-                }
-            }
+        for (current, target) in self
+            .coefficients
+            .iter_mut()
+            .flatten()
+            .flatten()
+            .zip(targets.iter().flatten().flatten())
+        {
+            current.b0 += (target.b0 - current.b0) / divisor;
+            current.b1 += (target.b1 - current.b1) / divisor;
+            current.b2 += (target.b2 - current.b2) / divisor;
+            current.a1 += (target.a1 - current.a1) / divisor;
+            current.a2 += (target.a2 - current.a2) / divisor;
         }
         self.smooth_remaining -= 1;
         if self.smooth_remaining == 0 {
