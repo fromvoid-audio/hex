@@ -16,6 +16,8 @@ mod overdrive;
 pub(super) mod probe;
 #[path = "callback_allocations/project_tuning.rs"]
 mod project_tuning;
+#[path = "callback_allocations/reverb_outputs.rs"]
+mod reverb_outputs;
 #[path = "../../../hex-engine/examples/support/session_audio_fixture.rs"]
 #[allow(dead_code)]
 mod session_audio_fixture;
