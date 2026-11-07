@@ -296,6 +296,59 @@ fn changed_state_matching_requires_the_original_private_processing_approval() {
         #[cfg(not(feature = "allocation-probe"))]
         check();
     }
+    #[cfg(feature = "allocation-probe")]
+    {
+        struct SilentProgram;
+        impl hex_lattice::ForeignAutomationProgram for SilentProgram {
+            fn render_quantum(
+                &self,
+                _: &[Option<u64>],
+                _: &[u16],
+                _: &mut [hex_lattice_contract::ForeignParameterPoint],
+            ) -> Result<usize, DeviceContractError> {
+                Ok(0)
+            }
+        }
+        let make = |key| {
+            hex_lattice::PreparedForeignAutomation::new(
+                binding,
+                std::num::NonZeroU64::new(key).unwrap(),
+                SilentProgram,
+                0,
+            )
+            .unwrap()
+        };
+        let previous = make(1);
+        let mut current = make(2);
+        current.retain_previous_on_control(&previous).unwrap();
+        let chain = |program| {
+            hex_lattice::NativeRuntimeChain::new_prepared(vec![
+                hex_lattice::PreparedRuntimeInstance {
+                    owner: identity.owner(),
+                    device_id: identity.device_id(),
+                    device_type: hex_plugin_state::TYPE_ID,
+                    matrix: hex_lattice::StereoMatrix::identity(),
+                    bypassed: false,
+                    sample_rate: 48_000,
+                    configuration: Some(Arc::new(effect.configuration().clone())),
+                    definition: Some(hex_lattice::PreparedProcessorFactory::Foreign(
+                        effect.prepared(),
+                    )),
+                    automation: hex_lattice::PreparedParameterAutomation::for_foreign(program),
+                    meter: Default::default(),
+                },
+            ])
+            .unwrap()
+        };
+        let previous = chain(previous);
+        let current = chain(current);
+        let measured = allocation_counter::measure(|| {
+            assert!(current.configuration_matches_range(&previous, 0..1));
+            assert!(previous.configuration_matches_range(&current, 0..1));
+        });
+        assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+        assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
+    }
     assert!(effect.retire_on_control().unwrap().failure.is_none());
 }
 

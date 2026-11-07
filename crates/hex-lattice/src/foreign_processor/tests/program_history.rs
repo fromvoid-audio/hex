@@ -227,7 +227,15 @@ fn chain_matching_recognizes_exact_retained_programs_without_relaxing_source_or_
                     .unwrap(),
                 _ => entry.device_id += 1,
             }
-            let refused = NativeRuntimeChain::new_prepared(vec![entry]).unwrap();
+            let prepared = NativeRuntimeChain::new_prepared(vec![entry]);
+            if matches!(fault, 2 | 5) {
+                assert!(matches!(
+                    prepared,
+                    Err(DeviceContractError::ForeignProcessingUnavailable)
+                ));
+                continue;
+            }
+            let refused = prepared.unwrap();
             assert!(
                 !refused.configuration_matches_range(&previous, 0..1),
                 "fault {fault}"
