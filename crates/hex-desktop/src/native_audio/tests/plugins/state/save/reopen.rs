@@ -188,6 +188,32 @@ fn idle_vst3_drag_survives_undo_save_reopen() {
     vst3_drag_roundtrip(false);
 }
 
+fn gesture_fixture() -> SavedEffectFixture {
+    // Keep resident backing below this harness's 8192-frame source budget.
+    // Reusing the same source gives native control work a longer audible run.
+    let mut fixture = nondefault_fixture_with_frames(8192);
+    let track = fixture.project.tracks()[0].id();
+    let asset = fixture.project.assets().next().unwrap().id();
+    let mut editor = hex_project::Editor::new(fixture.project.clone(), 8).unwrap();
+    for start in [8192, 16384] {
+        editor
+            .execute(Command::PlaceClip {
+                track,
+                asset,
+                start,
+                duration: 8192,
+                source_offset: 0,
+                source_length: 8192,
+                looping: false,
+            })
+            .unwrap();
+    }
+    fixture.project = editor.project().clone();
+    fixture.path = fixture.files.0.join("gesture.hex");
+    hex_storage::save_new(&fixture.path, &fixture.project).unwrap();
+    fixture
+}
+
 fn vst3_drag_roundtrip(playing: bool) {
     use hex_session::device_gesture::{
         GestureClient, GestureRequest, PluginParameterOrigin, PluginParameterValue,
@@ -215,7 +241,7 @@ fn vst3_drag_roundtrip(playing: bool) {
     let _native = native_fixture();
     // Keep producing accepted PCM while the control worker captures before
     // and after the drag. The short save-only fixture can end mid-gesture.
-    let mut fixture = nondefault_fixture_with_frames(8192);
+    let mut fixture = gesture_fixture();
     let mut h = open_saved(&fixture);
     let (before_revision, metadata) = h.submitted.unwrap();
     let device = fixture.project.main_devices()[0].id();
@@ -422,28 +448,11 @@ fn live_reading_vst3_drag_cancels_or_commits_exact_lane_and_preserves_other_read
     }
 
     let _native = native_fixture();
-    // Keep this fixture on the ordinary resident path. The harness admits
-    // 8192 resident source frames; reuse the same source for a longer take.
-    let mut fixture = nondefault_fixture_with_frames(8192);
+    let mut fixture = gesture_fixture();
     let device = fixture.project.main_devices()[0].id();
     let gain_target = DeviceAutomationTarget::Vst3 { parameter: 7 };
     let other_target = DeviceAutomationTarget::Vst3 { parameter: 11 };
     let mut editor = hex_project::Editor::new(fixture.project.clone(), 8).unwrap();
-    let track = fixture.project.tracks()[0].id();
-    let asset = fixture.project.assets().next().unwrap().id();
-    for start in [8192, 16384] {
-        editor
-            .execute(Command::PlaceClip {
-                track,
-                asset,
-                start,
-                duration: 8192,
-                source_offset: 0,
-                source_length: 8192,
-                looping: false,
-            })
-            .unwrap();
-    }
     for (target, value) in [(gain_target, 0.25), (other_target, 0.5)] {
         editor
             .execute(Command::ReplaceDeviceAutomationTarget {
