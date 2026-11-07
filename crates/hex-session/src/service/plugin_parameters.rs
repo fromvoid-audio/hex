@@ -19,6 +19,8 @@ pub struct PluginParameterRow {
     pub default_normalized: f64,
     pub steps: u32,
     pub editable: bool,
+    /// Class of the exact source that reported automation eligibility.
+    pub automation_class: Option<[u8; 16]>,
     pub page_first: u16,
     pub metadata_revision: u64,
 }
@@ -26,4 +28,12 @@ pub struct PluginParameterRow {
 pub struct PluginParameterResult {
     pub query: PluginParameterQuery,
     pub rows: Result<Vec<PluginParameterRow>, String>,
+}
+
+/// Saved class identity only. Live automation eligibility belongs to the
+/// loaded SDK worker and is checked again during candidate preparation.
+pub fn vst3_automation_class(state: &hex_lattice_contract::NativeDeviceState) -> Option<[u8; 16]> {
+    hex_plugin_state::decode(state)
+        .ok()
+        .map(|plugin| plugin.identity.class.bytes())
 }
