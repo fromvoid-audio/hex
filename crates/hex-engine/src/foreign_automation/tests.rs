@@ -3,6 +3,24 @@ use hex_project::{AutomationReadSelection, AutomationValue, BeatTime, Tempo, Tem
 
 const CLASS: [u8; 16] = [1; 16];
 
+#[test]
+fn instrument_loop_edits_share_a_worker_only_with_a_bounded_wrap_distance() {
+    use hex_project::LoopRegion;
+
+    let first = Some(LoopRegion::new(0, 512, true).unwrap());
+    let second = Some(LoopRegion::new(0, 256, true).unwrap());
+    let offset = Some(LoopRegion::new(64, 512, true).unwrap());
+    let short = Some(LoopRegion::new(0, 128, true).unwrap());
+    assert_eq!(
+        QuantumProfile::for_arrangement_instrument(256, None),
+        QuantumProfile::for_arrangement_instrument(256, first)
+    );
+    assert!(QuantumProfile::keeps_instrument_epoch(256, None, first));
+    assert!(QuantumProfile::keeps_instrument_epoch(256, first, second));
+    assert!(!QuantumProfile::keeps_instrument_epoch(256, first, offset));
+    assert!(!QuantumProfile::keeps_instrument_epoch(256, first, short));
+}
+
 fn point(beat: BeatTime, value: f32, outgoing: AutomationInterpolation) -> AutomationPoint {
     AutomationPoint {
         beat,

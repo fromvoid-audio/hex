@@ -106,12 +106,17 @@ pub(crate) fn prepare_device(
         return Err(Error::SourceMismatch);
     }
     let revision = std::num::NonZeroU64::new(source.binding.epoch).ok_or(Error::SourceMismatch)?;
+    let profile = if processor.is_instrument_profile() {
+        QuantumProfile::for_arrangement_instrument(source.quantum_frames, region)
+    } else {
+        QuantumProfile::arrangement(source.quantum_frames, region)
+    };
     let program = Program::prepare(
         device.automation(),
         source.class,
         source.parameters,
         tempo,
-        QuantumProfile::arrangement(source.quantum_frames, region),
+        profile,
     )
     .map_err(|_| Error::UnsupportedGraph)?
     .ok_or(Error::SourceMismatch)?;

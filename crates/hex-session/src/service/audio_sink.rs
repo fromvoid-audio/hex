@@ -98,9 +98,14 @@ impl<'a> ResidentEffectPreparation<'a> {
             })
     }
 
-    /// An authored program is immutable for one native worker epoch. A loop
-    /// edit also changes the transport proof used by that epoch.
-    pub fn same_authored_plugin_program(&self, previous: &Self, device: u64) -> bool {
+    /// An authored program is immutable for one native worker epoch. An
+    /// instrument loop edit may keep that epoch when the run budget matches.
+    pub fn same_authored_plugin_program(
+        &self,
+        previous: &Self,
+        device: u64,
+        quantum_frames: Option<u16>,
+    ) -> bool {
         fn lanes(
             project: &Project,
             device: u64,
@@ -122,8 +127,22 @@ impl<'a> ResidentEffectPreparation<'a> {
         if current.peek().is_none() && old.peek().is_none() {
             return true;
         }
+        let next_loop = self.project.loop_region();
+        let previous_loop = previous.project.loop_region();
+        let same_loop_budget = next_loop == previous_loop
+            || quantum_frames.is_some_and(|frames| {
+                self.project
+                    .native_sources()
+                    .iter()
+                    .any(|source| source.instrument().id().value() == device)
+                    && hex_engine::foreign_automation::QuantumProfile::keeps_instrument_epoch(
+                        frames,
+                        previous_loop,
+                        next_loop,
+                    )
+            });
         self.project.tempo_map() == previous.project.tempo_map()
-            && self.project.loop_region() == previous.project.loop_region()
+            && same_loop_budget
             && current.eq(old)
     }
 

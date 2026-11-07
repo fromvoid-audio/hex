@@ -24,8 +24,7 @@ pub struct QuantumProfile {
 
 impl QuantumProfile {
     /// Start with one run, allow the seven SDK timing cuts, and bound loop
-    /// wraps by their minimum spacing. Seek or loop replacement uses a new
-    /// source epoch before the renderer starts accepting the new origins.
+    /// wraps by their minimum spacing.
     pub(crate) fn arrangement(frames: u16, region: Option<hex_project::LoopRegion>) -> Self {
         let wraps = region
             .filter(|region| region.enabled())
@@ -36,6 +35,33 @@ impl QuantumProfile {
             frames,
             max_runs: (8 + wraps).min(u64::from(frames)) as u16,
         }
+    }
+
+    /// Reserve one wrap even when the loop is disabled. This permits the
+    /// compatible instrument loop edits described by `keeps_instrument_epoch`.
+    pub fn for_arrangement_instrument(
+        frames: u16,
+        region: Option<hex_project::LoopRegion>,
+    ) -> Self {
+        let mut profile = Self::arrangement(frames, region);
+        profile.max_runs = profile.max_runs.max(frames.min(9));
+        profile
+    }
+
+    /// With a shared origin of zero and at least one quantum between that
+    /// origin and any loop end, even several edits inside a partial quantum
+    /// cannot introduce a second wrap. Other loop changes need a fresh epoch.
+    pub fn keeps_instrument_epoch(
+        frames: u16,
+        before: Option<hex_project::LoopRegion>,
+        after: Option<hex_project::LoopRegion>,
+    ) -> bool {
+        before == after
+            || [before, after].into_iter().all(|region| {
+                region.is_none_or(|region| {
+                    !region.enabled() || (region.start() == 0 && region.end() >= u64::from(frames))
+                })
+            })
     }
 }
 
