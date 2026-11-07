@@ -624,6 +624,23 @@ impl EditorView {
             .unwrap_or(entry.base)
     }
 
+    /// The device toolbar follows the exact native host lane selected in
+    /// Arrangement. The toolbar uses the device panel's existing input owner.
+    pub(super) fn selected_automation_trim(&self) -> Option<Target> {
+        if !self.automation_view.enabled || self.mode != super::EditorMode::Arrangement {
+            return None;
+        }
+        let owner = self.device_panel.owner?;
+        self.automation_view
+            .devices
+            .main
+            .iter()
+            .find(|entry| {
+                entry.target.owner == owner && matches!(entry.metadata, EntryMetadata::HostGain)
+            })
+            .map(|entry| entry.target)
+    }
+
     pub(super) fn remember_automation_parameter(
         &mut self,
         device: DeviceId,
@@ -1084,16 +1101,14 @@ impl EditorView {
                 self.track_scroll.remeasure();
             }
             Action::HidePreview(target) => {
-                self.automation_view.devices.clear_main(target.owner);
-            }
-            Action::Hide(target) => {
-                if matches!(
-                    target.kind,
-                    DeviceAutomationTarget::HostInputGain | DeviceAutomationTarget::HostOutputGain
-                ) && !super::device_panel::finalize_controls(self, cx)
+                if self.selected_automation_trim() == Some(target)
+                    && !super::device_panel::finalize_controls(self, cx)
                 {
                     return;
                 }
+                self.automation_view.devices.clear_main(target.owner);
+            }
+            Action::Hide(target) => {
                 if self
                     .automation_view
                     .devices

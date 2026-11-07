@@ -1379,16 +1379,16 @@ fn clearing_a_recorded_only_lane_removes_the_take_with_one_undo(cx: &mut TestApp
 #[gpui::test]
 fn host_trim_lane_controls_edit_their_exact_stage_and_offer_record_arm(cx: &mut TestAppContext) {
     let (mut visual, editor, owner, _, device) = window(cx, "hex.utility", Slot::Track);
-    for (kind, descriptor, text) in [
+    for (kind, descriptor, delta) in [
         (
             DeviceAutomationTarget::HostInputGain,
             hex_engine::DEVICE_INPUT_GAIN,
-            "6",
+            -16.0,
         ),
         (
             DeviceAutomationTarget::HostOutputGain,
             hex_engine::DEVICE_OUTPUT_GAIN,
-            "-4",
+            16.0,
         ),
     ] {
         visual.update(|window, cx| {
@@ -1413,11 +1413,17 @@ fn host_trim_lane_controls_edit_their_exact_stage_and_offer_record_arm(cx: &mut 
             .into_boxed_str(),
         );
         let center = visual.debug_bounds(selector).unwrap().center();
+        let end = point(center.x, center.y + px(delta));
+        visual.simulate_mouse_move(center, None, Modifiers::default());
         visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
-        visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
-        visual.simulate_keystrokes("cmd-a");
-        visual.simulate_input(text);
-        visual.simulate_keystrokes("enter");
+        visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+        editor.read_with(&visual, |view, _| {
+            let snapshot = view.device_gesture.snapshot();
+            assert!(matches!(snapshot.map(|gesture| gesture.target),
+                Some(hex_session::device_gesture::GestureTarget::DeviceParameter { device: id, parameter })
+                if id == device && parameter == descriptor.id), "{snapshot:?} / {:?}", view.error);
+        });
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         pump(&mut visual, &editor);
     }
     let read = |visual: &VisualTestContext| {
@@ -1433,8 +1439,9 @@ fn host_trim_lane_controls_edit_their_exact_stage_and_offer_record_arm(cx: &mut 
             (state.input_gain_db(), state.output_gain_db())
         })
     };
-    assert_eq!(read(&visual), (6.0, -4.0));
+    let (input, output) = read(&visual);
+    assert!(input > 0.0 && output < 0.0, "{input} / {output}");
     editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
     pump(&mut visual, &editor);
-    assert_eq!(read(&visual), (6.0, 0.0));
+    assert_eq!(read(&visual), (input, 0.0));
 }

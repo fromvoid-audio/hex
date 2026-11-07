@@ -154,7 +154,6 @@ pub(in crate::editor) fn rows(
             entry.format(value),
             if overridden { " · overridden" } else { "" }
         );
-        let trim = super::super::device_panel::render_automation_trim(view, cx, target);
         let header = div()
             .w(px(view.track_header_width()))
             .flex_shrink_0()
@@ -170,7 +169,6 @@ pub(in crate::editor) fn rows(
                 div()
                     .flex()
                     .gap(px(2.0))
-                    .children(trim)
                     .child(
                         lane_button(
                             "…",
