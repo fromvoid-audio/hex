@@ -171,6 +171,10 @@ impl PreparedOperatorConfiguration {
         Ok(self)
     }
 
+    pub(crate) const fn fine_offsets_hz(&self) -> [f32; OPERATORS] {
+        self.fine_offsets_hz
+    }
+
     /// Control-prepared modifiers retain the existing compact note payload.
     pub(crate) fn with_note_modifiers(
         mut self,
