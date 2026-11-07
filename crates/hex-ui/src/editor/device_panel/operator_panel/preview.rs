@@ -28,10 +28,6 @@ pub(in crate::editor::device_panel) enum Field {
 }
 
 impl Field {
-    pub(super) const fn is_global(self) -> bool {
-        matches!(self, Self::Time | Self::Tone | Self::Volume)
-    }
-
     pub(in crate::editor::device_panel) const ALL: [Self; 6] = [
         Self::PitchEnvelope,
         Self::Spread,
@@ -393,9 +389,6 @@ pub(super) fn control(
                     if !current {
                         return;
                     }
-                    if event.phase == hex_widgets::NumericEventPhase::Begin && field.is_global() {
-                        super::context::select_routing(view, cx, owner);
-                    }
                 }
                 if let Some(state) = view.device_panel.operator_previews.get_mut(&key.0) {
                     state.values[key.1 as usize] = event.value;
@@ -442,6 +435,7 @@ pub(super) fn control(
         .h(px(ROW_HEIGHT))
         .flex_shrink_0()
         .child(control.entity.clone())
+        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
 }
 
 fn toggle(

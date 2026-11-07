@@ -602,8 +602,8 @@ fn operator_shell_controls_precede_selectors_and_sections_follow_child_focus(
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.device_panel.operator_pages[&device].selected_operator, 3,
-            "selector focus activates its oscillator"
+            view.device_panel.operator_pages[&device].selected_operator, 0,
+            "working-control focus preserves the explicit oscillator selection"
         )
     });
     for (index, expected) in order.iter().enumerate().skip(1) {
@@ -767,6 +767,13 @@ fn operator_lfo_and_routing_widgets_have_one_focus_group_and_release_previous_gr
             }
         })
     };
+    let lfo_background = visual
+        .debug_bounds(Box::leak(
+            format!("operator-lfo-link-{}", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    visual.simulate_click(lfo_background.center(), Modifiers::default());
+    visual.run_until_parked();
     let lfo = parameter_focus(82, cx);
     visual.update(|window, _| lfo.focus(window));
     visual.run_until_parked();
@@ -923,6 +930,21 @@ fn operator_filter_shared_controls_focus_commit_undo_and_redo(cx: &mut TestAppCo
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1440.0), px(540.0)));
     visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+    let left = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-20001", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let right = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-20002", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    visual.simulate_click(
+        point((left.right() + right.left()) / 2.0, left.center().y),
+        Modifiers::default(),
+    );
     visual.run_until_parked();
     let focus = editor.read_with(cx, |view, app| {
         let ParameterControl::Float { entity, .. } = &view.device_panel.controls[&ParameterKey {

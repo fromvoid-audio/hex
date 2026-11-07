@@ -146,7 +146,6 @@ pub(super) struct DevicePanelState {
         HashMap<(DeviceId, operator_panel::NavigationTarget), gpui::FocusHandle>,
     operator_section_focus:
         HashMap<(DeviceId, operator_panel::Section), operator_panel::context::SectionFocus>,
-    operator_context_focus: HashMap<DeviceId, HashMap<gpui::EntityId, Subscription>>,
     operator_previews: HashMap<DeviceId, operator_panel::preview::State>,
     operator_preview_inventory: Option<OperatorPreviewInventory>,
     operator_harmonics: HashMap<(DeviceId, usize), operator_panel::harmonics::Control>,
@@ -628,7 +627,6 @@ pub(super) fn view(
         view.device_panel.operator_pages.clear();
         view.device_panel.operator_navigation_focus.clear();
         view.device_panel.operator_section_focus.clear();
-        view.device_panel.operator_context_focus.clear();
         operator_panel::preview::cancel_all(view, cx);
         view.device_panel.operator_preview_inventory = None;
         operator_panel::envelope::cancel_all(view, cx);
@@ -739,7 +737,6 @@ pub(super) fn view(
         view.device_panel.operator_pages.clear();
         view.device_panel.operator_navigation_focus.clear();
         view.device_panel.operator_section_focus.clear();
-        view.device_panel.operator_context_focus.clear();
         operator_panel::preview::cancel_interactions(view, cx);
         operator_panel::envelope::cancel_all(view, cx);
         operator_panel::harmonics::retire(view, cx, |_| false);
@@ -1025,9 +1022,6 @@ fn render_track(
             .then_some(*device)
         })
         .collect();
-    view.device_panel
-        .operator_context_focus
-        .retain(|device, _| alive_operator.contains(device));
     operator_panel::envelope::retire_removed(view, cx, &alive_operator);
     operator_panel::harmonics::retire(view, cx, |key| alive_operator.contains(&key.0));
     let alive_eq8: HashSet<_> = identities
@@ -3139,35 +3133,14 @@ fn button_details(surface: Div, id: String, tooltip: &'static str) -> Stateful<D
 
 // Host-specific composition policy stays outside the shared bindings.
 fn binding_policy(
-    view: &EditorView,
-    key: ParameterKey,
+    _view: &EditorView,
+    _key: ParameterKey,
     identity: DeviceControlIdentity,
     descriptor: ParameterDescriptor,
     presentation: ControlPresentation,
     display: ControlText,
 ) -> bindings::BindingPolicy {
     let tab_navigation = identity.type_id.as_str() == Ok("hex.instrument.operator");
-    let numeric_begin = if identity.class == NativeDeviceClass::Instrument
-        && identity.type_id.as_str() == Ok("hex.instrument.operator")
-    {
-        operator_panel::shell_operator_for_numeric_parameter(key.parameter).and_then(|operator| {
-            operator_panel::context::Owner::capture(view, key.device).map(|owner| {
-                Box::new(
-                    move |view: &mut EditorView, cx: &mut Context<EditorView>, key| {
-                        operator_panel::context::select_oscillator(
-                            view,
-                            cx,
-                            owner,
-                            operator,
-                            &[key],
-                        );
-                    },
-                ) as bindings::NumericBeginHook
-            })
-        })
-    } else {
-        None
-    };
     let toggle_appearance = if presentation == ControlPresentation::CompactButton {
         match display.label {
             Some("") => ToggleAppearance::MicroSquare,
@@ -3189,7 +3162,6 @@ fn binding_policy(
         tab_navigation,
         toggle_appearance,
         choice_order,
-        numeric_begin,
     }
 }
 

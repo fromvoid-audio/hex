@@ -26,6 +26,7 @@ mod keyboard_navigation_tests;
 mod limiter_ui_tests;
 mod navigation_ui_tests;
 mod operator_algorithm_ui_tests;
+mod operator_context_selection_tests;
 mod operator_enable_ui_tests;
 mod operator_fine_ui_tests;
 #[path = "operator_harmonic_ui_tests.rs"]
@@ -1840,6 +1841,10 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         ))
         .unwrap();
     visual.simulate_click(shell.center(), Modifiers::default());
+    visual.simulate_keystrokes("escape");
+    let background =
+        operator_context_selection_tests::row_background(&mut visual, instrument_id, 0);
+    visual.simulate_click(background, Modifiers::default());
     visual.run_until_parked();
     let envelope_bounds = visual.debug_bounds(envelope_tab).expect("amp envelope tab");
     visual.simulate_click(envelope_bounds.center(), Modifiers::default());
@@ -2610,7 +2615,7 @@ fn operator_envelope_release_drag_cancels_and_commits_after_outside_release(
 }
 
 #[gpui::test]
-fn operator_shell_controls_select_their_oscillator_without_losing_the_edit(
+fn operator_shell_controls_preserve_edits_across_explicit_context_selection(
     cx: &mut TestAppContext,
 ) {
     cx.update(hex_widgets::bind_numeric_control_keys);
@@ -2677,6 +2682,12 @@ fn operator_shell_controls_select_their_oscillator_without_losing_the_edit(
         ))
         .unwrap();
     visual.simulate_click(shell.center(), Modifiers::default());
+    visual.simulate_keystrokes("escape");
+    let background = operator_context_selection_tests::row_background(&mut visual, operator, 0);
+    visual.simulate_click(background, Modifiers::default());
+    visual.run_until_parked();
+    let tab = visual.debug_bounds(oscillator_tab).unwrap();
+    visual.simulate_click(tab.center(), Modifiers::default());
     visual.run_until_parked();
 
     let waveform_a = ParameterKey {
@@ -2708,6 +2719,9 @@ fn operator_shell_controls_select_their_oscillator_without_losing_the_edit(
                     .into_boxed_str(),
             ))
             .expect("Operator shell level slider");
+        let background =
+            operator_context_selection_tests::row_background(&mut visual, operator, selected);
+        visual.simulate_click(background, Modifiers::default());
         visual.simulate_click(knob.center(), Modifiers::default());
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
@@ -2777,7 +2791,7 @@ fn operator_shell_controls_select_their_oscillator_without_losing_the_edit(
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.device_panel.operator_pages[&operator].selected_operator,
-            3
+            0
         );
     });
     visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
@@ -2785,7 +2799,7 @@ fn operator_shell_controls_select_their_oscillator_without_losing_the_edit(
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.device_panel.operator_pages[&operator].selected_operator,
-            3
+            0
         );
         let gesture = view
             .device_gesture
@@ -2856,10 +2870,10 @@ fn operator_shell_controls_select_their_oscillator_without_losing_the_edit(
         assert_eq!(
             view.device_panel.operator_pages[&operator],
             operator_panel::OperatorPanelState {
-                selected_operator: 1,
-                page: operator_panel::OperatorPage::Oscillator,
+                selected_operator: 0,
+                page: operator_panel::OperatorPage::Routing,
             },
-            "a focused shell numeric adjustment follows its oscillator on begin"
+            "numeric adjustment preserves the explicitly selected editor"
         );
     });
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
@@ -2879,7 +2893,7 @@ fn operator_shell_controls_select_their_oscillator_without_losing_the_edit(
     editor.read_with(cx, |view, cx| {
         assert_eq!(
             view.device_panel.operator_pages[&operator].selected_operator,
-            2
+            0
         );
         let Some(ParameterControl::Float { entity, .. }) =
             view.device_panel.controls.get(&ParameterKey {
@@ -3152,8 +3166,8 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
         assert_eq!(
             view.device_panel.operator_pages[&instrument_id],
             operator_panel::OperatorPanelState {
-                selected_operator: 1,
-                page: operator_panel::OperatorPage::Oscillator,
+                selected_operator: 0,
+                page: operator_panel::OperatorPage::Routing,
             }
         );
     });

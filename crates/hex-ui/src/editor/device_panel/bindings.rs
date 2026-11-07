@@ -8,13 +8,10 @@ use super::gesture_adapter::{
 use super::*;
 use std::{cell::Cell, rc::Rc};
 
-pub(super) type NumericBeginHook =
-    Box<dyn Fn(&mut EditorView, &mut Context<EditorView>, ParameterKey)>;
 pub(super) struct BindingPolicy {
     pub(super) tab_navigation: bool,
     pub(super) toggle_appearance: ToggleAppearance,
     pub(super) choice_order: Option<Vec<u32>>,
-    pub(super) numeric_begin: Option<NumericBeginHook>,
 }
 
 pub(super) type BindingPolicyFactory = fn(
@@ -593,7 +590,6 @@ fn create_parameter_control(
         tab_navigation,
         toggle_appearance,
         choice_order,
-        numeric_begin,
     } = policy(view, key, identity, descriptor, presentation, display);
     let style = parameter_style(presentation);
     let ControlText {
@@ -681,14 +677,6 @@ fn create_parameter_control(
                                 Some(ParameterControl::Float { entity, .. })
                                     if entity.entity_id() == emitter.entity_id())
                     };
-                    if !is_current(view) {
-                        return;
-                    }
-                    if event.phase == NumericEventPhase::Begin
-                        && let Some(hook) = numeric_begin.as_ref()
-                    {
-                        hook(view, cx, key);
-                    }
                     if !is_current(view) {
                         return;
                     }
