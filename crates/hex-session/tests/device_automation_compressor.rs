@@ -43,11 +43,11 @@ fn compressor_lane_edits_preserve_base_value_history_and_refuse_stale_requests()
     let Created::Device(device) = added.created.unwrap() else {
         panic!("device")
     };
-    let parameter = ParameterId::new(7).unwrap();
+    let parameter = ParameterId::new(8).unwrap();
     let points = vec![AutomationPoint {
         beat: BeatTime::ZERO,
-        value: AutomationValue::new(0.25).unwrap(),
-        outgoing: AutomationInterpolation::Linear,
+        value: AutomationValue::new(1.0).unwrap(),
+        outgoing: AutomationInterpolation::Step,
     }];
     let request = |revision, generation, points| Request::DeviceAutomation {
         project_generation: generation,

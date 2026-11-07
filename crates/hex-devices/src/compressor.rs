@@ -1,9 +1,9 @@
 //! Original zero-lookahead, stereo-linked feed-forward dynamics processor.
 //!
-//! Seven continuous controls consume the shared borrowed final-value stream.
+//! All eight controls consume the shared borrowed final-value stream.
 //! Gain, detector and dry/wet histories retain their existing smoothing laws;
-//! attack/release have explicit positive-logarithmic mapping. Detector choice
-//! remains a canonical state edit, without an authored automation capability.
+//! attack/release have explicit positive-logarithmic mapping. Stepped detector
+//! choice uses the existing reversible 5ms blend with both RMS histories warm.
 mod automation;
 
 use hex_lattice::{
@@ -233,7 +233,6 @@ const BINDINGS: [crate::parameter_binding::Binding<CompressorSettings>; 8] = [
     crate::parameter_binding::Binding::choice(
         DESCRIPTORS[7],
         hex_lattice_contract::ParameterSemantics {
-            automation: hex_lattice_contract::ParameterAutomation::Unsupported,
             smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
             ..crate::parameter_binding::CHOICE_ENVELOPE
         },

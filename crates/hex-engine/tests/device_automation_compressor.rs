@@ -163,5 +163,85 @@ fn compressor_mix_step_linear_owner_paths_seek_and_loop_keep_the_same_smoothing(
             out
         };
         assert_eq!(render(16013), render(13));
+        // Exercise audible stepped detector delivery at every effect owner.
+        let mut detector_state = base.clone();
+        for (id, value) in [(p::RATIO, 8.0), (p::THRESHOLD, -30.0), (p::MAKEUP, 0.0)] {
+            detector_state = D
+                .patch_parameter(&detector_state, id, ParameterValue::Float(value))
+                .unwrap();
+        }
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device,
+                state: detector_state,
+            })
+            .unwrap();
+        editor
+            .execute(Command::ReplaceDeviceAutomation {
+                device,
+                parameter: p::DRY_WET,
+                points: vec![],
+            })
+            .unwrap();
+        let detector_media = BTreeMap::from([(
+            asset,
+            Audio::new(
+                RATE,
+                (0..FRAMES)
+                    .map(|i| {
+                        if i % 97 < 7 {
+                            [0.8, -0.4]
+                        } else {
+                            [0.01, -0.02]
+                        }
+                    })
+                    .collect(),
+            )
+            .unwrap(),
+        )]);
+        let render_detector = |project: &Project, width| {
+            let revision = Arc::new(
+                PreparedRevision::prepare(
+                    project,
+                    &detector_media,
+                    Arc::new(SineTable::new()),
+                    None,
+                )
+                .unwrap(),
+            );
+            let mut playback = SessionPlayback::new(revision).unwrap();
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut out = vec![[0.0; 2]; FRAMES];
+            for block in out.chunks_mut(width) {
+                playback.render(block).unwrap();
+            }
+            out
+        };
+        let peak = render_detector(editor.project(), 13);
+        editor
+            .execute(Command::ReplaceDeviceAutomation {
+                device,
+                parameter: p::DETECTOR,
+                points: vec![
+                    AutomationPoint {
+                        beat: BeatTime::ZERO,
+                        value: AutomationValue::new(0.0).unwrap(),
+                        outgoing: Shape::Step,
+                    },
+                    AutomationPoint {
+                        beat: BeatTime::ONE,
+                        value: AutomationValue::new(1.0).unwrap(),
+                        outgoing: Shape::Step,
+                    },
+                ],
+            })
+            .unwrap();
+        let rms = render_detector(editor.project(), 13);
+        assert!(
+            rms.iter()
+                .zip(&peak)
+                .any(|(a, b)| (a[0] - b[0]).abs() > 1e-5)
+        );
+        assert_eq!(rms, render_detector(editor.project(), FRAMES));
     }
 }
