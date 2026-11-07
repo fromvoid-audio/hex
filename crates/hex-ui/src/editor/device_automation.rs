@@ -16,6 +16,7 @@ mod plot_geometry;
 mod read_selection;
 #[cfg(test)]
 mod tests;
+mod vst3;
 use super::pending_edit::{Disposition, Receipt};
 use super::{EditorView, ViewState, device_panel::DevicePanelOwner as Owner};
 use crate::context_menu::{MenuItem, PopupMenu};
@@ -375,34 +376,6 @@ impl Entry {
             label: format!("{} {} · {}", metadata.name, index + 1, label).into(),
             metadata: entry_metadata,
             base,
-            end: source.automation_target(kind).and_then(automation_extent),
-        })
-    }
-    fn vst3(
-        project: &Project,
-        generation: u64,
-        owner: Owner,
-        device: DeviceId,
-        row: &PluginParameterRow,
-    ) -> Option<Self> {
-        let class = row.automation_class?;
-        let kind = DeviceAutomationTarget::Vst3 { parameter: row.id };
-        kind.validate().ok()?;
-        let target = Target {
-            generation,
-            owner,
-            device,
-            kind,
-            class: NativeDeviceClass::Effect,
-            provider: Some(hex_lattice_contract::VST3_DEVICE_TYPE_ID),
-            vst3_class: Some(class),
-        };
-        let source = target.current(project, generation)?;
-        Some(Self {
-            target,
-            label: format!("vst3 · {}", hex_session::service::text::verbatim(&row.name)).into(),
-            metadata: EntryMetadata::Vst3 { steps: row.steps },
-            base: AutomationValue::new(row.normalized as f32).ok()?.get(),
             end: source.automation_target(kind).and_then(automation_extent),
         })
     }
