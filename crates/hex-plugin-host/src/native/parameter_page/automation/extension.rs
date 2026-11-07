@@ -154,6 +154,46 @@ impl Prepared {
     }
 }
 
+impl AuthoredParameterMetadata {
+    fn extend(
+        &mut self,
+        target: AuthoredTarget,
+        row: &protocol::ControllerParameter,
+    ) -> std::result::Result<(), &'static str> {
+        if row.id != target.id
+            || row.step_count != target.steps
+            || !row.supports_authored_automation()
+        {
+            return Err("authored parameter capability changed");
+        }
+        match self
+            .parameters
+            .binary_search_by_key(&target.id, |parameter| parameter.id)
+        {
+            Ok(index) if self.parameters[index].steps == Some(target.steps) => Ok(()),
+            Ok(_) => Err("armed authored parameter steps changed"),
+            Err(index) => {
+                if self
+                    .extension_limit
+                    .is_none_or(|limit| self.parameters.len() >= limit)
+                    || self.parameters.len() == self.parameters.capacity()
+                {
+                    return Err("authored parameter capacity is full");
+                }
+                self.parameters.insert(
+                    index,
+                    Parameter {
+                        id: target.id,
+                        steps: Some(target.steps),
+                        normalized: None,
+                    },
+                );
+                Ok(())
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,45 +268,5 @@ mod tests {
         );
         assert_eq!(metadata.backing_data_bytes(), backing);
         assert_eq!(metadata.parameters.len(), 2);
-    }
-}
-
-impl AuthoredParameterMetadata {
-    fn extend(
-        &mut self,
-        target: AuthoredTarget,
-        row: &protocol::ControllerParameter,
-    ) -> std::result::Result<(), &'static str> {
-        if row.id != target.id
-            || row.step_count != target.steps
-            || !row.supports_authored_automation()
-        {
-            return Err("authored parameter capability changed");
-        }
-        match self
-            .parameters
-            .binary_search_by_key(&target.id, |parameter| parameter.id)
-        {
-            Ok(index) if self.parameters[index].steps == Some(target.steps) => Ok(()),
-            Ok(_) => Err("armed authored parameter steps changed"),
-            Err(index) => {
-                if self
-                    .extension_limit
-                    .is_none_or(|limit| self.parameters.len() >= limit)
-                    || self.parameters.len() == self.parameters.capacity()
-                {
-                    return Err("authored parameter capacity is full");
-                }
-                self.parameters.insert(
-                    index,
-                    Parameter {
-                        id: target.id,
-                        steps: Some(target.steps),
-                        normalized: None,
-                    },
-                );
-                Ok(())
-            }
-        }
     }
 }
