@@ -116,7 +116,13 @@ for (const state of Object.keys(doc.states)) {
       state + ': loop-only guidance must disappear when looping is off');
   }
 }
-assert(!doc.elements.some(node => /^(algorithm-diagram|routing-choice)-(serial|paired|parallel)-node-[abcd]$/.test(node.id)), 'routing uses letters and paths instead of colored blocks');
+const routingNodes = doc.elements.filter(node => /^(algorithm-diagram|routing-choice)-(serial|paired|parallel)-node-[abcd]$/.test(node.id));
+assert.equal(routingNodes.length, 24);
+for (const node of routingNodes) {
+  const op = node.id.at(-1);
+  assert(node.type === 'container' && !node.text && node.bounds.width === 8 && node.bounds.height === 8, 'routing uses small squares without letters');
+  assert.equal(node.style.fill, doc.elements.find(element => element.id === 'ratio-' + op).style.color, 'routing colors match their oscillators');
+}
 assert(doc.elements.findIndex(node => node.id === 'routing-popup') >
   doc.elements.findIndex(node => node.id === 'filter-envelope-amount'), 'routing popup paints above filter fields');
 const half = frame.layout(doc, project.viewport, 'filter-peak-half').filter(node => node.visible);
@@ -142,7 +148,7 @@ for (const value of slots.filter(node => /^macro-slots-4-value-/.test(node.id)))
   const knob = slots.find(node => node.id === value.id.replace('-value-', '-knob-'));
   assert(value.style.fontSize >= 9 && value.bounds.x >= knob.bounds.x + knob.bounds.width, 'macro values stay beside knobs');
 }
-for (const [state, expectedWidth] of [['default', 640], ['settings', 808], ['a-options', 808], ['a-harmonics', 904]]) {
+for (const [state, expectedWidth] of [['default', 632], ['settings', 800], ['a-options', 800], ['a-harmonics', 896]]) {
   const nodes = frame.layout(doc, project.viewport, state).filter(node => node.visible);
   const meter = nodes.find(node => node.id === 'output-meter');
   near(meter.bounds.x + meter.bounds.width, expectedWidth, state + ': content-sized device width');
@@ -161,5 +167,10 @@ for (const id of ['cutoff', 'filter-envelope-amount']) {
   const field = doc.elements.find(node => node.id === id);
   assert('19.99 khz'.length * field.style.fontSize * 0.6 + 2 * field.style.padding <= field.bounds.width, 'frequency field fits its formatted range');
 }
+const core = frame.layout(doc, project.viewport, 'default').filter(node => node.visible);
+const fields = ['feedback', 'cutoff', 'resonance', 'filter-envelope-amount'].map(id => core.find(node => node.id === id));
+assert.equal(new Set(fields.map(node => node.bounds.x)).size, 1, 'right-side parameter values share one column');
+assert(fields.every(node => node.bounds.width === 60 && node.bounds.height === 18), 'right-side parameter values share dimensions');
+assert.equal(core.find(node => node.label === 'toggle mono poly').bounds.y, core.find(node => node.id === 'glide').bounds.y, 'voicing controls share a bottom baseline');
 assert(pointStates >= 35 && loopStates >= 15);
 console.log(`${pointStates} point states and ${loopStates} loop states passed in ${((performance.now()-started)/1000).toFixed(2)} s`);
