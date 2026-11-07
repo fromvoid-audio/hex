@@ -335,10 +335,9 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
     replacement::wait_for_blocks(&root, binding, 4);
     assert_eq!(f.editor.project(), &canonical);
     let mut stopped_query = start_bases(&mut f, &captured_state, &selected).unwrap();
-    f.control.command(PlaybackCommand::Stop).unwrap();
-    // This fixture submits directly on control. Consume Stop on the actual
-    // callback before asserting its transport/source discontinuity.
-    block(&mut f);
+    // Priority Stop invalidates new input immediately. An ordinary queued
+    // Stop deliberately keeps the source live until its audible fade ends.
+    f.control.stop();
     assert!(poll_bases(&mut f.control, &mut stopped_query, false).is_err());
     assert!(
         stopped_query
