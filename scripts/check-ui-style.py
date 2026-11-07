@@ -117,8 +117,8 @@ widgets = (
     'section_heading(', 'unavailable(',
     'menu_message(', 'action_button(', 'action_button_sized(', 'text_action_button(', 'text_segment_button(', 'entity.clone())', 'control.entity.clone())',
     'super::waveform::waveform_source_segment_view(', 'self.mixer_strip(', 'self.track_volume(', 'detail)', 'ruler_label)',
-    'self.title_bar()', 'self.title_bar(cx)', 'self.theme_button(', 'card)',
-    'header::title_bar(', 'header::loading_toolbar(',
+    'self.window_controls(', 'self.header_diagnostics(', 'self.project_title_label(', 'self.theme_button(', 'card)',
+    'header::window_controls(', 'header::loading_toolbar(',
     # Changelog body/group captions normalize text; the test paint probe has no label.
     'self.changelog_group(', 'self.changelog_paint_probe(', 'notes)',
     'crate::tooltips::HelpToggle)',
@@ -314,16 +314,16 @@ for root_view in ('app.rs', 'editor/render.rs'):
     app = (ROOT / 'crates/hex-ui/src' / root_view).read_text()
     if '.font_family(theme::FONT_FAMILY)' not in app:
         errors.append(f'{root_view}: root UI must inherit Ioskeley Mono')
-# The shared compact title row reserves balanced space for native controls;
+# The shared top toolbar reserves space for native window controls;
 # one EditorView renders both pending-backend startup and the loaded editor.
 # The generated demo retains its separate toolbar with the same leading inset.
 header = (ROOT / 'crates/hex-ui/src/editor/header.rs').read_text()
-if 'crate::build_info::HEADER_INSET.max(theme::TITLEBAR_LEADING_INSET)' not in header or '.px(px(' not in header:
-    errors.append('editor/header.rs: center title with balanced native-control insets')
+if '.pl(px(theme::TITLEBAR_LEADING_INSET))' not in header:
+    errors.append('editor/header.rs: reserve the native-control leading inset')
 for top_row in ('editor/render.rs',):
     source = (ROOT / 'crates/hex-ui/src' / top_row).read_text()
-    if 'header::title_bar' not in source and 'self.title_bar(cx)' not in source and 'self.title_bar()' not in source:
-        errors.append(f'{top_row}: use the shared title row')
+    if 'self.transport(window, cx)' not in source:
+        errors.append(f'{top_row}: use the shared top toolbar')
 demo_toolbar = (ROOT / 'crates/hex-ui/src/layout/transport.rs').read_text()
 if '.pl(px(theme::TITLEBAR_LEADING_INSET))' not in demo_toolbar:
     errors.append('layout/transport.rs: reserve the shared native titlebar leading inset')

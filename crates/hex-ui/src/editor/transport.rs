@@ -66,6 +66,8 @@ impl EditorView {
         );
         let field = self.project_tempo_input(cx);
         let controls = div()
+            .id("transport-primary-controls")
+            .on_click(|_, _, cx| cx.stop_propagation())
             .flex()
             .items_center()
             .flex_shrink_0()
@@ -289,6 +291,8 @@ impl EditorView {
             .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx))
             .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, true, cx));
         let mut status = div()
+            .id("transport-status-controls")
+            .on_click(|_, _, cx| cx.stop_propagation())
             .flex()
             .items_center()
             .min_w_0()
@@ -350,11 +354,16 @@ impl EditorView {
                     .child(theme::text("loading")),
             );
         }
-        status = status.child(self.workspace_view_toggle(cx));
+        status = status
+            .child(self.header_diagnostics(cx))
+            .child(self.workspace_view_toggle(cx));
         let narrow = f32::from(window.viewport_size().width) < header::WIDE_TOOLBAR_MIN_WIDTH;
-        let row = header::toolbar_row().h(px(header::toolbar_height(f32::from(
-            window.viewport_size().width,
-        ))));
+        let row = header::toolbar_row()
+            .relative()
+            .child(self.window_controls(cx))
+            .h(px(header::toolbar_height(f32::from(
+                window.viewport_size().width,
+            ))));
         if narrow {
             row.flex_col()
                 .items_start()
@@ -398,11 +407,7 @@ impl EditorView {
         .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
     }
 
-    pub(super) fn title_bar(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        let title = header::project_title(
-            self.state()
-                .and_then(|state| state.document_path.as_deref()),
-        );
+    fn header_diagnostics(&self, cx: &mut Context<Self>) -> Div {
         let description = theme::text(self.cpu_meter.description());
         let cpu_meter = div()
             .id("editor-cpu-meter")
@@ -454,7 +459,16 @@ impl EditorView {
                     }))),
             )
             .child(theme::text(self.cpu_meter.label()));
-        header::title_bar(title, cpu_meter, |control| match control {
+        div()
+            .flex()
+            .items_center()
+            .flex_shrink_0()
+            .children([cpu_meter])
+            .child(crate::build_info::editor_label())
+    }
+
+    fn window_controls(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        header::window_controls(|control| match control {
             header::TitlebarControl::Close => Box::new(cx.listener(|view, _, window, cx| {
                 if view.request_window_close(window, cx) {
                     window.remove_window();

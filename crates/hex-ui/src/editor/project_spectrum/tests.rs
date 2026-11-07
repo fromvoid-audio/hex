@@ -202,9 +202,13 @@ fn project_spectrum_layers_preserve_all_members_colors_and_clear_replaced_contex
 fn project_spectrum_cancel_narrow_resize_restores_wide_preferred_height(cx: &mut TestAppContext) {
     cx.update(crate::editor::bind_editor_keys);
     let (project, _, _, _) = audio_project();
-    let (handle, _) = editor_window(cx, project, Arc::default());
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    editor.update(cx, |view, cx| {
+        view.project_spectrum.height = 140.0;
+        cx.notify();
+    });
     let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.simulate_resize(size(px(1500.0), px(540.0)));
+    visual.simulate_resize(size(px(1920.0), px(540.0)));
     visual.run_until_parked();
     let original = visual.debug_bounds("project-spectrum").unwrap().size.height;
     visual.simulate_resize(size(px(880.0), px(540.0)));
@@ -221,7 +225,7 @@ fn project_spectrum_cancel_narrow_resize_restores_wide_preferred_height(cx: &mut
         Modifiers::default(),
     );
     visual.simulate_keystrokes("escape");
-    visual.simulate_resize(size(px(1500.0), px(540.0)));
+    visual.simulate_resize(size(px(1920.0), px(540.0)));
     visual.run_until_parked();
     assert_eq!(
         visual.debug_bounds("project-spectrum").unwrap().size.height,
@@ -378,7 +382,7 @@ fn project_spectrum_keeps_workspace_with_populated_details_and_returns(cx: &mut 
 }
 
 #[gpui::test]
-fn project_spectrum_compact_live_header_restores_height_and_keeps_device_details(
+fn reclaimed_top_chrome_keeps_full_spectrum_and_device_details_at_minimum_size(
     cx: &mut TestAppContext,
 ) {
     let (project, _, _, _) = audio_project();
@@ -391,13 +395,11 @@ fn project_spectrum_compact_live_header_restores_height_and_keeps_device_details
     });
     visual.simulate_resize(size(px(880.0), px(540.0)));
     visual.run_until_parked();
-    assert_eq!(
-        visual.debug_bounds("project-spectrum").unwrap().size.height,
-        px(22.0)
-    );
+    let spectrum = visual.debug_bounds("project-spectrum").unwrap();
+    assert!(spectrum.size.height >= px(72.0) && spectrum.size.height <= px(120.0));
     assert!(
         visual.debug_bounds("project-spectrum-plot").is_some(),
-        "compact expanded mode retains live master and every selected layer"
+        "full expanded mode retains live master and every selected layer"
     );
     assert!(
         visual.debug_bounds("clip-detail-viewport").is_none(),
