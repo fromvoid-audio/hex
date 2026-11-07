@@ -467,17 +467,23 @@ fn live_reading_vst3_drag_cancels_or_commits_exact_lane_and_preserves_other_read
             initial: PluginParameterValue::new(gain.normalized).unwrap(),
         }
     };
-    let first = query(&mut h, 1);
     h.audio
         .as_mut()
         .unwrap()
         .control
         .command(PlaybackCommand::Play)
         .unwrap();
-    let render_steady = |h: &ResidentHarness| {
+    let render_steady = |h: &ResidentHarness, phase: &str| {
         let mut block = [[0.0; 2]; 256];
-        for _ in 0..3 {
+        for _ in 0..5 {
             block = h.render_plugin_block();
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert!(
+                status.playing.load(Acquire),
+                "{phase}: transport did not play, position={}, rejected={:?}",
+                status.position.load(Acquire),
+                status.rejected_action()
+            );
             wait(|| {
                 h.callback
                     .lock()
@@ -488,12 +494,21 @@ fn live_reading_vst3_drag_cancels_or_commits_exact_lane_and_preserves_other_read
                     == Some(true)
             });
         }
-        assert!(block.iter().all(|&frame| frame == block[0]));
-        assert!(block[0][0] > 0.0);
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert!(
+            block.iter().all(|&frame| frame == block[0]) && block[0][0] > 0.0,
+            "{phase}: first={:?}, last={:?}, completed={}, fault={:?}, source={:?}",
+            block[0],
+            block[255],
+            h.plugin_completed.load(Acquire),
+            status.render_fault_snapshot(),
+            status.native_effect_source(),
+        );
         block[0][0]
     };
-    let original_pcm = render_steady(&h);
+    let original_pcm = render_steady(&h, "original reading");
     assert_eq!(original_pcm, 0.5);
+    let first = query(&mut h, 1);
 
     let send = |h: &mut ResidentHarness, client: &mut GestureClient| {
         let request = client.next_request().unwrap();
@@ -526,17 +541,17 @@ fn live_reading_vst3_drag_cancels_or_commits_exact_lane_and_preserves_other_read
     client.change_plugin(manual).unwrap();
     let preview = send(&mut h, &mut client);
     assert_eq!(preview.state.project.as_ref(), &before);
-    assert_eq!(render_steady(&h), original_pcm * 2.0);
+    assert_eq!(render_steady(&h, "first held preview"), original_pcm * 2.0);
     client.cancel().unwrap();
     assert_eq!(send(&mut h, &mut client).state.project.as_ref(), &before);
-    assert_eq!(render_steady(&h), original_pcm);
+    assert_eq!(render_steady(&h, "after cancel"), original_pcm);
 
     let second = query(&mut h, 2);
     client.begin_plugin(second).unwrap();
     send(&mut h, &mut client);
     client.change_plugin(manual).unwrap();
     send(&mut h, &mut client);
-    assert_eq!(render_steady(&h), original_pcm * 2.0);
+    assert_eq!(render_steady(&h, "second held preview"), original_pcm * 2.0);
     client.finish_plugin(manual).unwrap();
     let committed = send(&mut h, &mut client);
     let (revision, _) = h.applied(original_revision);
@@ -553,7 +568,7 @@ fn live_reading_vst3_drag_cancels_or_commits_exact_lane_and_preserves_other_read
         original.automation_target(other_target)
     );
     assert_eq!(captured_gain(result.state()), 2.0);
-    assert_eq!(render_steady(&h), original_pcm * 2.0);
+    assert_eq!(render_steady(&h, "after commit"), original_pcm * 2.0);
 
     let history = |h: &mut ResidentHarness, request| {
         h.service.submit(request).unwrap();
