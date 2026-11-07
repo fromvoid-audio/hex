@@ -185,6 +185,12 @@ pub enum ParameterPageProgress {
 #[allow(clippy::large_enum_variant)] // Reuse the fixed controller mailbox without allocating its UTF-16 query.
 pub enum ControllerRequest {
     Parameters(ParameterPageQuery),
+    /// One fresh page, independent of intervening value feedback revisions.
+    /// Only a selected target's actual row may establish its eligibility;
+    /// this observation grants no canonical base or publication authority.
+    SelectedParameters {
+        first: u16,
+    },
     ToggleEditor,
     CloseEditor,
 }
@@ -202,6 +208,12 @@ impl ControllerRequest {
     pub fn validate(self) -> Result<()> {
         match self {
             Self::Parameters(query) => query.validate(),
+            Self::SelectedParameters { first } => {
+                if first > MAX_CONTROLLER_PARAMETERS {
+                    return Err(Error::Protocol("invalid selected controller page"));
+                }
+                Ok(())
+            }
             Self::ToggleEditor | Self::CloseEditor => Ok(()),
         }
     }
@@ -236,6 +248,10 @@ pub fn parameter_page_request(
         }
         ControllerRequest::ToggleEditor => out[82] = 6,
         ControllerRequest::CloseEditor => out[82] = 7,
+        ControllerRequest::SelectedParameters { first } => {
+            out[72..74].copy_from_slice(&first.to_le_bytes());
+            out[82] = 8;
+        }
     }
     Ok(out)
 }
@@ -267,7 +283,16 @@ pub fn parameter_page(
         reader.end()?;
         return Ok(ParameterPageProgress::Pending);
     }
-    let ControllerRequest::Parameters(query) = request else {
+    let query = match request {
+        ControllerRequest::Parameters(query) => Some(query),
+        ControllerRequest::SelectedParameters { first } => Some(ParameterPageQuery {
+            first,
+            revision: 0,
+            conversion: None,
+        }),
+        ControllerRequest::ToggleEditor | ControllerRequest::CloseEditor => None,
+    };
+    let Some(query) = query else {
         if status != 4 {
             return Err(Error::Protocol("missing native editor acknowledgement"));
         }

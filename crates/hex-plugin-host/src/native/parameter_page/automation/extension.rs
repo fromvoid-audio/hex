@@ -120,8 +120,10 @@ impl Prepared {
     }
 
     /// Validate one selected target through a fresh page from this exact SDK
-    /// reader. The caller supplies the previously observed page/revision/steps;
-    /// changed or ineligible data refuses without disturbing existing metadata.
+    /// reader. The caller supplies the previously observed page/revision/steps.
+    /// The selected page is read fresh: PCM value feedback may advance ordinary
+    /// enumeration revisions while this operation is pending. Exact target,
+    /// flags and steps are revalidated; no current value becomes a base witness.
     /// Shares the ordinary one-query lane; PCM exchanges may continue while pending.
     pub fn begin_authored_parameter_extension_on_worker(
         &mut self,
@@ -156,7 +158,10 @@ impl Prepared {
         {
             return Err(Error::Protocol("authored parameter capacity is full"));
         }
-        self.begin_parameter_page_on_worker(query)?;
+        query.validate()?;
+        self.begin_controller_request_on_worker(ControllerRequest::SelectedParameters {
+            first: query.first,
+        })?;
         let page = self.parameter_page.as_mut().ok_or(Error::Protocol(
             "authored parameter query admission disappeared",
         ))?;

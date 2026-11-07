@@ -26,6 +26,102 @@ fn query(observed: &ParameterPage) -> ParameterPageQuery {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn extension_reads_a_fresh_selected_page_after_pcm_feedback_changes_revision() {
+    let case = Case::new();
+    let setup = case.setup(91);
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        move |command| {
+            setup(command);
+            command.env("HEX_ORIGINAL_PARAMETER_INVENTORY", "9");
+        },
+    )
+    .unwrap();
+    instance
+        .reserve_authored_parameter_capacity_on_control(1)
+        .unwrap();
+    let observed = page(&mut instance, ParameterPageQuery::default());
+    let q = ParameterPageQuery {
+        first: 8,
+        revision: observed.revision,
+        conversion: None,
+    };
+    let mut input = request(instance.configuration(), 0);
+    input
+        .parameters
+        .push(crate::transport::ParameterPoint {
+            frame: 0,
+            id: 7,
+            normalized: 0.75,
+        })
+        .unwrap();
+    instance.exchange_on_worker(input).unwrap();
+    // This read synchronizes real PCM feedback on the SDK main lane.
+    let current = page(&mut instance, ParameterPageQuery::default());
+    assert!(current.revision > observed.revision);
+    instance.begin_parameter_page_on_worker(q).unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        match instance.poll_parameter_page_on_worker().unwrap() {
+            ParameterPageProgress::Pending => assert!(Instant::now() < until),
+            ParameterPageProgress::Changed { revision, total } => {
+                assert_eq!((revision, total), (current.revision, 9));
+                break;
+            }
+            other => panic!("ordinary stale page must remain fenced: {other:?}"),
+        }
+        thread::yield_now();
+    }
+    let storage = instance.retained_storage_on_control().unwrap();
+    instance
+        .begin_authored_parameter_extension_on_worker(class(), 7, 0, q)
+        .unwrap();
+    assert!(matches!(
+        poll_extension(&mut instance),
+        Progress::Armed {
+            id: 7,
+            steps: 0,
+            ..
+        }
+    ));
+    assert!(instance.has_armed_authored_parameter(7));
+    assert_eq!(
+        instance
+            .authored_parameter_metadata
+            .as_ref()
+            .unwrap()
+            .initial_normalized(7),
+        None
+    );
+    assert_eq!(instance.retained_storage_on_control().unwrap(), storage);
+    let mut input = request(instance.configuration(), 1);
+    input
+        .parameters
+        .push(crate::transport::ParameterPoint {
+            frame: 0,
+            id: 7,
+            normalized: 0.5,
+        })
+        .unwrap();
+    let output = instance.exchange_armed_authored_on_worker(input).unwrap();
+    for (actual, original) in output.pcm[..8].iter().zip(&input.pcm[..8]) {
+        assert_eq!(*actual, [original[0] * 1.25, original[1] * 1.25]);
+    }
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert_eq!(case.observation().unwrap()[1], 0);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn sdk_extension_preserves_existing_bases_and_backing_while_pcm_continues() {
     let case = Case::new();
     let mut instance = Prepared::prepare(
@@ -210,7 +306,11 @@ fn sdk_extension_preserves_existing_bases_and_backing_while_pcm_continues() {
         .unwrap();
     assert!(matches!(
         poll_extension(&mut instance),
-        Progress::Changed { .. }
+        Progress::Armed {
+            id: 11,
+            steps: 0,
+            ..
+        }
     ));
     assert_eq!(instance.retained_storage_on_control().unwrap(), storage);
     assert_eq!(instance.child_id_on_control(), child);
@@ -279,8 +379,8 @@ fn held_extension_keeps_pcm_running_and_cancellation_reaps_the_original_reader()
     instance
         .reserve_authored_parameter_capacity_on_control(1)
         .unwrap();
-    // A stale revision still performs the real SDK enumeration before it can
-    // report Changed. The fixture holds that actual main-lane formatter.
+    // The fresh selected page performs the real SDK enumeration. The fixture
+    // holds that actual main-lane formatter while PCM continues independently.
     instance
         .begin_authored_parameter_extension_on_worker(
             class(),
