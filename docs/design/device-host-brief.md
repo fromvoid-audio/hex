@@ -6,7 +6,7 @@ Every host is 200 px high, with variable width. Its left sidebar contains power,
 
 Macros and modulators open independently and can remain open together: sidebar → macros → modulators → device controls → nested-device widget → external stereo meter/add button. Opening panels expands horizontally.
 
-Both panels contain color-coded square slots. All slots within a panel have one uniform size. Use two-high sizing for one/two assigned slots, three-high for three, and four-high for four or more; a fifth begins a second column at the four-high size. Do not mix slot sizes within a panel.
+Both panels contain color-coded square slots. All slots within a panel have one uniform size. Use two-high sizing for one/two assigned slots, three-high for three, and four-high for four or more; a fifth begins a second column at the four-high size. Do not mix slot sizes within a panel. Each size has a deliberate internal layout: macro values remain readable, source slots show useful previews, and knobs/previews must not overlap labels.
 
 Each device has a nested-device widget at its right end. Nested devices remain full-sized individual devices, with normal meters/add buttons between them and colored membership markers. Parent power controls the complete nested unit while preserving each child’s individual power state.
 
