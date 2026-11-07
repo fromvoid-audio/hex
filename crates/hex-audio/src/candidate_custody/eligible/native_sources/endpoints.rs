@@ -38,8 +38,7 @@ pub(crate) struct NativeEndpointBank {
     ordinary_requirements: bool,
 }
 impl NativeEndpointBank {
-    #[cfg(all(test, feature = "allocation-probe"))]
-    pub(crate) fn take_accepted_manual_parameter_for_test(
+    pub(crate) fn take_accepted_manual_parameter(
         &mut self,
         binding: Binding,
     ) -> Option<hex_plugin_host::transport::AcceptedManualParameter> {
@@ -50,7 +49,7 @@ impl NativeEndpointBank {
             .0
             .callback
             .as_mut()?
-            .take_accepted_manual_parameter_for_test()
+            .take_accepted_manual_parameter()
     }
     /// Headless control-side progress only. Compare each original installed
     /// endpoint's committed request prefix with its matching actual worker;

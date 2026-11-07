@@ -583,6 +583,7 @@ where
     }
     callback.finish_gain_recording_quantum(valid);
     callback.finish_native_parameter_quantum(valid);
+    callback.finish_foreign_parameter_delivery(valid);
     valid
 }
 

@@ -50,6 +50,41 @@ impl PublicationControl {
         Ok((self.rate, epoch, source))
     }
 
+    /// Observe one already admitted original worker operation at final direct
+    /// output. Register before rendering its reply. Drain the exact terminal
+    /// before another observation or canonical publication, including on cancel.
+    pub fn begin_native_source_parameter_delivery_on_control(
+        &mut self,
+        source: AppliedAudioSource,
+        binding: Binding,
+        request: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<crate::foreign_parameter_delivery::Target, &'static str> {
+        let (original, operation, parameter) = request
+            .delivery_identity()
+            .ok_or("vst3 delivery requires a PCM parameter point")?;
+        if !self.native_custody
+            || original != binding
+            || self.native_source_endpoint_installed(binding) != Some(true)
+        {
+            return Err("vst3 delivery operation source differs");
+        }
+        self.foreign_parameter_delivery
+            .begin(&self.status, source, binding, operation, parameter)
+    }
+
+    pub fn cancel_native_source_parameter_delivery_on_control(
+        &mut self,
+        target: crate::foreign_parameter_delivery::Target,
+    ) -> bool {
+        self.foreign_parameter_delivery.cancel(target)
+    }
+
+    pub fn try_native_source_parameter_delivery_on_control(
+        &mut self,
+    ) -> Option<crate::foreign_parameter_delivery::Receipt> {
+        self.foreign_parameter_delivery.try_receipt(&self.status)
+    }
+
     /// Queue a live hold on the selected original worker. A begin/change
     /// requires the exact applied ordinary source and a running transport.
     /// Release stays with the original worker even if its editor revision

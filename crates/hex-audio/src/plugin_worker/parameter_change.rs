@@ -62,7 +62,15 @@ pub struct NativeWorkerParameterChange {
     source: Weak<Signal>,
     binding: Binding,
     ordinal: u64,
+    parameter: u32,
+    pcm_point: bool,
     hold_id: Option<u32>,
+}
+impl NativeWorkerParameterChange {
+    pub(crate) fn delivery_identity(&self) -> Option<(Binding, u64, u32)> {
+        self.pcm_point
+            .then_some((self.binding, self.ordinal, self.parameter))
+    }
 }
 #[cfg(test)]
 impl NativeWorkerParameterChange {
@@ -338,6 +346,8 @@ impl NativeWorker {
             source: Arc::downgrade(&self.reaper.completed),
             binding: self.binding,
             ordinal,
+            parameter: id,
+            pcm_point: matches!(intent, Intent::Point | Intent::Hold | Intent::Update(_)),
             hold_id: (intent == Intent::Hold).then_some(id),
         })
     }

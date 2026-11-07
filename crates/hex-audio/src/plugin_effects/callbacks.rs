@@ -87,8 +87,7 @@ impl NativeEffectEntry {
         }
         Ok(())
     }
-    #[cfg(all(test, feature = "allocation-probe"))]
-    pub(crate) fn take_accepted_manual_parameter_for_test(
+    pub(crate) fn take_accepted_manual_parameter(
         &mut self,
     ) -> Option<hex_plugin_host::transport::AcceptedManualParameter> {
         self.callback.take_accepted_manual_parameter()
