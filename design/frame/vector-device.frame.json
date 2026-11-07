@@ -5,18 +5,18 @@
   "archive": {
     "version": 1,
     "designId": "hex-vector-device",
-    "sourceRevisionId": "vector-device-r9",
-    "currentRevisionId": "vector-device-r9",
+    "sourceRevisionId": "vector-device-r10",
+    "currentRevisionId": "vector-device-r10",
     "revisions": [
       {
-        "revisionId": "vector-device-r9",
+        "revisionId": "vector-device-r10",
         "parentRevisionId": null,
-        "capturedAt": "2026-11-07T08:43:36.734Z",
+        "capturedAt": "2026-11-07T08:49:47.184Z",
         "document": {
           "version": 1,
           "id": "hex-vector-device",
           "name": "hex / vector",
-          "revisionId": "vector-device-r9",
+          "revisionId": "vector-device-r10",
           "width": 930,
           "height": 200,
           "background": "#242424",
@@ -580,9 +580,9 @@
               "parentId": "compact-content",
               "bounds": {
                 "x": 56,
-                "y": 10,
-                "width": 88,
-                "height": 13
+                "y": 13,
+                "width": 72,
+                "height": 12
               },
               "style": {
                 "fill": "#111111",
@@ -595,15 +595,15 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 59,
-                "y": 12,
-                "width": 2,
-                "height": 9
+                "x": 58,
+                "y": 15,
+                "width": 68,
+                "height": 8
               },
               "style": {
-                "fill": "#414141",
+                "fill": "#1c1c1c",
                 "stroke": "none",
-                "radius": 0
+                "radius": 1
               }
             },
             {
@@ -611,15 +611,16 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 59,
-                "y": 19,
-                "width": 2,
-                "height": 2
+                "x": 58,
+                "y": 15,
+                "width": 4.25,
+                "height": 8
               },
               "style": {
                 "fill": "#ca7481",
                 "stroke": "none",
-                "radius": 0
+                "radius": 1,
+                "opacity": 0.32
               }
             },
             {
@@ -627,17 +628,17 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 64,
-                "y": 10,
-                "width": 76,
-                "height": 13
+                "x": 60,
+                "y": 13,
+                "width": 64,
+                "height": 12
               },
               "style": {
                 "fill": "none",
                 "stroke": "none",
                 "color": "#ca7481",
                 "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 11,
+                "fontSize": 9,
                 "padding": 0,
                 "textAlign": "right",
                 "verticalAlign": "middle"
@@ -650,8 +651,8 @@
               "parentId": "compact-content",
               "bounds": {
                 "x": 56,
-                "y": 26,
-                "width": 88,
+                "y": 30,
+                "width": 72,
                 "height": 12
               },
               "style": {
@@ -665,15 +666,15 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 59,
-                "y": 28,
-                "width": 2,
+                "x": 58,
+                "y": 32,
+                "width": 68,
                 "height": 8
               },
               "style": {
-                "fill": "#414141",
+                "fill": "#1c1c1c",
                 "stroke": "none",
-                "radius": 0
+                "radius": 1
               }
             },
             {
@@ -681,15 +682,16 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 59,
-                "y": 34,
-                "width": 2,
-                "height": 2
+                "x": 58,
+                "y": 32,
+                "width": 0,
+                "height": 8
               },
               "style": {
                 "fill": "#ca7481",
                 "stroke": "none",
-                "radius": 0
+                "radius": 1,
+                "opacity": 0.32
               }
             },
             {
@@ -697,9 +699,9 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 64,
-                "y": 26,
-                "width": 76,
+                "x": 60,
+                "y": 30,
+                "width": 64,
                 "height": 12
               },
               "style": {
@@ -707,7 +709,7 @@
                 "stroke": "none",
                 "color": "#ca7481",
                 "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 9,
+                "fontSize": 8.5,
                 "padding": 0,
                 "textAlign": "right",
                 "verticalAlign": "middle"
@@ -768,15 +770,21 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 159,
-                "y": 10,
-                "width": 24,
-                "height": 24
+                "x": 136,
+                "y": 18,
+                "width": 20,
+                "height": 20
               },
               "style": {
-                "fill": "#131313",
-                "stroke": "none",
-                "radius": 12
+                "fill": "#212121",
+                "stroke": "#141414",
+                "color": "#bcbfbd",
+                "fontSize": 9,
+                "fontFamily": "Ioskeley Mono",
+                "padding": 0,
+                "radius": 10,
+                "lineWidth": 1,
+                "textAlign": "left"
               }
             },
             {
@@ -784,189 +792,186 @@
               "type": "line",
               "parentId": "compact-content",
               "bounds": {
-                "x": 159,
-                "y": 10,
-                "width": 24,
-                "height": 24
+                "x": 136,
+                "y": 18,
+                "width": 20,
+                "height": 20
               },
               "style": {
-                "stroke": "#ca7481",
-                "lineWidth": 2,
-                "fill": "none"
+                "fill": "none",
+                "stroke": "#83c3cf",
+                "color": "#bcbfbd",
+                "fontSize": 9,
+                "fontFamily": "Ioskeley Mono",
+                "padding": 0,
+                "radius": 0,
+                "lineWidth": 1,
+                "textAlign": "left"
               },
               "points": [
                 [
-                  4.928932188134525,
-                  19.071067811865476
+                  4.107443490112105,
+                  15.892556509887896
                 ],
                 [
-                  4.165098547699679,
-                  18.214042100979228
+                  3.470915456416399,
+                  15.17836841748269
                 ],
                 [
-                  3.5045238078367333,
-                  17.275119360582007
+                  2.9204365065306113,
+                  14.395932800485006
                 ],
                 [
-                  2.955913913578824,
-                  16.266673981147715
+                  2.46326159464902,
+                  13.55556165095643
                 ],
                 [
-                  2.5264991861838375,
-                  15.20199661627312
+                  2.105415988486531,
+                  12.668330513560933
                 ],
                 [
-                  2.2219390322071835,
-                  14.095119020515686
+                  1.851615860172653,
+                  11.745932517096405
                 ],
                 [
-                  2.0462473562077292,
-                  12.960629120003334
+                  1.7052061301731076,
+                  10.800524266669447
                 ],
                 [
-                  2.0017396600987745,
-                  11.813478753064846
+                  1.6681163834156454,
+                  9.844565627554038
                 ],
                 [
-                  2.089002526340252,
-                  10.668786614734481
+                  1.7408354386168767,
+                  8.890655512278734
                 ],
                 [
-                  2.306885887163764,
-                  9.541639002193739
+                  1.9224049059698034,
+                  7.951365835161449
                 ],
                 [
-                  2.652518181717074,
-                  8.446890987195841
+                  2.2104318180975615,
+                  7.039075822663201
                 ],
                 [
-                  3.1213442013667407,
-                  7.398970635890703
+                  2.6011201678056173,
+                  6.165808863242252
                 ],
                 [
-                  3.707185124382425,
-                  6.411688856305881
+                  3.0893209369853545,
+                  5.343074046921568
                 ],
                 [
-                  4.402319948784848,
-                  5.4980573795697545
+                  3.668599957320707,
+                  4.581714482974795
                 ],
                 [
-                  5.19758725012547,
-                  4.670117273765942
+                  4.331322708437892,
+                  3.8917643948049516
                 ],
                 [
-                  6.082505923096571,
-                  3.9387802504947906
+                  5.068754935913809,
+                  3.2823168754123255
                 ],
                 [
-                  7.045413315675925,
-                  3.313684855618087
+                  5.8711777630632715,
+                  2.7614040463484053
                 ],
                 [
-                  8.073618935288023,
-                  2.8030694394993247
+                  6.728015779406686,
+                  2.3358911995827705
                 ],
                 [
-                  9.15357170123461,
-                  2.41366358090915
+                  7.627976417695508,
+                  2.0113863174242916
                 ],
                 [
-                  10.271038539116445,
-                  2.150599395558155
+                  8.559198782597038,
+                  1.792166162965129
                 ],
                 [
-                  11.411291963488104,
-                  2.0173438981528413
+                  9.50940996957342,
+                  1.6811199151273677
                 ],
                 [
-                  12.559304176528418,
-                  2.0156533093988624
+                  10.46608681377368,
+                  1.6797110911657187
                 ],
                 [
-                  13.699945124632565,
-                  2.145549910155413
+                  11.416620937193805,
+                  1.7879582584628444
                 ],
                 [
-                  14.818181902668861,
-                  2.40532174778801
+                  12.348484918890719,
+                  2.0044347898233417
                 ],
                 [
-                  15.899276877881888,
-                  2.7915451985897413
+                  13.249397398234906,
+                  2.326287665491451
                 ],
                 [
-                  16.928981922297837,
-                  3.299130088912886
+                  14.107484935248197,
+                  2.7492750740940717
                 ],
                 [
-                  17.893726193775702,
-                  3.921386780343907
+                  14.911438494813085,
+                  3.267822316953256
                 ],
                 [
-                  18.78079499087189,
-                  4.650114334782705
+                  15.650662492393243,
+                  3.875095278985588
                 ],
                 [
-                  19.578497324327962,
-                  5.475708597467926
+                  16.31541443693997,
+                  4.563090497889938
                 ],
                 [
-                  20.27631999669815,
-                  6.387288773484389
+                  16.896933330581792,
+                  5.322740644570325
                 ],
                 [
-                  20.865066159447462,
-                  7.372840829556493
+                  17.387555132872887,
+                  6.144034024630411
                 ],
                 [
-                  21.336976521428298,
-                  8.41937583118575
+                  17.780813767856916,
+                  7.016146525988124
                 ],
                 [
-                  21.68583161128631,
-                  9.513101128351447
+                  18.071526342738593,
+                  7.9275842736262065
                 ]
               ]
-            },
-            {
-              "id": "osc-a-level-cap",
-              "type": "container",
-              "parentId": "compact-content",
-              "bounds": {
-                "x": 164,
-                "y": 15,
-                "width": 14,
-                "height": 14
-              },
-              "style": {
-                "fill": "#868686",
-                "stroke": "none",
-                "radius": 7
-              }
             },
             {
               "id": "osc-a-level-pointer",
               "type": "line",
               "parentId": "compact-content",
               "bounds": {
-                "x": 159,
-                "y": 10,
-                "width": 24,
-                "height": 24
+                "x": 136,
+                "y": 18,
+                "width": 20,
+                "height": 20
               },
               "style": {
-                "stroke": "#202020",
-                "lineWidth": 1.7
+                "fill": "none",
+                "stroke": "#d4dbd8",
+                "color": "#bcbfbd",
+                "fontSize": 9,
+                "fontFamily": "Ioskeley Mono",
+                "padding": 0,
+                "radius": 0,
+                "lineWidth": 1,
+                "textAlign": "left"
               },
               "points": [
                 [
-                  13.937166322257262,
-                  11.50262022567029
+                  11.614305268547719,
+                  9.585516854725242
                 ],
                 [
-                  17.811498966771786,
-                  10.507860677010868
+                  14.842915805643154,
+                  8.756550564175724
                 ]
               ]
             },
@@ -975,19 +980,19 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 150,
-                "y": 35,
-                "width": 42,
-                "height": 7
+                "x": 163,
+                "y": 16,
+                "width": 36,
+                "height": 9
               },
               "style": {
                 "fill": "none",
                 "stroke": "none",
                 "color": "#a0a0a0",
                 "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 6.5,
+                "fontSize": 7.5,
                 "padding": 0,
-                "textAlign": "center",
+                "textAlign": "left",
                 "verticalAlign": "middle"
               },
               "text": "level"
@@ -997,19 +1002,19 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 150,
-                "y": 42,
-                "width": 42,
-                "height": 7
+                "x": 163,
+                "y": 29,
+                "width": 36,
+                "height": 10
               },
               "style": {
                 "fill": "none",
                 "stroke": "none",
-                "color": "#ca7481",
+                "color": "#d1d1d1",
                 "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 6.5,
+                "fontSize": 8,
                 "padding": 0,
-                "textAlign": "center",
+                "textAlign": "left",
                 "verticalAlign": "middle"
               },
               "text": "−6 db"
@@ -1064,9 +1069,9 @@
               "parentId": "compact-content",
               "bounds": {
                 "x": 56,
-                "y": 57.75,
-                "width": 88,
-                "height": 13
+                "y": 60.75,
+                "width": 72,
+                "height": 12
               },
               "style": {
                 "fill": "#111111",
@@ -1079,15 +1084,15 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 59,
-                "y": 59.75,
-                "width": 2,
-                "height": 9
+                "x": 58,
+                "y": 62.75,
+                "width": 68,
+                "height": 8
               },
               "style": {
-                "fill": "#414141",
+                "fill": "#1c1c1c",
                 "stroke": "none",
-                "radius": 0
+                "radius": 1
               }
             },
             {
@@ -1095,15 +1100,16 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 59,
-                "y": 66.75,
-                "width": 2,
-                "height": 2
+                "x": 58,
+                "y": 62.75,
+                "width": 8.5,
+                "height": 8
               },
               "style": {
                 "fill": "#cfbc77",
                 "stroke": "none",
-                "radius": 0
+                "radius": 1,
+                "opacity": 0.32
               }
             },
             {
@@ -1111,17 +1117,17 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 64,
-                "y": 57.75,
-                "width": 76,
-                "height": 13
+                "x": 60,
+                "y": 60.75,
+                "width": 64,
+                "height": 12
               },
               "style": {
                 "fill": "none",
                 "stroke": "none",
                 "color": "#cfbc77",
                 "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 11,
+                "fontSize": 9,
                 "padding": 0,
                 "textAlign": "right",
                 "verticalAlign": "middle"
@@ -1134,8 +1140,8 @@
               "parentId": "compact-content",
               "bounds": {
                 "x": 56,
-                "y": 73.75,
-                "width": 88,
+                "y": 77.75,
+                "width": 72,
                 "height": 12
               },
               "style": {
@@ -1149,15 +1155,15 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 59,
-                "y": 75.75,
-                "width": 2,
+                "x": 58,
+                "y": 79.75,
+                "width": 68,
                 "height": 8
               },
               "style": {
-                "fill": "#414141",
+                "fill": "#1c1c1c",
                 "stroke": "none",
-                "radius": 0
+                "radius": 1
               }
             },
             {
@@ -1165,15 +1171,16 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 59,
-                "y": 81.75,
-                "width": 2,
-                "height": 2
+                "x": 58,
+                "y": 79.75,
+                "width": 51,
+                "height": 8
               },
               "style": {
                 "fill": "#cfbc77",
                 "stroke": "none",
-                "radius": 0
+                "radius": 1,
+                "opacity": 0.32
               }
             },
             {
@@ -1181,9 +1188,9 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 64,
-                "y": 73.75,
-                "width": 76,
+                "x": 60,
+                "y": 77.75,
+                "width": 64,
                 "height": 12
               },
               "style": {
@@ -1191,7 +1198,7 @@
                 "stroke": "none",
                 "color": "#cfbc77",
                 "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 9,
+                "fontSize": 8.5,
                 "padding": 0,
                 "textAlign": "right",
                 "verticalAlign": "middle"
@@ -1252,15 +1259,21 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 159,
-                "y": 57.75,
-                "width": 24,
-                "height": 24
+                "x": 136,
+                "y": 65.75,
+                "width": 20,
+                "height": 20
               },
               "style": {
-                "fill": "#131313",
-                "stroke": "none",
-                "radius": 12
+                "fill": "#212121",
+                "stroke": "#141414",
+                "color": "#bcbfbd",
+                "fontSize": 9,
+                "fontFamily": "Ioskeley Mono",
+                "padding": 0,
+                "radius": 10,
+                "lineWidth": 1,
+                "textAlign": "left"
               }
             },
             {
@@ -1268,189 +1281,186 @@
               "type": "line",
               "parentId": "compact-content",
               "bounds": {
-                "x": 159,
-                "y": 57.75,
-                "width": 24,
-                "height": 24
+                "x": 136,
+                "y": 65.75,
+                "width": 20,
+                "height": 20
               },
               "style": {
-                "stroke": "#cfbc77",
-                "lineWidth": 2,
-                "fill": "none"
+                "fill": "none",
+                "stroke": "#83c3cf",
+                "color": "#bcbfbd",
+                "fontSize": 9,
+                "fontFamily": "Ioskeley Mono",
+                "padding": 0,
+                "radius": 0,
+                "lineWidth": 1,
+                "textAlign": "left"
               },
               "points": [
                 [
-                  4.928932188134525,
-                  19.071067811865476
+                  4.107443490112105,
+                  15.892556509887896
                 ],
                 [
-                  4.408706876430404,
-                  18.509398490801203
+                  3.6739223970253367,
+                  15.424498742334336
                 ],
                 [
-                  3.9329746500196983,
-                  17.909577142467572
+                  3.277478875016415,
+                  14.924647618722977
                 ],
                 [
-                  3.5045238078367333,
-                  17.275119360582007
+                  2.9204365065306113,
+                  14.395932800485006
                 ],
                 [
-                  3.125865529407168,
-                  16.609743745354624
+                  2.60488794117264,
+                  13.841453121128852
                 ],
                 [
-                  2.7992191566540523,
-                  15.91735010851956
+                  2.3326826305450434,
+                  13.2644584237663
                 ],
                 [
-                  2.5264991861838375,
-                  15.20199661627312
+                  2.105415988486531,
+                  12.668330513560933
                 ],
                 [
-                  2.3093040482915796,
-                  14.467876004085706
+                  1.924420040242983,
+                  12.056563336738089
                 ],
                 [
-                  2.1489067384522613,
-                  13.719291002794096
+                  1.7907556153768844,
+                  11.432742502328415
                 ],
                 [
-                  2.0462473562077292,
-                  12.960629120003334
+                  1.7052061301731076,
+                  10.800524266669447
                 ],
                 [
-                  2.0019275951793514,
-                  12.196336924606285
+                  1.6682729959827929,
+                  10.16361410383857
                 ],
                 [
-                  2.0162072165007743,
-                  11.430893985140926
+                  1.6801726804173118,
+                  9.525744987617438
                 ],
                 [
-                  2.089002526340252,
-                  10.668786614734481
+                  1.7408354386168767,
+                  8.890655512278734
                 ],
                 [
-                  2.219886866435889,
-                  9.914481576517057
+                  1.8499057220299076,
+                  8.26206798043088
                 ],
                 [
-                  2.408093114768729,
-                  9.172399903619162
+                  2.006744262307274,
+                  7.643666586349302
                 ],
                 [
-                  2.652518181717074,
-                  8.446890987195841
+                  2.2104318180975615,
+                  7.039075822663201
                 ],
                 [
-                  2.9517294753398033,
-                  7.742207084349277
+                  2.4597745627831693,
+                  6.451839236957731
                 ],
                 [
-                  3.3039732978951477,
-                  7.062478395360747
+                  2.7533110815792896,
+                  5.885398662800623
                 ],
                 [
-                  3.707185124382425,
-                  6.411688856305881
+                  3.0893209369853545,
+                  5.343074046921568
                 ],
                 [
-                  4.159001702863511,
-                  5.793652788934326
+                  3.4658347523862596,
+                  4.828043990778604
                 ],
                 [
-                  4.656774905643145,
-                  5.211992544670582
+                  3.880645754702621,
+                  4.343327120558818
                 ],
                 [
-                  5.19758725012547,
-                  4.670117273765942
+                  4.331322708437892,
+                  3.8917643948049516
                 ],
                 [
-                  5.7782689983779605,
-                  4.171202944036982
+                  4.815224165314967,
+                  3.4760024533641514
                 ],
                 [
-                  6.395416735180982,
-                  3.7181737263022363
+                  5.329513945984151,
+                  3.0984781052518637
                 ],
                 [
-                  7.045413315675925,
-                  3.313684855618087
+                  5.8711777630632715,
+                  2.7614040463484053
                 ],
                 [
-                  7.724449065697176,
-                  2.960107068765568
+                  6.437040888080979,
+                  2.4667558906379736
                 ],
                 [
-                  8.428544110531547,
-                  2.659512709200815
+                  7.023786758776289,
+                  2.216260591000679
                 ],
                 [
-                  9.15357170123461,
-                  2.41366358090915
+                  7.627976417695508,
+                  2.0113863174242916
                 ],
                 [
-                  9.895282401786949,
-                  2.224000622352092
+                  8.246068668155791,
+                  1.8533338519600766
                 ],
                 [
-                  10.64932899532767,
-                  2.0916354610290284
+                  8.874440829439726,
+                  1.7430295508575238
                 ],
                 [
-                  11.411291963488104,
-                  2.0173438981528413
+                  9.50940996957342,
+                  1.6811199151273677
                 ],
                 [
-                  12.176705389489543,
-                  2.001561361626239
+                  10.147254491241286,
+                  1.667967801355199
                 ],
                 [
-                  12.941083133185137,
-                  2.044380353969199
+                  10.784235944320947,
+                  1.7036502949743326
                 ]
               ]
-            },
-            {
-              "id": "osc-b-level-cap",
-              "type": "container",
-              "parentId": "compact-content",
-              "bounds": {
-                "x": 164,
-                "y": 62.75,
-                "width": 14,
-                "height": 14
-              },
-              "style": {
-                "fill": "#868686",
-                "stroke": "none",
-                "radius": 7
-              }
             },
             {
               "id": "osc-b-level-pointer",
               "type": "line",
               "parentId": "compact-content",
               "bounds": {
-                "x": 159,
-                "y": 57.75,
-                "width": 24,
-                "height": 24
+                "x": 136,
+                "y": 65.75,
+                "width": 20,
+                "height": 20
               },
               "style": {
-                "stroke": "#202020",
-                "lineWidth": 1.7
+                "fill": "none",
+                "stroke": "#d4dbd8",
+                "color": "#bcbfbd",
+                "fontSize": 9,
+                "fontFamily": "Ioskeley Mono",
+                "padding": 0,
+                "radius": 0,
+                "lineWidth": 1,
+                "textAlign": "left"
               },
               "points": [
                 [
-                  12.188216626637027,
-                  10.00887607079384
+                  10.15684718886419,
+                  8.340730058994867
                 ],
                 [
-                  12.564649879911082,
-                  6.026628212381519
+                  10.470541566592567,
+                  5.022190176984599
                 ]
               ]
             },
@@ -1459,19 +1469,19 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 150,
-                "y": 82.75,
-                "width": 42,
-                "height": 7
+                "x": 163,
+                "y": 63.75,
+                "width": 36,
+                "height": 9
               },
               "style": {
                 "fill": "none",
                 "stroke": "none",
                 "color": "#a0a0a0",
                 "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 6.5,
+                "fontSize": 7.5,
                 "padding": 0,
-                "textAlign": "center",
+                "textAlign": "left",
                 "verticalAlign": "middle"
               },
               "text": "level"
@@ -1481,19 +1491,19 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 150,
-                "y": 89.75,
-                "width": 42,
-                "height": 7
+                "x": 163,
+                "y": 76.75,
+                "width": 36,
+                "height": 10
               },
               "style": {
                 "fill": "none",
                 "stroke": "none",
-                "color": "#cfbc77",
+                "color": "#d1d1d1",
                 "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 6.5,
+                "fontSize": 8,
                 "padding": 0,
-                "textAlign": "center",
+                "textAlign": "left",
                 "verticalAlign": "middle"
               },
               "text": "−18 db"
@@ -1548,9 +1558,9 @@
               "parentId": "compact-content",
               "bounds": {
                 "x": 56,
-                "y": 105.5,
-                "width": 88,
-                "height": 13
+                "y": 108.5,
+                "width": 72,
+                "height": 12
               },
               "style": {
                 "fill": "#111111",
@@ -1563,15 +1573,15 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 59,
-                "y": 107.5,
-                "width": 2,
-                "height": 9
+                "x": 58,
+                "y": 110.5,
+                "width": 68,
+                "height": 8
               },
               "style": {
-                "fill": "#414141",
+                "fill": "#1c1c1c",
                 "stroke": "none",
-                "radius": 0
+                "radius": 1
               }
             },
             {
@@ -1579,15 +1589,16 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 59,
-                "y": 114.5,
-                "width": 2,
-                "height": 2
+                "x": 58,
+                "y": 110.5,
+                "width": 34,
+                "height": 8
               },
               "style": {
                 "fill": "#80b9df",
                 "stroke": "none",
-                "radius": 0
+                "radius": 1,
+                "opacity": 0.32
               }
             },
             {
@@ -1595,17 +1606,17 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 64,
-                "y": 105.5,
-                "width": 76,
-                "height": 13
+                "x": 60,
+                "y": 108.5,
+                "width": 64,
+                "height": 12
               },
               "style": {
                 "fill": "none",
                 "stroke": "none",
                 "color": "#80b9df",
                 "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 11,
+                "fontSize": 9,
                 "padding": 0,
                 "textAlign": "right",
                 "verticalAlign": "middle"
@@ -1618,8 +1629,8 @@
               "parentId": "compact-content",
               "bounds": {
                 "x": 56,
-                "y": 121.5,
-                "width": 88,
+                "y": 125.5,
+                "width": 72,
                 "height": 12
               },
               "style": {
@@ -1633,15 +1644,15 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 59,
-                "y": 123.5,
-                "width": 2,
+                "x": 58,
+                "y": 127.5,
+                "width": 68,
                 "height": 8
               },
               "style": {
-                "fill": "#414141",
+                "fill": "#1c1c1c",
                 "stroke": "none",
-                "radius": 0
+                "radius": 1
               }
             },
             {
@@ -1649,15 +1660,16 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 59,
-                "y": 129.5,
-                "width": 2,
-                "height": 2
+                "x": 58,
+                "y": 127.5,
+                "width": 0,
+                "height": 8
               },
               "style": {
                 "fill": "#80b9df",
                 "stroke": "none",
-                "radius": 0
+                "radius": 1,
+                "opacity": 0.32
               }
             },
             {
@@ -1665,9 +1677,9 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 64,
-                "y": 121.5,
-                "width": 76,
+                "x": 60,
+                "y": 125.5,
+                "width": 64,
                 "height": 12
               },
               "style": {
@@ -1675,7 +1687,7 @@
                 "stroke": "none",
                 "color": "#80b9df",
                 "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 9,
+                "fontSize": 8.5,
                 "padding": 0,
                 "textAlign": "right",
                 "verticalAlign": "middle"
@@ -1736,15 +1748,21 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 159,
-                "y": 105.5,
-                "width": 24,
-                "height": 24
+                "x": 136,
+                "y": 113.5,
+                "width": 20,
+                "height": 20
               },
               "style": {
-                "fill": "#131313",
-                "stroke": "none",
-                "radius": 12
+                "fill": "#212121",
+                "stroke": "#141414",
+                "color": "#bcbfbd",
+                "fontSize": 9,
+                "fontFamily": "Ioskeley Mono",
+                "padding": 0,
+                "radius": 10,
+                "lineWidth": 1,
+                "textAlign": "left"
               }
             },
             {
@@ -1752,189 +1770,186 @@
               "type": "line",
               "parentId": "compact-content",
               "bounds": {
-                "x": 159,
-                "y": 105.5,
-                "width": 24,
-                "height": 24
+                "x": 136,
+                "y": 113.5,
+                "width": 20,
+                "height": 20
               },
               "style": {
-                "stroke": "#80b9df",
-                "lineWidth": 2,
-                "fill": "none"
+                "fill": "none",
+                "stroke": "#83c3cf",
+                "color": "#bcbfbd",
+                "fontSize": 9,
+                "fontFamily": "Ioskeley Mono",
+                "padding": 0,
+                "radius": 0,
+                "lineWidth": 1,
+                "textAlign": "left"
               },
               "points": [
                 [
-                  4.928932188134525,
-                  19.071067811865476
+                  4.107443490112105,
+                  15.892556509887896
                 ],
                 [
-                  4.3325484027143855,
-                  18.419516025627033
+                  3.610457002261988,
+                  15.349596688022528
                 ],
                 [
-                  3.795985564744866,
-                  17.717879602276128
+                  3.163321303954055,
+                  14.764899668563439
                 ],
                 [
-                  3.323429901804559,
-                  16.971632662526545
+                  2.769524918170466,
+                  14.14302721877212
                 ],
                 [
-                  2.9185682617491864,
-                  16.18659737537428
+                  2.432140218124322,
+                  13.488831146145232
                 ],
                 [
-                  2.584559348169794,
-                  15.368898533922202
+                  2.1537994568081618,
+                  12.807415444935168
                 ],
                 [
-                  2.3240090763974024,
-                  14.524915770151582
+                  1.9366742303311686,
+                  12.104096475126319
                 ],
                 [
-                  2.1389502423249116,
-                  13.661233781457652
+                  1.7824585352707596,
+                  11.384361484548043
                 ],
                 [
-                  2.030826662668721,
-                  12.78459095727845
+                  1.6923555522239342,
+                  10.653825797732042
                 ],
                 [
-                  2.0004819104067195,
-                  11.901826806628504
+                  1.6670682586722663,
+                  9.918189005523754
                 ],
                 [
-                  2.0481527332780303,
-                  11.019828596704395
+                  1.7067939443983586,
+                  9.183190497253662
                 ],
                 [
-                  2.1734672066928837,
-                  10.14547761888409
+                  1.8112226722440699,
+                  8.454564682403408
                 ],
                 [
-                  2.3754476354635266,
-                  9.28559550134926
+                  1.9795396962196055,
+                  7.737996251124383
                 ],
                 [
-                  2.652518181717074,
-                  8.446890987195841
+                  2.2104318180975615,
+                  7.039075822663201
                 ],
                 [
-                  3.0025171594777866,
-                  7.635907593266578
+                  2.5020976328981557,
+                  6.363256327722148
                 ],
                 [
-                  3.4227138999972784,
-                  6.8589725580677845
+                  2.852261583331065,
+                  5.715810465056488
                 ],
                 [
-                  3.9098300562505255,
-                  6.12214747707527
+                  3.258191713542105,
+                  5.101789564229391
                 ],
                 [
-                  4.460065180381308,
-                  5.431181010569584
+                  3.71672098365109,
+                  4.525984175474654
                 ],
                 [
-                  5.069126374543641,
-                  4.791464032970811
+                  4.224271978786368,
+                  3.9928866941423427
                 ],
                 [
-                  5.7322617838053045,
-                  4.207987573594833
+                  4.776884819837754,
+                  3.506656311329028
                 ],
                 [
-                  6.44429766980397,
-                  3.6853038769745528
+                  5.370248058169975,
+                  3.0710865641454603
                 ],
                 [
-                  7.19967877590989,
-                  3.2274908865507577
+                  5.999732313258241,
+                  2.689575738792298
                 ],
                 [
-                  7.992511668968592,
-                  2.83812042882864
+                  6.66042639080716,
+                  2.3651003573572003
                 ],
                 [
-                  8.816610719474497,
-                  2.5202303462248974
+                  7.347175599562081,
+                  2.1001919551874146
                 ],
                 [
-                  9.66554636144095,
-                  2.276300796023234
+                  8.054621967867456,
+                  1.8969173300193616
                 ],
                 [
-                  10.532695255446386,
-                  2.1082349003521905
+                  8.777246046205322,
+                  1.7568624169601588
                 ],
                 [
-                  11.411291963488104,
-                  2.0173438981528413
+                  9.50940996957342,
+                  1.6811199151273677
                 ],
                 [
-                  12.294481732479627,
-                  2.0043369149797865
+                  10.245401443733021,
+                  1.6702807624831555
                 ],
                 [
-                  13.175373974578372,
-                  2.0693154304507377
+                  10.979478312148643,
+                  1.7244295253756148
                 ],
                 [
-                  14.047096027093794,
-                  2.2117724865092754
+                  11.705913355911497,
+                  1.8431437387577294
                 ],
                 [
-                  14.90284677254462,
-                  2.4305966426779104
+                  12.419038977120517,
+                  2.025497202231592
                 ],
                 [
-                  15.735949700525161,
-                  2.724080647442758
+                  13.113291417104302,
+                  2.2700672062022984
                 ],
                 [
-                  16.539904997395467,
-                  3.0899347581163195
+                  13.783254164496222,
+                  2.5749456317635997
                 ]
               ]
-            },
-            {
-              "id": "osc-c-level-cap",
-              "type": "container",
-              "parentId": "compact-content",
-              "bounds": {
-                "x": 164,
-                "y": 110.5,
-                "width": 14,
-                "height": 14
-              },
-              "style": {
-                "fill": "#868686",
-                "stroke": "none",
-                "radius": 7
-              }
             },
             {
               "id": "osc-c-level-pointer",
               "type": "line",
               "parentId": "compact-content",
               "bounds": {
-                "x": 159,
-                "y": 105.5,
-                "width": 24,
-                "height": 24
+                "x": 136,
+                "y": 113.5,
+                "width": 20,
+                "height": 20
               },
               "style": {
-                "stroke": "#202020",
-                "lineWidth": 1.7
+                "fill": "none",
+                "stroke": "#d4dbd8",
+                "color": "#bcbfbd",
+                "fontSize": 9,
+                "fontFamily": "Ioskeley Mono",
+                "padding": 0,
+                "radius": 0,
+                "lineWidth": 1,
+                "textAlign": "left"
               },
               "points": [
                 [
-                  12.907980999479093,
-                  10.217986951623264
+                  10.756650832899245,
+                  8.514989126352718
                 ],
                 [
-                  14.72394299843728,
-                  6.653960854869792
+                  12.269952498697734,
+                  5.544967379058161
                 ]
               ]
             },
@@ -1943,19 +1958,19 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 150,
-                "y": 130.5,
-                "width": 42,
-                "height": 7
+                "x": 163,
+                "y": 111.5,
+                "width": 36,
+                "height": 9
               },
               "style": {
                 "fill": "none",
                 "stroke": "none",
                 "color": "#a0a0a0",
                 "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 6.5,
+                "fontSize": 7.5,
                 "padding": 0,
-                "textAlign": "center",
+                "textAlign": "left",
                 "verticalAlign": "middle"
               },
               "text": "level"
@@ -1965,19 +1980,19 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 150,
-                "y": 137.5,
-                "width": 42,
-                "height": 7
+                "x": 163,
+                "y": 124.5,
+                "width": 36,
+                "height": 10
               },
               "style": {
                 "fill": "none",
                 "stroke": "none",
-                "color": "#80b9df",
+                "color": "#d1d1d1",
                 "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 6.5,
+                "fontSize": 8,
                 "padding": 0,
-                "textAlign": "center",
+                "textAlign": "left",
                 "verticalAlign": "middle"
               },
               "text": "−14 db"
@@ -2032,9 +2047,9 @@
               "parentId": "compact-content",
               "bounds": {
                 "x": 56,
-                "y": 153.25,
-                "width": 88,
-                "height": 13
+                "y": 156.25,
+                "width": 72,
+                "height": 12
               },
               "style": {
                 "fill": "#111111",
@@ -2047,15 +2062,15 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 59,
-                "y": 155.25,
-                "width": 2,
-                "height": 9
+                "x": 58,
+                "y": 158.25,
+                "width": 68,
+                "height": 8
               },
               "style": {
-                "fill": "#414141",
+                "fill": "#1c1c1c",
                 "stroke": "none",
-                "radius": 0
+                "radius": 1
               }
             },
             {
@@ -2063,15 +2078,16 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 59,
-                "y": 162.25,
-                "width": 2,
-                "height": 2
+                "x": 58,
+                "y": 158.25,
+                "width": 42.5,
+                "height": 8
               },
               "style": {
                 "fill": "#b293cf",
                 "stroke": "none",
-                "radius": 0
+                "radius": 1,
+                "opacity": 0.32
               }
             },
             {
@@ -2079,17 +2095,17 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 64,
-                "y": 153.25,
-                "width": 76,
-                "height": 13
+                "x": 60,
+                "y": 156.25,
+                "width": 64,
+                "height": 12
               },
               "style": {
                 "fill": "none",
                 "stroke": "none",
                 "color": "#b293cf",
                 "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 11,
+                "fontSize": 9,
                 "padding": 0,
                 "textAlign": "right",
                 "verticalAlign": "middle"
@@ -2102,8 +2118,8 @@
               "parentId": "compact-content",
               "bounds": {
                 "x": 56,
-                "y": 169.25,
-                "width": 88,
+                "y": 173.25,
+                "width": 72,
                 "height": 12
               },
               "style": {
@@ -2117,15 +2133,15 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 59,
-                "y": 171.25,
-                "width": 2,
+                "x": 58,
+                "y": 175.25,
+                "width": 68,
                 "height": 8
               },
               "style": {
-                "fill": "#414141",
+                "fill": "#1c1c1c",
                 "stroke": "none",
-                "radius": 0
+                "radius": 1
               }
             },
             {
@@ -2133,15 +2149,16 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 59,
-                "y": 177.25,
-                "width": 2,
-                "height": 2
+                "x": 58,
+                "y": 175.25,
+                "width": 0,
+                "height": 8
               },
               "style": {
                 "fill": "#b293cf",
                 "stroke": "none",
-                "radius": 0
+                "radius": 1,
+                "opacity": 0.32
               }
             },
             {
@@ -2149,9 +2166,9 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 64,
-                "y": 169.25,
-                "width": 76,
+                "x": 60,
+                "y": 173.25,
+                "width": 64,
                 "height": 12
               },
               "style": {
@@ -2159,7 +2176,7 @@
                 "stroke": "none",
                 "color": "#b293cf",
                 "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 9,
+                "fontSize": 8.5,
                 "padding": 0,
                 "textAlign": "right",
                 "verticalAlign": "middle"
@@ -2204,15 +2221,21 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 159,
-                "y": 153.25,
-                "width": 24,
-                "height": 24
+                "x": 136,
+                "y": 161.25,
+                "width": 20,
+                "height": 20
               },
               "style": {
-                "fill": "#131313",
-                "stroke": "none",
-                "radius": 12
+                "fill": "#212121",
+                "stroke": "#141414",
+                "color": "#bcbfbd",
+                "fontSize": 9,
+                "fontFamily": "Ioskeley Mono",
+                "padding": 0,
+                "radius": 10,
+                "lineWidth": 1,
+                "textAlign": "left"
               }
             },
             {
@@ -2220,189 +2243,186 @@
               "type": "line",
               "parentId": "compact-content",
               "bounds": {
-                "x": 159,
-                "y": 153.25,
-                "width": 24,
-                "height": 24
+                "x": 136,
+                "y": 161.25,
+                "width": 20,
+                "height": 20
               },
               "style": {
-                "stroke": "#b293cf",
-                "lineWidth": 2,
-                "fill": "none"
+                "fill": "none",
+                "stroke": "#83c3cf",
+                "color": "#bcbfbd",
+                "fontSize": 9,
+                "fontFamily": "Ioskeley Mono",
+                "padding": 0,
+                "radius": 0,
+                "lineWidth": 1,
+                "textAlign": "left"
               },
               "points": [
                 [
-                  4.928932188134525,
-                  19.071067811865476
+                  4.107443490112105,
+                  15.892556509887896
                 ],
                 [
-                  4.56417388765934,
-                  18.68644075925546
+                  3.803478239716117,
+                  15.572033966046218
                 ],
                 [
-                  4.220309261219619,
-                  18.28302570493984
+                  3.5169243843496822,
+                  15.23585475411653
                 ],
                 [
-                  3.8983045222943424,
-                  17.861956191112633
+                  3.248587101911952,
+                  14.88496349259386
                 ],
                 [
-                  3.599064461010581,
-                  17.424415366631187
+                  2.999220384175484,
+                  14.520346138859324
                 ],
                 [
-                  3.323429901804559,
-                  16.971632662526545
+                  2.769524918170466,
+                  14.14302721877212
                 ],
                 [
-                  3.072175340817793,
-                  16.504880337467146
+                  2.560146117348161,
+                  13.754066947889287
                 ],
                 [
-                  2.8460067696667917,
-                  16.02546990288262
+                  2.37167230805566,
+                  13.354558252402184
                 ],
                 [
-                  2.645559691701326,
-                  15.534748437792569
+                  2.2046330764177715,
+                  12.945623698160475
                 ],
                 [
-                  2.471397336325248,
-                  15.034094803695234
+                  2.05949778027104,
+                  12.528412336412694
                 ],
                 [
-                  2.3240090763974024,
-                  14.524915770151582
+                  1.9366742303311686,
+                  12.104096475126319
                 ],
                 [
-                  2.203809053159535,
-                  14.008642061951534
+                  1.8365075442996126,
+                  11.673868384959611
                 ],
                 [
-                  2.1111350125549553,
-                  13.486724338969236
+                  1.7592791771291294,
+                  11.23893694914103
                 ],
                 [
-                  2.0462473562077292,
-                  12.960629120003334
+                  1.7052061301731076,
+                  10.800524266669447
                 ],
                 [
-                  2.0093284097290507,
-                  12.431834662055904
+                  1.6744403414408755,
+                  10.35986221837992
                 ],
                 [
-                  2.0004819104067195,
-                  11.901826806628504
+                  1.6670682586722663,
+                  9.918189005523754
                 ],
                 [
-                  2.019732715717284,
-                  11.372094804706867
+                  1.68311059643107,
+                  9.476745670589056
                 ],
                 [
-                  2.067026733479862,
-                  10.844127132165376
+                  1.722522277899885,
+                  9.036772610137813
                 ],
                 [
-                  2.1422310738479133,
-                  10.319407307349481
+                  1.7851925615399278,
+                  8.5995060894579
                 ],
                 [
-                  2.245134422711887,
-                  9.799409722588177
+                  1.8709453522599058,
+                  8.166174768823481
                 ],
                 [
-                  2.3754476354635266,
-                  9.28559550134926
+                  1.9795396962196055,
+                  7.737996251124383
                 ],
                 [
-                  2.532804549453438,
-                  8.779408392678379
+                  2.110670457877865,
+                  7.316173660565315
                 ],
                 [
-                  2.716763012859012,
-                  8.28227071445788
+                  2.26396917738251,
+                  6.901892262048233
                 ],
                 [
-                  2.926806127071764,
-                  7.79557935688429
+                  2.4390051058931363,
+                  6.496316130736909
                 ],
                 [
-                  3.1623436991130642,
-                  7.320701857394268
+                  2.6352864159275535,
+                  6.10058488116189
                 ],
                 [
-                  3.4227138999972784,
-                  6.8589725580677845
+                  2.852261583331065,
+                  5.715810465056488
                 ],
                 [
-                  3.7071851243824216,
-                  6.411688856305888
+                  3.089320936985351,
+                  5.343074046921573
                 ],
                 [
-                  4.0149580462830645,
-                  5.9801075593179895
+                  3.3457983719025535,
+                  4.983422966098325
                 ],
                 [
-                  4.345167865069118,
-                  5.56544135266221
+                  3.6209732208909315,
+                  4.637867793885175
                 ],
                 [
-                  4.696886735439632,
-                  5.168855392761591
+                  3.914072279533027,
+                  4.307379493967993
                 ],
                 [
-                  5.069126374543641,
-                  4.791464032970811
+                  4.224271978786368,
+                  3.9928866941423427
                 ],
                 [
-                  5.460840838922396,
-                  4.434327692392775
+                  4.550700699101996,
+                  3.695273076993979
                 ],
                 [
-                  5.870929463470235,
-                  4.098449876243096
+                  4.8924412195585285,
+                  3.415374896869247
                 ]
               ]
-            },
-            {
-              "id": "osc-d-level-cap",
-              "type": "container",
-              "parentId": "compact-content",
-              "bounds": {
-                "x": 164,
-                "y": 158.25,
-                "width": 14,
-                "height": 14
-              },
-              "style": {
-                "fill": "#868686",
-                "stroke": "none",
-                "radius": 7
-              }
             },
             {
               "id": "osc-d-level-pointer",
               "type": "line",
               "parentId": "compact-content",
               "bounds": {
-                "x": 159,
-                "y": 153.25,
-                "width": 24,
-                "height": 24
+                "x": 136,
+                "y": 161.25,
+                "width": 20,
+                "height": 20
               },
               "style": {
-                "stroke": "#202020",
-                "lineWidth": 1.7
+                "fill": "none",
+                "stroke": "#d4dbd8",
+                "color": "#bcbfbd",
+                "fontSize": 9,
+                "fontFamily": "Ioskeley Mono",
+                "padding": 0,
+                "radius": 0,
+                "lineWidth": 1,
+                "textAlign": "left"
               },
               "points": [
                 [
-                  10.774185892694048,
-                  10.41968997524862
+                  8.978488243911707,
+                  8.683074979373849
                 ],
                 [
-                  8.322557678082141,
-                  7.259069925745857
+                  6.9354647317351175,
+                  6.049224938121547
                 ]
               ]
             },
@@ -2411,19 +2431,19 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 150,
-                "y": 178.25,
-                "width": 42,
-                "height": 7
+                "x": 163,
+                "y": 159.25,
+                "width": 36,
+                "height": 9
               },
               "style": {
                 "fill": "none",
                 "stroke": "none",
                 "color": "#a0a0a0",
                 "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 6.5,
+                "fontSize": 7.5,
                 "padding": 0,
-                "textAlign": "center",
+                "textAlign": "left",
                 "verticalAlign": "middle"
               },
               "text": "level"
@@ -2433,19 +2453,19 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 150,
-                "y": 185.25,
-                "width": 42,
-                "height": 7
+                "x": 163,
+                "y": 172.25,
+                "width": 36,
+                "height": 10
               },
               "style": {
                 "fill": "none",
                 "stroke": "none",
-                "color": "#b293cf",
+                "color": "#d1d1d1",
                 "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
-                "fontSize": 6.5,
+                "fontSize": 8,
                 "padding": 0,
-                "textAlign": "center",
+                "textAlign": "left",
                 "verticalAlign": "middle"
               },
               "text": "−24 db"
@@ -129420,7 +129440,8 @@
             "scope": "Compact Hex Vector at the global 200-pixel device height. General modulation belongs to the Hex host.",
             "oscillators": "Four compact oscillators with ratio, frequency offset, level/modulation depth and independent keytrack sliders. Keytrack examples are 100%, 100%, 50% and 0%.",
             "keytrack": "Slim vertical keytrack sliders have no numeric readout. Colored fill grows upward from the bottom of each inset channel.",
-            "oscillatorSwitches": "Oscillator on/off buttons are one third of their previous width, have no visible label and use their full oscillator color when enabled."
+            "oscillatorSwitches": "Oscillator on/off buttons are one third of their previous width, have no visible label and use their full oscillator color when enabled.",
+            "oscillatorControls": "Compact ratio and frequency-offset fields fill left to right. Smaller level knobs use Hex’s dark face, thin blue arc and light pointer, with level readouts beside them. Fill amounts are illustrative previews."
           },
           "assets": [
             {
