@@ -26,7 +26,8 @@ use hex_lattice_contract::{
     ParameterSemantics, ParameterValue,
 };
 use hex_project::{
-    AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, Device, DeviceId, Project,
+    AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, Device, DeviceAutomation,
+    DeviceId, Project,
 };
 use hex_session::service::{Event, PluginParameterRow, Request, vst3_automation_class};
 pub(super) use paint::{overlay, rows};
@@ -51,6 +52,13 @@ pub(super) struct Entry {
     metadata: EntryMetadata,
     pub(super) base: f32,
     end: Option<BeatTime>,
+}
+
+fn automation_extent(lane: &DeviceAutomation) -> Option<BeatTime> {
+    lane.points
+        .last()
+        .map(|point| point.beat)
+        .max(lane.touch.last().map(|span| span.end))
 }
 
 #[derive(Clone, Copy)]
@@ -366,10 +374,7 @@ impl Entry {
             label: format!("{} {} · {}", metadata.name, index + 1, label).into(),
             metadata: entry_metadata,
             base,
-            end: source
-                .automation_target(kind)
-                .and_then(|lane| lane.points.last())
-                .map(|point| point.beat),
+            end: source.automation_target(kind).and_then(automation_extent),
         })
     }
     fn vst3(
@@ -397,10 +402,7 @@ impl Entry {
             label: format!("vst3 · {}", hex_session::service::text::verbatim(&row.name)).into(),
             metadata: EntryMetadata::Vst3 { steps: row.steps },
             base: AutomationValue::new(row.normalized as f32).ok()?.get(),
-            end: source
-                .automation_target(kind)
-                .and_then(|lane| lane.points.last())
-                .map(|point| point.beat),
+            end: source.automation_target(kind).and_then(automation_extent),
         })
     }
 
@@ -410,8 +412,7 @@ impl Entry {
             let mut entry = self.clone();
             entry.end = source
                 .automation_target(self.target.kind)
-                .and_then(|lane| lane.points.last())
-                .map(|point| point.beat);
+                .and_then(automation_extent);
             return Some(entry);
         }
         Self::read(
