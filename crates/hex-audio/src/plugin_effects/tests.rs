@@ -136,6 +136,100 @@ fn actual_effect_storage_counts_spare_dry_capacity_and_retains_the_original_stat
     assert_eq!(effect.constructor_storage_on_control(), Some(after));
 }
 
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn instance_state_provenance_distinguishes_equal_payloads_and_preserves_host_metadata() {
+    let mut effects = Vec::new();
+    for instance in [2, 3] {
+        let binding = Binding {
+            root: 1,
+            instance,
+            graph: 3,
+            epoch: 4,
+        };
+        let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, instance).unwrap();
+        effects.push(
+            NativeEffect::prepare_on_control(identity, original_instance_for_binding(binding))
+                .unwrap(),
+        );
+    }
+    assert_eq!(effects[0].configuration(), effects[1].configuration());
+    let original = effects[0].configuration();
+    let canonical = NativeDeviceState::new(
+        original.type_id(),
+        original.state_version(),
+        original.payload().to_vec(),
+    )
+    .unwrap()
+    .with_input_gain_db(-3.0)
+    .unwrap()
+    .with_output_gain_db(6.0)
+    .unwrap();
+    assert!(effects.iter().all(|effect| {
+        !effect
+            .callback
+            .configuration
+            .state_verifier
+            .unwrap()
+            .approves_processing(&canonical)
+    }));
+    let definition = NativeEffectDefinition::new(&effects).unwrap();
+    let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let tuning = hex_lattice::TuningTable::default();
+    let context = hex_lattice::DevicePreparationContext {
+        sample_rate: 48_000,
+        tuning: &tuning,
+        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    };
+    for (index, effect) in effects.iter().enumerate() {
+        let state = registry
+            .prepare_instance_state(effect.callback.configuration.identity, &canonical, &context)
+            .unwrap();
+        assert_eq!(state, canonical);
+        assert!(state.shares_payload_storage_with(effect.configuration()));
+        assert!(
+            effect
+                .callback
+                .configuration
+                .state_verifier
+                .unwrap()
+                .approves_processing(&state)
+        );
+        assert!(
+            !effects[1 - index]
+                .callback
+                .configuration
+                .state_verifier
+                .unwrap()
+                .approves_processing(&state)
+        );
+    }
+    let missing = ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 4).unwrap();
+    assert!(
+        registry
+            .prepare_instance_state(missing, &canonical, &context)
+            .is_err()
+    );
+    let wrong_rate = hex_lattice::DevicePreparationContext {
+        sample_rate: 44_100,
+        ..context
+    };
+    assert!(
+        registry
+            .prepare_instance_state(
+                effects[0].callback.configuration.identity,
+                &canonical,
+                &wrong_rate
+            )
+            .is_err()
+    );
+    drop(definition);
+    for mut effect in effects {
+        assert!(effect.retire_on_control().unwrap().failure.is_none());
+    }
+}
+
 struct Fixture {
     editor: Editor,
     media: BTreeMap<hex_project::AssetId, hex_engine::Audio>,

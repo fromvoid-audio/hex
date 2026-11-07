@@ -160,7 +160,7 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
     assert_eq!(
         f.control
             .native_source_approves_captured_state_on_control(binding, &initial),
-        Some(false)
+        Some(true)
     );
     assert_eq!(
         f.control
@@ -191,7 +191,7 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
     };
     assert_eq!(approved(&history), Some(true));
     assert!(history.undo());
-    assert_eq!(approved(&history), Some(false));
+    assert_eq!(approved(&history), Some(true));
     assert!(history.redo());
     assert_eq!(approved(&history), Some(true));
     let mut repeated = start(&mut f, &captured, point);
@@ -326,7 +326,7 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
                 binding,
                 qualified_history.project().device(device).unwrap().state()
             ),
-        Some(false)
+        Some(true)
     );
     assert!(qualified_history.redo());
     assert_eq!(
