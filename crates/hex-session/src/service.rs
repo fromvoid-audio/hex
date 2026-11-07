@@ -23,6 +23,8 @@ pub use hex_storage::project_name;
 pub use hex_storage::text;
 use hex_tuning::ProjectTuning;
 mod arrangement_sections;
+mod clip_paint;
+pub use clip_paint::PaintMidiClip;
 mod browser_preview;
 pub mod take_audio;
 pub use browser_preview::{AudioPreview, PreviewFailure, PreviewSources};
@@ -471,6 +473,8 @@ pub enum DeviceClipboardAction {
 // Fixed request storage is bounded by the 32-slot control FIFO.
 #[allow(clippy::large_enum_variant)]
 pub enum Request {
+    /// Source-bound Arrangement paint; resolves through the canonical overwrite command.
+    PaintMidiClip(PaintMidiClip),
     DeviceClipboard {
         project_generation: u64,
         revision: u64,
@@ -966,6 +970,7 @@ impl Request {
                 | Request::ReorderTracks { .. }
                 | Request::ReparentTracks { .. }
                 | Request::MoveExistingClips { .. }
+                | Request::PaintMidiClip(_)
                 | Request::EditArrangementSection { .. }
                 | Request::SamplerEdit(SamplerEdit::History(_))
                 | Request::SamplerEdit(SamplerEdit::Midi(_))
@@ -3094,6 +3099,15 @@ fn run_worker(
                     )
                 },
             ),
+            Request::PaintMidiClip(intent) => Some(intent.resolve(
+                hex_engine::AudioSourceContext {
+                    project_generation,
+                    editor_revision: revision,
+                },
+                pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some(),
+            )),
             Request::MoveExistingClips {
                 project_generation: captured_generation,
                 revision: captured_revision,
@@ -4303,6 +4317,9 @@ fn run_worker(
                 Request::InsertEffectBusDevice { .. } => {
                     error =
                         Some("effect insertion request was not prepared; select it again".into());
+                }
+                Request::PaintMidiClip(_) => {
+                    error = Some("clip paint target was not resolved".into());
                 }
                 Request::MoveExistingClips { .. } => {
                     error = Some("clip move target was not resolved".into());
