@@ -1322,3 +1322,141 @@ fn actual_canonical_parameter_base_survives_the_same_native_lease_epoch() {
             .success()
     );
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn stopped_idle_parameter_uses_original_raw_zero_source_without_pcm_or_revival() {
+    const NAME: &str = "plugin_worker::capture::tests::parameter_change::stopped_idle_parameter_uses_original_raw_zero_source_without_pcm_or_revival";
+    if fixture_child(92, NAME) {
+        return;
+    }
+    let instance = original_instance();
+    let child = instance.child_id_on_control();
+    let initial = instance.ready().initial_state.clone();
+    let (mut owner, mut endpoint) = NativeWorker::start_on_control(instance).unwrap();
+    callback(&owner, &mut endpoint, 0, 1.0, &[]);
+    owner.revoke_on_control();
+    let admit = |owner: &mut NativeWorker, value| {
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            match owner.begin_parameter_change(0, value, true) {
+                Err(
+                    "native preparation is busy"
+                    | "native capture mailbox is busy"
+                    | "native parameter mailbox is busy",
+                ) if Instant::now() < until => thread::yield_now(),
+                terminal => break terminal,
+            }
+        }
+    };
+    let queued = admit(&mut owner, 0.5).unwrap();
+    let (mut other, other_endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
+    other.revoke_on_control();
+    assert!(
+        other
+            .drain_stopped_parameter_change_on_control(&queued)
+            .is_err()
+    );
+    assert!(other.withdraw_parameter_change_on_control(&queued).is_err());
+    assert!(other.retire_on_control().unwrap().native.status.success());
+    assert!(other.owns_callback(&other_endpoint));
+    assert!(queued.delivery_identity().is_none());
+    assert!(owner.quiesce_on_control().is_err());
+    assert!(!owner.transport_is_live_on_control());
+    assert_eq!(
+        owner.poll_parameter_change_on_control(&queued).unwrap(),
+        NativeWorkerParameterProgress::Failed
+    );
+    assert_eq!(
+        drain(&mut owner, &queued),
+        NativeWorkerParameterProgress::Flushed
+    );
+    assert!(
+        owner
+            .drain_stopped_parameter_change_on_control(&queued)
+            .is_err()
+    );
+    assert_eq!(owner.published_blocks_on_control(), 1);
+    let capture = begin(&mut owner);
+    let captured = complete(&mut owner, &capture);
+    assert_eq!(
+        &hex_plugin_state::decode(&captured)
+            .unwrap()
+            .component
+            .unwrap()[8..12],
+        &2.0_f32.to_le_bytes()
+    );
+    assert!(owner.begin_parameter_change_on_control(0, 0.25).is_err());
+    let restoring = admit(&mut owner, 0.25).unwrap();
+    assert_eq!(
+        drain(&mut owner, &restoring),
+        NativeWorkerParameterProgress::Flushed
+    );
+    let cancelled = admit(&mut owner, 0.75).unwrap();
+    assert!(
+        owner
+            .withdraw_parameter_change_on_control(&cancelled)
+            .unwrap()
+    );
+    assert_eq!(
+        drain(&mut owner, &cancelled),
+        NativeWorkerParameterProgress::Withdrawn
+    );
+    let capture = begin(&mut owner);
+    let captured = complete(&mut owner, &capture);
+    assert_eq!(
+        &hex_plugin_state::decode(&captured)
+            .unwrap()
+            .component
+            .unwrap()[8..12],
+        &1.0_f32.to_le_bytes()
+    );
+    let Some(Processor::Native(instance)) = owner
+        .reaper
+        .worker
+        .as_ref()
+        .and_then(|state| state.processor.as_ref())
+    else {
+        panic!("original native source");
+    };
+    assert_eq!(instance.ready().initial_state, initial);
+    assert_eq!(instance.child_id_on_control(), child);
+    let quiescent = owner.quiesce_on_control().unwrap();
+    assert_eq!(quiescent.completed_blocks(), 1);
+    assert!(quiescent.retire_on_control().unwrap().status.success());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn stopped_idle_parameter_refusal_cannot_be_flushed_or_reused_as_success() {
+    const NAME: &str = "plugin_worker::capture::tests::parameter_change::stopped_idle_parameter_refusal_cannot_be_flushed_or_reused_as_success";
+    if fixture_child(11, NAME) {
+        return;
+    }
+    let (mut owner, endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
+    owner.revoke_on_control();
+    let until = Instant::now() + Duration::from_secs(3);
+    let request = loop {
+        match owner.begin_parameter_change(0x1234, 0.5, true) {
+            Err(
+                "native preparation is busy"
+                | "native capture mailbox is busy"
+                | "native parameter mailbox is busy",
+            ) if Instant::now() < until => thread::yield_now(),
+            terminal => break terminal.unwrap(),
+        }
+    };
+    assert_eq!(
+        drain(&mut owner, &request),
+        NativeWorkerParameterProgress::Failed
+    );
+    assert!(owner.begin_parameter_change(0x1234, 0.25, true).is_err());
+    assert!(
+        owner
+            .drain_stopped_parameter_change_on_control(&request)
+            .is_err()
+    );
+    assert!(owner.owns_callback(&endpoint));
+    let retired = owner.retire_on_control().unwrap();
+    assert!(retired.failure.is_some());
+}

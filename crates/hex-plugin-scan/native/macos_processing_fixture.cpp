@@ -742,7 +742,7 @@ public:
                 ++observed.flushes;
                 return kResultOk;
             }
-            if ((processing && fault!=37 && fault!=86 && fault!=116 && fault!=132) ||
+            if ((processing && fault!=37 && fault!=86 && fault!=92 && fault!=116 && fault!=132) ||
                 !data.inputParameterChanges || data.inputParameterChanges->getParameterCount()!=1)
                 return kInvalidArgument;
             auto* queue=data.inputParameterChanges->getParameterData(0);

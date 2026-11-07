@@ -145,8 +145,9 @@ impl PublicationControl {
 
     /// Queue one validated raw SDK parameter input on the original live source.
     /// While playing, an actual PCM quantum consumes it. While idle, the same
-    /// worker flushes the point and acknowledges controller readback without
-    /// advancing PCM. Validate current metadata/writability at the caller.
+    /// serialized source flushes the point and acknowledges controller readback
+    /// without advancing PCM. After revocation, admission observes its healthy
+    /// worker join and the exact stopped-input drain performs that SDK exchange. Validate current metadata/writability at the caller.
     /// Processing progress below grants no canonical/state installation.
     pub fn begin_native_source_parameter_change_on_control(
         &mut self,
