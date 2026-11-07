@@ -3,7 +3,7 @@
 ## Continue editing in Frame
 
 [hex-orbital.frame.json](hex-orbital.frame.json) is the current editable prototype,
-saved at r172. It includes the structured design, prototype actions, and orbital
+saved at r174. It includes the structured design, prototype actions, and orbital
 styleguide in one portable project.
 
 In Frame, choose **Designs → Import design**, select the file, and open the
@@ -24,11 +24,13 @@ same dimensions as its host-modulator and device assembly in the workstation. Op
 import the file into another Frame session. Its left device rail, host modulator
 tray, selection border, meter, and nesting hint use the Hex concept’s visuals.
 
-The focused Vector study (r23) and both workstation views use the same design. The current Vector study follows the [Vector brief](../../docs/design/vector-brief.md) and [shared host brief](../../docs/design/device-host-brief.md). Ratio, fine Hz offset, level and keytrack remain in four oscillator rows. Routing presets, feedback, cutoff/resonance, mono/poly and glide remain on the main surface.
+The focused Vector study (r25) and both workstation views use the same design. The current Vector study follows the [Vector brief](../../docs/design/vector-brief.md) and [shared host brief](../../docs/design/device-host-brief.md). Ratio, fine Hz offset, level and keytrack remain in four oscillator rows. Routing presets, feedback, cutoff/resonance, mono/poly and glide remain on the main surface.
 
-Click an oscillator or filter section background to select its shared envelope editor. The left colored oscillator rectangle only toggles power; parameter edits retain selection. The routing diagram itself opens visual preset choices, replacing the separate label and text picker. Oscillator views show ghost envelopes; filter selection shows its independent envelope. The graph uses a fixed nonlinear time axis, an active curve above the ghosts, point/curvature handles and a focus preview. Loop examples demonstrate free, tempo-fit and note-pitch-fit modes with conditional timing controls. Free readouts and loop highlights follow the selected envelope. Synced A/D readouts show shape proportions beside effective cycle/rate captions. Filter level units and the loop-boundary reset decision remain open.
+Click an oscillator or filter section background to select its shared envelope editor. The left colored oscillator rectangle only toggles power; parameter edits retain selection. The routing diagram itself opens visual preset choices, replacing the separate label and text picker. Oscillator views show ghost envelopes; filter selection shows its independent envelope. The graph uses a fixed nonlinear time axis, an active curve above the ghosts, point/curvature handles and a focus preview. Selected point names and exact values have separate reserved header areas. Loop examples demonstrate free, tempo-fit and note-pitch-fit modes with conditional timing controls. Free readouts and loop highlights follow the selected envelope. Synced A/D readouts show shape proportions beside effective cycle/rate captions. First-cycle shading, a faint held region, a repeat bracket and separate note-off/release markers explain looping on that same time scale. Filter level units and the loop-boundary reset decision remain open.
 
 The waveform editor expands to the right of the oscillators, with Curve/Harmonics and 16/32/64 partial views. Edited examples preview changes immediately with no Apply/Cancel. Phase/retrigger and device settings use optional panels. A full-sized nested Delay example includes its own meter and add button, with parent/child power-state previews. The initial view keeps host panels closed; routing diagrams identify oscillator paths and output, ratio/Hz fields retain colored fills, and glide has explicit off/on previews. Macro/modulator examples show uniform two-, three- and four-high color-coded slots and a fifth-slot second column.
+
+Run `node design/frame/check-vector-envelope.cjs /absolute/path/to/frame` with the installed Frame runtime to check envelope readout separation and loop-exit geometry.
 
 Use **State** to review selectors, menus, panel layouts, envelope point values, edited waveform examples and insertion-modal examples. **Designs → Legacy prototype interaction** exposes the historical clickable controls. Numeric inputs hold session text. Graph drawing, continuous parameter DSP, audio audition, native Undo, actual preset/default writes and device insertion are illustrative requirements rather than implemented behavior in this Frame study.
 
