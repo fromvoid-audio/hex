@@ -57,6 +57,24 @@ fn lost() -> Error {
     Error::SourceLost("vst3 parameter source changed".into())
 }
 
+/// Stopped unlaned instruments retain full-state capture. Running instruments
+/// need isolation even before their first lane, to preserve the original MIDI
+/// worker. Saved identity chooses the mode; SDK/Root still admit the target.
+fn isolation_class(
+    input: &PluginParameterGestureInput<'_>,
+    playing: bool,
+) -> Result<Option<[u8; 16]>, Error> {
+    if let Some(class) = input.isolated_class() {
+        Ok(Some(class))
+    } else if input.is_instrument() && playing {
+        Hosting::saved_identity_on_control(input.canonical_state())
+            .map(|identity| Some(identity.class.bytes()))
+            .map_err(refused)
+    } else {
+        Ok(None)
+    }
+}
+
 fn admit<T>(
     control: &mut PublicationControl,
     mut begin: impl FnMut(&mut PublicationControl) -> Result<T, &'static str>,
@@ -233,8 +251,10 @@ impl Plugins {
                 .is_some_and(|armed| {
                     automation_class.is_some_and(|class| armed.contains(class, origin.parameter))
                 });
-            if input.is_instrument() && control.status.playing.load(Acquire) && !uses_hold {
-                let class = input.isolated_class()
+            let playing = control.status.playing.load(Acquire);
+            let isolated_class = isolation_class(&input, playing)?;
+            if input.is_instrument() && playing && !uses_hold {
+                let class = isolated_class
                     .filter(|class| automation_class == Some(*class))
                     .ok_or_else(|| refused("create an automation lane for this parameter before editing during playback"))?;
                 let selection = metadata::extend(
@@ -255,8 +275,7 @@ impl Plugins {
                     .authored = Some(selection);
                 uses_hold = true;
             }
-            let live = if let Some(class) = input.isolated_class() {
-                let playing = control.status.playing.load(Acquire);
+            let live = if let Some(class) = isolated_class {
                 let (source, transport_epoch) = control
                     .status
                     .native_parameter_source(playing)
@@ -414,7 +433,7 @@ impl Gesture {
             }
             let live = self.live.as_ref().ok_or_else(lost)?;
             if live.invalidated
-                || input.isolated_class() != Some(live.class)
+                || isolation_class(input, live.playing)? != Some(live.class)
                 || input.reading_class().is_some() != live.reading
                 || control.status.native_parameter_source(live.playing)
                     != Some((live.source, live.transport_epoch))

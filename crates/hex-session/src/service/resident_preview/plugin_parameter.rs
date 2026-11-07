@@ -91,11 +91,6 @@ pub(super) fn operation(
                 SessionError::PluginSourceLost("plugin parameter device changed".into())
             })?;
         let state = source.state();
-        let instrument = session
-            .project()
-            .native_sources()
-            .iter()
-            .any(|source| source.instrument().id() == device);
         let target = DeviceAutomationTarget::Vst3 { parameter };
         let reading_class = source
             .automation_target(target)
@@ -129,10 +124,6 @@ pub(super) fn operation(
                 "manual vst3 automation takeover is unavailable for this device",
             ));
         }
-        // Instruments must retain their original MIDI/PCM worker even before
-        // their first lane. This saved identity chooses isolation only; the
-        // host still validates the actual SDK row and loaded source profile.
-        let isolated_class = isolated_class.or_else(|| instrument_class(session, device));
         let result = sink
             .prepare_plugin_parameter_gesture(PluginParameterGestureInput {
                 context,
@@ -140,7 +131,11 @@ pub(super) fn operation(
                 canonical_state: state,
                 reading_class,
                 isolated_class,
-                instrument,
+                instrument: session
+                    .project()
+                    .native_sources()
+                    .iter()
+                    .any(|source| source.instrument().id() == device),
             })
             .map_err(|error| match error {
                 PluginParameterGestureError::Refused(reason) => SessionError::NativeAudio(reason),
