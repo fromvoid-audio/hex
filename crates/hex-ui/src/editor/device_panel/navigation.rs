@@ -297,7 +297,7 @@ pub(in crate::editor) fn bottom_bar(
         .items_center()
         .gap(px(4.0))
         .w(px(270.0))
-        .min_w(px(140.0))
+        .min_w(px(160.0))
         .children(trim)
         .child(overview)
         .child(controls)

@@ -171,12 +171,13 @@ impl EditorView {
             .flex_shrink_0()
             .flex()
             .items_center()
-            .gap_2()
+            .gap_1()
             .px_2()
             .border_t_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-            .text_xs();
+            .text_xs()
+            .child(self.browser_toggle_button(cx));
         let scan_status = self.plugin_scan_status();
         let plugin_status = self
             .pending_plugin_effect
