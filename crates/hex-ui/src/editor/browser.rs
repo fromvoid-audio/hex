@@ -2034,14 +2034,6 @@ impl EditorView {
                         .flex()
                         .items_center()
                         .gap_1()
-                        .child(self.browser_icon(
-                            "↻",
-                            "refresh browser source",
-                            |view, _, cx| {
-                                view.refresh_browser_tree(cx);
-                            },
-                            cx,
-                        ))
                         .child(div().flex_1().min_w_0().overflow_hidden().text_xs().child(
                             theme::text(if section == BrowserSection::All {
                                 "all folders"
