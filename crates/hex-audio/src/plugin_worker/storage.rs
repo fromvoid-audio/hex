@@ -53,11 +53,18 @@ impl NativeWorker {
     pub(crate) fn preconstruction_data_bytes_on_control(
         instance: &hex_plugin_host::native::Prepared,
     ) -> Option<usize> {
+        Self::preconstruction_data_bytes_for_source_on_control(
+            instance.retained_storage_on_control()?,
+        )
+    }
+
+    pub(crate) fn preconstruction_data_bytes_for_source_on_control(
+        source: hex_plugin_host::native::PreparedStorage,
+    ) -> Option<usize> {
         fn capture_bytes<R>(_: fn(Guard<State>, Arc<Signal>) -> R) -> usize {
             std::mem::size_of::<R>()
         }
-        instance
-            .retained_storage_on_control()?
+        source
             .data_bytes
             .checked_add(channel_storage_bound()?.data_bytes)?
             .checked_add(ChannelStorage::owner_reservation::<State>()?.data_bytes)?

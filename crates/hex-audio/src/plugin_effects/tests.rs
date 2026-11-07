@@ -24,10 +24,9 @@ fn actual_effect_data_limit_precedes_allocations_and_retains_original_disposal()
         let fits = allowance == diagnostic;
         let instance = original_instance_for_binding(binding);
         let configuration = NativeEffect::configuration_on_control(identity, &instance).unwrap();
-        let quoted = NativeWorker::preconstruction_data_bytes_on_control(&instance).unwrap()
-            + configuration.prepared.total_latency_frames() as usize
-                * std::mem::size_of::<[f32; 2]>()
-            + EffectSourceMetadata::required_data_bytes(instance.configuration()).unwrap();
+        let quoted =
+            NativeEffect::preconstruction_data_bytes_on_control(&instance, configuration.prepared)
+                .unwrap();
         drop(configuration);
         let limit = quoted + allowance;
         let mut outcome = None;

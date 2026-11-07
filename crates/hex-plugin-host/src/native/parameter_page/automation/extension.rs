@@ -19,6 +19,40 @@ pub enum AuthoredParameterExtensionProgress {
 }
 
 impl Prepared {
+    /// Prospective steady backing after reserving this metadata capacity. No
+    /// allocation or native I/O occurs. This is a quote, not source admission;
+    /// reservation must still validate the live epoch before worker transfer.
+    pub fn storage_with_authored_capacity_on_control(
+        &self,
+        limit: usize,
+    ) -> Option<crate::native::PreparedStorage> {
+        if self.sequence != 0
+            || self.parameter_page.is_some()
+            || limit == 0
+            || limit > usize::from(MAX_CONTROLLER_PARAMETERS)
+        {
+            return None;
+        }
+        let mut storage = self.retained_storage_on_control()?;
+        let previous = if let Some(metadata) = &self.authored_parameter_metadata {
+            if !metadata.matches(self)
+                || metadata.parameters.len() > limit
+                || metadata.extension_limit.is_some_and(|old| old > limit)
+            {
+                return None;
+            }
+            metadata.parameters.capacity()
+        } else {
+            storage.shared_handle_bound = storage.shared_handle_bound.checked_add(1)?;
+            0
+        };
+        let added = limit
+            .saturating_sub(previous)
+            .checked_mul(std::mem::size_of::<Parameter>())?;
+        storage.data_bytes = storage.data_bytes.checked_add(added)?;
+        Some(storage)
+    }
+
     /// Reserve before PCM transfer; the exact retained Vec capacity is charged
     /// by the existing source storage inventory. Live extension never allocates
     /// or increases this logical limit. An empty reservation arms no target.

@@ -49,10 +49,33 @@ fn sdk_extension_preserves_existing_bases_and_backing_while_pcm_continues() {
             .is_err()
     );
     let unreserved = instance.retained_storage_on_control().unwrap();
+    let mut quoted = None;
+    let measured = allocation_counter::measure(|| {
+        quoted = instance.storage_with_authored_capacity_on_control(2)
+    });
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.bytes_total,
+            measured.count_current,
+            measured.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
     instance
         .reserve_authored_parameter_capacity_on_control(2)
         .unwrap();
     let reserved = instance.retained_storage_on_control().unwrap();
+    assert_eq!(quoted, Some(reserved));
+    assert_eq!(
+        instance.storage_with_authored_capacity_on_control(2),
+        Some(reserved)
+    );
+    assert!(
+        instance
+            .storage_with_authored_capacity_on_control(0)
+            .is_none()
+    );
     let metadata_bytes = instance
         .authored_parameter_metadata
         .as_ref()

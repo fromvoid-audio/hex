@@ -172,6 +172,23 @@ impl NativeEffect {
         )
     }
 
+    fn preconstruction_data_bytes_on_control(
+        instance: &Prepared,
+        prepared: PreparedForeignProcessor,
+    ) -> Option<usize> {
+        let source = instance.storage_with_authored_capacity_on_control(
+            hex_plugin_host::transport::MAX_PARAMETER_POINTS,
+        )?;
+        NativeWorker::preconstruction_data_bytes_for_source_on_control(source)?
+            .checked_add(
+                (prepared.total_latency_frames() as usize)
+                    .checked_mul(std::mem::size_of::<[f32; 2]>())?,
+            )?
+            .checked_add(EffectSourceMetadata::required_data_bytes(
+                instance.configuration(),
+            )?)
+    }
+
     /// Query and arm selected raw parameters on the original source before it
     /// moves to the worker. IDs must be sorted and unique. This control-only
     /// preparation grants no graph admission, and refusal preserves custody.
@@ -217,6 +234,18 @@ impl NativeEffect {
                 cause, instance,
             ));
         }
+        let dry_frames = configuration.prepared.total_latency_frames() as usize;
+        // Reserve the actual retirement diagnostics before starting the worker;
+        // the unused allowance is not part of its resident storage inventory.
+        let known_data =
+            Self::preconstruction_data_bytes_on_control(&instance, configuration.prepared)
+                .and_then(|n| n.checked_add(hex_plugin_host::NATIVE_DIAGNOSTIC_DATA_BYTES));
+        if known_data.is_none_or(|bytes| bytes > max_data_bytes) {
+            return Err(NativeWorkerStartFailure::retain_source_on_control(
+                Error::Protocol("native effect data reservation exceeded or unavailable"),
+                instance,
+            ));
+        }
         let mut authored_bases = [None; hex_plugin_host::transport::MAX_PARAMETER_POINTS];
         if let Some((class, ids)) = authored {
             let (capabilities, bases) =
@@ -241,23 +270,6 @@ impl NativeEffect {
         if authored.is_none() {
             configuration.authored =
                 automation::SourceCapabilities::reserved(instance.configuration().identity.class);
-        }
-        let dry_frames = configuration.prepared.total_latency_frames() as usize;
-        // Reserve the actual retirement diagnostics before starting the worker;
-        // the unused allowance is not part of its resident storage inventory.
-        let known_data = NativeWorker::preconstruction_data_bytes_on_control(&instance)
-            .and_then(|n| n.checked_add(dry_frames.checked_mul(std::mem::size_of::<[f32; 2]>())?))
-            .and_then(|n| {
-                n.checked_add(EffectSourceMetadata::required_data_bytes(
-                    instance.configuration(),
-                )?)
-            })
-            .and_then(|n| n.checked_add(hex_plugin_host::NATIVE_DIAGNOSTIC_DATA_BYTES));
-        if known_data.is_none_or(|bytes| bytes > max_data_bytes) {
-            return Err(NativeWorkerStartFailure::retain_source_on_control(
-                Error::Protocol("native effect data reservation exceeded or unavailable"),
-                instance,
-            ));
         }
         let mut source_metadata =
             match EffectSourceMetadata::from_configuration(instance.configuration()) {
