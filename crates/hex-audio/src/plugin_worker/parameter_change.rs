@@ -127,6 +127,9 @@ pub enum NativeWorkerParameterProgress {
 }
 impl NativeWorker {
     /// Drain the exact admitted input after its original worker has stopped.
+    /// A queued idle operation is flushed by joining control on the healthy
+    /// original source. Other queued live operations remain withdrawn. No
+    /// callback, PCM prefix or transport is restarted by this control I/O.
     /// This reports SDK processing only, not delivery or canonical acceptance.
     pub fn drain_stopped_parameter_change_on_control(
         &mut self,
@@ -163,6 +166,12 @@ impl NativeWorker {
             .worker
             .as_mut()
             .ok_or("native parameter owner missing")?;
+        if joined.is_ok()
+            && state.native_error.is_none()
+            && let Err(error) = state.advance_idle_parameter_change(&self.reaper.completed)
+        {
+            state.native_error = Some(error);
+        }
         let healthy = joined.is_ok()
             && state.native_error.is_none()
             && matches!(state.processor, Some(Processor::Native(_)));
@@ -179,6 +188,9 @@ impl NativeWorker {
             None
         } else {
             match slot.phase {
+                Phase::Queued if slot.intent == Intent::Idle => {
+                    return Ok(NativeWorkerParameterProgress::Pending);
+                }
                 Phase::Queued => Some(Terminal::Withdrawn),
                 Phase::Complete => slot.result,
                 Phase::InFlight if state.parameter_change.ordinal == Some(request.ordinal) => {
@@ -245,6 +257,9 @@ impl NativeWorker {
         normalized: f64,
         idle: bool,
     ) -> Result<NativeWorkerParameterChange, &'static str> {
+        if idle && !self.transport_is_live_on_control() {
+            self.prepare_stopped_capture()?;
+        }
         self.queue_parameter_change(
             id,
             normalized,
@@ -316,7 +331,13 @@ impl NativeWorker {
         Parameters::default()
             .push(point)
             .map_err(|_| "invalid native parameter input")?;
-        if !self.transport_is_live_on_control() || !self.retains_original_source_on_control() {
+        if self.retirement_requested
+            || !self.retains_original_source_on_control()
+            || (!self.transport_is_live_on_control()
+                && (intent != Intent::Idle
+                    || self.reaper.join.is_some()
+                    || self.reaper.worker.is_none()))
+        {
             return Err("native parameter source is not live");
         }
         let mut mailbox = self
@@ -369,7 +390,7 @@ impl NativeWorker {
         if !slot.matches(request) {
             return Err("native parameter input operation differs");
         }
-        if !self.transport_is_live_on_control() {
+        if !self.transport_is_live_on_control() && slot.intent != Intent::Idle {
             return Ok(false);
         }
         if slot.phase != Phase::Queued {
@@ -472,8 +493,9 @@ fn without_parameter(points: &Parameters, id: u32) -> Result<Parameters, Fault> 
 }
 
 impl State {
-    /// Serialized with PCM on the native worker. Idle points never enter a
-    /// PCM block and use the same exact mailbox/token as live input.
+    /// Serialized with PCM on the native worker, or called by joining control
+    /// after its actual terminal. Idle points use the same exact mailbox/token
+    /// and never enter a PCM block. No mailbox guard spans native I/O.
     pub(super) fn advance_idle_parameter_change(
         &mut self,
         signal: &Signal,
