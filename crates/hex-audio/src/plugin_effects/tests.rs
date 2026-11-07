@@ -1388,9 +1388,12 @@ fn actual_arrangement_instrument_renders_authored_notes_at_compensated_offsets()
     }
     let mut expected = [[0.0; 2]; 48];
     let onset = latency + if loop_seek { 17 } else { 1 };
-    expected[onset..onset + 2].fill([0.5; 2]);
+    // The fixture adds 0.125 per SDK call. Seeking near the wrap starts
+    // the note in the third eight-frame call, after two silent calls.
+    let unity = if loop_seek { 0.75 } else { 0.5 };
+    expected[onset..onset + 2].fill([unity; 2]);
     if authored {
-        expected[onset + 1] = [1.0; 2];
+        expected[onset + 1] = [unity * 2.0; 2];
     }
     assert_eq!(output, expected);
     let retired = workers[0].retire_on_control().unwrap();
