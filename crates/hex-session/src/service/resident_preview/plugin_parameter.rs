@@ -92,9 +92,14 @@ pub(super) fn operation(
             })?;
         let state = source.state();
         let target = DeviceAutomationTarget::Vst3 { parameter };
+        // Lane/read admission includes instruments. The current opaque
+        // takeover protocol owns ordinary effects, with an explicit Begin
+        // refusal below for a reading instrument until its path is qualified.
+        let isolates_effect =
+            session.native_device_class(device).ok() == Some(hex_engine::NativeDeviceClass::Effect);
         let reading_effect_class = source
             .automation_target(target)
-            .filter(|lane| lane.is_reading())
+            .filter(|lane| isolates_effect && lane.is_reading())
             .and_then(|lane| lane.vst3_class)
             .filter(|class| {
                 super::super::device_automation_control::accepts_lane_target(
@@ -107,7 +112,7 @@ pub(super) fn operation(
         let isolated_effect_class = source
             .automation()
             .iter()
-            .filter(|lane| lane.is_reading())
+            .filter(|lane| isolates_effect && lane.is_reading())
             .find_map(|lane| {
                 lane.vst3_class.filter(|class| {
                     super::super::device_automation_control::accepts_lane_target(

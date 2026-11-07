@@ -4,7 +4,7 @@ use hex_project::{
     AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, DeviceAutomationTarget,
 };
 
-fn edit_with_running_callback(h: &mut ResidentHarness, request: Request) -> Event {
+pub(super) fn edit_with_running_callback(h: &mut ResidentHarness, request: Request) -> Event {
     h.service.submit(request).unwrap();
     let until = Instant::now() + Duration::from_secs(10);
     loop {
