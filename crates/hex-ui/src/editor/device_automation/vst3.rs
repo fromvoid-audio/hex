@@ -43,9 +43,6 @@ mod tests {
 
     #[test]
     fn vst3_lane_keeps_the_actual_instrument_or_effect_class_and_raw_zero() {
-        use hex_lattice_contract::NativeDeviceState;
-        use hex_session::service::PluginParameterRow;
-
         // Minimal current envelope from hex-plugin-state's documented fixed header.
         let mut payload = vec![0; 96];
         payload[..4].copy_from_slice(b"HXVS");
