@@ -1,7 +1,7 @@
 //! Saved live component/controller bytes restored into an independent instance.
 use super::*;
 
-fn open_saved(fixture: &SavedEffectFixture) -> ResidentHarness {
+pub(super) fn open_saved(fixture: &SavedEffectFixture) -> ResidentHarness {
     let mut h = ResidentHarness::with_plugins_and_catalog(
         host(),
         Some(EffectPresentation {
