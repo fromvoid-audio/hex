@@ -1037,10 +1037,14 @@ mod benchmark {
             let mut run = || {
                 for _ in 0..128 {
                     block.fill([0.125, -0.25]);
-                    if mode == 0 {
-                        legacy(&mut runtime, &mut block, &source);
-                    } else {
-                        runtime.process_automation(&mut block, &source).unwrap();
+                    match mode {
+                        0 => legacy(&mut runtime, &mut block, &source),
+                        1..=3 => runtime.process_automation(&mut block, &source).unwrap(),
+                        4 => {
+                            runtime.process_block(&mut block, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                        }
+                        5 => previous_canonical(&mut runtime, &mut block),
+                        _ => panic!("bounded benchmark mode"),
                     }
                     black_box(&block);
                 }
