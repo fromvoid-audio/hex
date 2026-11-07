@@ -361,10 +361,12 @@ pub enum Command {
         track: TrackId,
         before: Option<DeviceId>,
     },
-    /// Replace one canonical Arrangement envelope; empty points clear it.
+    /// Splice half-open touches in one history edge. VST3 targets require the
+    /// exact captured class; native/host targets require no class stamp.
     SpliceDeviceAutomationTouch {
         device: DeviceId,
         target: crate::DeviceAutomationTarget,
+        vst3_class: Option<[u8; 16]>,
         spans: Vec<crate::DeviceAutomationTouchSpan>,
     },
     ReplaceDeviceAutomationTarget {
@@ -2121,8 +2123,9 @@ impl Project {
             Command::SpliceDeviceAutomationTouch {
                 device,
                 target,
+                vst3_class,
                 spans,
-            } => self.splice_device_automation_touch(device, target, spans),
+            } => self.splice_device_automation_touch(device, target, vst3_class, spans),
             Command::ReplaceDeviceAutomationTarget {
                 device,
                 target,

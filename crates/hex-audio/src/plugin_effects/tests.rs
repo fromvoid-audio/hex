@@ -1966,18 +1966,22 @@ fn ordinary_resident_compiler_drives_signed_vst3_automation() {
         "plugin_effects::tests::ordinary_resident_compiler_drives_signed_vst3_automation";
     const CHILD: &str = "HEX_ORDINARY_AUTHORED_EFFECT_TEST_CHILD";
     if std::env::var_os(CHILD).is_none() {
-        let result = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", NAME, "--ignored", "--nocapture"])
-            .env(CHILD, "1")
-            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "91")
-            .output()
-            .unwrap();
-        assert!(
-            result.status.success() && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
-            "{}\n{}",
-            String::from_utf8_lossy(&result.stdout),
-            String::from_utf8_lossy(&result.stderr)
-        );
+        for case in ["base", "touch"] {
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--ignored", "--nocapture"])
+                .env(CHILD, "1")
+                .env("HEX_ORDINARY_AUTHORED_TOUCH_CASE", case)
+                .env("HEX_ORIGINAL_INSTANCE_VARIANT", "91")
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success()
+                    && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+                "{}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
         return;
     }
 
@@ -2012,6 +2016,41 @@ fn ordinary_resident_compiler_drives_signed_vst3_automation() {
             .to_vec(),
         })
         .unwrap();
+    let touch = std::env::var("HEX_ORDINARY_AUTHORED_TOUCH_CASE").as_deref() == Ok("touch");
+    if touch {
+        let target = hex_project::DeviceAutomationTarget::Vst3 { parameter: 7 };
+        let class = fixture
+            .editor
+            .project()
+            .device(fixture.device)
+            .unwrap()
+            .automation_target(target)
+            .unwrap()
+            .vst3_class;
+        let at = |frame| BeatTime::from_ratio(frame, 24_000).unwrap();
+        fixture
+            .editor
+            .execute(Command::SpliceDeviceAutomationTouch {
+                device: fixture.device,
+                target,
+                vst3_class: class,
+                spans: vec![hex_project::DeviceAutomationTouchSpan {
+                    start: at(8),
+                    end: at(31),
+                    steps: vec![
+                        hex_project::DeviceAutomationTouchStep {
+                            beat: at(8),
+                            value: AutomationValue::new(0.5).unwrap(),
+                        },
+                        hex_project::DeviceAutomationTouchStep {
+                            beat: at(29),
+                            value: AutomationValue::new(0.125).unwrap(),
+                        },
+                    ],
+                }],
+            })
+            .unwrap();
+    }
     let path = std::env::temp_dir().join(format!("hex-ordinary-vst3-{}.hex", std::process::id()));
     hex_storage::save_new(&path, fixture.editor.project()).unwrap();
     let reopened = hex_storage::load(&path);
@@ -2079,8 +2118,10 @@ fn ordinary_resident_compiler_drives_signed_vst3_automation() {
     }
     let mut expected = [[0.0; 2]; 64];
     expected[16] = fixture.samples[0].map(|sample| sample * 0.5);
-    expected[24] = fixture.samples[8].map(|sample| sample * (1.5 * 0.625));
-    expected[45] = fixture.samples[29].map(|sample| sample * (2.5 * 0.875));
+    expected[24] =
+        fixture.samples[8].map(|sample| sample * (if touch { 2.0 } else { 1.5 } * 0.625));
+    expected[45] =
+        fixture.samples[29].map(|sample| sample * (if touch { 0.5 } else { 2.5 } * 0.875));
     expected[47] = fixture.samples[31].map(|sample| sample * (3.0 * 0.875));
     assert_eq!(output, expected);
     let retired = workers[0].quiesce_on_control().unwrap();

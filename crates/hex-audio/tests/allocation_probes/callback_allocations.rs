@@ -1511,6 +1511,7 @@ fn reverb_automation_publication_and_render_are_allocation_free() -> Result<(), 
     let start = map.frame_to_beat((BLOCK + 5) as u64)?;
     let end = map.frame_to_beat((BLOCK + 19) as u64)?;
     editor.execute(Command::SpliceDeviceAutomationTouch {
+        vst3_class: None,
         device,
         target: DeviceAutomationTarget::Parameter(parameter::DRY_WET),
         spans: vec![DeviceAutomationTouchSpan {

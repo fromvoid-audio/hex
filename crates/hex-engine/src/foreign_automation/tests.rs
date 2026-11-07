@@ -501,3 +501,51 @@ fn revision_program_storage_accounts_for_the_table_and_each_lane_backing() {
     assert_eq!(summary.data_allocations, 3);
     assert_eq!(summary.data_bytes, expected);
 }
+
+#[test]
+fn canonical_vst3_touch_only_admission_quotes_backing_and_requires_exact_source_metadata() {
+    use hex_project::{DeviceAutomationTouchSpan, DeviceAutomationTouchStep};
+    let mut lane = lane(0, Vec::new());
+    lane.touch = vec![DeviceAutomationTouchSpan {
+        start: BeatTime::ONE,
+        end: BeatTime::from_quarters(2).unwrap(),
+        steps: vec![DeviceAutomationTouchStep {
+            beat: BeatTime::ONE,
+            value: AutomationValue::new(0.75).unwrap(),
+        }],
+    }];
+    let lanes = [lane];
+    let map = tempo();
+    let profile = QuantumProfile {
+        frames: 8,
+        max_runs: 1,
+    };
+    let capabilities = [ParameterCapability {
+        id: 0,
+        steps: 0,
+        normalized_base_bits: (1.0_f64 / 3.0).to_bits(),
+    }];
+    let prepared = Program::prepare(&lanes, CLASS, &capabilities, &map, profile)
+        .unwrap()
+        .unwrap();
+    assert!(Program::prepare(&lanes, [2; 16], &capabilities, &map, profile).is_err());
+    assert!(Program::prepare(&lanes, CLASS, &[], &map, profile).is_err());
+    let overlay = prepared.lanes[0].overlay.as_ref().unwrap();
+    assert!(
+        super::touch::Overlay::reservation_bytes(&lanes[0].touch, 1).unwrap()
+            >= overlay.backing_bytes().unwrap()
+    );
+    for (origin, expected) in [
+        (3996, 1.0 / 3.0),
+        (4000, 0.75),
+        (11996, 0.75),
+        (12000, 1.0 / 3.0),
+    ] {
+        let output = render(
+            &prepared,
+            &(origin..origin + 8).map(Some).collect::<Vec<_>>(),
+            &[],
+        );
+        assert_eq!(output[0].normalized, expected);
+    }
+}

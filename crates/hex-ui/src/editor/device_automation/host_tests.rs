@@ -1299,6 +1299,7 @@ fn clearing_a_recorded_only_lane_removes_the_take_with_one_undo(cx: &mut TestApp
     editor.update(&mut visual, |view, _| {
         assert!(
             view.enqueue(Request::Edit(Command::SpliceDeviceAutomationTouch {
+                vst3_class: None,
                 device,
                 target: kind,
                 spans: touch.clone(),

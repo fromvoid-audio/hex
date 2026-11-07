@@ -129,9 +129,6 @@ pub fn validate_device_automation(lanes: &[DeviceAutomation]) -> Result<(), Inva
         if lane.touch.is_empty() || !lane.points.is_empty() {
             validate_points(&lane.points)?;
         }
-        if lane.vst3_class.is_some() && !lane.touch.is_empty() {
-            return Err(Invalid("vst3 touch overlays are unsupported"));
-        }
         touch::validate(&lane.touch, lane.points.len())?;
     }
     Ok(())
@@ -181,7 +178,10 @@ impl Device {
             ));
         }
         for lane in &self.automation {
-            if !lane.touch.is_empty() && state.type_id() == hex_plugin_state::TYPE_ID {
+            if !lane.touch.is_empty()
+                && state.type_id() == hex_plugin_state::TYPE_ID
+                && !matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
+            {
                 return Err(Invalid("recorded touch requires a native effect target"));
             }
             validate_automation_class(lane, state)?;
@@ -235,10 +235,10 @@ impl Project {
             .iter()
             .flat_map(|source| source.devices())
             .any(|device| {
-                device
-                    .automation()
-                    .iter()
-                    .any(|lane| !lane.touch.is_empty())
+                device.automation().iter().any(|lane| {
+                    !lane.touch.is_empty()
+                        && !matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
+                })
             })
         {
             return Err(Invalid("recorded touch requires a native effect target"));
@@ -247,7 +247,10 @@ impl Project {
         for device in self.automation_devices() {
             validate_device_automation(&device.automation)?;
             for lane in &device.automation {
-                if !lane.touch.is_empty() && device.state().type_id() == hex_plugin_state::TYPE_ID {
+                if !lane.touch.is_empty()
+                    && device.state().type_id() == hex_plugin_state::TYPE_ID
+                    && !matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
+                {
                     return Err(Invalid("recorded touch requires a native effect target"));
                 }
                 validate_automation_class(lane, device.state())?;
@@ -343,13 +346,14 @@ impl Project {
         &mut self,
         device: DeviceId,
         target: DeviceAutomationTarget,
+        vst3_class: Option<[u8; 16]>,
         spans: Vec<DeviceAutomationTouchSpan>,
     ) -> Result<Created, Invalid> {
         target
             .validate()
             .map_err(|_| Invalid("invalid automation target identity"))?;
-        if matches!(target, DeviceAutomationTarget::Vst3 { .. })
-            || self
+        if !matches!(target, DeviceAutomationTarget::Vst3 { .. })
+            && self
                 .native_sources
                 .iter()
                 .any(|source| source.devices().any(|entry| entry.id() == device))
@@ -357,6 +361,9 @@ impl Project {
             return Err(Invalid("recorded touch requires a native effect target"));
         }
         self.edit_device(device, |entry| {
+            if automation_class(target, entry.state())? != vst3_class {
+                return Err(Invalid("recorded touch differs from device class"));
+            }
             match entry
                 .automation
                 .binary_search_by_key(&target, |lane| lane.target)
@@ -374,7 +381,7 @@ impl Project {
                         index,
                         DeviceAutomation {
                             target,
-                            vst3_class: None,
+                            vst3_class,
                             points: Vec::new(),
                             touch: touch::splice(&[], spans, 0)?,
                             read_selection: AutomationReadSelection::Authored,

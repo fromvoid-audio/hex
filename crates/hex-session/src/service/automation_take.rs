@@ -121,6 +121,7 @@ pub fn prepare_native_take_adoption_on_control(
         return Err("sealed take has no covered time".into());
     }
     Ok(hex_project::Command::SpliceDeviceAutomationTouch {
+        vst3_class: None,
         device,
         target,
         spans,
