@@ -231,7 +231,8 @@ pub(super) fn reduce(
 
 #[cfg(test)]
 mod tests {
-    use super::{PlotPoint, reduce, visible_range};
+    use super::{PlotPoint, recorded_knots, reduce, visible_range, visible_sections};
+    use hex_project::{AutomationValue, BeatTime, DeviceAutomationTouchSpan};
     use std::{cell::Cell, collections::BTreeMap};
 
     /// Unreduced reference polyline: every point, with held segments drawn as
