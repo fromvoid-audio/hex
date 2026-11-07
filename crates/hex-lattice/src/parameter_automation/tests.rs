@@ -1446,3 +1446,72 @@ fn external_groups_apply_multiple_targets_and_processors_once() {
     );
     assert_eq!(untouched, [[1.0; 2]; 2]);
 }
+
+#[test]
+fn foreign_history_updates_preserve_native_and_host_envelopes_and_reject_key_aliases() {
+    struct Foreign;
+    impl crate::ForeignAutomationProgram for Foreign {
+        fn render_quantum(
+            &self,
+            _: &[Option<u64>],
+            _: &[u16],
+            _: &mut [ForeignParameterPoint],
+        ) -> Result<usize, DeviceContractError> {
+            Ok(0)
+        }
+    }
+    let binding = ForeignProcessorBinding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    };
+    let make = |key| {
+        crate::PreparedForeignAutomation::new(
+            binding,
+            std::num::NonZeroU64::new(key).unwrap(),
+            Foreign,
+            0,
+        )
+        .unwrap()
+    };
+    let previous = PreparedParameterAutomation::for_foreign(make(1));
+    let mut current = program(descriptor(), semantics());
+    current
+        .prepare_external_host(DeviceAutomationTarget::HostOutputGain)
+        .unwrap();
+    current.foreign = Some(make(2));
+    let before = current
+        .block(Some(&Clock), 32)
+        .value_at(ParameterId::from_static(1), 15);
+    current
+        .retain_foreign_history_on_control(&previous, None)
+        .unwrap();
+    assert_eq!(
+        current
+            .block(Some(&Clock), 32)
+            .value_at(ParameterId::from_static(1), 15),
+        before
+    );
+    assert!(current.has_host_target(DeviceAutomationTarget::HostOutputGain));
+    assert!(
+        current
+            .foreign()
+            .unwrap()
+            .borrow()
+            .contains_revision(std::num::NonZeroU64::new(1).unwrap())
+    );
+    let same_owner = current.clone();
+    current
+        .retain_foreign_history_on_control(&same_owner, None)
+        .unwrap();
+    let ambiguous = PreparedParameterAutomation::for_foreign(make(2));
+    let storage = current.foreign().unwrap().storage_bytes();
+    assert!(
+        current
+            .retain_foreign_history_on_control(&ambiguous, None)
+            .is_err()
+    );
+    assert_eq!(current.foreign().unwrap().storage_bytes(), storage);
+    assert!(current.has_host_target(DeviceAutomationTarget::HostOutputGain));
+}
