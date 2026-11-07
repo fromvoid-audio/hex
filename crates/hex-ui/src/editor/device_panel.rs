@@ -35,8 +35,8 @@ use bindings::{
 pub(super) use bindings::{effective_parameter_value, parameter_display_override};
 mod gesture_adapter;
 pub(super) use gesture_adapter::{
-    NumericGestureLease, commit_owned_numeric_edit, dispatch_bound_numeric_gesture,
-    dispatch_numeric_gesture, owns_numeric_gesture,
+    NumericGestureKey, NumericGestureLease, commit_owned_numeric_edit,
+    dispatch_bound_numeric_gesture, dispatch_numeric_gesture, owns_numeric_gesture,
 };
 mod chain_window;
 mod effect_bus;

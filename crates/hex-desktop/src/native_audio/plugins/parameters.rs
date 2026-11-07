@@ -16,6 +16,7 @@ pub(super) struct ObservedInventory {
 pub(super) struct Inventory {
     query: PluginParameterQuery,
     binding: Binding,
+    class: Option<[u8; 16]>,
     token: Option<NativeWorkerControllerQuery>,
     revision: u64,
     total: Option<u16>,
@@ -67,6 +68,10 @@ impl Plugins {
         self.parameters = Some(Inventory {
             query,
             binding,
+            class: control
+                .native_source_metadata(binding)
+                .ok()
+                .map(|source| source.selection().cid),
             token: None,
             revision: 0,
             total: None,
@@ -192,6 +197,9 @@ impl Plugins {
                             default_normalized: parameter.default_normalized,
                             steps: parameter.step_count,
                             editable: parameter.is_editable(),
+                            automation_class: inventory
+                                .class
+                                .filter(|_| parameter.supports_authored_automation()),
                             page_first: page.first,
                             metadata_revision: page.revision,
                         }

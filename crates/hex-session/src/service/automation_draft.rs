@@ -17,7 +17,7 @@ use super::{Session, recovery};
 use hex_storage::automation_draft::DraftWriter;
 mod native_device;
 pub use hex_storage::automation_draft::{
-    AppliedEvent, DraftProgress, DraftProvenance, DraftTarget, DraftTerminal,
+    AppliedEvent, DraftAbortReason, DraftProgress, DraftProvenance, DraftTarget, DraftTerminal,
 };
 pub use native_device::DeviceDraftInput;
 use std::{

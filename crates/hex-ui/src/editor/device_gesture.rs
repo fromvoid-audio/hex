@@ -112,6 +112,9 @@ impl EditorView {
         target: GestureTarget,
         initial: ParameterValue,
     ) -> Result<(), &'static str> {
+        if self.native_automation_recorder.busy() {
+            return Err("finish the current automation touch first");
+        }
         self.device_gesture
             .begin(self.project_generation, target, initial)?;
         Ok(())

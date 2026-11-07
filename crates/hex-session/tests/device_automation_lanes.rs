@@ -54,6 +54,7 @@ fn stamped_lane_edits_preserve_base_value_and_refuse_stale_queued_requests() {
         revision,
         device,
         target: DeviceAutomationTarget::Parameter(parameter),
+        vst3_class: None,
         points,
     };
     service
@@ -193,6 +194,7 @@ fn provider_and_host_targets_coexist_clear_undo_and_save_reopen_without_base_edi
                 revision: current.state.revision,
                 device,
                 target,
+                vst3_class: None,
                 points: vec![AutomationPoint {
                     beat: BeatTime::ZERO,
                     value: AutomationValue::new(value).unwrap(),
@@ -211,6 +213,7 @@ fn provider_and_host_targets_coexist_clear_undo_and_save_reopen_without_base_edi
             revision: current.state.revision,
             device,
             target: DeviceAutomationTarget::HostInputGain,
+            vst3_class: None,
             points: Vec::new(),
         })
         .unwrap();
@@ -291,6 +294,7 @@ fn actual_source_owner_and_valid_foreign_envelope_do_not_gain_native_host_capabi
             revision: source.state.revision,
             device,
             target: DeviceAutomationTarget::HostInputGain,
+            vst3_class: None,
             points: vec![AutomationPoint {
                 beat: BeatTime::ZERO,
                 value: AutomationValue::new(0.5).unwrap(),

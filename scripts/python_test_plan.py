@@ -69,6 +69,9 @@ COMPREHENSIVE_ARGV = (
 )
 
 
+SHARDED_DISCOVERY_ARGV = ("python3", "scripts/python_shards.py", "--discover")
+
+
 def native_acceptance_inputs(env: dict) -> list[str]:
     """External fixtures/SDKs/signing state require fresh observations.
 
@@ -100,9 +103,10 @@ def select(profile: str, paths: list[str], inventory: list[dict],
     """
     modules = sorted(set(modules))
 
-    def comprehensive(reason: str) -> dict:
+    def comprehensive(reason: str, *, native: bool = False) -> dict:
         return {"mode": "comprehensive", "selected_groups": modules,
                 "excluded_groups": [], "test_selectors": modules,
+                "sharded_discovery": profile == "merge" and not native,
                 "reasons": [reason]}
 
     if profile not in {"merge", "health"}:
@@ -113,7 +117,7 @@ def select(profile: str, paths: list[str], inventory: list[dict],
     native = native_acceptance_inputs(os.environ if env is None else env)
     if native:
         return comprehensive("explicit native acceptance inputs retain full Python coverage: "
-                             + ", ".join(native))
+                             + ", ".join(native), native=True)
     if set(modules) != REVIEWED_MODULES:
         return comprehensive("new, missing or unregistered Python test module")
     owned = tooling_owner_modules(paths, modules)
@@ -185,7 +189,7 @@ def tooling_owner_modules(paths: list[str], modules: list[str]) -> list[str]:
 
 def argv(selection: dict) -> tuple[str, ...]:
     if selection.get("mode") == "comprehensive":
-        return COMPREHENSIVE_ARGV
+        return SHARDED_DISCOVERY_ARGV if selection.get("sharded_discovery") else COMPREHENSIVE_ARGV
     if selection.get("mode") != "shared":
         raise ValueError("Python test step needs a known nonempty selection")
     selectors = selection.get("test_selectors")
