@@ -240,8 +240,9 @@ fn sdk_extension_preserves_existing_bases_and_backing_while_pcm_continues() {
         .unwrap();
     assert_eq!(instance.retained_storage_on_control(), Some(quoted));
     assert!(!instance.has_armed_authored_parameter(7));
+    let refreshed = page(&mut instance, ParameterPageQuery::default());
     instance
-        .begin_authored_parameter_extension_on_worker(class(), 11, 0, q)
+        .begin_authored_parameter_extension_on_worker(class(), 11, 0, query(&refreshed))
         .unwrap();
     assert!(matches!(
         poll_extension(&mut instance),

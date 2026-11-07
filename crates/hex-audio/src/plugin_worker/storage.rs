@@ -50,6 +50,7 @@ impl NativeWorker {
     /// are already present; their enclosing Box is additional here. Failure
     /// diagnostics, opaque std thread/allocator resources and transient exchange
     /// costs remain separate, so this is not complete Root eligibility.
+    #[cfg(test)]
     pub(crate) fn preconstruction_data_bytes_on_control(
         instance: &hex_plugin_host::native::Prepared,
     ) -> Option<usize> {
