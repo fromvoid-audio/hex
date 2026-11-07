@@ -9,6 +9,8 @@ const MAX_POINTS: usize = 256;
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpectrumPlotLayer {
     pub points: Vec<[f32; 2]>,
+    /// Optional held-peak curve drawn as a thin line above the fill.
+    pub peak: Option<Vec<[f32; 2]>>,
     pub color: u32,
 }
 /// Validated immutable curves. Cloning shares all point storage, so an
@@ -17,17 +19,20 @@ pub struct SpectrumPlotLayer {
 pub struct SpectrumPlotLayers(Arc<[SpectrumPlotLayer]>);
 impl SpectrumPlotLayers {
     pub fn new(layers: Vec<SpectrumPlotLayer>) -> Option<Self> {
+        let invalid = |points: &[[f32; 2]]| {
+            !(2..=MAX_POINTS).contains(&points.len())
+                || points.iter().any(|[x, y]| {
+                    !x.is_finite()
+                        || !y.is_finite()
+                        || !(0.0..=1.0).contains(x)
+                        || !(0.0..=1.0).contains(y)
+                })
+                || !points.windows(2).all(|p| p[0][0] <= p[1][0])
+        };
         if layers.len() > MAX_SPECTRUM_PLOT_LAYERS
-            || layers.iter().any(|layer| {
-                !(2..=MAX_POINTS).contains(&layer.points.len())
-                    || layer.points.iter().any(|[x, y]| {
-                        !x.is_finite()
-                            || !y.is_finite()
-                            || !(0.0..=1.0).contains(x)
-                            || !(0.0..=1.0).contains(y)
-                    })
-                    || !layer.points.windows(2).all(|p| p[0][0] <= p[1][0])
-            })
+            || layers
+                .iter()
+                .any(|layer| invalid(&layer.points) || layer.peak.as_deref().is_some_and(invalid))
         {
             return None;
         }
@@ -58,11 +63,20 @@ pub fn layered_spectrum_plot(layers: SpectrumPlotLayers, style: ControlStyle) ->
                     }
                     let origin = bounds.origin + point(px(4.0), px(4.0));
                     let plot = Bounds::new(origin, gpui::size(width, height));
-                    let spectra = layers.iter().map(|layer| SpectrumLayer {
-                        points: &layer.points,
-                        color: layer.color,
-                        stroke_width: px(1.0),
-                    });
+                    let top = layers.len().saturating_sub(1);
+                    let spectra = layers
+                        .iter()
+                        .enumerate()
+                        .map(|(index, layer)| SpectrumLayer {
+                            points: &layer.points,
+                            peak: layer.peak.as_deref(),
+                            color: layer.color,
+                            stroke_width: if index == top {
+                                spectrum_painter::PRIMARY_TRACE_WIDTH
+                            } else {
+                                spectrum_painter::SECONDARY_TRACE_WIDTH
+                            },
+                        });
                     spectrum_painter::paint(plot, spectra.clone(), SpectrumPass::Fill, window);
                     let mut grid = PathBuilder::stroke(px(0.5));
                     for division in 1..4 {
@@ -78,6 +92,7 @@ pub fn layered_spectrum_plot(layers: SpectrumPlotLayers, style: ControlStyle) ->
                     if let Ok(path) = grid.build() {
                         window.paint_path(path, rgb(style.rail));
                     }
+                    spectrum_painter::paint(plot, spectra.clone(), SpectrumPass::Peak, window);
                     spectrum_painter::paint(plot, spectra, SpectrumPass::Trace, window);
                 },
             )
@@ -91,6 +106,7 @@ mod tests {
     fn malformed_or_excess_layers_are_refused_without_dropping_members() {
         let layer = SpectrumPlotLayer {
             points: vec![[0.0, 0.0], [1.0, 1.0]],
+            peak: Some(vec![[0.0, 0.5], [1.0, 1.0]]),
             color: 0x123456,
         };
         assert!(SpectrumPlotLayers::new(vec![layer.clone(); MAX_SPECTRUM_PLOT_LAYERS]).is_some());
@@ -101,6 +117,12 @@ mod tests {
             points: vec![[1.0, 0.0], [0.0, 1.0]],
             ..layer
         };
-        assert!(SpectrumPlotLayers::new(vec![invalid]).is_none());
+        assert!(SpectrumPlotLayers::new(vec![invalid.clone()]).is_none());
+        let invalid_peak = SpectrumPlotLayer {
+            peak: Some(vec![[0.0, f32::NAN], [1.0, 1.0]]),
+            points: vec![[0.0, 0.0], [1.0, 1.0]],
+            ..invalid
+        };
+        assert!(SpectrumPlotLayers::new(vec![invalid_peak]).is_none());
     }
 }

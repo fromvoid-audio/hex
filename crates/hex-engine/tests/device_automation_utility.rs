@@ -315,7 +315,15 @@ fn transport_loop_uses_arrangement_origin_while_linear_export_keeps_advancing() 
                 1_000 + (frame - 3_000) % 2_000
             };
             let gain = 2.0 * origin as f32 / QUARTER as f32;
-            [0.125 * gain, -0.25 * gain]
+            // At 8 kHz the end envelope spans 21 frames. Its first
+            // sample is unity and its final sample is zero; automation
+            // still follows the wrapped Arrangement origin.
+            let fade = if origin >= 2_979 {
+                (2_999 - origin) as f32 / 20.0
+            } else {
+                1.0
+            };
+            [0.125 * gain * fade, -0.25 * gain * fade]
         })
         .collect();
     close(&prepared(&f, &[257, 13, 64]), &expected, "transport loop");

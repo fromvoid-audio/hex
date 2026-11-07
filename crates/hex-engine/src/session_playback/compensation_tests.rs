@@ -3,6 +3,192 @@ use super::*;
 use crate::signal_graph::tests::{fixture, prepare};
 use crate::{Audio, SineTable};
 #[test]
+fn compensated_fader_ramps_at_the_delayed_content_origin() {
+    let mut f = fixture(&[&[7]], 1024);
+    for audio in f.media.values_mut() {
+        *audio = Audio::new(48000, vec![[1.0, -0.5]; 1024]).unwrap();
+    }
+    let mut old = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 32]).unwrap();
+    f.editor
+        .execute(hex_project::Command::Gain {
+            track: f.tracks[0],
+            gain: 0.0,
+        })
+        .unwrap();
+    let mut next = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
+    let mut frames = [[0.0; 2]; 256];
+    next.render(&mut frames).unwrap();
+    for (index, frame) in frames.iter().enumerate() {
+        let gain = 1.0 - (index + 1).min(240) as f32 / 240.0;
+        assert!((frame[0] - gain).abs() < 1e-5, "frame {index}: {frame:?}");
+        assert!(
+            (frame[1] + 0.5 * gain).abs() < 1e-5,
+            "frame {index}: {frame:?}"
+        );
+    }
+}
+
+#[test]
+fn noncompensated_device_fader_ramps_without_applying_gain_twice() {
+    let mut f = fixture(&[&[0]], 1024);
+    for audio in f.media.values_mut() {
+        *audio = Audio::new(48000, vec![[1.0, -0.5]; 1024]).unwrap();
+    }
+    let mut old = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    assert!(old.compensation.is_none());
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 32]).unwrap();
+    f.editor
+        .execute(hex_project::Command::Gain {
+            track: f.tracks[0],
+            gain: 0.0,
+        })
+        .unwrap();
+    let mut next = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
+    let mut frames = [[0.0; 2]; 256];
+    next.render(&mut frames).unwrap();
+    for (index, frame) in frames.iter().enumerate() {
+        let gain = 1.0 - (index + 1).min(240) as f32 / 240.0;
+        assert!((frame[0] - gain).abs() < 1e-5, "frame {index}: {frame:?}");
+        assert!(
+            (frame[1] + 0.5 * gain).abs() < 1e-5,
+            "frame {index}: {frame:?}"
+        );
+    }
+}
+
+#[test]
+fn compensated_fader_waits_for_origin_and_rolls_back_on_failure() {
+    let f = fixture(&[&[7]], 1024);
+    let revision = prepare(&f).unwrap();
+    let mut tested = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut oracle = SessionPlayback::new(revision).unwrap();
+    for runtime in [&mut tested, &mut oracle] {
+        runtime.track_faders[0].retarget([0.0; 2], 48000);
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    }
+    let initial = tested.track_faders[0];
+    tested.render(&mut [[0.0; 2]; 6]).unwrap();
+    oracle.render(&mut [[0.0; 2]; 6]).unwrap();
+    assert_eq!(tested.track_faders[0], initial);
+    tested.arrangement_frame = u64::MAX - 300;
+    assert!(tested.render(&mut [[0.0; 2]; 512]).is_err());
+    assert_eq!(tested.track_faders[0], initial);
+    tested.arrangement_frame = 6;
+    let mut actual = [[0.0; 2]; 32];
+    let mut expected = actual;
+    tested.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(tested.track_faders[0], oracle.track_faders[0]);
+}
+
+#[test]
+fn track_fader_ramp_feeds_capture_and_send_once() {
+    use hex_project::{Command, Created};
+    let mut f = fixture(&[&[]], 1024);
+    for audio in f.media.values_mut() {
+        *audio = Audio::new(48000, vec![[1.0, -0.5]; 1024]).unwrap();
+    }
+    let Created::ReturnTrack(bus) = f
+        .editor
+        .execute(Command::AddReturnTrack {
+            name: "return".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    f.editor
+        .execute(Command::SetReturnSend {
+            track: f.tracks[0],
+            return_track: bus,
+            gain: 0.5,
+        })
+        .unwrap();
+    let mut old = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 32]).unwrap();
+    f.editor
+        .execute(Command::Gain {
+            track: f.tracks[0],
+            gain: 0.0,
+        })
+        .unwrap();
+    let mut next = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
+    let plan = next
+        .output_capture_plan(
+            &[
+                OutputCaptureId::Track(f.tracks[0]),
+                OutputCaptureId::Return(bus),
+            ],
+            256,
+        )
+        .unwrap();
+    let mut main = [[0.0; 2]; 256];
+    let mut track = main;
+    let mut returned = main;
+    let mut buffers = [&mut track[..], &mut returned[..]];
+    let mut capture = OutputCapture::new(&plan, &mut buffers);
+    next.render_with_capture(&mut main, &mut capture).unwrap();
+    let track = capture.output(0).unwrap();
+    let returned = capture.output(1).unwrap();
+    for index in 0..256 {
+        let gain = 1.0 - (index + 1).min(240) as f32 / 240.0;
+        assert!((track[index][0] - gain).abs() < 1e-5);
+        assert!((returned[index][0] - 0.5 * gain).abs() < 1e-5);
+        assert!((main[index][0] - 1.5 * gain).abs() < 1e-5);
+    }
+}
+
+#[test]
+fn rapid_gain_retarget_and_equivalent_publication_continue_from_current_level() {
+    use hex_project::Command;
+    let mut f = fixture(&[&[]], 1024);
+    for audio in f.media.values_mut() {
+        *audio = Audio::new(48000, vec![[1.0; 2]; 1024]).unwrap();
+    }
+    let mut old = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 32]).unwrap();
+    f.editor
+        .execute(Command::Gain {
+            track: f.tracks[0],
+            gain: 0.0,
+        })
+        .unwrap();
+    let mut down = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    down.try_inherit_state_from(&mut old).unwrap();
+    let mut down_frames = [[0.0; 2]; 64];
+    down.render(&mut down_frames).unwrap();
+    let current = 1.0 - 64.0 / 240.0;
+    assert!((down_frames[63][0] - current).abs() < 1e-5);
+    f.editor
+        .execute(Command::Gain {
+            track: f.tracks[0],
+            gain: 1.0,
+        })
+        .unwrap();
+    let revision = prepare(&f).unwrap();
+    let mut up = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    up.try_inherit_state_from(&mut down).unwrap();
+    let mut first = [[0.0; 2]; 32];
+    up.render(&mut first).unwrap();
+    let mut republished = SessionPlayback::new(revision).unwrap();
+    republished.try_inherit_state_from(&mut up).unwrap();
+    let mut rest = [[0.0; 2]; 208];
+    republished.render(&mut rest).unwrap();
+    for (index, frame) in first.iter().chain(rest.iter()).enumerate() {
+        let gain = current + (1.0 - current) * (index + 1) as f32 / 240.0;
+        assert!((frame[0] - gain).abs() < 1e-5, "frame {index}: {frame:?}");
+    }
+}
+#[test]
 fn compensation_late_failure_rolls_back_all_rings_and_node_histories() {
     let f = fixture(&[&[], &[7]], 1024);
     let revision = prepare(&f).unwrap();
@@ -87,32 +273,61 @@ fn dry_fader_clock_reports_downstream_main_delivery_delay() {
     );
 }
 
+/// Pulse #3772: a latency device on an unrelated track no longer disables
+/// computer-keyboard monitoring. The keyboard plays its instrument through the
+/// compensated graph, delayed only by the project's PDC alignment.
 #[test]
-fn computer_keyboard_positive_latency_refusal_preserves_authored_runtime() {
-    let mut f = fixture(&[&[7]], 1024);
-    f.editor
-        .execute(hex_project::Command::InsertInstrument {
-            track: f.tracks[0],
-            state: hex_project::default_instrument_state().unwrap(),
-        })
-        .unwrap();
-    let revision = prepare(&f).unwrap();
-    let mut tested = crate::playback::Playback::from_prepared(Arc::clone(&revision));
-    let mut oracle = crate::playback::Playback::from_prepared(revision);
-    for playback in [&mut tested, &mut oracle] {
-        playback.apply(crate::playback::PlaybackCommand::Play);
-        playback.render(&mut [[0.0; 2]; 3]).unwrap();
+fn computer_keyboard_plays_through_positive_latency_on_another_track() {
+    let keyboard_output = |delays: &[&[u32]], playing: bool| {
+        let mut f = fixture(delays, 1024);
+        f.editor
+            .execute(hex_project::Command::InsertInstrument {
+                track: f.tracks[1],
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap();
+        // Silence the clip track so only the keyboard track is compared.
+        f.editor
+            .execute(hex_project::Command::Gain {
+                track: f.tracks[0],
+                gain: 0.0,
+            })
+            .unwrap();
+        let revision = prepare(&f).unwrap();
+        let latency = revision.arrangement().main_latency_frames() as usize;
+        let mut playback = crate::playback::Playback::from_prepared(revision);
+        let input = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+        input.set_key(0, Some((60, 100, 1))).unwrap();
+        playback
+            .prepare_computer_keyboard(f.editor.project(), f.tracks[1], input)
+            .unwrap();
+        if playing {
+            playback.apply(crate::playback::PlaybackCommand::Play);
+        }
+        let mut output = vec![[0.0; 2]; 512];
+        playback.render(&mut output).unwrap();
+        (latency, output)
+    };
+    for playing in [false, true] {
+        let (latency, delayed) = keyboard_output(&[&[7], &[]], playing);
+        let (none, direct) = keyboard_output(&[&[], &[]], playing);
+        assert_eq!((latency, none), (7, 0));
+        assert!(direct.iter().flatten().any(|sample| *sample != 0.0));
+        assert!(
+            delayed[..latency]
+                .iter()
+                .flatten()
+                .all(|sample| *sample == 0.0)
+        );
+        for (index, (actual, expected)) in delayed[latency..].iter().zip(&direct).enumerate() {
+            for channel in 0..2 {
+                assert!(
+                    (actual[channel] - expected[channel]).abs() < 1e-6,
+                    "playing={playing} frame {index}: {actual:?} != {expected:?}"
+                );
+            }
+        }
     }
-    let input = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
-    let error = tested
-        .prepare_computer_keyboard(f.editor.project(), f.tracks[0], input)
-        .unwrap_err();
-    assert!(error.to_string().contains("positive latency"));
-    let mut actual = [[0.0; 2]; 32];
-    let mut expected = actual;
-    tested.render(&mut actual).unwrap();
-    oracle.render(&mut expected).unwrap();
-    assert_eq!(actual, expected);
 }
 
 #[test]
@@ -533,3 +748,6 @@ fn gain_recording_delivery_delay_includes_the_complete_serial_main_chain() {
         );
     }
 }
+
+#[path = "compensation_tests/paused_layout.rs"]
+mod paused_layout;

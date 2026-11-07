@@ -75,7 +75,7 @@ impl EditorView {
                 self.error = Some(
                     format!(
                         "could not load recent projects · {}",
-                        error.to_string().to_lowercase()
+                        hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
                     )
                     .into(),
                 );
@@ -86,7 +86,12 @@ impl EditorView {
                     for path in self.recent_projects.projects.paths().iter().rev() {
                         if let Err(error) = merged.record_opened(path.clone()) {
                             self.recent_projects.writable = false;
-                            self.error = Some(error.to_string().to_lowercase().into());
+                            self.error = Some(
+                                hex_session::service::text::lowercase_outside_verbatim(
+                                    &error.to_string(),
+                                )
+                                .into(),
+                            );
                             break;
                         }
                     }
@@ -110,7 +115,7 @@ impl EditorView {
                 self.error = Some(
                     format!(
                         "could not add recent project · {}",
-                        error.to_string().to_lowercase()
+                        hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
                     )
                     .into(),
                 );
@@ -174,7 +179,7 @@ impl EditorView {
             self.error = Some(
                 format!(
                     "could not save recent projects · {}",
-                    error.to_string().to_lowercase()
+                    hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
                 )
                 .into(),
             );
@@ -197,11 +202,11 @@ impl EditorView {
 }
 
 pub(super) fn recent_project_label(path: &Path, all_paths: &[PathBuf]) -> String {
-    let file_name = path
+    let raw_file_name = path
         .file_name()
         .unwrap_or(path.as_os_str())
-        .to_string_lossy()
-        .to_lowercase();
+        .to_string_lossy();
+    let file_name = raw_file_name.to_lowercase();
     let duplicate_name = all_paths
         .iter()
         .filter(|other| {
@@ -209,7 +214,7 @@ pub(super) fn recent_project_label(path: &Path, all_paths: &[PathBuf]) -> String
                 .file_name()
                 .unwrap_or(other.as_os_str())
                 .to_string_lossy()
-                .eq_ignore_ascii_case(&file_name)
+                .eq_ignore_ascii_case(&raw_file_name)
         })
         .count()
         > 1;
@@ -264,6 +269,19 @@ mod tests {
         assert_eq!(
             recent_project_label(&paths[0], &paths),
             "session.hex · /work/live"
+        );
+    }
+
+    #[test]
+    fn duplicate_unicode_filenames_include_each_parent() {
+        let paths = [
+            PathBuf::from("/Work/Ärger.hex"),
+            PathBuf::from("/Archive/Ärger.hex"),
+        ];
+        assert_eq!(recent_project_label(&paths[0], &paths), "ärger.hex · /work");
+        assert_eq!(
+            recent_project_label(&paths[1], &paths),
+            "ärger.hex · /archive"
         );
     }
 

@@ -3,13 +3,19 @@
 //!
 //! # Dependencies
 //! Standard library only. Desktop owns startup and shutdown; control producers
-//! enqueue bounded records. This API is never called by the audio callback.
+//! enqueue bounded records. Producers may wait for another producer's bounded,
+//! allocation-free enqueue critical section, so they must never be called from
+//! a realtime/audio thread.
 //!
 //! # Does not own
 //! No audio/project authority, action replay, source admission or musical ACK.
 //! Enqueue success is not durable delivery. Producer wall/monotonic times and
 //! sequence precede writing; loss and truncation are explicit. Sequence orders
-//! enqueue attempts, not independent actions on different threads. Recent files
+//! enqueue attempts, not independent actions on different threads. New files
+//! use schema 3: event rows include fixed lowercase `level` and `category`
+//! tokens before the schema-2 timestamp, sequence, truncation and quoted message
+//! fields. The legacy `record` entry point assigns info/uncategorised; older
+//! schema-2 files have no classification and are not rewritten. Recent files
 //! roll at 8 MiB with four segments/session and ten retained sessions (320 MiB
 //! for new-format files, plus a bounded rollover header per session); older
 //! unbounded logs expire through normal retention.
@@ -19,6 +25,7 @@
 //! on its detached worker; it never blocks audio or owns project/media files.
 
 mod event;
+pub mod reader;
 mod rolling;
 
 use event::{Context, Record};
@@ -39,6 +46,56 @@ pub const MAX_EVENT_BYTES: usize = 4096;
 pub const RETAINED_SESSIONS: usize = 10;
 pub const MAX_SEGMENT_BYTES: u64 = 8 * 1024 * 1024;
 pub const RETAINED_SEGMENTS: usize = 4;
+
+/// Severity of a control-side diagnostic event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Level {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+impl Level {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warn => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+            Self::Trace => "trace",
+        }
+    }
+}
+
+/// Stable, bounded subsystem names for diagnostic filtering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Category {
+    Uncategorised,
+    Startup,
+    Ui,
+    Session,
+    Audio,
+    Transport,
+    Persistence,
+    Plugin,
+    Media,
+}
+impl Category {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Uncategorised => "uncategorised",
+            Self::Startup => "startup",
+            Self::Ui => "ui",
+            Self::Session => "session",
+            Self::Audio => "audio",
+            Self::Transport => "transport",
+            Self::Persistence => "persistence",
+            Self::Plugin => "plugin",
+            Self::Media => "media",
+        }
+    }
+}
 const RECEIVE_INTERVAL: Duration = Duration::from_millis(50);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -57,9 +114,6 @@ pub fn default_directory() -> Result<PathBuf, String> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PublishError {
     Full,
-    /// Another control producer owns the short enqueue gate. No waiting/retry
-    /// occurs here; the loss is counted independently of a full queue.
-    Busy,
     Closed,
 }
 
@@ -70,7 +124,6 @@ pub struct LogStatistics {
     pub last_sequence: u64,
     pub written: u64,
     pub queue_full: u64,
-    pub producer_busy: u64,
     pub closed: u64,
     pub truncated: u64,
     pub write_failed: u64,
@@ -85,7 +138,6 @@ struct Shared {
     admission: Mutex<()>,
     sequence: AtomicU64,
     queue_full: AtomicU64,
-    producer_busy: AtomicU64,
     closed: AtomicU64,
     truncated: AtomicU64,
     write_failed: AtomicU64,
@@ -103,7 +155,6 @@ impl Shared {
             admission: Mutex::new(()),
             sequence: AtomicU64::new(0),
             queue_full: AtomicU64::new(0),
-            producer_busy: AtomicU64::new(0),
             closed: AtomicU64::new(0),
             truncated: AtomicU64::new(0),
             write_failed: AtomicU64::new(0),
@@ -124,7 +175,6 @@ impl Shared {
             last_sequence: self.sequence.load(Ordering::Relaxed),
             written: self.written.load(Ordering::Relaxed),
             queue_full: self.queue_full.load(Ordering::Relaxed),
-            producer_busy: self.producer_busy.load(Ordering::Relaxed),
             closed: self.closed.load(Ordering::Relaxed),
             truncated: self.truncated.load(Ordering::Relaxed),
             write_failed: self.write_failed.load(Ordering::Relaxed),
@@ -140,8 +190,11 @@ impl Shared {
     }
 }
 
-/// Control-only producer: at most 4096 UTF-8 message bytes, a 64-record queue,
-/// nonwaiting enqueue, and explicit rejection. Never format or call on audio.
+/// Control-only producer: at most 4096 UTF-8 message bytes, a 64-record queue
+/// and explicit rejection when it is full. Concurrent producers wait for the
+/// enqueue gate instead of dropping records; its critical section performs no
+/// allocation, formatting or I/O and never blocks on the queue. Never format or
+/// call on a realtime/audio thread.
 #[derive(Clone)]
 pub struct DiagnosticsHandle {
     sender: SyncSender<Record>,
@@ -149,27 +202,31 @@ pub struct DiagnosticsHandle {
     path: Arc<PathBuf>,
 }
 impl DiagnosticsHandle {
+    /// Record a legacy unclassified message. This is control-side only.
     pub fn record(&self, message: &str) -> Result<(), PublishError> {
+        self.record_typed(Level::Info, Category::Uncategorised, message)
+    }
+
+    /// Record an explicitly classified message. Never call from the audio thread.
+    pub fn record_typed(
+        &self,
+        level: Level,
+        category: Category,
+        message: &str,
+    ) -> Result<(), PublishError> {
         if self.shared.closing.load(Ordering::Acquire) {
             self.shared.closed.fetch_add(1, Ordering::Relaxed);
             return Err(PublishError::Closed);
         }
-        // Allocate before admission: shutdown never waits on formatting/I/O.
+        // Allocate before admission: neither another producer nor shutdown
+        // waits on formatting/I/O while this producer holds the gate.
         let bounded = event::bounded(message).to_owned();
-        let _admission = match self.shared.admission.try_lock() {
-            Ok(gate) => gate,
-            Err(TryLockError::WouldBlock) => {
-                if self.shared.next_sequence().is_none() {
-                    self.shared.fail("session log sequence exhausted".into());
-                    return Err(PublishError::Closed);
-                }
-                self.shared.producer_busy.fetch_add(1, Ordering::Relaxed);
-                return Err(PublishError::Busy);
-            }
-            Err(TryLockError::Poisoned(_)) => {
-                self.shared.fail("session log admission failed".into());
-                return Err(PublishError::Closed);
-            }
+        // Waiting is bounded by another producer's short, allocation-free
+        // section. Dropping instead lost lifecycle records whenever a holder
+        // was preempted (#4204). The shutdown drain still only try-locks.
+        let Ok(_admission) = self.shared.admission.lock() else {
+            self.shared.fail("session log admission failed".into());
+            return Err(PublishError::Closed);
         };
         if self.shared.closing.load(Ordering::Acquire) {
             self.shared.closed.fetch_add(1, Ordering::Relaxed);
@@ -183,6 +240,8 @@ impl DiagnosticsHandle {
             self.shared.truncated.fetch_add(1, Ordering::Relaxed);
         }
         let record = Record {
+            level,
+            category,
             sequence,
             unix_nanos: unix_nanos(),
             elapsed_nanos: self.shared.started.elapsed().as_nanos(),
@@ -206,12 +265,9 @@ impl DiagnosticsHandle {
     pub fn path(&self) -> PathBuf {
         self.path.as_ref().clone()
     }
-    /// Backpressure losses, including a contended producer gate.
+    /// Backpressure losses from a full queue.
     pub fn overflow_count(&self) -> u64 {
-        self.shared
-            .queue_full
-            .load(Ordering::Relaxed)
-            .saturating_add(self.shared.producer_busy.load(Ordering::Relaxed))
+        self.shared.queue_full.load(Ordering::Relaxed)
     }
     pub fn statistics(&self) -> LogStatistics {
         self.shared.statistics()
@@ -442,7 +498,6 @@ fn write_statistics(
 ) -> bool {
     let stats = shared.statistics();
     let changed = stats.queue_full != reported.queue_full
-        || stats.producer_busy != reported.producer_busy
         || stats.truncated != reported.truncated
         || stats.closed != reported.closed;
     if !force && !changed {

@@ -98,6 +98,11 @@ fn browser_instrument_enter_uses_selected_registered_state_and_single_worker_und
 ) {
     cx.update(crate::editor::bind_editor_keys);
     let directory = instrument_environment();
+    hex_preferences::save_track_defaults(
+        &directory.root().join("config/track-defaults.json"),
+        hex_preferences::TrackDefaults::new(0.5).unwrap(),
+    )
+    .unwrap();
     let (handle, editor, original) = instrument_enter_worker_window(cx, &directory);
     let mut visual = VisualTestContext::from_window(handle, cx);
     for kind in ["hex.instrument.fm4", "hex.instrument.sine"] {
@@ -134,7 +139,9 @@ fn browser_instrument_enter_uses_selected_registered_state_and_single_worker_und
             let project = &view.state.as_ref().unwrap().project;
             assert_eq!(project.tracks()[0], original.tracks()[0]);
             let added = &project.tracks()[1];
-            assert_eq!(added.name(), "track 2");
+            assert_eq!(added.name(), kind.trim_start_matches("hex.instrument."));
+            assert!(added.name_is_automatic());
+            assert_eq!(added.gain(), 0.5);
             assert_eq!(added.ordered_device_chain().count(), 1);
             assert_eq!(added.instrument().unwrap().state(), &expected);
             assert_eq!(

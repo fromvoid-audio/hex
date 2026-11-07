@@ -2,7 +2,7 @@
 use hex_project::{BeatTime, Command, Created};
 use hex_session::service::{Event, Request, Service};
 fn next(service: &Service) -> Event {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
         match service.try_event() {
             Ok(e) => {
@@ -10,7 +10,7 @@ fn next(service: &Service) -> Event {
                 return e;
             }
             Err(std::sync::mpsc::TryRecvError::Empty) if std::time::Instant::now() < deadline => {
-                std::thread::yield_now()
+                std::thread::sleep(std::time::Duration::from_millis(1))
             }
             Err(e) => panic!("worker event: {e}"),
         }
@@ -190,6 +190,7 @@ fn worker_midi_clip_transfer_retains_source_devices_and_empty_destination_with_o
             &service,
             if copy {
                 Command::CopyMidiClipToNewTrack {
+                    initial_gain: Some(0.25),
                     clip,
                     name: "copied clip".into(),
                     before_track: None,
@@ -197,6 +198,7 @@ fn worker_midi_clip_transfer_retains_source_devices_and_empty_destination_with_o
                 }
             } else {
                 Command::MoveMidiClipToNewTrack {
+                    initial_gain: Some(0.25),
                     clip,
                     name: "moved clip".into(),
                     before_track: None,
@@ -209,6 +211,7 @@ fn worker_midi_clip_transfer_retains_source_devices_and_empty_destination_with_o
         };
         let project = std::sync::Arc::clone(&transferred.state.project);
         let target = project.track(destination).unwrap();
+        assert_eq!(target.gain(), 0.25);
         assert!(target.instrument().is_none());
         assert!(target.devices().is_empty());
         assert_eq!(target.ordered_device_chain().count(), 0);

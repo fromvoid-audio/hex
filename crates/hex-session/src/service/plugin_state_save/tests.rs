@@ -239,13 +239,10 @@ fn save_capture_refusal_preserves_existing_file_dirty_state_and_new_destination(
         }
     }
     fn event(service: &Service) -> Event {
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        loop {
-            if let Ok(event) = service.try_event() {
-                return event;
-            }
-            assert!(std::time::Instant::now() < until);
-            std::thread::yield_now();
+        // Blocks on the event channel; bounded only against hangs.
+        match service.events.recv_timeout(crate::test_wait::HANG_BOUND) {
+            Ok(event) => event,
+            Err(error) => panic!("event: worker event absent: {error}"),
         }
     }
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -290,4 +287,132 @@ fn save_capture_refusal_preserves_existing_file_dirty_state_and_new_destination(
     assert_ne!(std::fs::read(&path).unwrap(), before);
     drop(service);
     std::fs::remove_dir_all(folder).unwrap();
+}
+
+#[test]
+fn rate_history_retains_the_exact_captured_vst3_state_on_both_sides() {
+    use crate::Session;
+    use crate::service::project_rate::history_needs_replacement;
+    use hex_project::{SampleRateHistoryAction, SampleRateMode};
+
+    let project = fixture();
+    let captured = project_with_captures(project.clone(), captures(&project)).unwrap();
+    assert_ne!(captured, project);
+
+    for rate in [48_000, 96_000] {
+        let mut session = Session::new(48_000, 8, 1_000_000).unwrap();
+        session.editor = Editor::new(project.clone(), 8).unwrap();
+        let change = || SampleRateHistoryAction::Apply {
+            rate,
+            mode: SampleRateMode::FollowInterface,
+        };
+        let prepared = |_: &Project| Ok::<(), hex_project::Invalid>(());
+
+        let refused =
+            session
+                .editor
+                .change_sample_rate_prepared(change(), Some(captured.clone()), |_| {
+                    Err::<(), _>(hex_project::Invalid("fixture output refused"))
+                });
+        assert!(refused.is_err());
+        assert_eq!(session.project(), &project);
+        assert!(!session.editor.can_undo());
+
+        session
+            .editor
+            .change_sample_rate_prepared(change(), Some(captured.clone()), prepared)
+            .unwrap()
+            .unwrap();
+        let expected = captured
+            .at_sample_rate(rate)
+            .unwrap()
+            .with_sample_rate_mode(SampleRateMode::FollowInterface);
+        assert_eq!(session.project(), &expected);
+        assert!(history_needs_replacement(&session, false));
+
+        let captured_at_new_rate = project
+            .at_sample_rate(rate)
+            .unwrap()
+            .with_sample_rate_mode(SampleRateMode::FollowInterface);
+        session
+            .editor
+            .change_sample_rate_prepared(
+                SampleRateHistoryAction::Undo,
+                Some(captured_at_new_rate.clone()),
+                prepared,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project(), &captured);
+        assert!(history_needs_replacement(&session, true));
+
+        session
+            .editor
+            .change_sample_rate_prepared(
+                SampleRateHistoryAction::Redo,
+                Some(project.clone()),
+                prepared,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project(), &captured_at_new_rate);
+        assert!(session.editor.undo());
+        assert_eq!(session.project(), &project);
+    }
+}
+
+#[test]
+fn saved_reading_selection_keeps_raw_zero_and_excludes_base_and_host_targets() {
+    use hex_lattice_contract::DeviceAutomationTarget;
+    use hex_project::{
+        AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
+        BeatTime,
+    };
+    let project = fixture();
+    let device = project.main_devices()[0].id();
+    let mut editor = Editor::new(project, 8).unwrap();
+    for target in [
+        DeviceAutomationTarget::Vst3 { parameter: 0 },
+        DeviceAutomationTarget::Vst3 { parameter: 7 },
+        DeviceAutomationTarget::HostInputGain,
+    ] {
+        editor
+            .execute(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target,
+                points: vec![AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: AutomationValue::new(0.5).unwrap(),
+                    outgoing: AutomationInterpolation::Step,
+                }],
+            })
+            .unwrap();
+    }
+    editor
+        .execute(Command::SetDeviceAutomationReadSelection {
+            device,
+            target: DeviceAutomationTarget::Vst3 { parameter: 7 },
+            selection: AutomationReadSelection::Base,
+        })
+        .unwrap();
+    let cancellation = RequestCancellation::new(
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        0,
+    );
+    let input = PluginStateSaveInput {
+        project: editor.project(),
+        context: hex_engine::AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 2,
+        },
+        cancellation: &cancellation,
+    };
+    assert_eq!(
+        input
+            .authored_plugin_targets(device.value())
+            .collect::<Vec<_>>(),
+        vec![(0, Some([1; 16]))]
+    );
+    assert_eq!(input.authored_plugin_targets(u64::MAX).count(), 0);
 }

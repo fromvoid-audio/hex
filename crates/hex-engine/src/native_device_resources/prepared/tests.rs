@@ -734,17 +734,18 @@ fn registered_sampler_fixture(streamed: bool, shared: bool) {
                 assert!((actual[lane] - (sampler[lane] + vector[lane] + audio[lane])).abs() < 1e-6);
             }
         }
-        assert!(
+        // No prefix replays, so the replay work budget does not bind.
+        let beyond_budget =
             SessionPlayback::prepare_interactive_arrangement_preroll_with_device_resources(
                 Arc::clone(&revision),
                 &resources,
                 3,
                 2,
                 true,
-                &cancel
+                &cancel,
             )
-            .is_err()
-        );
+            .unwrap();
+        assert_eq!(beyond_budget.arrangement_frame(), 3);
     }
     let mut playback =
         SessionPlayback::new_with_device_resources(Arc::clone(&revision), &resources).unwrap();

@@ -64,7 +64,7 @@ fn limiter_compact_panel_fits_track_and_return_and_keeps_edits_undoable(cx: &mut
             .expect("limiter body");
         assert_eq!(
             frame.size.width,
-            px(limiter_panel::FRAME_WIDTH + gain_meters::WIDTH)
+            px(limiter_panel::FRAME_WIDTH + device_meter::WIDTH)
         );
         assert_eq!(frame.size.height, px(DEVICE_FRAME_HEIGHT));
         for parameter in [1, 2, 3, 4, 5, 6, 7, 8, 9] {

@@ -4,7 +4,26 @@ use hex_session::device_gesture::GestureKey;
 use std::{cell::Cell, rc::Rc};
 
 /// A widget owns only the gesture token it successfully began.
-pub(in crate::editor) type NumericGestureLease = Rc<Cell<Option<GestureKey>>>;
+pub(in crate::editor) type NumericGestureLease = Rc<Cell<Option<NumericGestureKey>>>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::editor) enum NumericGestureKey {
+    Canonical(GestureKey),
+    NativeAutomation(GestureKey),
+}
+
+pub(in crate::editor) fn owns_native_automation(
+    view: &EditorView,
+    target: GestureTarget,
+    lease: &NumericGestureLease,
+) -> bool {
+    match lease.get() {
+        Some(NumericGestureKey::NativeAutomation(key)) => {
+            view.native_automation_recorder.owns(target, Some(key))
+        }
+        _ => false,
+    }
+}
 use hex_lattice_contract::ParameterValue;
 use hex_project::Command;
 use hex_session::{device_gesture::GestureTarget, service::Request};
@@ -16,6 +35,9 @@ pub fn dispatch_numeric_gesture(
     phase: NumericEventPhase,
     value: ParameterValue,
 ) -> Result<(), &'static str> {
+    if matches!(target, GestureTarget::PluginParameter { .. }) {
+        return Err("plugin parameters require lossless sdk conversion");
+    }
     // Delayed events from a different control must never address whichever
     // gesture happens to be active now. Incarnation checks remain with bindings.
     if phase != NumericEventPhase::Begin
@@ -38,6 +60,9 @@ pub fn commit_owned_numeric_edit(
     target: GestureTarget,
     finalized: &NumericControlFinalValue,
 ) -> Result<(), &'static str> {
+    if matches!(target, GestureTarget::PluginParameter { .. }) {
+        return Err("plugin parameters require lossless sdk conversion");
+    }
     if !finalized.explicit_edit
         && finalized.value == finalized.previous
         && view.device_gesture.snapshot().is_none()
@@ -75,11 +100,15 @@ pub fn commit_owned_numeric_edit(
             GestureTarget::DeviceParameter { device, parameter } => {
                 view.manual_device_parameter_request(device, parameter, value)?
             }
+            GestureTarget::TrackGains { .. } => {
+                return Err("selected gains require their captured gesture");
+            }
             GestureTarget::DeviceParameterPair { .. } => {
                 return Err("paired parameter edits use the graph gesture");
             }
             GestureTarget::DeviceParameterSnapshot { .. }
-            | GestureTarget::EqNodeCreation { .. } => {
+            | GestureTarget::EqNodeCreation { .. }
+            | GestureTarget::PluginParameter { .. } => {
                 return Err("snapshot parameter edits use the harmonic gesture");
             }
             GestureTarget::ReturnSend {
@@ -121,14 +150,26 @@ pub(in crate::editor) fn dispatch_bound_numeric_gesture(
     value: ParameterValue,
 ) -> Result<(), &'static str> {
     if phase == NumericEventPhase::Begin {
+        if let Some(key) = view.begin_native_automation_touch(target, value)? {
+            lease.set(Some(NumericGestureKey::NativeAutomation(key)));
+            return Ok(());
+        }
         view.begin_device_gesture(target, value)?;
-        lease.set(view.device_gesture.snapshot().map(|snapshot| snapshot.key));
+        lease.set(
+            view.device_gesture
+                .snapshot()
+                .map(|snapshot| NumericGestureKey::Canonical(snapshot.key)),
+        );
         return Ok(());
     }
-    if !owns_numeric_gesture(view, target, lease) {
-        return Ok(());
+    if owns_native_automation(view, target, lease) {
+        view.update_native_automation_touch(phase, value)?;
+    } else {
+        if !owns_numeric_gesture(view, target, lease) {
+            return Ok(());
+        }
+        dispatch_numeric_gesture(view, target, phase, value)?;
     }
-    dispatch_numeric_gesture(view, target, phase, value)?;
     if matches!(phase, NumericEventPhase::Commit | NumericEventPhase::Cancel) {
         lease.set(None);
     }
@@ -140,12 +181,13 @@ pub(in crate::editor) fn owns_numeric_gesture(
     target: GestureTarget,
     lease: &NumericGestureLease,
 ) -> bool {
-    !view.device_gesture.has_pending_terminal()
-        && view.device_gesture.snapshot().is_some_and(|snapshot| {
-            Some(snapshot.key) == lease.get()
-                && snapshot.target == target
-                && snapshot.key.generation == view.project_generation
-        })
+    owns_native_automation(view, target, lease)
+        || (!view.device_gesture.has_pending_terminal()
+            && view.device_gesture.snapshot().is_some_and(|snapshot| {
+                Some(NumericGestureKey::Canonical(snapshot.key)) == lease.get()
+                    && snapshot.target == target
+                    && snapshot.key.generation == view.project_generation
+            }))
 }
 
 pub(super) fn commit_bound_numeric_edit(
@@ -154,13 +196,25 @@ pub(super) fn commit_bound_numeric_edit(
     lease: &NumericGestureLease,
     finalized: &NumericControlFinalValue,
 ) -> Result<(), &'static str> {
+    if owns_native_automation(view, target, lease) {
+        view.update_native_automation_touch(
+            NumericEventPhase::Commit,
+            ParameterValue::Float(finalized.value as f32),
+        )?;
+        lease.set(None);
+        return Ok(());
+    }
     let active = view.device_gesture.snapshot();
     if active.is_none() && !finalized.explicit_edit && finalized.value == finalized.previous {
         return Ok(());
     }
     if active.is_none() {
         view.begin_device_gesture(target, ParameterValue::Float(finalized.previous as f32))?;
-        lease.set(view.device_gesture.snapshot().map(|snapshot| snapshot.key));
+        lease.set(
+            view.device_gesture
+                .snapshot()
+                .map(|snapshot| NumericGestureKey::Canonical(snapshot.key)),
+        );
     } else if !owns_numeric_gesture(view, target, lease) {
         // Another control may own the same parameter. Submit after its terminal
         // through the existing barrier rather than adopting that gesture.

@@ -153,21 +153,22 @@ pub(crate) fn visit_arrangement_spans(
         // A median onset beyond the query end only rules out this node and
         // its right subtree. Earlier left-subtree spans may still be active.
         if node.max_end > start {
-            if let Some(right) = node.right {
-                if node.span_start < end && nodes[right].max_end > start {
-                    stack[size] = (right, false);
-                    size += 1;
-                }
+            if let Some(right) = node.right
+                && node.span_start < end
+                && nodes[right].max_end > start
+            {
+                stack[size] = (right, false);
+                size += 1;
             }
             if node.span_start < end && spans[node.span_index].end > start {
                 stack[size] = (index, true);
                 size += 1;
             }
-            if let Some(left) = node.left {
-                if nodes[left].max_end > start {
-                    stack[size] = (left, false);
-                    size += 1;
-                }
+            if let Some(left) = node.left
+                && nodes[left].max_end > start
+            {
+                stack[size] = (left, false);
+                size += 1;
             }
         }
     }

@@ -606,6 +606,11 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
                 });
             }
             let generation = editor.read_with(cx, |view, _| view.project_generation);
+            let held_output = editor.read_with(cx, |view, _| {
+                view.audio
+                    .as_ref()
+                    .and_then(|a| a.control.output_identity())
+            });
             match action {
                 "sequence" => {
                     let next = plot(&mut visual, device, 0.71, 0.6);
@@ -714,7 +719,14 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
                 if action == "commit" {
                     assert_ne!(read(view, device), before);
                 } else if action == "project" {
-                    assert!(view.audio.is_none());
+                    // This fixture worker never reports OutputReleased, so the
+                    // Resident endpoint stays held across the replacement.
+                    assert_eq!(
+                        view.audio
+                            .as_ref()
+                            .and_then(|a| a.control.output_identity()),
+                        held_output
+                    );
                     assert!(view.state.as_ref().unwrap().project.tracks().is_empty());
                     if let Some(pending) = view.pending_playback.as_ref() {
                         assert_eq!(pending.project_generation, view.project_generation);
@@ -1407,7 +1419,7 @@ fn eq_created_node_retains_released_position_through_exact_worker_terminal(
     });
     let start = plot(&mut visual, device, 0.8, 0.8);
     let end = plot(&mut visual, device, 0.72, 0.75);
-    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
     visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
     visual.run_until_parked();
     let held = graph.read_with(&visual, |graph, _| {
@@ -1495,7 +1507,7 @@ fn eq_new_node_reaches_worker_playback_preview_while_pointer_is_held(cx: &mut Te
     });
     let start = plot(&mut visual, device, 0.78, 0.8);
     let end = plot(&mut visual, device, 0.66, 0.75);
-    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
     visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
     pump_until(&editor, cx, |view| {
         view.resident_device_preview

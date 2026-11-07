@@ -632,16 +632,19 @@ fn changed_key_paints_current_content_in_same_draw_then_reuses(cx: &mut TestAppC
     assert_eq!(
         visual.rendered_background(selector),
         Some(
-            gpui::rgb(theme::clip_fill(
-                editor.read_with(cx, |view, _| view
-                    .state
-                    .as_ref()
-                    .unwrap()
-                    .project
-                    .track(source)
-                    .unwrap()
-                    .color()),
-                hex_project::ClipFlavor::Muted,
+            gpui::rgb(theme::arrangement_clip_body_fill(
+                theme::clip_fill(
+                    editor.read_with(cx, |view, _| view
+                        .state
+                        .as_ref()
+                        .unwrap()
+                        .project
+                        .track(source)
+                        .unwrap()
+                        .color()),
+                    hex_project::ClipFlavor::Muted,
+                    false
+                ),
                 true
             ))
             .into()
@@ -811,10 +814,11 @@ fn cold_main_selection_reuses_clip_scene_with_current_geometry(cx: &mut TestAppC
     );
     assert_eq!(content.read_with(cx, |content, _| content.builds), builds);
     // The first scene's cached handle still captures an ordinary trim drag.
-    let down = visual
-        .debug_bounds(trim_selector)
-        .expect("reused trim handle")
-        .center();
+    let down = crate::editor::clip_drag_ui_test::trim_grab_point(
+        visual
+            .debug_bounds(trim_selector)
+            .expect("reused trim handle"),
+    );
     visual.simulate_mouse_move(down, None, Modifiers::default());
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(

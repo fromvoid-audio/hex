@@ -279,7 +279,7 @@ fn q_filters_tracks_but_keeps_outside_clips_and_hits_without_editing_history(
         let x = f32::from(before.center().x);
         let viewport = v.visible_viewport(v.state.as_ref().unwrap().timeline_frames);
         assert!(
-            v.clip_handle_at_pointer(f.tracks[1], x, lane.top + 3.0, viewport),
+            v.clip_handle_at_pointer(f.tracks[1], x, lane.top + 3.0, viewport, false),
             "outside-section clip on a retained track stays interactive"
         );
     });

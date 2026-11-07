@@ -21,7 +21,7 @@ fn event(service: &Service) -> Event {
     }
 }
 #[derive(Clone, Copy)]
-enum Slot {
+pub(in crate::editor) enum Slot {
     Track,
     Main,
     Return,
@@ -37,17 +37,88 @@ fn window(
     TrackId,
     DeviceId,
 ) {
+    window_with_gain(cx, type_id, slot, false, None)
+}
+
+pub(in crate::editor) fn window_with_gain(
+    cx: &mut TestAppContext,
+    type_id: &str,
+    slot: Slot,
+    with_gain: bool,
+    sampler_path: Option<&std::path::Path>,
+) -> (
+    VisualTestContext,
+    Entity<EditorView>,
+    Owner,
+    TrackId,
+    DeviceId,
+) {
     cx.update(super::super::bind_editor_keys);
-    let service = Service::new(48000, 32, 8_000_000).unwrap();
+    let service = if sampler_path.is_some() {
+        Service::with_native_reservation(
+            48_000,
+            32,
+            8_000_000,
+            hex_session::ResidentNativeReservation {
+                storage: hex_engine::AudioStorageLedgerReservation {
+                    data_rows: 512,
+                    handle_rows: 64,
+                    root_rows: 64,
+                    max_retained_bytes: 20_000_000,
+                    max_construction_peak_bytes: 30_000_000,
+                },
+                max_scan_frames: 1024,
+            },
+        )
+        .unwrap()
+    } else {
+        Service::new(48000, 32, 8_000_000).unwrap()
+    };
     event(&service);
-    service
-        .submit(Request::Edit(Command::AddTrack {
+    let track_command = if sampler_path.is_some() {
+        Command::AddMidiTrack {
             name: "host automation".into(),
-        }))
-        .unwrap();
-    let Created::Track(track) = event(&service).created.unwrap() else {
+        }
+    } else {
+        Command::AddTrack {
+            name: "host automation".into(),
+        }
+    };
+    service.submit(Request::Edit(track_command)).unwrap();
+    let track_event = event(&service);
+    let revision = track_event.state.revision;
+    let Created::Track(track) = track_event.created.unwrap() else {
         panic!("track")
     };
+    if with_gain {
+        service
+            .submit(Request::Edit(Command::UpsertTrackGainPoint {
+                track,
+                point: hex_project::GainPoint {
+                    incoming_gain: None,
+                    beat: BeatTime::from_raw(2),
+                    gain: 1.0,
+                    outgoing: hex_project::GainInterpolation::Linear,
+                },
+            }))
+            .unwrap();
+        assert!(event(&service).error.is_none());
+    }
+    if let Some(path) = sampler_path {
+        service
+            .submit(Request::LoadFirstSampler {
+                request_id: 1,
+                project_generation: 0,
+                revision,
+                track,
+                empty_sampler: None,
+                path: path.to_path_buf(),
+                cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            })
+            .unwrap();
+        let loaded = event(&service);
+        assert!(loaded.error.is_none(), "{:?}", loaded.error);
+    }
     let state =
         hex_engine::default_native_device_state(DeviceTypeId::new(type_id).unwrap()).unwrap();
     let (owner, command) = match slot {
@@ -90,6 +161,7 @@ fn window(
     let Created::Device(device) = added.created.unwrap() else {
         panic!("device")
     };
+    let initial_state = added.state;
     let bootstrap = cx.add_window(|_, _| gpui::Empty);
     let handle = *bootstrap;
     let editor = cx
@@ -103,7 +175,7 @@ fn window(
                 )
             });
             editor.update(cx, |view, cx| {
-                view.state = Some(added.state);
+                view.state = Some(initial_state);
                 view.selected_track = Some(track);
                 view.device_panel_active = true;
                 view.clip_view_open = true;
@@ -157,7 +229,7 @@ fn header_menu(visual: &mut VisualTestContext, owner: Owner) {
     visual.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
     visual.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
 }
-fn header_assign(
+pub(in crate::editor) fn header_assign(
     visual: &mut VisualTestContext,
     editor: &Entity<EditorView>,
     owner: Owner,
@@ -169,31 +241,7 @@ fn header_assign(
     let index=editor.read_with(visual,|view,_|view.context_menu.as_ref().unwrap().items.iter().position(|item|matches!(&item.action,super::super::context_menu::EditorContextAction::Automation(Action::Show(entry,_)) if entry.target.kind==target)).unwrap());
     choose_index(visual, editor, index);
 }
-fn control_assign(
-    visual: &mut VisualTestContext,
-    editor: &Entity<EditorView>,
-    device: DeviceId,
-    target: DeviceAutomationTarget,
-) {
-    let (parameter, side) = match target {
-        DeviceAutomationTarget::HostInputGain => (hex_engine::DEVICE_INPUT_GAIN.id, "input"),
-        DeviceAutomationTarget::HostOutputGain => (hex_engine::DEVICE_OUTPUT_GAIN.id, "output"),
-        DeviceAutomationTarget::Parameter(_) => panic!("host control"),
-    };
-    let selector = format!(
-        "device-{}-parameter-{}-{side}-meter",
-        device.value(),
-        parameter.value()
-    );
-    let at = visual
-        .debug_bounds(Box::leak(selector.into_boxed_str()))
-        .unwrap()
-        .center();
-    visual.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
-    visual.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
-    choose_label(visual, editor, "add new automation lane");
-}
-fn pump(visual: &mut VisualTestContext, editor: &Entity<EditorView>) {
+pub(in crate::editor) fn pump(visual: &mut VisualTestContext, editor: &Entity<EditorView>) {
     let deadline = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(visual, |view, cx| {
@@ -259,25 +307,33 @@ fn draw(
 }
 
 #[gpui::test]
-fn host_controls_and_header_picker_are_real_for_utility_and_other_native_owners(
+fn host_header_picker_assigns_real_lanes_for_utility_and_other_native_owners(
     cx: &mut TestAppContext,
 ) {
     for type_id in ["hex.utility", "hex.overdrive"] {
         for slot in [Slot::Track, Slot::Main, Slot::Return] {
             let (mut visual, editor, owner, _, device) = window(cx, type_id, slot);
+            // Host trim has no chain control; only the passive output meter follows the device.
+            assert!(
+                visual
+                    .debug_bounds(Box::leak(
+                        format!("device-{}-output-meter", device.value()).into_boxed_str()
+                    ))
+                    .is_some()
+            );
             let before = editor.read_with(&visual, |view, _| {
                 view.state.as_ref().unwrap().project.snapshot()
             });
-            control_assign(
+            header_assign(
                 &mut visual,
                 &editor,
-                device,
+                owner,
                 DeviceAutomationTarget::HostInputGain,
             );
-            control_assign(
+            header_assign(
                 &mut visual,
                 &editor,
-                device,
+                owner,
                 DeviceAutomationTarget::HostOutputGain,
             );
             header_assign(
@@ -326,16 +382,16 @@ fn provider_and_two_host_lanes_edit_clear_and_undo_independently(cx: &mut TestAp
     let provider =
         DeviceAutomationTarget::Parameter(hex_lattice_contract::ParameterId::from_static(1));
     header_assign(&mut visual, &editor, owner, provider);
-    control_assign(
+    header_assign(
         &mut visual,
         &editor,
-        device,
+        owner,
         DeviceAutomationTarget::HostInputGain,
     );
-    control_assign(
+    header_assign(
         &mut visual,
         &editor,
-        device,
+        owner,
         DeviceAutomationTarget::HostOutputGain,
     );
     for (target, y) in [
@@ -462,6 +518,7 @@ fn moved_host_target_refusal_retires_only_its_own_receipt_without_new_history(
             revision,
             device,
             target,
+            vst3_class: None,
             points
         }));
         let earlier = event(&view.service);
@@ -513,6 +570,7 @@ fn explicit_equal_numeric_text_and_real_reenable_menus_preserve_curve_and_receip
                 revision,
                 device,
                 target: kind,
+                vst3_class: None,
                 points: points.clone()
             }));
             let entry = Entry::read(
@@ -630,6 +688,7 @@ fn stale_reenable_keeps_pending_selection_until_its_terminal_then_restores_canon
             revision,
             device,
             target,
+            vst3_class: None,
             points: vec![AutomationPoint {
                 beat: BeatTime::ZERO,
                 value: AutomationValue::new(0.5).unwrap(),
@@ -662,6 +721,7 @@ fn stale_reenable_keeps_pending_selection_until_its_terminal_then_restores_canon
         let edit = Edit::ReadSelection {
             device,
             target,
+            vst3_class: None,
             selection: Read::Authored,
         };
         view.automation_view.devices.read_pending = Some(super::read_selection::PendingRead {
@@ -704,4 +764,692 @@ fn stale_reenable_keeps_pending_selection_until_its_terminal_then_restores_canon
             Read::Base
         );
     });
+}
+
+pub(in crate::editor) const CMD: Modifiers = Modifiers {
+    control: false,
+    alt: false,
+    shift: false,
+    platform: true,
+    function: false,
+};
+const SHIFT: Modifiers = Modifiers {
+    control: false,
+    alt: false,
+    shift: true,
+    platform: false,
+    function: false,
+};
+const SHIFT_CMD: Modifiers = Modifiers {
+    platform: true,
+    ..SHIFT
+};
+
+pub(in crate::editor) fn lane_point(
+    visual: &mut VisualTestContext,
+    device: DeviceId,
+    target: DeviceAutomationTarget,
+    [x, y]: [f32; 2],
+) -> gpui::Point<Pixels> {
+    let bounds = plot(visual, device, target);
+    point(
+        bounds.left() + bounds.size.width * x,
+        bounds.top() + bounds.size.height * y,
+    )
+}
+
+pub(in crate::editor) fn lane_points(
+    visual: &VisualTestContext,
+    editor: &Entity<EditorView>,
+    device: DeviceId,
+    target: DeviceAutomationTarget,
+) -> Vec<AutomationPoint> {
+    editor.read_with(visual, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .automation_target(target)
+            .map(|lane| lane.points.clone())
+            .unwrap_or_default()
+    })
+}
+
+fn selected_beats(visual: &VisualTestContext, editor: &Entity<EditorView>) -> Vec<BeatTime> {
+    editor.read_with(visual, |view, _| {
+        view.automation_view
+            .devices
+            .selected
+            .as_ref()
+            .map(|selected| selected.beats.clone())
+            .unwrap_or_default()
+    })
+}
+
+fn lane_drag(
+    visual: &mut VisualTestContext,
+    from: gpui::Point<Pixels>,
+    to: gpui::Point<Pixels>,
+    modifiers: Modifiers,
+) {
+    visual.simulate_mouse_down(from, MouseButton::Left, modifiers);
+    visual.simulate_mouse_move(to, Some(MouseButton::Left), modifiers);
+    visual.simulate_mouse_up(to, MouseButton::Left, modifiers);
+    visual.run_until_parked();
+}
+
+/// Three unsnapped points (Cmd) at known pixels, so presses hit them exactly.
+fn three_point_lane(
+    cx: &mut TestAppContext,
+) -> (
+    VisualTestContext,
+    Entity<EditorView>,
+    DeviceId,
+    DeviceAutomationTarget,
+    Vec<AutomationPoint>,
+) {
+    let (mut visual, editor, owner, _, device) = window(cx, "hex.utility", Slot::Track);
+    let target =
+        DeviceAutomationTarget::Parameter(hex_lattice_contract::ParameterId::from_static(1));
+    header_assign(&mut visual, &editor, owner, target);
+    for x in [0.2, 0.4, 0.8] {
+        let at = lane_point(&mut visual, device, target, [x, 0.5]);
+        visual.simulate_click(at, CMD);
+        pump(&mut visual, &editor);
+    }
+    let points = lane_points(&visual, &editor, device, target);
+    assert_eq!(points.len(), 3, "blank clicks still add points");
+    (visual, editor, device, target, points)
+}
+
+#[gpui::test]
+fn lane_shift_marquee_selects_inside_points_while_shift_cmd_toggles(cx: &mut TestAppContext) {
+    let (mut visual, editor, device, target, points) = three_point_lane(cx);
+    let beats: Vec<_> = points.iter().map(|point| point.beat).collect();
+    let before = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().revision);
+    // Drag right-to-left over the first two points.
+    let from = lane_point(&mut visual, device, target, [0.5, 0.95]);
+    let to = lane_point(&mut visual, device, target, [0.1, 0.05]);
+    lane_drag(&mut visual, from, to, SHIFT);
+    assert_eq!(selected_beats(&visual, &editor), beats[..2]);
+    let from = lane_point(&mut visual, device, target, [0.7, 0.05]);
+    let to = lane_point(&mut visual, device, target, [0.9, 0.95]);
+    lane_drag(&mut visual, from, to, SHIFT_CMD);
+    assert_eq!(selected_beats(&visual, &editor), beats);
+    let from = lane_point(&mut visual, device, target, [0.1, 0.05]);
+    let to = lane_point(&mut visual, device, target, [0.3, 0.95]);
+    lane_drag(&mut visual, from, to, SHIFT_CMD);
+    assert_eq!(selected_beats(&visual, &editor), beats[1..]);
+    pump(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.state.as_ref().unwrap().revision,
+            before,
+            "marquee selection is view state and authors nothing"
+        );
+    });
+    assert_eq!(lane_points(&visual, &editor, device, target), points);
+}
+
+#[gpui::test]
+fn lane_group_move_and_delete_each_undo_in_one_step(cx: &mut TestAppContext) {
+    let (mut visual, editor, device, target, points) = three_point_lane(cx);
+    let from = lane_point(&mut visual, device, target, [0.1, 0.05]);
+    let to = lane_point(&mut visual, device, target, [0.5, 0.95]);
+    lane_drag(&mut visual, from, to, SHIFT);
+    assert_eq!(selected_beats(&visual, &editor).len(), 2);
+
+    // Dragging one selected point moves both by the same value delta.
+    let first = lane_point(&mut visual, device, target, [0.2, 0.5]);
+    let lower = point(first.x, first.y + px(12.0));
+    lane_drag(&mut visual, first, lower, CMD);
+    pump(&mut visual, &editor);
+    let moved = lane_points(&visual, &editor, device, target);
+    assert_eq!(moved.len(), 3);
+    let deltas: Vec<f32> = moved
+        .iter()
+        .zip(&points)
+        .map(|(moved, original)| {
+            assert_eq!(moved.beat, original.beat, "a vertical drag keeps beats");
+            moved.value.get() - original.value.get()
+        })
+        .collect();
+    assert!(deltas[0] < -0.05, "{deltas:?}");
+    assert!((deltas[0] - deltas[1]).abs() < 1e-4, "{deltas:?}");
+    assert_eq!(deltas[2], 0.0, "unselected points stay put");
+    assert_eq!(selected_beats(&visual, &editor).len(), 2);
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump(&mut visual, &editor);
+    assert_eq!(lane_points(&visual, &editor, device, target), points);
+
+    let from = lane_point(&mut visual, device, target, [0.3, 0.05]);
+    let to = lane_point(&mut visual, device, target, [0.9, 0.95]);
+    lane_drag(&mut visual, from, to, SHIFT);
+    assert_eq!(selected_beats(&visual, &editor).len(), 2);
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.delete_device_automation_point(cx))
+    });
+    pump(&mut visual, &editor);
+    assert_eq!(lane_points(&visual, &editor, device, target), points[..1]);
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump(&mut visual, &editor);
+    assert_eq!(lane_points(&visual, &editor, device, target), points);
+}
+
+#[gpui::test]
+fn lane_plain_blank_drag_adds_a_point_and_drags_it_without_a_marquee(cx: &mut TestAppContext) {
+    let (mut visual, editor, device, target, points) = three_point_lane(cx);
+    // Unsnapped (Cmd) so the dragged point lands exactly under the pointer.
+    let from = lane_point(&mut visual, device, target, [0.6, 0.5]);
+    let to = lane_point(&mut visual, device, target, [0.6, 0.2]);
+    visual.simulate_mouse_down(from, MouseButton::Left, CMD);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.automation_view.devices.marquee.is_none());
+        assert!(view.automation_view.devices.draft.is_some());
+    });
+    // Shift arriving after the press must not turn the gesture into a band.
+    visual.simulate_mouse_move(to, Some(MouseButton::Left), SHIFT_CMD);
+    visual.simulate_mouse_up(to, MouseButton::Left, SHIFT_CMD);
+    visual.run_until_parked();
+    pump(&mut visual, &editor);
+    let after = lane_points(&visual, &editor, device, target);
+    assert_eq!(after.len(), points.len() + 1, "the press added one point");
+    let added = after
+        .iter()
+        .find(|point| !points.contains(point))
+        .expect("new point");
+    assert!(added.value.get() > 0.7, "the drag raised the new point");
+    assert_eq!(selected_beats(&visual, &editor), [added.beat]);
+}
+
+#[gpui::test]
+fn unrelated_edit_refuses_during_automation_gesture_but_release_commits(cx: &mut TestAppContext) {
+    let (mut visual, editor, owner, track, device) = window(cx, "hex.utility", Slot::Track);
+    let target =
+        DeviceAutomationTarget::Parameter(hex_lattice_contract::ParameterId::from_static(1));
+    header_assign(&mut visual, &editor, owner, target);
+    let at = lane_point(&mut visual, device, target, [0.6, 0.5]);
+    visual.simulate_mouse_down(at, MouseButton::Left, CMD);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.automation_view.devices.draft.is_some());
+        assert!(!view.enqueue(Request::Edit(Command::Mute { track, muted: true })));
+        assert!(view.automation_view.devices.draft.is_some());
+        assert!(
+            view.error
+                .as_deref()
+                .unwrap()
+                .contains("automation point gesture")
+        );
+        let generation = view.project_generation;
+        let revision = view.state.as_ref().unwrap().revision;
+        assert!(!view.enqueue(Request::GainLane {
+            project_generation: generation,
+            revision,
+            track,
+            edit: hex_session::service::GainLaneEdit::Clear,
+        }));
+        assert_eq!(view.worker_requests_pending, 0);
+        assert!(view.error.as_deref().unwrap().contains("local draft"));
+    });
+    visual.simulate_mouse_up(at, MouseButton::Left, CMD);
+    visual.run_until_parked();
+    pump(&mut visual, &editor);
+    assert_eq!(lane_points(&visual, &editor, device, target).len(), 1);
+}
+
+#[gpui::test]
+fn selection_marquee_does_not_block_an_unrelated_edit(cx: &mut TestAppContext) {
+    let (mut visual, editor, owner, track, device) = window(cx, "hex.utility", Slot::Track);
+    let target =
+        DeviceAutomationTarget::Parameter(hex_lattice_contract::ParameterId::from_static(1));
+    header_assign(&mut visual, &editor, owner, target);
+    let at = lane_point(&mut visual, device, target, [0.6, 0.5]);
+    visual.simulate_mouse_down(at, MouseButton::Left, SHIFT);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.automation_view.devices.marquee.is_some());
+        assert!(view.automation_view.devices.draft.is_none());
+        assert!(view.enqueue(Request::Edit(Command::Mute { track, muted: true })));
+    });
+    visual.simulate_mouse_up(at, MouseButton::Left, SHIFT);
+}
+
+#[gpui::test]
+fn invalid_gain_text_blocks_starting_an_automation_gesture(cx: &mut TestAppContext) {
+    let (mut visual, editor, owner, track, device) =
+        window_with_gain(cx, "hex.utility", Slot::Track, true, None);
+    let target =
+        DeviceAutomationTarget::Parameter(hex_lattice_contract::ParameterId::from_static(1));
+    editor.update(&mut visual, |view, cx| {
+        view.clip_view_open = false;
+        view.gain_lane.track = Some(track);
+        view.gain_lane.selected = Some(BeatTime::from_raw(2));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let gain = visual
+        .debug_bounds("gain-point-value-value")
+        .unwrap()
+        .center();
+    visual.simulate_click(gain, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("invalid");
+    header_assign(&mut visual, &editor, owner, target);
+    let at = lane_point(&mut visual, device, target, [0.6, 0.5]);
+    visual.simulate_mouse_down(at, MouseButton::Left, CMD);
+    editor.read_with(&visual, |view, cx| {
+        assert!(view.gain_numeric_editing(cx));
+        assert!(view.automation_view.devices.draft.is_none());
+    });
+    visual.simulate_mouse_up(at, MouseButton::Left, CMD);
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.cancel_gain_draft(cx));
+    });
+    visual.simulate_mouse_down(at, MouseButton::Left, CMD);
+    visual.simulate_mouse_up(at, MouseButton::Left, CMD);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.automation_view.devices.pending.is_some())
+    });
+}
+
+pub(in crate::editor) struct TestWave(pub(in crate::editor) std::path::PathBuf);
+impl TestWave {
+    pub(in crate::editor) fn new() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "hex-draft-test-{}-{}.wav",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&44_u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&48_000_u32.to_le_bytes());
+        wav.extend_from_slice(&96_000_u32.to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&8_u32.to_le_bytes());
+        wav.extend_from_slice(&[0_u8; 8]);
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap()
+            .write_all(&wav)
+            .unwrap();
+        Self(path)
+    }
+}
+impl Drop for TestWave {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// The bound control displays the in-flight gesture value before canonical state.
+fn utility_gain_value(
+    visual: &mut VisualTestContext,
+    editor: &Entity<EditorView>,
+    device: DeviceId,
+) -> (Option<ParameterValue>, ParameterValue) {
+    let parameter = hex_lattice_contract::ParameterId::from_static(1);
+    editor.read_with(visual, |view, _| {
+        let canonical = hex_engine::native_device_parameter(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .state(),
+            parameter,
+        )
+        .unwrap();
+        (
+            view.device_gesture
+                .snapshot()
+                .map(|snapshot| snapshot.value),
+            canonical,
+        )
+    })
+}
+
+fn dotted_top(visual: &mut VisualTestContext, device: DeviceId) -> Option<Pixels> {
+    visual
+        .debug_bounds(Box::leak(
+            format!("automation-dotted-{}-1-true", device.value()).into_boxed_str(),
+        ))
+        .map(|bounds| bounds.top())
+}
+
+#[gpui::test]
+fn last_touched_dotted_line_follows_gesture_preview_through_delayed_ack(cx: &mut TestAppContext) {
+    let (mut visual, editor, owner, _, device) = window(cx, "hex.utility", Slot::Track);
+    let kind = DeviceAutomationTarget::Parameter(hex_lattice_contract::ParameterId::from_static(1));
+    editor.update(&mut visual, |view, cx| {
+        view.automation_view.enabled = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(editor.read_with(&visual, |view, _| {
+        !view.automation_view.devices.has_main(owner)
+    }));
+    assert!(dotted_top(&mut visual, device).is_none());
+    let (_, initial) = utility_gain_value(&mut visual, &editor, device);
+    let knob = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-1-knob", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let start = knob.center();
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    let mut previous = None;
+    let mut end = start;
+    for step in 1..=3 {
+        end = point(start.x, start.y - px(20.0 * step as f32));
+        visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+        visual.run_until_parked();
+        let (control, canonical) = utility_gain_value(&mut visual, &editor, device);
+        assert_eq!(canonical, initial, "drag frames stay uncommitted");
+        let expected = editor.read_with(&visual, |view, _| {
+            let entry = view
+                .automation_view
+                .devices
+                .main
+                .iter()
+                .find(|entry| entry.target.owner == owner)
+                .expect("touching the control selects its lane");
+            assert_eq!(entry.target.kind, kind);
+            entry.normalized(control.expect("gesture preview")).unwrap()
+        });
+        let plot = visual
+            .debug_bounds(Box::leak(
+                format!("automation-plot-{}-1-true", device.value()).into_boxed_str(),
+            ))
+            .unwrap();
+        let top = dotted_top(&mut visual, device).expect("unautomated lane is dotted");
+        let wanted =
+            f32::from(plot.top()) + 4.0 + (1.0 - expected) * (f32::from(plot.size.height) - 8.0);
+        assert!((f32::from(top) - wanted).abs() < 0.5, "{top:?} vs {wanted}");
+        assert!(
+            previous.is_none_or(|previous| top < previous),
+            "line follows each frame"
+        );
+        previous = Some(top);
+    }
+    let released = previous.unwrap();
+    let (final_value, _) = utility_gain_value(&mut visual, &editor, device);
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    for _ in 0..3 {
+        editor.update(&mut visual, |view, cx| {
+            assert!(
+                view.device_gesture.snapshot().is_some(),
+                "ack still delayed"
+            );
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(dotted_top(&mut visual, device), Some(released));
+        assert_eq!(utility_gain_value(&mut visual, &editor, device).1, initial);
+    }
+    pump(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.device_gesture.snapshot().is_none())
+    });
+    assert_eq!(
+        utility_gain_value(&mut visual, &editor, device).1,
+        final_value.unwrap()
+    );
+    let installed = dotted_top(&mut visual, device).unwrap();
+    assert!((f32::from(installed) - f32::from(released)).abs() < 0.5);
+}
+
+#[gpui::test]
+fn touching_an_automated_parameter_shows_its_envelope_unmoved(cx: &mut TestAppContext) {
+    let (mut visual, editor, owner, _, device) = window(cx, "hex.utility", Slot::Track);
+    let kind = DeviceAutomationTarget::Parameter(hex_lattice_contract::ParameterId::from_static(1));
+    let points = vec![AutomationPoint {
+        beat: BeatTime::ZERO,
+        value: AutomationValue::new(0.75).unwrap(),
+        outgoing: AutomationInterpolation::Step,
+    }];
+    editor.update(&mut visual, |view, cx| {
+        let revision = view.state.as_ref().unwrap().revision;
+        assert!(view.enqueue(Request::DeviceAutomation {
+            project_generation: view.project_generation,
+            revision,
+            device,
+            target: kind,
+            vst3_class: None,
+            points: points.clone()
+        }));
+        view.automation_view.enabled = true;
+        cx.notify();
+    });
+    pump(&mut visual, &editor);
+    let knob = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-1-knob", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let start = knob.center();
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(start.x, start.y - px(16.0)),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        let entry = view
+            .automation_view
+            .devices
+            .main
+            .iter()
+            .find(|entry| entry.target.owner == owner)
+            .unwrap();
+        assert_eq!(entry.target.kind, kind);
+        assert_eq!(
+            view.automation_view.devices.points(state, entry.target),
+            points
+        );
+    });
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("automation-plot-{}-1-true", device.value()).into_boxed_str(),
+            ))
+            .is_some()
+    );
+    assert!(
+        dotted_top(&mut visual, device).is_none(),
+        "envelope replaces the dotted line"
+    );
+    visual.simulate_mouse_up(
+        point(start.x, start.y - px(16.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    pump(&mut visual, &editor);
+}
+
+#[gpui::test]
+fn clearing_a_recorded_only_lane_removes_the_take_with_one_undo(cx: &mut TestAppContext) {
+    use hex_project::{DeviceAutomationTouchSpan, DeviceAutomationTouchStep};
+    let (mut visual, editor, owner, _, device) = window(cx, "hex.utility", Slot::Track);
+    let kind = DeviceAutomationTarget::HostOutputGain;
+    let start = BeatTime::from_ratio(1, 64).unwrap();
+    let touch = vec![DeviceAutomationTouchSpan {
+        start,
+        end: BeatTime::from_ratio(1, 32).unwrap(),
+        steps: vec![DeviceAutomationTouchStep {
+            beat: start,
+            value: AutomationValue::new(0.25).unwrap(),
+        }],
+    }];
+    editor.update(&mut visual, |view, _| {
+        assert!(
+            view.enqueue(Request::Edit(Command::SpliceDeviceAutomationTouch {
+                vst3_class: None,
+                device,
+                target: kind,
+                spans: touch.clone(),
+            }))
+        );
+    });
+    pump(&mut visual, &editor);
+    let target = visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            let state = view.state.as_ref().unwrap();
+            let lane = state
+                .project
+                .device(device)
+                .unwrap()
+                .automation_target(kind)
+                .unwrap();
+            assert!(lane.points.is_empty());
+            assert_eq!(lane.touch, touch);
+            let entry =
+                Entry::read(&state.project, view.project_generation, owner, device, kind).unwrap();
+            assert_eq!(entry.end, Some(touch[0].end));
+            let target = entry.target;
+            view.automation_view.enabled = true;
+            view.automation_menu_action(Action::Show(entry, true), window, cx);
+            target
+        })
+    });
+    pump(&mut visual, &editor);
+    let dotted: &'static str = Box::leak(
+        format!(
+            "automation-dotted-{}-{}-false",
+            device.value(),
+            target.key()
+        )
+        .into_boxed_str(),
+    );
+    let center = plot(&mut visual, device, kind).center();
+    assert!(visual.debug_bounds(dotted).is_none());
+    visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
+    editor.update(&mut visual, |view, cx| {
+        assert_eq!(
+            view.error.as_deref(),
+            Some("clear recorded automation before editing this lane"),
+        );
+        assert!(!view.automation_view.devices.pointer_active());
+        view.commit_device_automation(target, Vec::new(), cx);
+    });
+    pump(&mut visual, &editor);
+    assert!(visual.debug_bounds(dotted).is_some());
+    editor.update(&mut visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert!(
+            state
+                .project
+                .device(device)
+                .unwrap()
+                .automation_target(kind)
+                .is_none()
+        );
+        assert!(view.enqueue(Request::Undo));
+    });
+    pump(&mut visual, &editor);
+    assert!(visual.debug_bounds(dotted).is_none());
+    editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        let lane = state
+            .project
+            .device(device)
+            .unwrap()
+            .automation_target(kind)
+            .unwrap();
+        assert!(lane.points.is_empty());
+        assert_eq!(lane.touch, touch);
+    });
+}
+
+#[gpui::test]
+fn host_trim_lane_controls_edit_their_exact_stage_and_offer_record_arm(cx: &mut TestAppContext) {
+    let (mut visual, editor, owner, _, device) = window(cx, "hex.utility", Slot::Track);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+    assert!(visual.update(|window, _| window.is_window_active()));
+    for (kind, descriptor, delta) in [
+        (
+            DeviceAutomationTarget::HostInputGain,
+            hex_engine::DEVICE_INPUT_GAIN,
+            -16.0,
+        ),
+        (
+            DeviceAutomationTarget::HostOutputGain,
+            hex_engine::DEVICE_OUTPUT_GAIN,
+            8.0,
+        ),
+    ] {
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                let state = view.state.as_ref().unwrap();
+                let entry =
+                    Entry::read(&state.project, view.project_generation, owner, device, kind).unwrap();
+                assert!(matches!(
+                    view.native_automation_arm_action(&entry),
+                    Some(("arm automation recording", Action::ToggleNativeArm(target))) if target.kind == kind
+                ));
+                view.automation_menu_action(Action::Show(entry, true), window, cx);
+            });
+        });
+        pump(&mut visual, &editor);
+        let selector = Box::leak(
+            format!(
+                "device-{}-parameter-{}-value",
+                device.value(),
+                descriptor.id.value()
+            )
+            .into_boxed_str(),
+        );
+        let center = visual.debug_bounds(selector).unwrap().center();
+        let end = point(center.x, center.y + px(delta));
+        visual.simulate_mouse_move(center, None, Modifiers::default());
+        visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
+        let (captured, focused) =
+            visual.update(|window, cx| (window.is_pointer_dragging(), window.focused(cx)));
+        assert!(captured, "trim pointer capture, focus={focused:?}");
+        visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            let snapshot = view.device_gesture.snapshot();
+            assert!(matches!(snapshot.map(|gesture| gesture.target),
+                Some(hex_session::device_gesture::GestureTarget::DeviceParameter { device: id, parameter })
+                if id == device && parameter == descriptor.id), "{snapshot:?} / {:?}", view.error);
+        });
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        pump(&mut visual, &editor);
+    }
+    let read = |visual: &VisualTestContext| {
+        editor.read_with(visual, |view, _| {
+            let state = view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .state();
+            (state.input_gain_db(), state.output_gain_db())
+        })
+    };
+    let (input, output) = read(&visual);
+    assert!(input > 0.0 && output < 0.0, "{input} / {output}");
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump(&mut visual, &editor);
+    assert_eq!(read(&visual), (input, 0.0));
 }

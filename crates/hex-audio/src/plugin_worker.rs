@@ -3,6 +3,7 @@
 //! This is not installed-plugin process admission or crash recovery authority.
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 use hex_lattice_contract::ForeignProcessorBinding as Binding;
+pub use hex_plugin_host::transport::ReceivedProgram;
 use hex_plugin_host::transport::*;
 use std::{
     sync::atomic::Ordering::{Acquire, Release},
@@ -15,16 +16,30 @@ mod capture;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod controller;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub use controller::{NativeWorkerControllerProgress, NativeWorkerControllerQuery};
+pub use controller::{
+    NativeWorkerAuthoredParameterProgress, NativeWorkerControllerProgress,
+    NativeWorkerControllerQuery,
+};
+pub use hex_plugin_host::protocol::{ControllerRequest, ParameterPageQuery, PluginEditorState};
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod edits;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod parameter_change;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod parameters;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use parameter_change::{
+    NativeParameterHold, NativeWorkerParameterChange, NativeWorkerParameterProgress,
+    ProcessedParameterChange,
+};
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use parameters::{MAX_OBSERVED_PARAMETERS, NativeParameterValue, NativeParameterValues};
 mod storage;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use capture::{NativeWorkerCapture, NativeWorkerCaptureProgress};
+/// Non-terminal helper refusal carried by [`NativeWorkerCaptureProgress::Refused`].
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use hex_plugin_host::protocol::StateCaptureRefusal;
 
 // Original completion allocation, shared only by joining control and worker.
 // The callback never sees the capture mailbox or takes its mutex.
@@ -38,6 +53,10 @@ struct Signal {
     edits_requested: std::sync::atomic::AtomicBool,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     controller_requested: std::sync::atomic::AtomicBool,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    failure_diagnostic: std::sync::Mutex<Option<String>>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    parameter_change_requested: std::sync::atomic::AtomicBool,
 }
 impl Signal {
     fn new() -> Self {
@@ -51,6 +70,10 @@ impl Signal {
             edits_requested: std::sync::atomic::AtomicBool::new(false),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             controller_requested: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            failure_diagnostic: std::sync::Mutex::new(None),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            parameter_change_requested: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -82,8 +105,38 @@ struct State {
     controller: controller::Work,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     control_turn: u8,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    parameter_change: parameter_change::Work,
 }
 impl State {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn report_native_failure(
+        &self,
+        signal: &Signal,
+        exchange: &str,
+        error: &hex_plugin_host::Error,
+    ) {
+        use std::io::Write as _;
+
+        let Some(Processor::Native(instance)) = self.processor.as_ref() else {
+            return;
+        };
+        let configuration = instance.configuration();
+        let bundle = std::path::Path::new(&configuration.bundle)
+            .file_name()
+            .unwrap_or_default();
+        let message = format!(
+            "vst3 worker failed: exchange={exchange} bundle={bundle:?} binding={:?} child={:?} completed_blocks={} cause={error}",
+            configuration.binding,
+            instance.child_id_on_control(),
+            instance.completed_blocks_on_control(),
+        );
+        if let Ok(mut diagnostic) = signal.failure_diagnostic.lock() {
+            *diagnostic = Some(message.clone());
+        }
+        let _ = writeln!(std::io::stderr().lock(), "{message}");
+    }
+
     fn prepare_transport(&mut self) -> Result<(), Fault> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
@@ -117,22 +170,37 @@ impl State {
         }
         Ok(())
     }
-    fn process(&mut self, block: Block) -> Result<Block, Fault> {
+    fn process(
+        &mut self,
+        block: Block,
+        authored: bool,
+        manual_parameter: Option<ParameterPoint>,
+    ) -> Result<Block, Fault> {
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let _ = manual_parameter;
         match self.processor.as_mut() {
-            Some(Processor::Function(process)) => process(block),
+            Some(Processor::Function(process)) if !authored => process(block),
+            Some(Processor::Function(_)) => Err(Fault::InvalidParameters),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            Some(Processor::Native(instance)) => match instance.exchange_on_worker(block) {
-                Ok(reply) => Ok(reply),
-                Err(error) => {
-                    let fault = if matches!(error, hex_plugin_host::Error::Cancelled) {
-                        Fault::Revoked
-                    } else {
-                        Fault::Protocol
-                    };
-                    self.native_error = Some(error);
-                    Err(fault)
+            Some(Processor::Native(instance)) => {
+                let result = if authored {
+                    instance.exchange_armed_authored_with_manual_on_worker(block, manual_parameter)
+                } else {
+                    instance.exchange_on_worker(block)
+                };
+                match result {
+                    Ok(reply) => Ok(reply),
+                    Err(error) => {
+                        let fault = if matches!(error, hex_plugin_host::Error::Cancelled) {
+                            Fault::Revoked
+                        } else {
+                            Fault::Protocol
+                        };
+                        self.native_error = Some(error);
+                        Err(fault)
+                    }
                 }
-            },
+            }
             None => Err(Fault::Protocol),
         }
     }
@@ -238,6 +306,8 @@ fn spawn_processor_with(
         controller: controller::Work::default(),
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         control_turn: 0,
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        parameter_change: parameter_change::Work::default(),
     });
     let storage = storage::reserved_backing(&guard, &completed);
     let join = spawn(guard, published);
@@ -312,19 +382,59 @@ fn transport_runner_with_setup(
                 fault = Some(Fault::Protocol);
                 break;
             };
-            match state.worker.receive() {
-                Ok(Some(block)) => {
-                    let result = state.process(block).and_then(|reply| {
-                        // Validate the complete reply before publishing a
-                        // read-only observation under this original owner.
-                        state.worker.complete(reply)?;
-                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                        state.observe_parameter_reply(&reply)?;
-                        Ok(())
-                    });
+            match state.worker.receive_request() {
+                Ok(Some(hex_plugin_host::transport::WorkerRequest {
+                    block,
+                    parameter_capacity,
+                    authored_program,
+                    manual_origin_available,
+                })) => {
+                    let authored = authored_program.is_some();
+                    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                    let _ = (parameter_capacity, manual_origin_available);
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    let mut block = block;
+                    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                    let manual_parameter = None;
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    let manual_parameter = match state.stage_parameter_change(
+                        &published,
+                        &mut block,
+                        parameter_capacity,
+                        authored,
+                        manual_origin_available,
+                    ) {
+                        Ok(point) => point,
+                        Err(error) => {
+                            state.worker.revoke();
+                            fault = Some(error);
+                            break;
+                        }
+                    };
+                    let result =
+                        state
+                            .process(block, authored, manual_parameter)
+                            .and_then(|reply| {
+                                // Native exchange already validated the complete SDK
+                                // reply. Retain its private input receipt even if Stop
+                                // revokes the transport before callback publication.
+                                // The live terminal is still published only below.
+                                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                                let manual = state.complete_parameter_change(&reply)?;
+                                #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                                let manual = None;
+                                state.worker.complete_with_manual_parameter(reply, manual)?;
+                                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                                state.observe_parameter_reply(&reply)?;
+                                Ok(())
+                            });
                     if let Err(error) = result {
                         state.worker.revoke();
                         if error != Fault::Revoked {
+                            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                            if let Some(error) = &state.native_error {
+                                state.report_native_failure(&published, "pcm", error);
+                            }
                             fault = Some(error);
                         }
                         break;
@@ -347,13 +457,20 @@ fn transport_runner_with_setup(
                 break;
             }
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            if let Err(error) = state.publish_parameter_change(&published) {
+                state.worker.revoke();
+                fault = Some(error);
+                break;
+            }
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             if let Err(error) = state.advance_native_control(&published) {
                 let refused = matches!(error, hex_plugin_host::Error::Cancelled);
-                state.native_error = Some(error);
                 state.worker.revoke();
                 if !refused {
+                    state.report_native_failure(&published, "control", &error);
                     fault = Some(Fault::Protocol);
                 }
+                state.native_error = Some(error);
                 break;
             }
         }
@@ -438,6 +555,50 @@ impl NativeWorker {
     pub(crate) fn transport_is_live_on_control(&self) -> bool {
         !self.retirement_requested && !self.reaper.control.is_revoked()
     }
+
+    pub(crate) fn take_failure_diagnostic_on_control(&self) -> Option<String> {
+        if let Some(diagnostic) = self
+            .reaper
+            .completed
+            .failure_diagnostic
+            .try_lock()
+            .ok()?
+            .take()
+        {
+            return Some(diagnostic);
+        }
+        self.reaper.control.take_callback_fault().map(|fault| {
+            let deadline = self.reaper.control.deadline_miss().map_or_else(
+                String::new,
+                |miss| format!(
+                    " reply_sequence={} worker_phase={:?} quantum={}",
+                    miss.reply_sequence, miss.worker_phase, self.quantum
+                ),
+            );
+            format!(
+                "vst3 callback transport failed: binding={:?} completed_blocks={} fault={fault:?} cause={}{}",
+                self.binding,
+                self.reaper.completed_blocks(),
+                fault.message(),
+                deadline,
+            )
+        })
+    }
+    /// Actual original request pickup, distinct from successful processing.
+    /// The copied observation grants no graph, canonical or final-output ACK.
+    pub fn received_program_on_control(&self) -> Option<ReceivedProgram> {
+        self.transport_is_live_on_control()
+            .then(|| self.reaper.control.received_program())
+            .flatten()
+    }
+
+    /// Latest pickup only when its matching reply was successfully published
+    /// by this native joining worker. Final Main delivery remains separate.
+    pub fn processed_program_on_control(&self) -> Option<ReceivedProgram> {
+        let received = self.received_program_on_control()?;
+        (self.reaper.completed_blocks() > received.sequence).then_some(received)
+    }
+
     /// Diagnostic publication progress only; never native/root/graph readiness.
     pub fn published_blocks_on_control(&self) -> u64 {
         self.reaper.completed_blocks()
@@ -452,6 +613,14 @@ impl NativeWorker {
         if self.retirement_requested {
             return Err(hex_plugin_host::Error::Protocol(
                 "native worker retirement is terminal",
+            ));
+        }
+        if self
+            .parameter_change_pending_on_control()
+            .map_err(hex_plugin_host::Error::Protocol)?
+        {
+            return Err(hex_plugin_host::Error::Protocol(
+                "native parameter input terminal is pending",
             ));
         }
         let joined = self.reaper.join_on_control();
@@ -474,14 +643,14 @@ impl NativeWorker {
                 .map(|fault| hex_plugin_host::Error::Protocol(fault.message()))
         });
         if let Some(error) = failure {
-            if let Some(Processor::Native(instance)) = state.processor.as_mut() {
-                if let Err(custody) = instance.cancel_and_reap_on_control() {
-                    return Err(hex_plugin_host::Error::Preparation {
-                        cause: Box::new(error),
-                        exit: None,
-                        custody_error: Some(Box::new(custody)),
-                    });
-                }
+            if let Some(Processor::Native(instance)) = state.processor.as_mut()
+                && let Err(custody) = instance.cancel_and_reap_on_control()
+            {
+                return Err(hex_plugin_host::Error::Preparation {
+                    cause: Box::new(error),
+                    exit: None,
+                    custody_error: Some(Box::new(custody)),
+                });
             }
             return Err(error);
         }
