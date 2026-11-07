@@ -288,7 +288,7 @@ impl WorkerAudioSink for ResidentSink {
     }
     fn received_foreign_program_on_control(
         &mut self,
-        binding: hex_lattice_contract::ForeignProcessorBinding,
+        binding: hex_audio::plugin_effects::EffectBinding,
     ) -> hex_engine::ForeignProgramFrontier {
         self.inner.received_foreign_program_on_control(binding)
     }
