@@ -326,6 +326,38 @@ impl PreparedParameterAutomation {
         self.foreign.as_ref()
     }
 
+    pub(crate) fn shares_foreign_program_history_with(
+        &self,
+        other: &Self,
+        binding: hex_lattice_contract::ForeignProcessorBinding,
+    ) -> bool {
+        let Self {
+            ids,
+            lanes,
+            points,
+            host_input,
+            host_output,
+            input_target,
+            foreign,
+            touch,
+        } = self;
+        ids == &other.ids
+            && lanes == &other.lanes
+            && points == &other.points
+            && host_input == &other.host_input
+            && host_output == &other.host_output
+            && input_target == &other.input_target
+            && touch == &other.touch
+            && match (foreign, &other.foreign) {
+                (Some(a), Some(b)) => {
+                    a.borrow().binding == binding
+                        && b.borrow().binding == binding
+                        && a.shares_current_program_history_with(b)
+                }
+                _ => false,
+            }
+    }
+
     /// Carry the exact predecessor's immutable foreign quantum programs while
     /// preparing a new graph on control. Native/host envelopes stay unchanged.
     /// The host must obtain the optional frontier from this original worker.
