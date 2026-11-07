@@ -507,6 +507,10 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         )))
         .unwrap();
     visual.simulate_click(shell.center(), Modifiers::default());
+    visual.simulate_keystrokes("escape");
+    let background =
+        super::operator_context_selection_tests::row_background(&mut visual, device, 0);
+    visual.simulate_click(background, Modifiers::default());
     visual.run_until_parked();
     assert_eq!(
         tab_bounds(&mut visual, device, "envelope", "amp env"),
