@@ -560,7 +560,7 @@ fn actual_manual_input_coexists_with_another_authored_parameter() {
                     Some(0),
                     Some(1),
                     Some(2),
-                    Some(3),
+                    None,
                     Some(100),
                     Some(101),
                     Some(102),
@@ -571,7 +571,7 @@ fn actual_manual_input_coexists_with_another_authored_parameter() {
                 return Err(Fault::InvalidParameters);
             };
             assert_eq!(change.frame, 4);
-            for (frame, normalized) in [(0, 0.25), (3, 0.5), (4, 0.75)] {
+            for (frame, normalized) in [(0, 0.25), (2, 0.5), (4, 0.75)] {
                 output.push(ParameterPoint {
                     frame,
                     id: 7,
@@ -599,12 +599,10 @@ fn actual_manual_input_coexists_with_another_authored_parameter() {
     let request = begin_change(&mut owner, 11, 0.5);
     let input = [[0.5, -0.25]; 8];
     let mut output = [[9.0; 2]; 8];
-    let origin = |frame| {
-        Some(if frame < 4 {
-            frame as u64
-        } else {
-            frame as u64 + 96
-        })
+    let origin = |frame| match frame {
+        3 => None,
+        0..=2 => Some(frame as u64),
+        _ => Some(frame as u64 + 96),
     };
     let stage = || {
         endpoint.begin_physical_callback(8).unwrap();
@@ -679,7 +677,7 @@ fn actual_manual_input_coexists_with_another_authored_parameter() {
             thread::yield_now();
         }
     }
-    let expected_left = [0.5, 2.0 / 3.0, 5.0 / 6.0, 1.0, 1.875, 1.875, 1.875, 1.875];
+    let expected_left = [0.5, 0.75, 1.0, 1.0, 1.875, 1.875, 1.875, 1.875];
     for (actual, expected) in output.into_iter().zip(expected_left) {
         assert!(
             (actual[0] - expected).abs() < 1.0e-6,
