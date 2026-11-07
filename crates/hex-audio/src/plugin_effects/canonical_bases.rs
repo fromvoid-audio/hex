@@ -119,6 +119,10 @@ impl Hosting {
 
 impl CanonicalBasesCapture {
     #[cfg(test)]
+    pub(crate) fn preparation_progress(&self, output: &PublicationControl) -> Option<Progress> {
+        output.native_source_preparation_progress(self.scratch)
+    }
+    #[cfg(test)]
     pub(crate) fn awaiting_processing_approval(&self) -> bool {
         matches!(self.phase, Phase::Verify)
     }

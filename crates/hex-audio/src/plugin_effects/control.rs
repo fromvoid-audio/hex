@@ -377,3 +377,38 @@ impl<'a> NativeEffectDefinition<'a> {
         }))
     }
 }
+
+impl NativeEffectControl {
+    pub(crate) fn begin_parameter_extension(
+        &mut self,
+        class: hex_plugin_state::ClassId,
+        id: u32,
+        steps: u32,
+        query: hex_plugin_host::protocol::ParameterPageQuery,
+    ) -> Result<NativeWorkerControllerQuery, &'static str> {
+        self.worker
+            .begin_authored_parameter_extension_on_control(class, id, steps, query)
+    }
+    pub(crate) fn complete_parameter_extension(
+        &mut self,
+        token: &NativeWorkerControllerQuery,
+        facts: Option<&CapturedCanonicalBases>,
+    ) -> Result<crate::plugin_worker::NativeWorkerAuthoredParameterProgress, &'static str> {
+        let progress = self
+            .worker
+            .poll_authored_parameter_extension_on_control(token)?;
+        if let (
+            crate::plugin_worker::NativeWorkerAuthoredParameterProgress::Armed {
+                id, steps, ..
+            },
+            Some(facts),
+        ) = (progress, facts)
+        {
+            let next = super::parameter_extension::extended(&self.configuration, facts, id, steps)?;
+            self.configuration.reserve_program_revision_on_control()?;
+            self.source_metadata.authored_bases = super::parameter_extension::bases(&next);
+            self.configuration.authored = next;
+        }
+        Ok(progress)
+    }
+}

@@ -10,6 +10,7 @@ mod manual_order;
 mod manual_origin;
 mod manual_pause;
 mod manual_preroll;
+mod parameter_extension;
 mod pressure;
 #[cfg(not(debug_assertions))]
 mod profile;

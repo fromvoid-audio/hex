@@ -19,6 +19,7 @@ mod effect;
 mod endpoints;
 mod epoch;
 pub(super) mod ordinary;
+mod parameter_extension;
 mod program;
 mod references;
 mod state_approval;

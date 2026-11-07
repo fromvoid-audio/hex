@@ -36,6 +36,7 @@ pub use manual_base_capture::ManualBaseCapture;
 mod canonical_bases;
 pub use canonical_bases::{CanonicalBasesCapture, CapturedCanonicalBases};
 mod control;
+mod parameter_extension;
 mod state_approval;
 pub(crate) use control::{NativeEffectControl, NativeEffectReference};
 mod source_metadata;
@@ -229,6 +230,17 @@ impl NativeEffect {
                 };
             configuration.authored = capabilities;
             authored_bases = bases;
+        }
+        if let Err(cause) = instance.reserve_authored_parameter_capacity_on_control(
+            hex_plugin_host::transport::MAX_PARAMETER_POINTS,
+        ) {
+            return Err(NativeWorkerStartFailure::retain_source_on_control(
+                cause, instance,
+            ));
+        }
+        if authored.is_none() {
+            configuration.authored =
+                automation::SourceCapabilities::reserved(instance.configuration().identity.class);
         }
         let dry_frames = configuration.prepared.total_latency_frames() as usize;
         // Reserve the actual retirement diagnostics before starting the worker;
@@ -608,7 +620,7 @@ impl ForeignProcessors for NativeEffectCallback {
         if !self.matches(node)
             || node.automation.is_some_and(|program| {
                 program.binding != self.configuration.binding
-                    || !self.configuration.authored.is_armed()
+                    || !self.configuration.authored.has_metadata_container()
                     || !parameters.is_empty()
             })
             || (!notes.is_empty() && !self.configuration.prepared.is_instrument_profile())

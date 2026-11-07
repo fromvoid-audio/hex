@@ -135,6 +135,15 @@ impl Default for SourceCapabilities {
 pub(super) type CanonicalParameterBases = [Option<(u32, u64)>; MAX_PARAMETER_POINTS];
 
 impl SourceCapabilities {
+    /// The original source reserved its native metadata container. An empty
+    /// set grants no target; each later ID still needs its actual SDK ACK.
+    pub(super) fn reserved(class: hex_plugin_state::ClassId) -> Self {
+        Self {
+            class: Some(class),
+            ..Self::default()
+        }
+    }
+
     pub(super) fn arm(
         instance: &mut hex_plugin_host::native::Prepared,
         class: hex_plugin_state::ClassId,
@@ -214,6 +223,10 @@ impl SourceCapabilities {
         &self.parameters[..self.len]
     }
 
+    pub(super) fn class(&self) -> Option<hex_plugin_state::ClassId> {
+        self.class
+    }
+
     pub(super) fn same_parameters(&self, other: &Self) -> bool {
         self.class == other.class
             && self.len == other.len
@@ -224,7 +237,7 @@ impl SourceCapabilities {
                 .all(|(a, b)| a.id == b.id && a.steps == b.steps)
     }
 
-    pub(super) fn is_armed(&self) -> bool {
+    pub(super) fn has_metadata_container(&self) -> bool {
         self.class.is_some()
     }
 
