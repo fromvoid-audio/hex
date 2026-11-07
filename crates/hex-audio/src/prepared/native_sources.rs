@@ -14,6 +14,38 @@ pub(super) enum NativeEpochRuntimeTarget {
 }
 
 impl PublicationControl {
+    /// Queue a live hold on the selected original worker. A begin/change
+    /// requires the exact applied ordinary source and a running transport.
+    /// Release stays with the original worker even if its editor revision
+    /// changed. A returned token keeps its ordinary progress/drain custody
+    /// if the output starts closing after admission.
+    pub fn native_source_parameter_hold_on_control(
+        &mut self,
+        expected: AppliedAudioSource,
+        binding: Binding,
+        command: crate::plugin_worker::NativeParameterHold<'_>,
+    ) -> Result<crate::plugin_worker::NativeWorkerParameterChange, &'static str> {
+        use crate::plugin_worker::NativeParameterHold;
+        if !self.native_custody
+            || self.status.closing.load(Acquire)
+            || self.output_identity() != Some(expected.output_identity)
+            || binding.root != expected.output_identity
+        {
+            return Err("native parameter hold output differs or is closing");
+        }
+        if !self.status.playing.load(Acquire) {
+            return Err("native parameter hold requires running playback");
+        }
+        if !matches!(command, NativeParameterHold::Release { .. })
+            && (self.status.applied_audio_source().is_some()
+                || self.status.native_effect_source() != Some(expected)
+                || self.native_source_endpoint_installed(binding) != Some(true))
+        {
+            return Err("native parameter hold source is not applied");
+        }
+        self.candidate_root.native_parameter_hold(binding, command)
+    }
+
     /// Queue one validated raw SDK parameter input on the original live source.
     /// While playing, an actual PCM quantum consumes it. While idle, the same
     /// worker flushes the point and acknowledges controller readback without
