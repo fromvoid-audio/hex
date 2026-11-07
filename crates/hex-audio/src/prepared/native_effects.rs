@@ -46,7 +46,7 @@ impl Callback {
         }
     }
     pub(crate) fn finish_foreign_parameter_delivery(&mut self, valid: bool) {
-        let Some(target) = self.foreign_parameter_delivery.target() else {
+        let Some(target) = self.foreign_parameter_delivery.prepare_target() else {
             return;
         };
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

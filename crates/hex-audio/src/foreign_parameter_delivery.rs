@@ -155,7 +155,11 @@ impl Control {
     }
 }
 impl Callback {
-    pub(crate) fn target(&self) -> Option<Target> {
+    /// Collect a command posted after quantum start before its accepted marker
+    /// is selected at the final host-format boundary. Work remains one bounded
+    /// command read and one terminal write per preparation.
+    pub(crate) fn prepare_target(&mut self) -> Option<Target> {
+        self.prepare();
         self.target
     }
     pub(crate) fn prepare(&mut self) {
@@ -207,7 +211,11 @@ impl Callback {
             self.complete(Receipt::Aborted { target, reason });
             return;
         }
-        if let Some(marker) = marker
+        // Once matched, this exact input still owns its scheduled Main sample.
+        // Later native operations can reach the endpoint while compensation
+        // delays that sample; they cannot overwrite or invalidate this receipt.
+        if self.pending.is_none()
+            && let Some(marker) = marker
             && marker.binding == target.binding
             && marker.input.operation.get() >= target.operation
         {
@@ -339,7 +347,73 @@ mod tests {
             }
         );
         callback.finish(None, source, 132, 30, true, true);
-        assert!(control.receipts.is_empty() && callback.target().is_none());
+        assert!(control.receipts.is_empty() && callback.prepare_target().is_none());
+    }
+
+    #[test]
+    fn command_arriving_after_quantum_start_is_collected_at_the_final_boundary() {
+        let (_, _, target, marker) = fixture();
+        let (mut control, mut callback) = channel();
+        callback.prepare();
+        control.commands.push(target).unwrap();
+        control.target = Some(target);
+        assert_eq!(callback.prepare_target(), Some(target));
+        callback.finish(
+            Some(marker),
+            Some((target.source, target.transport_epoch)),
+            131,
+            30,
+            true,
+            true,
+        );
+        assert_eq!(
+            control.receipts.pop().unwrap(),
+            Receipt::Delivered {
+                target,
+                normalized: marker.input.point.normalized,
+                origin: marker.origin.unwrap(),
+                delivery_performance_frame: 130,
+            }
+        );
+    }
+
+    #[test]
+    fn scheduled_main_delivery_survives_a_later_native_operation_marker() {
+        let (mut control, mut callback, target, marker) = fixture();
+        let source = Some((target.source, target.transport_epoch));
+        callback.finish(Some(marker), source, 120, 30, true, true);
+        let later = AcceptedManualParameter {
+            sequence: marker.sequence + 1,
+            first_frame: marker.first_frame + 8,
+            input: ManualParameterInput {
+                operation: NonZeroU64::new(2).unwrap(),
+                point: ParameterPoint {
+                    normalized: 0.75,
+                    ..marker.input.point
+                },
+            },
+            origin: Some(ManualParameterOrigin {
+                arrangement_frame: 79,
+                performance_frame: 108,
+                loop_pass: 2,
+            }),
+            ..marker
+        };
+        callback.finish(Some(later), source, 125, 30, true, true);
+        assert!(
+            control.receipts.is_empty(),
+            "the scheduled input still awaits its final Main sample"
+        );
+        callback.finish(None, source, 131, 30, true, true);
+        assert_eq!(
+            control.receipts.pop().unwrap(),
+            Receipt::Delivered {
+                target,
+                normalized: marker.input.point.normalized,
+                origin: marker.origin.unwrap(),
+                delivery_performance_frame: 130,
+            }
+        );
     }
 
     #[test]
@@ -393,6 +467,34 @@ mod tests {
                 reason: AbortReason::Cancelled
             }
         );
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    #[ignore = "explicit optimized lookup microbenchmark"]
+    fn profile_final_witness_lookup() {
+        const ITERATIONS: u32 = 1_000_000;
+        for active in [false, true] {
+            let (_, mut callback, _, _) = fixture();
+            if !active {
+                callback.target = None;
+            }
+            let mut measure = |lookup: fn(&mut Callback) -> Option<Target>| {
+                for _ in 0..1000 {
+                    std::hint::black_box(lookup(std::hint::black_box(&mut callback)));
+                }
+                let start = std::time::Instant::now();
+                for _ in 0..ITERATIONS {
+                    std::hint::black_box(lookup(std::hint::black_box(&mut callback)));
+                }
+                start.elapsed().as_nanos() as f64 / f64::from(ITERATIONS)
+            };
+            let old_ns = measure(|callback| callback.target);
+            let new_ns = measure(Callback::prepare_target);
+            println!(
+                "active={active} iterations={ITERATIONS} old_lookup_ns={old_ns:.3} final_lookup_ns={new_ns:.3}"
+            );
+        }
     }
 
     #[test]
