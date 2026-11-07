@@ -9,20 +9,9 @@ use crate::plugin_worker::{
 mod tests;
 
 impl Custody {
-    pub(in crate::candidate_custody) fn reserve_native_program_revision(
-        &self,
-        binding: Binding,
-    ) -> Result<std::num::NonZeroU64, &'static str> {
-        self.with_live_capture(binding, |owner| match owner {
-            Owner::Effect(effect) => effect.reserve_program_revision_on_control(),
-            Owner::Loaned(control) => control.reserve_program_revision_on_control(),
-            _ => Err("native automation program source is unavailable"),
-        })
-    }
-
     // Work excludes source replacement/return; bank is held only for admission
     // and terminal context checks, never copied-state allocation or worker I/O.
-    fn with_live_capture<R>(
+    pub(super) fn with_live_capture<R>(
         &self,
         binding: Binding,
         run: impl FnOnce(&mut Owner) -> Result<R, &'static str>,
@@ -477,16 +466,6 @@ impl Custody {
 }
 
 impl CandidateRoot {
-    pub(crate) fn reserve_native_program_revision(
-        &self,
-        binding: Binding,
-    ) -> Result<std::num::NonZeroU64, &'static str> {
-        self.require_native_source_control_open()?;
-        let revision = self.0.eligible.reserve_native_program_revision(binding)?;
-        self.require_native_source_control_open()?;
-        Ok(revision)
-    }
-
     pub(crate) fn drain_stopped_native_parameter_change(
         &self,
         binding: Binding,
