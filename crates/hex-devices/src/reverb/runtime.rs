@@ -1,4 +1,4 @@
-//! Bounded FDN history; preparation owns allocation and tank/filter coefficients.
+//! Bounded FDN history; preparation owns allocation and canonical coefficients.
 //! Authored output/filter coefficients use bounded cached conversion in automation.
 pub(super) mod automation;
 use super::{PARAMETER_COUNT, Settings, parameter as p};
@@ -18,6 +18,32 @@ const TAPS: [f32; 8] = [
 const COEFFICIENTS: usize = 32;
 type FeedbackGains = (f32, f32, f32, f32);
 type Rotations = [Option<(f32, f32)>; 3];
+
+// Authored diffusion/density reuse the passive scatter law. A partial override
+// keys on the other component's current canonical ramp, not its final target.
+#[derive(Clone, Copy, Default)]
+struct ScatterCache {
+    parameters: Option<(f32, f32)>,
+    rotations: Rotations,
+}
+impl ScatterCache {
+    fn resolve(&mut self, diffusion: f32, density: f32) -> Rotations {
+        let parameters = Some((diffusion, density));
+        if self.parameters != parameters {
+            self.rotations = scatter_rotations(diffusion * 0.01, density + 1.0);
+            self.parameters = parameters;
+        }
+        self.rotations
+    }
+    fn check_inline(&self) {
+        let Self {
+            parameters,
+            rotations,
+        } = self;
+        let _: &Option<(f32, f32)> = parameters;
+        let _: &Rotations = rotations;
+    }
+}
 
 #[derive(Clone, Copy)]
 struct TankDesign {
@@ -154,10 +180,11 @@ impl PreparedReverb {
         ReverbRuntime {
             automation_controls: crate::parameter_binding::Controls::new(
                 AutomatedSettings::new(self.settings),
-                [true; 17],
+                [true; 19],
             ),
             automated_values: AutomatedValues::default(),
             tail_controls_frozen: false,
+            scatter_cache: ScatterCache::default(),
             rate: self.rate,
             factor: self.factor,
             tank_rate: self.tank_rate,
@@ -340,9 +367,10 @@ pub struct ReverbRuntimeStorage {
 }
 pub const RUNTIME_HEAP_ALLOCATIONS: usize = 14;
 pub struct ReverbRuntime {
-    automation_controls: crate::parameter_binding::Controls<AutomatedSettings, 17>,
+    automation_controls: crate::parameter_binding::Controls<AutomatedSettings, 19>,
     automated_values: AutomatedValues,
     tail_controls_frozen: bool,
+    scatter_cache: ScatterCache,
     rate: u32,
     factor: u32,
     tank_rate: f32,
@@ -378,6 +406,7 @@ impl ReverbRuntime {
             automation_controls,
             automated_values,
             tail_controls_frozen,
+            scatter_cache,
             rate,
             factor,
             tank_rate,
@@ -407,6 +436,7 @@ impl ReverbRuntime {
         automation_controls.check_inline(AutomatedSettings::check_inline);
         automated_values.check_inline();
         inline(tail_controls_frozen);
+        scatter_cache.check_inline();
         inline(rate);
         inline(factor);
         inline(tank_rate);
@@ -492,6 +522,8 @@ impl ReverbRuntime {
             .chorus_amount
             .unwrap_or_else(|| self.v(p::CHORUS_AMOUNT));
         let chorus_rate = output.chorus_rate.unwrap_or_else(|| self.v(p::CHORUS_RATE));
+        let diffusion = output.diffusion.unwrap_or_else(|| self.v(p::DIFFUSION));
+        let density = output.density.unwrap_or_else(|| self.v(p::DENSITY));
         let size = (self.v(p::SIZE) / 100.0).sqrt();
         let predelay = predelay * 0.001 * self.tank_rate;
         let excitation = 1.0 - self.v(p::FREEZE) * self.v(p::CUT);
@@ -557,7 +589,9 @@ impl ReverbRuntime {
             let delay = base + self.v(p::FREEZE) * (base.round() - base);
             self.lines[i].read(delay + modulation)
         });
-        let rotations = if settled {
+        let rotations = if output.diffusion.is_some() || output.density.is_some() {
+            self.scatter_cache.resolve(diffusion, density)
+        } else if settled {
             self.settled_tank.rotations
         } else {
             scatter_rotations(self.v(p::DIFFUSION) * 0.01, self.v(p::DENSITY) + 1.0)
@@ -597,7 +631,7 @@ impl ReverbRuntime {
                 .map(|(i, v)| v * if (i >> (c + 1)) & 1 == 0 { 0.25 } else { -0.25 })
                 .sum::<f32>();
             for (i, seconds) in [0.005, 0.0017].into_iter().enumerate() {
-                let a = self.v(p::DIFFUSION) * 0.006;
+                let a = diffusion * 0.006;
                 let old = self.allpasses[c][i]
                     .read(seconds * (0.5 + 1.5 * scale * 0.01) * self.tank_rate);
                 let output = old - a * diffuse;
@@ -733,6 +767,7 @@ impl NativeProcessorRuntime for ReverbRuntime {
         self.automation_controls.reset();
         self.automated_values = AutomatedValues::default();
         self.tail_controls_frozen = false;
+        self.scatter_cache = ScatterCache::default();
         self.clear();
         for v in &mut self.parameters {
             *v = Ramp::steady(v.target);
@@ -764,6 +799,7 @@ impl NativeProcessorRuntime for ReverbRuntime {
         };
         self.automation_controls.inherit(&old.automation_controls);
         self.automated_values = old.automated_values;
+        self.scatter_cache = old.scatter_cache;
         // Tail admission belongs to the host, not inherited DSP history. Fresh
         // canonical successors must ignore overrides from removed lanes.
         for (to, from) in self
