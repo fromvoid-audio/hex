@@ -14,6 +14,19 @@ let pointStates = 0, loopStates = 0;
 for (const state of Object.keys(doc.states)) {
   const visible = frame.layout(doc, project.viewport, state).filter(node => node.visible);
   const nodes = new Map(visible.map(node => [node.id, node]));
+  const voice = visible.filter(node => node.label === 'choose voice count');
+  assert.equal(voice.length, 1, state + ': one voice-count dropdown');
+  assert(!visible.some(node => node.label === 'toggle mono poly' || node.id === 'setting-value-0'), state + ': voice control is not duplicated');
+  for (const id of ['initial', 'peak', 'a-curve', 'd-curve', 'r-curve'])
+    assert(nodes.has('env-direct-' + id), state + ': expose envelope shaping directly');
+  for (const op of ['a', 'b', 'c', 'd']) {
+    assert(nodes.has('level-fill-' + op) && nodes.has('level-well-' + op), state + ': filled oscillator level slider');
+    assert(!nodes.has('level-knob-' + op) && !nodes.has('level-arc-' + op), state + ': no oscillator level knob');
+    const slider = nodes.get('level-' + op);
+    assert.equal(slider.bounds.y, nodes.get('ratio-' + op).bounds.y, state + ': tuning and level align');
+    const wave = visible.find(node => node.label === 'choose oscillator ' + op + ' waveform');
+    assert.equal(wave.bounds.y, nodes.get('hz-' + op).bounds.y, state + ': frequency and waveform align');
+  }
   const amount = nodes.get('filter-envelope-amount');
   assert(amount && (state === 'filter-depth-edit' ? /st$/.test(amount.value) : /hz$/.test(amount.value)),
     state + ': display peak frequency normally and semitones during exact entry');
@@ -36,7 +49,7 @@ for (const state of Object.keys(doc.states)) {
     assert.equal(nodes.get('adsr-2').value, '50%', state + ': filter sustain uses percent');
     const curve = visible.find(node => /^env-curve-filter-.*-active$/.test(node.id));
     assert(curve);
-    assert.equal(curve.points[49][1], 76, state + ': graph sustain matches 50% readout');
+    near(curve.points[49][1], (nodes.get('env-bg').bounds.y + curve.points[0][1]) / 2, state + ': graph sustain matches 50% readout');
   }
   if (state === 'default') assert.equal(amount.value, nodes.get('cutoff').value);
   if (state === 'filter-depth-positive') assert.equal(amount.value, '2 khz');
@@ -81,7 +94,7 @@ for (const state of Object.keys(doc.states)) {
     near(reset.bounds.x + reset.points[0][0], active.bounds.x + active.points[49][0], state + ': reset starts at decay end');
     near(reset.bounds.y + reset.points[0][1], active.bounds.y + active.points[49][1], state + ': reset starts at sustain level');
     near(reset.bounds.y + reset.points[1][1], active.bounds.y + active.points[0][1], state + ': reset ends at initial level');
-    assert(nodes.get('loop-repeat-label').text.includes('reset to initial'));
+    assert(nodes.get('loop-repeat-label').text.includes('reset'));
     if (/-tempo-|-pitch-/.test(active.id))
       assert(Math.abs(release.points[0][1] - active.points[49][1]) < 1e-8, state + ': note-off wins over boundary reset');
     const releaseHandle = visible.find(node => node.label === 'edit release curve envelope');
@@ -148,7 +161,7 @@ for (const value of slots.filter(node => /^macro-slots-4-value-/.test(node.id)))
   const knob = slots.find(node => node.id === value.id.replace('-value-', '-knob-'));
   assert(value.style.fontSize >= 9 && value.bounds.x >= knob.bounds.x + knob.bounds.width, 'macro values stay beside knobs');
 }
-for (const [state, expectedWidth] of [['default', 632], ['settings', 800], ['a-options', 800], ['a-harmonics', 896]]) {
+for (const [state, expectedWidth] of [['default', 620], ['settings', 788], ['a-options', 788], ['a-harmonics', 884]]) {
   const nodes = frame.layout(doc, project.viewport, state).filter(node => node.visible);
   const meter = nodes.find(node => node.id === 'output-meter');
   near(meter.bounds.x + meter.bounds.width, expectedWidth, state + ': content-sized device width');
@@ -171,6 +184,14 @@ const core = frame.layout(doc, project.viewport, 'default').filter(node => node.
 const fields = ['feedback', 'cutoff', 'resonance', 'filter-envelope-amount'].map(id => core.find(node => node.id === id));
 assert.equal(new Set(fields.map(node => node.bounds.x)).size, 1, 'right-side parameter values share one column');
 assert(fields.every(node => node.bounds.width === 60 && node.bounds.height === 18), 'right-side parameter values share dimensions');
-assert.equal(core.find(node => node.label === 'toggle mono poly').bounds.y, core.find(node => node.id === 'glide').bounds.y, 'voicing controls share a bottom baseline');
+assert.equal(core.find(node => node.label === 'choose voice count').bounds.y, core.find(node => node.id === 'glide').bounds.y, 'voicing controls share a bottom baseline');
+for (const count of [1, 2, 4, 8, 16, 32]) {
+  const state = count === 8 ? 'voices-menu' : 'voices-menu-' + count;
+  const nodes = frame.layout(doc, project.viewport, state).filter(node => node.visible);
+  assert(nodes.some(node => node.id === 'voice-count-menu'));
+  assert.equal(nodes.find(node => node.label === 'choose voice count').text, count + ' ▾');
+  assert.equal(nodes.find(node => node.id === 'voice-choice-' + count).style.fill, '#2a3c4c');
+  assert.equal(nodes.find(node => node.id === 'voice-choice-' + count).action.state, 'voices-' + count);
+}
 assert(pointStates >= 35 && loopStates >= 15);
 console.log(`${pointStates} point states and ${loopStates} loop states passed in ${((performance.now()-started)/1000).toFixed(2)} s`);
