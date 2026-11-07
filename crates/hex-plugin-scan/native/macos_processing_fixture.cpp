@@ -805,9 +805,19 @@ public:
                 auto* queue=data.inputParameterChanges->getParameterData(index);
                 if(!queue) return kInvalidArgument;
                 if(mixed_parameter_input(fault) && queue->getParameterId()==drag_axis_id) {
+                    const auto count=queue->getPointCount();
                     int32 offset=-1;ParamValue value=-1;
-                    if(queue->getPointCount()!=1 || queue->getPoint(0,offset,value)!=kResultOk ||
-                        offset!=0 || !std::isfinite(value) || value<0 || value>1) return kInvalidArgument;
+                    if(count<1 || count>(fault==held_input_fixture?2:1) ||
+                        queue->getPoint(0,offset,value)!=kResultOk || offset!=0 ||
+                        !std::isfinite(value) || value<0 || value>1) return kInvalidArgument;
+                    // The real Arrangement compiler brackets a held value at
+                    // both ends of the SDK slice. This fixture's second lane
+                    // deliberately models a constant multiplier.
+                    if(count==2) {
+                        int32 end=-1;ParamValue held=-1;
+                        if(queue->getPoint(1,end,held)!=kResultOk || end!=data.numSamples-1 ||
+                            end<=offset || held!=value) return kInvalidArgument;
+                    }
                     manual_gain=value*4.0;
                     continue;
                 }
