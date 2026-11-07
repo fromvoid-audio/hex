@@ -598,7 +598,16 @@ fn instrument_takeover_preserves_other_base_and_held_midi() {
     const CASE: &str = "HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE";
     if std::env::var_os(CASE).is_none() {
         let name = std::thread::current().name().unwrap().to_owned();
-        for case in ["reading", "unread", "empty", "renew", "idle", "refused"] {
+        for case in [
+            "reading",
+            "unread",
+            "empty",
+            "renew",
+            "author",
+            "author_empty",
+            "idle",
+            "refused",
+        ] {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", &name, "--ignored", "--nocapture"])
                 .env(CASE, case)
@@ -1456,28 +1465,38 @@ fn verify_instrument_takeover(
     use hex_session::device_gesture::{GestureClient, PluginParameterOrigin, PluginParameterValue};
     use hex_session::service::{DeviceAutomationControlEdit, PluginParameterQuery};
     let case = std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").unwrap();
+    let author = matches!(case.as_str(), "author" | "author_empty");
     let reading = !matches!(case.as_str(), "unread" | "empty" | "renew");
     let playing = case != "idle";
     let context = h.submitted.unwrap().1.context;
     let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
-    h.run(Request::QueryPluginParameters(PluginParameterQuery {
-        context,
-        device,
-        output_identity: output,
-        request_id: 11,
-    }));
-    let rows = h.next().plugin_parameters.unwrap().rows.unwrap();
-    assert_eq!(rows.len(), 2);
-    let class = rows
-        .iter()
-        .find(|r| r.id == 7)
-        .unwrap()
-        .automation_class
-        .unwrap();
+    let class = if case == "author_empty" {
+        hex_plugin_state::decode(original.device(device).unwrap().state())
+            .unwrap()
+            .identity
+            .class
+            .bytes()
+    } else {
+        h.run(Request::QueryPluginParameters(PluginParameterQuery {
+            context,
+            device,
+            output_identity: output,
+            request_id: 11,
+        }));
+        let rows = h.next().plugin_parameters.unwrap().rows.unwrap();
+        assert_eq!(rows.len(), 2);
+        rows.iter()
+            .find(|r| r.id == 7)
+            .unwrap()
+            .automation_class
+            .unwrap()
+    };
     let mut before = original.clone();
     let mut revision = context.editor_revision;
     for (id, value) in [(7, 0.25), (11, 0.5)] {
-        if matches!(case.as_str(), "empty" | "renew") || id == 7 && !reading {
+        if matches!(case.as_str(), "empty" | "renew" | "author_empty")
+            || id == 7 && (!reading || author)
+        {
             continue;
         }
         let event = super::automation::edit_with_running_callback(
@@ -1527,6 +1546,74 @@ fn verify_instrument_takeover(
     } else {
         0.0
     };
+    if author {
+        let binding = h.plugin_progress.lock().unwrap().binding.unwrap();
+        h.service
+            .submit(Request::DeviceAutomation {
+                project_generation: context.project_generation,
+                revision,
+                device,
+                target: DeviceAutomationTarget::Vst3 { parameter: 7 },
+                vst3_class: Some(class),
+                points: vec![AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: AutomationValue::new(0.25).unwrap(),
+                    outgoing: AutomationInterpolation::Step,
+                }],
+            })
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(3);
+        let mut fragment = 0;
+        let mut step = |h: &mut ResidentHarness| {
+            render_takeover_partial(h, [3, 5, 117, 1, 130][fragment % 5], true);
+            fragment += 1;
+            while h
+                .callback
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .native_workers_idle_on_control()
+                != Some(true)
+            {
+                assert!(Instant::now() < until);
+                std::thread::yield_now();
+            }
+            assert!(Instant::now() < until, "live lane authoring timed out");
+        };
+        let event = loop {
+            h.pump();
+            if let Ok(event) = h.service.try_event() {
+                break event;
+            }
+            step(h);
+        };
+        assert!(event.error.is_none(), "{:?}", event.error);
+        while h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire)
+            <= applied
+        {
+            h.pump();
+            step(h);
+        }
+        applied = h.applied(applied).0;
+        before = (*event.state.project).clone();
+        assert_eq!(
+            h.plugin_progress.lock().unwrap().binding,
+            Some(binding),
+            "new lane must retain the original SDK instrument"
+        );
+        assert!(
+            (peak(h) - baseline).abs() < 0.0001,
+            "live authoring must preserve the held gate"
+        );
+    }
     let query = |h: &mut ResidentHarness, request_id| {
         let context = h.submitted.unwrap().1.context;
         h.run(Request::QueryPluginParameters(PluginParameterQuery {

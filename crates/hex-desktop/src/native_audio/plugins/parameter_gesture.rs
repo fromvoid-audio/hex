@@ -23,7 +23,7 @@ use std::sync::atomic::Ordering::Acquire;
 use std::time::{Duration, Instant};
 
 mod manual_override;
-mod metadata;
+pub(super) mod metadata;
 use manual_override::LiveOverride;
 
 struct PendingPoint {

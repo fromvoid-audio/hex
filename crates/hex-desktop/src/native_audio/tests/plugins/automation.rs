@@ -4,6 +4,82 @@ use hex_project::{
     AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, DeviceAutomationTarget,
 };
 
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn fresh_selected_lookup_finds_raw_zero_beyond_the_first_page_without_inventory() {
+    const CHILD: &str = "HEX_DESKTOP_SELECTED_LOOKUP_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "80")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        return;
+    }
+    let _native = native_fixture();
+    let mut h = ResidentHarness::with_plugins(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    let initial = h.next();
+    h.applied(0);
+    h.run(Request::InsertPluginEffect(request(
+        &initial.state,
+        PluginEffectDestination::Main,
+    )));
+    let accepted = terminal(&mut h);
+    assert!(accepted.error.is_none(), "{:?}", accepted.error);
+    h.applied(1);
+    let binding = h.plugin_progress.lock().unwrap().binding.unwrap();
+    let control = &mut h.audio.as_mut().unwrap().control;
+    for hint in [None, Some(8), Some(4)] {
+        assert_eq!(
+            crate::native_audio::plugins::Plugins::lookup_authored_target_for_test(
+                control, binding, 0, hint
+            )
+            .unwrap(),
+            (0, 8)
+        );
+    }
+    assert!(
+        crate::native_audio::plugins::Plugins::lookup_authored_target_for_test(
+            control,
+            binding,
+            i32::MAX as u32,
+            None
+        )
+        .is_err()
+    );
+    assert!(
+        crate::native_audio::plugins::Plugins::lookup_authored_target_for_test(
+            control,
+            hex_audio::plugin_effects::EffectBinding {
+                epoch: binding.epoch + 1,
+                ..binding
+            },
+            0,
+            None
+        )
+        .is_err()
+    );
+}
+
 pub(super) fn edit_with_running_callback(h: &mut ResidentHarness, request: Request) -> Event {
     h.service.submit(request).unwrap();
     let until = Instant::now() + Duration::from_secs(10);
