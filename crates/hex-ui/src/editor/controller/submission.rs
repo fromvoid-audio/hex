@@ -30,6 +30,7 @@ pub(super) struct PendingKinds {
     clip_loop: bool,
     bypass: Option<hex_project::DeviceId>,
     clip_move: bool,
+    clip_paint: bool,
     section: bool,
     track_reorder: bool,
     duplicate: bool,
@@ -86,6 +87,7 @@ impl EditorView {
                     _ => None,
                 },
                 clip_move: self.pending_clip_move_matches(request),
+                clip_paint: self.pending_clip_paint_matches(request),
                 section: self.pending_section_matches(request),
                 track_reorder: self.pending_track_reorder_matches(request),
                 duplicate: self.pending_duplicate_matches(request),
@@ -168,6 +170,9 @@ impl EditorView {
         }
         if kinds.clip_move {
             self.clip_move_submitted();
+        }
+        if kinds.clip_paint {
+            self.clip_paint_submitted();
         }
         if kinds.section {
             self.section_submitted();
@@ -269,6 +274,9 @@ impl EditorView {
         }
         if kinds.clip_move {
             visible |= self.retire_pending_clip_move();
+        }
+        if kinds.clip_paint {
+            visible |= self.retire_pending_clip_paint();
         }
         if kinds.section {
             visible |= self.retire_pending_section();
