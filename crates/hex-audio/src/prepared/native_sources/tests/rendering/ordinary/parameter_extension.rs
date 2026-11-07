@@ -100,6 +100,42 @@ fn observed(f: &mut OrdinaryFixture) -> ParameterPageQuery {
     }
 }
 
+fn changed_canonical(
+    f: &mut OrdinaryFixture,
+    host: &Hosting,
+    source: AppliedAudioSource,
+    initial: &NativeDeviceState,
+) -> NativeDeviceState {
+    let until = Instant::now() + Duration::from_secs(3);
+    let mut capture = loop {
+        match host.begin_manual_base_capture_on_control(
+            &mut f.control,
+            source,
+            f.binding,
+            initial,
+            7,
+            0.75,
+        ) {
+            Ok(capture) => break capture,
+            Err(error)
+                if matches!(
+                    error.as_str(),
+                    "native preparation is busy" | "native source is busy"
+                ) => {}
+            Err(error) => panic!("isolated changed canonical: {error}"),
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    };
+    loop {
+        if let Some(result) = capture.poll_on_control(&mut f.control, &mut || false) {
+            return result.unwrap();
+        }
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 fn complete(
     f: &mut OrdinaryFixture,
     token: &NativeWorkerControllerQuery,
@@ -210,6 +246,18 @@ fn original_root_extends_only_acknowledged_targets_with_isolated_constructor_bas
         }
         let selected: &[u32] = if initially_armed { &[7, 11] } else { &[11] };
         let constructor = facts(&mut f, &host, source, &initial, selected, class.bytes());
+        let changed = changed_canonical(&mut f, &host, source, &initial);
+        let wrong_constructor = facts(&mut f, &host, source, &changed, selected, class.bytes());
+        let q = observed(&mut f);
+        let refused = wait(|| {
+            f.control
+                .begin_native_source_parameter_extension_on_control(f.binding, class, 11, 0, q)
+        });
+        assert!(
+            complete(&mut f, &refused, &wrong_constructor).is_err(),
+            "approved same-source current canonical facts cannot replace constructor bases"
+        );
+        assert_eq!(capabilities(&f, &initial), old);
         let q = observed(&mut f);
         let token = wait(|| {
             f.control
