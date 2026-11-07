@@ -527,6 +527,19 @@ fn workspace_four_returns_hidden_add_menu_does_not_block_tab(cx: &mut TestAppCon
     visual.simulate_click(toggle, Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds("device-add-menu").is_some());
+    visual.update(|window, _| {
+        let contexts = window.context_stack();
+        assert!(
+            contexts
+                .iter()
+                .any(|context| context.contains("hex_device_picker"))
+        );
+        assert!(
+            contexts
+                .iter()
+                .any(|context| context.contains("hex_text_input"))
+        );
+    });
     visual.simulate_keystrokes("tab");
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.mode, crate::editor::EditorMode::Session)

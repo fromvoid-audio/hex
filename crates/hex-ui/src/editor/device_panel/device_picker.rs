@@ -413,17 +413,16 @@ pub(in crate::editor) fn overlay(
     let owner = view.device_panel.owner?;
     ensure(view, cx);
     let scope = (view.project_generation, owner);
-    let search = view
-        .device_panel
-        .add_search
-        .as_mut()
-        .expect("search initialized above");
+    let search = view.device_panel.add_search.as_mut()?;
     if search.modal_scope.is_some_and(|current| current != scope) {
         search.modal_scope = None;
         close(view, window, cx);
         return None;
     }
-    search.modal_scope = Some(scope);
+    if search.modal_scope.is_none() {
+        search.modal_scope = Some(scope);
+        search.input.read(cx).focus(window);
+    }
     let card = render(view, owner, cx);
     Some(
         div()
