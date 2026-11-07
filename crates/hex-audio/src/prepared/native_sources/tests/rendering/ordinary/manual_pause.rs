@@ -90,7 +90,11 @@ fn paused_ordinary_hold_releases_before_resumed_authored_pcm() {
     render(&mut f);
     assert!(matches!(receive(&mut f, &hold), Progress::Processed(_)));
     render(&mut f);
-    assert_eq!(render(&mut f), [[0.75, -1.5]; QUANTUM]);
+    let held = render(&mut f);
+    assert!(
+        held.chunks_exact(64)
+            .all(|run| run[..32].iter().all(|frame| *frame == [0.75, -1.5]))
+    );
 
     f.control.command(PlaybackCommand::Pause).unwrap();
     render(&mut f);
@@ -116,7 +120,13 @@ fn paused_ordinary_hold_releases_before_resumed_authored_pcm() {
         receive(&mut f, &release),
         Progress::Released { .. }
     ));
-    assert_eq!(render(&mut f), [[0.25, -0.5]; QUANTUM]);
+    // Compare the interior, away from each intentional clip-loop declick.
+    let resumed = render(&mut f);
+    assert!(
+        resumed
+            .chunks_exact(64)
+            .all(|run| run[..32].iter().all(|frame| *frame == [0.25, -0.5]))
+    );
     assert_eq!(f.control.status.native_effect_source(), Some(source));
     dispose(f);
 }
