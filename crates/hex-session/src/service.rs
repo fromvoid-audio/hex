@@ -2816,7 +2816,7 @@ fn run_worker(
                         None
                     }
                     Ok(Step::Commit(command, path)) => {
-                        adopted_native_draft = Some(path);
+                        adopted_native_draft = Some((path, scope.target));
                         Some(Ok(*command))
                     }
                     Err(reason) => Some(Err(reason)),
@@ -4835,6 +4835,7 @@ fn run_worker(
                         .and_then(|sink| {
                             session.command_resident_snapshot(
                                 command,
+                                adopted_native_draft.as_ref().map(|(_, target)| *target),
                                 context,
                                 sink,
                                 admission,
@@ -6115,6 +6116,11 @@ fn run_worker(
                         {
                             return Err(SessionError::Invalid(
                                 "automation arm refused · project changed",
+                            ));
+                        }
+                        if native_automation_take.busy() {
+                            return Err(SessionError::Invalid(
+                                "finish the current automation take before changing its arm",
                             ));
                         }
                         if device_gesture.snapshot().is_some() {
@@ -8087,7 +8093,7 @@ fn run_worker(
             editor_revision: revision,
         });
         if let Some(completion) = native_automation_take_complete.as_mut() {
-            if let Some(path) = adopted_native_draft {
+            if let Some((path, _)) = adopted_native_draft {
                 if error.is_none() && revision != revision_before_request {
                     completion.progress = NativeAutomationTakeProgress::Committed;
                     status = Some("device automation take committed".into());
