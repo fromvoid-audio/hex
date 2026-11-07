@@ -5,18 +5,18 @@
   "archive": {
     "version": 1,
     "designId": "hex-vector-device",
-    "sourceRevisionId": "vector-device-r7",
-    "currentRevisionId": "vector-device-r7",
+    "sourceRevisionId": "vector-device-r8",
+    "currentRevisionId": "vector-device-r8",
     "revisions": [
       {
-        "revisionId": "vector-device-r7",
+        "revisionId": "vector-device-r8",
         "parentRevisionId": null,
-        "capturedAt": "2026-11-07T08:34:37.929Z",
+        "capturedAt": "2026-11-07T08:40:28.210Z",
         "document": {
           "version": 1,
           "id": "hex-vector-device",
           "name": "hex / vector",
-          "revisionId": "vector-device-r7",
+          "revisionId": "vector-device-r8",
           "width": 930,
           "height": 200,
           "background": "#242424",
@@ -552,12 +552,12 @@
               "bounds": {
                 "x": 33,
                 "y": 10,
-                "width": 22,
+                "width": 7.333333333333333,
                 "height": 35.75
               },
               "style": {
-                "fill": "#131313",
-                "stroke": "#303030",
+                "fill": "#ca7481",
+                "stroke": "none",
                 "color": "#ca7481",
                 "radius": 2,
                 "fontSize": 16,
@@ -566,7 +566,7 @@
                 "verticalAlign": "middle",
                 "padding": 0
               },
-              "text": "1",
+              "text": " ",
               "label": "select vector operator a",
               "action": {
                 "type": "set-state",
@@ -579,9 +579,9 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 60,
+                "x": 72,
                 "y": 10,
-                "width": 84,
+                "width": 72,
                 "height": 13
               },
               "style": {
@@ -595,7 +595,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 63,
+                "x": 75,
                 "y": 12,
                 "width": 2,
                 "height": 9
@@ -611,7 +611,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 63,
+                "x": 75,
                 "y": 19,
                 "width": 2,
                 "height": 2
@@ -627,9 +627,9 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 68,
+                "x": 80,
                 "y": 10,
-                "width": 72,
+                "width": 60,
                 "height": 13
               },
               "style": {
@@ -649,9 +649,9 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 60,
+                "x": 72,
                 "y": 26,
-                "width": 84,
+                "width": 72,
                 "height": 12
               },
               "style": {
@@ -665,7 +665,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 63,
+                "x": 75,
                 "y": 28,
                 "width": 2,
                 "height": 8
@@ -681,7 +681,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 63,
+                "x": 75,
                 "y": 34,
                 "width": 2,
                 "height": 2
@@ -697,9 +697,9 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 68,
+                "x": 80,
                 "y": 26,
-                "width": 72,
+                "width": 60,
                 "height": 12
               },
               "style": {
@@ -719,48 +719,48 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 56.5,
-                "y": 12,
-                "width": 2.5,
-                "height": 31.75
+                "x": 44,
+                "y": 10,
+                "width": 24,
+                "height": 35.75
               },
               "style": {
                 "fill": "#111111",
-                "stroke": "#393939",
-                "radius": 1
+                "stroke": "none",
+                "radius": 2
               },
               "label": "operator 1 keytrack 100 percent"
+            },
+            {
+              "id": "osc-a-keytrack-indicator",
+              "parentId": "compact-content",
+              "type": "container",
+              "bounds": {
+                "x": 47,
+                "y": 13,
+                "width": 2,
+                "height": 29.75
+              },
+              "style": {
+                "fill": "#414141",
+                "stroke": "none",
+                "radius": 0
+              }
             },
             {
               "id": "osc-a-keytrack-fill",
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 57,
+                "x": 47,
                 "y": 13,
-                "width": 1.5,
+                "width": 2,
                 "height": 29.75
               },
               "style": {
                 "fill": "#ca7481",
                 "stroke": "none",
                 "radius": 0
-              }
-            },
-            {
-              "id": "osc-a-keytrack-handle",
-              "type": "container",
-              "parentId": "compact-content",
-              "bounds": {
-                "x": 55.75,
-                "y": 12,
-                "width": 4,
-                "height": 2
-              },
-              "style": {
-                "fill": "#c4c4c4",
-                "stroke": "none",
-                "radius": 0.5
               }
             },
             {
@@ -1036,12 +1036,12 @@
               "bounds": {
                 "x": 33,
                 "y": 57.75,
-                "width": 22,
+                "width": 7.333333333333333,
                 "height": 35.75
               },
               "style": {
-                "fill": "#131313",
-                "stroke": "#303030",
+                "fill": "#cfbc77",
+                "stroke": "none",
                 "color": "#cfbc77",
                 "radius": 2,
                 "fontSize": 16,
@@ -1050,7 +1050,7 @@
                 "verticalAlign": "middle",
                 "padding": 0
               },
-              "text": "2",
+              "text": " ",
               "label": "select vector operator b",
               "action": {
                 "type": "set-state",
@@ -1063,9 +1063,9 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 60,
+                "x": 72,
                 "y": 57.75,
-                "width": 84,
+                "width": 72,
                 "height": 13
               },
               "style": {
@@ -1079,7 +1079,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 63,
+                "x": 75,
                 "y": 59.75,
                 "width": 2,
                 "height": 9
@@ -1095,7 +1095,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 63,
+                "x": 75,
                 "y": 66.75,
                 "width": 2,
                 "height": 2
@@ -1111,9 +1111,9 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 68,
+                "x": 80,
                 "y": 57.75,
-                "width": 72,
+                "width": 60,
                 "height": 13
               },
               "style": {
@@ -1133,9 +1133,9 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 60,
+                "x": 72,
                 "y": 73.75,
-                "width": 84,
+                "width": 72,
                 "height": 12
               },
               "style": {
@@ -1149,7 +1149,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 63,
+                "x": 75,
                 "y": 75.75,
                 "width": 2,
                 "height": 8
@@ -1165,7 +1165,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 63,
+                "x": 75,
                 "y": 81.75,
                 "width": 2,
                 "height": 2
@@ -1181,9 +1181,9 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 68,
+                "x": 80,
                 "y": 73.75,
-                "width": 72,
+                "width": 60,
                 "height": 12
               },
               "style": {
@@ -1203,48 +1203,48 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 56.5,
-                "y": 59.75,
-                "width": 2.5,
-                "height": 31.75
+                "x": 44,
+                "y": 57.75,
+                "width": 24,
+                "height": 35.75
               },
               "style": {
                 "fill": "#111111",
-                "stroke": "#393939",
-                "radius": 1
+                "stroke": "none",
+                "radius": 2
               },
               "label": "operator 2 keytrack 100 percent"
+            },
+            {
+              "id": "osc-b-keytrack-indicator",
+              "parentId": "compact-content",
+              "type": "container",
+              "bounds": {
+                "x": 47,
+                "y": 60.75,
+                "width": 2,
+                "height": 29.75
+              },
+              "style": {
+                "fill": "#414141",
+                "stroke": "none",
+                "radius": 0
+              }
             },
             {
               "id": "osc-b-keytrack-fill",
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 57,
+                "x": 47,
                 "y": 60.75,
-                "width": 1.5,
+                "width": 2,
                 "height": 29.75
               },
               "style": {
                 "fill": "#cfbc77",
                 "stroke": "none",
                 "radius": 0
-              }
-            },
-            {
-              "id": "osc-b-keytrack-handle",
-              "type": "container",
-              "parentId": "compact-content",
-              "bounds": {
-                "x": 55.75,
-                "y": 59.75,
-                "width": 4,
-                "height": 2
-              },
-              "style": {
-                "fill": "#c4c4c4",
-                "stroke": "none",
-                "radius": 0.5
               }
             },
             {
@@ -1520,12 +1520,12 @@
               "bounds": {
                 "x": 33,
                 "y": 105.5,
-                "width": 22,
+                "width": 7.333333333333333,
                 "height": 35.75
               },
               "style": {
-                "fill": "#131313",
-                "stroke": "#303030",
+                "fill": "#80b9df",
+                "stroke": "none",
                 "color": "#80b9df",
                 "radius": 2,
                 "fontSize": 16,
@@ -1534,7 +1534,7 @@
                 "verticalAlign": "middle",
                 "padding": 0
               },
-              "text": "3",
+              "text": " ",
               "label": "select vector operator c",
               "action": {
                 "type": "set-state",
@@ -1547,9 +1547,9 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 60,
+                "x": 72,
                 "y": 105.5,
-                "width": 84,
+                "width": 72,
                 "height": 13
               },
               "style": {
@@ -1563,7 +1563,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 63,
+                "x": 75,
                 "y": 107.5,
                 "width": 2,
                 "height": 9
@@ -1579,7 +1579,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 63,
+                "x": 75,
                 "y": 114.5,
                 "width": 2,
                 "height": 2
@@ -1595,9 +1595,9 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 68,
+                "x": 80,
                 "y": 105.5,
-                "width": 72,
+                "width": 60,
                 "height": 13
               },
               "style": {
@@ -1617,9 +1617,9 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 60,
+                "x": 72,
                 "y": 121.5,
-                "width": 84,
+                "width": 72,
                 "height": 12
               },
               "style": {
@@ -1633,7 +1633,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 63,
+                "x": 75,
                 "y": 123.5,
                 "width": 2,
                 "height": 8
@@ -1649,7 +1649,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 63,
+                "x": 75,
                 "y": 129.5,
                 "width": 2,
                 "height": 2
@@ -1665,9 +1665,9 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 68,
+                "x": 80,
                 "y": 121.5,
-                "width": 72,
+                "width": 60,
                 "height": 12
               },
               "style": {
@@ -1687,48 +1687,48 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 56.5,
-                "y": 107.5,
-                "width": 2.5,
-                "height": 31.75
+                "x": 44,
+                "y": 105.5,
+                "width": 24,
+                "height": 35.75
               },
               "style": {
                 "fill": "#111111",
-                "stroke": "#393939",
-                "radius": 1
+                "stroke": "none",
+                "radius": 2
               },
               "label": "operator 3 keytrack 50 percent"
+            },
+            {
+              "id": "osc-c-keytrack-indicator",
+              "parentId": "compact-content",
+              "type": "container",
+              "bounds": {
+                "x": 47,
+                "y": 108.5,
+                "width": 2,
+                "height": 29.75
+              },
+              "style": {
+                "fill": "#414141",
+                "stroke": "none",
+                "radius": 0
+              }
             },
             {
               "id": "osc-c-keytrack-fill",
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 57,
+                "x": 47,
                 "y": 123.375,
-                "width": 1.5,
+                "width": 2,
                 "height": 14.875
               },
               "style": {
                 "fill": "#80b9df",
                 "stroke": "none",
                 "radius": 0
-              }
-            },
-            {
-              "id": "osc-c-keytrack-handle",
-              "type": "container",
-              "parentId": "compact-content",
-              "bounds": {
-                "x": 55.75,
-                "y": 122.375,
-                "width": 4,
-                "height": 2
-              },
-              "style": {
-                "fill": "#c4c4c4",
-                "stroke": "none",
-                "radius": 0.5
               }
             },
             {
@@ -2004,12 +2004,12 @@
               "bounds": {
                 "x": 33,
                 "y": 153.25,
-                "width": 22,
+                "width": 7.333333333333333,
                 "height": 35.75
               },
               "style": {
-                "fill": "#131313",
-                "stroke": "#303030",
+                "fill": "#b293cf",
+                "stroke": "none",
                 "color": "#b293cf",
                 "radius": 2,
                 "fontSize": 16,
@@ -2018,7 +2018,7 @@
                 "verticalAlign": "middle",
                 "padding": 0
               },
-              "text": "4",
+              "text": " ",
               "label": "select vector operator d",
               "action": {
                 "type": "set-state",
@@ -2031,9 +2031,9 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 60,
+                "x": 72,
                 "y": 153.25,
-                "width": 84,
+                "width": 72,
                 "height": 13
               },
               "style": {
@@ -2047,7 +2047,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 63,
+                "x": 75,
                 "y": 155.25,
                 "width": 2,
                 "height": 9
@@ -2063,7 +2063,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 63,
+                "x": 75,
                 "y": 162.25,
                 "width": 2,
                 "height": 2
@@ -2079,9 +2079,9 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 68,
+                "x": 80,
                 "y": 153.25,
-                "width": 72,
+                "width": 60,
                 "height": 13
               },
               "style": {
@@ -2101,9 +2101,9 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 60,
+                "x": 72,
                 "y": 169.25,
-                "width": 84,
+                "width": 72,
                 "height": 12
               },
               "style": {
@@ -2117,7 +2117,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 63,
+                "x": 75,
                 "y": 171.25,
                 "width": 2,
                 "height": 8
@@ -2133,7 +2133,7 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 63,
+                "x": 75,
                 "y": 177.25,
                 "width": 2,
                 "height": 2
@@ -2149,9 +2149,9 @@
               "type": "text",
               "parentId": "compact-content",
               "bounds": {
-                "x": 68,
+                "x": 80,
                 "y": 169.25,
-                "width": 72,
+                "width": 60,
                 "height": 12
               },
               "style": {
@@ -2171,32 +2171,32 @@
               "type": "container",
               "parentId": "compact-content",
               "bounds": {
-                "x": 56.5,
-                "y": 155.25,
-                "width": 2.5,
-                "height": 31.75
+                "x": 44,
+                "y": 153.25,
+                "width": 24,
+                "height": 35.75
               },
               "style": {
                 "fill": "#111111",
-                "stroke": "#393939",
-                "radius": 1
+                "stroke": "none",
+                "radius": 2
               },
               "label": "operator 4 keytrack 0 percent"
             },
             {
-              "id": "osc-d-keytrack-handle",
-              "type": "container",
+              "id": "osc-d-keytrack-indicator",
               "parentId": "compact-content",
+              "type": "container",
               "bounds": {
-                "x": 55.75,
-                "y": 185,
-                "width": 4,
-                "height": 2
+                "x": 47,
+                "y": 156.25,
+                "width": 2,
+                "height": 29.75
               },
               "style": {
-                "fill": "#c4c4c4",
+                "fill": "#414141",
                 "stroke": "none",
-                "radius": 0.5
+                "radius": 0
               }
             },
             {
@@ -34414,6 +34414,94 @@
                 "state": "d-64-global"
               },
               "parentId": "detail-d"
+            },
+            {
+              "id": "osc-a-keytrack-value",
+              "type": "text",
+              "parentId": "compact-content",
+              "bounds": {
+                "x": 50,
+                "y": 22,
+                "width": 17,
+                "height": 10
+              },
+              "style": {
+                "fill": "none",
+                "stroke": "none",
+                "color": "#ca7481",
+                "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
+                "fontSize": 6.5,
+                "padding": 0,
+                "textAlign": "center",
+                "verticalAlign": "middle"
+              },
+              "text": "100%"
+            },
+            {
+              "id": "osc-b-keytrack-value",
+              "type": "text",
+              "parentId": "compact-content",
+              "bounds": {
+                "x": 50,
+                "y": 69.75,
+                "width": 17,
+                "height": 10
+              },
+              "style": {
+                "fill": "none",
+                "stroke": "none",
+                "color": "#cfbc77",
+                "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
+                "fontSize": 6.5,
+                "padding": 0,
+                "textAlign": "center",
+                "verticalAlign": "middle"
+              },
+              "text": "100%"
+            },
+            {
+              "id": "osc-c-keytrack-value",
+              "type": "text",
+              "parentId": "compact-content",
+              "bounds": {
+                "x": 50,
+                "y": 117.5,
+                "width": 17,
+                "height": 10
+              },
+              "style": {
+                "fill": "none",
+                "stroke": "none",
+                "color": "#80b9df",
+                "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
+                "fontSize": 6.5,
+                "padding": 0,
+                "textAlign": "center",
+                "verticalAlign": "middle"
+              },
+              "text": "50%"
+            },
+            {
+              "id": "osc-d-keytrack-value",
+              "type": "text",
+              "parentId": "compact-content",
+              "bounds": {
+                "x": 50,
+                "y": 165.25,
+                "width": 17,
+                "height": 10
+              },
+              "style": {
+                "fill": "none",
+                "stroke": "none",
+                "color": "#b293cf",
+                "fontFamily": "Ioskeley Mono, SFMono-Regular, Menlo, monospace",
+                "fontSize": 6.5,
+                "padding": 0,
+                "textAlign": "center",
+                "verticalAlign": "middle"
+              },
+              "text": "0%"
             }
           ],
           "states": {
@@ -34483,26 +34571,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#ca7481"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -36066,26 +36154,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#ca7481"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -37649,26 +37737,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#ca7481"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -39232,26 +39320,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#ca7481"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -40815,26 +40903,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#ca7481"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -42398,26 +42486,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#ca7481"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -43981,26 +44069,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#ca7481"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -45564,26 +45652,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#ca7481"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -47147,26 +47235,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#ca7481"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -48730,26 +48818,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#ca7481"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -50313,26 +50401,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#ca7481"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -51896,26 +51984,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#ca7481"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -53479,26 +53567,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#ca7481"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -55062,26 +55150,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#ca7481"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -56645,26 +56733,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#ca7481"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -58228,26 +58316,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#cfbc77"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -59811,26 +59899,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#cfbc77"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -61394,26 +61482,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#cfbc77"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -62977,26 +63065,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#cfbc77"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -64560,26 +64648,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#cfbc77"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -66143,26 +66231,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#cfbc77"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -67726,26 +67814,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#cfbc77"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -69309,26 +69397,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#cfbc77"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -70892,26 +70980,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#cfbc77"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -72475,26 +72563,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#cfbc77"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -74058,26 +74146,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#cfbc77"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -75641,26 +75729,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#cfbc77"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -77224,26 +77312,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#cfbc77"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -78807,26 +78895,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#cfbc77"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -80390,26 +80478,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#cfbc77"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -81973,26 +82061,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#80b9df"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -83556,26 +83644,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#80b9df"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -85139,26 +85227,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#80b9df"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -86722,26 +86810,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#80b9df"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -88305,26 +88393,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#80b9df"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -89888,26 +89976,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#80b9df"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -91471,26 +91559,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#80b9df"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -93054,26 +93142,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#80b9df"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -94637,26 +94725,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#80b9df"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -96220,26 +96308,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#80b9df"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -97803,26 +97891,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#80b9df"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -99386,26 +99474,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#80b9df"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -100969,26 +101057,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#80b9df"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -102552,26 +102640,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#80b9df"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -104135,26 +104223,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#80b9df"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -105718,26 +105806,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#b293cf"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -107301,26 +107389,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#b293cf"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -108884,26 +108972,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#b293cf"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -110467,26 +110555,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#b293cf"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -112050,26 +112138,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#b293cf"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -113633,26 +113721,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#b293cf"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -115216,26 +115304,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#b293cf"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -116799,26 +116887,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#b293cf"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -118382,26 +118470,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#b293cf"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -119965,26 +120053,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#b293cf"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -121548,26 +121636,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#b293cf"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -123131,26 +123219,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#b293cf"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -124714,26 +124802,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#b293cf"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -126297,26 +126385,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#b293cf"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -127880,26 +127968,26 @@
               },
               "select-a": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#ca7481",
+                  "stroke": "#202020"
                 }
               },
               "select-b": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#cfbc77",
+                  "stroke": "#202020"
                 }
               },
               "select-c": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#303030"
+                  "fill": "#80b9df",
+                  "stroke": "#202020"
                 }
               },
               "select-d": {
                 "style": {
-                  "fill": "#131313",
-                  "stroke": "#b293cf"
+                  "fill": "#b293cf",
+                  "stroke": "#202020"
                 }
               },
               "tab-osc": {
@@ -129418,8 +129506,9 @@
           },
           "designNotes": {
             "scope": "Compact Hex Vector at the global 200-pixel device height. General modulation belongs to the Hex host.",
-            "oscillators": "Four compact numbered oscillators with ratio, frequency offset, level/modulation depth and independent keytrack sliders. Keytrack examples are 100%, 100%, 50% and 0%.",
-            "keytrack": "Each oscillator keytrack slider is vertical, immediately beside the right edge of its numbered on/off button."
+            "oscillators": "Four compact oscillators with ratio, frequency offset, level/modulation depth and independent keytrack sliders. Keytrack examples are 100%, 100%, 50% and 0%.",
+            "keytrack": "Vertical keytrack fields beside each on/off button use the same dark inset, gray indicator, colored fill and percentage value styling as the frequency fields.",
+            "oscillatorSwitches": "Oscillator on/off buttons are one third of their previous width, have no visible label and use their full oscillator color when enabled."
           },
           "assets": [
             {
