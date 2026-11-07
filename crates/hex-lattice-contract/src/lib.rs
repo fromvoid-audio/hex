@@ -16,8 +16,10 @@ mod host_gain;
 pub use host_gain::HostGain;
 mod foreign_binding;
 mod foreign_parameter;
+mod vst3_state_approval;
 pub use foreign_binding::ForeignProcessorBinding;
 pub use foreign_parameter::ForeignParameterPoint;
+pub use vst3_state_approval::{Vst3StateAuthority, Vst3StateVerifier};
 #[cfg(test)]
 mod device_assets_tests;
 pub use device_assets::{
@@ -302,7 +304,7 @@ fn valid_parameter_text(value: &str) -> bool {
             .any(|character| character.is_uppercase() || character.is_control())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct NativeDeviceState {
     type_id: DeviceTypeId,
     state_version: u32,
@@ -310,7 +312,17 @@ pub struct NativeDeviceState {
     input_gain_millidb: i32,
     output_gain_millidb: i32,
     asset_references: Option<Arc<[DeviceAssetReference]>>,
+    // Process-local source provenance, never canonical or serialized state.
+    source_approval: Option<std::num::NonZeroU64>,
 }
+impl PartialEq for NativeDeviceState {
+    fn eq(&self, other: &Self) -> bool {
+        self.processing_eq(other)
+            && self.input_gain_millidb == other.input_gain_millidb
+            && self.output_gain_millidb == other.output_gain_millidb
+    }
+}
+impl Eq for NativeDeviceState {}
 impl NativeDeviceState {
     pub fn new(
         type_id: DeviceTypeId,
@@ -336,6 +348,7 @@ impl NativeDeviceState {
             input_gain_millidb: 0,
             output_gain_millidb: 0,
             asset_references: None,
+            source_approval: None,
         })
     }
     pub const fn type_id(&self) -> DeviceTypeId {
@@ -357,6 +370,7 @@ impl NativeDeviceState {
         if references.len() > MAX_DEVICE_ASSET_REFERENCES {
             return Err(DeviceContractError::StateTooLarge);
         }
+        self.source_approval = None;
         references.sort_unstable_by_key(|reference| reference.slot);
         if references
             .windows(2)
@@ -379,6 +393,9 @@ impl NativeDeviceState {
         }
         self.input_gain_millidb = source.input_gain_millidb;
         self.output_gain_millidb = source.output_gain_millidb;
+        if self.asset_references != source.asset_references {
+            self.source_approval = None;
+        }
         self.asset_references.clone_from(&source.asset_references);
         Ok(self)
     }
@@ -458,6 +475,7 @@ impl NativeDeviceState {
             input_gain_millidb: _,
             output_gain_millidb: _,
             asset_references: _,
+            source_approval: _,
         } = self;
         (
             payload.len(),

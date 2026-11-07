@@ -28,12 +28,13 @@ mod definition;
 mod tail;
 pub use definition::{NativeEffectDefinition, UnavailableEffect};
 mod hosting;
-mod manual_base_capture;
+pub(crate) mod manual_base_capture;
 pub use hex_lattice_contract::ForeignProcessorBinding as EffectBinding;
 pub use hosting::{EffectPresentation, EffectSelection, Hosting, PluginProfile};
 pub(crate) use manual_base_capture::BaseCaptureSource;
 pub use manual_base_capture::ManualBaseCapture;
 mod control;
+mod state_approval;
 pub(crate) use control::{NativeEffectControl, NativeEffectReference};
 mod source_metadata;
 pub use source_metadata::EffectSourceMetadata;
@@ -50,6 +51,7 @@ struct Configuration {
     prepared: PreparedForeignProcessor,
     authored: automation::SourceCapabilities,
     program_revision: std::num::NonZeroU64,
+    state_verifier: Option<hex_lattice_contract::Vst3StateVerifier>,
 }
 
 impl Configuration {
@@ -74,6 +76,7 @@ pub struct NativeEffect {
     worker: NativeWorker,
     callback: NativeEffectCallback,
     source_metadata: EffectSourceMetadata,
+    state_authority: hex_lattice_contract::Vst3StateAuthority,
 }
 /// Listed constructor backing of the original unsplit effect. Inline effect
 /// storage belongs to the host cell. The configuration state aliases the actual
@@ -113,6 +116,7 @@ impl NativeEffect {
             worker,
             callback,
             source_metadata,
+            state_authority: _,
         } = self;
         let NativeEffectCallback {
             transport,
@@ -177,6 +181,16 @@ impl NativeEffect {
                 ));
             }
         };
+        let state_authority = match hex_lattice_contract::Vst3StateAuthority::new_on_control() {
+            Ok(authority) => authority,
+            Err(_) => {
+                return Err(NativeWorkerStartFailure::retain_source_on_control(
+                    Error::Protocol("native state approval authorities exhausted"),
+                    instance,
+                ));
+            }
+        };
+        configuration.state_verifier = Some(state_authority.verifier());
         // Preserve an already known lease refusal before considering the
         // budget. Worker transfer validates again against a later close/exit.
         if let Err(cause) = instance.validate_worker_transfer_on_control() {
@@ -241,6 +255,7 @@ impl NativeEffect {
         Ok(Self {
             worker,
             source_metadata,
+            state_authority,
             callback: NativeEffectCallback {
                 configuration,
                 transport: callback,
@@ -318,6 +333,7 @@ impl NativeEffect {
             authored: automation::SourceCapabilities::default(),
             program_revision: std::num::NonZeroU64::new(config.binding.epoch)
                 .ok_or(Error::Protocol("native automation source epoch is invalid"))?,
+            state_verifier: None,
         })
     }
     pub(crate) fn reserve_program_revision_on_control(
@@ -518,6 +534,7 @@ impl NativeEffectCallback {
                 prepared,
                 authored: automation::SourceCapabilities::default(),
                 program_revision: std::num::NonZeroU64::new(binding.epoch).unwrap(),
+                state_verifier: None,
             },
             transport,
             input: [[0.0; 2]; MAX_FRAMES],

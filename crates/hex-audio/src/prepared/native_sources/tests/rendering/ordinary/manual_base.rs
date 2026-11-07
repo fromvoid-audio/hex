@@ -147,6 +147,48 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
 
     let mut scratch = start(&mut f, &initial, point);
     let captured = poll(&mut f.control, &mut scratch, false).unwrap();
+    assert_eq!(
+        f.control
+            .native_source_approves_captured_state_on_control(binding, &captured),
+        Some(true)
+    );
+    assert_eq!(
+        f.control
+            .native_source_approves_captured_state_on_control(binding, &initial),
+        Some(false)
+    );
+    assert_eq!(
+        f.control
+            .native_source_approves_captured_state_on_control(wrong_binding, &captured),
+        None
+    );
+    let independent = hex_lattice_contract::Vst3StateAuthority::new_on_control()
+        .unwrap()
+        .approve_on_control(captured.clone())
+        .unwrap();
+    assert_eq!(
+        f.control
+            .native_source_approves_captured_state_on_control(binding, &independent),
+        Some(false)
+    );
+    let mut history = Editor::new(f.editor.project().clone(), 8).unwrap();
+    history
+        .execute(Command::ReplaceDeviceState {
+            device,
+            state: captured.clone(),
+        })
+        .unwrap();
+    let approved = |history: &Editor| {
+        f.control.native_source_approves_captured_state_on_control(
+            binding,
+            history.project().device(device).unwrap().state(),
+        )
+    };
+    assert_eq!(approved(&history), Some(true));
+    assert!(history.undo());
+    assert_eq!(approved(&history), Some(false));
+    assert!(history.redo());
+    assert_eq!(approved(&history), Some(true));
     assert!(
         host.begin_manual_base_capture_on_control(
             &mut f.control,
@@ -212,6 +254,12 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
     assert!(poll(&mut f.control, &mut abandoned, true).is_err());
     let mut normalized = start_saved(&mut f, &selection).unwrap();
     let normalized = poll(&mut f.control, &mut normalized, false).unwrap();
+    assert_eq!(
+        f.control
+            .native_source_approves_captured_state_on_control(binding, &normalized),
+        Some(false),
+        "saved-state normalization cannot grant manual source approval"
+    );
     assert_eq!(
         &hex_plugin_state::decode(&normalized)
             .unwrap()

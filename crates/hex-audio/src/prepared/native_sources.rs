@@ -8,6 +8,39 @@ use hex_lattice_contract::{ForeignProcessorBinding as Binding, NativeDeviceState
 use hex_plugin_host::native;
 use hex_plugin_scan::macos::build_identity::InstanceBuild;
 
+impl PublicationControl {
+    pub(crate) fn approve_native_manual_base_on_control(
+        &self,
+        captured: &crate::plugin_effects::manual_base_capture::CompletedManualBase,
+    ) -> Result<NativeDeviceState, &'static str> {
+        if !self.native_custody
+            || self.status.closing.load(Acquire)
+            || !captured.matches_source(&self.status)
+        {
+            return Err("native manual base source changed");
+        }
+        let state = self.candidate_root.approve_native_manual_base(captured)?;
+        if !captured.matches_source(&self.status) || self.status.closing.load(Acquire) {
+            return Err("native manual base source changed");
+        }
+        Ok(state)
+    }
+
+    /// Read source correspondence only. This does not admit a graph, restore
+    /// SDK state, or prove that the captured parameter reached final Main.
+    pub fn native_source_approves_captured_state_on_control(
+        &self,
+        binding: Binding,
+        state: &NativeDeviceState,
+    ) -> Option<bool> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return None;
+        }
+        self.candidate_root
+            .native_source_approves_captured_state(binding, state)
+    }
+}
+
 pub(super) enum NativeEpochRuntimeTarget {
     Constructor(crate::candidate_custody::NativeEpochTarget),
     Ordinary(AppliedAudioSource),
