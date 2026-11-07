@@ -865,6 +865,21 @@ fn vst3_automation_uses_raw_ids_and_refuses_replacement_by_a_different_class() {
     );
     assert_eq!(editor.project(), &before);
     let zero = DeviceAutomationTarget::Vst3 { parameter: 0 };
+    let entry = editor.project().device(device).unwrap();
+    assert_eq!(entry.automation_target_class(zero).unwrap(), Some(class));
+    assert_eq!(
+        entry
+            .automation_target_class(DeviceAutomationTarget::HostInputGain)
+            .unwrap(),
+        None
+    );
+    assert!(
+        entry
+            .automation_target_class(DeviceAutomationTarget::Vst3 {
+                parameter: u32::MAX
+            })
+            .is_err()
+    );
     editor
         .execute(Command::ReplaceDeviceAutomationTarget {
             device,

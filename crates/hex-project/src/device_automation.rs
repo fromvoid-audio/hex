@@ -163,6 +163,19 @@ fn validate_automation_class(
     Ok(())
 }
 impl Device {
+    /// Canonical class stamp for this target, independent of SDK availability.
+    /// Native/host targets need no class; VST3 targets require a valid VST3
+    /// state. This identity query grants no live capability or capture authority.
+    pub fn automation_target_class(
+        &self,
+        target: DeviceAutomationTarget,
+    ) -> Result<Option<[u8; 16]>, Invalid> {
+        target
+            .validate()
+            .map_err(|_| Invalid("invalid automation target identity"))?;
+        automation_class(target, self.state())
+    }
+
     pub(crate) fn validate_automation_provider(
         &self,
         state: &hex_lattice_contract::NativeDeviceState,
