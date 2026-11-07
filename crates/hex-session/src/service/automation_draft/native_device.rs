@@ -19,7 +19,9 @@ pub use vst3::{Vst3ApplicationValue, Vst3CaptureTarget, Vst3ParameterApplication
 enum Capture {
     Native {
         target: NativeParameterInputTarget,
-        capture: NativeParameterCapture,
+        // Allocated once on Session control; foreign takes do not carry this
+        // larger provider-normalization state inline.
+        capture: Box<NativeParameterCapture>,
     },
     Vst3 {
         target: Vst3CaptureTarget,
@@ -63,7 +65,10 @@ impl DeviceDraftInput {
         Ok((
             Self {
                 input,
-                capture: Capture::Native { target, capture },
+                capture: Capture::Native {
+                    target,
+                    capture: Box::new(capture),
+                },
                 stamp,
                 last_sequence: 0,
             },
