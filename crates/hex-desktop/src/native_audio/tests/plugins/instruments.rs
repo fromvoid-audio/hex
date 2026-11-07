@@ -1591,8 +1591,8 @@ fn verify_instrument_takeover(
             std::thread::yield_now();
         }
     };
+    let mut client = GestureClient::default();
     for request_id in [12, 13] {
-        let mut client = GestureClient::default();
         client.begin_plugin(query(h, request_id)).unwrap();
         assert_eq!(send(h, &mut client, true).state.project.as_ref(), &before);
         client
@@ -1614,7 +1614,6 @@ fn verify_instrument_takeover(
             );
         }
     }
-    let mut client = GestureClient::default();
     client.begin_plugin(query(h, 14)).unwrap();
     send(h, &mut client, true);
     let manual = PluginParameterValue::new(0.5).unwrap();

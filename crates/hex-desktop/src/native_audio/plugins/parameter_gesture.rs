@@ -654,58 +654,48 @@ fn validate_current_parameter(
     steps: u32,
     reading: bool,
 ) -> Result<(PluginParameterValue, u64), Error> {
-    use hex_audio::plugin_worker::{NativeWorkerControllerProgress, ParameterPageQuery};
-    let mut first = 0;
-    let mut revision = 0;
-    loop {
-        let token = admit(control, |control| {
-            control.begin_native_source_controller_query_on_control(
-                binding,
-                ParameterPageQuery {
-                    first,
-                    revision,
-                    conversion: None,
-                },
-            )
-        })?;
-        let page = loop {
-            match control.poll_native_source_controller_query_on_control(binding, &token) {
-                Ok(NativeWorkerControllerProgress::Pending) | Err("native preparation is busy") => {
-                    edits::poll_control(control)
-                }
-                Ok(NativeWorkerControllerProgress::Page(page)) => break page,
-                _ => {
-                    return Err(refused(
-                        "vst3 parameter metadata changed · refresh the list",
-                    ));
-                }
+    use hex_audio::plugin_worker::{ControllerRequest, NativeWorkerControllerProgress};
+    let token = admit(control, |control| {
+        control.begin_native_source_controller_query_on_control(
+            binding,
+            ControllerRequest::SelectedParameters {
+                first: origin.page_first,
+            },
+        )
+    })?;
+    let page = loop {
+        match control.poll_native_source_controller_query_on_control(binding, &token) {
+            Ok(NativeWorkerControllerProgress::Pending) | Err("native preparation is busy") => {
+                edits::poll_control(control)
             }
-        };
-        if page.first != first || (revision != 0 && page.revision != revision) {
-            return Err(refused(
-                "vst3 parameter metadata changed · refresh the list",
-            ));
-        }
-        if first == origin.page_first {
-            let parameter = page
-                .as_slice()
-                .iter()
-                .find(|parameter| parameter.id == origin.parameter)
-                .ok_or_else(|| refused("vst3 parameter metadata changed · refresh the list"))?;
-            if !parameter.is_editable()
-                || parameter.step_count != steps
-                || (reading && !parameter.supports_authored_automation())
-                || (!reading && parameter.normalized != origin.initial.normalized())
-            {
+            Ok(NativeWorkerControllerProgress::Page(page)) => break page,
+            _ => {
                 return Err(refused(
                     "vst3 parameter metadata changed · refresh the list",
                 ));
             }
-            return PluginParameterValue::new(parameter.normalized)
-                .map(|value| (value, page.revision))
-                .map_err(refused);
         }
-        first = origin.page_first;
-        revision = page.revision;
+    };
+    if page.first != origin.page_first {
+        return Err(refused(
+            "vst3 parameter metadata changed · refresh the list",
+        ));
     }
+    let parameter = page
+        .as_slice()
+        .iter()
+        .find(|parameter| parameter.id == origin.parameter)
+        .ok_or_else(|| refused("vst3 parameter metadata changed · refresh the list"))?;
+    if !parameter.is_editable()
+        || parameter.step_count != steps
+        || (reading && !parameter.supports_authored_automation())
+        || (!reading && parameter.normalized != origin.initial.normalized())
+    {
+        return Err(refused(
+            "vst3 parameter metadata changed · refresh the list",
+        ));
+    }
+    PluginParameterValue::new(parameter.normalized)
+        .map(|value| (value, page.revision))
+        .map_err(refused)
 }
