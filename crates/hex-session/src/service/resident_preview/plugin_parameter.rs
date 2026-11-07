@@ -45,19 +45,33 @@ pub(super) fn operation(
                 "canonical plugin playback is unavailable",
             ));
         }
-        let state = session
+        let source = session
             .project()
             .device(device)
             .filter(|device| device.state().type_id() == DeviceTypeId::from_static("hex.vst3"))
             .ok_or_else(|| {
                 SessionError::PluginSourceLost("plugin parameter device changed".into())
-            })?
-            .state();
+            })?;
+        let state = source.state();
+        let target = DeviceAutomationTarget::Vst3 { parameter };
+        let reading_effect_class = source
+            .automation_target(target)
+            .filter(|lane| lane.is_reading())
+            .and_then(|lane| lane.vst3_class)
+            .filter(|class| {
+                super::super::device_automation_control::accepts_lane_target(
+                    session,
+                    device,
+                    target,
+                    Some(*class),
+                )
+            });
         let result = sink
             .prepare_plugin_parameter_gesture(PluginParameterGestureInput {
                 context,
                 operation,
                 canonical_state: state,
+                reading_effect_class,
             })
             .map_err(|error| match error {
                 PluginParameterGestureError::Refused(reason) => SessionError::NativeAudio(reason),
@@ -70,6 +84,11 @@ pub(super) fn operation(
                 PluginGesturePreparation::Commit(_),
                 PluginParameterGestureResult::Captured(mut capture),
             ) => {
+                if reading_effect_class.is_some() {
+                    return Err(SessionError::Invalid(
+                        "reading vst3 parameter requires an isolated override",
+                    ));
+                }
                 let bind = |captured: NativeDeviceState| bind_capture(state, captured);
                 capture.before = bind(capture.before.clone())?;
                 capture.after = bind(capture.after.clone())?;

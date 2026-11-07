@@ -732,6 +732,17 @@ fn actual_parameter_hold_replaces_one_lane_until_matching_release() {
         }
     }
 
+    let admit_hold = |owner: &mut NativeWorker, command| {
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            match owner.parameter_hold_on_control(command) {
+                Ok(token) => break token,
+                Err("native parameter mailbox is busy") => thread::yield_now(),
+                Err(error) => panic!("hold admission: {error}"),
+            }
+            assert!(Instant::now() < until);
+        }
+    };
     let mut instance = original_instance();
     let class = instance.configuration().identity.class;
     let metadata = instance
@@ -834,7 +845,13 @@ fn actual_parameter_hold_replaces_one_lane_until_matching_release() {
         };
 
     render(&owner, 0, 0.0);
-    let hold = owner.hold_parameter_on_control(7, 0.75).unwrap();
+    let hold = admit_hold(
+        &mut owner,
+        crate::plugin_worker::NativeParameterHold::Begin {
+            id: 7,
+            normalized: 0.75,
+        },
+    );
     assert!(
         owner.release_held_parameter_on_control(&hold).is_err(),
         "one mailbox operation"
@@ -842,7 +859,13 @@ fn actual_parameter_hold_replaces_one_lane_until_matching_release() {
     render(&owner, 1, 0.0);
     processed(&mut owner, &hold, 1, 0.75);
     render(&owner, 2, 1.0);
-    let change = owner.update_held_parameter_on_control(&hold, 0.5).unwrap();
+    let change = admit_hold(
+        &mut owner,
+        crate::plugin_worker::NativeParameterHold::Change {
+            hold: &hold,
+            normalized: 0.5,
+        },
+    );
     render(&owner, 3, 3.0);
     processed(&mut owner, &change, 3, 0.5);
     let unscoped = begin_change(&mut owner, 7, 0.0);
@@ -852,7 +875,10 @@ fn actual_parameter_hold_replaces_one_lane_until_matching_release() {
         NativeWorkerParameterProgress::Refused
     );
     assert!(owner.release_held_parameter_on_control(&unscoped).is_err());
-    let release = owner.release_held_parameter_on_control(&hold).unwrap();
+    let release = admit_hold(
+        &mut owner,
+        crate::plugin_worker::NativeParameterHold::Release { hold: &hold },
+    );
     render(&owner, 5, 2.0);
     assert_eq!(
         terminal(&mut owner, &release),
@@ -861,13 +887,22 @@ fn actual_parameter_hold_replaces_one_lane_until_matching_release() {
             first_frame: 40
         }
     );
-    let stale = owner.update_held_parameter_on_control(&hold, 0.75).unwrap();
+    let stale = admit_hold(
+        &mut owner,
+        crate::plugin_worker::NativeParameterHold::Change {
+            hold: &hold,
+            normalized: 0.75,
+        },
+    );
     render(&owner, 6, 2.0);
     assert_eq!(
         terminal(&mut owner, &stale),
         NativeWorkerParameterProgress::Refused
     );
-    let stale_release = owner.release_held_parameter_on_control(&hold).unwrap();
+    let stale_release = admit_hold(
+        &mut owner,
+        crate::plugin_worker::NativeParameterHold::Release { hold: &hold },
+    );
     render(&owner, 7, 1.0);
     assert_eq!(
         terminal(&mut owner, &stale_release),
@@ -875,7 +910,13 @@ fn actual_parameter_hold_replaces_one_lane_until_matching_release() {
     );
     render(&owner, 8, 1.0);
 
-    let stopped = owner.hold_parameter_on_control(7, 0.75).unwrap();
+    let stopped = admit_hold(
+        &mut owner,
+        crate::plugin_worker::NativeParameterHold::Begin {
+            id: 7,
+            normalized: 0.75,
+        },
+    );
     owner.revoke_on_control();
     let until = Instant::now() + Duration::from_secs(3);
     loop {

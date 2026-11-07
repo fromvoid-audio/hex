@@ -188,6 +188,32 @@ fn idle_vst3_drag_survives_undo_save_reopen() {
     vst3_drag_roundtrip(false);
 }
 
+fn gesture_fixture() -> SavedEffectFixture {
+    // Keep resident backing below this harness's 8192-frame source budget.
+    // Reusing the same source gives native control work a longer audible run.
+    let mut fixture = nondefault_fixture_with_frames(8192);
+    let track = fixture.project.tracks()[0].id();
+    let asset = fixture.project.assets().next().unwrap().id();
+    let mut editor = hex_project::Editor::new(fixture.project.clone(), 8).unwrap();
+    for start in [8192, 16384] {
+        editor
+            .execute(Command::PlaceClip {
+                track,
+                asset,
+                start,
+                duration: 8192,
+                source_offset: 0,
+                source_length: 8192,
+                looping: false,
+            })
+            .unwrap();
+    }
+    fixture.project = editor.project().clone();
+    fixture.path = fixture.files.0.join("gesture.hex");
+    hex_storage::save_new(&fixture.path, &fixture.project).unwrap();
+    fixture
+}
+
 fn vst3_drag_roundtrip(playing: bool) {
     use hex_session::device_gesture::{
         GestureClient, GestureRequest, PluginParameterOrigin, PluginParameterValue,
@@ -215,7 +241,7 @@ fn vst3_drag_roundtrip(playing: bool) {
     let _native = native_fixture();
     // Keep producing accepted PCM while the control worker captures before
     // and after the drag. The short save-only fixture can end mid-gesture.
-    let mut fixture = nondefault_fixture_with_frames(8192);
+    let mut fixture = gesture_fixture();
     let mut h = open_saved(&fixture);
     let (before_revision, metadata) = h.submitted.unwrap();
     let device = fixture.project.main_devices()[0].id();
@@ -389,4 +415,214 @@ fn vst3_drag_roundtrip(playing: bool) {
 fn captured_gain(state: &NativeDeviceState) -> f32 {
     let state = hex_plugin_state::decode(state).unwrap();
     f32::from_le_bytes(state.component.unwrap()[8..12].try_into().unwrap())
+}
+
+#[test]
+#[ignore = "explicit original SDK helper/source receipts required"]
+fn live_reading_vst3_drag_cancels_or_commits_exact_lane_and_preserves_other_read() {
+    use hex_project::{
+        AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, DeviceAutomationTarget,
+    };
+    use hex_session::device_gesture::{GestureClient, PluginParameterOrigin, PluginParameterValue};
+    use hex_session::service::PluginParameterQuery;
+
+    const CHILD: &str = "HEX_DESKTOP_TEST_READING_VST3_DRAG";
+    if std::env::var_os(CHILD).is_none() {
+        let files = Files::new();
+        let name = std::thread::current().name().unwrap().to_owned();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "144")
+            .env("HEX_ORIGINAL_RESTORE_TRACE", files.0.join("restore-trace"))
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"));
+        return;
+    }
+
+    let _native = native_fixture();
+    let mut fixture = gesture_fixture();
+    let device = fixture.project.main_devices()[0].id();
+    let gain_target = DeviceAutomationTarget::Vst3 { parameter: 7 };
+    let other_target = DeviceAutomationTarget::Vst3 { parameter: 11 };
+    let mut editor = hex_project::Editor::new(fixture.project.clone(), 8).unwrap();
+    for (target, value) in [(gain_target, 0.25), (other_target, 0.5)] {
+        editor
+            .execute(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target,
+                points: vec![AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: AutomationValue::new(value).unwrap(),
+                    outgoing: AutomationInterpolation::Step,
+                }],
+            })
+            .unwrap();
+    }
+    fixture.project = editor.project().clone();
+    fixture.path = fixture.files.0.join("reading.hex");
+    hex_storage::save_new(&fixture.path, &fixture.project).unwrap();
+    let before = fixture.project.clone();
+
+    let mut h = open_saved(&fixture);
+    let (original_revision, metadata) = h.submitted.unwrap();
+    let query = |h: &mut ResidentHarness, request_id| {
+        let query = PluginParameterQuery {
+            context: metadata.context,
+            device,
+            output_identity: h.audio.as_ref().unwrap().control.output_identity().unwrap(),
+            request_id,
+        };
+        h.run(Request::QueryPluginParameters(query));
+        let rows = h.next().plugin_parameters.unwrap().rows.unwrap();
+        let gain = rows.into_iter().find(|row| row.id == 7).unwrap();
+        assert!(gain.editable && gain.automation_class.is_some());
+        PluginParameterOrigin {
+            context: metadata.context,
+            device,
+            parameter: gain.id,
+            page_first: gain.page_first,
+            metadata_revision: gain.metadata_revision,
+            initial: PluginParameterValue::new(gain.normalized).unwrap(),
+        }
+    };
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let render_steady = |h: &ResidentHarness, phase: &str| {
+        let mut block = [[0.0; 2]; 256];
+        for _ in 0..3 {
+            block = h.render_plugin_block();
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert!(
+                status.playing.load(Acquire),
+                "{phase}: transport did not play, position={}, rejected={:?}",
+                status.position.load(Acquire),
+                status.rejected_action()
+            );
+            wait(|| {
+                h.callback
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .native_workers_idle_on_control()
+                    == Some(true)
+            });
+        }
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert!(
+            block.iter().all(|&frame| frame == block[0]) && block[0][0] > 0.0,
+            "{phase}: first={:?}, last={:?}, completed={}, fault={:?}, source={:?}",
+            block[0],
+            block[255],
+            h.plugin_completed.load(Acquire),
+            status.render_fault_snapshot(),
+            status.native_effect_source(),
+        );
+        block[0][0]
+    };
+    let original_pcm = render_steady(&h, "original reading");
+    assert_eq!(original_pcm, 0.5);
+    let first = query(&mut h, 1);
+
+    let send = |h: &mut ResidentHarness, client: &mut GestureClient| {
+        let request = client.next_request().unwrap();
+        client.mark_submitted();
+        h.service.submit(Request::DeviceGesture(request)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            h.pump();
+            if let Ok(event) = h.service.try_event()
+                && let Some(ack) = event.gesture_ack.as_ref()
+                && ack.key == request.key()
+                && ack.phase == request.phase()
+            {
+                assert!(ack.accepted, "{ack:?} {:?}", event.error);
+                assert!(client.acknowledge(ack));
+                return event;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "reading vst3 gesture {request:?}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+            h.render_worker_step();
+        }
+    };
+    let mut client = GestureClient::default();
+    let manual = PluginParameterValue::new(0.5).unwrap();
+    client.begin_plugin(first).unwrap();
+    send(&mut h, &mut client);
+    client.change_plugin(manual).unwrap();
+    let preview = send(&mut h, &mut client);
+    assert_eq!(preview.state.project.as_ref(), &before);
+    assert_eq!(render_steady(&h, "first held preview"), original_pcm * 2.0);
+    client.cancel().unwrap();
+    assert_eq!(send(&mut h, &mut client).state.project.as_ref(), &before);
+    assert_eq!(render_steady(&h, "after cancel"), original_pcm);
+
+    let second = query(&mut h, 2);
+    client.begin_plugin(second).unwrap();
+    send(&mut h, &mut client);
+    client.change_plugin(manual).unwrap();
+    send(&mut h, &mut client);
+    assert_eq!(render_steady(&h, "second held preview"), original_pcm * 2.0);
+    client.finish_plugin(manual).unwrap();
+    let committed = send(&mut h, &mut client);
+    let (revision, _) = h.applied(original_revision);
+    let result = committed.state.project.device(device).unwrap();
+    let original = before.device(device).unwrap();
+    let gain = result.automation_target(gain_target).unwrap();
+    assert!(!gain.is_reading());
+    assert_eq!(
+        gain.points,
+        original.automation_target(gain_target).unwrap().points
+    );
+    assert_eq!(
+        result.automation_target(other_target),
+        original.automation_target(other_target)
+    );
+    assert_eq!(captured_gain(result.state()), 2.0);
+    assert_eq!(render_steady(&h, "after commit"), original_pcm * 2.0);
+
+    let history = |h: &mut ResidentHarness, request| {
+        h.service.submit(request).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            h.pump();
+            if let Ok(event) = h.service.try_event()
+                && event.request_complete
+            {
+                assert!(event.error.is_none(), "{:?}", event.error);
+                return event;
+            }
+            assert!(Instant::now() < deadline, "reading vst3 history");
+            h.render_worker_step();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    let undone = history(&mut h, Request::Undo);
+    assert_eq!(undone.state.project.as_ref(), &before);
+    assert!(!undone.state.can_undo);
+    let (revision, _) = h.applied(revision);
+    let redone = history(&mut h, Request::Redo);
+    assert_eq!(redone.state.project, committed.state.project);
+    h.applied(revision);
+    let saved = h.run(Request::SaveCurrent);
+    assert!(saved.save_complete && !saved.state.unsaved);
+    assert_eq!(
+        hex_storage::load(&fixture.path).unwrap(),
+        *committed.state.project
+    );
 }

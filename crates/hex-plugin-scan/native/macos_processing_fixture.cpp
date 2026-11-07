@@ -797,7 +797,34 @@ public:
         }
         // Independent SDK automation oracle. The previous block's final value
         // is the implicit point at -1; jumps require adjacent old/new points.
-        std::array<std::pair<int32,ParamValue>,64> points{};int32 point_count=0;
+        struct Curve {
+            std::array<std::pair<int32,ParamValue>,64> points{};
+            int32 count=0,next=0,left_offset=-1;
+            double left_value=0.0;
+            bool read(IParamValueQueue& queue,int32 frames) {
+                count=queue.getPointCount();
+                if(count<1 || count>static_cast<int32>(points.size())) return false;
+                for(int32 n=0;n<count;++n) {
+                    auto& point=points[static_cast<size_t>(n)];
+                    if(queue.getPoint(n,point.first,point.second)!=kResultOk || point.first<0 ||
+                        point.first>=frames || !std::isfinite(point.second) || point.second<0 || point.second>1 ||
+                        (n && points[static_cast<size_t>(n-1)].first>=point.first)) return false;
+                }
+                return true;
+            }
+            double at(int32 frame) {
+                while(next<count && points[static_cast<size_t>(next)].first<frame) {
+                    const auto& point=points[static_cast<size_t>(next++)];
+                    left_offset=point.first;left_value=point.second;
+                }
+                if(next==count) return left_value;
+                const auto& right=points[static_cast<size_t>(next)];
+                return left_value+(right.second-left_value)*static_cast<double>(frame-left_offset)/
+                    static_cast<double>(right.first-left_offset);
+            }
+        } primary,secondary;
+        primary.left_value=static_cast<double>(gain.load())/4.0;
+        secondary.left_value=manual_gain/4.0;
         if(data.inputParameterChanges) {
             const auto count=data.inputParameterChanges->getParameterCount();
             if(count<1 || count>(mixed_parameter_input(fault)?2:1)) return kInvalidArgument;
@@ -805,21 +832,11 @@ public:
                 auto* queue=data.inputParameterChanges->getParameterData(index);
                 if(!queue) return kInvalidArgument;
                 if(mixed_parameter_input(fault) && queue->getParameterId()==drag_axis_id) {
-                    int32 offset=-1;ParamValue value=-1;
-                    if(queue->getPointCount()!=1 || queue->getPoint(0,offset,value)!=kResultOk ||
-                        offset!=0 || !std::isfinite(value) || value<0 || value>1) return kInvalidArgument;
-                    manual_gain=value*4.0;
-                    continue;
-                }
-                if(queue->getParameterId()!=parameter_id(fault)) return kInvalidArgument;
-                point_count=queue->getPointCount();
-                if(point_count<1 || point_count>static_cast<int32>(points.size())) return kInvalidArgument;
-                for(int32 n=0;n<point_count;++n) {
-                    auto& point=points[static_cast<size_t>(n)];
-                    if(queue->getPoint(n,point.first,point.second)!=kResultOk || point.first<0 ||
-                        point.first>=data.numSamples || !std::isfinite(point.second) || point.second<0 || point.second>1 ||
-                        (n && points[static_cast<size_t>(n-1)].first>=point.first)) return kInvalidArgument;
-                }
+                    if(!secondary.read(*queue,data.numSamples) ||
+                        (fault==mixed_input_fixture &&
+                            (secondary.count!=1 || secondary.points[0].first!=0))) return kInvalidArgument;
+                } else if(queue->getParameterId()!=parameter_id(fault) ||
+                    !primary.read(*queue,data.numSamples)) return kInvalidArgument;
             }
         }
         ++observed.blocks; // count attempted foreign DSP, including a refusal
@@ -828,7 +845,7 @@ public:
         if (fault==31) fault_crash(9);
         if (fault==10) return kResultFalse;
         const float scale=(fault==127 || fault==held_input_fixture)?1.0f:0.5f+static_cast<float>(block)*0.125f;
-        int32 next_point=0,left_offset=-1;double left_value=static_cast<double>(gain.load())/4.0;
+        const auto point_count=primary.count;
         double current_gain=gain.load();
         bool silent=true;
         const auto event_count=data.inputEvents?data.inputEvents->getEventCount():0;
@@ -861,19 +878,8 @@ public:
                 if (++next_event<event_count && data.inputEvents->getEvent(next_event,event)!=kResultOk)
                     return kResultFalse;
             }
-            if(point_count) {
-                while(next_point<point_count && points[static_cast<size_t>(next_point)].first<frame) {
-                    left_offset=points[static_cast<size_t>(next_point)].first;
-                    left_value=points[static_cast<size_t>(next_point)].second;++next_point;
-                }
-                double value=left_value;
-                if(next_point<point_count) {
-                    const auto& right_point=points[static_cast<size_t>(next_point)];
-                    value+=(right_point.second-left_value)*static_cast<double>(frame-left_offset)/
-                        static_cast<double>(right_point.first-left_offset);
-                }
-                current_gain=parameter_value(fault,value)*4.0;
-            }
+            if(point_count) current_gain=parameter_value(fault,primary.at(frame))*4.0;
+            if(secondary.count) manual_gain=secondary.at(frame)*4.0;
             // Independent internal change at offset0; later host automation
             // still reaches its endpoint at the end of this actual SDK block.
             if(fault==79 && point_count && frame==0) current_gain=1.0;

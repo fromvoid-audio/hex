@@ -50,8 +50,15 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
     };
     let binding = f.binding;
     assert!(
-        host.begin_manual_base_capture_on_control(&mut f.control, source, binding, &initial, point)
-            .is_err()
+        host.begin_manual_base_capture_on_control(
+            &mut f.control,
+            source,
+            binding,
+            &initial,
+            point.id,
+            point.normalized
+        )
+        .is_err()
     );
     f.control.command(PlaybackCommand::Play).unwrap();
     assert_eq!(block(&mut f), [[0.0; 2]; 8]);
@@ -68,7 +75,14 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
     for (source, binding, point) in [
         (stale, binding, point),
         (source, wrong_binding, point),
-        (source, binding, ParameterPoint { frame: 1, ..point }),
+        (
+            source,
+            binding,
+            ParameterPoint {
+                normalized: f64::NAN,
+                ..point
+            },
+        ),
     ] {
         assert!(
             host.begin_manual_base_capture_on_control(
@@ -76,12 +90,13 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
                 source,
                 binding,
                 &initial,
-                point
+                point.id,
+                point.normalized
             )
             .is_err()
         );
     }
-    let start = |f: &mut OrdinaryFixture, state, point| {
+    let start = |f: &mut OrdinaryFixture, state, point: ParameterPoint| {
         let until = Instant::now() + Duration::from_secs(3);
         loop {
             match host.begin_manual_base_capture_on_control(
@@ -89,7 +104,8 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
                 source,
                 binding,
                 state,
-                point,
+                point.id,
+                point.normalized,
             ) {
                 Ok(capture) => break capture,
                 Err(error)
@@ -125,7 +141,8 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
             source,
             binding,
             &captured,
-            point
+            point.id,
+            point.normalized
         )
         .is_err()
     );
