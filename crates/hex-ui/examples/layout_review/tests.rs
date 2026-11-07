@@ -151,7 +151,7 @@ fn selection_focus_hover_and_bypass_preserve_body_paint_and_real_control_footpri
         Some(gpui::Background::from(rgb(theme::device_style(
             theme::DeviceStyleRole::Layout
         )
-        .accent)))
+        .surface)))
     );
     visual.simulate_keystrokes("escape");
     let bypass = visual.debug_bounds("bypass-sample").unwrap();

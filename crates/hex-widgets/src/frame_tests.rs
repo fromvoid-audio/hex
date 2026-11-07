@@ -328,14 +328,24 @@ impl Render for SelectionFixture {
         let mut idle = device_frame("device", STYLE, div(), div(), div());
         let idle = idle.interactivity().compute_style(None, None, window, cx);
         let current = frame.interactivity().compute_style(None, None, window, cx);
-        assert_eq!(current.border_color, idle.border_color);
+        assert_eq!(
+            current.border_color,
+            Some(
+                rgb(if self.selected {
+                    STYLE.accent
+                } else {
+                    STYLE.border
+                })
+                .into()
+            )
+        );
         assert_eq!(current.border_widths, idle.border_widths);
         frame
     }
 }
 
 #[gpui::test]
-fn selection_changes_only_header_paint_without_moving_or_recoloring_the_frame(
+fn selection_changes_only_border_paint_without_moving_or_recoloring_surfaces(
     cx: &mut TestAppContext,
 ) {
     let handle = *cx.add_window(|_, _| SelectionFixture { selected: false });
@@ -384,11 +394,7 @@ fn selection_changes_only_header_paint_without_moving_or_recoloring_the_frame(
         }
         assert_eq!(
             visual.rendered_background("device-frame-header"),
-            Some(gpui::Background::from(rgb(if selected {
-                STYLE.accent
-            } else {
-                STYLE.surface
-            })))
+            Some(gpui::Background::from(rgb(STYLE.surface)))
         );
     }
 }
