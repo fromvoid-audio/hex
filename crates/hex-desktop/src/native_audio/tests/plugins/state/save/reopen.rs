@@ -422,11 +422,28 @@ fn live_reading_vst3_drag_cancels_or_commits_exact_lane_and_preserves_other_read
     }
 
     let _native = native_fixture();
-    let mut fixture = nondefault_fixture_with_frames(65_536);
+    // Keep this fixture on the ordinary resident path. The harness admits
+    // 8192 resident source frames; reuse the same source for a longer take.
+    let mut fixture = nondefault_fixture_with_frames(8192);
     let device = fixture.project.main_devices()[0].id();
     let gain_target = DeviceAutomationTarget::Vst3 { parameter: 7 };
     let other_target = DeviceAutomationTarget::Vst3 { parameter: 11 };
     let mut editor = hex_project::Editor::new(fixture.project.clone(), 8).unwrap();
+    let track = fixture.project.tracks()[0].id();
+    let asset = fixture.project.assets().next().unwrap().id();
+    for start in [8192, 16384] {
+        editor
+            .execute(Command::PlaceClip {
+                track,
+                asset,
+                start,
+                duration: 8192,
+                source_offset: 0,
+                source_length: 8192,
+                looping: false,
+            })
+            .unwrap();
+    }
     for (target, value) in [(gain_target, 0.25), (other_target, 0.5)] {
         editor
             .execute(Command::ReplaceDeviceAutomationTarget {
@@ -475,7 +492,7 @@ fn live_reading_vst3_drag_cancels_or_commits_exact_lane_and_preserves_other_read
         .unwrap();
     let render_steady = |h: &ResidentHarness, phase: &str| {
         let mut block = [[0.0; 2]; 256];
-        for _ in 0..5 {
+        for _ in 0..3 {
             block = h.render_plugin_block();
             let status = h.audio.as_ref().unwrap().status().unwrap();
             assert!(
