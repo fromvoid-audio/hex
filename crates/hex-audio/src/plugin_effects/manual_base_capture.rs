@@ -189,12 +189,16 @@ impl Hosting {
                 || facts.sample_rate() != rate
                 || !facts.canonical_state().processing_eq(canonical)
                 || facts.values().count() != ids.len()
-                || output.native_source_approves_processing_state_on_control(
-                    binding,
-                    facts.canonical_state(),
-                ) != Some(true)
             {
                 return Err("native saved canonical base facts differ".into());
+            }
+            match output.native_source_approves_processing_state_on_control(
+                binding,
+                facts.canonical_state(),
+            ) {
+                Some(true) => {}
+                Some(false) => return Err("native saved canonical base facts differ".into()),
+                None => return Err("native preparation is busy".into()),
             }
         }
         let mut parameters = Parameters::default();
