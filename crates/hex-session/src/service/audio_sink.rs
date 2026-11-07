@@ -30,6 +30,7 @@ pub struct PluginParameterGestureInput<'a> {
     pub(in crate::service) canonical_state: &'a NativeDeviceState,
     pub(in crate::service) reading_class: Option<[u8; 16]>,
     pub(in crate::service) isolated_class: Option<[u8; 16]>,
+    pub(in crate::service) instrument: bool,
 }
 impl<'a> PluginParameterGestureInput<'a> {
     pub fn context(&self) -> hex_engine::AudioSourceContext {
@@ -46,6 +47,9 @@ impl<'a> PluginParameterGestureInput<'a> {
     /// including when the edited parameter has no lane of its own.
     pub fn isolated_class(&self) -> Option<[u8; 16]> {
         self.isolated_class
+    }
+    pub fn is_instrument(&self) -> bool {
+        self.instrument
     }
     pub fn canonical_state(&self) -> &'a NativeDeviceState {
         self.canonical_state
@@ -101,7 +105,7 @@ impl<'a> ResidentEffectPreparation<'a> {
     pub fn requires_plugin_profile(&self) -> bool {
         requires_plugin_profile(self.project)
     }
-    /// Borrow the active authored raw targets of one canonical device. The
+    /// Borrow all saved raw targets, including lanes currently set to Base. The
     /// native source owner still validates the class and exact SDK capabilities.
     pub fn authored_plugin_targets(
         &self,
@@ -111,7 +115,7 @@ impl<'a> ResidentEffectPreparation<'a> {
             .automation_devices()
             .find(|candidate| candidate.id().value() == device && is_plugin_effect(candidate))
             .into_iter()
-            .flat_map(hex_project::Device::reading_automation)
+            .flat_map(|device| device.automation().iter())
             .filter_map(|lane| match lane.target {
                 hex_lattice_contract::DeviceAutomationTarget::Vst3 { parameter } => {
                     Some((parameter, lane.vst3_class))
@@ -558,6 +562,16 @@ pub trait WorkerAudioSink: Send {
     ) -> Result<Option<hex_engine::PreparedRevision>, String> {
         Ok(None)
     }
+    /// Actual original-worker pickup only, for bounded immutable program
+    /// retention. None conservatively retains history; never synthesize this
+    /// from a queued graph key or final Main publication.
+    fn received_foreign_program_on_control(
+        &mut self,
+        _binding: hex_lattice_contract::ForeignProcessorBinding,
+    ) -> Option<std::num::NonZeroU64> {
+        None
+    }
+
     /// A host with no private offline capability must refuse foreign bounce
     /// instead of using its live source or publishing unprocessed audio.
     fn prepare_offline_bounce(

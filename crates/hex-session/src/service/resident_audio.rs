@@ -302,6 +302,13 @@ impl Inputs<'_> {
         } else {
             prepared
         };
+        let prepared = match self.current {
+            Some(current) => prepared
+                .with_foreign_program_history_from(&current.prepared, |binding| {
+                    sink.received_foreign_program_on_control(binding)
+                })?,
+            None => prepared,
+        };
         let prepared = match gain_recording {
             Some(track) => prepared.arm_gain_recording(project, track)?,
             None => prepared,

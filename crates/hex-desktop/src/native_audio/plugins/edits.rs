@@ -59,12 +59,18 @@ impl Plugins {
         &self,
         control: &mut PublicationControl,
         input: &ResidentEffectPreparation<'_>,
-        owner: ProcessorChainOwner,
+        destination: PluginEffectDestination,
         device: u64,
         state: &NativeDeviceState,
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&RequestCancellation>,
     ) -> Result<Option<Binding>, String> {
+        let owner = destination.owner();
+        let retain_instrument = destination.is_instrument()
+            && control
+                .status
+                .playing
+                .load(std::sync::atomic::Ordering::Acquire);
         let authored = AuthoredSelection::from_targets(input.authored_plugin_targets(device))?;
         let mut changed_state = false;
         if input.preparing_edit()
@@ -90,7 +96,10 @@ impl Plugins {
             if source.project_generation != input.context().project_generation
                 || source.owner != owner
                 || source.device != device
-                || source.authored != authored
+                || !match &source.authored {
+                    Some(armed) => armed.covers(authored.as_ref()),
+                    None => authored.is_none(),
+                }
                 || source.retiring
                 || (input.preparing_edit()
                     && !source.accepted
@@ -99,6 +108,7 @@ impl Plugins {
                 continue;
             }
             if changed_state
+                && !retain_instrument
                 && !matches!(source.operation, SourceOperation::Edit(context) if context == input.context())
             {
                 // A historical matching payload does not free its physical
@@ -106,7 +116,11 @@ impl Plugins {
                 // own source instead of introducing a current/tail alias.
                 continue;
             }
-            if original_state(control, source.binding, cancellation)?.processing_eq(state) {
+            if (retain_instrument
+                && control.native_source_approves_captured_state_on_control(source.binding, state)
+                    == Some(true))
+                || original_state(control, source.binding, cancellation)?.processing_eq(state)
+            {
                 return Ok(Some(source.binding));
             }
         }
@@ -127,7 +141,15 @@ impl Plugins {
         let owner = destination.owner();
         let control = output.publication.control().ok_or("native output closed")?;
         if self
-            .matching_edit_source(control, input, owner, device, state, desired, cancellation)?
+            .matching_edit_source(
+                control,
+                input,
+                destination,
+                device,
+                state,
+                desired,
+                cancellation,
+            )?
             .is_some()
         {
             return Ok(());
@@ -310,6 +332,42 @@ pub(super) fn original_state(
                     "native preparation is busy" | "native source is busy"
                 ) => {}
             Err(error) => return Err(error),
+        }
+        poll_control(control);
+    }
+}
+
+/// Consume the private query through disposal even after cancellation.
+pub(super) fn canonical_bases(
+    host: &Hosting,
+    control: &mut PublicationControl,
+    binding: Binding,
+    state: &NativeDeviceState,
+    selection: &AuthoredSelection,
+    cancellation: Option<&RequestCancellation>,
+) -> Result<hex_audio::plugin_effects::CapturedCanonicalBases, String> {
+    let playing = control
+        .status
+        .playing
+        .load(std::sync::atomic::Ordering::Acquire);
+    let source = control
+        .status
+        .native_parameter_source(playing)
+        .ok_or("vst3 canonical source is not ready")?
+        .0;
+    let mut query = loop {
+        check_cancel(cancellation)?;
+        match host.begin_canonical_bases_capture_on_control(
+            control, source, binding, state, selection, playing,
+        ) {
+            Err(error) if error == "native preparation is busy" => poll_control(control),
+            result => break result?,
+        }
+    };
+    loop {
+        let mut cancelled = || cancellation.is_some_and(RequestCancellation::is_cancelled);
+        if let Some(result) = query.poll_on_control(control, &mut cancelled) {
+            return result;
         }
         poll_control(control);
     }

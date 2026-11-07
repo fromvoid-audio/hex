@@ -104,20 +104,16 @@ pub(super) fn operation(
                     Some(*class),
                 )
             });
-        let isolated_class = source
-            .automation()
-            .iter()
-            .filter(|lane| lane.is_reading())
-            .find_map(|lane| {
-                lane.vst3_class.filter(|class| {
-                    super::super::device_automation_control::accepts_lane_target(
-                        session,
-                        device,
-                        lane.target,
-                        Some(*class),
-                    )
-                })
-            });
+        let isolated_class = source.automation().iter().find_map(|lane| {
+            lane.vst3_class.filter(|class| {
+                super::super::device_automation_control::accepts_lane_target(
+                    session,
+                    device,
+                    lane.target,
+                    Some(*class),
+                )
+            })
+        });
         if matches!(operation, PluginGesturePreparation::Begin { .. })
             && isolated_class.is_none()
             && source
@@ -135,6 +131,11 @@ pub(super) fn operation(
                 canonical_state: state,
                 reading_class,
                 isolated_class,
+                instrument: session
+                    .project()
+                    .native_sources()
+                    .iter()
+                    .any(|source| source.instrument().id() == device),
             })
             .map_err(|error| match error {
                 PluginParameterGestureError::Refused(reason) => SessionError::NativeAudio(reason),

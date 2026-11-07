@@ -90,6 +90,20 @@ impl AuthoredSelection {
         Ok(Some(selected))
     }
 
+    /// Selection membership only; actual SDK/source admission stays with Root.
+    pub fn contains(&self, class: [u8; 16], id: u32) -> bool {
+        self.class.bytes() == class && self.ids[..self.len].binary_search(&id).is_ok()
+    }
+    /// Keep already armed targets when a canonical lane stops reading or is cleared.
+    pub fn covers(&self, requested: Option<&Self>) -> bool {
+        requested.is_none_or(|requested| {
+            self.class == requested.class
+                && requested.ids[..requested.len]
+                    .iter()
+                    .all(|id| self.ids[..self.len].binary_search(id).is_ok())
+        })
+    }
+
     pub(crate) fn parameters(&self) -> (hex_plugin_state::ClassId, &[u32]) {
         (self.class, &self.ids[..self.len])
     }
