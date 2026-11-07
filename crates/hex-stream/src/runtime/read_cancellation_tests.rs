@@ -28,7 +28,7 @@ fn pump(runtime: &mut StreamRuntime) -> usize {
 #[test]
 fn shutdown_during_verified_page_read_reclaims_every_page_without_publication() {
     for release_read in [true, false] {
-        let wav = crate::worker::tests::Fixture::pcm16();
+        let wav = crate::worker::tests::Fixture::pcm32();
         let limits = VerifiedWavReaderLimits::new(
             WavReaderLimits::new(1024 * 1024, 4096, 128, 8192),
             1024 * 1024,
@@ -51,7 +51,9 @@ fn shutdown_during_verified_page_read_reclaims_every_page_without_publication() 
                 false
             })
             .expect("calibrate a complete verified read");
-        assert!(complete_checks > prefix_checks);
+        // The hold must precede the last check, with real decoder work still
+        // remaining. A 32-bit page spans four bounded decoder batches.
+        assert!(complete_checks > prefix_checks + 1);
         drop(reader);
 
         let mut editor = Editor::new(Project::new(48_000).expect("project"), 2).expect("editor");

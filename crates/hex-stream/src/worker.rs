@@ -1097,6 +1097,16 @@ pub(crate) mod tests {
         }
 
         pub(crate) fn pcm16_frames(frames: u16) -> Self {
+            Self::pcm_frames(frames, 16)
+        }
+
+        pub(crate) fn pcm32() -> Self {
+            Self::pcm_frames(4096, 32)
+        }
+
+        fn pcm_frames(frames: u16, bits: u16) -> Self {
+            assert!(matches!(bits, 16 | 32));
+            let block_align = bits / 8 * 2;
             let stamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock")
@@ -1113,7 +1123,7 @@ pub(crate) mod tests {
                 .open(&path)
                 .expect("create fixture");
             file.write_all(b"RIFF").expect("RIFF");
-            file.write_all(&(36_u32 + u32::from(frames) * 4).to_le_bytes())
+            file.write_all(&(36_u32 + u32::from(frames) * u32::from(block_align)).to_le_bytes())
                 .expect("riff length");
             file.write_all(b"WAVEfmt ").expect("WAVE format");
             file.write_all(&16_u32.to_le_bytes())
@@ -1122,17 +1132,23 @@ pub(crate) mod tests {
             file.write_all(&2_u16.to_le_bytes()).expect("channel count");
             file.write_all(&48_000_u32.to_le_bytes())
                 .expect("sample rate");
-            file.write_all(&192_000_u32.to_le_bytes())
+            file.write_all(&(48_000 * u32::from(block_align)).to_le_bytes())
                 .expect("byte rate");
-            file.write_all(&4_u16.to_le_bytes()).expect("block align");
-            file.write_all(&16_u16.to_le_bytes()).expect("bit depth");
+            file.write_all(&block_align.to_le_bytes())
+                .expect("block align");
+            file.write_all(&bits.to_le_bytes()).expect("bit depth");
             file.write_all(b"data").expect("data header");
-            file.write_all(&(u32::from(frames) * 4).to_le_bytes())
+            file.write_all(&(u32::from(frames) * u32::from(block_align)).to_le_bytes())
                 .expect("data length");
-            let mut pcm = Vec::with_capacity(usize::from(frames) * 4);
+            let mut pcm = Vec::with_capacity(usize::from(frames) * usize::from(block_align));
             for index in 0..i16::try_from(frames).expect("bounded fixture frames") {
-                pcm.extend_from_slice(&index.to_le_bytes());
-                pcm.extend_from_slice(&(-index).to_le_bytes());
+                if bits == 16 {
+                    pcm.extend_from_slice(&index.to_le_bytes());
+                    pcm.extend_from_slice(&(-index).to_le_bytes());
+                } else {
+                    pcm.extend_from_slice(&(i32::from(index) << 16).to_le_bytes());
+                    pcm.extend_from_slice(&(-i32::from(index) << 16).to_le_bytes());
+                }
             }
             file.write_all(&pcm).expect("PCM samples");
             file.sync_all().expect("flush fixture");
