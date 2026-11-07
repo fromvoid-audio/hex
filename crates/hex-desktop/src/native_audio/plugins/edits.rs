@@ -375,8 +375,9 @@ pub(super) fn original_state(
 pub(super) fn armed_selection(
     control: &mut PublicationControl,
     binding: Binding,
+    cancellation: Option<&RequestCancellation>,
 ) -> Result<Option<AuthoredSelection>, String> {
-    let metadata = source_metadata(control, binding, None)?;
+    let metadata = source_metadata(control, binding, cancellation)?;
     let class = metadata.selection().cid;
     AuthoredSelection::from_targets(
         metadata
