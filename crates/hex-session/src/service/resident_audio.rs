@@ -1256,16 +1256,21 @@ pub(super) fn relink_files(
     Ok(revision)
 }
 
+pub(super) enum PluginParameterCommit {
+    Captured {
+        device: hex_project::DeviceId,
+        capture: Box<PluginParameterCapture>,
+    },
+    Override(Box<Command>),
+}
+
 enum Transition {
     Command(Box<Command>),
     NativeAutomationTake {
         command: Box<Command>,
         target: hex_engine::NativeParameterInputTarget,
     },
-    PluginParameter {
-        device: hex_project::DeviceId,
-        capture: Box<PluginParameterCapture>,
-    },
+    PluginParameter(PluginParameterCommit),
     PluginEffect {
         command: Box<Command>,
         control: Arc<PluginEffectControl>,
@@ -2134,15 +2139,14 @@ impl Session {
     #[allow(clippy::too_many_arguments)] // Exact native capture plus the existing publication owners.
     pub(super) fn plugin_parameter_resident_snapshot(
         &mut self,
-        device: hex_project::DeviceId,
-        capture: Box<PluginParameterCapture>,
+        commit: PluginParameterCommit,
         context: hex_engine::AudioSourceContext,
         sink: &mut dyn WorkerAudioSink,
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
     ) -> Result<Snapshot, SessionError> {
         self.resident_transition(
-            Transition::PluginParameter { device, capture },
+            Transition::PluginParameter(commit),
             context,
             sink,
             admission,
@@ -2359,7 +2363,7 @@ impl Session {
             &transition,
             Transition::SectionCommand { .. } | Transition::SectionHistory { .. }
         );
-        let plugin_parameter = matches!(&transition, Transition::PluginParameter { .. });
+        let plugin_parameter = matches!(&transition, Transition::PluginParameter(_));
         let explicit_tuning = matches!(&transition, Transition::Command(command)
             if matches!(command.as_ref(), Command::SetTuning(..)));
         let prepare = |source: &Project, project: &Project| {
@@ -2440,13 +2444,14 @@ impl Session {
             Ok(snapshot)
         };
         let result = match transition {
-            Transition::PluginParameter { device, capture } => {
+            Transition::PluginParameter(PluginParameterCommit::Captured { device, capture }) => {
                 let PluginParameterCapture { before, after } = *capture;
                 self.editor
                     .replace_captured_device_state(device, before, after, prepare)
                     .map(|snapshot| Some((Created::None, snapshot)))
             }
             Transition::Command(command)
+            | Transition::PluginParameter(PluginParameterCommit::Override(command))
             | Transition::NativeAutomationTake { command, .. }
             | Transition::PluginEffect { command, .. }
             | Transition::SectionCommand { command, .. } => self
