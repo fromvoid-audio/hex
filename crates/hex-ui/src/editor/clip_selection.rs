@@ -341,7 +341,10 @@ mod tests {
                     paints.push((
                         id,
                         prefix,
-                        crate::theme::clip_fill(track.color(), flavor, members.contains(&id)),
+                        crate::theme::arrangement_clip_body_fill(
+                            crate::theme::clip_fill(track.color(), flavor, false),
+                            members.contains(&id),
+                        ),
                     ));
                 }
             }

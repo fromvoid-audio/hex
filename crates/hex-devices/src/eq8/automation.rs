@@ -1,9 +1,9 @@
-//! Shared float targets reuse EQ8's existing designer, smoother and routing.
+//! Shared typed targets reuse EQ8's existing designer, smoother and routing.
 //! A fixed Copy model retains every bank. Derived coefficient targets are staged
 //! before controls install; immutable canonical coefficient Arcs never change.
 use super::*;
-use crate::parameter_binding::{Binding, SCALAR_ENVELOPE};
-pub(super) const COUNT: usize = 121;
+use crate::parameter_binding::{Binding, CHOICE_ENVELOPE, SCALAR_ENVELOPE};
+pub(super) const COUNT: usize = 161;
 pub(super) const GAIN_SLOT: usize = COUNT - 1;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct ControlValues {
@@ -27,13 +27,38 @@ const LOG: hex_lattice_contract::ParameterSemantics = hex_lattice_contract::Para
     normalization: hex_lattice_contract::ParameterNormalization::PositiveLogarithmic,
     ..SEMANTICS
 };
+const CHOICE: hex_lattice_contract::ParameterSemantics = hex_lattice_contract::ParameterSemantics {
+    smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+    ..CHOICE_ENVELOPE
+};
 macro_rules! band_bindings {
-    ($(($bank:literal,$band:literal)),* $(,)?) => {
+    ($(($bank:literal, $band:literal)),* $(,)?) => {
         const BINDINGS: [Binding<ControlValues>; COUNT] = [
-            $(Binding::float(DESCRIPTORS[$bank*40+$band*5+2],LOG,|s|s.banks[$bank][$band].frequency_hz,|s,v|s.banks[$bank][$band].frequency_hz=v),
-            Binding::float(DESCRIPTORS[$bank*40+$band*5+3],SEMANTICS,|s|s.banks[$bank][$band].gain_db,|s,v|s.banks[$bank][$band].gain_db=v),
-            Binding::float(DESCRIPTORS[$bank*40+$band*5+4],LOG,|s|s.banks[$bank][$band].q,|s,v|s.banks[$bank][$band].q=v),)*
-            Binding::float(DESCRIPTORS[201],SEMANTICS,|s|s.gain,|s,v|s.gain=v),
+            $(Binding::choice(
+                DESCRIPTORS[$bank * 40 + $band * 5 + 1], CHOICE,
+                |s| u32::from(s.banks[$bank][$band].kind),
+                |s, v| {
+                    s.banks[$bank][$band].kind = u8::try_from(v)
+                        .map_err(|_| DeviceContractError::InvalidParameterValue)?;
+                    Ok(())
+                },
+            ),
+            Binding::float(
+                DESCRIPTORS[$bank * 40 + $band * 5 + 2], LOG,
+                |s| s.banks[$bank][$band].frequency_hz,
+                |s, v| s.banks[$bank][$band].frequency_hz = v,
+            ),
+            Binding::float(
+                DESCRIPTORS[$bank * 40 + $band * 5 + 3], SEMANTICS,
+                |s| s.banks[$bank][$band].gain_db,
+                |s, v| s.banks[$bank][$band].gain_db = v,
+            ),
+            Binding::float(
+                DESCRIPTORS[$bank * 40 + $band * 5 + 4], LOG,
+                |s| s.banks[$bank][$band].q,
+                |s, v| s.banks[$bank][$band].q = v,
+            ),)*
+            Binding::float(DESCRIPTORS[201], SEMANTICS, |s| s.gain, |s, v| s.gain = v),
         ];
     };
 }
@@ -297,7 +322,10 @@ mod tests {
                 let base = all_bands(mode);
                 let mut source = room(&base, rate, false);
                 source.process_block(&mut signal(513), &R);
-                for binding in &BINDINGS[..GAIN_SLOT] {
+                for binding in BINDINGS[..GAIN_SLOT]
+                    .iter()
+                    .filter(|b| matches!(b.descriptor.kind, ParameterKind::Float { .. }))
+                {
                     let id = binding.descriptor.id;
                     let bank = ((id.value() - 1) / 40) as usize;
                     if !selected(source.mode).contains(&bank) {
@@ -353,6 +381,9 @@ mod tests {
         fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
             let f = ((self.start + offset) * 7 + id.value() as usize * 3) % 65;
             let t = f as f32 / 64.0;
+            if id != parameter::OUTPUT_GAIN && (id.value() - 1) % 5 == 1 {
+                return Some(ParameterValue::Choice((f % 8) as u32));
+            }
             Some(ParameterValue::Float(if id == parameter::OUTPUT_GAIN {
                 0.5 + t
             } else {
@@ -362,6 +393,53 @@ mod tests {
                     _ => 0.5 + 2.0 * t,
                 }
             }))
+        }
+    }
+    #[test]
+    fn every_kind_choice_matches_canonical_handoffs_in_its_routing() {
+        for rate in [8000, 96000] {
+            for mode in 0..3 {
+                let base = all_bands(mode);
+                let mut source = room(&base, rate, false);
+                source.process_block(&mut signal(513), &R);
+                for binding in BINDINGS
+                    .iter()
+                    .filter(|b| matches!(b.descriptor.kind, ParameterKind::Choice { .. }))
+                {
+                    let id = binding.descriptor.id;
+                    let bank = ((id.value() - 1) / 40) as usize;
+                    assert!(
+                        EQ8_DEFINITION
+                            .supports_parameter_automation(&base, id)
+                            .unwrap()
+                    );
+                    binding.semantics.validate(binding.descriptor).unwrap();
+                    if !selected(source.mode).contains(&bank) {
+                        continue;
+                    }
+                    for choice in 0..8 {
+                        let value = ParameterValue::Choice(choice);
+                        let authored = Values {
+                            ids: vec![id],
+                            value: Some(value),
+                            dense: false,
+                            start: 0,
+                        };
+                        let changed = EQ8_DEFINITION.patch_parameter(&base, id, value).unwrap();
+                        let mut actual = prepare(&base, rate, &[id]).unwrap().runtime();
+                        actual.inherit_history_from(&source);
+                        let mut canonical = room(&changed, rate, false);
+                        canonical.inherit_history_from(&source);
+                        let mut out = signal(513);
+                        let mut reference = out.clone();
+                        actual
+                            .process_automation(&mut out, &authored, false)
+                            .unwrap();
+                        canonical.process_block(&mut reference, &R);
+                        assert_eq!(out, reference, "id {id:?} choice {choice} rate {rate}");
+                    }
+                }
+            }
         }
     }
     #[test]
@@ -670,14 +748,16 @@ mod tests {
     fn band_ranges_are_rejected_before_audio_or_targets_change() {
         let base = all_bands(0);
         for (id, value) in [
-            (parameter::frequency(0, 0), 0.0),
-            (parameter::q(0, 0), f32::NAN),
-            (parameter::gain(0, 0), 25.0),
+            (parameter::frequency(0, 0), ParameterValue::Float(0.0)),
+            (parameter::q(0, 0), ParameterValue::Float(f32::NAN)),
+            (parameter::gain(0, 0), ParameterValue::Float(25.0)),
+            (parameter::kind(0, 0), ParameterValue::Choice(8)),
+            (parameter::kind(0, 0), ParameterValue::Float(0.0)),
         ] {
             let mut actual = prepare(&base, 8000, &[id]).unwrap().runtime();
             let source = Values {
                 ids: vec![id],
-                value: Some(ParameterValue::Float(value)),
+                value: Some(value),
                 dense: false,
                 start: 0,
             };
