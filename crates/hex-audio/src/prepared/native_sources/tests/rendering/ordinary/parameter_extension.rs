@@ -66,8 +66,7 @@ fn facts(
         }
         assert!(
             Instant::now() < until,
-            "scratch progress: {:?}",
-            capture.preparation_progress(&f.control)
+            "isolated constructor query must dispose its scratch"
         );
         std::thread::sleep(Duration::from_millis(1));
     }
@@ -202,8 +201,13 @@ fn original_root_extends_only_acknowledged_targets_with_isolated_constructor_bas
             output_identity: f.control.output_identity().unwrap(),
         };
         f.control.command(PlaybackCommand::Play).unwrap();
-        block(&mut f);
-        replacement::wait_for_blocks(&root, f.binding, 1);
+        for count in 1..=3 {
+            let pcm = block(&mut f);
+            replacement::wait_for_blocks(&root, f.binding, count);
+            if count == 3 {
+                assert_eq!(pcm, [[0.25, -0.5]; 8]);
+            }
+        }
         let selected: &[u32] = if initially_armed { &[7, 11] } else { &[11] };
         let constructor = facts(&mut f, &host, source, &initial, selected, class.bytes());
         let q = observed(&mut f);
@@ -260,8 +264,12 @@ fn original_root_extends_only_acknowledged_targets_with_isolated_constructor_bas
             Some(initial.clone())
         );
         assert_eq!(f.control.status.native_effect_source(), Some(source));
-        block(&mut f);
-        replacement::wait_for_blocks(&root, f.binding, 2);
+        assert_eq!(
+            block(&mut f),
+            [[0.25, -0.5]; 8],
+            "capability publication cannot alter the playing processor"
+        );
+        replacement::wait_for_blocks(&root, f.binding, 4);
         let q = observed(&mut f);
         let token = wait(|| {
             f.control
@@ -296,6 +304,6 @@ fn original_root_extends_only_acknowledged_targets_with_isolated_constructor_bas
                 )
                 .is_err()
         );
-        drop(f);
+        dispose(f);
     }
 }
