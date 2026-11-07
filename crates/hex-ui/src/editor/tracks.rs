@@ -2801,20 +2801,21 @@ impl EditorView {
             })
             .id(("clip", clip_id.value()))
             .debug_selector(|| format!("clip-visual-{}", clip_id.value()))
-            .on_hover(cx.listener(move |view, hovered, _, cx| {
-                if *hovered && view.project_generation != hover_generation {
-                    return;
-                }
-                let hovered_clip = (hover_generation, clip_id);
-                let next = if *hovered {
-                    Some(hovered_clip)
-                } else if view.hovered_fade_clip == Some(hovered_clip) {
-                    None
-                } else {
-                    view.hovered_fade_clip
-                };
-                if view.hovered_fade_clip != next {
-                    view.hovered_fade_clip = next;
+            .on_mouse_move(
+                cx.listener(move |view, event: &gpui::MouseMoveEvent, _, cx| {
+                    if view.update_fade_hover(
+                        track,
+                        clip_id,
+                        hover_generation,
+                        Some(f32::from(event.position.y)),
+                    ) {
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_hover(cx.listener(move |view, hovered: &bool, window, cx| {
+                let pointer_y = hovered.then(|| f32::from(window.mouse_position().y));
+                if view.update_fade_hover(track, clip_id, hover_generation, pointer_y) {
                     cx.notify();
                 }
             }))
