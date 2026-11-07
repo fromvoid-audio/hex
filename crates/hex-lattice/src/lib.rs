@@ -382,6 +382,13 @@ pub trait NativeProcessorRuntime: StdAny + Send {
     ) {
         self.process_bypassed_block(frames, _resources);
     }
+    /// Enter a residual-output tail after the host's complete admission
+    /// preflight. Both transaction twins receive this notification before
+    /// clock-free processing. Freeze any last effective controls needed by
+    /// that path without resetting signal history or transferring custody.
+    /// No allocation, blocking, I/O or potentially final resource drops.
+    /// Providers that already retain their effective controls need no action.
+    fn begin_output_tail(&mut self) {}
     fn reset(&mut self);
     /// True only when this runtime cannot produce any future output under
     /// zero input and its current prepared configuration, including output
