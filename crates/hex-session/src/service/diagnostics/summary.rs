@@ -1458,12 +1458,12 @@ pub(super) fn request(value: &Request) -> Description {
         } => {
             describe!("commit_midi_take"; ["request_id" => request_id, "project_generation" => project_generation, "revision" => revision, "notes_count" => notes.len(), "stop_frame" => stop_frame]; omitted="binding")
         }
-        Request::NativeAutomationTake {
+        Request::DeviceAutomationTake {
             request_id,
             scope,
             action: _,
         } => {
-            describe!("native_automation_take"; ["request_id" => request_id, "gesture_serial" => scope.stamp.gesture_serial]; omitted="delivery data")
+            describe!("device_automation_take"; ["request_id" => request_id, "gesture_serial" => scope.stamp.gesture_serial]; omitted="delivery data")
         }
         Request::ArmNativeParameterRecording {
             project_generation,

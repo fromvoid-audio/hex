@@ -665,10 +665,11 @@ pub trait WorkerAudioSink: Send {
     }
     /// Exact current armed and playing ordinary output. A copied observation
     /// cannot reserve an audio input or substitute for a delivery receipt.
-    fn native_automation_source(
+    fn device_automation_source(
         &mut self,
         _context: hex_engine::AudioSourceContext,
-    ) -> Result<Option<super::NativeAutomationSource>, String> {
+        _target: super::DeviceCaptureTarget,
+    ) -> Result<Option<super::DeviceAutomationSource>, String> {
         Ok(None)
     }
     /// Synchronously borrow actual active/retiring/unpublished owners for every precommit check.

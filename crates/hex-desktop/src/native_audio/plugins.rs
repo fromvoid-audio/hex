@@ -354,6 +354,25 @@ impl Plugins {
     }
     /// The exact successor has applied. Keep the old bindings until Root
     /// returns their graph, tail and endpoint obligations on control.
+    /// Copied source observation only; actual target SDK/delivery admission
+    /// remains in the parameter gesture adapter and Root.
+    pub(super) fn matches_capture_source(
+        &self,
+        context: AudioSourceContext,
+        target: hex_session::service::automation_draft::Vst3CaptureTarget,
+    ) -> bool {
+        self.sources
+            .iter()
+            .rev()
+            .find(|source| {
+                source.accepted
+                    && !source.retiring
+                    && source.project_generation == context.project_generation
+                    && source.device == target.device.value()
+            })
+            .is_some_and(|source| source.binding == target.binding)
+    }
+
     pub(super) fn retire_document_sources(&mut self, generation: u64) {
         for source in self
             .sources
@@ -1011,6 +1030,87 @@ fn advance_source(
 #[cfg(test)]
 mod idle_tests {
     use super::*;
+
+    #[test]
+    fn recording_source_observation_rejects_pending_retiring_and_replaced_bindings() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+        let mut insert = || {
+            let hex_project::Created::Device(device) = editor
+                .execute(hex_project::Command::InsertMainDevice {
+                    before: None,
+                    state: hex_engine::default_native_device_state(
+                        hex_engine::DeviceTypeId::from_static("hex.utility"),
+                    )
+                    .unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("device")
+            };
+            device
+        };
+        let device = insert();
+        let other = insert();
+        let mut plugins = Plugins::default();
+        let binding = Binding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 4,
+        };
+        let context = AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 7,
+        };
+        let target = hex_session::service::automation_draft::Vst3CaptureTarget {
+            device,
+            class: [9; 16],
+            parameter: 0,
+            binding,
+        };
+        plugins.sources.push(Source {
+            binding,
+            owner: ProcessorChainOwner::Main,
+            device: device.value(),
+            project_generation: 1,
+            operation: SourceOperation::Reopen,
+            authored: None,
+            accepted: false,
+            retiring: false,
+            queued: true,
+            observes_latency: true,
+            editor_open: false,
+            edit_backlog: false,
+            #[cfg(feature = "allocation-probe")]
+            observed_latency_receipt: false,
+            #[cfg(feature = "allocation-probe")]
+            attempts: 0,
+        });
+        assert!(!plugins.matches_capture_source(context, target));
+        plugins.sources[0].accepted = true;
+        assert!(plugins.matches_capture_source(context, target));
+        plugins.sources[0].retiring = true;
+        assert!(!plugins.matches_capture_source(context, target));
+        plugins.sources[0].retiring = false;
+        plugins.sources[0].binding.epoch += 1;
+        assert!(!plugins.matches_capture_source(context, target));
+        plugins.sources[0].binding = binding;
+        assert!(!plugins.matches_capture_source(
+            AudioSourceContext {
+                project_generation: 2,
+                ..context
+            },
+            target
+        ));
+        assert!(!plugins.matches_capture_source(
+            context,
+            hex_session::service::automation_draft::Vst3CaptureTarget {
+                device: other,
+                ..target
+            }
+        ));
+    }
 
     #[test]
     fn stopped_editor_backlog_keeps_polling_busy_until_drained_or_output_closes() {

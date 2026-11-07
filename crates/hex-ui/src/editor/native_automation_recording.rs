@@ -11,8 +11,8 @@ use hex_project::DeviceId;
 use hex_session::{
     device_gesture::{GestureKey, GestureTarget},
     service::{
-        Event, NativeAutomationTakeAction as Action, NativeAutomationTakeProgress as Progress,
-        NativeAutomationTakeScope, Request,
+        DeviceAutomationTakeAction as Action, DeviceAutomationTakeProgress as Progress,
+        DeviceAutomationTakeScope, Event, Request,
         automation_draft::{DraftProvenance, EVENTS_PER_BATCH},
     },
 };
@@ -60,7 +60,7 @@ enum End {
 struct Touch {
     gesture: GestureTarget,
     audio: Target,
-    scope: NativeAutomationTakeScope,
+    scope: DeviceAutomationTakeScope,
     phase: Phase,
     latest: ParameterValue,
     pending: Option<NativeTransientValue>,
@@ -431,8 +431,8 @@ impl EditorView {
             .checked_add(1)
             .ok_or("automation request limit reached")?;
         let pending = input_value(kind, value)?;
-        let scope = NativeAutomationTakeScope {
-            target: input,
+        let scope = DeviceAutomationTakeScope {
+            target: input.into(),
             stamp: DraftProvenance {
                 sample_rate: audio.sample_rate,
                 output_identity: source.output_identity,
@@ -466,7 +466,7 @@ impl EditorView {
             retired_batch: None,
             retired_read: 0,
         };
-        if !self.enqueue(Request::NativeAutomationTake {
+        if !self.enqueue(Request::DeviceAutomationTake {
             request_id: request,
             scope,
             action: Action::Begin,
@@ -493,7 +493,7 @@ impl EditorView {
             return Ok(());
         }
         if touch.latest != value {
-            touch.pending = Some(input_value(touch.scope.target.target(), value)?);
+            touch.pending = Some(input_value(touch.audio.input.target(), value)?);
             touch.latest = value;
         }
         if phase == NumericEventPhase::Commit {
@@ -527,7 +527,7 @@ impl EditorView {
     }
 
     pub(super) fn native_automation_take_completion(&mut self, event: &Event) {
-        let Some(completion) = event.native_automation_take_complete.as_ref() else {
+        let Some(completion) = event.device_automation_take_complete.as_ref() else {
             return;
         };
         let Some(mut touch) = self.native_automation_recorder.touch.take() else {
@@ -581,8 +581,8 @@ impl EditorView {
                 if let Some(arm) = self.native_automation_recorder.arm.as_mut()
                     && arm.generation == touch.scope.stamp.project_generation
                     && arm.revision == touch.scope.stamp.editor_revision
-                    && arm.device == touch.scope.target.device()
-                    && arm.kind == touch.scope.target.target()
+                    && arm.device == touch.audio.input.device()
+                    && arm.kind == touch.audio.input.target()
                     && arm.revision.checked_add(1) == Some(event.state.revision)
                 {
                     arm.revision = event.state.revision;
@@ -607,7 +607,7 @@ impl EditorView {
     }
 
     pub(super) fn native_automation_request_not_submitted(&mut self, request: &Request) {
-        let Request::NativeAutomationTake { request_id, .. } = request else {
+        let Request::DeviceAutomationTake { request_id, .. } = request else {
             return;
         };
         let Some(touch) = self
@@ -672,7 +672,7 @@ impl EditorView {
                 touch.in_flight = Some((id, kind));
             }
             self.native_automation_recorder.request = id;
-            if self.enqueue(Request::NativeAutomationTake {
+            if self.enqueue(Request::DeviceAutomationTake {
                 request_id: id,
                 scope,
                 action,
@@ -730,8 +730,8 @@ mod tests {
                 parameter: hex_engine::DEVICE_OUTPUT_GAIN.id,
             },
             audio,
-            scope: NativeAutomationTakeScope {
-                target: input,
+            scope: DeviceAutomationTakeScope {
+                target: input.into(),
                 stamp: DraftProvenance {
                     sample_rate: 48_000,
                     output_identity: 4,

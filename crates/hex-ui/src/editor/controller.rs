@@ -3480,7 +3480,7 @@ impl EditorView {
         if self.native_automation_recorder.busy()
             && !matches!(
                 &request,
-                Request::NativeAutomationTake { .. }
+                Request::DeviceAutomationTake { .. }
                     | Request::RestartAudio { .. }
                     | Request::RestartRecovery(_)
             )
