@@ -328,9 +328,9 @@ mod tests {
             })
             .unwrap();
         let overridden = session.project().clone();
-        assert!(session.undo());
+        assert!(session.editor.undo());
         assert_eq!(session.project(), &before);
-        assert!(session.redo());
+        assert!(session.editor.redo());
         assert_eq!(session.project(), &overridden);
 
         let directory =
