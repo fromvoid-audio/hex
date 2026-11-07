@@ -8,8 +8,32 @@ use std::num::NonZeroU64;
 /// Callers must prove that every admitted origin window fits the point limit.
 pub trait AuthoredParameterProgram {
     /// Match the same immutable program across fragments of one quantum.
-    /// A new graph program needs a new key and a fresh or aligned endpoint.
+    /// A new graph program needs a new key. An unfinished quantum retains
+    /// its opening key and requires an explicit retained version below.
     fn quantum_program_key(&self) -> NonZeroU64;
+
+    /// Query an immutable version retained by the graph owner. This is a
+    /// bounded callback query, without acquiring or releasing program custody.
+    /// The default admits only the current version.
+    fn contains_quantum_program(&self, key: NonZeroU64) -> bool {
+        key == self.quantum_program_key()
+    }
+
+    /// Render the admitted version frozen at the quantum's first frame. The
+    /// owner must retain its storage and density admission through final host
+    /// acceptance. Resolving a key never authorizes another native binding.
+    fn render_quantum_program(
+        &self,
+        key: NonZeroU64,
+        origins: &[Option<u64>],
+        timing_changes: &TimingChanges,
+        output: &mut Parameters,
+    ) -> Result<(), Fault> {
+        if key != self.quantum_program_key() {
+            return Err(Fault::InvalidParameters);
+        }
+        self.render_quantum(origins, timing_changes, output)
+    }
 
     /// Offsets of the output points are relative to the full physical quantum.
     /// An absent origin explicitly denotes unavailable Arrangement timing.
@@ -48,9 +72,12 @@ impl AuthoredOrigins {
         changes: &TimingChanges,
     ) -> Result<Parameters, Fault> {
         let mut points = Parameters::default();
-        segment
-            .program
-            .render_quantum(&self.frames[..frames], changes, &mut points)?;
+        segment.program.render_quantum_program(
+            self.program.ok_or(Fault::InvalidParameters)?,
+            &self.frames[..frames],
+            changes,
+            &mut points,
+        )?;
         if !points.valid(frames) {
             return Err(Fault::InvalidParameters);
         }
@@ -260,6 +287,142 @@ mod tests {
             );
             assert_eq!(worker.pending_requests_for_test(), 0);
             assert!(matches!(worker.receive_request(), Err(Fault::Revoked)));
+        }
+    }
+    struct RetainedProgram {
+        current: NonZeroU64,
+        linear: bool,
+    }
+    impl AuthoredParameterProgram for RetainedProgram {
+        fn quantum_program_key(&self) -> NonZeroU64 {
+            self.current
+        }
+        fn contains_quantum_program(&self, key: NonZeroU64) -> bool {
+            key.get() <= self.current.get()
+        }
+        fn render_quantum_program(
+            &self,
+            key: NonZeroU64,
+            origins: &[Option<u64>],
+            _: &TimingChanges,
+            output: &mut Parameters,
+        ) -> Result<(), Fault> {
+            if !self.contains_quantum_program(key) {
+                return Err(Fault::InvalidParameters);
+            }
+            assert_eq!(origins.len(), 8);
+            // Exactly fills the physical budget. Fragment-level rendering or
+            // mixing versions would either overflow or change these values.
+            for frame in [0, 7] {
+                let value = key.get() as f64 / 4.0
+                    + if self.linear {
+                        origins[frame].unwrap() as f64 / 64.0
+                    } else {
+                        0.0
+                    };
+                for id in 0..32 {
+                    output.push(ParameterPoint {
+                        id,
+                        frame: frame as u16,
+                        normalized: value,
+                    })?;
+                }
+            }
+            Ok(())
+        }
+        fn render_quantum(
+            &self,
+            origins: &[Option<u64>],
+            timing: &TimingChanges,
+            output: &mut Parameters,
+        ) -> Result<(), Fault> {
+            self.render_quantum_program(self.current, origins, timing, output)
+        }
+    }
+
+    #[test]
+    fn graph_revisions_keep_the_opening_step_or_linear_program_until_next_quantum() {
+        for linear in [false, true] {
+            let (_control, mut callback, mut worker) = channel(binding(), 8).unwrap();
+            let programs = [1, 2, 3].map(|key| RetainedProgram {
+                current: NonZeroU64::new(key).unwrap(),
+                linear,
+            });
+            for (part, (start, frames, version)) in
+                [(0, 1, 0), (1, 3, 1), (4, 2, 2), (6, 2, 2), (8, 8, 2)]
+                    .into_iter()
+                    .enumerate()
+            {
+                let mut output = [[0.0; 2]; 8];
+                let render = || {
+                    callback.begin_physical_callback(frames).unwrap();
+                    callback
+                        .stage_segment_with_authored_parameters(
+                            0,
+                            &[[0.0; 2]; 8][..frames],
+                            &[],
+                            &mut output[..frames],
+                            SegmentTiming {
+                                playing: Some(true),
+                                at: |index| {
+                                    Some(ProcessTiming {
+                                        arrangement_frame: (start + index) as i64,
+                                        playing: true,
+                                        ..ProcessTiming::default()
+                                    })
+                                },
+                            },
+                            AuthoredSegment {
+                                program: &programs[version],
+                                origin: &|index| Some((start + index) as u64),
+                            },
+                        )
+                        .unwrap();
+                    callback.finish(true).unwrap();
+                };
+                #[cfg(feature = "allocation-probe")]
+                {
+                    let measured = allocation_counter::measure(render);
+                    assert_eq!(
+                        (
+                            measured.count_total,
+                            measured.bytes_total,
+                            measured.count_current,
+                            measured.bytes_current
+                        ),
+                        (0, 0, 0, 0)
+                    );
+                }
+                #[cfg(not(feature = "allocation-probe"))]
+                {
+                    let mut render = render;
+                    render();
+                }
+                if part < 3 {
+                    assert!(worker.receive_request().unwrap().is_none());
+                    continue;
+                }
+                let request = worker.receive_request().unwrap().unwrap();
+                assert!(request.authored);
+                assert_eq!(request.parameter_capacity, 0);
+                let key = if part == 3 { 1.0 } else { 3.0 };
+                let first = if part == 3 { 0 } else { 8 };
+                let points = request.block.parameters.as_slice();
+                assert_eq!(points.len(), 64);
+                for (index, point) in points.iter().enumerate() {
+                    let frame = if index < 32 { 0 } else { 7 };
+                    assert_eq!(point.id, (index % 32) as u32);
+                    assert_eq!(point.frame, frame);
+                    let expected = key / 4.0
+                        + if linear {
+                            (first + usize::from(frame)) as f64 / 64.0
+                        } else {
+                            0.0
+                        };
+                    assert_eq!(point.normalized, expected);
+                }
+                worker.complete(request.block).unwrap();
+            }
         }
     }
 }

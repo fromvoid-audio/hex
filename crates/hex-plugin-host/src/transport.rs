@@ -984,7 +984,14 @@ impl Callback {
             .as_ref()
             .map(|segment| segment.program.quantum_program_key());
         if stage.state.position % q != 0 && self.authored_origins.program != program {
-            return Err(Fault::InvalidParameters);
+            let retained = self
+                .authored_origins
+                .program
+                .zip(authored.as_ref())
+                .is_some_and(|(key, segment)| segment.program.contains_quantum_program(key));
+            if !retained {
+                return Err(Fault::InvalidParameters);
+            }
         }
         let mut result = SegmentReply {
             events: Events::default(),
