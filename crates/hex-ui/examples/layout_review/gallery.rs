@@ -164,7 +164,11 @@ impl Fixture {
         let generic = matches!(entry, Entry::Instrument | Entry::Effect);
         let mut numeric = Vec::new();
         for index in 0..numbers {
+            let oscillator_level = entry == Entry::Vector && index < 12 && index % 3 == 2;
             let (appearance, width, height) = match entry {
+                Entry::Vector if oscillator_level => {
+                    (NumericControlPresentation::FilledSlider, 60.0, 18.0)
+                }
                 Entry::Vector if index >= 24 => {
                     (NumericControlPresentation::InlineValue, 46.0, 14.0)
                 }
@@ -189,14 +193,31 @@ impl Fixture {
             } else {
                 theme::DeviceStyleRole::Control
             };
-            let spec = NumericSpec::new(0.0, 100.0, 50.0, NumericScale::Linear, 2, Some("%"))
-                .map_err(|error| error.to_string())?;
+            let (spec, value) = if oscillator_level {
+                (
+                    NumericSpec::new(
+                        0.0,
+                        1.0,
+                        0.5,
+                        NumericScale::LinearAmplitudeDecibels,
+                        1,
+                        None::<&str>,
+                    ),
+                    0.5,
+                )
+            } else {
+                (
+                    NumericSpec::new(0.0, 100.0, 50.0, NumericScale::Linear, 2, Some("%")),
+                    50.0,
+                )
+            };
+            let spec = spec.map_err(|error| error.to_string())?;
             let config = NumericControlConfig::new(
                 format!("fixture-{}-numeric-{index}", entry.key()),
                 theme::text(["amount", "fine", "level"][index % 3]),
                 appearance,
                 spec,
-                50.0,
+                value,
                 theme::device_style(role),
             )
             .map_err(|error| error.to_string())?;
