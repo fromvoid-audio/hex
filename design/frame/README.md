@@ -3,7 +3,7 @@
 ## Continue editing in Frame
 
 [hex-orbital.frame.json](hex-orbital.frame.json) is the current editable prototype,
-saved at r163. It includes the structured design, prototype actions, and orbital
+saved at r168. It includes the structured design, prototype actions, and orbital
 styleguide in one portable project.
 
 In Frame, choose **Designs → Import design**, select the file, and open the
@@ -31,9 +31,10 @@ keytrack sliders with keyboard icons. Each oscillator has its own waveform menu
 with Sine, Triangle, Saw, Square, and Edit. The menu and preset choices have
 explicit preview states, including `vector-osc-a-menu` on the focused page.
 
-Edit expands a collapsible waveform section beneath the amplitude envelope,
-inside the device. It has **Curve** and **Harmonics** tabs, including 16/32/64
-partial views. The chevron collapses it back to the full envelope layout. The
+Edit expands a 300-pixel waveform section immediately to the right of the
+oscillators. The full amplitude envelope and remaining device panels shift right,
+keeping the shared 200-pixel device height. It has **Curve** and **Harmonics** tabs, including 16/32/64
+partial views. The chevron collapses it back to the compact device layout. The
 workstation has the same menus and inline editor in both Arrangement and Console.
 
 Turn on **Interact** to open pickers, preview presets, expand/collapse the editor, switch tabs and partial ranges,
