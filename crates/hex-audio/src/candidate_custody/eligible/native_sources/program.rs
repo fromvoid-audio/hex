@@ -45,6 +45,7 @@ impl CandidateRoot {
 mod tests {
     use super::super::tests::*;
     use super::*;
+    use std::time::{Duration, Instant};
     #[test]
     #[ignore = "explicit source-bound original SDK fixture required"]
     fn original_root_issues_program_revisions_through_endpoint_loan_and_reunion() {
