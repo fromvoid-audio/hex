@@ -96,7 +96,7 @@ fn main_resize_after_window_shrink_starts_from_painted_height(cx: &mut TestAppCo
     visual.simulate_resize(size(px(880.), px(540.)));
     visual.run_until_parked();
     let displayed = main(&mut visual);
-    let detail = visual.debug_bounds("clip-view-toggle-row").unwrap();
+    let detail = visual.debug_bounds("clip-view").unwrap();
     assert!(displayed.size.height >= px(23.));
     assert!(displayed.bottom() <= detail.top());
     let from = edge(&mut visual);

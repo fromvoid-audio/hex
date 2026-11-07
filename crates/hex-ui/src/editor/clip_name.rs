@@ -3,13 +3,14 @@ use super::{CancelClipName, CommitClipName, EditorMode, EditorView, RenameClip, 
 use crate::theme;
 use gpui::{
     App, AppContext, Context, Entity, KeyBinding, Subscription, Window, div, prelude::*, px, rgb,
+    rgba,
 };
 use hex_project::{ClipId, Command, SessionCellContent};
 use hex_session::service::Request;
 use hex_widgets::TextInput;
 
-pub(super) const CLIP_NAME_HEIGHT: f32 =
-    super::tracks::TRACK_ROW_HEIGHT * super::time_selection::SELECTION_HANDLE_FRACTION;
+/// Shared title geometry; time-selection handles keep their own independent zones.
+pub(super) const CLIP_NAME_HEIGHT: f32 = 14.0;
 
 pub(super) struct NameEdit {
     clip: ClipId,
@@ -237,7 +238,9 @@ impl EditorView {
                 .child(edit.input.clone())
                 .into_any_element();
         }
-        clip_name_text(name).into_any_element()
+        clip_name_text(name)
+            .debug_selector(move || format!("clip-name-label-{}", clip.value()))
+            .into_any_element()
     }
     pub(super) fn clip_name_header(
         &self,
@@ -324,11 +327,15 @@ fn clip_name_surface(fill: u32) -> gpui::Div {
         .left(px(-1.0))
         .right(px(-1.0))
         .h(px(CLIP_NAME_HEIGHT))
+        .flex()
+        .items_center()
         .px_1()
         .overflow_hidden()
         .text_xs()
         .line_height(px(14.0))
         .bg(rgb(fill))
+        .border_b_1()
+        .border_color(rgba((text << 8) | 0x70))
         .text_color(rgb(text))
 }
 

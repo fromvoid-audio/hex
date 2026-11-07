@@ -589,6 +589,7 @@ pub struct App {
     #[cfg(any(test, feature = "test-support", debug_assertions))]
     pub(crate) name: Option<&'static str>,
     quitting: bool,
+    should_quit_handler: Option<Box<dyn FnMut(&mut App)>>,
 }
 
 impl App {
@@ -668,6 +669,7 @@ impl App {
                 #[cfg(any(feature = "inspector", debug_assertions))]
                 inspector_element_registry: InspectorElementRegistry::default(),
                 quitting: false,
+                should_quit_handler: None,
 
                 #[cfg(any(test, feature = "test-support", debug_assertions))]
                 name: None,
@@ -695,6 +697,20 @@ impl App {
             let cx = app.clone();
             move || {
                 cx.borrow_mut().shutdown();
+            }
+        }));
+
+        platform.on_should_quit(Box::new({
+            let cx = app.clone();
+            move || {
+                let mut cx = cx.borrow_mut();
+                let Some(mut handler) = cx.should_quit_handler.take() else {
+                    return false;
+                };
+                cx.update(|cx| handler(cx));
+                // A handler installed while this one ran replaces it.
+                cx.should_quit_handler.get_or_insert(handler);
+                true
             }
         }));
 
@@ -756,6 +772,26 @@ impl App {
     /// Gracefully quit the application via the platform's standard routine.
     pub fn quit(&self) {
         self.platform.quit();
+    }
+
+    /// Hex patch: handle the platform's request to terminate (macOS
+    /// `applicationShouldTerminate:` from Dock Quit, logout, restart, shutdown
+    /// or [`App::quit`]). While a handler is installed the platform defers
+    /// termination; the handler, or work it starts, must answer exactly once
+    /// with [`App::reply_to_quit`]. Replaces any previous handler. Without a
+    /// handler the platform terminates immediately, as upstream GPUI does.
+    /// [`App::quit`] also reaches this handler, so a handler should reply
+    /// `true` at once when the user has already confirmed quitting.
+    pub fn on_should_quit(&mut self, handler: impl FnMut(&mut App) + 'static) {
+        self.should_quit_handler = Some(Box::new(handler));
+    }
+
+    /// Hex patch: answer a termination request deferred by [`App::on_should_quit`]:
+    /// `true` terminates, `false` cancels. Ignored when no request is pending.
+    /// On macOS the reply is delivered on a later main run-loop turn, outside any
+    /// App borrow, because terminating runs the quit observers synchronously.
+    pub fn reply_to_quit(&self, terminate: bool) {
+        self.platform.reply_to_quit(terminate);
     }
 
     /// Schedules all windows in the application to be redrawn. This can be called

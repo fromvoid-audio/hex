@@ -5,6 +5,7 @@
 //! # Dependencies
 //! Uses hex-session/project/engine/audio contracts, hex-widgets, GPUI and the bounded library,
 //! preferences, tuning, MIDI, MTS, diagnostics and plugin-catalog services.
+//! fastrand supplies transient browser result ranks on the UI thread.
 //!
 //! # Does not own
 //! Does not own a second editable project, construct DSP or access files/audio devices from
@@ -32,6 +33,16 @@ mod editor_backend;
 mod test_wait;
 pub use editor_backend::{EditorAudio, EditorAudioEvent, EditorBackend, EditorPublicationState};
 mod layout;
+mod log_viewer;
+mod section_appearance;
+mod section_hit;
+mod section_input;
+mod section_reorder;
+mod section_resize;
+mod section_selection;
+mod section_surface;
+mod startup;
+pub use startup::open_or_report;
 pub mod output_meter;
 mod theme;
 mod tooltips;

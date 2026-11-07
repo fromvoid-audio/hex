@@ -78,7 +78,7 @@ fn device_theme_refresh_preserves_canonical_and_preview_numeric_drafts(cx: &mut 
     theme::apply_preferences(hex_preferences::ThemePreferences::default());
     editor.update(cx, |_, cx| cx.notify());
     visual.run_until_parked();
-    let field = operator_panel::preview::Field::FineA;
+    let field = operator_panel::preview::Field::PitchEnvelope;
     let preview = editor.read_with(cx, |view, _| {
         view.device_panel.operator_previews[&device].controls[&field]
             .entity

@@ -5,8 +5,9 @@ use crate::theme::{self, DeviceStyleRole};
 use gpui::{Div, IntoElement, SharedString, div, prelude::*, px, rgb};
 use hex_widgets::{DeviceLayout, DeviceSectionSurface, device_compact_section, device_layout};
 
-/// The accepted native device body, below the shared fourteen-pixel header.
-pub(crate) const BODY_HEIGHT: f32 = 168.0;
+/// Every native device uses one 200 px host, including its left header and outline.
+pub(crate) const FRAME_HEIGHT: f32 = 200.0;
+pub(crate) const BODY_HEIGHT: f32 = FRAME_HEIGHT - 2.0 * hex_widgets::DEVICE_FRAME_BORDER_WIDTH;
 pub(crate) const GENERIC_FRAME_WIDTH: f32 = 286.0;
 pub(crate) const SAMPLER_FRAME_WIDTH: f32 = 1040.0;
 pub(crate) const UTILITY_FRAME_WIDTH: f32 = 144.0;
