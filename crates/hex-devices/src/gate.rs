@@ -1,4 +1,10 @@
 //! Original zero-lookahead, linked-peak hysteresis gate.
+//!
+//! Shared parameter delivery stages all six controls together. A return above
+//! threshold refuses the frame before coefficients, detector history or PCM
+//! change. Time-control changes retain history and restart only the affected
+//! active attack/release ramp; authored values use the existing gate envelope.
+mod automation;
 
 use hex_lattice::{
     NativeDeviceDefinition, NativeProcessorRuntime, OutputTail, PreparedNativeProcessor,
@@ -117,6 +123,51 @@ struct GateSettings {
     release_ms: f32,
 }
 
+const BINDINGS: [crate::parameter_binding::Binding<GateSettings>; 6] = [
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[0],
+        crate::parameter_binding::SCALAR_ENVELOPE,
+        |c| c.threshold_db,
+        |c, v| c.threshold_db = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[1],
+        crate::parameter_binding::SCALAR_ENVELOPE,
+        |c| c.return_db,
+        |c, v| c.return_db = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[2],
+        crate::parameter_binding::SCALAR_ENVELOPE,
+        |c| c.floor_db,
+        |c, v| c.floor_db = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[3],
+        hex_lattice_contract::ParameterSemantics {
+            normalization: hex_lattice_contract::ParameterNormalization::PositiveLogarithmic,
+            ..crate::parameter_binding::SCALAR_ENVELOPE
+        },
+        |c| c.attack_ms,
+        |c, v| c.attack_ms = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[4],
+        crate::parameter_binding::SCALAR_ENVELOPE,
+        |c| c.hold_ms,
+        |c, v| c.hold_ms = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[5],
+        hex_lattice_contract::ParameterSemantics {
+            normalization: hex_lattice_contract::ParameterNormalization::PositiveLogarithmic,
+            ..crate::parameter_binding::SCALAR_ENVELOPE
+        },
+        |c| c.release_ms,
+        |c, v| c.release_ms = v,
+    ),
+];
+
 impl Default for GateSettings {
     fn default() -> Self {
         Self {
@@ -231,16 +282,7 @@ impl NativeDeviceMetadata for GateDefinition {
         id: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
         let settings = decode(state)?;
-        let value = match id {
-            parameter::THRESHOLD => settings.threshold_db,
-            parameter::RETURN => settings.return_db,
-            parameter::FLOOR => settings.floor_db,
-            parameter::ATTACK => settings.attack_ms,
-            parameter::HOLD => settings.hold_ms,
-            parameter::RELEASE => settings.release_ms,
-            _ => return Err(DeviceContractError::UnknownParameter),
-        };
-        Ok(ParameterValue::Float(value))
+        Ok(crate::parameter_binding::binding(&BINDINGS, id)?.read(&settings))
     }
     fn patch_parameter(
         &self,
@@ -249,28 +291,45 @@ impl NativeDeviceMetadata for GateDefinition {
         value: ParameterValue,
     ) -> Result<NativeDeviceState, DeviceContractError> {
         let mut settings = decode(state)?;
-        let descriptor = DESCRIPTORS
-            .iter()
-            .find(|descriptor| descriptor.id == id)
-            .ok_or(DeviceContractError::UnknownParameter)?;
-        descriptor.validate(value)?;
-        let ParameterValue::Float(value) = value else {
-            return Err(DeviceContractError::InvalidParameterValue);
-        };
-        match id {
-            parameter::THRESHOLD => settings.threshold_db = value,
-            parameter::RETURN => settings.return_db = value,
-            parameter::FLOOR => settings.floor_db = value,
-            parameter::ATTACK => settings.attack_ms = value,
-            parameter::HOLD => settings.hold_ms = value,
-            parameter::RELEASE => settings.release_ms = value,
-            _ => return Err(DeviceContractError::UnknownParameter),
-        }
+        crate::parameter_binding::binding(&BINDINGS, id)?.write(&mut settings, value)?;
         encode(settings)
+    }
+    fn parameter_semantics_for_state(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
+        decode(state)?;
+        Ok(Some(
+            crate::parameter_binding::binding(&BINDINGS, id)?.semantics,
+        ))
     }
 }
 
 impl NativeDeviceDefinition for GateDefinition {
+    fn supports_parameter_automation(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<bool, DeviceContractError> {
+        decode(state)?;
+        Ok(crate::parameter_binding::binding(&BINDINGS, id)
+            .is_ok_and(|b| b.declares_arrangement_automation()))
+    }
+    fn prepare_automated_runtime_instance(
+        &self,
+        _identity: hex_lattice::ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+        parameters: &[ParameterId],
+    ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
+        Ok(hex_lattice::PreparedRuntimeDevice {
+            matrix: StereoMatrix::identity(),
+            processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(
+                std::sync::Arc::new(PreparedGate::new(state, context.sample_rate, parameters)?),
+            )),
+        })
+    }
     fn prepare_matrix(
         &self,
         state: &NativeDeviceState,
@@ -290,24 +349,11 @@ impl NativeDeviceDefinition for GateDefinition {
         state: &NativeDeviceState,
         context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
-        let sample_rate = context.sample_rate;
-        if !(MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&sample_rate) {
-            return Err(DeviceContractError::InvalidParameterValue);
-        }
-        let settings = decode(state)?;
-        let attack_frames = checked_frames(settings.attack_ms, sample_rate)?;
-        let hold_frames = checked_frames(settings.hold_ms.max(MIN_HOLD_MS), sample_rate)?;
-        let release_frames = checked_frames(settings.release_ms, sample_rate)?;
-        Ok(Some(Box::new(PreparedGate {
-            settings,
-            sample_rate,
-            threshold: db_to_gain(settings.threshold_db)?,
-            return_level: db_to_gain(settings.return_db)?,
-            floor_gain: db_to_gain(settings.floor_db)?,
-            attack_frames,
-            hold_frames,
-            release_frames,
-        })))
+        Ok(Some(Box::new(PreparedGate::new(
+            state,
+            context.sample_rate,
+            &[],
+        )?)))
     }
 }
 
@@ -326,7 +372,9 @@ fn checked_frames(milliseconds: f32, sample_rate: u32) -> Result<u32, DeviceCont
     Ok(frames as u32)
 }
 
+#[derive(Clone, Copy)]
 struct PreparedGate {
+    admitted: [bool; 6],
     settings: GateSettings,
     sample_rate: u32,
     threshold: f64,
@@ -338,6 +386,18 @@ struct PreparedGate {
 }
 
 impl PreparedNativeProcessor for PreparedGate {
+    fn supports_parameter_automation(&self, id: ParameterId) -> bool {
+        self.supports(id)
+    }
+    fn parameter_automation_descriptor(&self, id: ParameterId) -> Option<ParameterDescriptor> {
+        self.supports(id)
+            .then(|| {
+                crate::parameter_binding::binding(&BINDINGS, id)
+                    .ok()
+                    .map(|b| b.descriptor)
+            })
+            .flatten()
+    }
     fn supports_smoothed_bypass(&self) -> bool {
         true
     }
@@ -349,6 +409,8 @@ impl PreparedNativeProcessor for PreparedGate {
     }
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
         Box::new(GateRuntime {
+            base: *self,
+            controls: crate::parameter_binding::Controls::new(self.settings, self.admitted),
             settings: self.settings,
             sample_rate: self.sample_rate,
             threshold: self.threshold,
@@ -384,6 +446,8 @@ struct GateHistory {
 }
 
 struct GateRuntime {
+    base: PreparedGate,
+    controls: crate::parameter_binding::Controls<GateSettings, 6>,
     settings: GateSettings,
     sample_rate: u32,
     threshold: f64,
@@ -492,6 +556,27 @@ impl GateRuntime {
 }
 
 impl NativeProcessorRuntime for GateRuntime {
+    fn supports_parameter_automation(&self, id: ParameterId) -> bool {
+        self.base.supports(id)
+    }
+    fn process_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        self.process_automated(frames, values, false)
+    }
+    fn process_bypassed_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        self.process_automated(frames, values, true)
+    }
     fn supports_detached_source_rejoin(&self) -> bool {
         true
     }
@@ -517,6 +602,14 @@ impl NativeProcessorRuntime for GateRuntime {
         }
     }
     fn reset(&mut self) {
+        self.controls.reset();
+        self.settings = self.base.settings;
+        self.threshold = self.base.threshold;
+        self.return_level = self.base.return_level;
+        self.floor_gain = self.base.floor_gain;
+        self.attack_frames = self.base.attack_frames;
+        self.hold_frames = self.base.hold_frames;
+        self.release_frames = self.base.release_frames;
         self.reset_history();
     }
     fn is_quiescent(&self) -> bool {
@@ -536,20 +629,21 @@ impl NativeProcessorRuntime for GateRuntime {
         else {
             return;
         };
-        let old_settings = previous.settings;
         self.set_history(previous.history());
-        if self.settings == old_settings {
-            return;
-        }
-        let attack_changed = self.settings.attack_ms != old_settings.attack_ms;
-        let release_changed = self.settings.release_ms != old_settings.release_ms;
-        let floor_changed = self.settings.floor_db != old_settings.floor_db;
-        if self.open && attack_changed && self.ramp_remaining > 0 && self.ramp_target == 1.0 {
-            self.start_ramp(1.0, self.attack_frames);
-        } else if !self.open && (floor_changed || (release_changed && self.ramp_remaining > 0)) {
-            self.start_ramp(self.floor_gain, self.release_frames);
+        if self.base.admitted.iter().any(|&v| v) && previous.base.admitted.iter().any(|&v| v) {
+            self.controls.inherit(&previous.controls);
+            self.settings = previous.settings;
+            self.threshold = previous.threshold;
+            self.return_level = previous.return_level;
+            self.floor_gain = previous.floor_gain;
+            self.attack_frames = previous.attack_frames;
+            self.hold_frames = previous.hold_frames;
+            self.release_frames = previous.release_frames;
+        } else {
+            self.retarget_envelope(previous.settings);
         }
     }
+
     fn can_retarget_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
         previous
             .as_any()
