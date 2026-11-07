@@ -585,16 +585,7 @@ fn operator_shell_controls_precede_selectors_and_sections_follow_child_focus(
                 ParameterControl::Choice { entity, .. } => entity.focus_handle(cx),
             };
             order.push(focus(base));
-            order.push(
-                view.device_panel.operator_previews[&device].controls[&[
-                    operator_panel::preview::Field::FineA,
-                    operator_panel::preview::Field::FineB,
-                    operator_panel::preview::Field::FineC,
-                    operator_panel::preview::Field::FineD,
-                ][operator]]
-                    .entity
-                    .focus_handle(cx),
-            );
+            order.push(focus(609 + operator as u32));
             order.push(focus(62 + operator as u32 * 3));
             order.push(focus(base + 1));
             order.push(
@@ -689,7 +680,6 @@ fn operator_preview_invalid_drafts_refuse_forward_and_reverse_tab(cx: &mut TestA
     visual.update(|window, _| window.activate_window());
     visual.run_until_parked();
     for (field, valid) in [
-        (operator_panel::preview::Field::FineB, "12"),
         (operator_panel::preview::Field::PitchEnvelope, "20"),
         (operator_panel::preview::Field::Time, "30"),
     ] {

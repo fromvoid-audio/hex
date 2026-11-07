@@ -27,6 +27,7 @@ mod limiter_ui_tests;
 mod navigation_ui_tests;
 mod operator_algorithm_ui_tests;
 mod operator_enable_ui_tests;
+mod operator_fine_ui_tests;
 #[path = "operator_harmonic_ui_tests.rs"]
 mod operator_harmonic_ui_tests;
 mod operator_navigation_tests;

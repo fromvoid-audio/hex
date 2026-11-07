@@ -1,5 +1,4 @@
 use super::*;
-use gpui::Focusable;
 use operator_panel::preview::{Field, Switch};
 
 pub(super) fn operator_fixture() -> (Service, Arc<ViewState>, TrackId, DeviceId) {
@@ -520,12 +519,12 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
     visual.simulate_click(envelope.center(), Modifiers::default());
     let fine = visual
         .debug_bounds(selector(format!(
-            "operator-preview-{}-{}-knob",
-            device.value(),
-            Field::FineB as usize
+            "device-{}-parameter-610-slider",
+            device.value()
         )))
         .unwrap();
     visual.simulate_click(fine.center(), Modifiers::default());
+    visual.simulate_keystrokes("escape");
     tab_to_routing(&mut visual, &editor, device);
     assert!(
         visual.update(|window, app| editor.read_with(app, |view, _| view
@@ -587,160 +586,5 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             &original,
             "navigation and selection preserve canonical sound state"
         );
-    });
-}
-
-#[gpui::test]
-fn operator_fine_pointer_focus_and_keyboard_follow_stable_owner(cx: &mut TestAppContext) {
-    cx.update(hex_widgets::bind_numeric_control_keys);
-    let (service, state, track, device) = operator_fixture();
-    let revision = state.revision;
-    let original = state
-        .project
-        .track(track)
-        .unwrap()
-        .instrument()
-        .unwrap()
-        .state()
-        .clone();
-    let (handle, editor) = actor_editor_window(cx, service, state, track);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.update(|window, _| window.activate_window());
-    visual.run_until_parked();
-    for (operator, field) in [
-        (1, Field::FineB),
-        (2, Field::FineC),
-        (3, Field::FineD),
-        (0, Field::FineA),
-    ] {
-        let fine = visual
-            .debug_bounds(selector(format!(
-                "operator-preview-{}-{}-knob",
-                device.value(),
-                field as usize
-            )))
-            .unwrap();
-        visual.simulate_click(fine.center(), Modifiers::default());
-        visual.run_until_parked();
-        editor.read_with(cx, |view, _| {
-            assert_eq!(
-                view.device_panel.operator_pages[&device].selected_operator, operator,
-                "clicking fine must select its oscillator"
-            );
-            assert_eq!(
-                view.device_panel.operator_pages[&device].page,
-                operator_panel::OperatorPage::Envelope
-            );
-        });
-    }
-    let fine_b = editor.read_with(cx, |view, _| {
-        view.device_panel.operator_previews[&device].controls
-            [&operator_panel::preview::Field::FineB]
-            .entity
-            .clone()
-    });
-
-    visual.update(|window, app| fine_b.focus_handle(app).focus(window));
-    visual.run_until_parked();
-    editor.read_with(cx, |view, _| {
-        assert_eq!(
-            view.device_panel.operator_pages[&device].selected_operator, 1,
-            "keyboard focus selects B without editing its value"
-        )
-    });
-    editor.update(cx, |view, cx| {
-        view.device_panel
-            .operator_pages
-            .get_mut(&device)
-            .unwrap()
-            .page = operator_panel::OperatorPage::Routing;
-        cx.notify();
-    });
-    visual.run_until_parked();
-    visual.simulate_keystrokes("up");
-    visual.run_until_parked();
-    editor.read_with(cx, |view, _| {
-        assert_eq!(
-            view.device_panel.operator_pages[&device].selected_operator,
-            1
-        );
-        assert_eq!(
-            view.device_panel.operator_pages[&device].page,
-            operator_panel::OperatorPage::Oscillator
-        );
-        assert_eq!(view.state.as_ref().unwrap().revision, revision);
-        assert_eq!(
-            view.state
-                .as_ref()
-                .unwrap()
-                .project
-                .track(track)
-                .unwrap()
-                .instrument()
-                .unwrap()
-                .state(),
-            &original
-        );
-        assert!(
-            view.device_gesture.snapshot().is_none(),
-            "fine remains honest view-only state"
-        );
-    });
-    let value = visual
-        .debug_bounds(selector(format!(
-            "operator-preview-{}-{}-value",
-            device.value(),
-            Field::FineB as usize
-        )))
-        .unwrap();
-    visual.simulate_click(value.center(), Modifiers::default());
-    visual.simulate_keystrokes("cmd-a");
-    visual.simulate_input("12");
-    visual.simulate_keystrokes("enter");
-    visual.run_until_parked();
-    editor.read_with(cx, |view, _| {
-        assert_eq!(
-            view.device_panel.operator_previews[&device].values[Field::FineB as usize],
-            12.0
-        )
-    });
-    // Keep a cached entity alive across owner/generation changes: neither focus
-    // nor its keyboard Begin may select a stale/reused instrument context.
-    editor.update(cx, |view, cx| {
-        view.selected_track = None;
-        cx.notify();
-    });
-    visual.run_until_parked();
-    visual.update(|window, app| fine_b.focus_handle(app).focus(window));
-    visual.simulate_keystrokes("up");
-    visual.run_until_parked();
-    editor.read_with(cx, |view, _| {
-        assert_eq!(
-            view.device_panel.operator_previews[&device].values[Field::FineB as usize],
-            12.0,
-            "hidden owner cannot receive stale numeric input"
-        )
-    });
-    editor.update(cx, |view, cx| {
-        view.selected_track = Some(track);
-        view.project_generation += 1;
-        view.device_panel.operator_pages.clear();
-        cx.notify();
-    });
-    visual.run_until_parked();
-    visual.update(|window, app| fine_b.focus_handle(app).focus(window));
-    visual.simulate_keystrokes("up");
-    visual.run_until_parked();
-    editor.read_with(cx, |view, _| {
-        assert_eq!(
-            view.device_panel
-                .operator_pages
-                .get(&device)
-                .copied()
-                .unwrap_or_default()
-                .selected_operator,
-            0,
-            "old generation cannot select reused ids"
-        )
     });
 }
