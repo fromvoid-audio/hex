@@ -693,7 +693,7 @@ fn oscillator_envelope_detail(
                 })
                 .unwrap_or(0.0)
         });
-        envelope::graph(view, cx, device, operator, values)
+        envelope::graph(view, cx, device, operator, values, parameters)
     } else {
         div()
             .id("operator-waveform-cycle")

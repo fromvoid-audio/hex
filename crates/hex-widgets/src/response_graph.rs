@@ -29,6 +29,8 @@ mod axes;
 mod creation_hint;
 #[cfg(test)]
 mod node_appearance_tests;
+#[cfg(test)]
+mod reference_tests;
 mod scroll;
 pub use axes::ResponseGraphAxes;
 pub use creation_hint::ResponseGraphCreationHint;
@@ -165,6 +167,15 @@ fn valid_curve(points: &[[f32; 2]]) -> bool {
     }) && points.windows(2).all(|pair| pair[0][0] <= pair[1][0])
 }
 
+/// Passive normalized comparison curve. It has no nodes or input targets.
+/// Owners retain domain meaning; the graph shares its exact plot projection.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResponseGraphReference {
+    pub points: std::sync::Arc<[[f32; 2]]>,
+    pub color: u32,
+    pub opacity: f32,
+}
+
 /// Product-resolved spectrum colors, separate from response and control colors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResponseGraphAnalyzerStyle {
@@ -179,6 +190,7 @@ pub struct ResponseGraphAnalyzerStyle {
 pub struct ResponseGraph {
     id: SharedString,
     model: ResponseGraphModel,
+    references: std::sync::Arc<[ResponseGraphReference]>,
     style: ControlStyle,
     analyzer_style: Option<ResponseGraphAnalyzerStyle>,
     axes: Option<ResponseGraphAxes>,
@@ -250,6 +262,7 @@ impl ResponseGraph {
         Self {
             id: id.into(),
             model,
+            references: std::sync::Arc::from([]),
             style,
             analyzer_style: None,
             axes: None,
@@ -414,6 +427,35 @@ impl ResponseGraph {
             self.model.analyzer.as_deref(),
             self.model.input_analyzer.as_deref(),
         ]
+    }
+
+    /// Install at most four bounded, noninteractive curves. Invalid input leaves
+    /// the previous display intact. Repaints only clone the shared allocation.
+    pub fn set_references(
+        &mut self,
+        references: Vec<ResponseGraphReference>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        if references.len() > 4
+            || references.iter().any(|curve| {
+                !(2..=MAX_CURVE_POINTS).contains(&curve.points.len())
+                    || !valid_curve(&curve.points)
+                    || curve.color > 0xffffff
+                    || !curve.opacity.is_finite()
+                    || !(0.0..=1.0).contains(&curve.opacity)
+            })
+        {
+            return Err("invalid graph references");
+        }
+        if self.references.as_ref() != references.as_slice() {
+            self.references = references.into();
+            cx.notify();
+        }
+        Ok(())
+    }
+
+    pub fn references(&self) -> &[ResponseGraphReference] {
+        &self.references
     }
 
     pub fn set_model(
@@ -1188,6 +1230,7 @@ impl gpui::Render for ResponseGraph {
         }
         self.creation_hint_was_focused = focused;
         self.cancel_unfocused_creation(window, cx);
+        let references = self.references.clone();
         let primary = self.model.primary.clone();
         let secondary = self.model.secondary.clone();
         let analyzer = self.model.analyzer.clone();
@@ -1277,6 +1320,7 @@ impl gpui::Render for ResponseGraph {
                             axes.as_ref(),
                             &primary,
                             &secondary,
+                            &references,
                             analyzer.as_deref(),
                             input_analyzer.as_deref(),
                             analyzer_peak.as_deref(),
@@ -1318,6 +1362,7 @@ fn paint_graph(
     axes: Option<&ResponseGraphAxes>,
     primary: &[[f32; 2]],
     secondary: &[[f32; 2]],
+    references: &[ResponseGraphReference],
     analyzer: Option<&[[f32; 2]]>,
     input_analyzer: Option<&[[f32; 2]]>,
     analyzer_peak: Option<&[[f32; 2]]>,
@@ -1382,13 +1427,24 @@ fn paint_graph(
     }
     spectrum_painter::paint(plot, spectra.clone(), SpectrumPass::Peak, window);
     spectrum_painter::paint(plot, spectra, SpectrumPass::Trace, window);
+    for reference in references {
+        paint_curve(
+            origin,
+            width,
+            height,
+            &reference.points,
+            px(0.8),
+            gpui::Hsla::from(rgb(reference.color)).alpha(reference.opacity),
+            window,
+        );
+    }
     paint_curve(
         origin,
         width,
         height,
         secondary,
         px(0.75),
-        style.muted,
+        rgb(style.muted).into(),
         window,
     );
     paint_curve(
@@ -1397,7 +1453,7 @@ fn paint_graph(
         height,
         primary,
         px(1.15),
-        style.accent,
+        rgb(style.accent).into(),
         window,
     );
     for node in nodes {
@@ -1471,7 +1527,7 @@ fn paint_curve(
     height: Pixels,
     points: &[[f32; 2]],
     stroke_width: Pixels,
-    color: u32,
+    color: gpui::Hsla,
     window: &mut Window,
 ) {
     let mut path = PathBuilder::stroke(stroke_width);
@@ -1484,7 +1540,7 @@ fn paint_curve(
         }
     }
     if let Ok(path) = path.build() {
-        window.paint_path(path, rgb(color));
+        window.paint_path(path, color);
     }
 }
 
