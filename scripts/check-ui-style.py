@@ -16,6 +16,8 @@ widgets = (
     'self.arrangement(', 'self.ruler(', 'self.clip_view(',
     # Query clear-slot composition contains a themed action and native input semantics.
     'self.clear_search_slot(',
+    # Pinned browser collections compose themed heading, labels and icons.
+    'self.browser_collections(',
     # Header drop wrapper preserves the existing themed row and only refines drag paint.
     'self.device_drop_header(',
     # Clip name components normalize labels or render a native text-input entity.

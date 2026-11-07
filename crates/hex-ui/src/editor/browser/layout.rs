@@ -426,24 +426,15 @@ impl EditorView {
             )
     }
 
-    pub(super) fn browser_sidebar(
-        &self,
-        width: f32,
-        cx: &mut Context<Self>,
-    ) -> gpui::Stateful<Div> {
-        let width = self.browser.layout.sidebar_width(width);
-        let compact = width == PICKER_MIN_WIDTH;
-        let mut sidebar = div()
-            .id("browser-sidebar")
-            .w(px(width))
+    fn browser_collections(&self, compact: bool, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        let mut collections = div()
+            .id("browser-collections")
+            .debug_selector(|| "browser-collections".into())
+            .w_full()
+            .min_w_0()
             .flex_shrink_0()
-            .min_h_0()
-            .overflow_y_scroll()
             .flex()
             .flex_col()
-            .border_r_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-            .debug_selector(|| "browser-sidebar".to_owned())
             .child(picker_group_heading("collections", compact));
         for (index, name) in ["favorites", "inspiration", "recent finds"]
             .into_iter()
@@ -452,14 +443,14 @@ impl EditorView {
             let color = [
                 hex_project::ElementColor::Red,
                 hex_project::ElementColor::Cyan,
-                hex_project::ElementColor::Gray,
+                hex_project::ElementColor::Rose,
             ][index];
             let icon = picker_icon(
                 browser_caption("■")
                     .text_color(rgb(theme::element_colors(color).accent))
                     .debug_selector(move || format!("browser-picker-glyph-collection-{index}")),
             );
-            sidebar = sidebar.child(
+            collections = collections.child(
                 div()
                     .id(("browser-collection", index))
                     .debug_selector(move || format!("browser-collection-{index}"))
@@ -498,8 +489,25 @@ impl EditorView {
                     })),
             );
         }
-        sidebar = sidebar
-            .child(picker_group_heading("collections pending", compact))
+        collections
+    }
+
+    pub(super) fn browser_sidebar(
+        &self,
+        width: f32,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let width = self.browser.layout.sidebar_width(width);
+        let compact = width == PICKER_MIN_WIDTH;
+        let mut sidebar = div()
+            .id("browser-sidebar-sources")
+            .debug_selector(|| "browser-sidebar-sources".into())
+            .w_full()
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
             .child(picker_group_heading("library", compact));
         for index in [3, 0, 1, 2, 4] {
             let (section, name) = SECTIONS[index].clone();
@@ -702,7 +710,19 @@ impl EditorView {
                 );
             }
         }
-        sidebar.child(self.browser_places(compact, cx))
+        let sources = sidebar.child(self.browser_places(compact, cx));
+        div()
+            .id("browser-sidebar")
+            .debug_selector(|| "browser-sidebar".to_owned())
+            .w(px(width))
+            .flex_shrink_0()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .border_r_1()
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .child(sources)
+            .child(self.browser_collections(compact, cx))
     }
 
     fn browser_places(&self, compact: bool, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
