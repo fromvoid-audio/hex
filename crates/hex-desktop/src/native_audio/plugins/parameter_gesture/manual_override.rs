@@ -165,8 +165,7 @@ impl Gesture {
         // its original effective value on the same worker before releasing UI
         // custody. Idle reading targets also restore their actual Begin value.
         // A running reading target releases its authored hold.
-        if !(live.reading && live.playing)
-            && !live.discard
+        if !(live.discard || live.reading && live.playing)
             && self.pending.is_none()
             && self.last != self.origin.initial
         {
