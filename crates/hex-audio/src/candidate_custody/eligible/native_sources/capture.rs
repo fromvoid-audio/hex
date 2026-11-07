@@ -90,7 +90,7 @@ impl Custody {
     }
     // Once an input is admitted, return its token even if the bank closes
     // during the final live-source check. The caller owns the exact terminal.
-    fn admit_live_operation<R>(
+    pub(super) fn admit_live_operation<R>(
         &self,
         binding: Binding,
         run: impl FnOnce(&mut Owner) -> Result<R, &'static str>,

@@ -36,6 +36,7 @@ pub use manual_base_capture::ManualBaseCapture;
 mod canonical_bases;
 pub use canonical_bases::{CanonicalBasesCapture, CapturedCanonicalBases};
 mod control;
+mod parameter_extension;
 mod state_approval;
 pub(crate) use control::{NativeEffectControl, NativeEffectReference};
 mod source_metadata;
@@ -171,6 +172,23 @@ impl NativeEffect {
         )
     }
 
+    fn preconstruction_data_bytes_on_control(
+        instance: &Prepared,
+        prepared: PreparedForeignProcessor,
+    ) -> Option<usize> {
+        let source = instance.storage_with_authored_capacity_on_control(
+            hex_plugin_host::transport::MAX_PARAMETER_POINTS,
+        )?;
+        NativeWorker::preconstruction_data_bytes_for_source_on_control(source)?
+            .checked_add(
+                (prepared.total_latency_frames() as usize)
+                    .checked_mul(std::mem::size_of::<[f32; 2]>())?,
+            )?
+            .checked_add(EffectSourceMetadata::required_data_bytes(
+                instance.configuration(),
+            )?)
+    }
+
     /// Query and arm selected raw parameters on the original source before it
     /// moves to the worker. IDs must be sorted and unique. This control-only
     /// preparation grants no graph admission, and refusal preserves custody.
@@ -216,6 +234,18 @@ impl NativeEffect {
                 cause, instance,
             ));
         }
+        let dry_frames = configuration.prepared.total_latency_frames() as usize;
+        // Reserve the actual retirement diagnostics before starting the worker;
+        // the unused allowance is not part of its resident storage inventory.
+        let known_data =
+            Self::preconstruction_data_bytes_on_control(&instance, configuration.prepared)
+                .and_then(|n| n.checked_add(hex_plugin_host::NATIVE_DIAGNOSTIC_DATA_BYTES));
+        if known_data.is_none_or(|bytes| bytes > max_data_bytes) {
+            return Err(NativeWorkerStartFailure::retain_source_on_control(
+                Error::Protocol("native effect data reservation exceeded or unavailable"),
+                instance,
+            ));
+        }
         let mut authored_bases = [None; hex_plugin_host::transport::MAX_PARAMETER_POINTS];
         if let Some((class, ids)) = authored {
             let (capabilities, bases) =
@@ -230,22 +260,16 @@ impl NativeEffect {
             configuration.authored = capabilities;
             authored_bases = bases;
         }
-        let dry_frames = configuration.prepared.total_latency_frames() as usize;
-        // Reserve the actual retirement diagnostics before starting the worker;
-        // the unused allowance is not part of its resident storage inventory.
-        let known_data = NativeWorker::preconstruction_data_bytes_on_control(&instance)
-            .and_then(|n| n.checked_add(dry_frames.checked_mul(std::mem::size_of::<[f32; 2]>())?))
-            .and_then(|n| {
-                n.checked_add(EffectSourceMetadata::required_data_bytes(
-                    instance.configuration(),
-                )?)
-            })
-            .and_then(|n| n.checked_add(hex_plugin_host::NATIVE_DIAGNOSTIC_DATA_BYTES));
-        if known_data.is_none_or(|bytes| bytes > max_data_bytes) {
+        if let Err(cause) = instance.reserve_authored_parameter_capacity_on_control(
+            hex_plugin_host::transport::MAX_PARAMETER_POINTS,
+        ) {
             return Err(NativeWorkerStartFailure::retain_source_on_control(
-                Error::Protocol("native effect data reservation exceeded or unavailable"),
-                instance,
+                cause, instance,
             ));
+        }
+        if authored.is_none() {
+            configuration.authored =
+                automation::SourceCapabilities::reserved(instance.configuration().identity.class);
         }
         let mut source_metadata =
             match EffectSourceMetadata::from_configuration(instance.configuration()) {
@@ -608,7 +632,7 @@ impl ForeignProcessors for NativeEffectCallback {
         if !self.matches(node)
             || node.automation.is_some_and(|program| {
                 program.binding != self.configuration.binding
-                    || !self.configuration.authored.is_armed()
+                    || !self.configuration.authored.has_metadata_container()
                     || !parameters.is_empty()
             })
             || (!notes.is_empty() && !self.configuration.prepared.is_instrument_profile())

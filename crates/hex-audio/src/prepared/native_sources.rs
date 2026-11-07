@@ -8,6 +8,8 @@ use hex_lattice_contract::{ForeignProcessorBinding as Binding, NativeDeviceState
 use hex_plugin_host::native;
 use hex_plugin_scan::macos::build_identity::InstanceBuild;
 
+mod parameter_extension;
+
 impl PublicationControl {
     pub(crate) fn approve_native_canonical_processing_on_control(
         &self,

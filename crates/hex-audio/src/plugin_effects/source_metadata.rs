@@ -20,8 +20,9 @@ impl EffectSourceMetadata {
     /// Inline metadata and allocator overhead are separate from this DATA cap.
     pub const MAX_DATA_BYTES: usize = 2 * 4096 + 128;
 
-    /// Immutable controller values observed from the restored canonical
-    /// instance before authored PCM. These are control-side copied data only.
+    /// Frozen constructor bases, observed before authored PCM or added from a
+    /// disposed isolated constructor restoration after the original SDK worker
+    /// validates the target. These are control-side copied data only.
     pub fn authored_base_values(&self) -> impl Iterator<Item = (u32, f64)> + '_ {
         self.authored_bases
             .iter()
