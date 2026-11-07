@@ -18,6 +18,7 @@ pub(crate) struct BaseCaptureSource {
     pub profile: PluginProfile,
     pub presentation: PresentationPlan,
     pub prepared: hex_lattice::PreparedForeignProcessor,
+    pub canonical_is_constructor_state: bool,
 }
 
 enum Phase {
@@ -154,9 +155,12 @@ impl Hosting {
         })
     }
     /// Restore fresh captured state in a private Root sibling, then put only
-    /// reading targets back to their source-bound canonical bases. Other
-    /// component/controller bytes remain part of the actual capture. Save owns
+    /// armed targets back to their source-bound canonical bases. Completed
+    /// isolated facts supply the current bases after an original-worker edit;
+    /// otherwise the canonical state must match the constructor's frozen bases.
+    /// Other component/controller bytes remain part of the actual capture. Save owns
     /// the canonical context and cancellation, without a live-delivery claim.
+    #[allow(clippy::too_many_arguments)] // Exact saved source/state plus optional isolated canonical facts.
     pub fn begin_saved_base_capture_on_control(
         &self,
         output: &mut PublicationControl,
@@ -164,24 +168,55 @@ impl Hosting {
         canonical: &NativeDeviceState,
         captured: &NativeDeviceState,
         selection: &super::AuthoredSelection,
+        canonical_bases: Option<&super::CapturedCanonicalBases>,
     ) -> Result<ManualBaseCapture, String> {
         let identity = Self::saved_identity_on_control(canonical)?;
         if Self::saved_identity_on_control(captured)? != identity {
             return Err("native saved capture identity differs".into());
         }
         let (rate, original) = output.native_saved_base_capture_source(binding, canonical)?;
+        if canonical_bases.is_none() && !original.canonical_is_constructor_state {
+            return Err("native saved current canonical bases are required".into());
+        }
         let (class, ids) = selection.parameters();
         if class != identity.class || original.metadata.authored_base_values().count() != ids.len()
         {
             return Err("native saved base selection differs".into());
         }
+        if let Some(facts) = canonical_bases {
+            if facts.binding() != binding
+                || facts.prepared() != original.prepared
+                || facts.sample_rate() != rate
+                || !facts.canonical_state().processing_eq(canonical)
+                || facts.values().count() != ids.len()
+                || output.native_source_approves_processing_state_on_control(
+                    binding,
+                    facts.canonical_state(),
+                ) != Some(true)
+            {
+                return Err("native saved canonical base facts differ".into());
+            }
+        }
         let mut parameters = Parameters::default();
-        for (&expected, (id, normalized)) in
+        let mut restored = canonical_bases.map(|facts| facts.values());
+        for (&expected, (id, original_value)) in
             ids.iter().zip(original.metadata.authored_base_values())
         {
             if expected != id {
                 return Err("native saved base parameter differs".into());
             }
+            let normalized = match restored.as_mut() {
+                Some(values) => {
+                    let (restored_id, value) = values
+                        .next()
+                        .ok_or("native saved canonical base is missing")?;
+                    if restored_id != id {
+                        return Err("native saved canonical parameter differs".into());
+                    }
+                    value
+                }
+                None => original_value,
+            };
             parameters
                 .push(ParameterPoint {
                     id,
