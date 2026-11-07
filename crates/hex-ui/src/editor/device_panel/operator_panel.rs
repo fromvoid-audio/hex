@@ -18,17 +18,21 @@ pub(super) mod harmonics;
 pub(super) mod preview;
 
 pub(super) const OPERATOR_FRAME_WIDTH: f32 = crate::device_composition::VECTOR_WIDTH;
-// Three shared tiles plus fixed selector, badge, gaps and retained breathing room.
+// Two compact control columns with a narrow power/identity column.
 const SHELL_WIDTH: f32 = crate::device_composition::VECTOR_SHELL_WIDTH;
 const FIELD_WIDTH: f32 = 46.0;
 // Retain the implementation while these additional harmonic tools are dormant.
 const SHOW_HARMONIC_TOOLS: bool = false;
 
-gpui::actions!(hex_operator, [ActivateRouting, ActivateSection]);
+gpui::actions!(
+    hex_operator,
+    [ActivateRouting, ActivateSection, ActivatePower]
+);
 
 pub(in crate::editor) fn bind_keys(cx: &mut gpui::App) {
     cx.bind_keys([
         gpui::KeyBinding::new("enter", ActivateSection, Some("hex_operator_section")),
+        gpui::KeyBinding::new("enter", ActivatePower, Some("hex_operator_power")),
         gpui::KeyBinding::new("enter", ActivateRouting, Some("hex_operator_routing")),
     ]);
 }
@@ -104,13 +108,7 @@ pub(super) fn render_body(
         .pr(px(4.0));
     for operator in (0..4).rev() {
         shell = shell.child(operator_row(
-            view,
-            cx,
-            device,
-            identity,
-            parameters,
-            operator,
-            state.selected_operator == operator,
+            view, cx, device, identity, parameters, operator,
         ));
     }
 
@@ -243,7 +241,6 @@ fn operator_row(
     identity: DeviceControlIdentity,
     parameters: &[NativeDeviceParameterView],
     operator: usize,
-    selected: bool,
 ) -> Stateful<Div> {
     let base = operator as u32 * 3 + 1;
     let fixed_id = 62 + operator as u32 * 3;
@@ -297,14 +294,19 @@ fn operator_row(
         ))
         .debug_selector(move || format!("operator-row-{}-{operator}", device.value()))
         .w_full()
-        .h(px(40.0))
+        .h(px(44.0))
         .flex()
         .items_center()
-        .justify_between()
         .gap(px(2.0))
-        .pr(px(18.0))
         .relative()
         .track_focus(&section_focus)
+        .key_context("hex_operator_section")
+        .on_action(cx.listener(move |view, _: &ActivateSection, _, cx| {
+            if let Some(owner) = owner {
+                context::select_oscillator(view, cx, owner, operator);
+            }
+            cx.stop_propagation();
+        }))
         .on_mouse_down(
             gpui::MouseButton::Left,
             cx.listener(move |view, _, window, cx| {
@@ -315,9 +317,7 @@ fn operator_row(
                 }
                 cx.stop_propagation();
             }),
-        )
-        .child(primary);
-    row = row.child(fine);
+        );
     let fixed_control = shell_control(
         view,
         cx,
@@ -328,41 +328,58 @@ fn operator_row(
         ControlPresentation::CompactButton,
         Some(""),
     );
-    row = row.child(
-        div()
-            .w(px(60.0))
-            .h(px(40.0))
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .gap(px(2.0))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.0))
-                    .child(section_title("fixed"))
-                    .child(fixed_control),
-            )
-            .child(level),
+    let waveform = compact_control(
+        view,
+        cx,
+        device,
+        identity,
+        parameters,
+        id(57 + operator as u32),
+        ControlPresentation::CompactSelector,
+        Some("wave"),
     );
-    row = row.child(
-        operator_label(view, cx, device, parameters, operator, selected)
-            .absolute()
-            .right(px(4.0))
-            .top(px(14.0)),
-    );
+    row = row
+        .child(operator_power(view, cx, device, parameters, operator))
+        .child(
+            div()
+                .w(px(18.0))
+                .flex_shrink_0()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(4.0))
+                .child(section_title(["a", "b", "c", "d"][operator]))
+                .child(fixed_control),
+        )
+        .child(
+            div()
+                .w(px(60.0))
+                .flex_shrink_0()
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .child(primary)
+                .child(fine),
+        )
+        .child(
+            div()
+                .w(px(64.0))
+                .flex_shrink_0()
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .child(level)
+                .child(waveform),
+        );
     row
 }
 
-fn operator_label(
+fn operator_power(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: DeviceId,
     parameters: &[NativeDeviceParameterView],
     operator: usize,
-    selected: bool,
 ) -> Stateful<Div> {
     let owner = context::Owner::capture(view, device);
     let enabled = matches!(
@@ -371,42 +388,35 @@ fn operator_label(
     );
     let focus = navigation_focus(view, cx, device, NavigationTarget::Oscillator(operator));
     hex_widgets::device_badge(
-        theme::text(["a", "b", "c", "d"][operator]),
-        theme::device_identity_style(operator, enabled, selected),
+        theme::text(""),
+        theme::device_identity_style(operator, enabled, false),
     )
     .id(ElementId::Name(
         format!("operator-select-{}-{operator}", device.value()).into(),
     ))
     .debug_selector(move || format!("operator-select-{}-{operator}", device.value()))
+    .w(px(6.0))
+    .h(px(36.0))
+    .border_0()
     .track_focus(&focus)
-    .key_context("hex_operator_section")
+    .key_context("hex_operator_power")
     .cursor(gpui::CursorStyle::PointingHand)
+    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
     .on_click(cx.listener(move |view, _, window, cx| {
         if owner.is_some_and(|owner| owner.is_current(view))
             && finalize_controls(view, cx)
             && toggle_enable(view, device, operator)
         {
             focus.focus(window);
-            let state = view.device_panel.operator_pages.entry(device).or_default();
-            state.selected_operator = operator;
-            if state.page != OperatorPage::Envelope {
-                state.page = OperatorPage::Oscillator;
-            }
             cx.notify();
         }
     }))
-    .on_action(cx.trace(move |view, _: &ActivateSection, _, cx| {
-        if owner.is_some_and(|owner| owner.is_current(view)) {
-            if finalize_controls(view, cx) {
-                let state = view.device_panel.operator_pages.entry(device).or_default();
-                state.selected_operator = operator;
-                if state.page != OperatorPage::Envelope {
-                    state.page = OperatorPage::Oscillator;
-                }
-                cx.notify();
-            }
-            cx.stop_propagation();
+    .on_action(cx.trace(move |view, _: &ActivatePower, _, cx| {
+        if owner.is_some_and(|owner| owner.is_current(view)) && finalize_controls(view, cx) {
+            toggle_enable(view, device, operator);
+            cx.notify();
         }
+        cx.stop_propagation();
     }))
 }
 
@@ -510,17 +520,6 @@ fn oscillator_envelope_detail(
     operator: usize,
     page: OperatorPage,
 ) -> Stateful<Div> {
-    let one_based = operator as u32 + 1;
-    let waveform = compact_control(
-        view,
-        cx,
-        device,
-        identity,
-        parameters,
-        id(56 + one_based),
-        ControlPresentation::CompactSelector,
-        Some("wave"),
-    );
     let phase = compact_control_with_codec(
         view,
         cx,
@@ -622,13 +621,6 @@ fn oscillator_envelope_detail(
                 .flex_shrink_0()
                 .flex()
                 .gap(px(4.0))
-                .child(detail_field(
-                    device,
-                    id(57 + operator as u32),
-                    "wave",
-                    64.0,
-                    waveform,
-                ))
                 .child(
                     div()
                         .id("operator-waveform-preview")

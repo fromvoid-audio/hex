@@ -648,7 +648,9 @@ impl Render for EditorView {
             .child(self.project_spectrum_pointer_events(cx))
             .child(self.clip_detail_pointer_events(cx))
             .track_focus(&self.focus)
-            .key_context(if self.changelog.is_open() {
+            .key_context(if super::device_panel::picker_is_open(self) {
+                "hex_device_picker_root"
+            } else if self.changelog.is_open() {
                 "hex_changelog"
             } else if self.track_name.is_editing() {
                 "hex_track_name hex_text_editing"
@@ -832,6 +834,9 @@ impl Render for EditorView {
                 }),
             )
             .capture_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
+                if super::device_panel::picker_is_open(view) {
+                    return;
+                }
                 if event.keystroke.key == "space"
                     && event.keystroke.modifiers == gpui::Modifiers::default()
                     && !window.context_stack().iter().any(|context| {
@@ -883,6 +888,9 @@ impl Render for EditorView {
                 }
             }))
             .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
+                if super::device_panel::picker_is_open(view) {
+                    return;
+                }
                 if view.workspace_tab(event, window, cx) {
                     cx.stop_propagation();
                     return;
@@ -1719,6 +1727,7 @@ impl Render for EditorView {
             .children(self.tuning_overlay(cx))
             .children(self.changelog_overlay(cx))
             .children(self.missing_media_overlay(cx))
+            .children(super::device_panel::picker_overlay(self, window, cx))
             .when(self.update_preparing(), |root| {
                 root.child(
                     div()

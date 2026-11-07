@@ -14,6 +14,7 @@ mod compressor_ui_tests;
 mod delay_ui_tests;
 mod device_add_ui_tests;
 mod device_comparison_tests;
+mod device_picker_modal_ui_tests;
 mod device_picker_ui_tests;
 mod device_preset_ui_tests;
 mod device_reorder_tests;
@@ -1743,7 +1744,7 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     let shell = visual.debug_bounds(shell_selector).expect("operator shell");
     assert_eq!(
         shell.size.width,
-        px(3.0 * hex_widgets::MICRO_DIAL_WIDTH + 72.0)
+        px(crate::device_composition::VECTOR_SHELL_WIDTH)
     );
     let envelope_graph = visual
         .debug_bounds("operator-envelope-graph")
@@ -1882,7 +1883,7 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
             format!("operator-row-{}-{operator}", instrument_id.value()).into_boxed_str(),
         );
         let bounds = visual.debug_bounds(row).expect("operator row");
-        assert_eq!(bounds.size.height, px(40.0));
+        assert_eq!(bounds.size.height, px(44.0));
         let level_id = operator * 3 + 2;
         let slider = Box::leak(
             format!(
@@ -2095,12 +2096,9 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         );
     });
 
-    let operator_b =
-        Box::leak(format!("operator-select-{}-1", instrument_id.value()).into_boxed_str());
-    let bounds = visual
-        .debug_bounds(operator_b)
-        .expect("operator b row selector");
-    visual.simulate_click(bounds.center(), Modifiers::default());
+    let background =
+        operator_context_selection_tests::row_background(&mut visual, instrument_id, 1);
+    visual.simulate_click(background, Modifiers::default());
     visual.run_until_parked();
     let waveform_b = ParameterKey {
         device: instrument_id,
@@ -2131,10 +2129,9 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
             "page navigation dismisses selector popup"
         )
     });
-    let bounds = visual
-        .debug_bounds(operator_b)
-        .expect("operator b row selector");
-    visual.simulate_click(bounds.center(), Modifiers::default());
+    let background =
+        operator_context_selection_tests::row_background(&mut visual, instrument_id, 1);
+    visual.simulate_click(background, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(
@@ -2986,14 +2983,14 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
             .expect("Operator shell");
         assert_eq!(
             shell.size.width,
-            px(3.0 * hex_widgets::MICRO_DIAL_WIDTH + 72.0)
+            px(crate::device_composition::VECTOR_SHELL_WIDTH)
         );
         for operator in 0..4 {
             let row = Box::leak(
                 format!("operator-row-{}-{operator}", instrument_id.value()).into_boxed_str(),
             );
             let row_bounds = visual.debug_bounds(row).expect("fixed-mode row");
-            assert_eq!(row_bounds.size.height, px(40.0));
+            assert_eq!(row_bounds.size.height, px(44.0));
             assert!(row_bounds.origin.y >= shell.origin.y);
             assert!(
                 row_bounds.origin.y + row_bounds.size.height <= shell.origin.y + shell.size.height,
@@ -3018,10 +3015,10 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                         .into_boxed_str(),
                 ))
                 .expect("compact oscillator badge");
-            assert_eq!(badge.size, gpui::size(px(12.0), px(12.0)));
+            assert_eq!(badge.size, gpui::size(px(6.0), px(36.0)));
             let fixed_id = 62 + operator * 3;
             let level_id = operator * 3 + 2;
-            for parameter in [fixed_id + 1, level_id] {
+            for parameter in [fixed_id + 1, level_id, 609 + operator] {
                 let field = Box::leak(
                     format!("device-{}-parameter-{parameter}", instrument_id.value())
                         .into_boxed_str(),
@@ -3055,6 +3052,26 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                         <= row_bounds.origin.x + row_bounds.size.width - px(4.0),
                     "oscillator controls need an inset from the dark row edges"
                 );
+            }
+            let field_bounds = |visual: &mut VisualTestContext, parameter| {
+                visual
+                    .debug_bounds(Box::leak(
+                        format!("device-{}-parameter-{parameter}", instrument_id.value())
+                            .into_boxed_str(),
+                    ))
+                    .unwrap()
+            };
+            let coarse = field_bounds(&mut visual, fixed_id + 1);
+            let fine = field_bounds(&mut visual, 609 + operator);
+            let level = field_bounds(&mut visual, level_id);
+            let wave = field_bounds(&mut visual, 57 + operator);
+            assert!(badge.right() < coarse.left());
+            assert!(coarse.bottom() <= fine.top());
+            assert!(coarse.right() <= level.left());
+            assert!(level.bottom() <= wave.top());
+            for field in [coarse, fine, level, wave] {
+                assert!(field.top() >= row_bounds.top() && field.bottom() <= row_bounds.bottom());
+                assert!(field.right() <= row_bounds.right());
             }
             let toggle = Box::leak(
                 format!("device-{}-parameter-{fixed_id}", instrument_id.value()).into_boxed_str(),

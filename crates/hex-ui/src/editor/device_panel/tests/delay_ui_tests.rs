@@ -473,7 +473,7 @@ fn delay_catalog_growth_keeps_scrolling_choices_searchable_on_all_owners(cx: &mu
                 cx.notify();
             });
             visual.run_until_parked();
-            let panel = visual.debug_bounds("device-panel").unwrap();
+            let panel = visual.debug_bounds("device-picker-modal").unwrap();
             let menu = visual.debug_bounds("device-add-menu").unwrap();
             assert!(
                 menu.left() >= panel.left()

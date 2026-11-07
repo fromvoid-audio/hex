@@ -19,6 +19,7 @@ widgets = (
     # Meter insertion action normalizes its caption in the owning component.
     'device_add::button(',
     'device_picker::render(',
+    'super::device_panel::picker_overlay(',
     # Query clear-slot composition contains a themed action and native input semantics.
     'self.clear_search_slot(',
     # Pinned browser collections compose themed heading, labels and icons.
@@ -54,7 +55,7 @@ widgets = (
     'wave_canvas(',
     'harmonic_range_control)', 'harmonic_repeat_control)', 'harmonic_tools)',
     'view.device_panel.operator_harmonics[&key].entity.clone())',
-    'operator_row(', 'operator_label(', 'page_tab(', 'shell)', 'page_tabs)', 'detail)',
+    'operator_row(', 'operator_power(', 'page_tab(', 'shell)', 'page_tabs)', 'detail)',
     'level)', 'primary)', 'multiplier)', 'fixed_control)', 'section_title(', 'page_tabs(', 'control)',
     'preview::render(', 'fine)', 'toggle(', 'heading)', 'left)', 'select_row)',
     'routing_link(', 'selector(',
@@ -279,7 +280,7 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
         # Catalog list rows normalize their labels inside the shared picker.
         device_insertion_component = device_insertion_component or (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/device_picker.rs'
-            and suffix.startswith('list)')
+            and suffix.startswith(('list)', 'card)'))
         )
         # The rotated title paints the already themed label in the inherited font.
         device_insertion_component = device_insertion_component or (
