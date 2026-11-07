@@ -598,7 +598,7 @@ fn instrument_takeover_preserves_other_base_and_held_midi() {
     const CASE: &str = "HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE";
     if std::env::var_os(CASE).is_none() {
         let name = std::thread::current().name().unwrap().to_owned();
-        for case in ["reading", "unread", "idle", "refused"] {
+        for case in ["reading", "unread", "empty", "idle", "refused"] {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", &name, "--ignored", "--nocapture"])
                 .env(CASE, case)
@@ -1453,7 +1453,7 @@ fn verify_instrument_takeover(
     use hex_session::device_gesture::{GestureClient, PluginParameterOrigin, PluginParameterValue};
     use hex_session::service::{DeviceAutomationControlEdit, PluginParameterQuery};
     let case = std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").unwrap();
-    let reading = case != "unread";
+    let reading = !matches!(case.as_str(), "unread" | "empty");
     let playing = case != "idle";
     let context = h.submitted.unwrap().1.context;
     let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
@@ -1474,7 +1474,7 @@ fn verify_instrument_takeover(
     let mut before = original.clone();
     let mut revision = context.editor_revision;
     for (id, value) in [(7, 0.25), (11, 0.5)] {
-        if id == 7 && !reading {
+        if case == "empty" || id == 7 && !reading {
             continue;
         }
         let event = super::automation::edit_with_running_callback(
