@@ -330,10 +330,10 @@ impl Plugins {
                     self.parameter_gesture = None;
                 }
             } else {
+                // A retained refusal still owns its acknowledged preview.
+                // Cancel/source loss releases it; rejected publication does not.
                 gesture.commit = None;
-                if let Some(live) = gesture.live.as_mut() {
-                    live.invalidated = true;
-                }
+                gesture.next_program = None;
             }
         }
     }

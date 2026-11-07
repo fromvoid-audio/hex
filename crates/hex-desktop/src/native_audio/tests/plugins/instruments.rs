@@ -1410,6 +1410,28 @@ fn assert_instrument_takeover_begin(
     assert_eq!(cancelled.state.project.as_ref(), expected);
 }
 
+/// Deliberately vary callback sizes while the worker owns complete SDK quanta.
+fn render_takeover_partial(h: &ResidentHarness, frames: usize) {
+    let mut pcm = [[0.0; 2]; 256];
+    let mut host = [0.0; 512];
+    let mut slot = h.callback.lock().unwrap();
+    let callback = slot.as_mut().unwrap();
+    let measured = allocation_counter::measure(|| {
+        callback
+            .render_native_direct(&mut pcm[..frames], &mut host[..frames * 2])
+            .unwrap();
+    });
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.bytes_total,
+            measured.count_current,
+            measured.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+}
+
 fn verify_instrument_takeover(
     h: &mut ResidentHarness,
     original: &hex_project::Project,
@@ -1524,6 +1546,7 @@ fn verify_instrument_takeover(
         client.mark_submitted();
         h.service.submit(Request::DeviceGesture(request)).unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
+        let mut fragment = 0usize;
         loop {
             h.pump();
             if let Ok(event) = h.service.try_event()
@@ -1533,14 +1556,29 @@ fn verify_instrument_takeover(
             {
                 assert_eq!(ack.accepted, accepted, "{case}: {ack:?} {:?}", event.error);
                 assert!(!ack.source_lost, "{case}: {ack:?}");
-                assert!(client.acknowledge(ack));
+                assert!(client.acknowledge_with_snapshot(ack, event.active_device_gesture));
                 return event;
             }
             assert!(
                 Instant::now() < deadline,
                 "instrument gesture timed out: {request:?}"
             );
-            h.render_worker_step();
+            render_takeover_partial(h, [3, 5, 117, 1, 130][fragment % 5]);
+            fragment += 1;
+            // The native worker is asynchronous; wait only on this test/control
+            // thread before offering the next irregular physical fragment.
+            while h
+                .callback
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .native_workers_idle_on_control()
+                == Some(false)
+            {
+                assert!(Instant::now() < deadline);
+                std::thread::yield_now();
+            }
             std::thread::yield_now();
         }
     };

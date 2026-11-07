@@ -121,6 +121,13 @@ impl Plugins {
             }
             return;
         }
+        if gesture.commit.is_none()
+            && let Some(scratch) = live.scratch.as_mut()
+            && scratch.poll_on_control(control, &mut || true).is_some()
+        {
+            // Capture cleanup is independent of the retained audible hold.
+            live.scratch = None;
+        }
         if gesture.commit.is_none() {
             let source_changed = context != Some(live.source.context)
                 || control.status.recording_source() != Some(live.source);
