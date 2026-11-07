@@ -17,17 +17,19 @@ To save a later design revision back to Hex, use **Designs → Download design**
 Frame and update the portable project on the design branch. The older artifacts
 below document earlier iterations.
 
-## Operator redesign
+## Vector device design
 
-[operator-redesign.frame.json](operator-redesign.frame.json) is a separate editable
-design. Open **operator / redesign** from **Designs**, or import the file in a
-different Frame session. Turn on **Interact** to switch editors, select operators
-A–D, change the harmonic range, and preview two routing diagrams. Parameter
-values and the harmonic painter are illustrative.
+[vector-device.frame.json](vector-device.frame.json) is the focused design page
+for Hex’s native Vector instrument. Open **hex / vector** from **Designs**, or
+import the file into another Frame session. Its left device rail, host modulator
+tray, selection border, meter, and nesting hint use the Hex concept’s visuals.
 
-References for the control set include
-[Robert Henke’s design notes](https://roberthenke.com/technology/operator.html)
-and [Ableton’s Operator manual](https://www.ableton.com/en/manual/live-instrument-reference/#operator).
+Four FM operators share an amplitude-envelope editor and harmonic painter.
+The context panel covers oscillator response, filter, pitch, FM routing, and
+global voice/output settings. General modulation uses the host’s modulator tray.
+With **Interact** enabled, select operators A–D, switch harmonic ranges, and
+open the context panels. Numeric editing, modulation assignments, and harmonic
+painting remain illustrative design proposals.
 
 ## Earlier design and implementation reference
 
