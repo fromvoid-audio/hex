@@ -22,7 +22,9 @@ impl EditorView {
             let retain_client =
                 self.retired_action_outcomes.is_some() && audio.control.has_action_outcomes();
             let identity = audio.control.output_identity();
-            if let Some(receipts) = audio.control.close_retaining_gain_receipts() {
+            if !self.retire_native_automation_client(&mut audio.control)
+                && let Some(receipts) = audio.control.close_retaining_gain_receipts()
+            {
                 if self.gain_recorder.retired.is_none()
                     && identity == Some(receipts.output_identity())
                     && self.gain_recorder.target.map(ScalarReceiptTarget::Gain)

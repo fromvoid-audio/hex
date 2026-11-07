@@ -1209,6 +1209,7 @@ impl EditorView {
         visible_change |= self.poll_update(cx);
         visible_change |= self.poll_browser_sample_playback();
         visible_change |= self.tick_gain_recording();
+        visible_change |= self.tick_native_automation_recording();
         visible_change |= self.tick_midi_recording();
         visible_change |= self.tick_sampler_parameter();
         visible_change |= self.tick_computer_keyboard();
@@ -2345,6 +2346,7 @@ impl EditorView {
         self.recovery_failure = event.recovery_failure.clone();
         let sampler_edit_complete = event.sampler_edit_complete;
         self.plugin_effect_complete(&event);
+        self.native_automation_take_completion(&event);
         if let Some(result) = event.plugin_parameters.take() {
             super::device_panel::vst3_parameters::install_result(
                 self,
@@ -3471,6 +3473,17 @@ impl EditorView {
             && !recovery_restore
         {
             self.error = Some("finish the current open action before editing".into());
+            return false;
+        }
+        if self.native_automation_recorder.busy()
+            && !matches!(
+                &request,
+                Request::NativeAutomationTake { .. }
+                    | Request::RestartAudio { .. }
+                    | Request::RestartRecovery(_)
+            )
+        {
+            self.error = Some("finish the automation touch before another project action".into());
             return false;
         }
         let own_midi_request = match &request {
@@ -4748,6 +4761,7 @@ impl EditorView {
     }
 
     fn stop_transport(&mut self, stop_output: bool) {
+        self.cancel_native_automation_touch();
         use super::audio_admission::LatencyRebuild;
         let native_restore = matches!(
             self.latency_rebuild.take(),
