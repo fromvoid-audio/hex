@@ -141,5 +141,18 @@ for (const value of slots.filter(node => /^macro-slots-4-value-/.test(node.id)))
   const knob = slots.find(node => node.id === value.id.replace('-value-', '-knob-'));
   assert(value.style.fontSize >= 9 && value.bounds.x >= knob.bounds.x + knob.bounds.width, 'macro values stay beside knobs');
 }
+for (const [state, expectedWidth] of [['default', 708], ['settings', 876], ['a-options', 876], ['a-harmonics', 972]]) {
+  const nodes = frame.layout(doc, project.viewport, state).filter(node => node.visible);
+  const meter = nodes.find(node => node.id === 'output-meter');
+  near(meter.bounds.x + meter.bounds.width, expectedWidth, state + ': content-sized device width');
+  for (const field of nodes.filter(node => node.type === 'input' && ['osc-options', 'settings-panel'].includes(node.parentId)))
+    assert(field.bounds.width <= 54 && field.style.fontSize >= 10, state + ': compact settings keep readable values');
+  if (['settings', 'a-options'].includes(state)) {
+    assert(nodes.some(node => node.id === 'compact-pane'));
+    assert(!nodes.some(node => node.id === 'optional-pane'));
+    assert(nodes.some(node => node.parentId === 'compact-pane' && node.label === 'close optional panel'));
+    assert(doc.elements.findIndex(node => node.id === 'skin-compact-options') < doc.elements.findIndex(node => node.id === 'row-a'), 'host skin stays behind controls');
+  }
+}
 assert(pointStates >= 35 && loopStates >= 15);
 console.log(`${pointStates} point states and ${loopStates} loop states passed in ${((performance.now()-started)/1000).toFixed(2)} s`);
