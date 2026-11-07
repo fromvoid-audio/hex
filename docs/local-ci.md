@@ -152,7 +152,8 @@ Python tooling follows the same rule. A changed `scripts/NAME.py` (or
 Scripts without their own test module, config files and unknown inputs keep
 comprehensive discovery. Merge checks without explicit native acceptance inputs
 run that inventory through `scripts/python_shards.py --discover` with up to
-eight workers and batches of up to eight ordinary cases. When Git on the
+eight workers and batches of up to eight ordinary cases from the same
+module or package. When Git on the
 original PATH is Apple's `/usr/bin/git` launcher, discovery resolves the
 selected Git once with `xcrun` and puts only that executable ahead of the
 original PATH for its child processes. Comprehensive full, release and health runs
@@ -163,7 +164,7 @@ Subprocess-heavy test methods explicitly marked `__hex_shard_bounded__ = True`
 use at most two workers. Owner selections run them after ordinary tests.
 Discovery queues them after the first wave of ordinary batches and shares the
 same worker limit. The real Cargo fixture classes marked
-`__hex_shard_early__ = True` start in that first wave. Both modes report every
+`__hex_shard_early__ = True` start as isolated cases in that first wave. Both modes report every
 result and include the time spent on every case.
 
 Module-scoped test steps build only the library (or, for a binary-only crate,

@@ -100,7 +100,8 @@ class SelectionTests(unittest.TestCase):
         suite = unittest.TestSuite([plain, bounded, plain])
         with patch.object(unittest.defaultTestLoader, "loadTestsFromNames", return_value=suite):
             selected = shards.test_cases(["fixture"])
-        self.assertEqual(dict(selected), {plain.id(): False, bounded.id(): True})
+        self.assertEqual({name: (is_bounded, early) for name, is_bounded, early in selected},
+                         {plain.id(): (False, False), bounded.id(): (True, False)})
 
     def test_shard_scheduler_preserves_fast_parallelism_and_bounds_tagged_cases(self):
         lock = threading.Lock()
@@ -200,13 +201,15 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(impact.argv(health), impact.COMPREHENSIVE_ARGV)
 
     def test_discovery_batches_preserve_exact_cases_and_fixture_isolation(self):
-        cases = [(f"test_{index}", index in {2, 7}) for index in range(15)]
+        cases = [(f"test_{index // 5}.case_{index}", index in {2, 7}, index == 11)
+                 for index in range(15)]
         groups = shards.batches(cases, size=4)
-        self.assertEqual(sorted(name for batch, _ in groups for name in batch), sorted(name for name, _ in cases))
-        self.assertEqual([batch for batch, bounded in groups if bounded], [("test_2",), ("test_7",)])
+        self.assertEqual(sorted(name for batch, _ in groups for name in batch), sorted(name for name, _, _ in cases))
+        self.assertEqual(groups[0], (("test_2.case_11",), False))
+        self.assertEqual([batch for batch, bounded in groups if bounded], [("test_0.case_2",), ("test_1.case_7",)])
         self.assertTrue(all(1 <= len(batch) <= 4 for batch, _ in groups))
-        self.assertEqual(shards.batches(cases, size=1),
-                         [((name,), marked) for marked in (False, True) for name, bounded in cases if marked == bounded])
+        self.assertTrue(all(len({name.split(".")[0] for name in batch}) == 1 for batch, _ in groups))
+        self.assertTrue(all(len(batch) == 1 for batch, _ in shards.batches(cases, size=1)))
 
     def test_shard_discovery_runs_nested_cases_and_refuses_import_errors(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -234,7 +237,7 @@ class SelectionTests(unittest.TestCase):
             result = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(result.returncode, 1)
             self.assertTrue(result.stderr.startswith(
-                "===== budget_nested_fixture.test_cases.SlowCases.test_scheduled_first and 3 more"))
+                "===== budget_nested_fixture.test_cases.SlowCases.test_scheduled_first (exit 0)"))
             for method, outcome in (("test_pass", "ok"), ("test_skip", "skipped"), ("test_fail", "FAIL")):
                 self.assertRegex(
                     result.stderr,

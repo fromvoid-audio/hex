@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager, nullcontext
+from itertools import groupby
 import os
 from pathlib import Path
 import shutil
@@ -30,8 +31,8 @@ BOOTSTRAP = ("import sys, unittest; sys.path.insert(0, 'scripts/tests'); "
              "unittest.main(module=None)")
 
 
-def test_cases(selectors: list[str] | None) -> list[tuple[str, bool]]:
-    """Expand selectors to unique test IDs and their bounded-fixture marker."""
+def test_cases(selectors: list[str] | None) -> list[tuple[str, bool, bool]]:
+    """Expand selectors to unique IDs with bounded and early fixture markers."""
     sys.path.insert(0, str(TESTS))
     found: dict[str, bool] = {}
     early: set[str] = set()
@@ -56,8 +57,7 @@ def test_cases(selectors: list[str] | None) -> list[tuple[str, bool]]:
     else:
         suite = unittest.defaultTestLoader.loadTestsFromNames(selectors)
     walk(suite)
-    # Start long real Cargo fixtures in the first wave of discovery batches.
-    return sorted(found.items(), key=lambda case: (case[0] not in early, case[0]))
+    return [(name, bounded, name in early) for name, bounded in sorted(found.items())]
 
 
 def run_cases(cases, workers, run, *, overlap_bounded=False):
@@ -83,12 +83,15 @@ def run_cases(cases, workers, run, *, overlap_bounded=False):
             yield results[index % lanes][index // lanes]
 
 
-def batches(cases: list[tuple[str, bool]], size: int) -> list[tuple[tuple[str, ...], bool]]:
-    """Keep bounded fixtures isolated and distribute ordinary cases across batches."""
-    ordinary = [name for name, bounded in cases if not bounded]
-    count = (len(ordinary) + size - 1) // size
-    return ([(tuple(ordinary[index::count]), False) for index in range(count)]
-            + [((name,), True) for name, bounded in cases if bounded])
+def batches(cases: list[tuple[str, bool, bool]], size: int) -> list[tuple[tuple[str, ...], bool]]:
+    """Reuse module imports and class setup while isolating marked fixtures."""
+    jobs = [((name,), False) for name, bounded, early in cases if early and not bounded]
+    ordinary = (name for name, bounded, early in cases if not bounded and not early)
+    for _, group in groupby(ordinary, key=lambda name: name.split(".", 1)[0]):
+        names = list(group)
+        jobs.extend((tuple(names[index:index + size]), False) for index in range(0, len(names), size))
+    jobs.extend(((name,), True) for name, bounded, _ in cases if bounded)
+    return jobs
 
 
 @contextmanager
