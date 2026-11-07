@@ -150,12 +150,22 @@ Python tooling follows the same rule. A changed `scripts/NAME.py` (or
 `scripts/NAME`) runs its own `test_NAME` module, and a changed
 `scripts/tests/test_X.py` runs itself. Both add the shared planner invariants.
 Scripts without their own test module, config files and unknown inputs keep
-comprehensive discovery. Owner selections run through `scripts/python_shards.py`:
+comprehensive discovery. Merge checks without explicit native acceptance inputs
+run that inventory through `scripts/python_shards.py --discover` with up to
+eight workers and batches of up to eight ordinary cases from the same
+module or package. When Git on the
+original PATH is Apple's `/usr/bin/git` launcher, discovery resolves the
+selected Git once with `xcrun` and puts only that executable ahead of the
+original PATH for its child processes. Comprehensive full, release and health runs
+remain serial. Owner selections run through `scripts/python_shards.py`:
 one process per test from a shared work queue (up to 12 workers), which brings
 `test_local_ci` + `test_ci_plan` from 124 s serial to about 40 s.
 Subprocess-heavy test methods explicitly marked `__hex_shard_bounded__ = True`
-run after the ordinary queue with at most two workers. Their output and timing
-remain included, and unmarked tests retain their normal worker count.
+use at most two workers. Owner selections run them after ordinary tests.
+Discovery queues them after the first wave of ordinary batches and shares the
+same worker limit. The real Cargo fixture classes marked
+`__hex_shard_early__ = True` start as isolated cases in that first wave. Both modes report every
+result and include the time spent on every case.
 
 Module-scoped test steps build only the library (or, for a binary-only crate,
 the binaries): a `module::path::` filter can never match an integration test,
