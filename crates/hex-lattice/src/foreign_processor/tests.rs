@@ -6,6 +6,8 @@ use crate::{
 };
 use std::sync::Arc;
 
+mod program_history;
+
 const TYPE: DeviceTypeId = DeviceTypeId::from_static("test.foreign");
 
 fn state() -> Arc<NativeDeviceState> {
