@@ -259,7 +259,7 @@ mod tests {
             .execute(Command::InsertMainDevice {
                 before: None,
                 state: hex_engine::default_native_device_state(
-                    hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+                    hex_engine::DeviceTypeId::from_static("hex.utility"),
                 )
                 .unwrap(),
             })
