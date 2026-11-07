@@ -360,3 +360,59 @@ fn rate_history_retains_the_exact_captured_vst3_state_on_both_sides() {
         assert_eq!(session.project(), &project);
     }
 }
+
+#[test]
+fn saved_reading_selection_keeps_raw_zero_and_excludes_base_and_host_targets() {
+    use hex_lattice_contract::DeviceAutomationTarget;
+    use hex_project::{
+        AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
+        BeatTime,
+    };
+    let project = fixture();
+    let device = project.main_devices()[0].id();
+    let mut editor = Editor::new(project, 8).unwrap();
+    for target in [
+        DeviceAutomationTarget::Vst3 { parameter: 0 },
+        DeviceAutomationTarget::Vst3 { parameter: 7 },
+        DeviceAutomationTarget::HostInputGain,
+    ] {
+        editor
+            .execute(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target,
+                points: vec![AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: AutomationValue::new(0.5).unwrap(),
+                    outgoing: AutomationInterpolation::Step,
+                }],
+            })
+            .unwrap();
+    }
+    editor
+        .execute(Command::SetDeviceAutomationReadSelection {
+            device,
+            target: DeviceAutomationTarget::Vst3 { parameter: 7 },
+            selection: AutomationReadSelection::Base,
+        })
+        .unwrap();
+    let cancellation = RequestCancellation::new(
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        0,
+    );
+    let input = PluginStateSaveInput {
+        project: editor.project(),
+        context: hex_engine::AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 2,
+        },
+        cancellation: &cancellation,
+    };
+    assert_eq!(
+        input
+            .authored_plugin_targets(device.value())
+            .collect::<Vec<_>>(),
+        vec![(0, Some([1; 16]))]
+    );
+    assert_eq!(input.authored_plugin_targets(u64::MAX).count(), 0);
+}

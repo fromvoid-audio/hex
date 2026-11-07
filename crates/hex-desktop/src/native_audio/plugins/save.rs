@@ -36,6 +36,7 @@ struct Entry {
     owner: ProcessorChainOwner,
     device: u64,
     expected: NativeDeviceState,
+    authored: Option<hex_audio::plugin_effects::AuthoredSelection>,
     request: Option<NativeWorkerCapture>,
     captured: Option<NativeDeviceState>,
     /// Refused-as-still-changing attempts so far.
@@ -104,6 +105,9 @@ impl Plugins {
                     owner,
                     device,
                     expected: state.clone(),
+                    authored: hex_audio::plugin_effects::AuthoredSelection::from_targets(
+                        input.authored_plugin_targets(device),
+                    )?,
                     request: None,
                     captured: None,
                     refused: 0,
@@ -199,10 +203,55 @@ impl Plugins {
         captures
             .try_reserve_exact(wanted.len())
             .map_err(|_| "vst3 saved state allocation failed")?;
-        for entry in wanted {
+        for mut entry in wanted {
             // All tokens have reached their actual terminals. A late source
             // close/replacement still refuses data before snapshot publication.
             control.native_source_metadata(entry.binding)?;
+            if let Some(selection) = entry.authored.as_ref() {
+                let host = self
+                    .host
+                    .as_ref()
+                    .ok_or("qualified vst3 helper unavailable")?;
+                let state = entry
+                    .captured
+                    .as_ref()
+                    .ok_or("vst3 capture terminal is missing")?;
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                let mut scratch = loop {
+                    if cancellation.is_cancelled() {
+                        return Err("vst3 save cancelled".into());
+                    }
+                    match host.begin_saved_base_capture_on_control(
+                        control,
+                        entry.binding,
+                        &entry.expected,
+                        state,
+                        selection,
+                    ) {
+                        Ok(scratch) => break scratch,
+                        Err(error)
+                            if matches!(
+                                error.as_str(),
+                                "native preparation is busy" | "native source is busy"
+                            ) && std::time::Instant::now() < deadline =>
+                        {
+                            edits::poll_control(control)
+                        }
+                        Err(error) => return Err(error),
+                    }
+                };
+                // Cancellation stops work, then keeps polling until the private
+                // source actually disposes. Its Root retains every native owner.
+                loop {
+                    let mut cancelled =
+                        || cancellation.is_cancelled() || std::time::Instant::now() >= deadline;
+                    if let Some(terminal) = scratch.poll_on_control(control, &mut cancelled) {
+                        entry.captured = Some(terminal?);
+                        break;
+                    }
+                    edits::poll_control(control);
+                }
+            }
             captures.push(PluginStateCapture {
                 owner: entry.owner,
                 device_id: entry.device,

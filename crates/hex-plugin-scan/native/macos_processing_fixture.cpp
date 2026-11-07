@@ -286,6 +286,10 @@ public:
             handler->performEdit(parameter_id(fault),0.75);
             handler->endEdit(parameter_id(fault));trace(25);
         }
+        // Original opaque editor state changes only after real processing.
+        // A stopped scratch restored from that capture must preserve it.
+        const auto* live_scroll=std::getenv("HEX_ORIGINAL_CAPTURE_SCROLL_WHILE_PLAYING");
+        if(fault==held_input_fixture && live_scroll && !std::strcmp(live_scroll,"1") && observed.blocks.load()>0) scroll=123;
         std::array<unsigned char,8> data{};std::memcpy(data.data(),"HXCT",4);std::memcpy(data.data()+4,&scroll,4);
         int32 written=0;const auto result=stream->write(data.data(),data.size(),&written);
         trace(20);return result==kResultOk && written==8?kResultOk:kResultFalse;
@@ -722,7 +726,7 @@ public:
         if (pthread_main_np() || !same_worker() || !active || !std::isfinite(sample_rate) || data.processMode!=process_mode ||
             data.symbolicSampleSize!=precision) { ++observed.violations;return kResultFalse; }
         if (!data.numSamples && !data.numInputs && !data.numOutputs && !data.inputs && !data.outputs) {
-            if(saturated_editor_drag(fault) && data.inputParameterChanges) {
+            if((saturated_editor_drag(fault) || fault==held_input_fixture) && data.inputParameterChanges) {
                 const auto count=data.inputParameterChanges->getParameterCount();
                 if(count<1 || count>2) return kInvalidArgument;
                 for(int32 n=0;n<count;++n) {
@@ -731,7 +735,9 @@ public:
                     if(!queue || queue->getPointCount()!=1 || queue->getPoint(0,offset,value)!=kResultOk ||
                         offset || !std::isfinite(value) || value<0 || value>1) return kInvalidArgument;
                     if(queue->getParameterId()==parameter_id(fault)) gain=static_cast<float>(value*4.0);
-                    else if(queue->getParameterId()!=drag_axis_id) return kInvalidArgument;
+                    else if(queue->getParameterId()==drag_axis_id) {
+                        if(fault==held_input_fixture) manual_gain.store(value*4.0);
+                    } else return kInvalidArgument;
                 }
                 ++observed.flushes;
                 return kResultOk;

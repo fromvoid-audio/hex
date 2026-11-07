@@ -46,8 +46,28 @@ impl PublicationControl {
             .ok_or("native base capture requires the applied ordinary effect")?;
         let source = self
             .candidate_root
-            .native_source_for_base_capture(binding, canonical)?;
+            .native_source_for_base_capture(binding, canonical, true)?;
         Ok((self.rate, epoch, source))
+    }
+
+    pub(crate) fn native_saved_base_capture_source(
+        &self,
+        binding: Binding,
+        canonical: &NativeDeviceState,
+    ) -> Result<(u32, crate::plugin_effects::BaseCaptureSource), String> {
+        if !self.native_custody
+            || self.status.closing.load(Acquire)
+            || self.output_identity() != Some(binding.root)
+        {
+            return Err("native saved base capture output differs or is closing".into());
+        }
+        // Save may follow a pending ordinary publication or stopped playback.
+        // Its caller retains exact captured data and canonical source identity.
+        // This private scratch never needs or claims a live callback witness.
+        let source = self
+            .candidate_root
+            .native_source_for_base_capture(binding, canonical, false)?;
+        Ok((self.rate, source))
     }
 
     /// Observe one already admitted original worker operation at final direct
