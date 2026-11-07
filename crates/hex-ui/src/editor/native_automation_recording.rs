@@ -576,7 +576,15 @@ impl EditorView {
             }
             (Submission::Poll, Progress::Pending) => {}
             (Submission::Poll, Progress::Committed) => {
-                self.native_automation_recorder.arm = None;
+                if let Some(arm) = self.native_automation_recorder.arm.as_mut()
+                    && arm.generation == touch.scope.stamp.project_generation
+                    && arm.revision == touch.scope.stamp.editor_revision
+                    && arm.device == touch.scope.target.device()
+                    && arm.kind == touch.scope.target.target()
+                    && arm.revision.checked_add(1) == Some(event.state.revision)
+                {
+                    arm.revision = event.state.revision;
+                }
                 return;
             }
             (Submission::Poll, Progress::Retained(path)) => {
