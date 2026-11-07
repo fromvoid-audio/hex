@@ -1208,9 +1208,13 @@ fn compile_effect_devices(
             )
             .map_err(|_| Invalid("native device state or automation could not be prepared"))?;
         let processor = prepared_device.processor;
-        if crate::foreign_automation::candidate::has_authored(device) {
-            let Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) = processor.as_ref()
-            else {
+        // An explicitly admitted unavailable effect has no factory. Keep its
+        // canonical lanes through document staging; the restored foreign
+        // worker must still prove its exact metadata before any playback.
+        if crate::foreign_automation::candidate::has_authored(device)
+            && let Some(factory) = processor.as_ref()
+        {
+            let hex_lattice::PreparedProcessorFactory::Foreign(facts) = factory else {
                 return Err(Invalid("authored vst3 source metadata is unavailable"));
             };
             let program = crate::foreign_automation::candidate::prepare_device(
