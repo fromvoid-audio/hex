@@ -20,6 +20,7 @@ pub struct PreparedOperatorConfiguration {
     configuration_id: u64,
     ratios: [f64; OPERATORS],
     tuning: [OperatorTuning; OPERATORS],
+    fine_offsets_hz: [f32; OPERATORS],
     configuration: PreparedFmConfiguration,
     oscillator_levels: [f64; OPERATORS],
     envelopes: PreparedOperatorEnvelopes,
@@ -145,6 +146,7 @@ impl PreparedOperatorConfiguration {
             configuration_id,
             ratios: oscillators.map(|oscillator| oscillator.ratio),
             tuning,
+            fine_offsets_hz: [0.0; OPERATORS],
             configuration: PreparedFmConfiguration::new(oscillators, routing),
             oscillator_levels: oscillators.map(|oscillator| oscillator.level),
             envelopes,
@@ -155,6 +157,18 @@ impl PreparedOperatorConfiguration {
             oscillator_velocity: [0.0; OPERATORS],
             oscillator_quantize: [false; OPERATORS],
         })
+    }
+
+    /// Add signed Hz after ratio/fixed multiplication during control-side note preparation.
+    pub(crate) fn with_fine_offsets(mut self, offsets: [f32; OPERATORS]) -> Result<Self, Invalid> {
+        if offsets
+            .iter()
+            .any(|value| !value.is_finite() || value.abs() > super::tuning::FINE_LIMIT_HZ)
+        {
+            return Err(Invalid("invalid operator fine frequency offset"));
+        }
+        self.fine_offsets_hz = offsets;
+        Ok(self)
     }
 
     /// Control-prepared modifiers retain the existing compact note payload.
@@ -203,7 +217,7 @@ impl PreparedOperatorConfiguration {
         velocity: u8,
         table: Option<&hex_lattice::TuningTable>,
     ) -> Result<super::tuning::NoteSteps, Invalid> {
-        if self.oscillator_velocity == [0.0; 4] {
+        if self.oscillator_velocity == [0.0; 4] && self.fine_offsets_hz == [0.0; 4] {
             return super::tuning::prepared_steps_with_table(
                 self.sample_rate,
                 pitch,
@@ -240,12 +254,17 @@ impl PreparedOperatorConfiguration {
             if amount != 0.0 && self.oscillator_quantize[i] {
                 multiplier = multiplier.round().max(1.0);
             }
-            *step = super::tuning::oscillator_step(self.sample_rate, base * multiplier)?;
+            let frequency = base * multiplier + f64::from(self.fine_offsets_hz[i]);
+            *step = if frequency <= 0.0 {
+                None
+            } else {
+                super::tuning::oscillator_step(self.sample_rate, frequency)?
+            };
         }
         Ok(steps)
     }
 
-    /// Compute pitch on control. An oscillator at or above Nyquist is silenced
+    /// Compute pitch on control. An oscillator at/below zero or at/above Nyquist is silenced
     /// for this note only; the note and its other oscillators are still admitted.
     pub fn prepare_note(&self, pitch: u8, velocity: u8) -> Result<PreparedOperatorNote, Invalid> {
         self.prepare_note_with_tuning(pitch, velocity, None)
@@ -613,6 +632,7 @@ impl PreparedOperatorConfiguration {
         self.sample_rate == target.sample_rate
             && self.ratios == target.ratios
             && self.tuning == target.tuning
+            && self.fine_offsets_hz == target.fine_offsets_hz
             && self.configuration.phases == target.configuration.phases
             && self.configuration.routing.modulation == target.configuration.routing.modulation
             && self.configuration.routing.order == target.configuration.routing.order
