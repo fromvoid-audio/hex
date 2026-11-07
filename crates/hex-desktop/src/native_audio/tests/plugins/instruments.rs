@@ -1678,7 +1678,18 @@ fn verify_instrument_takeover(
         );
     }
     let redone = super::automation::edit_with_running_callback(h, Request::Redo);
-    assert!(redone.error.is_none(), "{:?}", redone.error);
+    if redone.error.is_some() {
+        let binding = h.plugin_progress.lock().unwrap().binding.unwrap();
+        let control = &h.audio.as_ref().unwrap().control;
+        panic!(
+            "redo: {:?}; original source {:?}; endpoint {:?}; native diagnostic {:?}; preparation {:?}",
+            redone.error,
+            binding,
+            control.native_source_endpoint_status(binding),
+            control.take_native_source_failure_diagnostic(binding),
+            control.try_native_source_preparation_error(binding)
+        );
+    }
     assert_eq!(redone.state.project, committed.state.project);
     applied = h.applied(applied).0;
     if playing {

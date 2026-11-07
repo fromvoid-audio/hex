@@ -225,7 +225,7 @@ impl Plugins {
                 steps,
                 input.reading_class().is_some(),
             )?;
-            let mut holds_program = self
+            let mut uses_hold = self
                 .sources
                 .iter()
                 .find(|source| source.binding == binding)
@@ -233,7 +233,7 @@ impl Plugins {
                 .is_some_and(|armed| {
                     automation_class.is_some_and(|class| armed.contains(class, origin.parameter))
                 });
-            if input.is_instrument() && control.status.playing.load(Acquire) && !holds_program {
+            if input.is_instrument() && control.status.playing.load(Acquire) && !uses_hold {
                 let class = input.isolated_class()
                     .filter(|class| automation_class == Some(*class))
                     .ok_or_else(|| refused("create an automation lane for this parameter before editing during playback"))?;
@@ -253,7 +253,7 @@ impl Plugins {
                     .find(|source| source.binding == binding)
                     .ok_or_else(lost)?
                     .authored = Some(selection);
-                holds_program = true;
+                uses_hold = true;
             }
             let live = if let Some(class) = input.isolated_class() {
                 let playing = control.status.playing.load(Acquire);
@@ -268,7 +268,7 @@ impl Plugins {
                     transport_epoch,
                     class,
                     input.reading_class().is_some(),
-                    holds_program,
+                    uses_hold,
                     playing,
                 ))
             } else {
@@ -458,7 +458,7 @@ impl Gesture {
             let (token, opening_hold) = if let Some(live) = self
                 .live
                 .as_ref()
-                .filter(|live| live.holds_program && live.playing)
+                .filter(|live| live.uses_hold && live.playing)
             {
                 let command = live.hold.as_ref().map_or(
                     NativeParameterHold::Begin {

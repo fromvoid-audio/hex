@@ -7,7 +7,7 @@ pub(super) struct LiveOverride {
     pub(super) transport_epoch: u64,
     pub(super) class: [u8; 16],
     pub(super) reading: bool,
-    pub(super) holds_program: bool,
+    pub(super) uses_hold: bool,
     pub(super) playing: bool,
     pub(super) hold: Option<NativeWorkerParameterChange>,
     release: Option<NativeWorkerParameterChange>,
@@ -22,7 +22,7 @@ impl LiveOverride {
         transport_epoch: u64,
         class: [u8; 16],
         reading: bool,
-        holds_program: bool,
+        uses_hold: bool,
         playing: bool,
     ) -> Self {
         Self {
@@ -30,7 +30,7 @@ impl LiveOverride {
             transport_epoch,
             class,
             reading,
-            holds_program,
+            uses_hold,
             playing,
             hold: None,
             release: None,
@@ -238,7 +238,7 @@ impl Gesture {
     ) -> Result<Prepared, Error> {
         let actual = self.sdk_value(self.last);
         let live = self.live.as_mut().ok_or_else(lost)?;
-        if (live.playing && live.holds_program && live.hold.is_none()) || live.invalidated {
+        if (live.playing && live.uses_hold && live.hold.is_none()) || live.invalidated {
             return Err(refused("vst3 automation hold is unavailable"));
         }
         let status = std::sync::Arc::clone(&control.status);
