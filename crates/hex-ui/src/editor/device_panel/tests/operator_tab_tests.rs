@@ -354,14 +354,12 @@ fn operator_section_activation_and_invalid_draft_keep_focus_and_state(cx: &mut T
         });
         assert_eq!(focused(&mut visual), target);
     }
-    // Badge keyboard activation is navigation only. Mouse enable toggles
-    // must not leak into Enter or create a canonical history operation.
+    // Row background activation selects without changing the sound.
     for operator in 0..4 {
         let target = editor.read_with(cx, |view, _| {
-            view.device_panel.operator_navigation_focus[&(
-                device,
-                operator_panel::NavigationTarget::Oscillator(operator),
-            )]
+            view.device_panel.operator_section_focus
+                [&(device, operator_panel::Section::Oscillator(operator))]
+                .handle
                 .clone()
         });
         visual.update(|window, _| target.focus(window));
@@ -567,8 +565,8 @@ fn operator_shell_controls_precede_selectors_and_sections_follow_child_focus(
             format!("operator-row-{}-{operator}", device.value()),
         );
         assert!(
-            selector.origin.x >= level.origin.x + level.size.width,
-            "oscillator squares stay at the far right"
+            selector.right() < level.left(),
+            "power strips stay at the far left"
         );
         assert!(selector.origin.x + selector.size.width <= row.origin.x + row.size.width);
     }
@@ -584,10 +582,12 @@ fn operator_shell_controls_precede_selectors_and_sections_follow_child_focus(
                 ParameterControl::Bool { entity, .. } => entity.focus_handle(cx),
                 ParameterControl::Choice { entity, .. } => entity.focus_handle(cx),
             };
-            order.push(focus(base));
-            order.push(focus(609 + operator as u32));
-            order.push(focus(62 + operator as u32 * 3));
-            order.push(focus(base + 1));
+            order.push(
+                view.device_panel.operator_section_focus
+                    [&(device, operator_panel::Section::Oscillator(operator))]
+                    .handle
+                    .clone(),
+            );
             order.push(
                 view.device_panel.operator_navigation_focus[&(
                     device,
@@ -595,6 +595,11 @@ fn operator_shell_controls_precede_selectors_and_sections_follow_child_focus(
                 )]
                     .clone(),
             );
+            order.push(focus(62 + operator as u32 * 3));
+            order.push(focus(base));
+            order.push(focus(609 + operator as u32));
+            order.push(focus(base + 1));
+            order.push(focus(57 + operator as u32));
         }
         order
     });
@@ -612,12 +617,12 @@ fn operator_shell_controls_precede_selectors_and_sections_follow_child_focus(
         assert_eq!(
             &focused(&mut visual),
             expected,
-            "coarse, fine, fixed, level, selector"
+            "section, power, fixed, coarse, fine, level, waveform"
         );
         for operator in 0..4 {
             let row =
                 Box::leak(format!("operator-row-{}-{operator}", device.value()).into_boxed_str());
-            let color = if operator == 3 - index / 5 {
+            let color = if operator == 3 - index / 7 {
                 device_layout_style().surface
             } else {
                 device_layout_style().rail
@@ -650,8 +655,9 @@ fn operator_shell_controls_precede_selectors_and_sections_follow_child_focus(
         editor.read_with(cx, |view, _| {
             for ((_, section), state) in &view.device_panel.operator_section_focus {
                 assert!(
-                    !state.handle.tab_stop,
-                    "containers are excluded from traversal"
+                    state.handle.tab_stop
+                        == matches!(section, operator_panel::Section::Oscillator(_)),
+                    "only explicit oscillator selection surfaces participate in traversal"
                 );
                 assert_eq!(
                     state.focused,

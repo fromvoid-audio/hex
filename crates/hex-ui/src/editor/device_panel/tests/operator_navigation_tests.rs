@@ -355,7 +355,14 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
                         == ParameterValue::Bool(false)
                 })
         });
-        // Badges now make a canonical enable edit as well as selecting context.
+        let background = super::operator_context_selection_tests::row_background(
+            &mut visual,
+            device,
+            operator as usize,
+        );
+        visual.simulate_click(background, Modifiers::default());
+        visual.run_until_parked();
+        // Power edits and explicit row selection are independent.
         // Undo that edit before testing that subsequent navigation preserves sound.
         editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
         pump_until(&editor, cx, |view| {
