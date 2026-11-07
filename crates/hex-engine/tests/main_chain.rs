@@ -404,6 +404,8 @@ fn removing_warmed_main_preserves_zero_input_residual_once() {
     }
 }
 fn assert_main_residual(compensated: bool, action: &str) {
+    const BYPASS_RAMP_FRAMES: usize = 240;
+    const OUTPUT_FRAMES: usize = BYPASS_RAMP_FRAMES + 16;
     let (mut edit, mut media) = fixture(compensated);
     // Past warmup, canonical input really is zero; only the old Main has PCM.
     for audio in media.values_mut() {
@@ -451,35 +453,51 @@ fn assert_main_residual(compensated: bool, action: &str) {
     candidate.try_inherit_state_from(&mut donor).unwrap();
     let track = edit.project().tracks()[0].id();
     let plan = candidate
-        .output_capture_plan(&[hex_engine::OutputCaptureId::Track(track)], 64)
+        .output_capture_plan(&[hex_engine::OutputCaptureId::Track(track)], OUTPUT_FRAMES)
         .unwrap();
-    let mut expected = [[0.0; 2]; 64];
+    let mut expected = [[0.0; 2]; OUTPUT_FRAMES];
     let mut actual = expected;
     oracle.render(&mut expected).unwrap();
     assert!(
         expected.iter().flatten().any(|sample| sample.abs() > 0.001),
         "real residual"
     );
-    let mut tap = [[9.0; 2]; 64];
+    let mut tap = [[9.0; 2]; OUTPUT_FRAMES];
     let mut buffers: [&mut [[f32; 2]]; 1] = [&mut tap];
     let mut capture = hex_engine::OutputCapture::new(&plan, &mut buffers);
     candidate
         .render_with_capture(&mut actual, &mut capture)
         .unwrap();
-    assert_eq!(
-        actual, expected,
-        "post-current-Main, premaster exactly once: {action}/{compensated}"
-    );
+    if action == "bypass" {
+        for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+            let wet = 1.0 - ((index + 1) as f32 / BYPASS_RAMP_FRAMES as f32).min(1.0);
+            for (actual, expected) in actual.iter().zip(expected) {
+                assert!(
+                    (actual - expected * wet).abs() < 1.0e-7,
+                    "Main bypass ramp at frame {index}, compensated={compensated}"
+                );
+            }
+        }
+        assert_eq!(actual[BYPASS_RAMP_FRAMES..], [[0.0; 2]; 16]);
+    } else {
+        assert_eq!(
+            actual, expected,
+            "post-current-Main, premaster exactly once: {action}/{compensated}"
+        );
+    }
     assert_eq!(
         capture.output(0).unwrap(),
-        &[[0.0; 2]; 64],
+        &[[0.0; 2]; OUTPUT_FRAMES],
         "old Main must not pollute pre-Main captures"
     );
     candidate.apply(SessionPlaybackCommand::Stop).unwrap();
     candidate.apply(SessionPlaybackCommand::Seek(512)).unwrap();
     candidate.apply(SessionPlaybackCommand::Play).unwrap();
     candidate.render(&mut actual).unwrap();
-    assert_eq!(actual, [[0.0; 2]; 64], "stop/seek retires the old residual");
+    assert_eq!(
+        actual, [[0.0; 2]; OUTPUT_FRAMES],
+        "stop/seek retires the old residual"
+    );
 }
 
 #[test]

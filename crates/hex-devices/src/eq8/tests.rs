@@ -113,7 +113,10 @@ fn each_filter_shape_has_finite_prepared_response_and_expected_gain_or_cut() {
 
 #[test]
 fn prepared_processor_is_fixed_bounded_zero_latency_and_rate_safe() {
-    const { assert!(EQ8_RUNTIME_BYTES <= 4_096) };
+    println!("fixed eq8 runtime bytes: {EQ8_RUNTIME_BYTES}");
+    // Fixed histories, one outgoing routing, 121 cached controls and inline
+    // coefficient targets fit in 16 KiB; factories report their actual size.
+    const { assert!(EQ8_RUNTIME_BYTES <= 16_384) };
     for rate in [8_000, 22_050, 44_100, 48_000, 96_000, 192_000] {
         let settings = decode(&EQ8_DEFINITION.default_state().unwrap()).unwrap();
         let prepared = PreparedEq8::new(settings, rate).unwrap();
@@ -312,7 +315,7 @@ fn channel_banks_are_independent_for_left_right_and_mid_side_modes() {
     }
 }
 
-fn patch_band(
+pub(super) fn patch_band(
     mut state: NativeDeviceState,
     bank: usize,
     band: usize,
@@ -640,7 +643,9 @@ fn changing_audition_selection_crossfades_through_normal_and_resets_history() {
 
 #[test]
 fn audition_history_crossfades_copies_and_partitions_with_live_coefficients() {
-    const { assert!(EQ8_RUNTIME_BYTES <= 4_096) };
+    // Fixed histories, one outgoing routing, 121 cached controls and inline
+    // coefficient targets fit in 16 KiB; factories report their actual size.
+    const { assert!(EQ8_RUNTIME_BYTES <= 16_384) };
     let mut old_state = EQ8_DEFINITION.default_state().unwrap();
     old_state = patch_band(old_state, 0, 1, 0, 450.0, 8.0);
     old_state = patch_band(old_state, 0, 5, 0, 3_200.0, -5.0);
@@ -719,7 +724,8 @@ fn audition_history_crossfades_copies_and_partitions_with_live_coefficients() {
 }
 
 #[test]
-fn parameter_retarget_accepts_filter_edits_but_requires_same_rate_mode_and_enabled_topology() {
+fn parameter_retarget_accepts_filter_edits_and_mode_crossfades_but_requires_same_rate_and_enabled_topology()
+ {
     let mut state = EQ8_DEFINITION.default_state().unwrap();
     state = EQ8_DEFINITION
         .patch_parameter(&state, parameter::enabled(0, 1), ParameterValue::Bool(true))
@@ -752,7 +758,8 @@ fn parameter_retarget_accepts_filter_edits_but_requires_same_rate_mode_and_enabl
     let mode_candidate = PreparedEq8::new(decode(&mode_changed).unwrap(), 48_000)
         .unwrap()
         .runtime();
-    assert!(!mode_candidate.can_retarget_parameters_from(&source));
+    // A mode change retargets through the ModeFade crossfade (Pulse #4106).
+    assert!(mode_candidate.can_retarget_parameters_from(&source));
 
     let enabled_changed = EQ8_DEFINITION
         .patch_parameter(
@@ -834,7 +841,9 @@ fn registered_runtime_chain_accepts_routing_change_and_resets_incompatible_lanes
     let mut next = chain_for(next_state);
     assert!(next.can_inherit_from(&old));
     next.inherit_from(&old);
-    assert!(next.committed_range_is_quiescent(0..1));
+    // The new lanes start empty, but the outgoing routing still crossfades
+    // out (Pulse #4106), so the entry is not quiescent until the fade ends.
+    assert!(!next.committed_range_is_quiescent(0..1));
     next.begin_block();
     let mut output = [[0.25, -0.1]; 32];
     next.process_block(&mut output).unwrap();
@@ -1005,4 +1014,72 @@ fn registered_eq8_can_transfer_only_the_held_selector_to_a_compatible_candidate(
         selection,
     ));
     assert!(!excluded.processor_audition_is_active(owner, 19, EQ8_TYPE_ID, selection));
+}
+
+/// Pulse #3961: handoff smoothing lasts the same time at every rate, so the
+/// per-sample output-gain step shrinks as the rate grows.
+#[test]
+fn handoff_smoothing_time_is_rate_independent_with_bounded_gain_steps() {
+    let old_state = EQ8_DEFINITION.default_state().unwrap();
+    let new_state = EQ8_DEFINITION
+        .patch_parameter(
+            &old_state,
+            parameter::OUTPUT_GAIN,
+            ParameterValue::Float(1.5),
+        )
+        .unwrap();
+    let reference_seconds = 256.0 / 48_000.0;
+    for rate in [8_000, 44_100, 48_000, 96_000, 192_000] {
+        let old = PreparedEq8::new(decode(&old_state).unwrap(), rate)
+            .unwrap()
+            .runtime();
+        let prepared = PreparedEq8::new(decode(&new_state).unwrap(), rate).unwrap();
+        let step = (prepared.output_gain - old.current_gain).abs();
+        let mut runtime = prepared.runtime();
+        assert!(runtime.inherit_history_from(&old));
+        let frames = usize::from(runtime.smooth_remaining);
+        assert!(
+            (frames as f64 / f64::from(rate) - reference_seconds).abs() <= 1.0 / f64::from(rate),
+            "rate={rate}: {frames} frames"
+        );
+        let mut chunked = prepared.runtime();
+        assert!(chunked.inherit_history_from(&old));
+        let mut whole_audio = vec![[0.25_f32, -0.125]; frames + 8];
+        let mut chunked_audio = whole_audio.clone();
+        let mut previous = runtime.current_gain;
+        let mut largest = 0.0_f64;
+        for frame in whole_audio.iter_mut() {
+            runtime.process(std::slice::from_mut(frame));
+            largest = largest.max((runtime.current_gain - previous).abs());
+            previous = runtime.current_gain;
+        }
+        let mut offset = 0;
+        for size in [1_usize, 7, 64, 128].into_iter().cycle() {
+            if offset == chunked_audio.len() {
+                break;
+            }
+            let end = (offset + size).min(chunked_audio.len());
+            chunked.process(&mut chunked_audio[offset..end]);
+            offset = end;
+        }
+        assert_eq!(whole_audio, chunked_audio, "rate={rate}");
+        let mut last_output = 0.25_f64 * old.current_gain;
+        for frame in &whole_audio {
+            let output = f64::from(frame[0]);
+            assert!(
+                (output - last_output).abs() <= 0.25 * step / frames as f64 + 1.0e-7,
+                "rate={rate}: audible gain step exceeded the ramp"
+            );
+            last_output = output;
+        }
+        assert!((last_output - 0.25 * runtime.target_gain).abs() < 1.0e-7);
+        assert_eq!(runtime.smooth_remaining, 0);
+        assert_eq!(runtime.current_gain, runtime.target_gain);
+        assert!(
+            largest <= step / frames as f64 * (1.0 + 1.0e-9),
+            "rate={rate}: step {largest} over {frames} frames"
+        );
+    }
+    assert_eq!(coefficient_smooth_frames(48_000), 256);
+    assert_eq!(coefficient_smooth_frames(192_000), 1_024);
 }

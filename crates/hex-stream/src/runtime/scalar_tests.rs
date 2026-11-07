@@ -500,6 +500,7 @@ fn shutdown_with_full_return_queue_reclaims_held_pages_and_worker_job() {
     let (steps_tx, steps_rx) = mpsc::sync_channel(1);
     let (_quantum_tx, quantum_rx) = mpsc::sync_channel(1);
     let hooks = crate::worker::TestWorkerHooks {
+        read_gate: None,
         entered: entered_tx,
         release: release_rx,
         publications: publication_tx,
@@ -587,6 +588,7 @@ fn full_return_queue_recovers_and_serves_new_pcm() {
     let (steps_tx, steps_rx) = mpsc::sync_channel(1);
     let (quantum_tx, quantum_rx) = mpsc::sync_channel(1);
     let hooks = crate::worker::TestWorkerHooks {
+        read_gate: None,
         entered: entered_tx,
         release: release_rx,
         publications: publication_tx,
@@ -729,6 +731,7 @@ fn dense_pending_scalar_yields_pcm_preserves_scalar_fifo_and_stop_reclaims_held_
     let (steps_tx, steps_rx) = mpsc::sync_channel(1);
     let (quantum_tx, quantum_rx) = mpsc::sync_channel(1);
     let hooks = crate::worker::TestWorkerHooks {
+        read_gate: None,
         entered: entered_tx,
         release: release_rx,
         publications: publication_tx,

@@ -67,6 +67,23 @@ impl<T> OwnedShared<T> {
 // Closed canonical operation for the ordinary gain-recording path. No generic
 // mutable borrow or Arc escapes, and private prepared roots expose no caller.
 impl OwnedShared<crate::Project> {
+    pub(crate) fn retain_foreign_programs(
+        &mut self,
+        previous: &Self,
+        received: &mut dyn FnMut(
+            hex_lattice_contract::ForeignProcessorBinding,
+        ) -> crate::ForeignProgramFrontier,
+    ) -> Result<(), crate::Invalid> {
+        if self.parts().is_none() || previous.parts().is_none() {
+            return Err(crate::Invalid(
+                "foreign program graph constructor is unknown",
+            ));
+        }
+        let project = Arc::get_mut(&mut self.arc)
+            .ok_or(crate::Invalid("foreign program graph is already shared"))?;
+        crate::prepared_revision::foreign_programs::retain_project(project, &previous.arc, received)
+    }
+
     pub(crate) fn prepare_scalar_automation(
         &mut self,
         input: crate::device_automation::NativeParameterInputTarget,

@@ -87,7 +87,7 @@ impl EditorView {
                 generation: self.project_generation,
                 revision: state.revision,
                 clip,
-                start: self.piano_beat_start.raw(),
+                start: self.piano_beat_start,
                 span: self.piano_beat_span.raw(),
             },
             bounds,
@@ -132,7 +132,7 @@ impl EditorView {
             generation: self.project_generation,
             revision: state.revision,
             clip,
-            start: self.piano_beat_start.raw(),
+            start: self.piano_beat_start,
             span: self.piano_beat_span.raw(),
         };
         if self
@@ -407,8 +407,9 @@ impl EditorView {
                             &hitbox,
                         );
                         if let Some((first, last)) = time_selection {
-                            let first = first.max(key.start);
-                            let last = last.min(key.start.saturating_add(key.span));
+                            let first = i128::from(first).max(key.start);
+                            let last = i128::from(last)
+                                .min(key.start.saturating_add(i128::from(key.span)));
                             if first < last {
                                 let left =
                                     ((first - key.start) as f64 / key.span as f64) as f32 * width;

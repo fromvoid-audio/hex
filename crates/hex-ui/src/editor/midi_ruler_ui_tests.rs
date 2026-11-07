@@ -409,7 +409,7 @@ fn marker_cancels_on_escape_focus_viewport_competing_ack_and_clip_retirement(
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     for cancel in 0..5 {
         editor.update(&mut visual, |v, cx| {
-            v.piano_beat_start = BeatTime::ZERO;
+            v.piano_beat_start = 0;
             v.piano_beat_span = beat(4);
             cx.notify();
         });

@@ -13,11 +13,22 @@ pub struct EffectSourceMetadata {
     cid: [u8; 16],
     executable_sha256: String,
     info_sha256: String,
+    pub(super) authored_bases: super::automation::CanonicalParameterBases,
 }
 impl EffectSourceMetadata {
     /// Two existing 4096-byte configuration paths and two lower-hex digests.
     /// Inline metadata and allocator overhead are separate from this DATA cap.
     pub const MAX_DATA_BYTES: usize = 2 * 4096 + 128;
+
+    /// Frozen constructor bases, observed before authored PCM or added from a
+    /// disposed isolated constructor restoration after the original SDK worker
+    /// validates the target. These are control-side copied data only.
+    pub fn authored_base_values(&self) -> impl Iterator<Item = (u32, f64)> + '_ {
+        self.authored_bases
+            .iter()
+            .flatten()
+            .map(|&(id, bits)| (id, f64::from_bits(bits)))
+    }
 
     pub fn selection(&self) -> EffectSelection<'_> {
         EffectSelection {
@@ -45,6 +56,7 @@ impl EffectSourceMetadata {
             cid: config.identity.class.bytes(),
             executable_sha256: digest_text(config.identity.binary.executable_sha256)?,
             info_sha256: digest_text(config.identity.binary.info_sha256)?,
+            authored_bases: [None; hex_plugin_host::transport::MAX_PARAMETER_POINTS],
         };
         if source.data_bytes() != Some(expected) {
             return Err(Error::Protocol("native source metadata capacity differs"));
@@ -58,6 +70,7 @@ impl EffectSourceMetadata {
             cid: self.cid,
             executable_sha256: copy_text(&self.executable_sha256)?,
             info_sha256: copy_text(&self.info_sha256)?,
+            authored_bases: self.authored_bases,
         })
     }
     /// Actual retained String capacities, excluding this inline value and

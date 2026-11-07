@@ -211,10 +211,8 @@ fn assert_return_export(authored_feed: bool, automation: bool) {
         let data = fs::read(target).unwrap();
         for (channel, expected) in expected.into_iter().enumerate() {
             let offset = 44 + channel * 2;
-            assert_eq!(
-                i16::from_le_bytes([data[offset], data[offset + 1]]),
-                (expected * 32767.0).round() as i16
-            );
+            let actual = i16::from_le_bytes([data[offset], data[offset + 1]]);
+            assert_pcm16_near(actual, expected, "captured output");
         }
         assert_eq!(
             control.progress(),
@@ -257,10 +255,8 @@ fn assert_return_export(authored_feed: bool, automation: bool) {
         assert_eq!(data.len(), 48);
         for (channel, expected) in expected.into_iter().enumerate() {
             let offset = 44 + channel * 2;
-            assert_eq!(
-                i16::from_le_bytes([data[offset], data[offset + 1]]),
-                (expected * 32767.0).round() as i16
-            );
+            let actual = i16::from_le_bytes([data[offset], data[offset + 1]]);
+            assert_pcm16_near(actual, expected, "captured output");
         }
     }
     // Refuse the whole existing batch; never merge/delete files in it.
@@ -632,7 +628,8 @@ fn automatic_ranges_refuse_audible_unbounded_delay_only_on_relevant_paths() {
             ]
         })
         .collect();
-    assert_eq!(pcm[480], [16_384, -16_384]);
+    assert_pcm16_near(pcm[480][0], 0.5, "delayed left");
+    assert_pcm16_near(pcm[480][1], -0.5, "delayed right");
     for signal in [&ExportSignal::Main, &delayed, &stems] {
         let error = controlled_frame_count(revision.arrangement(), 0, None, signal).unwrap_err();
         assert!(error.to_string().contains("explicit range"), "{error}");
@@ -721,5 +718,15 @@ fn automatic_ranges_refuse_audible_unbounded_delay_only_on_relevant_paths() {
     assert_eq!(
         controlled_frame_count(grouped.arrangement(), 0, None, &delayed).unwrap(),
         1
+    );
+}
+
+/// PCM16 export applies ±1 LSB TPDF dither, so each sample lands within one
+/// LSB of plain rounding.
+fn assert_pcm16_near(actual: i16, expected: f32, context: &str) {
+    let rounded = (expected.clamp(-1.0, 1.0) * 32_767.0).round() as i32;
+    assert!(
+        (i32::from(actual) - rounded).abs() <= 1,
+        "{context}: {actual} not within one lsb of {rounded}"
     );
 }

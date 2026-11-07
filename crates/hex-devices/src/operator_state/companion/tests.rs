@@ -3,8 +3,8 @@ use crate::fm4::PreparedOperatorNote;
 #[test]
 fn suffix_migration_preserves_every_prefix_and_catalog_version_boundary() {
     let current = crate::operator_state::tests::legacy_state();
-    assert_eq!(current.payload().len(), 1728);
-    assert_eq!(OPERATOR_METADATA.descriptors().len(), 424);
+    assert_eq!(current.payload().len(), 1744);
+    assert_eq!(OPERATOR_METADATA.descriptors().len(), 428);
     for (version, length) in [
         (1, 224),
         (2, 240),
@@ -176,7 +176,7 @@ fn key_scales_and_velocity_pitch_quantization_match_independent_oracles() {
             .prepare_configuration(48000)
             .unwrap()
             .prepare_note(69, 127)
-            .is_err()
+            .is_ok()
     );
     settings.fields[0] = 128.0;
     settings.companion.words[0][1] = (-1.0_f32).to_bits();

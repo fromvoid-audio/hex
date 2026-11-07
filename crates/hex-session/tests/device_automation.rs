@@ -22,7 +22,7 @@ fn unsupported_envelope_refuses_before_canonical_commit_and_preserves_history() 
             track,
             before: None,
             state: hex_engine::default_native_device_state(DeviceTypeId::from_static(
-                "hex.overdrive",
+                "hex.limiter",
             ))
             .unwrap(),
         })

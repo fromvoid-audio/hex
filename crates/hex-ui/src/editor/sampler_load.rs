@@ -183,7 +183,7 @@ impl EditorView {
             .is_some_and(|active| Rc::ptr_eq(&active.destination, &drag.destination))
             && !self.opening_project
             && !self.close_prompt_open
-            && self.browser.scan_generation() == drag.browser_generation
+            && Some(self.browser.scan_generation()) == drag.browser_generation
             && drag.project_generation == self.project_generation
             && self
                 .state

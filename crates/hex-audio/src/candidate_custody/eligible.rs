@@ -665,6 +665,11 @@ impl Custody {
         slot.preparation_failure = None;
         Some(report)
     }
+    #[cfg(test)]
+    pub(super) fn with_bank_held<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _bank = lock(&self.bank);
+        f()
+    }
     pub(super) fn usage(&self) -> Option<AudioCandidateDomainUsage> {
         let guard = self.bank.try_lock().ok()?;
         if !self.enabled() {

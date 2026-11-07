@@ -26,7 +26,21 @@ pub trait NativeInstrumentClock {
     fn arrangement_frame_at_offset(&self, _offset: usize) -> Option<u64> {
         None
     }
+    /// Exact Arrangement content origin eligible for authored foreign
+    /// automation. Stopped monitoring, audition and uncompensated warmup
+    /// return None even if they have a cursor or a musical clock.
+    fn authored_arrangement_frame_at_offset(&self, _offset: usize) -> Option<u64> {
+        None
+    }
     fn loop_pass_at_offset(&self, _offset: usize) -> Option<u64> {
+        None
+    }
+    /// Canonical time signature at the aligned Arrangement position.
+    fn arrangement_meter_at_offset(&self, _offset: usize) -> Option<(u8, u8)> {
+        None
+    }
+    /// Active Arrangement cycle bounds in Q32.32 quarter-note beats.
+    fn arrangement_cycle_at_offset(&self, _offset: usize) -> Option<(u64, u64)> {
         None
     }
     /// Optional exact host performance-frame origin, independent of arrangement
@@ -165,6 +179,26 @@ pub trait PreparedMutableInstrumentRuntime: Send + Sync {
     /// this against both actual twins before admission; default providers refuse
     /// nonempty gain batches while retaining their ordinary unity path.
     fn supports_occurrence_gain(&self) -> bool {
+        false
+    }
+    /// Immutable opt-in that releasing (note-off'd) voices are stealable. A
+    /// note-on that finds all `max_active_occurrences` slots occupied then
+    /// takes the slot of the runtime's oldest releasing occurrence instead of
+    /// refusing; it still refuses with `EventCapacityExceeded` when every slot
+    /// is held. A steal never hard-cuts a sounding voice: if the provider's
+    /// fixed declick storage is exhausted, it drops the incoming onset instead
+    /// (that occurrence never becomes active and its NoteOff is ignored), and
+    /// the rest of the block, including every NoteOff, still applies. The stolen occurrence leaves the active set at that frame:
+    /// `active_occurrence_ids` no longer reports it, it does not count toward
+    /// `max_active_occurrences`, it ignores later events, and hosts must not
+    /// send it occurrence gains (its gain is frozen at the steal frame). Its
+    /// audio continues in provider-owned fixed storage with a bounded declick
+    /// fade and never outlasts `max_release_tail_frames` after its note-off.
+    /// Hosts may therefore admit note density by held voices and must take
+    /// per-occurrence gains from `active_occurrence_ids`, not their own
+    /// release deadlines. The default keeps the strict release-occupies-a-slot
+    /// contract.
+    fn steals_releasing_voices(&self) -> bool {
         false
     }
     /// Opt-in declaration that the immutable factory owns only its inline Box payload, with no
@@ -450,6 +484,7 @@ impl std::error::Error for NativeInstrumentRuntimeError {}
 pub struct NativeInstrumentRuntimePair {
     active_occurrence_ids: bool,
     occurrence_gain: bool,
+    steals_releasing_voices: bool,
     runtime_version: u32,
     declared_pair_bytes: usize,
     max_events_per_block: usize,
@@ -474,6 +509,7 @@ impl NativeInstrumentRuntimePair {
         let max_release_tail_frames = prepared.max_release_tail_frames();
         let occurrence_gain = prepared.supports_occurrence_gain();
         let active_occurrence_ids = prepared.supports_active_occurrence_ids();
+        let steals_releasing_voices = prepared.steals_releasing_voices();
         let declared_pair_bytes = declared_twin_bytes
             .checked_mul(2)
             .ok_or(NativeInstrumentRuntimeError::RuntimeBudgetExceeded)?;
@@ -512,6 +548,7 @@ impl NativeInstrumentRuntimePair {
         Ok(Self {
             active_occurrence_ids,
             occurrence_gain,
+            steals_releasing_voices,
             runtime_version,
             declared_pair_bytes,
             max_events_per_block,
@@ -563,6 +600,11 @@ impl NativeInstrumentRuntimePair {
 
     pub const fn supports_occurrence_gain(&self) -> bool {
         self.occurrence_gain
+    }
+
+    /// The factory's `steals_releasing_voices` declaration, fixed at admission.
+    pub const fn steals_releasing_voices(&self) -> bool {
+        self.steals_releasing_voices
     }
 
     /// Checked combined declaration for both fixed runtime twins.
@@ -870,8 +912,7 @@ pub(super) fn validate_event_batch(
             velocity,
             ..
         } = event
-        {
-            if pitch > 127
+            && (pitch > 127
                 || velocity == 0
                 || velocity > 127
                 || events[..index].iter().any(|prior| {
@@ -880,10 +921,9 @@ pub(super) fn validate_event_batch(
                         NativeInstrumentEvent::NoteOn { occurrence_id: prior_id, .. }
                             if *prior_id == occurrence_id
                     )
-                })
-            {
-                return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
-            }
+                }))
+        {
+            return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
         }
         previous_offset = offset;
     }

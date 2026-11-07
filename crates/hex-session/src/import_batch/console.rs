@@ -80,6 +80,7 @@ pub(crate) fn prefix(
     destination: AudioBatchDestination,
     count: usize,
     track_name: &str,
+    new_track_gain: Option<f32>,
 ) -> Result<(Vec<Command>, Option<ResolvedCell>), SessionError> {
     let AudioBatchDestination::Console(target) = destination else {
         return Ok((Vec::new(), None));
@@ -87,7 +88,7 @@ pub(crate) fn prefix(
     validate(project, target, count)?;
     let mut commands = Vec::new();
     commands
-        .try_reserve_exact(2)
+        .try_reserve_exact(3)
         .map_err(|_| SessionError::Allocation)?;
     let cell = match target {
         ConsoleDestination::Cell { track, scene } => {
@@ -128,6 +129,11 @@ pub(crate) fn prefix(
                 ));
             };
             commands.push(command);
+            if let Some(gain) = new_track_gain {
+                let gain_command = Command::Gain { track, gain };
+                projected.execute(gain_command.clone())?;
+                commands.push(gain_command);
+            }
             let scene = match scene {
                 SessionSceneTarget::Existing(scene) => scene,
                 SessionSceneTarget::Insert { before } => {

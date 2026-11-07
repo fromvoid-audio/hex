@@ -1,5 +1,41 @@
 # hex / orbital workstation — Frame study
 
+## Continue editing in Frame
+
+[hex-orbital.frame.json](hex-orbital.frame.json) is the current editable prototype,
+saved at r187. It includes the structured design, prototype actions, and orbital
+styleguide in one portable project.
+
+In Frame, choose **Designs → Import design**, select the file, and open the
+imported copy. If Frame already has a project with the same ID, use the separate
+copy proposed by the import preview. Use Frame’s **State** selector to review Arrangement/Console, editor and device-panel examples. Historical clickable previews are available through **Designs → Legacy prototype interaction**.
+Choose `group-track-selected` in the State picker to see the selected group track.
+
+To save a later design revision back to Hex, use **Designs → Download design** in
+Frame and update the portable project on the design branch. The older artifacts
+below document earlier iterations.
+
+## Vector device design
+
+[vector-device.frame.json](vector-device.frame.json) is the focused design page
+for Hex’s native Vector instrument. Every device host uses a shared height of
+**200 pixels**, including Vector, Delay, and Adjust. The Vector page uses the
+same dimensions as its host-modulator and device assembly in the workstation. Open **hex / vector** from **Designs**, or
+import the file into another Frame session. Its left device rail, host modulator
+tray, selection border, meter, and nesting hint use the Hex concept’s visuals.
+
+The focused Vector study (r38) and both workstation views use the same design. The current Vector study follows the [Vector brief](../../docs/design/vector-brief.md) and [shared host brief](../../docs/design/device-host-brief.md). Ratio, fine Hz offset, filled horizontal level sliders and keytrack remain in four compact oscillator rows. Routing presets, feedback, cutoff/resonance and envelope depth, voice count and glide remain on the main surface.
+
+Click an oscillator or filter section background to select its shared envelope editor. The left colored oscillator rectangle only toggles power; parameter edits retain selection. The routing diagram itself opens visual preset choices, replacing the separate label and text picker. Oscillator views show ghost envelopes; filter selection shows its independent envelope. The graph uses a fixed nonlinear time axis, an active curve above the ghosts, point/curvature handles and a focus preview. Selected point names and exact values have separate reserved header areas. Loop examples demonstrate free, tempo-fit and note-pitch-fit modes with conditional timing controls. Free readouts and loop highlights follow the selected envelope. Synced A/D readouts show shape proportions beside effective cycle/rate captions. First-cycle shading, a faint held region, a repeat bracket and separate note-off/release markers explain looping on that same time scale. Filter levels use 0–100%, with a bipolar envelope depth of −96 to +96 semitones (default 0 st). `env peak` follows the edited graph peak while cutoff shows the base; the underlying depth remains in semitones. Cutoff, resonance and env peak share one section. `filter-peak-half` shows the reduced peak, `filter-depth-edit` shows exact semitone entry, and `focused-section-b`, `focused-routing`, `focused-routing-choice` and `focused-env-point` demonstrate keyboard focus. Oscillator letters and selected-point source labels retain identity; compact source-aware readouts and side-by-side macro values preserve readability. The default device is 620 × 200 px; settings and oscillator options use a 168 px panel, while waveform editing uses 264 px. The envelope is narrower again, with compact source-aware headers and a two-row filter layout. Routing uses 8 px oscillator-colored squares without operator letters, with short arrows and a compact preset popup. Feedback and filter values share an aligned column; voicing controls share the bottom baseline. The poly button is now a voice-count dropdown (1/2/4/8/16/32), with voice count removed from settings. A shorter envelope plot makes room for an always-visible initial/peak and curve-control row below ADSR. Device settings remain in the host menu. The `filter-depth-positive` and `filter-depth-negative` states show ±24 st examples at a 500 Hz cutoff, reading 2 kHz and 125 Hz respectively. All three loop modes reset immediately to initial after decay. The graph shows a reset arrow and second cycle; release previews follow the actual note-off level, with note-off taking priority at an exact boundary. Oscillator phase is unaffected.
+
+The waveform editor expands to the right of the oscillators, with Curve/Harmonics and 16/32/64 partial views. Edited examples preview changes immediately with no Apply/Cancel. Phase/retrigger and device settings use optional panels. A full-sized nested Delay example includes its own meter and add button, with parent/child power-state previews. The initial view keeps host panels closed; routing diagrams identify oscillator paths and output, ratio/Hz fields retain colored fills, and glide has explicit off/on previews. Macro/modulator examples show uniform two-, three- and four-high color-coded slots and a fifth-slot second column.
+
+Run `node design/frame/check-vector-envelope.cjs /absolute/path/to/frame` with the installed Frame runtime to check envelope readout separation and loop-exit geometry.
+
+Use **State** to review selectors, menus, panel layouts, envelope point values, edited waveform examples and insertion-modal examples. **Designs → Legacy prototype interaction** exposes the historical clickable controls. Numeric inputs hold session text. Graph drawing, continuous parameter DSP, audio audition, native Undo, actual preset/default writes and device insertion are illustrative requirements rather than implemented behavior in this Frame study.
+
+## Earlier design and implementation reference
+
 Two editable 1900 × 1120 desktop concepts closely follow the user-supplied Live
 screenshots' layout and widgets with a neutral charcoal / sci-fi accent theme and Hex's
 lowercase Ioskeley Mono typography. Arrangement has the overview, timeline,

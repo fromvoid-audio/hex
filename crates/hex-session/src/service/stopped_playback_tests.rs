@@ -2,12 +2,11 @@
 use super::*;
 use hex_engine::{NativeDeviceClass, playback::PlaybackCommand};
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
-use std::time::Duration;
 
 fn next(service: &Service) -> Event {
     service
         .events
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(crate::test_wait::HANG_BOUND)
         .expect("worker response")
 }
 fn submit(service: &Service, request: Request) -> Event {
@@ -38,7 +37,68 @@ fn render(playback: &mut Playback) -> Vec<hex_engine::Frame> {
 }
 
 #[test]
-fn vector_b_tuning_refusal_preserves_canonical_sound_and_stop_can_restore_a_restarted_handoff() {
+fn refused_compile_preserves_canonical_state_history_and_active_sound() {
+    // The default sine instrument still refuses pitches at or above nyquist.
+    let service = Service::new(8_000, 16, 0).expect("service");
+    next(&service);
+    let added = submit(
+        &service,
+        Request::Edit(Command::InsertTrackWithDevice {
+            name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        }),
+    );
+    let track = added.state.project.tracks()[0].id();
+    let clip = submit(
+        &service,
+        Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: hex_project::BeatTime::ZERO,
+            length: hex_project::BeatTime::from_raw(4 << 32),
+        }),
+    )
+    .state
+    .project
+    .tracks()[0]
+        .midi_clips()[0]
+        .id();
+    let note = |pitch| {
+        Request::Edit(Command::AddMidiNote {
+            clip,
+            start: hex_project::BeatTime::ZERO,
+            duration: hex_project::BeatTime::from_raw(2 << 32),
+            pitch,
+            channel: 0,
+            velocity: 100,
+        })
+    };
+    let before = submit(&service, note(60));
+    assert!(before.error.is_none(), "{:?}", before.error);
+    let canonical = Arc::clone(&before.state);
+    let mut active = before.playback.unwrap();
+    active.apply(PlaybackCommand::Play);
+    render(&mut active);
+
+    let refused = submit(&service, note(127));
+    assert!(
+        refused
+            .error
+            .as_deref()
+            .is_some_and(|reason| reason.contains("cannot be prepared by its instrument")),
+        "{:?}",
+        refused.error
+    );
+    assert!(refused.playback.is_none());
+    assert_eq!(refused.state.project, canonical.project);
+    assert_eq!(refused.state.revision, canonical.revision);
+    assert_eq!(refused.state.can_undo, canonical.can_undo);
+    render(&mut active);
+}
+
+#[test]
+fn vector_b_tuning_edits_keep_canonical_sound_and_stop_can_restore_a_restarted_handoff() {
     let service = Service::new(48_000, 16, 0).expect("service");
     next(&service);
     let added = submit(
@@ -110,19 +170,14 @@ fn vector_b_tuning_refusal_preserves_canonical_sound_and_stop_can_restore_a_rest
     active.apply(PlaybackCommand::Play);
     render(&mut active);
 
-    // B ratio 128 exceeds Nyquist for this authored A4. Compilation must leave
-    // the accepted state/history intact and the active graph still renderable.
-    let refused = patch(&service, device, 4, ParameterValue::Float(128.0));
-    assert!(
-        refused
-            .error
-            .as_deref()
-            .is_some_and(|reason| reason.contains("mutable instrument note is unsupported"))
-    );
-    assert!(refused.playback.is_none());
-    assert_eq!(refused.state.project, canonical.project);
-    assert_eq!(refused.state.revision, canonical.revision);
-    assert_eq!(refused.state.can_undo, canonical.can_undo);
+    // B ratio 128 exceeds Nyquist for this authored A4. Only that oscillator
+    // is silenced (Pulse #3957): the edit compiles and the note still sounds.
+    let silenced = patch(&service, device, 4, ParameterValue::Float(128.0));
+    assert!(silenced.error.is_none(), "{:?}", silenced.error);
+    assert_ne!(silenced.state.revision, canonical.revision);
+    let mut silenced = silenced.playback.expect("above-nyquist edit compiles");
+    silenced.apply(PlaybackCommand::Play);
+    render(&mut silenced);
     render(&mut active);
 
     // A supported B ratio compiles. Its filter histories cannot carry over, so

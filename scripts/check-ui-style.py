@@ -11,9 +11,19 @@ widgets = (
     'self.track(', 'self.mixer_strip(', 'self.mixer(', 'self.transport(', 'self.controller_input_row(', 'self.controller_input_settings(', 'self.clip_detail_view(',
     'self.browser(', 'self.inspector(', 'self.status_bar(', 'theme::text(', 'crate::theme::text(',
     'self.icon(', 'self.control_icon(', 'self.control_icon_description(',
+    # Workspace navigation components route their glyphs/tooltips through theme::text.
+    'self.browser_toggle_button(', 'self.workspace_view_toggle(',
     'self.arrangement(', 'self.ruler(', 'self.clip_view(',
+    # Main's arrangement map paints cached geometry without text.
+    'super::arrangement_map::view(',
+    # Meter insertion action normalizes its caption in the owning component.
+    'device_add::button(',
+    'device_picker::render(',
+    'super::device_panel::picker_overlay(',
     # Query clear-slot composition contains a themed action and native input semantics.
     'self.clear_search_slot(',
+    # Pinned browser collections compose themed heading, labels and icons.
+    'self.browser_collections(',
     # Header drop wrapper preserves the existing themed row and only refines drag paint.
     'self.device_drop_header(',
     # Clip name components normalize labels or render a native text-input entity.
@@ -39,9 +49,13 @@ widgets = (
     'hex_widgets::action(',
     # The shared splitter handle paints caller-resolved geometry/color only.
     'self.project_spectrum_splitter_input(cx)',
+    # Recorder controls route captions through the shared themed button factory.
+    'self.sample_arm_button(', 'self.sample_recorder_mode_button(',
+    # The take waveform canvas paints geometry only.
+    'wave_canvas(',
     'harmonic_range_control)', 'harmonic_repeat_control)', 'harmonic_tools)',
     'view.device_panel.operator_harmonics[&key].entity.clone())',
-    'operator_row(', 'operator_label(', 'page_tab(', 'shell)', 'page_tabs)', 'detail)',
+    'operator_row(', 'operator_power(', 'page_tab(', 'shell)', 'page_tabs)', 'detail)',
     'level)', 'primary)', 'multiplier)', 'fixed_control)', 'section_title(', 'page_tabs(', 'control)',
     'preview::render(', 'fine)', 'toggle(', 'heading)', 'left)', 'select_row)',
     'routing_link(', 'selector(',
@@ -94,7 +108,7 @@ widgets = (
     'boundary::cursor_action(', 'boundary::handle(', 'source_adjust_button(', 'gain_adjust_button(', 'session_audio_loop_button(',
     'field_row(', 'loop_row(', 'time_ruler(', 'source_marker(', 'source_column)',
     'source_row(', 'details)', 'waveform_panel)', 'canvas_region)', 'roll_area)',
-    'status_slot(', 'super::waveform::waveform_view_cached(',
+    'status_slot(', 'disk_overload_slot(', 'super::waveform::waveform_view_cached(',
     'super::waveform::waveform_source_segment_view_cached(',
     'super::waveform::waveform_source_segment_gain_view_cached(',
     'toolbar)', 'control)', 'element)', 'controls)', 'clip_view)', 'step_button(', 'control_button(',
@@ -103,8 +117,8 @@ widgets = (
     'section_heading(', 'unavailable(',
     'menu_message(', 'action_button(', 'action_button_sized(', 'text_action_button(', 'text_segment_button(', 'entity.clone())', 'control.entity.clone())',
     'super::waveform::waveform_source_segment_view(', 'self.mixer_strip(', 'self.track_volume(', 'detail)', 'ruler_label)',
-    'self.title_bar()', 'self.title_bar(cx)', 'self.theme_button(', 'card)',
-    'header::title_bar(', 'header::loading_toolbar(',
+    'self.window_controls(', 'self.header_diagnostics(', 'self.project_title_label(', 'self.theme_button(', 'card)',
+    'header::window_controls(', 'header::loading_toolbar(',
     # Changelog body/group captions normalize text; the test paint probe has no label.
     'self.changelog_group(', 'self.changelog_paint_probe(', 'notes)',
     'crate::tooltips::HelpToggle)',
@@ -113,6 +127,8 @@ widgets = (
     # Device preset header actions reuse themed compact action buttons.
     'super::device_preset::actions(', 'super::device_panel::action_button(', 'super::device_panel::segment_button(',
     'super::super::device_preset::actions(',
+    # The VST3 editor toggle uses the same themed device action.
+    'vst3_editor_button(',
     # Shared A/B actions compose themed compact buttons, never raw text.
     'super::device_comparison::actions(', 'super::super::device_comparison::actions(',
     'device_drag_title(', 'render_return_drop_target(', 'uniform_list(',
@@ -192,6 +208,18 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/mixer.rs'
             and suffix.startswith(('super::track_meters::render(', 'toggle_button_with_style('))
         )
+        # Track meters compose a text-free shared gauge and its rendered fixture.
+        # Tooltip text still passes through MiniTooltip's theme::text boundary.
+        header_mixer_component = header_mixer_component or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/track_meters.rs'
+            and suffix.startswith(('meter)', 'render_meter('))
+        )
+        # This fixture calls the typed, text-free performance segment view.
+        # Keep the registration local; tooltip prose is normalized by its owner.
+        header_mixer_component = header_mixer_component or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/track_performance/tests.rs'
+            and suffix.startswith('super::super::render(')
+        )
         # Clip-detail bindings return shared widgets; their labels pass through
         # theme::text in the owning component, never raw .child text.
         clip_detail_component = (
@@ -219,6 +247,15 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/browser/layout.rs'
             and suffix.startswith(('gpui::svg()', 'browser_vector_icon('))
         )
+        # Browser result wrappers contain the existing UniformList and a
+        # text-free scrollbar. Keep these exceptions at their typed owners.
+        browser_scrollbar_component = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/browser.rs'
+            and suffix.startswith('self.browser_results(')
+        ) or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/browser/scrollbar.rs'
+            and suffix.startswith(('list)', 'self.browser_scrollbar('))
+        )
         # Playback vector controls and their SVG child contain no text.
         transport_vector_component = (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/transport.rs'
@@ -240,7 +277,27 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             )
             and suffix.startswith('insertion_gap(')
         )
-        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not transport_vector_component and not limiter_component and not device_insertion_component:
+        # Catalog list rows normalize their labels inside the shared picker.
+        device_insertion_component = device_insertion_component or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/device_picker.rs'
+            and suffix.startswith(('list)', 'card)'))
+        )
+        # The rotated title paints the already themed label in the inherited font.
+        device_insertion_component = device_insertion_component or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel.rs'
+            and suffix.startswith('hex_widgets::vertical_device_name(title)')
+        )
+        # The log viewer displays source bytes and native filenames verbatim;
+        # query/list are typed GPUI components; log_scrollbar is text-free.
+        log_viewer_source = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/log_viewer.rs'
+            and suffix.startswith(('display)', 'session)', 'detail)', 'status)', 'self.query.clone())', 'list)', 'self.log_scrollbar('))
+        )
+        plugin_parameter_search = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/vst3_parameters.rs'
+            and suffix.startswith('panel.search.clone())')
+        )
+        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not browser_scrollbar_component and not transport_vector_component and not limiter_component and not device_insertion_component and not log_viewer_source and not plugin_parameter_search:
             line = source.count('\n', 0, match.start()) + 1
             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):
@@ -257,16 +314,16 @@ for root_view in ('app.rs', 'editor/render.rs'):
     app = (ROOT / 'crates/hex-ui/src' / root_view).read_text()
     if '.font_family(theme::FONT_FAMILY)' not in app:
         errors.append(f'{root_view}: root UI must inherit Ioskeley Mono')
-# The shared compact title row reserves balanced space for native controls;
+# The shared top toolbar reserves space for native window controls;
 # one EditorView renders both pending-backend startup and the loaded editor.
 # The generated demo retains its separate toolbar with the same leading inset.
 header = (ROOT / 'crates/hex-ui/src/editor/header.rs').read_text()
-if 'crate::build_info::HEADER_INSET.max(theme::TITLEBAR_LEADING_INSET)' not in header or '.px(px(' not in header:
-    errors.append('editor/header.rs: center title with balanced native-control insets')
+if '.pl(px(theme::TITLEBAR_LEADING_INSET))' not in header:
+    errors.append('editor/header.rs: reserve the native-control leading inset')
 for top_row in ('editor/render.rs',):
     source = (ROOT / 'crates/hex-ui/src' / top_row).read_text()
-    if 'header::title_bar' not in source and 'self.title_bar(cx)' not in source and 'self.title_bar()' not in source:
-        errors.append(f'{top_row}: use the shared title row')
+    if 'self.transport(window, cx)' not in source:
+        errors.append(f'{top_row}: use the shared top toolbar')
 demo_toolbar = (ROOT / 'crates/hex-ui/src/layout/transport.rs').read_text()
 if '.pl(px(theme::TITLEBAR_LEADING_INSET))' not in demo_toolbar:
     errors.append('layout/transport.rs: reserve the shared native titlebar leading inset')

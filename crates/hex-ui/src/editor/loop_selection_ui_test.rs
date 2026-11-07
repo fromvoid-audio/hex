@@ -404,6 +404,7 @@ fn l_time_bounds_win_including_reverse_and_main_proxy_with_stale_refusal(cx: &mu
         editor.read_with(&visual, |v, _| {
             let r = v.state.as_ref().unwrap().project.loop_region().unwrap();
             assert_eq!((r.start(), r.end()), (12_000, 36_000));
+            assert_eq!(v.playback_start_frame(), 12_000);
             assert_eq!(v.time_selection.unwrap().anchor_frame, 36_000);
         });
     }
@@ -922,7 +923,7 @@ fn loop_review_session_cell_selection_is_not_a_stale_arrangement_selection(
         assert_eq!(v.selected_cell, Some((track, scene)));
     });
     let position = visual
-        .debug_bounds("show arrange view · tab")
+        .debug_bounds("workspace-view-toggle")
         .unwrap()
         .center();
     visual.simulate_click(position, Modifiers::default());
@@ -981,7 +982,7 @@ fn loop_review_retained_editor_focus_does_not_edit_during_browser_or_device_drag
                 let payload = BrowserAudioDrag {
                     project_generation: v.project_generation,
                     revision: state.revision,
-                    browser_generation: v.browser.scan_generation(),
+                    browser_generation: Some(v.browser.scan_generation()),
                     sample_rate: state.project.sample_rate(),
                     path: state
                         .project
@@ -1362,6 +1363,11 @@ fn section_loop_focus_waits_for_own_ack_switches_sections_and_preserves_repeat_t
     editor.read_with(&visual, |v, _| {
         assert!(v.arrangement_focus.projection.enabled);
         assert_eq!(&*v.arrangement_focus_ranges(), &[(96_000, 120_000)]);
+        assert_eq!(
+            v.playback_start_frame(),
+            96_000,
+            "section loop supplies the play start"
+        );
     });
     visual.simulate_keystrokes("l");
     pump(&editor, &mut visual);
@@ -1852,4 +1858,96 @@ fn enabling_the_loop_retires_a_point_cursor_until_a_new_click(cx: &mut TestAppCo
     });
     let third = place(&mut visual, 0.7);
     assert_ne!(third, 24_000);
+}
+
+#[gpui::test]
+fn new_selection_loop_takes_play_start_only_after_ack_and_later_cursor_wins(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, audio, _, _files) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::SetLoopRegion {
+            start: 24_000,
+            end: 36_000,
+            enabled: true
+        })))
+    });
+    pump(&editor, &mut visual);
+    click(&mut visual, audio, false);
+    let track = editor.read_with(&visual, |v, _| {
+        v.state.as_ref().unwrap().project.tracks()[0].id()
+    });
+    editor.update(&mut visual, |v, _| {
+        v.edit_cursor = Some(super::edit_cursor::EditCursor {
+            track,
+            frame: 18_000,
+            generation: v.project_generation,
+            pulse_color: 0,
+            pulse_started: Instant::now(),
+        });
+        v.edit_cursor_in_selected_clip = Some(audio);
+        v.time_selection = None;
+        v.advance_selection_intent();
+        assert_eq!(v.playback_start_frame(), 18_000);
+    });
+    visual.simulate_keystrokes("l");
+    let terminal = editor.update(&mut visual, |v, _| next(&v.service));
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.playback_start_frame(),
+            18_000,
+            "uninstalled edit cannot move play start"
+        )
+    });
+    install_loop_terminal(&editor, &mut visual, terminal);
+    editor.read_with(&visual, |v, _| assert_eq!(v.playback_start_frame(), 0));
+    editor.update(&mut visual, |v, _| {
+        v.edit_cursor.as_mut().unwrap().frame = 12_000;
+        v.edit_cursor_in_selected_clip = Some(audio);
+        v.advance_selection_intent();
+        assert_eq!(v.playback_start_frame(), 12_000);
+    });
+}
+
+#[gpui::test]
+fn selection_loop_does_not_override_a_new_cursor_or_a_refused_terminal(cx: &mut TestAppContext) {
+    for case in ["new cursor", "refusal", "replacement"] {
+        let cx = &mut cx.new_app();
+        let (handle, editor, audio, _, _files) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        click(&mut visual, audio, false);
+        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
+        visual.simulate_keystrokes("l");
+        let mut event = editor.update(&mut visual, |v, _| next(&v.service));
+        editor.update(&mut visual, |v, _| {
+            let track = v.state.as_ref().unwrap().project.tracks()[0].id();
+            v.edit_cursor = Some(super::edit_cursor::EditCursor {
+                track,
+                frame: 18_000,
+                generation: v.project_generation,
+                pulse_color: 0,
+                pulse_started: Instant::now(),
+            });
+            v.edit_cursor_in_selected_clip = Some(audio);
+            v.time_selection = None;
+            v.advance_selection_intent();
+        });
+        if case == "refusal" {
+            event.error = Some("refused test loop".into());
+            event.state = before;
+            event.playback = None;
+        } else if case == "replacement" {
+            event.project_replaced = true;
+        }
+        install_loop_terminal(&editor, &mut visual, event);
+        editor.read_with(&visual, |v, _| {
+            assert!(v.selection_loop_start.is_none(), "{case}");
+            if case != "replacement" {
+                assert_eq!(v.playback_start_frame(), 18_000, "{case}");
+            }
+        });
+    }
 }

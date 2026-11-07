@@ -29,6 +29,105 @@ fn fixture() -> (Editor, hex_project::TrackId, DeviceId) {
     };
     (editor, track, device)
 }
+
+#[test]
+fn external_reading_union_keeps_live_arm_and_distinct_provider_and_host_slots() {
+    let (editor, _, device) = fixture();
+    let target = |target| native_parameter_input_target(editor.project(), device, target).unwrap();
+    let gain = target(DeviceAutomationTarget::Parameter(parameter::GAIN));
+    let mute = target(DeviceAutomationTarget::Parameter(parameter::MUTE));
+    let host = target(DeviceAutomationTarget::HostOutputGain);
+    let registry = hex_devices::native_registry().unwrap();
+    let current = editor.project().device(device).unwrap();
+    let program = prepare_with_registry_inputs_and_external(
+        current,
+        &registry,
+        Some(gain),
+        &[gain, mute, host],
+    )
+    .unwrap();
+    assert_eq!(program.input_target(), Some(gain.target()));
+    assert!(program.parameter_ids().contains(&parameter::GAIN));
+    assert!(program.parameter_ids().contains(&parameter::MUTE));
+    assert_eq!(program.parameter_ids().len(), 2);
+    assert!(program.has_host_target(DeviceAutomationTarget::HostOutputGain));
+    assert!(
+        program.storage_vectors().2.is_empty(),
+        "external targets do not add authored points"
+    );
+    let quote = quote_with_inputs_and_external(current, Some(gain), &[gain, mute, host]).unwrap();
+    assert!(quote >= program.storage_bytes().unwrap());
+    let live_only = prepare_with_registry_and_input(current, &registry, Some(gain)).unwrap();
+    let growth =
+        input_and_external_growth_overlap(current, Some(gain), &[gain, mute, host]).unwrap();
+    assert!(
+        growth >= live_only.storage_bytes().unwrap(),
+        "old reading vectors coexist during growth"
+    );
+    assert!(
+        prepare_with_registry_inputs_and_external(current, &registry, None, &[gain, gain]).is_err()
+    );
+    assert!(quote_with_inputs_and_external(current, None, &[gain, gain]).is_err());
+    let over_limit = vec![gain; MAX_EXTERNAL_PARAMETER_TARGETS + 1];
+    assert!(
+        prepare_with_registry_inputs_and_external(current, &registry, None, &over_limit).is_err()
+    );
+    assert_eq!(
+        quote_with_inputs_and_external(current, None, &over_limit),
+        Err(crate::AudioStorageError::Capacity)
+    );
+}
+
+#[test]
+fn ordinary_factory_prepares_external_provider_union_with_live_arm() {
+    let (editor, _, device) = fixture();
+    let target = |target| native_parameter_input_target(editor.project(), device, target).unwrap();
+    let gain = target(DeviceAutomationTarget::Parameter(parameter::GAIN));
+    let mute = target(DeviceAutomationTarget::Parameter(parameter::MUTE));
+    let host = target(DeviceAutomationTarget::HostOutputGain);
+    let registry = hex_devices::native_registry().unwrap();
+    let instruments = hex_devices::native_instrument_registry().unwrap();
+    let media = std::collections::BTreeMap::new();
+    let (compiled, _) = crate::compile::project_with_source_bank(
+        editor.project(),
+        crate::compile::SourceBank::Resident(&media),
+        Some(std::sync::Arc::new(crate::SineTable::new())),
+        &registry,
+        &instruments,
+        None,
+        None,
+        None,
+        Some(gain),
+        &[mute, host],
+    )
+    .unwrap();
+    let prepared = &compiled.tracks()[0].device_chain;
+    assert_eq!(prepared.len(), 1);
+    assert_eq!(prepared[0].automation.input_target(), Some(gain.target()));
+    assert!(
+        prepared[0]
+            .automation
+            .parameter_ids()
+            .contains(&parameter::GAIN)
+    );
+    assert!(
+        prepared[0]
+            .automation
+            .parameter_ids()
+            .contains(&parameter::MUTE)
+    );
+    assert!(
+        prepared[0]
+            .automation
+            .has_host_target(DeviceAutomationTarget::HostOutputGain)
+    );
+    let chain = hex_lattice::NativeRuntimeChain::new_prepared(prepared.to_vec()).unwrap();
+    assert_eq!(
+        chain.len(),
+        1,
+        "the actual factory admits the complete provider union"
+    );
+}
 #[test]
 fn canonical_input_target_resolves_each_effect_owner_and_exact_current_value_domains() {
     let (mut editor, track, device) = fixture();
@@ -203,12 +302,12 @@ fn canonical_input_target_resolves_each_effect_owner_and_exact_current_value_dom
 fn native_input_refuses_unsupported_foreign_and_source_owners() {
     let (mut editor, track, _) = fixture();
     for state in [
-        hex_devices::overdrive::OVERDRIVE_DEFINITION
+        hex_devices::compressor::COMPRESSOR_DEFINITION
             .default_state()
             .unwrap(),
         NativeDeviceState::new(DeviceTypeId::from_static("test.foreign"), 1, vec![]).unwrap(),
     ] {
-        let unsupported = state.type_id() == hex_devices::overdrive::OVERDRIVE_TYPE_ID;
+        let unsupported = state.type_id() == hex_devices::compressor::COMPRESSOR_TYPE_ID;
         let Created::Device(device) = editor
             .execute(Command::InsertDevice {
                 track,
@@ -223,7 +322,7 @@ fn native_input_refuses_unsupported_foreign_and_source_owners() {
             native_parameter_input_target(
                 editor.project(),
                 device,
-                DeviceAutomationTarget::Parameter(ParameterId::from_static(1))
+                DeviceAutomationTarget::Parameter(hex_devices::compressor::parameter::DETECTOR)
             )
             .is_err()
         );

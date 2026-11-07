@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "updated_date": "2026-11-05",
+  "phase": "callback_verification_recorded_checkpoint_pending_integration",
+  "mission": "goal.md",
+  "goal_activation": "active_runtime_goal",
+  "scheduler": "none_user_requested_manual_goal",
+  "checkpoint_issue": "https://pulse.iocore.dev/#/issues/5056",
+  "checkpoint_pr": "https://github.com/PORTALSURFER/hex/pull/2100",
+  "branch": "pulse/task-5056-g1-93085f3caa28",
+  "upstream_base": "26578f70bcbdb5bd7ddd5e2e9392c720daaeadbd",
+  "previous_improvement_merge": "af0d9bd154fb4d8d8fd89b2ede067a4bd2e5d1d8",
+  "evidence": "measurements.jsonl",
+  "next_action": "Reconcile PR 2100 actual merge and its recorded metadata checks. Refresh live Pulse and published upstream work before selecting one concrete measured improvement. Mac-owned worker experiment5054 was active at this snapshot; inspect its exact published head/owner before acting. Do not replay delivered callback fixes, the obsolete CPU-profile availability blocker, the subframe split, or retired Sampler3851. Preserve broader3850/4001 acceptance, user review and explicit holds.",
+  "limits": [
+    "Snapshot only; reconcile Git and live Pulse before recovery.",
+    "Raw ignored artifact logs are executor-local; essential results also belong in canonical PRs/Pulse.",
+    "Focused Linux checks do not qualify native macOS or full-workspace health."
+  ],
+  "last_verified_source": "a84c1573532f7b281b9dcb76da66d705a3db14d9",
+  "last_verification_issue": "https://pulse.iocore.dev/#/issues/5049",
+  "last_verification_note": 111599,
+  "native_goal_status": "active_observed_automatic_goal_continuation",
+  "user_goal_prompt_sha256": "9e52b1a4d3d02366259163988bd9abc61f283cb543384209d4da53b682e999d6"
+}

@@ -26,7 +26,7 @@ fn exact_maximum_chunks_and_host_metadata_remain_separate() {
         .unwrap()
         .with_output_gain_millidb(3300)
         .unwrap();
-    assert_eq!(state.payload().len(), MAX_NATIVE_DEVICE_STATE_BYTES);
+    assert_eq!(state.payload().len(), MAX_ENVELOPE_BYTES);
     let decoded = available(&state, Some(identity())).unwrap();
     assert_eq!(decoded.identity, identity());
     assert_eq!(decoded.component, Some(&bytes[..1999]));
