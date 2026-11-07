@@ -17,9 +17,20 @@ impl Status {
     /// The ordinary source and epoch eligible for new live parameter input.
     /// Priority Stop invalidates admission before the callback consumes it.
     pub fn live_native_parameter_source(&self) -> Option<(AppliedAudioSource, u64)> {
+        self.native_parameter_source(true)
+    }
+
+    /// Current ordinary source at the requested transport state. Idle uses the
+    /// installed canonical graph observation, including after native runtime
+    /// return. Root must independently match the exact native binding and state.
+    pub fn native_parameter_source(&self, playing: bool) -> Option<(AppliedAudioSource, u64)> {
         let epoch = self.transport_epoch.load(Acquire);
-        let source = self.native_effect_source()?;
-        (self.playing.load(Acquire)
+        let source = if playing {
+            self.native_effect_source()?
+        } else {
+            self.recording_source()?
+        };
+        (self.playing.load(Acquire) == playing
             && self.pending_stop_marker.load(Acquire) == 0
             && self.applied_audio_source().is_none()
             && !self.closing.load(Acquire)
@@ -34,10 +45,11 @@ impl PublicationControl {
         expected: AppliedAudioSource,
         binding: Binding,
         canonical: &NativeDeviceState,
+        playing: bool,
     ) -> Result<(u32, u64, crate::plugin_effects::BaseCaptureSource), String> {
         let (_, epoch) = self
             .status
-            .live_native_parameter_source()
+            .native_parameter_source(playing)
             .filter(|(source, _)| *source == expected)
             .filter(|_| {
                 self.native_custody && self.output_identity() == Some(expected.output_identity)
@@ -46,7 +58,7 @@ impl PublicationControl {
             .ok_or("native base capture requires the applied ordinary effect")?;
         let source = self
             .candidate_root
-            .native_source_for_base_capture(binding, canonical, true)?;
+            .native_source_for_base_capture(binding, canonical, playing)?;
         Ok((self.rate, epoch, source))
     }
 

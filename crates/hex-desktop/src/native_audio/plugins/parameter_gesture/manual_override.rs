@@ -7,6 +7,7 @@ pub(super) struct LiveOverride {
     pub(super) transport_epoch: u64,
     pub(super) class: [u8; 16],
     pub(super) reading: bool,
+    pub(super) playing: bool,
     pub(super) hold: Option<NativeWorkerParameterChange>,
     release: Option<NativeWorkerParameterChange>,
     scratch: Option<ManualBaseCapture>,
@@ -20,12 +21,14 @@ impl LiveOverride {
         transport_epoch: u64,
         class: [u8; 16],
         reading: bool,
+        playing: bool,
     ) -> Self {
         Self {
             source,
             transport_epoch,
             class,
             reading,
+            playing,
             hold: None,
             release: None,
             scratch: None,
@@ -70,13 +73,13 @@ impl Plugins {
     pub(in crate::native_audio) fn override_publication_source(
         &self,
         successor: AudioSourceContext,
-    ) -> Option<(AppliedAudioSource, u64)> {
+    ) -> Option<(AppliedAudioSource, u64, bool)> {
         let gesture = self.parameter_gesture.as_ref()?;
         let (predecessor, _) = gesture.commit?;
         let live = gesture.live.as_ref()?;
         (successor.project_generation == predecessor.project_generation
             && predecessor.editor_revision.checked_add(1) == Some(successor.editor_revision))
-        .then_some((live.source, live.transport_epoch))
+        .then_some((live.source, live.transport_epoch, live.playing))
     }
 
     pub(in crate::native_audio::plugins) fn parameter_override_cleanup_pending(&self) -> bool {
@@ -101,9 +104,15 @@ impl Plugins {
         };
         if gesture.commit.is_none() {
             let source_changed = context != Some(live.source.context)
-                || control.status.native_effect_source() != Some(live.source);
-            live.discard |= source_changed;
-            live.invalidated |= control.status.live_native_parameter_source()
+                || control.status.recording_source() != Some(live.source);
+            live.discard |= source_changed
+                || (!live.playing
+                    && live.reading
+                    && control
+                        .status
+                        .playing
+                        .load(std::sync::atomic::Ordering::Acquire));
+            live.invalidated |= control.status.native_parameter_source(live.playing)
                 != Some((live.source, live.transport_epoch));
         }
         let discard = live.discard;
@@ -155,7 +164,7 @@ impl Gesture {
         // A target without a reading lane uses ordinary points. Cancel restores
         // its original effective value on the same worker before releasing UI
         // custody. A reading target instead releases its authored hold.
-        if !live.reading
+        if !(live.reading && live.playing)
             && !live.discard
             && self.pending.is_none()
             && self.last != self.origin.initial
@@ -191,14 +200,14 @@ impl Gesture {
     ) -> Result<Prepared, Error> {
         let actual = self.sdk_value(self.last);
         let live = self.live.as_mut().ok_or_else(lost)?;
-        if (live.reading && live.hold.is_none()) || live.invalidated {
+        if (live.playing && live.reading && live.hold.is_none()) || live.invalidated {
             return Err(refused("vst3 automation hold is unavailable"));
         }
         let status = std::sync::Arc::clone(&control.status);
         let expected = (live.source, live.transport_epoch);
         let mut cancelled = || {
             cancellation.is_some_and(RequestCancellation::is_cancelled)
-                || status.live_native_parameter_source() != Some(expected)
+                || status.native_parameter_source(live.playing) != Some(expected)
         };
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
@@ -206,14 +215,26 @@ impl Gesture {
                 return Err(lost());
             }
             if live.scratch.is_none() {
-                match host.begin_manual_base_capture_on_control(
-                    control,
-                    live.source,
-                    self.binding,
-                    canonical,
-                    self.origin.parameter,
-                    actual,
-                ) {
+                let beginning = if live.playing {
+                    host.begin_manual_base_capture_on_control(
+                        control,
+                        live.source,
+                        self.binding,
+                        canonical,
+                        self.origin.parameter,
+                        actual,
+                    )
+                } else {
+                    host.begin_idle_manual_base_capture_on_control(
+                        control,
+                        live.source,
+                        self.binding,
+                        canonical,
+                        self.origin.parameter,
+                        actual,
+                    )
+                };
+                match beginning {
                     Ok(scratch) => live.scratch = Some(scratch),
                     Err(reason)
                         if matches!(
