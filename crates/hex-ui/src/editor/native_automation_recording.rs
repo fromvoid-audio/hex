@@ -95,7 +95,9 @@ impl Touch {
                 ..
             } => {
                 self.delivered_sequence = self.delivered_sequence.max(sequence);
-                self.batch.push((sequence, application));
+                if self.phase != Phase::Orphaned {
+                    self.batch.push((sequence, application));
+                }
             }
             Receipt::Superseded { .. } => {}
             Receipt::Finished { application, .. } => {
@@ -510,7 +512,7 @@ impl EditorView {
             .touch
             .as_mut()
             .filter(|touch| {
-                touch.phase == Phase::Delivering
+                matches!(touch.phase, Phase::Delivering | Phase::Orphaned)
                     && client.native_parameter_target() == Some(touch.audio)
             })
         else {
