@@ -2,12 +2,12 @@
 //! The oracle uses content indices and the authored gain law, without a renderer
 //! or envelope clock. Setup, oracle construction and reclamation are off callback.
 use super::*;
-use std::sync::atomic::Ordering;
 use hex_lattice::{NativeDeviceDefinition, NativeDeviceRegistry, NativeInstrumentRegistry};
 use hex_lattice_contract::{DeviceAutomationTarget, HostGain};
 use hex_project::{
     AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
 };
+use std::sync::atomic::Ordering;
 
 #[test]
 fn limiter_output_gain_uses_delayed_content_clock_without_callback_allocations()
