@@ -167,6 +167,7 @@ fn verified_stem_page_miss_removes_the_entire_unpublished_batch() {
             frames: Some(1024),
             signal: ExportSignal::Stems(stems),
             control: ExportControl::default(),
+            format: hex_export::ExportFormat::Pcm16,
             overwrite: false,
         },
     );
@@ -400,6 +401,7 @@ fn assert_verified_export_matches_resident(rate: u32, grouped: bool, signal_inde
                     frames: Some(18000),
                     signal: signal.clone(),
                     control: control.clone(),
+                    format: hex_export::ExportFormat::Pcm16,
                     overwrite: false,
                 },
             );

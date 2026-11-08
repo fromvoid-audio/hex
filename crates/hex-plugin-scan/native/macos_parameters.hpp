@@ -17,8 +17,8 @@ struct ParameterPoint {
 // One instance permanently retains its input and output containers. SDK access
 // is confined to the serialized processing/flush call. Host loading/extraction
 // uses that same thread before/after the call. Retained references prevent
-// reset; malformed writes/overflow are sticky, so partial feedback is never
-// mistaken for a complete successful process result.
+// reset. Structural misuse and overflow remain sticky. Invalid normalized
+// values in plug-in output are individually refused without poisoning PCM.
 class ParameterChanges final : public IParameterChanges {
     struct Queue final : public IParamValueQueue {
         ParameterChanges* owner=nullptr;
@@ -100,8 +100,14 @@ class ParameterChanges final : public IParameterChanges {
     }
     bool append(ParamID id,int32 offset,ParamValue value,int32& index) {
         index=-1;
-        if(offset<0 || offset>=offset_limit || !std::isfinite(value) || value<0 || value>1) {
+        if(offset<0 || offset>=offset_limit) {
             bad.store(true);return false;
+        }
+        if(!std::isfinite(value) || value<0 || value>1) {
+            // Output feedback is optional. Preserve the valid points and the
+            // worker's independent PCM and queue-lifetime checks.
+            if(!writable) bad.store(true);
+            return false;
         }
         int32 parameter_index=0;
         if(!queue(id,parameter_index)) return false;

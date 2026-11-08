@@ -109,7 +109,7 @@ fn loop_split_keeps_source_region_and_advances_phase_recursively() {
 }
 
 #[test]
-fn edge_trim_preserves_one_shot_silent_tail_and_clamps_to_legal_edges() {
+fn edge_trim_preserves_one_shot_silent_tail_and_pads_before_source() {
     let (mut editor, clip) = editor_with_clip(false, 10, 8, 4, 5, 20);
     editor
         .execute(Command::SetClipFades {
@@ -149,7 +149,11 @@ fn edge_trim_preserves_one_shot_silent_tail_and_clamps_to_legal_edges() {
     assert_eq!(trimmed.fade().span(), 10);
     assert_eq!(trimmed.fade().offset(), 0);
     let left_bound = prior.preview_edge_trim(TrimEdge::Left, 0, 20).unwrap();
-    assert_eq!((left_bound.start(), left_bound.source_offset()), (6, 0));
+    assert_eq!((left_bound.start(), left_bound.source_offset()), (0, 0));
+    assert_eq!(left_bound.duration(), 18);
+    let prefix_event = left_bound.audio_events().events[0];
+    assert_eq!((prefix_event.start, prefix_event.source_start), (6, 0));
+    assert_eq!(prefix_event.end, 18);
     let right_bound = trimmed
         .preview_edge_trim(TrimEdge::Right, u64::MAX, 20)
         .unwrap();
@@ -167,12 +171,93 @@ fn edge_trim_preserves_one_shot_silent_tail_and_clamps_to_legal_edges() {
             frame: 15,
         })
         .unwrap();
+    // The three-frame silent tail is consumed before any audible source.
     let right = editor.project().clip(clip).unwrap();
-    assert_eq!((right.duration(), right.source_length()), (7, 4));
-    assert_eq!(right.duration() - right.source_length(), 3);
+    assert_eq!((right.duration(), right.source_length()), (7, 7));
     assert_eq!(right.source_offset(), 2);
     assert!(editor.undo());
     assert_eq!(editor.project().clip(clip).unwrap(), &trimmed);
+}
+
+/// Loop on, extend right past the source, loop off: a 100-frame one-shot at
+/// frame 10 whose 10-frame source is followed by 90 silent frames.
+fn silent_tail_fixture() -> (Editor, hex_project::ClipId) {
+    let (mut editor, clip) = editor_with_clip(true, 10, 10, 0, 10, 100);
+    editor
+        .execute(Command::TrimClipEdge {
+            clip,
+            edge: TrimEdge::Right,
+            frame: 110,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetClipLooping {
+            clip,
+            looping: false,
+        })
+        .unwrap();
+    let tail = editor.project().clip(clip).unwrap();
+    assert_eq!((tail.duration(), tail.source_length()), (100, 10));
+    (editor, clip)
+}
+
+#[test]
+fn one_shot_right_trim_shortens_silent_tail_before_source() {
+    let (mut editor, clip) = silent_tail_fixture();
+    for (frame, expected) in [(105, (95, 10)), (20, (10, 10)), (15, (5, 5)), (0, (1, 1))] {
+        let preview = editor
+            .project()
+            .clip(clip)
+            .unwrap()
+            .preview_edge_trim(TrimEdge::Right, frame, 100)
+            .unwrap();
+        editor
+            .execute(Command::TrimClipEdge {
+                clip,
+                edge: TrimEdge::Right,
+                frame,
+            })
+            .unwrap();
+        let trimmed = editor.project().clip(clip).unwrap();
+        assert_eq!(trimmed, &preview, "frame {frame}");
+        assert_eq!(
+            (trimmed.duration(), trimmed.source_length()),
+            expected,
+            "frame {frame}"
+        );
+        assert_eq!((trimmed.start(), trimmed.source_offset()), (10, 0));
+    }
+}
+
+#[test]
+fn split_inside_one_shot_silent_tail_succeeds_and_undoes_exactly() {
+    for fades in [None, Some((2, 30))] {
+        let (mut editor, clip) = silent_tail_fixture();
+        if let Some((fade_in, fade_out)) = fades {
+            editor
+                .execute(Command::SetClipFades {
+                    clip,
+                    fade_in,
+                    fade_out,
+                })
+                .unwrap();
+        }
+        let before = editor.project().clone();
+        let right = match editor
+            .execute(Command::SplitClip { clip, frame: 50 })
+            .unwrap()
+        {
+            Created::Clip(id) => id,
+            other => panic!("unexpected result: {other:?}"),
+        };
+        let left = editor.project().clip(clip).unwrap();
+        let tail = editor.project().clip(right).unwrap();
+        assert_eq!((left.start(), left.duration()), (10, 40), "{fades:?}");
+        assert_eq!((tail.start(), tail.duration()), (50, 60), "{fades:?}");
+        assert!(editor.undo());
+        // Identity allocation is never rewound; all authored state is restored.
+        assert_eq!(editor.project().tracks(), before.tracks(), "{fades:?}");
+    }
 }
 
 #[test]
@@ -341,14 +426,7 @@ fn lower_fade_resize_uses_source_trim_preserves_upper_samples_and_one_step_histo
         for (edge, requested, expected_start, expected_duration, expected_in, expected_out) in [
             (TrimEdge::Left, 14, 14, 16, 6, 7),
             (TrimEdge::Right, 25, 10, 15, 8, 5),
-            (
-                TrimEdge::Left,
-                0,
-                if looping { 0 } else { 5 },
-                if looping { 30 } else { 25 },
-                if looping { 20 } else { 15 },
-                7,
-            ),
+            (TrimEdge::Left, 0, 0, 30, 20, 7),
             (
                 TrimEdge::Right,
                 u64::MAX,
@@ -378,18 +456,24 @@ fn lower_fade_resize_uses_source_trim_preserves_upper_samples_and_one_step_histo
                 (expected_start, expected_duration)
             );
             assert_eq!(
-                (changed.fade().fade_in(), changed.fade().fade_out()),
+                (
+                    changed.retained_fade().fade_in(),
+                    changed.retained_fade().fade_out()
+                ),
                 (expected_in, expected_out)
             );
             assert_eq!(
-                (changed.fade().in_curve(), changed.fade().out_curve()),
+                (
+                    changed.retained_fade().in_curve(),
+                    changed.retained_fade().out_curve()
+                ),
                 (700, -600)
             );
             match edge {
                 TrimEdge::Left => {
-                    assert_eq!(changed.fade().in_start(), 0);
+                    assert_eq!(changed.retained_fade().in_start(), 0);
                     assert_eq!(
-                        changed.fade().out_end_offset(),
+                        changed.retained_fade().out_end_offset(),
                         3.min(changed.duration() - 1)
                     );
                     if looping {
@@ -398,14 +482,18 @@ fn lower_fade_resize_uses_source_trim_preserves_upper_samples_and_one_step_histo
                             changed.source_phase(),
                             ((i128::from(changed.start()) - 10).rem_euclid(20)) as u64
                         );
+                    } else if changed.start() < 5 {
+                        assert_eq!((changed.source_offset(), changed.source_length()), (0, 25));
+                        let event = changed.audio_events().events[0];
+                        assert_eq!((event.start, event.source_start), (5, 0));
                     } else {
                         assert_eq!(changed.source_offset(), changed.start() - 5);
                         assert_eq!(changed.source_length(), 30 - changed.start());
                     }
                 }
                 TrimEdge::Right => {
-                    assert_eq!(changed.fade().out_end_offset(), 0);
-                    assert_eq!(changed.fade().in_start(), 2);
+                    assert_eq!(changed.retained_fade().out_end_offset(), 0);
+                    assert_eq!(changed.retained_fade().in_start(), 2);
                 }
             }
             let result = editor.project().clone();

@@ -81,6 +81,10 @@ impl NativeInstrumentClock for ArrangementEffectClock<'_> {
         self.running.then_some(())?;
         self.frame(self.performance_start?, offset)
     }
+    fn authored_arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+        self.running.then_some(())?;
+        self.frame(self.start, offset)
+    }
     fn loop_pass_at_offset(&self, _offset: usize) -> Option<u64> {
         self.pass
     }

@@ -57,6 +57,29 @@ impl ComputerKeyboardInput {
         self.audition = Some(bank);
         Ok(self)
     }
+    /// Snapshot the one-shot gate for a transactional foreign instrument ledger.
+    pub(crate) fn foreign_audition_gate(&self) -> Option<(u64, bool, bool)> {
+        self.audition.as_ref().map(|bank| {
+            (
+                bank.gate_frames,
+                bank.started.load(Acquire),
+                bank.finished.load(Acquire),
+            )
+        })
+    }
+
+    /// Publish gate progress only after the foreign audio transaction commits.
+    pub(crate) fn commit_foreign_audition_gate(&self, started: bool, finished: bool) {
+        if let Some(bank) = &self.audition {
+            if started {
+                bank.started.store(true, Release);
+            }
+            if finished {
+                bank.finished.store(true, Release);
+            }
+        }
+    }
+
     pub fn is_note_audition(&self) -> bool {
         self.audition.is_some()
     }
@@ -300,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn mutable_instrument_refuses_a_whole_bank_if_one_pitch_is_unsupported() {
+    fn mutable_instrument_admits_a_bank_whose_high_pitch_silences_nyquist_operators() {
         let (source, track) = fixture();
         let mut snapshot = source.snapshot();
         snapshot.sample_rate = 8000;
@@ -329,7 +352,8 @@ mod tests {
                 .with_note_audition(&[(60, 37), (127, 93)], 64)
                 .unwrap(),
         );
-        assert!(ComputerKeyboardRuntime::prepare(editor.project(), track, input).is_err());
+        // Operators above nyquist are silenced per note (Pulse #3957).
+        assert!(ComputerKeyboardRuntime::prepare(editor.project(), track, input).is_ok());
         assert_eq!(editor.project().snapshot(), before);
     }
 }

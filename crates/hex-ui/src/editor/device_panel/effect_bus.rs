@@ -83,6 +83,7 @@ pub(in crate::editor) fn select_main(
     view.selected_track = None;
     view.track_selection = Default::default();
     view.selected_clip = None;
+    view.detail_context = None;
     view.selected_cell = None;
     view.selected_scene = None;
     view.device_panel.main_selected = Some(view.project_generation);
