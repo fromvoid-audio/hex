@@ -320,7 +320,7 @@ fn native_input_refuses_unsupported_foreign_and_source_owners() {
             native_parameter_input_target(
                 editor.project(),
                 device,
-                DeviceAutomationTarget::Parameter(hex_devices::limiter::parameter::ROUTING)
+                DeviceAutomationTarget::Parameter(hex_devices::limiter::parameter::MODE)
             )
             .is_err()
         );

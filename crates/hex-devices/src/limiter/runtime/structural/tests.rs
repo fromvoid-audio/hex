@@ -573,7 +573,7 @@ fn routing_warm_fade_matches_independent_canonical_branches_with_live_links() {
     assert!(runtime.committed_is_quiescent());
     assert!(tail[latency..].iter().flatten().all(|&x| x == 0.0));
     assert!(
-        !crate::limiter::DEFINITION
+        crate::limiter::DEFINITION
             .supports_parameter_automation(&s, ROUTING)
             .unwrap()
     );
