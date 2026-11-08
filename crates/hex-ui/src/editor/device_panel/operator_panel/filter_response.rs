@@ -170,7 +170,7 @@ pub(super) fn graph(
     content
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 pub(in crate::editor::device_panel) fn displayed(
     view: &EditorView,
     device: DeviceId,
