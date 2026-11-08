@@ -410,7 +410,12 @@ fn group_track_header_menu(cx: &mut TestAppContext, mode: super::EditorMode) {
         }
         group.id()
     });
-    let selector = Box::leak(format!("group-track-marker-{}", group.value()).into_boxed_str());
+    let marker = if mode == super::EditorMode::Session {
+        "console-group-fold"
+    } else {
+        "group-track-marker"
+    };
+    let selector = Box::leak(format!("{marker}-{}", group.value()).into_boxed_str());
     assert!(visual.debug_bounds(selector).is_some());
     for id in &ids {
         let selector = Box::leak(format!("track-hierarchy-indent-{}", id.value()).into_boxed_str());

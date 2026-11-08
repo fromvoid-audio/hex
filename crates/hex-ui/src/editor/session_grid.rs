@@ -19,7 +19,8 @@ use std::sync::Arc;
 
 const TRACK_COLUMN_WIDTH: f32 = 148.0;
 const SCENE_ROW_HEIGHT: f32 = 31.0;
-const TRACK_HEADER_HEIGHT: f32 = 34.0;
+// Shared by the pinned Return bank so scene and mixer columns stay aligned.
+pub(super) const TRACK_HEADER_HEIGHT: f32 = 28.0;
 // Eight nested ancestors fit while preserving a usable header label.
 const GROUP_BAND_HEIGHT: f32 = 1.0;
 const SCENE_HEADER_WIDTH: f32 = 150.0;
@@ -609,14 +610,10 @@ impl EditorView {
                             .items_center()
                             .border_l_1()
                             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-                            .bg(rgb(theme::color(if selected {
-                                theme::PaletteRole::Raised
-                            } else {
-                                theme::PaletteRole::Surface
-                            })))
-                            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
-                            .text_xs()
-                            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+                            .bg(rgb(theme::element_colors(track.color()).accent))
+                            .text_size(px(11.0))
+                            .line_height(px(14.0))
+                            .text_color(rgb(theme::color(theme::PaletteRole::ClipText)))
                             .child(
                                 div()
                                     .min_w_0()
@@ -683,15 +680,7 @@ impl EditorView {
                                                 })
                                                 .into()
                                             })
-                                            .child(theme::text(if folded { ">" } else { "v" }))
-                                    }))
-                                    .children(track.is_group().then(|| {
-                                        div()
-                                            .flex_shrink_0()
-                                            .debug_selector(move || {
-                                                format!("group-track-marker-{}", track_id.value())
-                                            })
-                                            .child(theme::text("group · "))
+                                            .child(theme::text(if folded { "▸" } else { "▾" }))
                                     }))
                                     .child(
                                         div()
