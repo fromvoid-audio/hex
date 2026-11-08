@@ -296,8 +296,16 @@ impl WorkerAudioSink for ResidentSink {
                                 >= point.application.origin.performance_frame
                         );
                         match point.application.value {
-                            hex_session::service::automation_draft::Vst3ApplicationValue::Value(value)=>{assert_eq!(value,expected.plugin_value.unwrap().normalized());CONFIRMED_TEST_POINTS.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}
-                            hex_session::service::automation_draft::Vst3ApplicationValue::Restored=>{CONFIRMED_TEST_ENDS.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}
+                            hex_session::service::automation_draft::Vst3ApplicationValue::Value(
+                                value,
+                            ) => {
+                                assert_eq!(value, expected.plugin_value.unwrap().normalized());
+                                CONFIRMED_TEST_POINTS
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            hex_session::service::automation_draft::Vst3ApplicationValue::Restored => {
+                                CONFIRMED_TEST_ENDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
                         }
                     }
                     Observation::Unchanged { key } => {
