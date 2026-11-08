@@ -84,6 +84,8 @@ use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
 #[cfg(test)]
 #[path = "device_unit_order_tests.rs"]
 mod unit_order_tests;
+#[path = "device_unit_parent.rs"]
+mod unit_parent;
 #[cfg(test)]
 #[path = "device_unit_removal_tests.rs"]
 mod unit_removal_tests;
@@ -232,6 +234,10 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             before,
         } => {
             move_track_device(project, device, track, before)?;
+            Ok(crate::Created::None)
+        }
+        Command::ReparentDevice { device, parent } => {
+            unit_parent::apply(project, device, parent)?;
             Ok(crate::Created::None)
         }
         Command::ReplaceDeviceState { device, state } => {

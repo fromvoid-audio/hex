@@ -393,6 +393,13 @@ pub enum Command {
         track: TrackId,
         before: Option<DeviceId>,
     },
+    /// Attach a complete local/Main/Return effect unit as the parent's last
+    /// child. None detaches it immediately after its former top-level unit.
+    /// An unchanged parent is a no-op; source-owned edits and foreign parents refuse.
+    ReparentDevice {
+        device: DeviceId,
+        parent: Option<DeviceId>,
+    },
     /// Splice half-open touches in one history edge. VST3 targets require the
     /// exact captured class; native/host targets require no class stamp.
     SpliceDeviceAutomationTouch {
@@ -2184,6 +2191,7 @@ impl Project {
             | Command::RemoveDevice(_)
             | Command::MoveDevice { .. }
             | Command::MoveTrackDevice { .. }
+            | Command::ReparentDevice { .. }
             | Command::ReplaceDeviceState { .. }
             | Command::ReplaceDeviceStateWithIdentityReservation { .. }
             | Command::SetDeviceBypass { .. }
