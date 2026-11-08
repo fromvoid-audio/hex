@@ -96,6 +96,7 @@ fn chunk_transactions_do_not_allocate_or_free() {
 #[test]
 fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
     use hex_devices::utility::{UTILITY_DEFINITION, UTILITY_TYPE_ID, UtilityDefinition, parameter};
+    use hex_lattice::PreparedNativeProcessor;
     use hex_lattice::{
         NativeRuntimeChain, PreparedModulationState, PreparedProcessorFactory,
         PreparedRuntimeInstance, ProcessorChainOwner, StereoMatrix,
@@ -105,16 +106,14 @@ fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
     let build = || {
         let state = UTILITY_DEFINITION.default_state().unwrap();
         let id = parameter::GAIN;
+        let definition = UtilityDefinition::prepare_owned_automated_filter(&state, 48_000).unwrap();
         let target = ModulationTarget {
             descriptor: *UTILITY_DEFINITION
                 .descriptors()
                 .iter()
                 .find(|d| d.id == id)
                 .unwrap(),
-            semantics: UTILITY_DEFINITION
-                .parameter_semantics_for_state(&state, id)
-                .unwrap()
-                .unwrap(),
+            semantics: definition.parameter_modulation_semantics(id).unwrap(),
             base: UTILITY_DEFINITION.read_parameter(&state, id).unwrap(),
         };
         let program = PreparedModulation::new(
@@ -130,7 +129,7 @@ fn utility_graph_modulation_transactions_do_not_allocate_or_free() {
         let source =
             PreparedLfoSource::free(ModulationSourceId::new(1).unwrap(), 48_000.0, 7.0, 0.0)
                 .unwrap();
-        let definition = UtilityDefinition::prepare_owned_automated_filter(&state, 48_000).unwrap();
+
         NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
             modulation: Some(PreparedModulationState::new(vec![source], program, 17).unwrap()),
             automation: Default::default(),

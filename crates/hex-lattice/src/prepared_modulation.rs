@@ -41,6 +41,18 @@ impl PreparedModulationState {
         Ok(prepared)
     }
 
+    pub(crate) fn validate_sample_rate(&self, sample_rate: u32) -> Result<(), Error> {
+        if sample_rate == 0
+            || self
+                .sources
+                .iter()
+                .any(|source| source.sample_rate() != f64::from(sample_rate))
+        {
+            return Err(Error::InvalidParameterValue);
+        }
+        Ok(())
+    }
+
     /// Construct separately owned runtime storage on control, before publication.
     pub fn prepare(&self) -> Result<ModulationRuntime, Error> {
         ModulationRuntime::new(

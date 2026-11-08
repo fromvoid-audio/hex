@@ -36,6 +36,13 @@ pub trait PreparedOwnedProcessorRuntime: Send + Sync {
     fn supports_parameter_automation(&self, _parameter: hex_lattice_contract::ParameterId) -> bool {
         false
     }
+    /// Prepared, state-aware opt-in to sample-rate modulation delivery.
+    fn parameter_modulation_semantics(
+        &self,
+        _parameter: hex_lattice_contract::ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        None
+    }
     fn runtime_version(&self) -> u32;
     /// Entire owner plus both histories, all buffers and reserved capacities.
     /// Shared prepared configuration is accounted by its separate control owner.
@@ -258,6 +265,16 @@ impl PreparedProcessorFactory {
             Self::Legacy(value) => value.supports_parameter_automation(parameter),
             Self::Owned(value) => value.supports_parameter_automation(parameter),
             Self::Foreign(_) => false,
+        }
+    }
+    pub fn parameter_modulation_semantics(
+        &self,
+        parameter: hex_lattice_contract::ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        match self {
+            Self::Legacy(value) => value.parameter_modulation_semantics(parameter),
+            Self::Owned(value) => value.parameter_modulation_semantics(parameter),
+            Self::Foreign(_) => None,
         }
     }
     pub fn runtime_version(&self) -> u32 {

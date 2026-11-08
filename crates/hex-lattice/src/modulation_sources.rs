@@ -19,9 +19,14 @@ pub const MAX_MODULATION_LFO_CHUNK_FRAMES: usize = 8192;
 #[derive(Clone, Copy, Debug)]
 pub struct PreparedLfoSource {
     pub id: ModulationSourceId,
-    pub lfo: ModulationLfo,
+    lfo: ModulationLfo,
+    sample_rate: f64,
 }
 impl PreparedLfoSource {
+    pub fn sample_rate(&self) -> f64 {
+        self.sample_rate
+    }
+
     /// Prepare a free-running source without exposing DSP internals to the host.
     pub fn free(
         id: ModulationSourceId,
@@ -32,7 +37,11 @@ impl PreparedLfoSource {
         let rate = hex_dsp::LfoRate::free(sample_rate, frequency_hz)
             .map_err(|_| Error::InvalidParameterValue)?;
         let lfo = ModulationLfo::new(rate, phase).map_err(|_| Error::InvalidParameterValue)?;
-        Ok(Self { id, lfo })
+        Ok(Self {
+            id,
+            lfo,
+            sample_rate,
+        })
     }
 
     /// Prepare a tempo-synced source using quarter-note beats per cycle.
@@ -46,12 +55,17 @@ impl PreparedLfoSource {
         let rate = hex_dsp::LfoRate::tempo(sample_rate, beats_per_minute, beats_per_cycle)
             .map_err(|_| Error::InvalidParameterValue)?;
         let lfo = ModulationLfo::new(rate, phase).map_err(|_| Error::InvalidParameterValue)?;
-        Ok(Self { id, lfo })
+        Ok(Self {
+            id,
+            lfo,
+            sample_rate,
+        })
     }
 }
 
 struct Source {
     id: ModulationSourceId,
+    sample_rate: f64,
     initial: ModulationLfo,
     committed: ModulationLfo,
     scratch: ModulationLfo,
@@ -113,6 +127,7 @@ impl ModulationLfoBank {
             samples.resize(chunk_frames, 0.0);
             prepared.push(Source {
                 id: source.id,
+                sample_rate: source.sample_rate,
                 initial: source.lfo,
                 committed: source.lfo,
                 scratch: source.lfo,
@@ -212,6 +227,9 @@ impl ModulationLfoBank {
             .binary_search_by_key(&prepared.id, |source| source.id)
             .map_err(|_| Error::InvalidId)?;
         let source = self.sources.get_mut(index).ok_or(Error::InvalidId)?;
+        if source.sample_rate != prepared.sample_rate {
+            return Err(Error::InvalidParameterValue);
+        }
         let mut next = prepared.lfo;
         next.inherit_phase(&source.scratch);
         source.scratch = next;
@@ -305,6 +323,7 @@ mod tests {
 
     fn source(id: u64, rate: f64, phase: f64) -> PreparedLfoSource {
         PreparedLfoSource {
+            sample_rate: 48_000.0,
             id: ModulationSourceId::new(id).unwrap(),
             lfo: ModulationLfo::new(LfoRate::free(48_000.0, rate).unwrap(), phase).unwrap(),
         }
@@ -405,6 +424,8 @@ mod tests {
         assert!(bank.render_chunk(9).is_err());
         assert!(bank.reset(prepared.id, 0.0).is_err());
         assert!(bank.retarget(source(2, 100.0, 0.0)).is_err());
+        let wrong_rate = PreparedLfoSource::free(prepared.id, 44_100.0, 100.0, 0.0).unwrap();
+        assert!(bank.retarget(wrong_rate).is_err());
         let mut replacement = ModulationLfoBank::new(&[prepared], 8).unwrap();
         assert!(replacement.inherit_committed(&bank).is_err());
         bank.render_chunk(2).unwrap();

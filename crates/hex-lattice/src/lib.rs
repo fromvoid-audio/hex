@@ -19,6 +19,8 @@ mod host_output_gain_ramp;
 mod matrix_ramp;
 mod meter;
 mod modulation;
+#[cfg(test)]
+mod modulation_graph_tests;
 mod modulation_runtime;
 mod modulation_sources;
 mod owned_processor;
@@ -229,6 +231,14 @@ pub trait PreparedNativeProcessor: Send + Sync {
     }
     fn supports_parameter_automation(&self, _parameter: hex_lattice_contract::ParameterId) -> bool {
         false
+    }
+    /// Exact semantics for sample-rate modulation through this prepared factory.
+    /// Absence refuses delivery, independently of automation support.
+    fn parameter_modulation_semantics(
+        &self,
+        _parameter: hex_lattice_contract::ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        None
     }
     fn runtime_version(&self) -> u32;
     /// Total bytes owned by one runtime: object plus every heap allocation,
@@ -1081,6 +1091,9 @@ impl NativeRuntimeChain {
         let mut stateful_count = 0_usize;
         let mut automation_bytes = 0usize;
         for instance in instances {
+            if let Some(prepared) = &instance.modulation {
+                prepared.validate_sample_rate(instance.sample_rate)?;
+            }
             automation_bytes = automation_bytes
                 .checked_add(
                     instance
@@ -1208,7 +1221,8 @@ impl NativeRuntimeChain {
                 .map(PreparedModulationState::prepare)
                 .transpose()?;
             if let Some(modulation) = &modulation {
-                if !instance.matrix.is_identity()
+                if (!modulation.program().parameter_ids().is_empty()
+                    && !instance.matrix.is_identity())
                     || matches!(
                         instance.definition,
                         Some(PreparedProcessorFactory::Foreign(_))
@@ -1217,11 +1231,21 @@ impl NativeRuntimeChain {
                     return Err(DeviceContractError::UnsupportedProcessingClass);
                 }
                 for &parameter in modulation.program().parameter_ids() {
-                    if instance.definition.as_ref().is_none_or(|factory| {
-                        !factory.supports_parameter_automation(parameter)
-                            || factory.parameter_automation_descriptor(parameter)
-                                != modulation.program().descriptor(parameter)
-                    }) || !runtime.supports_parameter_automation(parameter)
+                    if modulation
+                        .program()
+                        .semantics(parameter)
+                        .is_none_or(|semantics| {
+                            semantics.modulation
+                                != hex_lattice_contract::ParameterModulation::SampleRate
+                        })
+                        || instance.definition.as_ref().is_none_or(|factory| {
+                            !factory.supports_parameter_automation(parameter)
+                                || factory.parameter_automation_descriptor(parameter)
+                                    != modulation.program().descriptor(parameter)
+                                || factory.parameter_modulation_semantics(parameter)
+                                    != modulation.program().semantics(parameter)
+                        })
+                        || !runtime.supports_parameter_automation(parameter)
                     {
                         return Err(DeviceContractError::UnsupportedProcessingClass);
                     }
@@ -1414,9 +1438,11 @@ impl NativeRuntimeChain {
     }
 
     pub fn has_stateful_processors(&self) -> bool {
-        self.entries
-            .iter()
-            .any(|entry| entry.runtime.is_stateful() || !entry.automation.is_empty())
+        self.entries.iter().any(|entry| {
+            entry.runtime.is_stateful()
+                || !entry.automation.is_empty()
+                || entry.modulation.is_some()
+        })
     }
 
     /// Preflight and apply a transient audition to the exact current processor
@@ -1568,6 +1594,7 @@ impl NativeRuntimeChain {
                 && entry.algorithmic_latency_frames == Some(0)
                 && entry.output_tail == (OutputTail::Finite { max_tail_frames: 0 })
                 && entry.automation.is_empty()
+                && entry.modulation.is_none()
                 && !entry.committed_matrix_ramp.is_active()
                 && !entry.committed_bypass_ramp.is_active()
                 && !entry.committed_output_gain_ramp.active()
@@ -2069,12 +2096,12 @@ impl NativeRuntimeChain {
 
     fn inherit_modulation(&mut self, previous: &Self, excluded: &std::ops::Range<usize>) {
         for entry in &mut self.entries {
-            if let Some((index, old)) = previous
-                .entries
-                .iter()
-                .enumerate()
-                .find(|(_, old)| Self::same_runtime_identity(entry, old))
-                && !excluded.contains(&index)
+            if let Some((index, old)) = previous.entries.iter().enumerate().find(|(_, old)| {
+                entry.owner == old.owner
+                    && entry.device_id == old.device_id
+                    && entry.device_type == old.device_type
+                    && entry.sample_rate == old.sample_rate
+            }) && !excluded.contains(&index)
                 && let (Some(current), Some(old)) = (&mut entry.modulation, &old.modulation)
             {
                 current.inherit_graph_committed(old);
@@ -3156,8 +3183,13 @@ impl NativeRuntimeChain {
                 matches!(runtime.prepared.output_tail(), OutputTail::Finite { .. })
                     && foreign.committed_tail_is_drained(node);
         } else if entry.bypassed {
-            if entry.runtime.is_stateful() {
-                if entry.matrix.is_identity() {
+            if entry.runtime.is_stateful() || entry.modulation.is_some() {
+                if entry.matrix.is_identity()
+                    || entry
+                        .modulation
+                        .as_ref()
+                        .is_some_and(|modulation| modulation.program().parameter_ids().is_empty())
+                {
                     Self::process_native_provider(entry, frames, None, clock, input, external)?;
                 } else {
                     for (frame_index, frame) in frames.iter_mut().enumerate() {
@@ -3247,9 +3279,15 @@ impl NativeRuntimeChain {
                         runtime.process_auxiliary(
                             StereoAuxiliaryBlock::paired(chunk, key),
                             chunk_clock,
-                            Some(values),
+                            (!values.parameter_ids().is_empty()).then_some(values),
                             entry.bypassed,
                         )
+                    } else if values.parameter_ids().is_empty() {
+                        if entry.bypassed {
+                            runtime.process_bypassed_with_clock(chunk, chunk_clock)
+                        } else {
+                            runtime.process_with_clock(chunk, chunk_clock)
+                        }
                     } else {
                         runtime.process_automation(chunk, chunk_clock, values, entry.bypassed)
                     }

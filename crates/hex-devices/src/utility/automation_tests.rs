@@ -612,13 +612,11 @@ fn shared_lfo_drives_two_utility_controls_on_each_sample() {
         PreparedModulation,
     };
     let base = UTILITY_DEFINITION.default_state().unwrap();
+    let factory = UtilityDefinition::prepare_owned_automated_filter(&base, 48_000).unwrap();
     let ids = [parameter::GAIN, parameter::BALANCE];
     let targets = ids.map(|id| ModulationTarget {
         descriptor: *DESCRIPTORS.iter().find(|d| d.id == id).unwrap(),
-        semantics: UTILITY_DEFINITION
-            .parameter_semantics_for_state(&base, id)
-            .unwrap()
-            .unwrap(),
+        semantics: factory.parameter_modulation_semantics(id).unwrap(),
         base: UTILITY_DEFINITION.read_parameter(&base, id).unwrap(),
     });
     let program = PreparedModulation::new(
@@ -640,7 +638,7 @@ fn shared_lfo_drives_two_utility_controls_on_each_sample() {
     .unwrap();
     let source_id = ModulationSourceId::new(1).unwrap();
     let source = PreparedLfoSource::free(source_id, 48_000.0, 12_000.0, 0.0).unwrap();
-    let factory = UtilityDefinition::prepare_owned_automated_filter(&base, 48_000).unwrap();
+
     let declaration = hex_lattice::PreparedModulationState::new(vec![source], program, 2).unwrap();
     let instance = hex_lattice::PreparedRuntimeInstance {
         modulation: Some(declaration),
@@ -657,6 +655,28 @@ fn shared_lfo_drives_two_utility_controls_on_each_sample() {
             std::sync::Arc::new(factory),
         )),
     };
+    let mut wrong_rate = instance.clone();
+    wrong_rate.sample_rate = 44_100;
+    assert!(matches!(
+        hex_lattice::NativeRuntimeChain::new_prepared(vec![wrong_rate]),
+        Err(DeviceContractError::InvalidParameterValue)
+    ));
+    let mut undeclared = instance.clone();
+    let mut invalid_targets = targets;
+    invalid_targets[0].semantics.modulation =
+        hex_lattice_contract::ParameterModulation::Unsupported;
+    undeclared.modulation = Some(
+        hex_lattice::PreparedModulationState::new(
+            vec![source],
+            PreparedModulation::new(&invalid_targets, &[], 1).unwrap(),
+            2,
+        )
+        .unwrap(),
+    );
+    assert!(matches!(
+        hex_lattice::NativeRuntimeChain::new_prepared(vec![undeclared]),
+        Err(DeviceContractError::UnsupportedProcessingClass)
+    ));
     let mut chain = hex_lattice::NativeRuntimeChain::new_prepared(vec![instance.clone()]).unwrap();
     chain.begin_block();
     let input = [[0.25, -0.1]; 5];
