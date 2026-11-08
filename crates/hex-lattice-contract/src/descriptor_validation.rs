@@ -2,7 +2,9 @@
 //! share this owner. Declaration order determines the first reported error.
 use super::{DeviceContractError, MAX_PARAMETERS_PER_DEVICE, ParameterDescriptor};
 
-const SMALL_SET: usize = 32;
+// Measured sorting overhead regresses a shuffled 33-entry set. Keep the
+// original scan for ordinary small devices and sort only larger metadata.
+const SMALL_SET: usize = 64;
 
 /// Validate a complete device-owned descriptor set, including dynamic overrides.
 /// Host input/output controls are outside this device parameter namespace.
@@ -77,7 +79,7 @@ mod tests {
 
     #[test]
     fn set_bound_and_duplicate_validation_cover_both_algorithms() {
-        for count in [0, 1, 2, 32, 33, MAX_PARAMETERS_PER_DEVICE] {
+        for count in [0, 1, 2, 32, 33, 64, 65, MAX_PARAMETERS_PER_DEVICE] {
             let mut set = descriptors(count);
             assert_eq!(validate_parameter_descriptors(&set), Ok(()));
             if count >= 2 {
