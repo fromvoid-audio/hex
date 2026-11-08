@@ -171,6 +171,7 @@ fn limiter_output_gain_uses_delayed_content_clock_without_callback_allocations()
 #[test]
 fn limiter_native_targets_publish_audibly_without_callback_allocations()
 -> Result<(), Box<dyn Error>> {
+    const BLOCK: usize = 1024;
     use hex_devices::limiter::{DEFINITION as D, parameter as p};
     use hex_lattice_contract::NativeDeviceMetadata;
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
