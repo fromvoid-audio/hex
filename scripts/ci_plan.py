@@ -406,6 +406,9 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
                          "hex-audio": {"allocation-probe", "stream-test-support"}, "hex-desktop": {"allocation-probe"},
                          "hex-ui": {"ui-test-support"}, "hex-session": {"source-overview-test-support"},
                          "hex-stream": {"allocation-probe", "test-support"},
+                         # One-shot verified-WAV read fault injection; it does not
+                         # change compressor processing or its host contract.
+                         "hex-media": {"test-support"},
                          "hex-sandbox": {"ui-test-support"}}
     narrow = bool(executable) and set(executable) <= compressor and set(affected) <= known_consumers
     narrow = narrow and all(set(p["features"]) <= reviewed_features.get(p["name"], set())

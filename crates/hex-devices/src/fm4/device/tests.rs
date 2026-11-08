@@ -384,3 +384,30 @@ fn registered_event_validation_matches_inline_pitch_and_velocity_domain() {
         }
     }
 }
+
+#[test]
+fn only_implemented_carriers_declare_arrangement_automation_semantics() {
+    let state = FM4_DEFINITION.default_state().unwrap();
+    for descriptor in PARAMETERS {
+        let semantics = hex_lattice_contract::validated_parameter_semantics(
+            &FM4_DEFINITION,
+            &state,
+            descriptor.id,
+        )
+        .unwrap();
+        assert_eq!(
+            semantics.is_some(),
+            (29..=32).contains(&descriptor.id.value())
+        );
+        if let Some(semantics) = semantics {
+            assert_eq!(
+                semantics.automation,
+                hex_lattice_contract::ParameterAutomation::DeviceArrangementEnvelope
+            );
+            assert_eq!(
+                semantics.smoothing,
+                hex_lattice_contract::ParameterSmoothing::DeviceManaged
+            );
+        }
+    }
+}

@@ -804,6 +804,7 @@ impl MutableInstrumentTrackRuntime {
             events,
             clock,
             &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            None,
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -818,6 +819,7 @@ impl MutableInstrumentTrackRuntime {
         events: &mut Vec<NativeInstrumentEvent>,
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
         resources: &dyn hex_lattice::DeviceResources,
+        automation: Option<&dyn hex_lattice::NativeParameterAutomation>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
         self.process_segment_inner(
             Some(track),
@@ -830,7 +832,7 @@ impl MutableInstrumentTrackRuntime {
             clock,
             resources,
             None,
-            None,
+            automation,
         )
     }
 

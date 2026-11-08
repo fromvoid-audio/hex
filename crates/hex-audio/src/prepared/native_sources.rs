@@ -1043,6 +1043,19 @@ impl PublicationControl {
         self.candidate_root
             .try_native_source_received_program(binding)
     }
+    /// Observe the last accepted quantum of the exact live loaned endpoint.
+    /// None means no coherent callback observation; busy, stale, retired and
+    /// closing sources are errors. This grants no graph or pruning authority.
+    pub fn try_native_source_committed_quantum_on_control(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<crate::plugin_worker::CommittedQuantum>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native automation output is closing");
+        }
+        self.candidate_root
+            .try_native_source_committed_quantum(binding)
+    }
     /// Exact worker reply publication, still distinct from final Main delivery.
     pub fn native_source_processed_program_on_control(
         &self,
