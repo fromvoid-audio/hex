@@ -448,3 +448,78 @@ fn shared_enabled_grant_refuses_invalid_disabled_legacy_coefficients_on_control(
     assert!(EqDefinition::prepare_automation_component(&encoded, 48000, &[enabled]).is_err());
     assert_eq!(state.encode().unwrap(), encoded);
 }
+
+#[test]
+fn effective_kind_and_bank_history_survive_equivalent_and_shadowed_base_retargets() {
+    for (mode, bank) in [(1, 1), (1, 2), (2, 3), (2, 4)] {
+        let (mut state, _) = fixture();
+        state.mode = mode;
+        let id = state.nodes[0].id.parameter(NodeParameter::Bank).unwrap();
+        let factory = PreparedEq::automated(state.clone(), 48000, &[id]).unwrap();
+        let values = Held {
+            id: [id],
+            value: Some(ParameterValue::Choice(bank)),
+        };
+        let mut source = factory.create_runtime();
+        source
+            .process_block_with_automation(&mut [[0.5, -0.25]; 32], None, &values, &R)
+            .unwrap();
+        for canonical_bank in [0, if bank == 1 { 2 } else { 1 }] {
+            let mut next = state.clone();
+            next.nodes[0].bank = canonical_bank;
+            let mut candidate = PreparedEq::automated(next, 48000, &[id])
+                .unwrap()
+                .create_runtime();
+            candidate.copy_history_from(source.as_ref());
+            let mut uninterrupted = factory.create_runtime();
+            uninterrupted.copy_history_from(source.as_ref());
+            let mut actual = [[0.5, -0.25]; 64];
+            let mut expected = actual;
+            candidate
+                .process_block_with_automation(&mut actual, None, &values, &R)
+                .unwrap();
+            uninterrupted
+                .process_block_with_automation(&mut expected, None, &values, &R)
+                .unwrap();
+            assert!(
+                actual == expected,
+                "mode {mode} effective bank {bank} base bank {canonical_bank}: {:?} != {:?}",
+                actual[0],
+                expected[0]
+            );
+        }
+    }
+    let (state, _) = fixture();
+    let id = state.nodes[0].id.parameter(NodeParameter::Kind).unwrap();
+    let factory = PreparedEq::automated(state.clone(), 48000, &[id]).unwrap();
+    let values = Held {
+        id: [id],
+        value: Some(ParameterValue::Choice(5)),
+    };
+    let mut source = factory.create_runtime();
+    source
+        .process_block_with_automation(&mut [[0.5, -0.25]; 32], None, &values, &R)
+        .unwrap();
+    let mut next = state;
+    next.nodes[0].kind = NodeKind::LowCut;
+    let mut candidate = PreparedEq::automated(next, 48000, &[id])
+        .unwrap()
+        .create_runtime();
+    candidate.copy_history_from(source.as_ref());
+    let mut uninterrupted = factory.create_runtime();
+    uninterrupted.copy_history_from(source.as_ref());
+    let mut actual = [[0.5, -0.25]; 64];
+    let mut expected = actual;
+    candidate
+        .process_block_with_automation(&mut actual, None, &values, &R)
+        .unwrap();
+    uninterrupted
+        .process_block_with_automation(&mut expected, None, &values, &R)
+        .unwrap();
+    assert!(
+        actual == expected,
+        "effective kind history was reset: {:?} != {:?}",
+        actual[0],
+        expected[0]
+    );
+}
