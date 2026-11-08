@@ -3,7 +3,9 @@
 //! The disk worker seals the file independently of callback and UI lifetimes.
 use super::Session;
 mod plugin_observation;
-pub use plugin_observation::{FailedPluginContinuation, prepare_failed_plugin_continuation};
+pub use plugin_observation::{
+    FailedPluginContinuation, copy_failed_plugin_on_control, prepare_failed_plugin_continuation,
+};
 mod recovery;
 use super::automation_draft::{
     DeviceDraftInput, DraftProvenance, DraftWorker, DraftWorkerOutcome, RecoveryCopyWorker,
