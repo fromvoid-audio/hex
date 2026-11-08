@@ -3865,7 +3865,7 @@ pub(super) mod tests {
                 .prepared_seek
                 .as_ref()
                 .expect("stationary section click prepares a seek even without stateful devices");
-            let section = pending.section.unwrap();
+            let section = pending.kind.section().unwrap();
             assert_eq!(
                 section.region,
                 hex_project::LoopRegion::new(0, 96_000, true).unwrap()
@@ -3951,12 +3951,12 @@ pub(super) mod tests {
                 let launch = view
                     .latched_seek_intent
                     .as_ref()
-                    .and_then(|intent| intent.section)
+                    .and_then(|intent| intent.kind.section())
                     .or_else(|| {
                         view.prepared_seek
                             .as_ref()
                             .filter(|pending| !pending.cancelled)
-                            .and_then(|pending| pending.section)
+                            .and_then(|pending| pending.kind.section())
                     })
                     .unwrap_or_else(|| {
                         panic!(

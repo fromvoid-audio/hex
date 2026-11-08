@@ -130,6 +130,7 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
             stroke,
             theme::color(theme::PaletteRole::Primary),
             has_border,
+            move || format!("{selector}-trailing"),
         );
     } else if let Some(waveform) = &payload.ghost_waveform {
         ghost = ghost.children([waveform_body_below(
@@ -173,6 +174,7 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
         stroke,
         theme::color(theme::PaletteRole::Primary),
         has_border,
+        move || format!("{selector}-trailing"),
     )
 }
 

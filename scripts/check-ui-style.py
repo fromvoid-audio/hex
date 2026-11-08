@@ -218,7 +218,11 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             and suffix.startswith('framed_clip)')
         ) or (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/clip_boundary.rs'
-            and suffix.startswith(('paint)', 'trailing_edge('))
+            and suffix.startswith(('paint)', 'trailing_edge(', 'body.absolute('))
+        )
+        header_mixer_component = header_mixer_component or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/clip_border_ui_test.rs'
+            and suffix.startswith('super::pixel_boundary_shell(')
         )
         # Track meters compose a text-free shared gauge and its rendered fixture.
         # Tooltip text still passes through MiniTooltip's theme::text boundary.

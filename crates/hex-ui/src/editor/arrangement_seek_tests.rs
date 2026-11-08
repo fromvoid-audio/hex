@@ -1,5 +1,5 @@
 use super::{
-    PendingSeek, SeekIntent, SeekStage, ToggleAction, VerifiedSeekCandidateContext,
+    PendingSeek, SeekIntent, SeekKind, SeekStage, ToggleAction, VerifiedSeekCandidateContext,
     cancel_published_seek, capture_arrangement_fence, desired_playing_with_pending,
     latch_latest_intent, requires_preroll, resolve_prepared_seek_terminal, routes_are_current,
     seek_requires_preroll_for_mode, toggle_action, verified_audio_candidate_is_current,
@@ -83,7 +83,7 @@ fn post_loop_cursor_survives_actual_seek_worker_and_fenced_callback_installation
     let fence = capture_arrangement_fence(&control, &project, active).unwrap();
     let service = Service::new(48_000, 8, 1 << 20).unwrap();
     let intent = SeekIntent {
-        section: None,
+        kind: SeekKind::Fresh,
         recovery_generation: None,
         destination_frame: 768,
         start_playing: true,
@@ -148,7 +148,7 @@ fn stateful_seek_beyond_the_linear_replay_ceiling_installs_at_its_destination() 
     // About 11:39 at 48 kHz, past the 8_388_608-frame linear export replay budget.
     let destination = hex_engine::MAX_ARRANGEMENT_PREROLL_FRAMES * 4 + 37;
     let intent = SeekIntent {
-        section: None,
+        kind: SeekKind::Fresh,
         recovery_generation: None,
         destination_frame: destination,
         start_playing: true,
@@ -423,7 +423,7 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
         .expect("admission-time route fence");
 
     let intent = SeekIntent {
-        section: Some(hex_session::arrangement_seek::SectionLaunch {
+        kind: SeekKind::Section(hex_session::arrangement_seek::SectionLaunch {
             region: hex_project::LoopRegion::new(256, 512, true).unwrap(),
             quantization: hex_engine::LaunchQuantization::Quarter,
         }),
@@ -437,7 +437,7 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
     };
     let mut pending = PendingSeek::from_intent(1, &intent, fence);
     let worker_intent = SeekIntent {
-        section: None,
+        kind: SeekKind::Fresh,
         prepared_revision: None,
         ..intent.clone()
     };
@@ -474,7 +474,7 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
     latch_latest_intent(
         &mut latched,
         SeekIntent {
-            section: Some(hex_session::arrangement_seek::SectionLaunch {
+            kind: SeekKind::Section(hex_session::arrangement_seek::SectionLaunch {
                 region: hex_project::LoopRegion::new(512, 768, true).unwrap(),
                 quantization: hex_engine::LaunchQuantization::Half,
             }),
@@ -485,7 +485,7 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
     latch_latest_intent(
         &mut latched,
         SeekIntent {
-            section: Some(hex_session::arrangement_seek::SectionLaunch {
+            kind: SeekKind::Section(hex_session::arrangement_seek::SectionLaunch {
                 region: hex_project::LoopRegion::new(768, 1024, true).unwrap(),
                 quantization: hex_engine::LaunchQuantization::EighthTriplet,
             }),
@@ -561,7 +561,7 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
     assert_eq!(control.reclaim(), 1, "first section returns to control");
     let latest = latched.take().unwrap();
     assert_eq!(
-        latest.section.unwrap().quantization,
+        latest.kind.section().unwrap().quantization,
         hex_engine::LaunchQuantization::EighthTriplet
     );
     let latest_spec = latest.spec().unwrap();
@@ -591,12 +591,12 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
     assert_eq!(latest_result.request_id, request);
     assert_eq!(
         latest_result.mode,
-        ArrangementSeekMode::SectionLoop(latest.section.unwrap().region)
+        ArrangementSeekMode::SectionLoop(latest.kind.section().unwrap().region)
     );
     let latest_playback = latest_result.result.unwrap();
     assert_eq!(
         latest_playback.section_loop(),
-        Some(latest.section.unwrap().region)
+        Some(latest.kind.section().unwrap().region)
     );
     assert_eq!(latest_playback.position(), 768);
     let latest_revision = control
@@ -604,7 +604,7 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
             latest_playback,
             PublicationPolicy::InstallSectionWhenReady {
                 fence: next_fence,
-                quantization: latest.section.unwrap().quantization,
+                quantization: latest.kind.section().unwrap().quantization,
             },
         )
         .unwrap();
@@ -645,7 +645,7 @@ fn invalidating_published_seek_cancels_callback_candidate_and_waits_for_terminal
         )
         .expect("publish conditional seek candidate");
     let intent = SeekIntent {
-        section: None,
+        kind: SeekKind::Fresh,
         recovery_generation: None,
         destination_frame: 256,
         start_playing: true,

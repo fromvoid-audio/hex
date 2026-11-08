@@ -154,12 +154,15 @@ fn track_gain_gesture_reaches_callback_without_a_pcm_step() {
     }
 }
 
+pub(super) static CONFIRMED_TEST_INTERRUPTS: AtomicU64 = AtomicU64::new(0);
 pub(super) static CONFIRMED_TEST_POINTS: AtomicU64 = AtomicU64::new(0);
 pub(super) static CONFIRMED_TEST_READY: AtomicU64 = AtomicU64::new(0);
 pub(super) static CONFIRMED_TEST_ENDS: AtomicU64 = AtomicU64::new(0);
 pub(super) static CONFIRMED_TEST_NOOPS: AtomicU64 = AtomicU64::new(0);
 struct ResidentSink {
     inner: NativeAudioSink,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    control_polls: Arc<AtomicU64>,
     initial_rate: u32,
     refuse: Arc<AtomicBool>,
     budget_refuse: Arc<AtomicBool>,
@@ -237,8 +240,17 @@ impl WorkerAudioSink for ResidentSink {
     > {
         use hex_session::device_gesture::PluginGesturePreparation;
         let case = std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").unwrap_or_default();
-        let retire = case == "delivery_retire";
-        let touch = matches!(case.as_str(), "touch" | "touch_empty" | "touch_commit");
+        let retire = matches!(
+            case.as_str(),
+            "delivery_retire" | "touch_close_pending" | "touch_close_queued"
+        );
+        let touch = case.starts_with("touch");
+        let close = case == "touch_close_begin"
+            && matches!(input.operation(), PluginGesturePreparation::Begin { .. })
+            || case == "touch_close_point"
+                && matches!(input.operation(), PluginGesturePreparation::Preview(_))
+            || case == "touch_close_restored"
+                && matches!(input.operation(), PluginGesturePreparation::Commit(_));
         let preview = matches!(input.operation(), PluginGesturePreparation::Preview(_));
         let confirm = touch || (retire || case == "delivery") && preview;
         let expected = match input.operation() {
@@ -255,6 +267,10 @@ impl WorkerAudioSink for ResidentSink {
             input
         });
         if confirm {
+            if close {
+                assert!(result.is_ok());
+                self.inner.relinquish_output();
+            }
             if retire && preview {
                 assert!(result.is_err());
                 self.inner.relinquish_output();
@@ -312,8 +328,26 @@ impl WorkerAudioSink for ResidentSink {
                         assert_eq!(key, expected.key);
                         CONFIRMED_TEST_NOOPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
-                    Observation::Interrupted { .. } => {
-                        panic!("confirmed fixture operation was interrupted")
+                    Observation::Interrupted {
+                        key,
+                        context,
+                        target,
+                        source,
+                        ..
+                    } => {
+                        assert!(case.starts_with("touch_close_"));
+                        assert_eq!(key, expected.key);
+                        assert_eq!(context.project_generation, key.generation);
+                        assert_eq!(
+                            source.target,
+                            hex_session::service::DeviceCaptureTarget::Vst3(target)
+                        );
+                        assert_eq!(
+                            CONFIRMED_TEST_POINTS.load(std::sync::atomic::Ordering::Relaxed),
+                            u64::from(case != "touch_close_begin")
+                        );
+                        CONFIRMED_TEST_INTERRUPTS
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
             }
@@ -595,6 +629,9 @@ impl WorkerAudioSink for ResidentSink {
             self.inner.resident.pending.is_some(),
             std::sync::atomic::Ordering::Release,
         );
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        self.control_polls
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
     }
     fn close(&mut self) {
         self.inner.close();
@@ -603,6 +640,8 @@ impl WorkerAudioSink for ResidentSink {
 
 pub(super) struct ResidentHarness {
     pub(super) service: Service,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) control_polls: Arc<AtomicU64>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     event_sender: mpsc::SyncSender<EditorAudioEvent>,
     events: mpsc::Receiver<EditorAudioEvent>,
@@ -779,7 +818,13 @@ impl ResidentHarness {
             inner.plugins.catalog = catalog;
             inner.plugins.facts_gate = facts_gate;
             inner.plugins.progress = Some(Arc::clone(&plugin_progress));
-            inner.plugins.completed = Some(Arc::clone(&plugin_completed));
+            // This optional Session-poll diagnostic can lag actual DSP replies.
+            // The continuity driver must work without it as a processing clock.
+            if std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").as_deref()
+                != Ok("touch_control_lag")
+            {
+                inner.plugins.completed = Some(Arc::clone(&plugin_completed));
+            }
             inner.plugins.queued = Some(Arc::clone(&plugin_queued));
             inner.plugins.records = Some(Arc::clone(&plugin_records));
         }
@@ -813,12 +858,16 @@ impl ResidentHarness {
         let file_publication_waiting = Arc::new(AtomicBool::new(false));
         let pending_observation_generation = Arc::new(AtomicU64::new(0));
         let publication_probe = Arc::new(Mutex::new(None));
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let control_polls = Arc::new(AtomicU64::new(0));
         let service = Service::with_audio_sink_and_native_reservation(
             16,
             frame_limit,
             recovery,
             Box::new(ResidentSink {
                 inner,
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                control_polls: Arc::clone(&control_polls),
                 initial_rate: rate,
                 refuse: Arc::clone(&refuse),
                 budget_refuse: Arc::clone(&budget_refuse),
@@ -833,6 +882,8 @@ impl ResidentHarness {
         .unwrap();
         Self {
             service,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            control_polls,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             event_sender: sender,
             events,
@@ -962,6 +1013,7 @@ impl ResidentHarness {
             }
         }
     }
+    #[track_caller]
     pub(super) fn next(&mut self) -> Event {
         let end = Instant::now() + Duration::from_secs(10);
         loop {
