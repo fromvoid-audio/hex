@@ -1058,6 +1058,12 @@ fn browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candi
         preview.start_frame
     });
     assert!(visual.debug_bounds("clip-drop-preview").is_some());
+    crate::editor::clip_boundary::tests::assert_open_upper_right(
+        &mut visual,
+        "clip-drop-preview",
+        "clip-drop-preview-trailing",
+        None,
+    );
 
     // Moving back out of the lane restores the cursor ghost and clears the target.
     visual.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
