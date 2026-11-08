@@ -101,7 +101,11 @@ impl PreparedEq {
         let mut stages = Vec::with_capacity(settings.nodes.len());
         for node in &settings.nodes {
             let coefficients = design(*node, sample_rate);
+            let enabled_parameter = node.id.parameter(NodeParameter::Enabled)?;
             if (node.enabled
+                || parameters
+                    .iter()
+                    .any(|grant| grant.descriptor.id == enabled_parameter)
                 || settings
                     .lanes
                     .iter()

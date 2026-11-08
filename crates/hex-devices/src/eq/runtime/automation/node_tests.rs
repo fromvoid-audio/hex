@@ -433,3 +433,18 @@ fn borrowed_bulk_values_are_used_and_bulk_failure_is_reported() {
             .is_err()
     );
 }
+
+#[test]
+fn shared_enabled_grant_refuses_invalid_disabled_legacy_coefficients_on_control() {
+    let (mut state, _) = fixture();
+    state.nodes[0].enabled = false;
+    state.nodes[0].kind = NodeKind::LowShelf;
+    state.nodes[0].legacy_shelf = true;
+    state.nodes[0].gain_db = 24.0;
+    state.nodes[0].q = 18.0;
+    let encoded = state.encode().unwrap();
+    assert!(PreparedEq::new(state.clone(), 48000).is_ok());
+    let enabled = state.nodes[0].id.parameter(NodeParameter::Enabled).unwrap();
+    assert!(EqDefinition::prepare_automation_component(&encoded, 48000, &[enabled]).is_err());
+    assert_eq!(state.encode().unwrap(), encoded);
+}
