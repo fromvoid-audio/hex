@@ -397,6 +397,23 @@ fn send(input: &mut DraftInput, events: &[AppliedEvent]) {
     }
     batch.submit().unwrap();
 }
+
+pub(in crate::service) fn injected_failed_writer(
+    writer: DraftWriter,
+    event: AppliedEvent,
+) -> DraftWorkerOutcome {
+    let barrier = Arc::new(Barrier::new(2));
+    let held = Arc::clone(&barrier);
+    let (mut input, worker) = spawn_with_start(writer, move || {
+        held.wait();
+    })
+    .unwrap();
+    send(&mut input, &[event]);
+    input.finish(DraftTerminal::Interrupted).unwrap();
+    input.shared.state().failed = true;
+    barrier.wait();
+    worker.join_on_control().unwrap()
+}
 #[test]
 fn three_loan_backpressure_and_independent_terminal_preserve_fifo_and_exact_file() {
     let files = Files::new();
