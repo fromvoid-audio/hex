@@ -164,14 +164,24 @@ fn native_vst3_instrument_bounces_to_new_track() {
 }
 
 fn render_completed_block(harness: &ResidentHarness) -> [hex_engine::Frame; 256] {
-    let previous = harness.plugin_completed.load(Acquire);
     let frames = harness.render_plugin_block();
     let deadline = Instant::now() + Duration::from_millis(800);
-    while harness.plugin_completed.load(Acquire) <= previous {
+    // Session's optional diagnostic is sampled on a different control cadence.
+    // An increase can describe an older request, leaving this request in flight.
+    // Pace the headless host by the exact installed endpoints' published prefix.
+    while harness
+        .callback
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .native_workers_idle_on_control()
+        != Some(true)
+    {
         let status = harness.audio.as_ref().unwrap().status().unwrap();
         assert!(
             Instant::now() < deadline,
-            "worker did not complete next block after {previous}; playing={} source={:?} fault={:?}",
+            "worker did not publish the committed prefix; playing={} source={:?} fault={:?}",
             status.playing.load(Acquire),
             status.native_effect_source(),
             status.render_fault_snapshot(),
@@ -1895,6 +1905,9 @@ fn verify_instrument_takeover(
         case.as_str(),
         "touch" | "touch_stress" | "touch_control_lag"
     ) {
+        if case == "touch_control_lag" {
+            assert_eq!(h.plugin_completed.load(Acquire), 0);
+        }
         return;
     }
     client.begin_plugin(query(h, 14)).unwrap();
