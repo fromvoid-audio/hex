@@ -150,6 +150,29 @@ impl Fixture {
         }
     }
 
+    pub(super) fn plan_drag(
+        &self,
+        section: SectionId,
+        raw: BeatTime,
+        snapped: BeatTime,
+        copy: bool,
+        gap_appearance: &mut Option<(String, ElementColor)>,
+    ) -> Result<Option<Plan>, Invalid> {
+        Ok(crate::section_reorder::drag_preview(
+            self.project(),
+            section,
+            raw,
+            snapped,
+            copy,
+            gap_appearance,
+        )?
+        .map(|preview| Plan {
+            display: display(preview.sections()),
+            sections: preview.sections().to_vec(),
+            command: preview.command,
+        }))
+    }
+
     /// Resolve this audio-free, fixed-tempo fixture's lane pointer to the
     /// same frame viewport and adaptive grid used by arrangement input.
     pub(super) fn snapped_beat(

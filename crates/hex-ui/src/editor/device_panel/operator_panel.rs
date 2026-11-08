@@ -13,9 +13,11 @@ use hex_project::DeviceId;
 pub(super) mod algorithms;
 pub(super) mod context;
 pub(super) mod envelope;
+pub(super) mod filter_response;
 mod global;
 pub(super) mod harmonics;
 pub(super) mod preview;
+pub(super) mod routing_picker;
 
 pub(super) const OPERATOR_FRAME_WIDTH: f32 = crate::device_composition::VECTOR_WIDTH;
 // Two compact control columns with a narrow power/identity column.
@@ -26,7 +28,15 @@ const SHOW_HARMONIC_TOOLS: bool = false;
 
 gpui::actions!(
     hex_operator,
-    [ActivateRouting, ActivateSection, ActivatePower]
+    [
+        ActivateRouting,
+        RoutingSettings,
+        CloseRouting,
+        NextRouting,
+        PreviousRouting,
+        ActivateSection,
+        ActivatePower
+    ]
 );
 
 pub(in crate::editor) fn bind_keys(cx: &mut gpui::App) {
@@ -34,6 +44,13 @@ pub(in crate::editor) fn bind_keys(cx: &mut gpui::App) {
         gpui::KeyBinding::new("enter", ActivateSection, Some("hex_operator_section")),
         gpui::KeyBinding::new("enter", ActivatePower, Some("hex_operator_power")),
         gpui::KeyBinding::new("enter", ActivateRouting, Some("hex_operator_routing")),
+        gpui::KeyBinding::new("space", ActivateRouting, Some("hex_operator_routing")),
+        gpui::KeyBinding::new("alt-enter", RoutingSettings, Some("hex_operator_routing")),
+        gpui::KeyBinding::new("escape", CloseRouting, Some("hex_operator_routing_open")),
+        gpui::KeyBinding::new("down", NextRouting, Some("hex_operator_routing_open")),
+        gpui::KeyBinding::new("right", NextRouting, Some("hex_operator_routing_open")),
+        gpui::KeyBinding::new("up", PreviousRouting, Some("hex_operator_routing_open")),
+        gpui::KeyBinding::new("left", PreviousRouting, Some("hex_operator_routing_open")),
     ]);
 }
 
@@ -91,6 +108,9 @@ pub(super) fn render_body(
     device_view: &NativeDeviceView,
 ) -> Stateful<Div> {
     let state = *view.device_panel.operator_pages.entry(device).or_default();
+    if state.page != OperatorPage::Filter {
+        filter_response::hide(view, device);
+    }
     let owner = context::Owner::capture(view, device);
     let parameters = &device_view.parameters;
     let identity = DeviceControlIdentity {
@@ -1323,44 +1343,45 @@ fn filter_detail(
     identity: DeviceControlIdentity,
     parameters: &[NativeDeviceParameterView],
 ) -> Stateful<Div> {
-    let mut detail = div()
+    let graph = filter_response::graph(view, cx, device, parameters);
+    let mut row = div()
+        .w_full()
+        .h(px(27.0))
+        .flex_shrink_0()
+        .flex()
+        .gap(px(4.0));
+    for (parameter, label, width) in [
+        (20_003, "slope", 52.0),
+        (20_004, "circuit", 64.0),
+        (20_007, "morph", 56.0),
+    ] {
+        let control = compact_control(
+            view,
+            cx,
+            device,
+            identity,
+            parameters,
+            id(parameter),
+            if parameter < 20_005 {
+                ControlPresentation::CompactSelector
+            } else {
+                ControlPresentation::InlineValue
+            },
+            None,
+        );
+        row = row.child(detail_field(device, id(parameter), label, width, control));
+    }
+    div()
         .w_full()
         .h_full()
         .flex()
         .flex_col()
-        .gap(px(4.0))
-        .child(section_title("filter"));
-    for fields in [
-        &[(20_003, "slope"), (20_004, "circuit")][..],
-        &[(20_007, "morph")][..],
-    ] {
-        let mut row = div()
-            .w_full()
-            .h(px(48.0))
-            .flex()
-            .items_center()
-            .gap(px(3.0));
-        for &(parameter, label) in fields {
-            row = row.child(compact_control(
-                view,
-                cx,
-                device,
-                identity,
-                parameters,
-                id(parameter),
-                if parameter < 20_005 {
-                    ControlPresentation::CompactSelector
-                } else {
-                    ControlPresentation::MicroDial
-                },
-                Some(label),
-            ));
-        }
-        detail = detail.child(row);
-    }
-    detail.id(ElementId::Name(
-        format!("operator-filter-detail-{}", device.value()).into(),
-    ))
+        .gap(px(2.0))
+        .child(graph)
+        .child(row)
+        .id(ElementId::Name(
+            format!("operator-filter-detail-{}", device.value()).into(),
+        ))
 }
 
 pub(super) fn filter_summary(

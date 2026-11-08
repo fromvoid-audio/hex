@@ -643,4 +643,4 @@ impl Drop for DraftWorker {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

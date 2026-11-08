@@ -362,6 +362,21 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("append_arrangement_section_copy"; ["section" => section.value(), "start_beats_q32" => start.raw(), "gap_name_redacted_bytes" => gap_name.len()]; omitted="gap_color")
         }
+        Command::MoveArrangementSectionBeyondEnd {
+            section,
+            start,
+            gap_name,
+            ..
+        } => {
+            describe!("move_arrangement_section_beyond_end"; ["section" => section.value(), "start_beats_q32" => start.raw(), "gap_name_redacted_bytes" => gap_name.len()]; omitted="gap_color")
+        }
+        Command::ReplaceArrangementSection {
+            source,
+            target,
+            copy,
+        } => {
+            describe!("replace_arrangement_section"; ["source" => source.value(), "target" => target.value(), "copy" => copy]; omitted="")
+        }
         Command::SplitArrangementSection { section, at } => {
             describe!("split_arrangement_section"; ["section" => section.value(), "at_beats_q32" => at.raw()]; omitted="")
         }
@@ -1914,7 +1929,7 @@ mod append_tests {
     use super::*;
 
     #[test]
-    fn append_gap_names_are_redacted() {
+    fn absolute_placement_gap_names_are_redacted() {
         let mut editor =
             hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
         let hex_project::Created::ArrangementSection(section) = editor
@@ -1928,19 +1943,36 @@ mod append_tests {
         else {
             panic!("source");
         };
-        let description = command(&Command::AppendArrangementSectionCopy {
-            section,
-            start: hex_project::BeatTime::from_quarters(8).unwrap(),
-            gap_name: "private secret gap".into(),
-            gap_color: hex_project::ElementColor::Rose,
-        });
-        assert_eq!(description.name, "append_arrangement_section_copy");
-        assert!(
-            description
-                .details
-                .text
-                .contains("gap_name_redacted_bytes=")
-        );
-        assert!(!description.details.text.contains("private secret"));
+        let start = hex_project::BeatTime::from_quarters(8).unwrap();
+        for (edit, name) in [
+            (
+                Command::AppendArrangementSectionCopy {
+                    section,
+                    start,
+                    gap_name: "private secret gap".into(),
+                    gap_color: hex_project::ElementColor::Rose,
+                },
+                "append_arrangement_section_copy",
+            ),
+            (
+                Command::MoveArrangementSectionBeyondEnd {
+                    section,
+                    start,
+                    gap_name: "private secret gap".into(),
+                    gap_color: hex_project::ElementColor::Rose,
+                },
+                "move_arrangement_section_beyond_end",
+            ),
+        ] {
+            let description = command(&edit);
+            assert_eq!(description.name, name);
+            assert!(
+                description
+                    .details
+                    .text
+                    .contains("gap_name_redacted_bytes=")
+            );
+            assert!(!description.details.text.contains("private secret"));
+        }
     }
 }

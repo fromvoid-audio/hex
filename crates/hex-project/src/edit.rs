@@ -194,6 +194,27 @@ pub enum Command {
         gap_name: String,
         gap_color: crate::ElementColor,
     },
+    /// Cut a complete song section and place it at an absolute final beat
+    /// strictly beyond the current last marker, preserving its identity.
+    /// Close the old interval, then mark the gap after the remaining markers
+    /// (or zero for a sole section). Unmarked music is retained. Move and gap
+    /// share one preparation/history edge; equal-end placement uses reorder.
+    MoveArrangementSectionBeyondEnd {
+        section: crate::SectionId,
+        start: crate::BeatTime,
+        gap_name: String,
+        gap_color: crate::ElementColor,
+    },
+    /// Replace a target's complete song interval with source content. Moves
+    /// close the old source interval and retain its ID; copies preserve it and
+    /// allocate a new result ID. Both carry source name/color and retire target.
+    /// All non-replaced music ripples intact. Self replacement is a no-op;
+    /// one private candidate owns preparation, refusal and Undo/Redo.
+    ReplaceArrangementSection {
+        source: crate::SectionId,
+        target: crate::SectionId,
+        copy: bool,
+    },
     /// Split marker metadata at a strict interior beat, preserving all music.
     /// The left marker retains its ID; the right gets a fresh ID and the same
     /// name/color. One validated command owns both adjoining positive ranges.
@@ -1990,6 +2011,8 @@ impl Project {
             | Command::DuplicateArrangementSection(_)
             | Command::DuplicateArrangementSectionAt { .. }
             | Command::AppendArrangementSectionCopy { .. }
+            | Command::MoveArrangementSectionBeyondEnd { .. }
+            | Command::ReplaceArrangementSection { .. }
             | Command::SplitArrangementSection { .. }
             | Command::MergeArrangementSections(_)) => {
                 crate::arrangement_sections::apply(self, command)
@@ -3331,6 +3354,8 @@ impl Command {
                 | Self::DuplicateArrangementSection(_)
                 | Self::DuplicateArrangementSectionAt { .. }
                 | Self::AppendArrangementSectionCopy { .. }
+                | Self::MoveArrangementSectionBeyondEnd { .. }
+                | Self::ReplaceArrangementSection { .. }
         )
     }
 }

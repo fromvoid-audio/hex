@@ -65,6 +65,7 @@ pub(super) struct RectangleDemo {
     section_command: Option<Command>,
     section_error: Option<&'static str>,
     section_marker_latched: bool,
+    section_gap_appearance: Option<(String, hex_project::ElementColor)>,
     section_focus: bool,
     section_anchor_beat: Option<BeatTime>,
     section_last_pointer: Option<(f32, f32)>,
@@ -115,6 +116,7 @@ impl RectangleDemo {
             section_command: None,
             section_error: None,
             section_marker_latched: false,
+            section_gap_appearance: None,
             section_focus: false,
             section_anchor_beat: None,
             section_last_pointer: None,
@@ -151,6 +153,7 @@ impl RectangleDemo {
             self.section_command = None;
             self.section_error = None;
             self.section_marker_latched = false;
+            self.section_gap_appearance = None;
             self.section_anchor_beat = None;
             self.section_last_pointer = None;
             self.section_released_hover = crate::section_surface::Hover::default();
@@ -407,6 +410,7 @@ impl RectangleDemo {
         };
         self.capture = RectangleCapture::begin(Target::Rectangle(index), part, x, true);
         self.section_marker_latched = self.kind == Kind::Section && edit.marker_only;
+        self.section_gap_appearance = None;
         self.section_last_pointer = (self.kind == Kind::Section).then_some((x, y));
         self.preview = self.canonical.clone();
         if let Some(fixture) = self.section_fixture.as_ref() {
@@ -544,13 +548,19 @@ impl RectangleDemo {
                     } else if intent.part == RectanglePart::Body {
                         fixture
                             .snapped_beat(intent.pointer_x, left, width, true)
-                            .and_then(|beat| {
-                                fixture.plan_at_beat(
+                            .and_then(|raw| {
+                                let snapped = fixture.snapped_beat(
+                                    intent.pointer_x,
+                                    left,
+                                    width,
+                                    edit.invert_snap,
+                                )?;
+                                fixture.plan_drag(
                                     section.id(),
-                                    intent.part,
-                                    beat,
+                                    raw,
+                                    snapped,
                                     edit.copy_content,
-                                    self.section_marker_latched,
+                                    &mut self.section_gap_appearance,
                                 )
                             })
                     } else {
@@ -653,6 +663,7 @@ impl RectangleDemo {
         self.section_anchor_beat = None;
         self.section_paint = None;
         self.section_marker_latched = false;
+        self.section_gap_appearance = None;
         if self
             .capture
             .is_some_and(|capture| capture.key == Target::SectionRange)
@@ -810,7 +821,7 @@ impl RectangleDemo {
                 if fixture.project() != source {
                     commit_error = Some("section project changed");
                 } else {
-                    let select_copy = matches!(command, Command::DuplicateArrangementSectionAt { section, .. } if Some(section) == primary_id);
+                    let select_copy = matches!(command, Command::DuplicateArrangementSectionAt { section, .. } | Command::AppendArrangementSectionCopy { section, .. } if Some(section) == primary_id);
                     match fixture.commit(command) {
                         Ok(hex_project::Created::ArrangementSection(id)) if select_copy => {
                             created_copy = Some(id)
@@ -884,12 +895,13 @@ impl RectangleDemo {
             _ => self.section_command.as_ref(),
         };
         project.is_some_and(|project| {
-            if let Some(Command::DuplicateArrangementSectionAt { section, .. }) = command {
+            if let Some(Command::DuplicateArrangementSectionAt { section, .. } | Command::AppendArrangementSectionCopy { section, .. }) = command {
                 return self
                     .selection_primary
                     .and_then(|index| project.arrangement_sections().get(index))
                     .is_some_and(|selected| selected.id() == *section)
-                    && project.arrangement_section(painted.id()).is_none();
+                    && project.arrangement_section(painted.id()).is_none()
+                    && !matches!(command, Some(Command::AppendArrangementSectionCopy { start, .. }) if painted.start() != *start);
             }
             self.selected.iter().any(|index| {
                 project
@@ -2044,7 +2056,7 @@ mod tests {
         let area = visual.debug_bounds("section-copy-area").unwrap();
         let first = visual.debug_bounds("section-copy-rectangle-0").unwrap();
         let down = point(first.center().x, first.top() + px(5.0));
-        let dest = point(area.left() + area.size.width * 0.95, down.y);
+        let dest = point(area.left() + area.size.width * 0.88, down.y);
         let alt = Modifiers {
             alt: true,
             ..Modifiers::default()
@@ -2462,7 +2474,7 @@ mod tests {
             view.section_fixture.as_ref().unwrap().project().snapshot()
         });
         visual.simulate_mouse_down(at(0.3), MouseButton::Left, Modifiers::default());
-        visual.simulate_mouse_move(at(0.95), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(at(0.88), MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(outside, MouseButton::Left, alt);
         visual.simulate_keystrokes("escape");
         view.read_with(cx, |view, _| {
@@ -2475,14 +2487,14 @@ mod tests {
         });
         for accept in [false, true] {
             visual.simulate_mouse_down(at(0.3), MouseButton::Left, Modifiers::default());
-            visual.simulate_mouse_move(at(0.95), MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(at(0.88), MouseButton::Left, Modifiers::default());
             visual.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
             visual.simulate_modifiers_change(alt);
             let expected = view.read_with(cx, |view, _| {
                 let fixture = view.section_fixture.as_ref().unwrap();
                 let id = fixture.project().arrangement_sections()[0].id();
                 let bounds = view.bounds.unwrap();
-                let position = (f32::from(at(0.95).x) - f32::from(bounds.left()))
+                let position = (f32::from(at(0.88).x) - f32::from(bounds.left()))
                     / f32::from(bounds.size.width);
                 fixture
                     .plan(id, RectanglePart::Body, position, true, false)
@@ -3085,6 +3097,88 @@ mod tests {
                 visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
                 view.read_with(cx, |view, _| assert!(view.capture.is_none()));
             }
+        }
+    }
+    #[gpui::test]
+    fn beyond_end_drag_retains_gap_and_selection_through_pending_paints(cx: &mut TestAppContext) {
+        for copy in [false, true] {
+            let handle = cx
+                .add_window(|_, cx| RectangleDemo::new(Kind::Section, "section-beyond".into(), cx));
+            let view = handle.root(cx).unwrap();
+            let mut visual = VisualTestContext::from_window(*handle, cx);
+            visual.update(|window, _| window.activate_window());
+            visual.run_until_parked();
+            let area = visual.debug_bounds("section-beyond-area").unwrap();
+            let last = visual.debug_bounds("section-beyond-rectangle-1").unwrap();
+            let from = point(last.center().x, last.top() + px(5.0));
+            let to = point(area.left() + area.size.width * 0.97, from.y);
+            let modifiers = Modifiers {
+                alt: copy,
+                ..Modifiers::default()
+            };
+            let before = view.read_with(cx, |v, _| {
+                v.section_fixture.as_ref().unwrap().project().snapshot()
+            });
+            visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(to, MouseButton::Left, modifiers);
+            visual.run_until_parked();
+            let appearance = view.read_with(cx, |v, _| {
+                assert!(matches!(
+                    v.section_command,
+                    Some(
+                        Command::MoveArrangementSectionBeyondEnd { .. }
+                            | Command::AppendArrangementSectionCopy { .. }
+                    )
+                ));
+                v.section_gap_appearance.clone().unwrap()
+            });
+            visual.simulate_mouse_up(to, MouseButton::Left, modifiers);
+            visual.run_until_parked();
+            let index = view.read_with(cx, |v, _| {
+                let Some(Pending::Section { sections, .. }) = v.pending.as_ref() else {
+                    panic!("pending section move/copy")
+                };
+                assert_eq!(
+                    v.section_fixture.as_ref().unwrap().project().snapshot(),
+                    before
+                );
+                let selected: Vec<_> = sections
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| v.section_selected(m))
+                    .collect();
+                assert_eq!(selected.len(), 1);
+                let gap = sections.iter().find(|m| m.name() == appearance.0).unwrap();
+                assert_eq!(gap.color(), appearance.1);
+                assert!(!v.section_selected(gap));
+                assert!(gap.end() > BeatTime::from_quarters(9).unwrap());
+                selected[0].0
+            });
+            let selector = Box::leak(format!("section-beyond-rectangle-{index}").into_boxed_str());
+            let frozen = visual.debug_bounds(selector).unwrap();
+            for _ in 0..3 {
+                visual.update(|window, _| window.refresh());
+                visual.run_until_parked();
+                assert_eq!(visual.debug_bounds(selector).unwrap(), frozen);
+            }
+            view.update(cx, |v, cx| v.settle(true, cx));
+            visual.run_until_parked();
+            assert_eq!(visual.debug_bounds(selector).unwrap(), frozen);
+            view.read_with(cx, |v, _| {
+                assert!(v.pending.is_none());
+                let project = v.section_fixture.as_ref().unwrap().project();
+                assert_eq!(
+                    project.arrangement_sections().len(),
+                    if copy { 4 } else { 3 }
+                );
+                let selected = v.selection_primary.unwrap();
+                assert_eq!(selected, index);
+                assert_eq!(v.selected, [selected]);
+                assert_ne!(
+                    project.arrangement_sections()[selected].name(),
+                    appearance.0
+                );
+            });
         }
     }
 }
