@@ -72,6 +72,7 @@ fn source() -> Result<(Project, TrackId, hex_project::ReturnId), Box<dyn Error>>
     snapshot.tracks[0]
         .devices
         .push(hex_project::DeviceSnapshot {
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id,
@@ -82,6 +83,7 @@ fn source() -> Result<(Project, TrackId, hex_project::ReturnId), Box<dyn Error>>
     snapshot.return_tracks[0]
         .devices
         .push(hex_project::DeviceSnapshot {
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id,
@@ -651,6 +653,7 @@ fn run_instrument_suffix_matrix_probe() -> Result<(), Box<dyn Error>> {
     snapshot.tracks[0]
         .devices
         .push(hex_project::DeviceSnapshot {
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: device,

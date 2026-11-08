@@ -134,6 +134,7 @@ impl From<&NativeSource> for NativeSourceSnapshot {
             devices: source
                 .devices()
                 .map(|d| DeviceSnapshot {
+                    parent: d.parent.map(|id| id.value()),
                     automation: d.automation().to_vec(),
                     id: d.id().value(),
                     state: d.state().clone(),
@@ -373,6 +374,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 .map(|(index, state)| {
                     // allocate_id_range proved this complete inclusive range fits.
                     Device {
+                        parent: None,
                         automation: Vec::new(),
                         id: DeviceId(first + 1 + index as u64),
                         state,

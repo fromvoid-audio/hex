@@ -126,6 +126,7 @@ pub use device_automation::{
     MAX_DEVICE_AUTOMATION_POINTS, MAX_DEVICE_AUTOMATION_POINTS_PER_LANE,
     MAX_DEVICE_AUTOMATION_TOUCH_SPANS, validate_device_automation,
 };
+pub use device_inventory::MAX_SERIAL_DEVICE_DEPTH;
 mod device_clipboard;
 pub use device_clipboard::{DeviceChainOwner, DeviceClipboard, DeviceSelectionIds};
 mod device_comparison;

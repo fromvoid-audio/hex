@@ -94,6 +94,7 @@ pub fn project_with_operators(
             soloed: false,
             devices: Vec::new(),
             instrument: Some(DeviceSnapshot {
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: instrument_id,

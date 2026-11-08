@@ -3,13 +3,16 @@
 //! # Serial host-unit extension contract
 //!
 //! This is the selected extension boundary, not a claim that nested devices are
-//! implemented. `Device` and `DeviceSnapshot` are currently flat; the engine's
+//! processed. `Device` and `DeviceSnapshot` retain bounded serial membership;
+//! the engine's
 //! `compile::prepare_source_instruments` also refuses multi-device sources.
 //! Parallel Audio Rack branches and reusable modulation remain separate owners.
 //!
-//! A serial unit is one existing `Device` followed by an owned, ordered list of
-//! child `Device` units. Keep that suffix in the canonical model, not in opaque
-//! provider payloads, a UI tree, or a second Rack registry. Signal order is
+//! A serial unit is one existing `Device` followed by its contiguous child units
+//! in the canonical owner chain. Each node stores its stable parent identity;
+//! bounded preorder validation avoids a second registry and preserves existing
+//! identity, automation, capacity and provider-state codecs. Keep the suffix in
+//! the canonical model, not in opaque provider payloads, a UI tree, or a second Rack registry. Signal order is
 //! processor then children in preorder, followed by the next sibling. This does
 //! not introduce parallel branches, another instrument position or MIDI routing.
 //! Session/engine provider admission permits compatible effects as children;
@@ -93,6 +96,7 @@ pub fn default_instrument_state() -> Result<NativeDeviceState, Invalid> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Device {
+    pub(crate) parent: Option<DeviceId>,
     pub(crate) automation: Vec<crate::DeviceAutomation>,
     pub(crate) id: DeviceId,
     pub(crate) state: NativeDeviceState,
@@ -100,6 +104,10 @@ pub struct Device {
     pub(crate) comparison: Option<crate::DeviceComparison>,
 }
 impl Device {
+    /// Serial-unit parent in this canonical chain; `None` identifies a root.
+    pub fn parent(&self) -> Option<DeviceId> {
+        self.parent
+    }
     pub fn id(&self) -> DeviceId {
         self.id
     }
@@ -307,6 +315,7 @@ fn insert_instrument(
     let binding = project.register_instrument(
         name,
         Device {
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id,
@@ -360,6 +369,7 @@ fn insert(
     target.devices.insert(
         index,
         Device {
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id,

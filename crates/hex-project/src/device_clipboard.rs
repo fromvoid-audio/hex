@@ -67,6 +67,14 @@ impl Project {
         owner: DeviceChainOwner,
         selected: &DeviceSelectionIds,
     ) -> Result<DeviceClipboard, Invalid> {
+        if self.devices().any(|device| {
+            (selected.ids().contains(&device.id()) && device.parent().is_some())
+                || device
+                    .parent()
+                    .is_some_and(|parent| selected.ids().contains(&parent))
+        }) {
+            return Err(Invalid("serial device clipboard is not supported yet"));
+        }
         let mut members = Vec::new();
         match owner {
             DeviceChainOwner::Track(id) => {

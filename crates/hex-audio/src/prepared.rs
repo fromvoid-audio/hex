@@ -5450,6 +5450,7 @@ mod tests {
             arrangement_sections: Vec::new(),
             main_devices: if effect_buses {
                 vec![DeviceSnapshot {
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id: DEVICE_ID + 2,
@@ -5493,6 +5494,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id: DEVICE_ID,
@@ -5532,6 +5534,7 @@ mod tests {
                 gain: 1.0,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id: DEVICE_ID + 1,
@@ -5663,6 +5666,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id: TRACK_DEVICE_ID,
@@ -5698,6 +5702,7 @@ mod tests {
                 gain: 0.75,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id: RETURN_DEVICE_ID,
@@ -5802,6 +5807,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id: TRACK_DEVICE_ID,
@@ -5837,6 +5843,7 @@ mod tests {
                 gain: 0.75,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id: RETURN_DEVICE_ID,
@@ -5962,6 +5969,7 @@ mod tests {
                 devices: state
                     .as_ref()
                     .map(|state| DeviceSnapshot {
+                        parent: None,
                         automation: Vec::new(),
                         comparison: None,
                         id: TRACK_DEVICE_ID,
@@ -6001,6 +6009,7 @@ mod tests {
                 devices: state
                     .as_ref()
                     .map(|state| DeviceSnapshot {
+                        parent: None,
                         automation: Vec::new(),
                         comparison: None,
                         id: RETURN_DEVICE_ID,
