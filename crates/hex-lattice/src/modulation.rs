@@ -478,6 +478,23 @@ mod tests {
     }
 
     #[test]
+    fn same_target_routes_keep_the_authored_summation_order() {
+        let target = target(1, 0.0);
+        let routes = [0, 1, 2].map(|source| ModulationRoute {
+            source,
+            target: target.descriptor.id,
+            amount: 1.0,
+        });
+        let program = PreparedModulation::new(&[target], &routes, 3).unwrap();
+        let a = [1.0];
+        let b = [1.0e-20];
+        let c = [-1.0];
+        let sources = [&a[..], &b[..], &c[..]];
+        let block = program.block(None, &sources, 1).unwrap();
+        assert_eq!(block.value_at(target.descriptor.id, 0), Some(target.base));
+    }
+
+    #[test]
     fn logarithmic_and_boolean_destinations_convert_after_summing() {
         let mut frequency = target(1, 10.0);
         frequency.descriptor.kind = ParameterKind::Float {
