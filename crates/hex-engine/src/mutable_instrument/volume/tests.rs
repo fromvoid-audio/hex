@@ -154,6 +154,7 @@ fn real_sampler_gains_follow_exact_ids_onsets_jumps_and_arbitrary_partitions() {
                     None,
                     &resources,
                     &mut ramp,
+                    None,
                 )
                 .unwrap();
             runtime.commit_block();
@@ -199,6 +200,7 @@ fn outgoing_gain_holds_left_limit_and_retired_ids_are_never_dispatched() {
             None,
             &resources,
             &mut ramp,
+            None,
         )
         .unwrap();
     runtime.commit_block();
@@ -247,6 +249,7 @@ fn foreign_live_id_refuses_before_output_and_rollback_keeps_original_history() {
             None,
             &resources,
             &mut ramp,
+            None,
         )
         .unwrap();
     runtime.commit_block();
@@ -314,6 +317,7 @@ fn retired_gain_never_reacquires_a_new_curve_or_a_rebased_old_clock() {
             None,
             &resources,
             &mut ramp,
+            None,
         )
         .unwrap();
     runtime.commit_block();
@@ -353,6 +357,7 @@ fn retired_gain_never_reacquires_a_new_curve_or_a_rebased_old_clock() {
             None,
             &resources,
             &mut incompatible_clock,
+            None,
         )
         .unwrap();
     runtime.commit_block();
@@ -388,6 +393,7 @@ fn finite_terminal_freezes_left_limit_before_a_new_clock_or_curve_is_visible() {
             None,
             &resources,
             &mut finite,
+            None,
         )
         .unwrap();
     runtime.commit_block();
@@ -408,6 +414,7 @@ fn finite_terminal_freezes_left_limit_before_a_new_clock_or_curve_is_visible() {
             None,
             &resources,
             &mut |_, _, _| panic!("finite tail queried a replacement clock"),
+            None,
         )
         .unwrap();
     runtime.commit_block();
