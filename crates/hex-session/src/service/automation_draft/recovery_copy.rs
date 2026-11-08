@@ -1,7 +1,56 @@
 //! Bounded, non-destructive copies of failed writer custody.
-use super::{AppliedEvent, DraftTerminal, DraftWorkerOutcome, EVENTS_PER_BATCH};
+use super::{
+    AppliedEvent, DraftPrefixIdentity, DraftTerminal, DraftWorkerOutcome, EVENTS_PER_BATCH,
+};
 use hex_storage::automation_draft::{DraftOutcome, DraftReadLimits, DraftReader, DraftWriter};
 use std::path::Path;
+
+/// Identity of the verified copy, not permission to release the original custody.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecoveryCopyReceipt {
+    prefix: DraftPrefixIdentity,
+    terminal: DraftTerminal,
+}
+
+impl RecoveryCopyReceipt {
+    pub fn terminal(self) -> DraftTerminal {
+        self.terminal
+    }
+
+    pub fn events(self) -> u64 {
+        self.prefix.events()
+    }
+
+    /// Revalidate while holding the reader lock. A later replacement remains
+    /// possible after this returns; adoption must revalidate in its own custody.
+    pub fn verify_on_control(
+        self,
+        path: &Path,
+        limits: DraftReadLimits,
+        max_events: u64,
+    ) -> Result<(), String> {
+        if self.events() > max_events {
+            return Err("automation recovery receipt exceeds budget".into());
+        }
+        let mut reader = DraftReader::open_bounded(path, limits, max_events)
+            .map_err(|error| error.to_string())?;
+        let expected = match self.terminal {
+            DraftTerminal::Finished(clock) => DraftOutcome::Finished(clock),
+            DraftTerminal::Aborted(reason) => DraftOutcome::Aborted(reason),
+            DraftTerminal::Interrupted => DraftOutcome::Interrupted,
+        };
+        if reader.outcome() != expected
+            || reader.progress().durable_terminal != Some(self.terminal)
+            || reader.progress().durable_events != self.events()
+            || !reader
+                .matches_prefix(self.prefix)
+                .map_err(|error| error.to_string())?
+        {
+            return Err("automation recovery copy no longer matches its receipt".into());
+        }
+        Ok(())
+    }
+}
 
 /// Copy a failed writer's validated prefix and retained suffix to a new interrupted draft.
 /// The original file and borrowed batches remain owned by the caller on every outcome.
@@ -34,7 +83,7 @@ pub(in crate::service) fn copy_failed_with_tail_on_control(
         &DraftReader,
         Option<AppliedEvent>,
     ) -> Result<(Vec<AppliedEvent>, DraftTerminal), String>,
-) -> Result<DraftTerminal, String> {
+) -> Result<RecoveryCopyReceipt, String> {
     if outcome.failure.is_none() || outcome.retained.len() > super::BATCH_SLOTS {
         return Err("automation writer outcome is not a bounded failure".into());
     }
@@ -145,5 +194,8 @@ pub(in crate::service) fn copy_failed_with_tail_on_control(
     {
         return Err("automation recovery copy did not verify; preserve both drafts".into());
     }
-    Ok(terminal)
+    Ok(RecoveryCopyReceipt {
+        prefix: copied,
+        terminal,
+    })
 }

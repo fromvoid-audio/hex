@@ -37,7 +37,8 @@ mod native_automation_recording;
 pub use native_automation_recording::{
     DeviceAutomationSource, DeviceAutomationTakeAction, DeviceAutomationTakeCompletion,
     DeviceAutomationTakeProgress, DeviceAutomationTakeScope, DeviceCaptureTarget,
-    FailedPluginContinuation, copy_failed_plugin_on_control, prepare_failed_plugin_continuation,
+    FailedPluginContinuation, copy_failed_plugin_on_control,
+    copy_failed_plugin_with_receipt_on_control, prepare_failed_plugin_continuation,
 };
 #[cfg(test)]
 mod busy_reason_tests;
