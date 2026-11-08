@@ -2919,6 +2919,35 @@ fn builtin_fm4_render_state_handoff_and_retirement_are_callback_allocation_free(
     compare_output(&actual, &expected);
     assert!(control.status.rejected_revision().is_none());
 
+    // Capturing four committed targets and rendering the detached release use
+    // the same reserved buffers as authored automation. Curve publication is
+    // independently exercised at the Engine boundary while admission is closed.
+    editor.execute(Command::SetDeviceBypass {
+        device: instrument,
+        bypassed: true,
+    })?;
+    let tail_revision = Arc::new(PreparedRevision::prepare(
+        editor.project(),
+        &media,
+        Arc::clone(&table),
+        Some(changed_revision.session()),
+    )?);
+    let mut tail_oracle = Playback::try_from_prepared_with_session(Arc::clone(&tail_revision))?;
+    tail_oracle
+        .try_inherit_runtime_from(&mut changed_oracle)
+        .map_err(|_| "FM4 tail oracle handoff failed")?;
+    control
+        .publish(Playback::try_from_prepared_with_session(Arc::clone(
+            &tail_revision,
+        ))?)
+        .map_err(|_| "FM4 tail publication failed")?;
+    for _ in 0..4 {
+        tail_oracle.render(&mut expected)?;
+        measured_block(&mut callback, &mut actual);
+        compare_output(&actual, &expected);
+    }
+    assert!(control.status.rejected_revision().is_none());
+
     let mut completed = 0;
     let retired = measure(|| completed = control.reclaim());
     assert!(completed > 0, "old FM4 graph retires on the control side");
