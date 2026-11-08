@@ -66,6 +66,16 @@ fn snapshot(operation: PluginGesturePreparation) -> GestureSnapshot {
     }
 }
 impl State {
+    pub(super) fn terminal_for(&self, snapshot: Option<GestureSnapshot>) -> Option<GestureRequest> {
+        let snapshot = snapshot.filter(|snapshot| self.owns(Some(*snapshot)))?;
+        self.terminal.or_else(|| {
+            Some(GestureRequest::CommitPlugin {
+                key: snapshot.key,
+                sequence: snapshot.sequence.max(1),
+                value: snapshot.plugin_value?,
+            })
+        })
+    }
     pub(super) fn owns(&self, snapshot: Option<GestureSnapshot>) -> bool {
         self.active
             .as_ref()
