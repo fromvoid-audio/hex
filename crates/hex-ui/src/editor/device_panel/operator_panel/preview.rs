@@ -1,8 +1,10 @@
 //! View-only Operator controls for sections without native DSP contracts yet.
 use super::super::{EditorView, control_style};
+use super::algorithms::diagram;
 use crate::diagnostics::ActionTraceContext as _;
 use crate::theme;
 use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, rgb};
+use hex_lattice_contract::ParameterValue;
 use hex_widgets::{
     NumericControl, NumericControlConfig, NumericControlEvent, NumericControlKind,
     NumericControlPresentation, NumericScale, NumericSpec, Toggle, ToggleAppearance, ToggleChanged,
@@ -147,6 +149,7 @@ pub(super) fn render(
             "pitch env",
             Some(Switch::Pitch),
             &[Field::PitchEnvelope, Field::Spread, Field::Transpose],
+            None,
         ),
         row(
             view,
@@ -155,6 +158,11 @@ pub(super) fn render(
             "global",
             None,
             &[Field::Time, Field::Tone, Field::Volume],
+            device_view
+                .parameters
+                .iter()
+                .find(|parameter| parameter.descriptor.id == super::id(600))
+                .map(|parameter| parameter.value),
         ),
         super::global::voices(view, cx, device, device_view),
     ];
@@ -183,6 +191,7 @@ fn row(
     title: &'static str,
     switch: Option<Switch>,
     fields: &[Field],
+    routing: Option<ParameterValue>,
 ) -> Stateful<Div> {
     let owner = super::context::Owner::capture(view, device);
     let section = super::Section::Preview(title);
@@ -209,7 +218,7 @@ fn row(
     if let Some(switch) = switch {
         left = left.child(toggle(view, cx, device, switch));
     } else {
-        left = left.child(routing_link(view, cx, device));
+        left = left.child(routing_link(view, cx, device, routing));
     }
     row = row.child(left);
     let mut dials = div()
@@ -240,6 +249,7 @@ fn routing_link(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: hex_project::DeviceId,
+    canonical: Option<ParameterValue>,
 ) -> Stateful<Div> {
     let owner = super::context::Owner::capture(view, device);
     let focus = view
@@ -250,21 +260,30 @@ fn routing_link(
         .routing_focus
         .get_or_insert_with(|| cx.focus_handle().tab_index(0).tab_stop(true))
         .clone();
-    let colors = (0..4).rev().filter_map(theme::oscillator_identity_color);
-    let mut icon = div()
-        .w(px(12.0))
-        .h(px(30.0))
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_between();
-    for (index, color) in colors.enumerate() {
-        icon = icon.child(
-            hex_widgets::device_identity_marker(color).id(ElementId::Name(
-                format!("operator-route-icon-{}-{index}", device.value()).into(),
-            )),
-        );
-    }
+    let choice = canonical.map(|value| {
+        super::effective_parameter_value(
+            view,
+            super::ParameterKey {
+                device,
+                parameter: super::id(600),
+            },
+            value,
+        )
+    });
+    let icon = div().relative().w(px(38.0)).h(px(34.0));
+    let icon = match choice {
+        Some(ParameterValue::Choice(choice @ 1..=11)) => icon
+            .debug_selector(move || format!("operator-routing-current-{}-{choice}", device.value()))
+            .child(diagram(choice as usize - 1, false)),
+        _ => icon
+            .debug_selector(move || format!("operator-routing-current-{}-custom", device.value()))
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_size(px(8.0))
+            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+            .child(theme::text("custom")),
+    };
     hex_widgets::device_focus_target(super::super::device_layout_style())
         .id(ElementId::Name(
             format!("operator-preview-{}-route-link", device.value()).into(),
@@ -279,8 +298,8 @@ fn routing_link(
             })
             .into()
         })
-        .w(px(18.0))
-        .h(px(34.0))
+        .w(px(40.0))
+        .h(px(36.0))
         .flex()
         .items_center()
         .cursor(gpui::CursorStyle::PointingHand)

@@ -662,3 +662,84 @@ fn limiter_structural_values(
         }
     }
 }
+
+#[test]
+fn flexible_eq_output_gain_reaches_all_owners_both_renderers_and_read_selections() {
+    use hex_devices::eq::{EQ_TYPE_ID, OUTPUT_GAIN};
+    use hex_project::AutomationReadSelection as Read;
+    for owner in 0..3 {
+        let base = fixture_owner(EQ_TYPE_ID, 1024, owner);
+        let base_pcm = render(&base, true, 1024, 17);
+        let mut canonical = fixture_owner(EQ_TYPE_ID, 1024, owner);
+        let settings = hex_devices::eq::EqState {
+            output_gain: 0.5,
+            ..Default::default()
+        };
+        state(&mut canonical, settings.encode().unwrap());
+        let expected = render(&canonical, true, 1024, 31);
+        let mut actual = fixture_owner(EQ_TYPE_ID, 1024, owner);
+        lane(
+            &mut actual,
+            Target::Parameter(OUTPUT_GAIN),
+            vec![AutomationPoint {
+                beat: BeatTime::ZERO,
+                value: AutomationValue::new(0.5 / 16.0).unwrap(),
+                outgoing: Curve::Step,
+            }],
+        );
+        close(&render(&actual, true, 1024, 127), &expected);
+        close(&render(&actual, false, 1024, 17), &expected);
+        let saved = actual
+            .e
+            .project()
+            .device(actual.device)
+            .unwrap()
+            .automation()
+            .to_vec();
+        for selection in [Read::Base, Read::Authored] {
+            actual
+                .e
+                .execute(Command::SetDeviceAutomationReadSelection {
+                    device: actual.device,
+                    target: Target::Parameter(OUTPUT_GAIN),
+                    selection,
+                })
+                .unwrap();
+            close(
+                &render(&actual, true, 1024, 19),
+                if selection == Read::Base {
+                    &base_pcm
+                } else {
+                    &expected
+                },
+            );
+            assert_eq!(
+                actual
+                    .e
+                    .project()
+                    .device(actual.device)
+                    .unwrap()
+                    .automation()[0]
+                    .points,
+                saved[0].points,
+            );
+        }
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                actual.e.project(),
+                &actual.media,
+                Arc::new(SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        assert_eq!(revision.arrangement().main_latency_frames(), 0);
+        let mut playback = SessionPlayback::new(revision).unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut out = vec![[0.0; 2]; 1024];
+        playback.render(&mut out).unwrap();
+        playback.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+        playback.render(&mut out).unwrap();
+        close(&out, &expected);
+    }
+}
