@@ -1231,7 +1231,7 @@ pub struct Control {
 }
 /// The unique worker-side publication/return endpoint; never a UI command client.
 pub struct PublicationControl {
-    foreign_parameter_delivery: crate::foreign_parameter_delivery::Control,
+    foreign_parameter_delivery: Option<crate::foreign_parameter_delivery::Control>,
     plugin_callback_quantum: Option<u16>,
     output_transport_reaper: Option<crate::plugin_worker::Reaper>,
     publications: Producer<QueuedPublication>,
@@ -1493,7 +1493,7 @@ pub(crate) fn channel_with_interface(
             midi_recording,
             command_ticket: 0,
             publication: PublicationControl {
-                foreign_parameter_delivery,
+                foreign_parameter_delivery: Some(foreign_parameter_delivery),
                 plugin_callback_quantum: None,
                 output_transport_reaper: None,
                 candidate_root: candidate_root.clone(),
