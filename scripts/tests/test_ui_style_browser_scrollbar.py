@@ -26,7 +26,8 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 "crates/hex-ui/src/editor/browser.rs": '.child(self.browser_results(rows, count, cx))',
                 "crates/hex-ui/src/editor/browser/scrollbar.rs": '.child(list) .child(self.browser_scrollbar(cx))',
                 "crates/hex-ui/src/editor/track_meters.rs": '.child(bar) .child(bars.id(id))',
-                "crates/hex-ui/src/editor/tracks.rs": '.child(toggle_button_with_style(label, tooltip, id, style))',
+                "crates/hex-ui/src/editor/tracks.rs": '.child(toggle_button_with_style(label, tooltip, id, style)) .child(framed_clip)',
+                "crates/hex-ui/src/editor/clip_boundary.rs": '.child(paint)',
                 "crates/hex-ui/src/editor/return_tracks.rs": '.child(super::waveform::toggle_button_with_style(label, tooltip, id, style))',
             }
             for name, text in files.items():
@@ -44,6 +45,10 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 ("other.rs", '.child(self.browser_scrollbar(cx))'),
                 ("other.rs", '.child(list)'),
                 ("other.rs", '.child(bar)'),
+                ("other.rs", '.child(framed_clip)'),
+                ("other.rs", '.child(paint)'),
+                ("editor/clip_boundary.rs", '.child("Unnormalized")'),
+                ("editor/clip_boundary.rs", '.child(self.unregistered_component(cx))'),
                 ("other.rs", '.child(toggle_button_with_style(label, tooltip, id, style))'),
                 ("other.rs", '.child(super::waveform::toggle_button_with_style(label, tooltip, id, style))'),
                 ("editor/tracks.rs", '.child("Unnormalized")'),
