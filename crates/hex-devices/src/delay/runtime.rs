@@ -20,8 +20,21 @@ pub(super) const MAX_SECONDS: usize = 16;
 pub(super) struct Factory {
     pub(super) settings: Settings,
     pub(super) rate: u32,
+    pub(super) admitted: [bool; automation::COUNT],
 }
 impl PreparedOwnedProcessorRuntime for Factory {
+    fn supports_parameter_automation(&self, id: hex_lattice_contract::ParameterId) -> bool {
+        automation::slot(id).is_some_and(|i| self.admitted[i])
+    }
+    fn parameter_automation_descriptor(
+        &self,
+        id: hex_lattice_contract::ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterDescriptor> {
+        self.supports_parameter_automation(id)
+            .then(|| automation::descriptor(id))
+            .flatten()
+    }
+
     fn supports_smoothed_bypass(&self) -> bool {
         true
     }
@@ -41,7 +54,7 @@ impl PreparedOwnedProcessorRuntime for Factory {
             v.resize(length, [0.0; 2]);
             Ok(v)
         };
-        let scalar = Scalar::new(self.settings, self.rate);
+        let scalar = Scalar::new(self.settings, self.rate, self.admitted);
         let runtime = Runtime {
             settings: self.settings,
             rate: self.rate,
@@ -69,6 +82,7 @@ impl PreparedOwnedProcessorRuntime for Factory {
 }
 #[derive(Clone, Copy, Debug)]
 struct Scalar {
+    controls: crate::parameter_binding::Controls<automation::Mix, { automation::COUNT }>,
     next: usize,
     valid: usize,
     nonzero: usize,
@@ -89,7 +103,7 @@ struct Scalar {
     lfo: Lfo,
 }
 impl Scalar {
-    fn new(s: Settings, rate: u32) -> Self {
+    fn new(s: Settings, rate: u32, admitted: [bool; automation::COUNT]) -> Self {
         let times = times(s, rate, 120_000_000);
         let mix = f64::from(s.value(DRY_WET));
         let (dry_gain, wet_gain) = mix_gains(mix, s.flag(EQUAL_LOUDNESS));
@@ -102,6 +116,7 @@ impl Scalar {
             );
         }
         Self {
+            controls: crate::parameter_binding::Controls::new(automation::Mix::new(s), admitted),
             next: 0,
             valid: 0,
             nonzero: 0,
@@ -231,16 +246,40 @@ impl Runtime {
     }
     fn inherit_scalars(&mut self, old: Scalar, old_settings: Settings) {
         self.pristine = false;
+        let mut controls = self.primary.controls;
+        controls.inherit(&old.controls);
         self.primary = old;
+        self.primary.controls = controls;
         (self.primary.dry_gain, self.primary.wet_gain) =
             mix_gains(self.primary.mix, self.settings.flag(EQUAL_LOUDNESS));
-        if self.settings != old_settings {
+        // Bound targets are installed by the next borrowed sample/fallback.
+        // Only unbound canonical controls retime this shared ramp immediately.
+        let mut unbound = old_settings;
+        unbound.set(FEEDBACK, self.settings.value(FEEDBACK));
+        unbound.set(DRY_WET, self.settings.value(DRY_WET));
+        if self.settings != unbound {
             self.primary.ramp_left = self.rate.div_ceil(100);
         }
         self.speculative = self.primary;
         self.dirty_start = self.primary.next;
         self.dirty_len = 0;
         self.open = false;
+    }
+    fn block_settings(&self) -> BlockSettings {
+        let hq = self.settings.flag(HIGH_QUALITY);
+        BlockSettings {
+            freeze: self.settings.flag(FREEZE) && !self.releasing,
+            hq,
+            alpha: 1.0 - (-1.0 / (f64::from(self.rate) * if hq { 0.02 } else { 0.01 })).exp(),
+            fade_frames: self.rate.div_ceil(20),
+        }
+    }
+    fn restore_controls(&mut self) {
+        let old = self.speculative.controls.effective();
+        self.speculative.controls.reset();
+        if old != self.speculative.controls.effective() {
+            self.speculative.ramp_left = self.rate.div_ceil(100);
+        }
     }
     fn process(
         &mut self,
@@ -251,154 +290,238 @@ impl Runtime {
         if !self.open {
             self.begin_block();
         }
-        let settings = self.settings;
-        let rate = self.rate;
-        let freeze = settings.flag(FREEZE) && !self.releasing;
-        let hq = settings.flag(HIGH_QUALITY);
-        let alpha = 1.0 - (-1.0 / (f64::from(rate) * if hq { 0.02 } else { 0.01 })).exp();
-        let fade_frames = rate.div_ceil(20);
+        if !frames.is_empty() && !self.releasing {
+            self.restore_controls();
+        }
+        let block = self.block_settings();
         for (offset, frame) in frames.iter_mut().enumerate() {
-            let s = &mut self.speculative;
-            if let Some(tempo) = clock
-                .and_then(|c| c.tempo_micro_bpm_at_offset(offset))
-                .filter(|v| *v > 0)
-            {
-                s.tempo = tempo;
-            }
-            let oscillator = s.lfo.process(
-                settings.choice(LFO_WAVE),
-                f64::from(settings.value(LFO_MORPH)),
-                lfo_increment(settings, rate, s.tempo),
+            self.process_frame(
+                frame,
+                clock.and_then(|c| c.tempo_micro_bpm_at_offset(offset)),
+                bypassed,
+                block,
             );
-            let mut requested = times(settings, rate, s.tempo);
-            for time in &mut requested {
-                *time = (*time * (1.0 + oscillator * f64::from(settings.value(LFO_DELAY)))).clamp(
-                    f64::from(rate) / 1000.0,
-                    f64::from(rate) * MAX_SECONDS as f64,
-                );
-            }
-            if s.valid == 0 {
-                s.times = requested;
-                s.old_times = requested;
-            }
-            match settings.choice(SMOOTHING) {
-                0 => {
-                    for (time, target) in s.times.iter_mut().zip(requested) {
-                        *time += alpha * (target - *time);
-                        if (target - *time).abs() < 1e-8 {
-                            *time = target;
-                        }
-                    }
-                    s.fade_left = 0;
-                }
-                1 => {
-                    if s.fade_left == 0
-                        && s.times
-                            .iter()
-                            .zip(requested)
-                            .any(|(a, b)| (a - b).abs() > 1e-8)
-                    {
-                        s.old_times = s.times;
-                        s.fade_left = fade_frames;
-                    }
-                    s.times = requested;
-                }
-                _ => {
-                    s.times = requested;
-                    s.fade_left = 0;
-                }
-            }
-            if s.ramp_left > 0 {
-                s.feedback +=
-                    (f64::from(settings.value(FEEDBACK)) - s.feedback) / f64::from(s.ramp_left);
-                s.mix += (f64::from(settings.value(DRY_WET)) - s.mix) / f64::from(s.ramp_left);
-                s.filter_mix +=
-                    (f64::from(settings.flag(FILTER)) - s.filter_mix) / f64::from(s.ramp_left);
-                s.frequency +=
-                    (f64::from(settings.value(FREQUENCY)) - s.frequency) / f64::from(s.ramp_left);
-                s.width += (f64::from(settings.value(WIDTH)) - s.width) / f64::from(s.ramp_left);
-                s.ramp_left -= 1;
-                if s.ramp_left == 0 {
-                    s.feedback = f64::from(settings.value(FEEDBACK));
-                    s.mix = f64::from(settings.value(DRY_WET));
-                    s.filter_mix = f64::from(settings.flag(FILTER));
-                    s.frequency = f64::from(settings.value(FREQUENCY));
-                    s.width = f64::from(settings.value(WIDTH));
-                }
-                (s.dry_gain, s.wet_gain) = mix_gains(s.mix, settings.flag(EQUAL_LOUDNESS));
-            }
-            let scalar = &*s;
-            let mut wet = std::array::from_fn::<_, 2, _>(|lane| {
-                tap(&self.scratch, scalar, s.times[lane], lane, hq, freeze)
-            });
-            if s.fade_left > 0 && !freeze {
-                let weight = 1.0 - f64::from(s.fade_left) / f64::from(fade_frames);
-                for (lane, value) in wet.iter_mut().enumerate() {
-                    let old = tap(&self.scratch, scalar, s.old_times[lane], lane, hq, false);
-                    *value = old * (1.0 - weight) + *value * weight;
-                }
-                s.fade_left -= 1;
-            }
-            if s.filter_tick == 0 {
-                let frequency = (s.frequency
-                    * 2.0_f64.powf(oscillator * f64::from(settings.value(LFO_FILTER)) * 4.0))
-                .clamp(20.0, 20000.0);
-                for filter in &mut s.filters {
-                    filter.tune(frequency, s.width, rate);
-                }
-            }
-            s.filter_tick = (s.filter_tick + 1) % 16;
-            let dry = frame.map(|v| if v.is_finite() { f64::from(v) } else { 0.0 });
-            let mut write = [0.0; 2];
-            for lane in 0..2 {
-                let feedback = if settings.flag(PING_PONG) {
-                    wet[1 - lane]
-                } else {
-                    wet[lane]
-                };
-                let input = if settings.flag(PING_PONG) {
-                    if lane == 0 {
-                        (dry[0] + dry[1]) * 0.5
-                    } else {
-                        0.0
-                    }
-                } else {
-                    dry[lane]
-                };
-                let loop_input = if freeze {
-                    feedback
-                } else {
-                    input + feedback * s.feedback
-                };
-                let filtered = s.filters[lane].process(if freeze { 0.0 } else { loop_input });
-                let value = finite(if freeze {
-                    loop_input
-                } else {
-                    loop_input * (1.0 - s.filter_mix) + filtered * s.filter_mix
-                });
-                write[lane] = if value.abs() < 1e-12 { 0.0 } else { value };
-            }
-            if !bypassed {
-                *frame = std::array::from_fn(|lane| {
-                    finite(dry[lane] * s.dry_gain + wet[lane] * s.wet_gain)
-                });
-            }
-            if s.valid == self.scratch.len() {
-                s.nonzero -= usize::from(self.scratch[s.next] != [0.0; 2]);
-            } else {
-                s.valid += 1;
-            }
-            s.nonzero += usize::from(write != [0.0; 2]);
-            self.scratch[s.next] = write;
-            s.next += 1;
-            if s.next == self.scratch.len() {
-                s.next = 0;
-            }
-            self.dirty_len = self.dirty_len.saturating_add(1).min(self.scratch.len());
         }
     }
+    fn process_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        bypassed: bool,
+    ) -> Result<(), DeviceContractError> {
+        if !self.open {
+            self.begin_block();
+        }
+        let mut resolved = self
+            .speculative
+            .controls
+            .resolve(&automation::BINDINGS, values)?;
+        let block = self.block_settings();
+        for (offset, frame) in frames.iter_mut().enumerate() {
+            if let Some(next) = self.speculative.controls.sample(
+                &automation::BINDINGS,
+                &mut resolved,
+                values,
+                offset,
+            )? {
+                if next.effective() != self.speculative.controls.effective() {
+                    self.speculative.ramp_left = self.rate.div_ceil(100);
+                }
+                self.speculative.controls.install(next);
+            }
+            self.process_frame(
+                frame,
+                clock.and_then(|c| c.tempo_micro_bpm_at_offset(offset)),
+                bypassed,
+                block,
+            );
+        }
+        Ok(())
+    }
+    // Preserve block-loop optimization: an out-of-line call here regresses
+    // canonical processing. The measured old/new kernel comparison covers it.
+    #[inline(always)]
+    fn process_frame(
+        &mut self,
+        frame: &mut StereoFrame,
+        tempo: Option<u32>,
+        bypassed: bool,
+        block: BlockSettings,
+    ) {
+        let settings = self.settings;
+        let rate = self.rate;
+        let BlockSettings {
+            freeze,
+            hq,
+            alpha,
+            fade_frames,
+        } = block;
+        let s = &mut self.speculative;
+        let targets = s.controls.effective();
+        if let Some(tempo) = tempo.filter(|v| *v > 0) {
+            s.tempo = tempo;
+        }
+        let oscillator = s.lfo.process(
+            settings.choice(LFO_WAVE),
+            f64::from(settings.value(LFO_MORPH)),
+            lfo_increment(settings, rate, s.tempo),
+        );
+        let mut requested = times(settings, rate, s.tempo);
+        for time in &mut requested {
+            *time = (*time * (1.0 + oscillator * f64::from(settings.value(LFO_DELAY)))).clamp(
+                f64::from(rate) / 1000.0,
+                f64::from(rate) * MAX_SECONDS as f64,
+            );
+        }
+        if s.valid == 0 {
+            s.times = requested;
+            s.old_times = requested;
+        }
+        match settings.choice(SMOOTHING) {
+            0 => {
+                for (time, target) in s.times.iter_mut().zip(requested) {
+                    *time += alpha * (target - *time);
+                    if (target - *time).abs() < 1e-8 {
+                        *time = target;
+                    }
+                }
+                s.fade_left = 0;
+            }
+            1 => {
+                if s.fade_left == 0
+                    && s.times
+                        .iter()
+                        .zip(requested)
+                        .any(|(a, b)| (a - b).abs() > 1e-8)
+                {
+                    s.old_times = s.times;
+                    s.fade_left = fade_frames;
+                }
+                s.times = requested;
+            }
+            _ => {
+                s.times = requested;
+                s.fade_left = 0;
+            }
+        }
+        if s.ramp_left > 0 {
+            s.feedback += (f64::from(targets.feedback) - s.feedback) / f64::from(s.ramp_left);
+            s.mix += (f64::from(targets.mix) - s.mix) / f64::from(s.ramp_left);
+            s.filter_mix +=
+                (f64::from(settings.flag(FILTER)) - s.filter_mix) / f64::from(s.ramp_left);
+            s.frequency +=
+                (f64::from(settings.value(FREQUENCY)) - s.frequency) / f64::from(s.ramp_left);
+            s.width += (f64::from(settings.value(WIDTH)) - s.width) / f64::from(s.ramp_left);
+            s.ramp_left -= 1;
+            if s.ramp_left == 0 {
+                s.feedback = f64::from(targets.feedback);
+                s.mix = f64::from(targets.mix);
+                s.filter_mix = f64::from(settings.flag(FILTER));
+                s.frequency = f64::from(settings.value(FREQUENCY));
+                s.width = f64::from(settings.value(WIDTH));
+            }
+            (s.dry_gain, s.wet_gain) = mix_gains(s.mix, settings.flag(EQUAL_LOUDNESS));
+        }
+        let scalar = &*s;
+        let mut wet = std::array::from_fn::<_, 2, _>(|lane| {
+            tap(&self.scratch, scalar, s.times[lane], lane, hq, freeze)
+        });
+        if s.fade_left > 0 && !freeze {
+            let weight = 1.0 - f64::from(s.fade_left) / f64::from(fade_frames);
+            for (lane, value) in wet.iter_mut().enumerate() {
+                let old = tap(&self.scratch, scalar, s.old_times[lane], lane, hq, false);
+                *value = old * (1.0 - weight) + *value * weight;
+            }
+            s.fade_left -= 1;
+        }
+        if s.filter_tick == 0 {
+            let frequency = (s.frequency
+                * 2.0_f64.powf(oscillator * f64::from(settings.value(LFO_FILTER)) * 4.0))
+            .clamp(20.0, 20000.0);
+            for filter in &mut s.filters {
+                filter.tune(frequency, s.width, rate);
+            }
+        }
+        s.filter_tick = (s.filter_tick + 1) % 16;
+        let dry = frame.map(|v| if v.is_finite() { f64::from(v) } else { 0.0 });
+        let mut write = [0.0; 2];
+        for lane in 0..2 {
+            let feedback = if settings.flag(PING_PONG) {
+                wet[1 - lane]
+            } else {
+                wet[lane]
+            };
+            let input = if settings.flag(PING_PONG) {
+                if lane == 0 {
+                    (dry[0] + dry[1]) * 0.5
+                } else {
+                    0.0
+                }
+            } else {
+                dry[lane]
+            };
+            let loop_input = if freeze {
+                feedback
+            } else {
+                input + feedback * s.feedback
+            };
+            let filtered = s.filters[lane].process(if freeze { 0.0 } else { loop_input });
+            let value = finite(if freeze {
+                loop_input
+            } else {
+                loop_input * (1.0 - s.filter_mix) + filtered * s.filter_mix
+            });
+            write[lane] = if value.abs() < 1e-12 { 0.0 } else { value };
+        }
+        if !bypassed {
+            *frame =
+                std::array::from_fn(|lane| finite(dry[lane] * s.dry_gain + wet[lane] * s.wet_gain));
+        }
+        if s.valid == self.scratch.len() {
+            s.nonzero -= usize::from(self.scratch[s.next] != [0.0; 2]);
+        } else {
+            s.valid += 1;
+        }
+        s.nonzero += usize::from(write != [0.0; 2]);
+        self.scratch[s.next] = write;
+        s.next += 1;
+        if s.next == self.scratch.len() {
+            s.next = 0;
+        }
+        self.dirty_len = self.dirty_len.saturating_add(1).min(self.scratch.len());
+    }
+}
+#[derive(Clone, Copy)]
+struct BlockSettings {
+    freeze: bool,
+    hq: bool,
+    alpha: f64,
+    fade_frames: u32,
 }
 impl OwnedProcessorRuntime for Runtime {
+    fn supports_parameter_automation(&self, id: hex_lattice_contract::ParameterId) -> bool {
+        self.primary.controls.supports(&automation::BINDINGS, id)
+    }
+    fn process_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        _: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        self.process_automation(frames, clock, values, false)
+    }
+    fn process_bypassed_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        _: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        self.process_automation(frames, clock, values, true)
+    }
+
     fn fixed_storage_pair_bytes(&self) -> Option<usize> {
         std::mem::size_of::<Self>().checked_add(
             self.committed
@@ -469,7 +592,8 @@ impl OwnedProcessorRuntime for Runtime {
     fn reset(&mut self) {
         self.pristine = false;
         self.releasing = false;
-        let s = Scalar::new(self.settings, self.rate);
+        let admitted = std::array::from_fn(|i| self.primary.controls.admitted(i));
+        let s = Scalar::new(self.settings, self.rate, admitted);
         self.primary = s;
         self.speculative = s;
         self.dirty_start = 0;
@@ -545,7 +669,10 @@ impl OwnedProcessorRuntime for Runtime {
         let Some(old) = previous.as_any().downcast_ref::<Self>() else {
             return false;
         };
+        let mut controls = self.primary.controls;
+        controls.inherit(&old.primary.controls);
         let mut scalar = old.primary;
+        scalar.controls = controls;
         scalar.nonzero = 0;
         scalar.filters = scalar.filters.map(BandPass::without_signal_memory);
         self.primary = scalar;
