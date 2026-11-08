@@ -1,22 +1,118 @@
-//! Shared output-gain envelopes use the existing native checkpoint owner.
-//! Preparation grants one exact descriptor. Borrowed values are validated per
-//! frame; missing values select canonical Base with the existing 1/64 gain law.
-//! A cold held reading starts at its canonical gain. Once processing begins,
-//! history copies retain gain progress; empty blocks never consume that start.
-//! This module owns no project curves, clock, resource or publication lifecycle.
+//! Exact shared grants resolve stable node identities on control. Borrowed typed
+//! values are validated at every original frame offset; node targets refresh at
+//! the existing 64-frame coefficient cadence and use its existing ramp/history law.
+//! Cold held targets start canonically. Missing values select immutable Base.
+//! Granted fields override historical opaque lanes, including Base; ungranted
+//! historical fields still use their original clock. No authored lane is erased.
+//! This module owns no curves, clock, publication or resource lifecycle.
 use super::*;
 use hex_lattice::NativeParameterAutomation;
+use hex_lattice_contract::MAX_PARAMETERS_PER_DEVICE;
 
+#[derive(Clone, Copy)]
+pub(super) struct Grant {
+    pub(super) descriptor: ParameterDescriptor,
+    node: Option<(usize, NodeParameter)>,
+}
+impl Grant {
+    pub(super) fn prepare(
+        settings: &EqState,
+        ids: &[ParameterId],
+    ) -> Result<Vec<Self>, DeviceContractError> {
+        if ids.len() > MAX_PARAMETERS_PER_DEVICE || ids.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(DeviceContractError::InvalidParameterValue);
+        }
+        ids.iter()
+            .map(|&id| {
+                if id == OUTPUT_GAIN {
+                    return Ok(Self {
+                        descriptor: DESCRIPTORS[201],
+                        node: None,
+                    });
+                }
+                let (identity, field) = NodeId::from_parameter(id)?;
+                let index = settings
+                    .nodes
+                    .iter()
+                    .position(|node| node.id == identity)
+                    .ok_or(DeviceContractError::UnknownParameter)?;
+                if settings.nodes[index].legacy_shelf
+                    && matches!(
+                        field,
+                        NodeParameter::Kind | NodeParameter::Gain | NodeParameter::Q
+                    )
+                {
+                    return Err(DeviceContractError::UnsupportedProcessingClass);
+                }
+                Ok(Self {
+                    descriptor: descriptor(identity, field)?,
+                    node: Some((index, field)),
+                })
+            })
+            .collect()
+    }
+}
+#[derive(Clone, Copy)]
+struct Patch {
+    node: Node,
+    mask: u8,
+}
+pub(super) struct Nodes {
+    patches: [Option<Patch>; MAX_NODES],
+}
+impl Nodes {
+    fn new(config: &Configuration) -> Self {
+        let mut nodes = Self {
+            patches: [None; MAX_NODES],
+        };
+        // Preparation validates node indices against the bounded canonical nodes.
+        for grant in &config.parameters {
+            if let Some((index, field)) = grant.node {
+                let patch = nodes.patches[index].get_or_insert(Patch {
+                    node: config.nodes[index],
+                    mask: 0,
+                });
+                patch.mask |= 1 << field as u8;
+            }
+        }
+        nodes
+    }
+    pub(super) fn apply(&self, index: usize, node: &mut Node) {
+        let Some(patch) = self.patches[index] else {
+            return;
+        };
+        for field in NodeParameter::ALL {
+            if patch.mask & (1 << field as u8) == 0 {
+                continue;
+            }
+            match field {
+                NodeParameter::Enabled => node.enabled = patch.node.enabled,
+                NodeParameter::Kind => {
+                    node.kind = patch.node.kind;
+                    node.legacy_shelf = patch.node.legacy_shelf;
+                }
+                NodeParameter::Frequency => node.frequency_hz = patch.node.frequency_hz,
+                NodeParameter::Gain => node.gain_db = patch.node.gain_db,
+                NodeParameter::Q => {
+                    node.q = patch.node.q;
+                    node.legacy_shelf = patch.node.legacy_shelf;
+                }
+                NodeParameter::Slope => node.slope = patch.node.slope,
+                NodeParameter::Bank => node.bank = patch.node.bank,
+            }
+        }
+    }
+}
 impl PreparedEq {
     pub(in crate::eq8::flexible) fn automated(
         settings: EqState,
         rate: u32,
         parameters: &[ParameterId],
     ) -> Result<Self, DeviceContractError> {
-        if parameters != [OUTPUT_GAIN] {
+        if parameters.is_empty() {
             return Err(DeviceContractError::UnsupportedProcessingClass);
         }
-        Self::prepare(settings, rate, true)
+        Self::prepare(settings, rate, parameters)
     }
 }
 impl EqRuntime {
@@ -27,31 +123,60 @@ impl EqRuntime {
         values: &dyn NativeParameterAutomation,
         bypassed: bool,
     ) -> Result<(), DeviceContractError> {
-        let reading = match values.parameter_ids() {
-            [] => false,
-            [OUTPUT_GAIN] => true,
-            _ => return Err(DeviceContractError::UnsupportedProcessingClass),
-        };
-        if !self.configuration.output_gain_automation {
+        let ids = values.parameter_ids();
+        if self.configuration.parameters.is_empty()
+            || ids.len() > self.configuration.parameters.len()
+            || ids.windows(2).any(|pair| pair[0] >= pair[1])
+        {
             return Err(DeviceContractError::UnsupportedProcessingClass);
         }
+        let mut bindings = [0; MAX_PARAMETERS_PER_DEVICE];
+        for (slot, id) in bindings.iter_mut().zip(ids) {
+            *slot = self
+                .configuration
+                .parameters
+                .binary_search_by_key(id, |grant| grant.descriptor.id)
+                .map_err(|_| DeviceContractError::UnsupportedProcessingClass)?;
+        }
+        let mut nodes = Nodes::new(&self.configuration);
+        let has_nodes = self
+            .configuration
+            .parameters
+            .iter()
+            .any(|grant| grant.node.is_some());
+        let mut readings = [None; MAX_PARAMETERS_PER_DEVICE];
         for (offset, frame) in frames.iter_mut().enumerate() {
-            let value = reading
-                .then(|| values.value_at(OUTPUT_GAIN, offset))
-                .flatten();
-            let target = if let Some(value) = value {
-                DESCRIPTORS[201].validate(value)?;
-                let ParameterValue::Float(gain) = value else {
-                    return Err(DeviceContractError::InvalidParameterValue);
-                };
-                f64::from(gain)
-            } else {
-                self.configuration.gain
-            };
-            if value.is_some() && self.gain_pristine {
-                self.gain = target;
+            values.values_at(offset, &mut readings[..ids.len()])?;
+            let mut gain = self.configuration.gain;
+            let mut authored_gain = false;
+            for (&reading, &binding) in readings[..ids.len()].iter().zip(&bindings) {
+                let grant = self.configuration.parameters[binding];
+                if let Some(value) = reading {
+                    grant.descriptor.validate(value)?;
+                }
+                if let Some((index, field)) = grant.node {
+                    if let Some(patch) = nodes.patches[index].as_mut() {
+                        patch.node.set(
+                            field,
+                            reading.unwrap_or_else(|| self.configuration.nodes[index].value(field)),
+                        )?;
+                    }
+                } else if let Some(ParameterValue::Float(value)) = reading {
+                    gain = f64::from(value);
+                    authored_gain = true;
+                }
             }
-            self.process_at(std::slice::from_mut(frame), clock, bypassed, offset, target);
+            if authored_gain && self.pristine {
+                self.gain = gain;
+            }
+            self.process_at(
+                std::slice::from_mut(frame),
+                clock,
+                bypassed,
+                offset,
+                gain,
+                has_nodes.then_some(&nodes),
+            );
         }
         Ok(())
     }
@@ -382,3 +507,6 @@ mod clock_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod node_tests;
