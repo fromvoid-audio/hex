@@ -162,9 +162,9 @@ fn carrier_automation_reveals_inaudible_operator_on_held_note_then_restores_base
     )
     .unwrap();
     pair.commit_block();
-    for offset in 239..300 {
+    for (offset, actual) in changed.iter().enumerate().skip(239) {
         assert_eq!(
-            changed[offset],
+            *actual,
             target.sample(123 + offset as u64, u64::MAX, &BorrowedDeviceResources(&[]))
         );
     }
@@ -185,9 +185,9 @@ fn carrier_automation_reveals_inaudible_operator_on_held_note_then_restores_base
     )
     .unwrap();
     pair.commit_block();
-    for offset in 239..300 {
+    for (offset, actual) in restored.iter().enumerate().skip(239) {
         assert_eq!(
-            restored[offset],
+            *actual,
             base.sample(423 + offset as u64, u64::MAX, &BorrowedDeviceResources(&[]))
         );
     }
