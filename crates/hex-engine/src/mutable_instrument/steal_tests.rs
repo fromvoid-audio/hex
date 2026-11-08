@@ -134,6 +134,7 @@ fn run(
             &mut events,
             None,
             &resources,
+            None,
         )?;
         runtime.commit_block();
         offset += count;
