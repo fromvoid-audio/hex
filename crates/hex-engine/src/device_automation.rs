@@ -196,7 +196,10 @@ pub fn project_device_automation_target_supported(
     };
     target_supported(&registry, device.state(), target)
 }
-fn effect_devices(project: &hex_project::Project) -> impl Iterator<Item = &hex_project::Device> {
+/// Canonical track-local, Return and Main effects, excluding retained sources.
+pub(crate) fn effect_devices(
+    project: &hex_project::Project,
+) -> impl Iterator<Item = &hex_project::Device> {
     project
         .tracks()
         .iter()

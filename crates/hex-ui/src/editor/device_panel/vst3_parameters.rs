@@ -433,7 +433,8 @@ fn queue_touch_refresh(
     row: Option<&PluginParameterRow>,
 ) {
     let page = row.map(|row| row.page_first);
-    panel.last_touched = None;
+    // Keep the last validated presentation until the new target resolves.
+    // A pending touch suspends follow-control input without erasing its label.
     panel.touch_unavailable = false;
     panel.queued_touch = None;
     panel.pending_touch = Some(touch);
@@ -1701,9 +1702,7 @@ fn follow_display(
             Some("refreshing last touched parameter"),
         );
     }
-    if panel.pending_touch.is_some() || panel.queued_touch.is_some() {
-        return (None, None, Some("refreshing last touched parameter"));
-    }
+    let refreshing = panel.pending_touch.is_some() || panel.queued_touch.is_some();
     let Some(id) = panel.last_touched else {
         return (None, None, Some("no vst parameter touched"));
     };
@@ -1729,11 +1728,17 @@ fn follow_display(
         return (None, Some(row), Some("refreshing last touched parameter"));
     }
     let query = panel.query;
-    let status = row
-        .automation_class
-        .is_none()
-        .then_some("automation unavailable");
+    let status = if refreshing {
+        Some("refreshing last touched parameter")
+    } else {
+        row.automation_class
+            .is_none()
+            .then_some("automation unavailable")
+    };
     let control = follow_knob(view, device, query, &row, cx);
+    if let Some(control) = &control {
+        control.update(cx, |control, cx| control.set_enabled(!refreshing, cx));
+    }
     (control, Some(row), status)
 }
 
@@ -2010,18 +2015,26 @@ fn create_knob(
     let event_origin = Rc::clone(&origin);
     let drag = Rc::new(RefCell::new(None));
     let steps = row.steps;
+    let is_follow = role == "follow";
     let subscription =
         cx.subscribe(
             &control,
             move |view, emitter, event: &NumericControlEvent, cx| {
                 let origin = event_origin.get();
+                // Pending metadata suspends new follow gestures, but an admitted
+                // pointer gesture must still reach its existing terminal owner.
+                let continuing_pointer =
+                    event.phase != NumericEventPhase::Begin && event.gesture.is_some();
                 let current =
                     view.device_panel
                         .vst3_parameters
                         .panels
                         .get(&device)
                         .filter(|panel| {
-                            panel.source == Some(source)
+                            (!is_follow
+                                || continuing_pointer
+                                || (panel.pending_touch.is_none() && panel.queued_touch.is_none()))
+                                && panel.source == Some(source)
                                 && panel.query.context == origin.context
                                 && panel.query.output_identity == query.output_identity
                         })
@@ -2081,6 +2094,12 @@ fn knob_event(
     };
     let value = PluginParameterValue::new(normalized)?;
     let mut drag = drag.borrow_mut();
+    if view.automation_close_preflight.frozen()
+        && (event.phase == NumericEventPhase::Begin
+            || (event.phase == NumericEventPhase::Commit && event.gesture.is_none()))
+    {
+        return Err("close is pending · automation recording is unavailable");
+    }
     if event.phase == NumericEventPhase::Begin {
         let key = view.device_gesture.begin_plugin(origin)?;
         *drag = Some((event.gesture.clone(), key));
@@ -2610,6 +2629,98 @@ mod tests {
                 );
             }
         }
+        let (previous_control, previous_value) = editor.update(&mut visual, |view, cx| {
+            let control = follow_display(view, device, cx).0.unwrap();
+            (control.entity_id(), control.read(cx).value())
+        });
+        editor.update(&mut visual, |view, cx| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            let touch = TouchObservation {
+                source: AppliedAudioSource {
+                    context: panel.query.context,
+                    audio_revision: 1,
+                    output_identity: panel.query.output_identity,
+                },
+                binding,
+                parameter: 8,
+            };
+            let row = panel
+                .rows()
+                .unwrap()
+                .iter()
+                .find(|row| row.id == 8)
+                .unwrap()
+                .clone();
+            queue_touch_refresh(panel, touch, Some(&row));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("vst3-last-touch-label").is_some(),
+            "a pending touch must retain the last validated label across repaints"
+        );
+        let pending_dial = visual
+            .debug_bounds(Box::leak(
+                format!("vst3-follow-knob-{}-7-knob", device.value()).into_boxed_str(),
+            ))
+            .unwrap()
+            .center();
+        visual.simulate_mouse_down(pending_dial, gpui::MouseButton::Left, modifiers);
+        visual.simulate_mouse_move(
+            gpui::point(pending_dial.x, pending_dial.y - gpui::px(20.0)),
+            gpui::MouseButton::Left,
+            modifiers,
+        );
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get(&device)
+                .unwrap();
+            let control = panel.follow_knob.as_ref().unwrap().1.control.read(cx);
+            assert!(
+                !control.is_interacting(),
+                "pending display must not start a gesture"
+            );
+            assert_eq!(control.value(), previous_value);
+            assert!(view.device_gesture.snapshot().is_none());
+        });
+        visual.simulate_mouse_up(pending_dial, gpui::MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        editor.update(&mut visual, |view, cx| {
+            let (control, row, _) = follow_display(view, device, cx);
+            assert_eq!(control.unwrap().entity_id(), previous_control);
+            assert_eq!(row.unwrap().id, 7);
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            let row = panel
+                .rows()
+                .unwrap()
+                .iter()
+                .find(|row| row.id == 8)
+                .unwrap()
+                .clone();
+            resolve_pending_touch(panel, binding, &[row], Some(0), true).unwrap();
+            assert_eq!(follow_display(view, device, cx).1.unwrap().id, 8);
+            // Restore the existing stale-value assertions below.
+            view.device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap()
+                .last_touched = Some(7);
+        });
         editor.update(&mut visual, |view, cx| {
             let panel = view
                 .device_panel

@@ -113,6 +113,9 @@ impl EditorView {
         target: GestureTarget,
         initial: ParameterValue,
     ) -> Result<(), &'static str> {
+        if self.automation_close_preflight.frozen() {
+            return Err("close is pending · device gestures are unavailable");
+        }
         if self.native_automation_recorder.busy() {
             return Err("finish the current automation touch first");
         }
@@ -128,6 +131,9 @@ impl EditorView {
         second: hex_lattice_contract::ParameterId,
         initial: ParameterPairValue,
     ) -> Result<(), &'static str> {
+        if self.automation_close_preflight.frozen() {
+            return Err("close is pending · device gestures are unavailable");
+        }
         self.device_gesture
             .begin_pair(self.project_generation, device, first, second, initial)?;
         Ok(())
