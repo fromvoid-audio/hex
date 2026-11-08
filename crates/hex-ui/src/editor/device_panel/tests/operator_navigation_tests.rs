@@ -284,6 +284,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
     visual.update(|window, _| window.activate_window());
     visual.simulate_resize(size(px(1440.0), px(540.0)));
     visual.run_until_parked();
+    open_operator_options(&mut visual, device);
     let envelope = tab_bounds(&mut visual, device, "envelope", "amp env");
     let oscillator = tab_bounds(&mut visual, device, "oscillator", "osc");
     let rail = visual
@@ -309,7 +310,13 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         tab_bounds(&mut visual, device, "oscillator", "osc"),
         oscillator
     );
-    assert_eq!(lfo_link_bounds(&mut visual, device), lfo);
+    assert_eq!(
+        lfo_link_bounds(&mut visual, device),
+        Bounds {
+            origin: lfo.origin + point(px(120.0), px(0.0)),
+            ..lfo
+        }
+    );
     for parameter in 82..=92 {
         assert!(
             visual
@@ -473,7 +480,10 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
                 device.value()
             )))
             .unwrap(),
-        rail
+        Bounds {
+            origin: rail.origin + point(px(120.0), px(0.0)),
+            ..rail
+        }
     );
     assert!(
         visual

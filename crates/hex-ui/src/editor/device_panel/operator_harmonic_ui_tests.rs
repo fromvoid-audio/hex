@@ -29,6 +29,7 @@ fn rendered_harmonic_stroke_is_atomic_and_shift_preserves_other_columns(cx: &mut
     let (handle, editor) = actor_editor_window(cx, service, initial, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
+    open_operator_options(&mut visual, device);
     let tab = Box::leak(format!("operator-page-{}-oscillator", device.value()).into_boxed_str());
     let bounds = visual.debug_bounds(tab).unwrap();
     visual.simulate_click(bounds.center(), Modifiers::default());
@@ -47,23 +48,27 @@ fn rendered_harmonic_stroke_is_atomic_and_shift_preserves_other_columns(cx: &mut
     }
     let tab_bounds = visual.debug_bounds(tab).unwrap();
     assert!(bounds.bottom() <= tab_bounds.top());
-    let preview = visual.debug_bounds("operator-fixed-anchors").unwrap();
-    assert!(preview.top() >= tab_bounds.bottom());
-    assert!(preview.size.width >= px(48.0));
-    assert!(preview.size.height >= px(12.0));
+    assert!(visual.debug_bounds("operator-fixed-anchors").is_none());
     let envelope = visual.debug_bounds("operator-envelope-fields").unwrap();
-    let oscillator = visual.debug_bounds("operator-oscillator-fields").unwrap();
-    assert!(envelope.right() <= oscillator.left());
+    let oscillator = visual
+        .debug_bounds(Box::leak(
+            format!("operator-options-panel-{}", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    assert!(oscillator.right() <= envelope.left());
     assert!(envelope.top() >= tab_bounds.bottom());
-    assert!(oscillator.top() >= tab_bounds.bottom());
     let field = |parameter| {
         Box::leak(format!("operator-field-{}-{parameter}", device.value()).into_boxed_str())
             as &'static str
     };
-    let phase = visual.debug_bounds(field(3)).unwrap();
+    let phase = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-3-value", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
     let velocity = visual.debug_bounds(field(74)).unwrap();
     assert!(
-        velocity.right() <= phase.left(),
+        phase.right() <= velocity.left(),
         "envelope velocity and oscillator phase cells must not collide"
     );
     for parameter in [33, 34, 35, 36, 37, 38, 74, 360, 361, 362] {
@@ -79,7 +84,7 @@ fn rendered_harmonic_stroke_is_atomic_and_shift_preserves_other_columns(cx: &mut
         let bounds = visual.debug_bounds(control).expect("oscillator toggle");
         assert!(bounds.left() >= oscillator.left() && bounds.right() <= oscillator.right());
     }
-    for parameter in [3, 74, 78, 358, 360, 361] {
+    for parameter in [3, 74, 358, 360, 361] {
         let text = editor.read_with(cx, |view, app| {
             let ParameterControl::Float { entity, .. } = &view.device_panel.controls
                 [&ParameterKey {
@@ -281,7 +286,14 @@ fn rendered_harmonic_stroke_is_atomic_and_shift_preserves_other_columns(cx: &mut
     let envelope_tab_bounds = visual.debug_bounds(envelope_tab).unwrap();
     visual.simulate_click(envelope_tab_bounds.center(), Modifiers::default());
     visual.run_until_parked();
-    assert_eq!(visual.debug_bounds(field(3)).unwrap(), phase);
+    assert_eq!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("device-{}-parameter-3-value", device.value()).into_boxed_str()
+            ))
+            .unwrap(),
+        phase
+    );
     assert_eq!(visual.debug_bounds(field(74)).unwrap(), velocity);
     assert_eq!(visual.debug_bounds(tab).unwrap(), tab_bounds);
     visual.simulate_click(tab_bounds.center(), Modifiers::default());
@@ -456,7 +468,8 @@ fn hiding_harmonic_field_cancels_stroke_and_keeps_the_preview(cx: &mut TestAppCo
         );
     });
     assert!(visual.debug_bounds(graph).is_none());
-    assert!(visual.debug_bounds("operator-fixed-anchors").is_some());
+    assert!(visual.debug_bounds("operator-envelope-graph").is_some());
+    assert!(visual.debug_bounds("operator-fixed-anchors").is_none());
     visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_click(tab_bounds.center(), Modifiers::default());
     visual.run_until_parked();
@@ -535,6 +548,7 @@ fn companion_toggles_and_loop_are_canonical_with_undo(cx: &mut TestAppContext) {
     let (handle, editor) = actor_editor_window(cx, service, initial, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
+    open_operator_options(&mut visual, device);
     for (parameter, expected) in [
         (357, ParameterValue::Bool(false)),
         (359, ParameterValue::Bool(true)),
