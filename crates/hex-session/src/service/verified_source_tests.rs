@@ -930,6 +930,31 @@ fn file_batch_storage_and_preparation_refusals_preserve_project_sources_and_wave
 }
 
 #[test]
+fn identical_file_extrema_do_not_hide_independent_channels() {
+    let files = Files::new();
+    let path = files.0.join("independent.wav");
+    let mut index = 0;
+    hex_export::write_float_wav_new(&path, 48_000, 4096, &AtomicBool::new(false), |output| {
+        for frame in output {
+            *frame = if index % 2 == 0 {
+                [0.8, -0.8]
+            } else {
+                [-0.8, 0.8]
+            };
+            index += 1;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let mut source =
+        crate::VerifiedAudioFile::inspect(path, 48_000, reservation(1).reader, || false).unwrap();
+    source.prepare_waveform_on_control(|| false).unwrap();
+    let waveform = source.cached_waveform().unwrap();
+    assert!(waveform.bins().iter().all(|pair| pair[0] == pair[1]));
+    assert!(!waveform.has_identical_channels());
+}
+
+#[test]
 fn ordinary_file_peaks_match_complete_resident_conversion_without_retaining_pcm() {
     let files = Files::new();
     for (source_rate, project_rate) in [(48_000, 48_000), (44_100, 48_000), (96_000, 44_100)] {
@@ -959,7 +984,7 @@ fn ordinary_file_peaks_match_complete_resident_conversion_without_retaining_pcm(
                 crate::VerifiedAudioFile::inspect(path.clone(), project_rate, small, || false)
                     .unwrap();
             bounded.prepare_waveform_on_control(|| false).unwrap();
-            assert_eq!(bounded.cached_waveform().unwrap().source_frames, 5003);
+            assert_eq!(bounded.cached_waveform().unwrap().source_frames(), 5003);
         }
         assert!(source.cached_waveform().is_none());
         let decoded = hex_media::decode_wav_file(
@@ -979,8 +1004,9 @@ fn ordinary_file_peaks_match_complete_resident_conversion_without_retaining_pcm(
         let expected = hex_media::waveform::summarize_peaks(&resident.audio, 1024).unwrap();
         source.prepare_waveform_on_control(|| false).unwrap();
         let actual = source.cached_waveform().unwrap();
-        assert_eq!(actual.source_frames, expected.source_frames);
-        assert_eq!(actual.bins, expected.bins);
+        assert!(actual.has_identical_channels());
+        assert_eq!(actual.source_frames(), expected.source_frames());
+        assert_eq!(actual.bins(), expected.bins());
         assert_eq!(actual.cached_bin_count(), expected.cached_bin_count());
         assert!(actual.cached_bin_count() <= 2047);
         assert!(!actual.shares_audio_with(&resident.audio));

@@ -215,7 +215,7 @@ impl Session {
                     "prepared audio sample rate differs from project",
                 ));
             }
-            let frames = u64::try_from(member.waveform.source_frames)
+            let frames = u64::try_from(member.waveform.source_frames())
                 .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
             if let Some(asset) = self.reusable_import_asset(&member) {
                 // An unchanged resident file adds no asset, PCM or waveform.

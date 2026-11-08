@@ -580,8 +580,8 @@ fn bind_editor_keys(cx: &mut App) {
             DeleteClip,
             Some("hex_editor && !hex_text_editing && !hex_text_input && !hex_device_selection && !hex_response_graph_remove && !hex_track_header"),
         ),
-        KeyBinding::new("cmd-backspace", DeleteSectionMarker, Some("hex_editor")),
-        KeyBinding::new("cmd-delete", DeleteSectionMarker, Some("hex_editor")),
+        KeyBinding::new("alt-cmd-backspace", DeleteSectionMarker, Some("hex_editor")),
+        KeyBinding::new("alt-cmd-delete", DeleteSectionMarker, Some("hex_editor")),
         KeyBinding::new(
             "g",
             GroupSelection,

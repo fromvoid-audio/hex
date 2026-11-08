@@ -393,7 +393,7 @@ impl Session {
                     .ok_or("bounce including tail allowance exceeds its frame budget")?;
                 let retained = prepared
                     .iter()
-                    .map(|p: &PreparedImport| p.waveform.source_frames as u64)
+                    .map(|p: &PreparedImport| p.waveform.source_frames() as u64)
                     .sum::<u64>();
                 if self
                     .resident_frames
@@ -478,7 +478,7 @@ impl Session {
         let mut total_bytes = self.resident_waveform_bytes;
         for (member, file) in prepared.into_iter().zip(&files) {
             if member.audio.sample_rate() != self.project().sample_rate()
-                || member.waveform.source_frames as u64 != file.frames
+                || member.waveform.source_frames() as u64 != file.frames
                 || member.path != file.path
             {
                 return Err(SessionError::Invalid(
