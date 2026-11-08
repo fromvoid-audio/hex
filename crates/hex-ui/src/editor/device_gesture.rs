@@ -81,6 +81,7 @@ pub(super) fn retire_failed_finalize_barriers(
             Request::Undo
             | Request::Redo
             | Request::SaveDevicePreset { .. }
+            | Request::SaveDeviceDefault { .. }
             | Request::LoadDevicePreset { .. } => {}
             Request::Open(_)
             | Request::OpenWith { .. }
@@ -680,8 +681,43 @@ mod tests {
     #[test]
     fn failed_terminal_retires_finalize_barriers_and_keeps_open_and_edits_ordered() {
         let control = hex_session::service::ExportControl::default();
+        let mut project =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 4).unwrap();
+        let hex_project::Created::Track(track) = project
+            .execute(hex_project::Command::AddTrack {
+                name: "default owner".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let state = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+        )
+        .unwrap();
+        let hex_project::Created::Device(device) = project
+            .execute(hex_project::Command::InsertDevice {
+                track,
+                before: None,
+                state,
+            })
+            .unwrap()
+        else {
+            panic!("device");
+        };
         let mut deferred = VecDeque::from([
             Request::SaveCurrent,
+            Request::SaveDeviceDefault {
+                owner: hex_session::service::preset::Owner {
+                    project_generation: 0,
+                    revision: 0,
+                    device,
+                    class: hex_engine::NativeDeviceClass::Effect,
+                    type_id: hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+                },
+                root: "default-data".into(),
+            },
             Request::TuningLibrary {
                 project_generation: 1,
                 revision: 2,
