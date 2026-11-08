@@ -35,7 +35,12 @@ struct Active {
 
 impl Active {
     fn terminal_error(&self, error: SessionError) -> SessionError {
-        if self.ended && !self.interrupted && !matches!(error, SessionError::PluginSourceLost(_)) {
+        if self.source_lost {
+            SessionError::PluginSourceLost(error.to_string())
+        } else if self.ended
+            && !self.interrupted
+            && !matches!(error, SessionError::PluginSourceLost(_))
+        {
             SessionError::PluginRecordingReleased(error.to_string())
         } else {
             error
