@@ -195,6 +195,9 @@ fn mode_base_handoff_shadowed_base_and_row_removal_keep_effective_routing() {
 }
 struct Clock(usize);
 impl NativeInstrumentClock for Clock {
+    fn beat_at_offset(&self, _: usize) -> Option<u64> {
+        None
+    }
     fn transport_is_running(&self) -> Option<bool> {
         Some(true)
     }
@@ -316,4 +319,55 @@ fn plain_handoff_freezes_active_audition_and_carries_an_inflight_mode_fade() {
     render(checkpoint.as_mut(), &mut out, Some(2), 17);
     reference.process_block(&mut expected, &R);
     assert_eq!(out, expected);
+}
+#[test]
+fn audition_queries_follow_effective_node_fields_and_reset_restores_base_routing() {
+    use hex_lattice::ProcessorAuditionSelection;
+    struct Values {
+        ids: [ParameterId; 3],
+        enabled: bool,
+    }
+    impl NativeParameterAutomation for Values {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            &self.ids
+        }
+        fn value_at(&self, id: ParameterId, _: usize) -> Option<ParameterValue> {
+            Some(if id == MODE {
+                ParameterValue::Choice(2)
+            } else if id == self.ids[1] {
+                ParameterValue::Bool(self.enabled)
+            } else {
+                ParameterValue::Choice(3)
+            })
+        }
+    }
+    let node = NodeId::new(1).unwrap();
+    let mut values = Values {
+        ids: [
+            MODE,
+            node.parameter(NodeParameter::Enabled).unwrap(),
+            node.parameter(NodeParameter::Bank).unwrap(),
+        ],
+        enabled: false,
+    };
+    let mut runtime = PreparedEq::automated(state(0), 48000, &values.ids)
+        .unwrap()
+        .create_runtime();
+    let selection = ProcessorAuditionSelection { lane: 0, index: 1 };
+    runtime
+        .process_block_with_automation(&mut input(1), None, &values, &R)
+        .unwrap();
+    assert!(!runtime.transient_audition().unwrap().can_select(selection));
+    runtime.reset();
+    assert!(runtime.transient_audition().unwrap().can_select(selection));
+    values.enabled = true;
+    runtime
+        .process_block_with_automation(&mut input(64), None, &values, &R)
+        .unwrap();
+    assert!(runtime.transient_audition().unwrap().can_select(selection));
+    runtime.reset();
+    assert!(
+        runtime.transient_audition().unwrap().can_select(selection),
+        "reset must expose canonical stereo bank before the next render"
+    );
 }

@@ -830,6 +830,18 @@ impl NativeProcessorRuntime for EqRuntime {
         self.last_frame = None;
         self.fallback_frame = 0;
         self.mode = self.configuration.mode;
+        self.effective_banks = std::array::from_fn(|index| {
+            self.configuration
+                .nodes
+                .get(index)
+                .map_or(0, |node| node.bank)
+        });
+        self.effective_enabled = std::array::from_fn(|index| {
+            self.configuration
+                .nodes
+                .get(index)
+                .is_some_and(|node| node.enabled)
+        });
         self.pristine = true;
         self.audition = None;
         self.audition_request = None;
