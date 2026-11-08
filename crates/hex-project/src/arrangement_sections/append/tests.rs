@@ -218,7 +218,12 @@ fn invalid_append_preserves_the_complete_project_and_history() {
 
 #[test]
 fn capacity_accounts_for_both_copy_and_gap_before_mutation() {
-    for count in [MAX_ARRANGEMENT_SECTIONS - 1, MAX_ARRANGEMENT_SECTIONS] {
+    for (count, gap, admitted) in [
+        (MAX_ARRANGEMENT_SECTIONS - 1, false, true),
+        (MAX_ARRANGEMENT_SECTIONS - 1, true, false),
+        (MAX_ARRANGEMENT_SECTIONS, false, false),
+        (MAX_ARRANGEMENT_SECTIONS, true, false),
+    ] {
         let mut project = Project::new(8_000).unwrap();
         project.arrangement_sections = (0..count)
             .map(|index| ArrangementSection {
@@ -232,7 +237,30 @@ fn capacity_accounts_for_both_copy_and_gap_before_mutation() {
         project.next_id = count as u64 + 1;
         let mut editor = Editor::new(project, 1).unwrap();
         let before = editor.project().snapshot();
-        let edit = command(SectionId(1), beat(count as u64 + 1));
+        let edit = command(SectionId(1), beat(count as u64 + u64::from(gap)));
+        if admitted {
+            let preview = editor
+                .project()
+                .preview_arrangement_section_edit(&edit)
+                .unwrap();
+            editor.execute(edit).unwrap();
+            assert_eq!(
+                editor.project().arrangement_sections().len(),
+                MAX_ARRANGEMENT_SECTIONS
+            );
+            assert_eq!(
+                geometry(editor.project().arrangement_sections()),
+                geometry(preview.sections())
+            );
+            assert!(
+                !editor
+                    .project()
+                    .arrangement_sections()
+                    .iter()
+                    .any(|marker| marker.name() == "gap")
+            );
+            continue;
+        }
         assert!(
             editor
                 .project()
