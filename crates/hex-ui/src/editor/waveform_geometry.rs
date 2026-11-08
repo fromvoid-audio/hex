@@ -94,6 +94,13 @@ pub(super) struct WaveformGeometry {
 pub(super) struct WaveformChannelGeometry {
     outline: Vec<gpui::Point<Pixels>>,
 }
+#[cfg(test)]
+impl WaveformGeometry {
+    fn channels(&self) -> &[WaveformChannelGeometry] {
+        &self.channels[..self.display.channels().len()]
+    }
+}
+
 impl AsRef<hex_widgets::WaveformGeometry> for WaveformGeometry {
     fn as_ref(&self) -> &hex_widgets::WaveformGeometry {
         &self.display
@@ -736,6 +743,10 @@ pub(super) fn prepare_waveform_geometry(
         columns: point_count,
     })
 }
+
+#[cfg(test)]
+#[path = "waveform_geometry/lane_tests.rs"]
+mod lane_tests;
 
 #[cfg(test)]
 mod tests {
