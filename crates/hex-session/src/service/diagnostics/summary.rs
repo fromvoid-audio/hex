@@ -207,6 +207,11 @@ pub(super) fn created(value: &hex_project::Created) -> Description {
 
 pub(super) fn command(value: &Command) -> Description {
     match value {
+        Command::InitializeDevice(initialization) => {
+            let mut description = describe!("initialize_device"; ["comparison_present" => initialization.comparison().is_some()]; omitted="comparison");
+            description.nested("creation", command(initialization.command()));
+            description
+        }
         Command::DuplicateAliasClips(value0) => {
             describe!("duplicate_alias_clips"; ["value0_count" => value0.len()]; omitted="")
         }
@@ -1930,6 +1935,36 @@ pub(super) fn gesture_target(value: &crate::device_gesture::GestureTarget) -> De
 #[cfg(test)]
 mod default_tests {
     use super::*;
+
+    #[test]
+    fn initialized_device_projection_preserves_kind_without_names_or_bank_payloads() {
+        let secret = "秘密の音🎵";
+        let type_id = hex_lattice_contract::DeviceTypeId::from_static("test.device");
+        let state =
+            hex_lattice_contract::NativeDeviceState::new(type_id, 1, secret.as_bytes().to_vec())
+                .unwrap();
+        let initialization = hex_project::DeviceInitialization::new(
+            Command::InsertDefaultTrackWithDevice {
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: state.clone(),
+                device_name: secret.into(),
+            },
+            Some(hex_project::DeviceComparison::new(
+                hex_project::DeviceVariant::B,
+                state,
+            )),
+        )
+        .unwrap();
+        let description = command(&Command::InitializeDevice(Box::new(initialization)));
+        assert_eq!(description.name, "initialize_device");
+        let details = description.details.text;
+        assert!(details.contains("creation=insert_default_track_with_device"));
+        assert!(details.contains("comparison_present=true"));
+        assert!(details.contains("state_payload_bytes="));
+        assert!(!details.contains(secret));
+        assert!(!details.contains("秘密"));
+    }
 
     #[test]
     fn device_default_projection_redacts_the_configured_data_folder() {

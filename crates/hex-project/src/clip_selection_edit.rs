@@ -531,7 +531,8 @@ impl Command {
             | Self::ApplyClipSettingsToAliases(_)
             | Self::DuplicateSessionCell { .. }
             | Self::ReverseClips(_) => ClipCommandScope::Explicit,
-            Self::AddArrangementSection { .. }
+            Self::InitializeDevice(_)
+            | Self::AddArrangementSection { .. }
             | Self::SetArrangementSectionRange { .. }
             | Self::MoveArrangementSectionMarker { .. }
             | Self::ResizeArrangementSectionMarker { .. }
