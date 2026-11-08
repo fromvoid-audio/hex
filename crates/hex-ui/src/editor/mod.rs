@@ -49,6 +49,8 @@ mod navigation_metrics;
 mod plugin_effect;
 mod selection_play_start;
 mod truncated_import;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod worker_ui_fixture;
 #[cfg(feature = "ui-test-support")]
 pub(crate) use plugin_effect::fixture_catalog as plugin_effect_fixture_catalog;
 #[cfg(feature = "ui-test-support")]
