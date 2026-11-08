@@ -2202,14 +2202,7 @@ fn verify_instrument_takeover(
                 send(h, &mut client, true);
                 return;
             }
-            use hex_session::service::{DeviceAutomationTakeProgress, DeviceAutomationTakeScope};
-            let scope = {
-                let originals =
-                    crate::native_audio::tests::resident_preview::SESSION_RECORDING_OBSERVATIONS
-                        .lock()
-                        .unwrap();
-                DeviceAutomationTakeScope::from_plugin_ready(origin.context, &originals[0]).unwrap()
-            };
+            use hex_session::service::DeviceAutomationTakeProgress;
             let directory = recovery_directory.unwrap().join("automation-drafts");
             let paths = std::fs::read_dir(directory)
                 .unwrap()
@@ -2218,17 +2211,57 @@ fn verify_instrument_takeover(
             assert_eq!(paths.len(), 1);
             let path = paths[0].clone();
             let original = std::fs::read(&path).unwrap();
+            // Durable header data are sufficient; the caller does not retain or
+            // reconstruct the old SDK worker binding to request recovery.
+            let (target, expected) = {
+                let reader = hex_storage::automation_draft::DraftReader::open(
+                    &path,
+                    hex_storage::automation_draft::DraftReadLimits {
+                        max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
+                    },
+                )
+                .unwrap();
+                (reader.target(), reader.provenance())
+            };
             let request = |request_id| Request::RecoverDeviceAutomationTake {
                 request_id,
-                target: hex_storage::automation_draft::DraftTarget::Device {
-                    device,
-                    target: DeviceAutomationTarget::Vst3 { parameter: 7 },
-                },
-                expected: scope.stamp,
+                target,
+                expected,
                 path: path.clone(),
                 context: origin.context,
             };
-            let recovered = super::automation::edit_with_running_callback(h, request(401));
+            h.service.submit(request(401)).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut fragment = 0usize;
+            let recovered = loop {
+                h.pump();
+                if let Ok(event) = h.service.try_event()
+                    && event
+                        .device_automation_take_complete
+                        .as_ref()
+                        .is_some_and(|done| done.request_id == 401)
+                {
+                    break event;
+                }
+                // Probe the actual publication interval, including its first
+                // callback, while retaining the original held instrument gate.
+                render_takeover_partial(h, [3, 5, 117, 1, 130][fragment % 5], true, &case, None);
+                fragment += 1;
+                while h
+                    .callback
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .native_workers_idle_on_control()
+                    != Some(true)
+                {
+                    assert!(Instant::now() < deadline, "recovery DSP prefix timed out");
+                    std::thread::yield_now();
+                }
+                assert!(Instant::now() < deadline, "recovery publication timed out");
+                std::thread::yield_now();
+            };
             assert!(recovered.error.is_none(), "{:?}", recovered.error);
             assert_eq!(
                 recovered
