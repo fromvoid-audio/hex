@@ -81,6 +81,10 @@
 use crate::{Command, DeviceId, Invalid, Project, TrackId};
 use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
 
+#[cfg(test)]
+#[path = "device_unit_removal_tests.rs"]
+mod unit_removal_tests;
+
 pub const MAX_DEVICES_PER_TRACK: usize = 64;
 pub const MAX_DEVICES: usize = crate::MAX_TRACKS * (MAX_DEVICES_PER_TRACK + 1)
     + crate::MAX_RETURN_TRACKS * MAX_DEVICES_PER_TRACK;
@@ -165,14 +169,19 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
         }
         Command::RemoveDevice(id) => {
             if let Ok((track, index)) = locate_device(project, id) {
-                project.tracks[track].devices.remove(index);
+                let span = crate::device_inventory::serial_unit_span(
+                    &project.tracks[track].devices,
+                    index,
+                )?;
+                let removed = span.len();
+                drop(project.tracks[track].devices.drain(span));
                 if project.tracks[track]
                     .instrument_position
                     .is_some_and(|position| index < position)
                 {
                     project.tracks[track].instrument_position = project.tracks[track]
                         .instrument_position
-                        .and_then(|position| position.checked_sub(1));
+                        .and_then(|position| position.checked_sub(removed));
                 }
             } else if let Some((track, index)) =
                 project
@@ -186,13 +195,18 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
                             .map(|index| (track, index))
                     })
             {
-                project.returns[track].devices.remove(index);
+                let span = crate::device_inventory::serial_unit_span(
+                    &project.returns[track].devices,
+                    index,
+                )?;
+                drop(project.returns[track].devices.drain(span));
             } else if let Some(index) = project
                 .main_devices
                 .iter()
                 .position(|device| device.id == id)
             {
-                project.main_devices.remove(index);
+                let span = crate::device_inventory::serial_unit_span(&project.main_devices, index)?;
+                drop(project.main_devices.drain(span));
             } else {
                 return Err(Invalid("device no longer exists"));
             }
