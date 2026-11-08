@@ -125,7 +125,12 @@ impl SaturatorRuntime {
         .into_iter()
         .enumerate()
         {
-            if self.controls.has_value(index) {
+            let parameter = [parameter::DRIVE, parameter::OUTPUT][index];
+            // An omitted reading route keeps its existing immediate fallback.
+            // A retained route with no value represents base selection instead.
+            let omitted = self.base.supports(parameter)
+                && values.parameter_ids().binary_search(&parameter).is_err();
+            if self.controls.has_value(index) || omitted {
                 *gain = target;
                 self.gain_ramp_remaining[index] = 0;
             } else {

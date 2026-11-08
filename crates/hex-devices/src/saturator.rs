@@ -523,6 +523,9 @@ impl SaturatorRuntime {
 
     /// Bypass is already a discontinuity; resume from exact fallback targets.
     fn finish_gain_ramp(&mut self) {
+        if self.gain_ramp_remaining == [0; 2] {
+            return;
+        }
         for (index, (gain, target)) in [
             (&mut self.drive_gain, self.base.drive_gain),
             (&mut self.output_gain, self.base.output_gain),
