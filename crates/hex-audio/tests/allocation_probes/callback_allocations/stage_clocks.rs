@@ -167,3 +167,132 @@ fn limiter_output_gain_uses_delayed_content_clock_without_callback_allocations()
     control.reclaim();
     Ok(())
 }
+
+#[test]
+fn limiter_native_targets_publish_audibly_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    const BLOCK: usize = 1024;
+    use hex_devices::limiter::{DEFINITION as D, parameter as p};
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let mut editor = Editor::new(Project::new(RATE)?, 16)?;
+    let Created::Imported { track, asset, .. } =
+        editor.execute(Command::ImportPreparedAudioTrack {
+            name: "limiter automation".into(),
+            path: "memory/limiter.wav".into(),
+            source_sample_rate: RATE,
+            source_frames: (BLOCK * 8) as u64,
+            playback_frames: (BLOCK * 8) as u64,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        })?
+    else {
+        return Err("audio track".into());
+    };
+    let Created::Device(device) = editor.execute(Command::InsertDevice {
+        track,
+        before: None,
+        state: D.default_state()?,
+    })?
+    else {
+        return Err("limiter".into());
+    };
+    let media = BTreeMap::from([(asset, Audio::new(RATE, vec![[0.1, -0.05]; BLOCK * 8])?)]);
+    let table = Arc::new(SineTable::new());
+    let prepare = |project: &Project| -> Result<_, Box<dyn Error>> {
+        Ok(Arc::new(PreparedRevision::prepare(
+            project,
+            &media,
+            Arc::clone(&table),
+            None,
+        )?))
+    };
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    let (mut old_control, mut old_callback) = prepared::channel(RATE)?;
+    for owner in [&mut control, &mut old_control] {
+        owner
+            .publish(Playback::try_from_prepared_with_session(prepare(
+                editor.project(),
+            )?)?)
+            .map_err(|_| "publish")?;
+        owner.command(PlaybackCommand::Play).map_err(|_| "play")?;
+    }
+    let mut out = [[0.0; 2]; BLOCK];
+    let mut old_out = out;
+    measured_block(&mut callback, &mut out);
+    measured_block(&mut old_callback, &mut old_out);
+    assert_eq!(out, old_out);
+    for (parameter, a, b) in [
+        (p::GAIN, 0.5, 0.75),
+        (p::CEILING, 1.0, 0.875),
+        (p::RELEASE, 0.6, 0.4),
+    ] {
+        editor.execute(Command::ReplaceDeviceAutomation {
+            device,
+            parameter,
+            points: vec![
+                AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: AutomationValue::new(a)?,
+                    outgoing: AutomationInterpolation::Linear,
+                },
+                AutomationPoint {
+                    beat: editor
+                        .project()
+                        .tempo_map()
+                        .frame_to_beat((BLOCK * 2) as u64)?,
+                    value: AutomationValue::new(b)?,
+                    outgoing: AutomationInterpolation::Step,
+                },
+            ],
+        })?;
+    }
+    let authored = editor.project().snapshot();
+    assert!(editor.undo());
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), authored);
+    let path =
+        std::env::temp_dir().join(format!("hex-limiter-automation-{}.hex", std::process::id()));
+    hex_storage::save_new(&path, editor.project())?;
+    let loaded = hex_storage::load(&path);
+    std::fs::remove_file(path)?;
+    let loaded = loaded?;
+    assert_eq!(&loaded, editor.project());
+    control
+        .publish(Playback::try_from_prepared_with_session(prepare(&loaded)?)?)
+        .map_err(|_| "automation publication")?;
+    measured_block(&mut callback, &mut out);
+    measured_block(&mut old_callback, &mut old_out);
+    assert!(out.iter().flatten().all(|v| v.is_finite()));
+    assert!(
+        out.iter()
+            .zip(&old_out)
+            .any(|(a, b)| (a[0] - b[0]).abs() > 1e-4)
+    );
+    control.reclaim();
+    for bypassed in [true, false] {
+        editor.execute(Command::SetDeviceBypass { device, bypassed })?;
+        control
+            .publish(Playback::try_from_prepared_with_session(prepare(
+                editor.project(),
+            )?)?)
+            .map_err(|_| "bypass publication")?;
+        measured_block(&mut callback, &mut out);
+        assert!(out.iter().flatten().all(|v| v.is_finite()));
+        assert!(out.iter().flatten().any(|v| v.abs() > 0.0));
+        control.reclaim();
+    }
+    editor.execute(Command::RemoveDevice(device))?;
+    control
+        .publish(Playback::try_from_prepared_with_session(prepare(
+            editor.project(),
+        )?)?)
+        .map_err(|_| "removal publication")?;
+    measured_block(&mut callback, &mut out);
+    control.reclaim();
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut out);
+    control.reclaim();
+    old_control.request_shutdown();
+    measured_shutdown(&mut old_callback, &mut old_out);
+    old_control.reclaim();
+    Ok(())
+}
