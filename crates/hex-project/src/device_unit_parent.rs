@@ -96,6 +96,45 @@ pub(super) fn apply(
     Ok(())
 }
 
+pub(super) fn insert(
+    project: &mut Project,
+    parent: DeviceId,
+    state: hex_lattice_contract::NativeDeviceState,
+) -> Result<crate::Created, Invalid> {
+    let (owner, index) = locate(project, parent)?;
+    let chain = devices(project, owner);
+    let end = crate::device_inventory::serial_unit_span(chain, index)?.end;
+    let before = chain.get(end).map(Device::id);
+    let command = match owner {
+        Owner::Track(index) => {
+            let track = &project.tracks[index];
+            let before = if track.instrument_position == Some(end) {
+                track.instrument().map(Device::id)
+            } else {
+                before
+            };
+            crate::Command::InsertDevice {
+                track: track.id,
+                before,
+                state,
+            }
+        }
+        Owner::Return(index) => crate::Command::InsertReturnDevice {
+            return_track: project.returns[index].id,
+            before,
+            state,
+        },
+        Owner::Main => crate::Command::InsertMainDevice { before, state },
+    };
+    let crate::Created::Device(id) = project.apply(command)? else {
+        return Err(Invalid(
+            "nested device insertion returned an invalid result",
+        ));
+    };
+    apply(project, id, Some(parent))?;
+    Ok(crate::Created::Device(id))
+}
+
 #[cfg(test)]
 #[path = "device_unit_parent_tests.rs"]
 mod tests;
