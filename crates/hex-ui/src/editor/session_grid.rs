@@ -424,7 +424,10 @@ impl EditorView {
         });
         let available_width =
             f32::from(window.bounds().size.width) - self.browser_content_width(window);
-        let pending_return = self.track_gain_controls.pending_return_gain(generation, cx);
+        let pending_return = self
+            .track_name
+            .pending_return(generation)
+            .or_else(|| self.track_gain_controls.pending_return_gain(generation, cx));
         let return_page = self.console_returns.page(
             &state.project,
             generation,

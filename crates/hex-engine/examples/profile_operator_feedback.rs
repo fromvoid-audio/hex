@@ -5,7 +5,7 @@ mod fixture;
 
 use fixture::Fixture;
 use hex_engine::{PreparedRevision, SessionPlayback, SessionPlaybackCommand, SineTable};
-use hex_lattice::InstrumentHistoryRetargetPreparation;
+use hex_lattice::{InstrumentHistoryRetargetPreparation, PreparedMutableInstrumentRuntime};
 use hex_project::{Command, Editor};
 use std::{collections::BTreeMap, error::Error, hint::black_box, sync::Arc, time::Instant};
 
@@ -41,7 +41,7 @@ struct Options {
 fn main() -> Result<(), Box<dyn Error>> {
     let options = parse_options()?;
     println!(
-        "profile={} operator=registered feedback=nonzero states=feedback:{FEEDBACK_A}->{FEEDBACK_B},level:{LEVEL_A}->{LEVEL_B} ramp_default=5ms sample_rate={} tracks={} notes_per_track={} topology={} block_frames={} warmup_blocks={} measured_blocks={} scenario={:?} all_operators={} arch={} os={}",
+        "profile={} operator=registered processing_mode=global audible_capacity=32 feedback=nonzero states=feedback:{FEEDBACK_A}->{FEEDBACK_B},level:{LEVEL_A}->{LEVEL_B} ramp_default=5ms sample_rate={} tracks={} notes_per_track={} topology={} block_frames={} warmup_blocks={} measured_blocks={} scenario={:?} all_operators={} arch={} os={}",
         if cfg!(debug_assertions) {
             "debug"
         } else {
@@ -131,6 +131,7 @@ fn run_steady(
         let started = Instant::now();
         playback.render(black_box(&mut output))?;
         timings.push(started.elapsed().as_nanos());
+        ensure_finite_audible_pcm("measured steady block", &output)?;
         update_checksum(&mut checksum, black_box(&output));
     }
 
@@ -196,6 +197,7 @@ fn run_retarget(
         let render_started = Instant::now();
         candidate.render(black_box(&mut output))?;
         let render_elapsed = render_started.elapsed().as_nanos();
+        ensure_finite_audible_pcm("retarget following block", &output)?;
         if iteration >= options.warmup {
             update_checksum(&mut checksum, black_box(&output));
             setup_timings.push(setup_elapsed);
@@ -252,18 +254,7 @@ fn prepare_revision(
 fn report_registered_storage(
     state: &hex_lattice_contract::NativeDeviceState,
 ) -> Result<(), Box<dyn Error>> {
-    let registry = hex_devices::native_instrument_registry()?;
-    let prepared = registry.prepare_instrument(
-        state,
-        &hex_lattice::DevicePreparationContext {
-            sample_rate: fixture::SAMPLE_RATE,
-            tuning: &hex_lattice::TuningTable::default(),
-            resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
-        },
-    )?;
-    let factory = prepared
-        .prepare_mutable_runtime()?
-        .ok_or("nonzero feedback did not select the registered mutable runtime")?;
+    let factory = registered_factory(state)?;
     let pair_bytes = factory
         .declared_twin_bytes()
         .checked_mul(2)
@@ -276,12 +267,31 @@ fn report_registered_storage(
         }
     };
     println!(
-        "declared_registered_operator_runtime_twin_bytes={} declared_pair_bytes={} target_proof_bytes={} host_total_bytes=not_exposed_by_public_api",
+        "state_version={} declared_registered_operator_runtime_twin_bytes={} declared_pair_bytes={} declared_occurrence_capacity={} target_proof_bytes={} host_total_bytes=not_exposed_by_public_api",
+        state.state_version(),
         factory.declared_twin_bytes(),
         pair_bytes,
+        factory.max_active_occurrences(),
         proof.declared_fixed_storage_bytes(),
     );
     Ok(())
+}
+
+fn registered_factory(
+    state: &hex_lattice_contract::NativeDeviceState,
+) -> Result<Box<dyn PreparedMutableInstrumentRuntime>, Box<dyn Error>> {
+    let registry = hex_devices::native_instrument_registry()?;
+    let prepared = registry.prepare_instrument(
+        state,
+        &hex_lattice::DevicePreparationContext {
+            sample_rate: fixture::SAMPLE_RATE,
+            tuning: &hex_lattice::TuningTable::default(),
+            resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        },
+    )?;
+    Ok(prepared
+        .prepare_mutable_runtime()?
+        .ok_or("nonzero feedback did not select the registered mutable runtime")?)
 }
 
 fn verify_partition_checksum(revision: Arc<PreparedRevision>) -> Result<(), Box<dyn Error>> {
@@ -324,7 +334,18 @@ fn ensure_finite_audible_pcm(label: &str, frames: &[[f32; 2]]) -> Result<(), Box
 
 #[cfg(test)]
 mod tests {
-    use super::ensure_finite_audible_pcm;
+    use super::*;
+
+    #[test]
+    fn current_global_density_check_uses_occurrence_admission() {
+        assert_eq!(
+            registered_factory(&fixture::state(FEEDBACK_A, LEVEL_A).unwrap())
+                .unwrap()
+                .max_active_occurrences(),
+            64
+        );
+        verify_density_refusal(Arc::new(SineTable::new()), false).unwrap();
+    }
 
     #[test]
     fn partition_fixture_guard_rejects_silence_and_non_finite_pcm() {
@@ -338,16 +359,30 @@ fn verify_density_refusal(
     table: Arc<SineTable>,
     all_operators: bool,
 ) -> Result<(), Box<dyn Error>> {
-    let overfull = if all_operators {
-        fixture::project_with_operators(1, 17, FEEDBACK_A, LEVEL_A, true)?
-    } else {
-        fixture::project(1, 17, FEEDBACK_A, LEVEL_A)?
+    let state = fixture::state_with_operators(FEEDBACK_A, LEVEL_A, all_operators)?;
+    let limit = registered_factory(&state)?.max_active_occurrences();
+    let over_limit = limit.checked_add(1).ok_or("occurrence limit overflow")?;
+    let fixture = |notes| {
+        if all_operators {
+            fixture::project_with_operators(1, notes, FEEDBACK_A, LEVEL_A, true)
+        } else {
+            fixture::project(1, notes, FEEDBACK_A, LEVEL_A)
+        }
     };
+    let admitted = fixture(limit)?;
+    let mut playback =
+        SessionPlayback::new(Arc::new(prepare_revision(&admitted.project, &table, None)?))?;
+    playback.apply(SessionPlaybackCommand::Play)?;
+    let mut output = [[0.0; 2]; CHECK_FRAMES];
+    playback.render(&mut output)?;
+    ensure_finite_audible_pcm("exact-capacity density fixture", &output)?;
+    println!("density_admission_check=pass occurrence_identities={limit}");
+    let overfull = fixture(over_limit)?;
     let revision = match prepare_revision(&overfull.project, &table, None) {
         Ok(revision) => Arc::new(revision),
         Err(error) if is_density_refusal(&error) => {
             println!(
-                "density_refusal_check=pass phase=revision_preparation voices_per_track=17 limit=16"
+                "density_refusal_check=pass phase=revision_preparation occurrence_identities={over_limit} limit={limit}"
             );
             return Ok(());
         }
@@ -357,7 +392,7 @@ fn verify_density_refusal(
         Ok(playback) => playback,
         Err(error) if is_density_refusal(&error) => {
             println!(
-                "density_refusal_check=pass phase=playback_setup voices_per_track=17 limit=16"
+                "density_refusal_check=pass phase=playback_setup occurrence_identities={over_limit} limit={limit}"
             );
             return Ok(());
         }
@@ -366,11 +401,13 @@ fn verify_density_refusal(
     playback.apply(SessionPlaybackCommand::Play)?;
     let mut frame = [[0.0_f32; 2]; 1];
     match playback.render(&mut frame) {
-        Ok(()) => return Err("17 simultaneous Operator notes were not refused".into()),
+        Ok(()) => return Err("over-limit Operator occurrence identities were not refused".into()),
         Err(error) if is_density_refusal(&error) => {}
         Err(error) => return Err(error.into()),
     }
-    println!("density_refusal_check=pass phase=render voices_per_track=17 limit=16");
+    println!(
+        "density_refusal_check=pass phase=render occurrence_identities={over_limit} limit={limit}"
+    );
     Ok(())
 }
 
@@ -461,8 +498,8 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
             return Err(usage().into());
         }
     }
-    if !matches!(options.tracks, 1 | 2 | 100)
-        || !matches!(options.notes, 1 | 16)
+    if !matches!(options.tracks, 1 | 2 | 25 | 100)
+        || !matches!(options.notes, 1 | 16 | 32)
         || !matches!(options.block, 128 | 512)
         || options.measured == 0
         || options.measured > 100_000
@@ -491,5 +528,5 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
 }
 
 fn usage() -> &'static str {
-    "usage: profile_operator_feedback [--tracks=1|2|100] [--notes=1|16] [--block=128|512] [--warmup-blocks=n] [--measured-blocks=n] [--scenario=steady|retarget|both] [--density-check] [--all-operators] [--shared-source (steady only)]"
+    "usage: profile_operator_feedback [--tracks=1|2|25|100] [--notes=1|16|32] [--block=128|512] [--warmup-blocks=n] [--measured-blocks=n] [--scenario=steady|retarget|both] [--density-check] [--all-operators] [--shared-source (steady only)]"
 }

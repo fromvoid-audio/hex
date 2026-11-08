@@ -30,6 +30,12 @@ impl Target {
                 .map(ReturnTrack::name),
         }
     }
+    fn name_editing_supported(self, mode: super::EditorMode) -> bool {
+        match mode {
+            super::EditorMode::Arrangement => true,
+            super::EditorMode::Session => matches!(self, Self::Return(_)),
+        }
+    }
     fn rename(self, name: String) -> Command {
         match self {
             Self::Track(track) => Command::RenameTrack { track, name },
@@ -79,6 +85,16 @@ pub(super) fn parse_tags(text: &str) -> Result<Vec<hex_project::TrackTag>, hex_p
 impl TrackNameState {
     pub(super) fn is_editing(&self) -> bool {
         self.edit.is_some()
+    }
+    pub(super) fn pending_return(&self, generation: u64) -> Option<ReturnId> {
+        let edit = self
+            .edit
+            .as_ref()
+            .filter(|edit| edit.generation == generation)?;
+        match edit.target {
+            Target::Return(id) => Some(id),
+            Target::Track(_) => None,
+        }
     }
 }
 pub(super) fn bind_keys(cx: &mut App) {
@@ -199,7 +215,7 @@ impl EditorView {
             self.track_name.scope = current;
         }
         if let Some(edit) = &self.track_name.edit
-            && ((edit.tags.is_none() && self.mode != super::EditorMode::Arrangement)
+            && ((edit.tags.is_none() && !edit.target.name_editing_supported(self.mode))
                 || edit.generation != self.project_generation
                 || !self.state.as_ref().is_some_and(|state| {
                     state.revision == edit.revision && edit.matches(&state.project)
@@ -278,7 +294,7 @@ impl EditorView {
             self.error = Some("finish or cancel the current edit before editing tags".into());
             return;
         }
-        if (!tags && self.mode != super::EditorMode::Arrangement)
+        if (!tags && !target.name_editing_supported(self.mode))
             || self.edit_pending()
             || self.track_name.edit.is_some()
             || self.clip_name_edit.is_some()
@@ -287,6 +303,14 @@ impl EditorView {
             || self.active_midi_trim_drag.is_some()
             || self.active_fade_drag.is_some()
         {
+            return;
+        }
+        if matches!(target, Target::Return(_))
+            && self.mode == super::EditorMode::Session
+            && self.track_gain_controls.has_pending_draft(cx)
+        {
+            self.error = Some("finish the current numeric edit before renaming the return".into());
+            cx.notify();
             return;
         }
         let Some(state) = &self.state else {
@@ -452,13 +476,22 @@ impl EditorView {
         track: TrackId,
         cx: &mut Context<Self>,
     ) -> FocusHandle {
+        self.header_name_focus(Target::Track(track), cx)
+    }
+
+    /// Allocate one stable header focus owner, including before its Console
+    /// page is painted during keyboard navigation.
+    pub(super) fn header_name_focus(
+        &mut self,
+        target: Target,
+        cx: &mut Context<Self>,
+    ) -> FocusHandle {
         self.track_name
             .focuses
-            .entry(Target::Track(track))
+            .entry(target)
             .or_insert_with(|| cx.focus_handle())
             .clone()
     }
-
     /// One inline label/input renderer for both stable naming owners. Row geometry
     /// and ordinary header focus remain with their existing callers.
     pub(super) fn track_name_label(
@@ -467,12 +500,7 @@ impl EditorView {
         name: &str,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let focus = self
-            .track_name
-            .focuses
-            .entry(target)
-            .or_insert_with(|| cx.focus_handle())
-            .clone();
+        let focus = self.header_name_focus(target, cx);
         let click_focus = focus.clone();
         let (element_id, input_selector): (gpui::ElementId, &str) = match target {
             Target::Track(id) => (("track-name-focus", id.value()).into(), "track-name-input"),
@@ -496,7 +524,13 @@ impl EditorView {
             .min_w_0()
             .flex_1()
             .when(matches!(target, Target::Return(_)), |label| {
-                label.track_focus(&focus).key_context("hex_return_header")
+                label
+                    .track_focus(&focus)
+                    .key_context(if self.mode == super::EditorMode::Session {
+                        "hex_return_header hex_console_return_header"
+                    } else {
+                        "hex_return_header"
+                    })
             })
             .on_click(
                 cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {

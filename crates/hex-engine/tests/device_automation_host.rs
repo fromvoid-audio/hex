@@ -547,6 +547,17 @@ fn limiter_values(parameters: &[(hex_lattice_contract::ParameterId, f32)]) {
 
 #[test]
 fn limiter_lookahead_retains_maximum_pdc_across_owners_reading_and_seek() {
+    limiter_structural_values(hex_devices::limiter::parameter::LOOKAHEAD, 3, 48);
+}
+#[test]
+fn limiter_routing_retains_maximum_pdc_across_owners_reading_and_seek() {
+    limiter_structural_values(hex_devices::limiter::parameter::ROUTING, 2, 24);
+}
+fn limiter_structural_values(
+    parameter: hex_lattice_contract::ParameterId,
+    choices: u32,
+    expected_latency: usize,
+) {
     use hex_devices::limiter::{DEFINITION as D, parameter as p};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
     use hex_project::AutomationReadSelection as Read;
@@ -568,12 +579,12 @@ fn limiter_lookahead_retains_maximum_pdc_across_owners_reading_and_seek() {
         state(&mut base, settings.clone());
         let base_pcm = render(&base, true, 1024, 31);
         let base_latency = latency(&base);
-        for look in 0..3 {
+        for choice in 0..choices {
             let mut canonical =
                 fixture_owner(DeviceTypeId::from_static("hex.limiter"), 1024, owner);
             state(
                 &mut canonical,
-                D.patch_parameter(&settings, p::LOOKAHEAD, ParameterValue::Choice(look))
+                D.patch_parameter(&settings, parameter, ParameterValue::Choice(choice))
                     .unwrap(),
             );
             let static_latency = latency(&canonical);
@@ -582,15 +593,15 @@ fn limiter_lookahead_retains_maximum_pdc_across_owners_reading_and_seek() {
             state(&mut f, settings.clone());
             lane(
                 &mut f,
-                Target::Parameter(p::LOOKAHEAD),
+                Target::Parameter(parameter),
                 vec![AutomationPoint {
                     beat: BeatTime::ZERO,
-                    value: AutomationValue::new(look as f32 / 2.0).unwrap(),
+                    value: AutomationValue::new(choice as f32 / (choices - 1) as f32).unwrap(),
                     outgoing: Curve::Step,
                 }],
             );
             let maximum = latency(&f);
-            assert_eq!(maximum, 48);
+            assert_eq!(maximum, expected_latency);
             let expected: Vec<_> = (0usize..1024)
                 .map(|i| {
                     i.checked_sub(maximum - static_latency)
@@ -608,7 +619,7 @@ fn limiter_lookahead_retains_maximum_pdc_across_owners_reading_and_seek() {
                     .to_vec();
             f.e.execute(Command::SetDeviceAutomationReadSelection {
                 device: f.device,
-                target: Target::Parameter(p::LOOKAHEAD),
+                target: Target::Parameter(parameter),
                 selection: Read::Base,
             })
             .unwrap();
@@ -622,7 +633,7 @@ fn limiter_lookahead_retains_maximum_pdc_across_owners_reading_and_seek() {
             close(&render(&f, true, 1024, 19), &expected_base);
             f.e.execute(Command::SetDeviceAutomationReadSelection {
                 device: f.device,
-                target: Target::Parameter(p::LOOKAHEAD),
+                target: Target::Parameter(parameter),
                 selection: Read::Authored,
             })
             .unwrap();

@@ -1,5 +1,5 @@
 //! Nine value controls use their existing owned history and latency. Lookahead
-//! eligibility selects the bounded ten-control factory at fixed maximum latency.
+//! or routing eligibility selects the bounded structural factory at fixed latency.
 use super::{
     decode,
     runtime::Factory,
@@ -90,7 +90,7 @@ pub(super) fn descriptor(id: ParameterId) -> Option<ParameterDescriptor> {
     slot(id).map(|i| BINDINGS[i].descriptor)
 }
 pub(super) fn semantics(id: ParameterId) -> Option<ParameterSemantics> {
-    if id == LOOKAHEAD {
+    if matches!(id, LOOKAHEAD | ROUTING) {
         super::runtime::structural::semantics(id)
     } else {
         slot(id).map(|i| BINDINGS[i].semantics)
@@ -108,10 +108,13 @@ pub(super) fn prepare(
     if ids.is_empty() || ids.windows(2).any(|w| w[0] >= w[1]) {
         return Err(DeviceContractError::UnsupportedProcessingClass);
     }
-    if ids.iter().any(|&id| id != LOOKAHEAD && slot(id).is_none()) {
+    if ids
+        .iter()
+        .any(|&id| !matches!(id, LOOKAHEAD | ROUTING) && slot(id).is_none())
+    {
         return Err(DeviceContractError::UnsupportedProcessingClass);
     }
-    if ids.binary_search(&LOOKAHEAD).is_ok() {
+    if ids.iter().any(|id| matches!(*id, LOOKAHEAD | ROUTING)) {
         return Ok(PreparedRuntimeDevice {
             matrix: StereoMatrix::identity(),
             processor: Some(PreparedProcessorFactory::Owned(Arc::new(
@@ -250,8 +253,8 @@ mod tests {
             &[][..],
             &[GAIN, GAIN],
             &[CEILING, GAIN],
-            &[ROUTING],
-            &[LOOKAHEAD, ROUTING],
+            &[MODE],
+            &[LOOKAHEAD, MODE],
         ] {
             assert!(prepare(&base, &context, ids).is_err());
         }
@@ -262,6 +265,7 @@ mod tests {
             AUTO_RELEASE,
             LINK,
             LOOKAHEAD,
+            ROUTING,
             MAXIMIZE,
             THRESHOLD,
             OUTPUT,
@@ -275,6 +279,7 @@ mod tests {
                 AUTO_RELEASE,
                 LINK,
                 LOOKAHEAD,
+                ROUTING,
                 MAXIMIZE,
                 THRESHOLD,
                 OUTPUT,
@@ -287,7 +292,7 @@ mod tests {
             let id = ParameterId::new(raw).unwrap();
             assert_eq!(
                 DEFINITION.supports_parameter_automation(&base, id).unwrap(),
-                ![7, 8].contains(&raw)
+                raw != 8
             );
         }
         let look = DEFINITION
