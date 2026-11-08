@@ -22,7 +22,8 @@ use std::{
 pub const MAX_SEEK_WORK_FRAMES: u64 = MAX_ARRANGEMENT_PREROLL_FRAMES;
 /// Dedicated control-side preparation stack for the bounded runtime
 /// constructor and preroll renderer. This reservation is independent of the
-/// candidate's 32 MiB accounted runtime/scratch ceiling.
+/// candidate's accounted runtime/scratch ceiling, defined by
+/// [`hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES`].
 pub const SEEK_WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
 
 /// Candidate policy for Arrangement seek preparation. The default remains the
