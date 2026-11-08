@@ -2048,14 +2048,30 @@ fn verify_instrument_takeover(
         assert!(blocks < 512, "bounded signed replay fixture");
         let replay = |h: &mut ResidentHarness, path: &std::path::Path| -> Vec<[f32; 2]> {
             let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
-            let opened =
-                super::automation::edit_with_running_callback(h, Request::Open(path.to_owned()));
+            h.service.submit(Request::Open(path.to_owned())).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let opened = loop {
+                h.pump();
+                h.render_worker_step();
+                if let Ok(event) = h.service.try_event() {
+                    assert!(event.error.is_none(), "{:?}", event.error);
+                    if event.project_replaced {
+                        break event;
+                    }
+                }
+                assert!(Instant::now() < deadline, "replay open did not complete");
+            };
             super::super::resident_lifecycle::finish_replacement(h, &opened, old_output);
-            let restored = h.next();
-            assert!(restored.error.is_none(), "{:?}", restored.error);
             assert_eq!(
-                restored.state.project.as_ref(),
+                opened.state.project.as_ref(),
                 &hex_storage::load(path).unwrap()
+            );
+            assert_eq!(
+                h.submitted_observation().unwrap().foreign_processor(
+                    device.value(),
+                    before.device(device).unwrap().state().type_id()
+                ),
+                Some(true)
             );
             h.audio
                 .as_mut()
@@ -2139,8 +2155,9 @@ fn verify_instrument_takeover(
             client
                 .finish_plugin(PluginParameterValue::new(0.75).unwrap())
                 .unwrap();
-            // The ordinary Session path deliberately refuses opaque commit:
-            // canonical take adoption is the next consumer increment.
+            // This producer-only fixture injects recording below an ordinary
+            // Session gesture, without a durable take owner. Opaque Commit must
+            // refuse; the opt-in Session regression covers canonical adoption.
             let ended = send(h, &mut client, false);
             assert_eq!(ended.state.project.as_ref(), &before);
             if case == "touch_commit" {
