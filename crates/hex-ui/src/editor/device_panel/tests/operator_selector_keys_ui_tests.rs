@@ -80,7 +80,7 @@ fn native_choice_popup_keys_own_input_before_editor_transport_and_launch_actions
         assert_eq!(view.state.as_ref().unwrap().revision, revision + 1);
         assert_eq!(
             view.device_panel.operator_pages[&device].page,
-            operator_panel::OperatorPage::Routing
+            operator_panel::OperatorPage::Envelope
         );
     });
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));

@@ -39,7 +39,11 @@ use hex_widgets::{
 };
 use std::sync::Arc;
 
+#[cfg(all(test, feature = "ui-test-support"))]
+mod beyond_end_tests;
 mod clipboard;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod drop_tests;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SectionEdge {
@@ -78,6 +82,14 @@ struct Display {
     // toggle it.
     held: [Option<SectionId>; 2],
     marker_only: bool,
+    drop_feedback: Option<DropDisplay>,
+}
+#[derive(Clone)]
+struct DropDisplay {
+    feedback: section_reorder::DropFeedback,
+    // Earlier FIFO completions may install a different clock while this exact
+    // receipt still owns paint. Never reproject its original target with it.
+    tempo: TempoMap,
 }
 impl Display {
     fn pointer_hover_at(
@@ -148,6 +160,7 @@ impl Mode {
 }
 struct Gesture {
     launch_eligible: bool,
+    gap_appearance: Option<(String, ElementColor)>,
     generation: u64,
     revision: u64,
     viewport: Viewport,
@@ -252,10 +265,7 @@ impl EditorView {
             return None;
         }
         Some(
-            if matches!(
-                g.command,
-                Some(Command::DuplicateArrangementSectionAt { .. })
-            ) {
+            if g.command.as_ref().and_then(copied_section_source).is_some() {
                 super::drag::copy_cursor(true)
             } else if g.capture.displaced(4.0) {
                 gpui::CursorStyle::ClosedHand
@@ -513,6 +523,8 @@ impl EditorView {
                     | Command::DuplicateArrangementSection(_)
                     | Command::DuplicateArrangementSectionAt { .. }
                     | Command::AppendArrangementSectionCopy { .. }
+                    | Command::MoveArrangementSectionBeyondEnd { .. }
+                    | Command::ReplaceArrangementSection { .. }
             )
         }) || self
             .audio
@@ -956,6 +968,7 @@ impl EditorView {
             pointer_hover: None,
             held: [None; 2],
             marker_only: mode.marker_only(),
+            drop_feedback: None,
         };
         let part = match edge {
             Some(SectionEdge::Shared(..)) => RectanglePart::Seam,
@@ -980,10 +993,11 @@ impl EditorView {
             mode,
             display,
             command: None,
+            gap_appearance: None,
         });
         self.select_section_metadata(id);
         self.status = if matches!(mode, Mode::Reorder(_)) {
-            "section drag · reorder song content · option copies · option-command edits markers only · command toggles snap"
+            "section drag · insert or replace song content · option copies · option-command edits markers only · command toggles snap"
         } else if matches!(
             mode,
             Mode::ContentStart(_)
@@ -1060,21 +1074,37 @@ impl EditorView {
             pointer_hover: None,
             held: [None; 2],
             marker_only: g.mode.marker_only(),
+            drop_feedback: None,
         };
         match g.mode {
             Mode::Reorder(id) => {
-                // Structural destinations are fixed edges, independent of grid snap.
-                // A click must never move music, even when it snaps outside its marker.
+                // Interior destinations retain stable edges. Beyond the end,
+                // the absolute pointer uses the grid. A click never moves music.
                 let raw_beat = self
                     .section_pointer(g.last_pointer.0, g.last_pointer.1, true)
                     .unwrap_or(beat);
                 if g.capture.displaced(4.0) {
-                    match section_reorder::preview(&state.project, id, raw_beat, edit.copy_content)
-                    {
+                    match crate::section_hit::drop_edge_frames(g.viewport.length, g.layout[2])
+                        .and_then(|edge_frames| {
+                            section_reorder::drop_preview(
+                                &state.project,
+                                id,
+                                raw_beat,
+                                beat,
+                                edit.copy_content,
+                                edge_frames,
+                                &mut g.gap_appearance,
+                            )
+                        }) {
                         Ok(Some(preview)) => {
                             g.display.markers =
                                 preview.sections().iter().map(Marker::from).collect();
                             g.display.tempo = preview.tempo_map().clone();
+                            g.display.drop_feedback =
+                                preview.feedback().map(|feedback| DropDisplay {
+                                    feedback,
+                                    tempo: state.project.tempo_map().clone(),
+                                });
                             g.command = Some(preview.command);
                         }
                         Ok(None) => {}
@@ -1793,6 +1823,7 @@ impl EditorView {
             pointer_hover: None,
             held: [None; 2],
             marker_only: false,
+            drop_feedback: None,
         };
         match &command {
             Command::RenameArrangementSection { section, name } => {
@@ -1813,6 +1844,8 @@ impl EditorView {
             | Command::DuplicateArrangementSection(_)
             | Command::DuplicateArrangementSectionAt { .. }
             | Command::AppendArrangementSectionCopy { .. }
+            | Command::MoveArrangementSectionBeyondEnd { .. }
+            | Command::ReplaceArrangementSection { .. }
             | Command::SplitArrangementSection { .. }
             | Command::MergeArrangementSections(_) => {
                 match state.project.preview_arrangement_section_edit(&command) {
@@ -2020,6 +2053,7 @@ impl EditorView {
                 pointer_hover: None,
                 held: [None; 2],
                 marker_only: false,
+                drop_feedback: None,
             };
             &canonical
         };
@@ -2090,7 +2124,8 @@ impl EditorView {
             let new_copy = m.id.is_none()
                 && copy_command.is_some_and(|command| match command {
                     Command::AppendArrangementSectionCopy { start, .. } => m.start == *start,
-                    Command::DuplicateArrangementSectionAt { .. } => true,
+                    Command::DuplicateArrangementSectionAt { .. }
+                    | Command::ReplaceArrangementSection { copy: true, .. } => true,
                     _ => false,
                 });
             let canonical_selected = m.id.is_some_and(|id| {
@@ -2280,6 +2315,33 @@ impl EditorView {
                     .into_any_element(),
             );
         }
+        if let Some(drop) = &display.drop_feedback {
+            let fraction = |beat| {
+                drop.tempo.beat_to_frame(beat).ok().map(|frame| {
+                    (frame as f64 - viewport.start as f64) as f32 / viewport.length as f32
+                })
+            };
+            match drop.feedback {
+                section_reorder::DropFeedback::Insert(at) => {
+                    if let Some(left) = fraction(at) {
+                        elements.push(
+                            crate::section_surface::insertion_indicator(left)
+                                .debug_selector(|| "section-drop-insertion".into())
+                                .into_any_element(),
+                        );
+                    }
+                }
+                section_reorder::DropFeedback::Replace { start, end, .. } => {
+                    if let (Some(left), Some(right)) = (fraction(start), fraction(end)) {
+                        elements.push(
+                            crate::section_surface::replacement_indicator(left, right - left)
+                                .debug_selector(|| "section-drop-replace".into())
+                                .into_any_element(),
+                        );
+                    }
+                }
+            }
+        }
         elements
     }
 }
@@ -2287,12 +2349,27 @@ fn copied_section_source(command: &Command) -> Option<SectionId> {
     match command {
         Command::DuplicateArrangementSectionAt { section, .. }
         | Command::AppendArrangementSectionCopy { section, .. } => Some(*section),
+        Command::ReplaceArrangementSection {
+            source, copy: true, ..
+        } => Some(*source),
         _ => None,
     }
 }
 
 fn same_command(a: &Command, b: &Command) -> bool {
     match (a, b) {
+        (
+            Command::ReplaceArrangementSection {
+                source: a,
+                target: at,
+                copy: ac,
+            },
+            Command::ReplaceArrangementSection {
+                source: b,
+                target: bt,
+                copy: bc,
+            },
+        ) => (a, at, ac) == (b, bt, bc),
         (
             Command::AppendArrangementSectionCopy {
                 section: a,
@@ -2301,6 +2378,20 @@ fn same_command(a: &Command, b: &Command) -> bool {
                 gap_color: ac,
             },
             Command::AppendArrangementSectionCopy {
+                section: b,
+                start: bt,
+                gap_name: bn,
+                gap_color: bc,
+            },
+        )
+        | (
+            Command::MoveArrangementSectionBeyondEnd {
+                section: a,
+                start: at,
+                gap_name: an,
+                gap_color: ac,
+            },
+            Command::MoveArrangementSectionBeyondEnd {
                 section: b,
                 start: bt,
                 gap_name: bn,
@@ -2706,7 +2797,7 @@ pub(super) mod tests {
             let before =
                 editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
             let (from, to) =
-                editor.read_with(cx, |view, _| (position(view, 2), position(view, 13)));
+                editor.read_with(cx, |view, _| (position(view, 2), position(view, 12)));
             let copy = Modifiers {
                 alt: true,
                 ..Modifiers::default()
@@ -2843,7 +2934,12 @@ pub(super) mod tests {
                 frozen
             );
             if !select_elsewhere {
-                assert_eq!(painted_fill(&mut visual, 2), selected_fill);
+                // At the exact insertion edge, the pointer is outside the new
+                // copy's hover fill after ACK; pending target paint above stays frozen.
+                assert_eq!(
+                    painted_fill(&mut visual, 2),
+                    Some(rgb(theme::section_colors(copy_color, true, false).0).into())
+                );
             }
         }
     }
@@ -3416,7 +3512,7 @@ pub(super) mod tests {
         let (handle, editor, _) = fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
-        let (down, to) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 13)));
+        let (down, to) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 12)));
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
@@ -4121,7 +4217,7 @@ pub(super) mod tests {
                 .unwrap();
         });
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        let end = editor.read_with(cx, |view, _| position(view, 11));
+        let end = editor.read_with(cx, |view, _| position(view, 12));
         visual.simulate_mouse_down(clicked, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
@@ -4310,7 +4406,7 @@ pub(super) mod tests {
         let (handle, editor, ids) = fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
-        let (down, to) = editor.read_with(cx, |v, _| (position(v, 10), position(v, 2)));
+        let (down, to) = editor.read_with(cx, |v, _| (position(v, 10), position(v, 0)));
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
@@ -4685,7 +4781,7 @@ pub(super) mod tests {
         // geometry through the canonical installation in the same receive.
         assert_eq!(bounds(&mut visual, 1), preview);
         let before = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.clone());
-        let (source, target) = editor.read_with(cx, |v, _| (position(v, 10), position(v, 2)));
+        let (source, target) = editor.read_with(cx, |v, _| (position(v, 10), position(v, 0)));
         visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();

@@ -26,6 +26,7 @@ const MAX_AUTOMATIC_RETRIES: u8 = 3;
 const REFRESH_YIELDED_TO_CONTROL: &str = "vst3 parameter refresh yielded to control";
 
 mod cache;
+mod scrollbar;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -67,6 +68,7 @@ struct Panel {
     search: Entity<TextInput>,
     _observe_search: Subscription,
     scroll: UniformListScrollHandle,
+    scrollbar: scrollbar::State,
     visible_pages: BTreeSet<u16>,
     priority_page: Option<u16>,
     queued_touch: Option<TouchObservation>,
@@ -78,6 +80,7 @@ struct Panel {
     pending_touch_request: Option<u64>,
     next_page: u16,
     knobs: HashMap<u32, Knob>,
+    row_placeholders: HashMap<u32, RowPlaceholder>,
     next_query_at: Instant,
     retry_count: u8,
 }
@@ -85,6 +88,11 @@ struct Knob {
     control: Entity<NumericControl>,
     origin: Rc<Cell<PluginParameterOrigin>>,
     _subscription: Subscription,
+}
+struct RowPlaceholder {
+    name: String,
+    default: f64,
+    control: Entity<NumericControl>,
 }
 
 /// Metadata reads keep the control poll active without claiming edit custody.
@@ -102,6 +110,9 @@ impl Panel {
         let Some(matched) = self.rows().map(|rows| matching_rows(rows, &self.filter)) else {
             return;
         };
+        if reset_scroll || *self.matched != matched {
+            self.scrollbar.invalidate();
+        }
         self.matched = Arc::new(matched);
         if reset_scroll {
             self.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
@@ -109,6 +120,7 @@ impl Panel {
     }
 
     fn mark_values_stale(&mut self) {
+        self.scrollbar.invalidate();
         let total = self.rows().and_then(|rows| u16::try_from(rows.len()).ok());
         if let Some(rows) = &self.result {
             self.result = Some(Arc::new(
@@ -128,6 +140,7 @@ impl Panel {
         self.source = None;
         self.total = total;
         self.knobs.clear();
+        self.row_placeholders.clear();
         self.follow_knob = None;
         self.priority_page = None;
         self.queued_touch = None;
@@ -602,6 +615,7 @@ fn ensure_panel(view: &mut EditorView, device: DeviceId, cx: &mut Context<Editor
             search,
             _observe_search: observe_search,
             scroll: UniformListScrollHandle::new(),
+            scrollbar: scrollbar::State::default(),
             visible_pages: BTreeSet::new(),
             priority_page: None,
             queued_touch: None,
@@ -613,6 +627,7 @@ fn ensure_panel(view: &mut EditorView, device: DeviceId, cx: &mut Context<Editor
             placeholder_knob,
             next_page: 0,
             knobs: HashMap::new(),
+            row_placeholders: HashMap::new(),
             next_query_at: Instant::now(),
             retry_count: 0,
         },
@@ -773,6 +788,7 @@ fn apply_result(
             record_error(panel, "vst3 parameter inventory differs".into());
             return;
         }
+        panel.scrollbar.invalidate();
         panel.source = Some(source);
         panel.descriptor_signature = Some(descriptor_signature);
         panel.total = Some(result.total);
@@ -1378,7 +1394,7 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
     } else {
         follow_display(view, device, cx)
     };
-    let Some(panel) = view.device_panel.vst3_parameters.panels.get(&device) else {
+    let Some(panel) = view.device_panel.vst3_parameters.panels.get_mut(&device) else {
         return body.h(px(56.0)).child(div().h(px(56.0)).flex_shrink_0());
     };
     let row = follow_row.as_ref();
@@ -1522,15 +1538,15 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
             let query = panel.query;
             let scroll = panel.scroll.clone();
             let editor = cx.weak_entity();
+            let scrollbar = scrollbar::element(panel, device, cx);
             body.child(
                 div()
                     .debug_selector(|| "vst3-parameter-list-area".to_string())
                     .flex()
-                    .flex_col()
                     .flex_1()
                     .min_h_0()
                     .w_full()
-                    .child(
+                    .child(div().flex().flex_col().flex_1().min_w_0().h_full().child(
                         uniform_list(
                             ("vst3-parameter-list", device.value()),
                             matched.len(),
@@ -1558,12 +1574,25 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
                                         let knob = if row.editable {
                                             editor
                                                 .update(app, |view, cx| {
+                                                    if let Some(panel) = view
+                                                        .device_panel
+                                                        .vst3_parameters
+                                                        .panels
+                                                        .get_mut(&device)
+                                                    {
+                                                        panel.row_placeholders.remove(&row.id);
+                                                    }
                                                     knob(view, device, query, row, cx)
                                                 })
                                                 .ok()
                                                 .flatten()
                                         } else {
-                                            None
+                                            editor
+                                                .update(app, |view, cx| {
+                                                    row_placeholder(view, device, row, cx)
+                                                })
+                                                .ok()
+                                                .flatten()
                                         };
                                         let row_id = row.id;
                                         let row_editor = editor.clone();
@@ -1594,12 +1623,17 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
                                                         div()
                                                             .flex_1()
                                                             .min_w_0()
-                                                            .truncate()
-                                                            .child(theme::text(
-                                                            hex_session::service::text::verbatim(
-                                                                &row.name,
-                                                            ),
-                                                        )),
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap_2()
+                                                            .child(div().flex_1().min_w_0().truncate().child(theme::text(
+                                                                hex_session::service::text::verbatim(&row.name),
+                                                            )))
+                                                            .when(!row.editable && !row.value.is_empty(), |item| item.child(
+                                                                div().max_w(px(72.0)).truncate().child(theme::text(
+                                                                    hex_session::service::text::verbatim(&row.value),
+                                                                )),
+                                                            )),
                                                     )
                                                     .children(knob)
                                                     .when(row.automation_class.is_some(), |item| {
@@ -1624,18 +1658,6 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
                                                                 );
                                                             },
                                                         )
-                                                    })
-                                                    .when(!row.editable, |item| {
-                                                        item.child(
-                                                        div()
-                                                            .max_w(px(92.0))
-                                                            .truncate()
-                                                            .child(theme::text(
-                                                            hex_session::service::text::verbatim(
-                                                                &row.value,
-                                                            ),
-                                                        )),
-                                                    )
                                                     }),
                                                 ),
                                         )
@@ -1647,7 +1669,8 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
                         .flex_1()
                         .min_h_0()
                         .w_full(),
-                    ),
+                    ))
+                    .children([scrollbar]),
             )
         }
     }
@@ -1830,6 +1853,61 @@ fn placeholder_knob(
     .ok()?;
     let control = cx.new(|cx| NumericControl::from_config(cx, config));
     control.update(cx, |control, cx| control.set_enabled(false, cx));
+    Some(control)
+}
+
+// A bounded set of display-only controls supports virtualization without giving
+// cached descriptors the authority to dispatch parameter gestures.
+fn row_placeholder(
+    view: &mut EditorView,
+    device: DeviceId,
+    row: &PluginParameterRow,
+    cx: &mut Context<EditorView>,
+) -> Option<Entity<NumericControl>> {
+    let panel = view.device_panel.vst3_parameters.panels.get_mut(&device)?;
+    if let Some(placeholder) = panel.row_placeholders.get(&row.id)
+        && placeholder.name == row.name
+        && placeholder.default == row.default_normalized
+    {
+        let control = placeholder.control.clone();
+        control.update(cx, |control, cx| {
+            let _ = control.set_external_value(row.normalized, cx);
+        });
+        return Some(control);
+    }
+    // The list also renders an item for measurement, so pruning by each
+    // requested range would evict controls that are still on screen.
+    if panel.row_placeholders.len() >= 128 {
+        panel.row_placeholders.clear();
+    }
+    let spec = NumericSpec::new(
+        0.0,
+        1.0,
+        row.default_normalized,
+        NumericScale::Linear,
+        3,
+        None::<&str>,
+    )
+    .ok()?;
+    let config = NumericControlConfig::new(
+        format!("vst3-placeholder-{}-{}", device.value(), row.id),
+        theme::text(hex_session::service::text::verbatim(&row.name)),
+        NumericControlPresentation::MicroDial,
+        spec,
+        row.normalized,
+        theme::control_style(),
+    )
+    .ok()?;
+    let control = cx.new(|cx| NumericControl::from_config(cx, config));
+    control.update(cx, |control, cx| control.set_enabled(false, cx));
+    panel.row_placeholders.insert(
+        row.id,
+        RowPlaceholder {
+            name: row.name.clone(),
+            default: row.default_normalized,
+            control: control.clone(),
+        },
+    );
     Some(control)
 }
 
@@ -2552,6 +2630,14 @@ mod tests {
         });
         visual.run_until_parked();
         assert_eq!(bounds(&mut visual), baseline);
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("vst3-placeholder-{}-7-knob", device.value()).into_boxed_str(),
+                ))
+                .is_some(),
+            "a stale visible parameter retains a disabled dial"
+        );
         editor.read_with(&visual, |view, cx| {
             let panel = view
                 .device_panel
@@ -2569,6 +2655,220 @@ mod tests {
                 panel.follow_knob.is_none(),
                 "stale rows cannot retain editable controls"
             );
+            assert_eq!(panel.row_placeholders[&7].control.read(cx).value(), 0.8);
+            assert!(!panel.knobs.contains_key(&7));
+        });
+        editor.update(&mut visual, |view, cx| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            panel.result = Some(Arc::new(
+                (0..40)
+                    .map(|index| PluginParameterRow {
+                        id: 100 + index,
+                        page_first: ((index as usize / PAGE_SIZE) * PAGE_SIZE) as u16,
+                        ..layout_row(0.35, false, 0)
+                    })
+                    .collect(),
+            ));
+            panel.refilter(true);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        editor.update(&mut visual, |view, _| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            panel
+                .scroll
+                .0
+                .borrow()
+                .base_handle
+                .set_offset(gpui::point(px(0.0), px(-1164.0)));
+        });
+        visual.update(|window, cx| window.draw(cx).clear());
+        assert!(visual.debug_bounds("vst3-parameter-row-124").is_some());
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("vst3-placeholder-{}-124-knob", device.value()).into_boxed_str()
+                ))
+                .is_some(),
+            "a newly visible row has its dial in the first frame"
+        );
+        editor.read_with(&visual, |view, _| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get(&device)
+                .unwrap();
+            assert!(panel.row_placeholders.len() <= 128);
+            assert!(!panel.knobs.contains_key(&124));
+        });
+        let dial =
+            Box::leak(format!("vst3-placeholder-{}-124-knob", device.value()).into_boxed_str());
+        let down = visual.debug_bounds(dial).unwrap().center();
+        visual.simulate_mouse_down(down, gpui::MouseButton::Left, modifiers);
+        visual.simulate_mouse_move(
+            gpui::point(down.x, down.y - px(20.0)),
+            gpui::MouseButton::Left,
+            modifiers,
+        );
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get(&device)
+                .unwrap();
+            let control = panel.row_placeholders[&124].control.read(cx);
+            assert!(!control.is_interacting());
+            assert_eq!(control.value(), 0.35);
+            assert!(view.device_gesture.snapshot().is_none());
+        });
+        visual.simulate_mouse_up(down, gpui::MouseButton::Left, modifiers);
+        editor.update(&mut visual, |view, cx| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            panel.source = Some(binding);
+            let rows = Arc::make_mut(panel.result.as_mut().unwrap());
+            rows[24] = PluginParameterRow {
+                id: 124,
+                page_first: rows[24].page_first,
+                ..layout_row(0.35, true, 7)
+            };
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("vst3-knob-{}-124-knob", device.value()).into_boxed_str()
+                ))
+                .is_some()
+        );
+        editor.read_with(&visual, |view, _| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get(&device)
+                .unwrap();
+            assert!(!panel.row_placeholders.contains_key(&124));
+            assert!(panel.knobs.contains_key(&124));
+        });
+        editor.update(&mut visual, |view, cx| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            panel.result = Some(Arc::new(
+                (0..40)
+                    .map(|index| PluginParameterRow {
+                        id: 100 + index,
+                        page_first: ((index as usize / PAGE_SIZE) * PAGE_SIZE) as u16,
+                        ..layout_row(0.35, false, 0)
+                    })
+                    .collect(),
+            ));
+            panel.refilter(true);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("vst3-parameter-scrollbar").is_some(),
+            "a long parameter list has a scrollbar"
+        );
+        let geometry = |visual: &VisualTestContext| {
+            editor.read_with(visual, |view, _| {
+                view.device_panel.vst3_parameters.panels[&device]
+                    .scrollbar
+                    .test_geometry()
+                    .unwrap()
+            })
+        };
+        let (track, thumb, maximum) = geometry(&visual);
+        assert!(maximum > 0.0);
+        assert_eq!(thumb.top(), track.top());
+        let row = visual.debug_bounds("vst3-parameter-row-100").unwrap();
+        visual.simulate_event(gpui::ScrollWheelEvent {
+            position: row.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(-150.0))),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+        let (track, thumb, _) = geometry(&visual);
+        assert!(thumb.top() > track.top());
+        visual.simulate_mouse_down(thumb.center(), gpui::MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                view.device_panel.vst3_parameters.panels[&device]
+                    .scrollbar
+                    .test_dragging()
+            )
+        });
+        let outside = gpui::point(track.left(), track.bottom() + px(300.0));
+        visual.simulate_mouse_move(outside, gpui::MouseButton::Left, modifiers);
+        visual.simulate_mouse_up(outside, gpui::MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        let (track, thumb, _) = geometry(&visual);
+        assert!((f32::from(thumb.bottom() - track.bottom())).abs() < 0.01);
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                !view.device_panel.vst3_parameters.panels[&device]
+                    .scrollbar
+                    .test_dragging()
+            );
+            assert!(view.device_gesture.snapshot().is_none());
+        });
+        visual.simulate_mouse_down(thumb.center(), gpui::MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        editor.update(&mut visual, |view, cx| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            assert!(panel.scrollbar.test_dragging());
+            panel.filter = "no matching parameter".into();
+            panel.refilter(true);
+            assert!(!panel.scrollbar.test_dragging());
+            cx.notify();
+        });
+        visual.simulate_mouse_move(
+            gpui::point(track.left(), track.top()),
+            gpui::MouseButton::Left,
+            modifiers,
+        );
+        visual.simulate_mouse_up(
+            gpui::point(track.left(), track.top()),
+            gpui::MouseButton::Left,
+            modifiers,
+        );
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                !view.device_panel.vst3_parameters.panels[&device]
+                    .scrollbar
+                    .test_dragging()
+            );
+            assert!(view.device_gesture.snapshot().is_none());
         });
     }
 

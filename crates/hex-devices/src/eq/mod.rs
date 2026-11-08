@@ -184,7 +184,8 @@ impl EqDefinition {
     /// Control-only exact-grant component preparation. The returned processor
     /// uses the existing native checkpoint/runtime custody; no resource ownership
     /// transfers. Standard registry admission uses the same exact-grant component.
-    /// Known node fields and output gain are accepted; mode and legacy-shelf
+    /// Known node fields, mode and output gain are accepted. Mode uses one
+    /// preallocated outgoing fade with latest-target coalescence; legacy-shelf
     /// kind/gain/q remain unsupported. Grants are sorted, unique and bounded by
     /// the neutral descriptor limit. No authored state or curves are rewritten.
     pub fn prepare_automation_component(
@@ -229,6 +230,10 @@ impl NativeDeviceDefinition for EqDefinition {
         context: &hex_lattice::DevicePreparationContext<'_>,
         parameters: &[ParameterId],
     ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
+        // Mode component qualification precedes ordinary registry admission.
+        if parameters.first() == Some(&MODE) {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
         Ok(hex_lattice::PreparedRuntimeDevice {
             matrix: StereoMatrix::identity(),
             processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(
