@@ -45,9 +45,9 @@ fn operator_focus_paints_sections_without_mouse_motion_and_keeps_detail_dark(
             background(device_layout_style().surface)
         );
     }
-    // Amount -> filter toggle, then its selector and two dials -> pitch toggle,
-    // then three pitch dials -> global routing icon. No pointer event or forced draw.
-    for (title, tabs) in [("filter", 1), ("pitch env", 4), ("global", 4)] {
+    // Amount -> filter toggle, then its selector and two dials -> routing.
+    // Focus paints without a pointer event or forced draw.
+    for (title, tabs) in [("filter", 1), ("global", 4)] {
         for _ in 0..tabs {
             visual.simulate_keystrokes("tab");
         }
@@ -639,16 +639,18 @@ fn operator_shell_controls_precede_selectors_and_sections_follow_child_focus(
         visual.run_until_parked();
         assert_eq!(&focused(&mut visual), expected);
     }
-    // Preview child focus reveals its row without making the row a Tab stop
-    // or changing its switch, project state, or neighboring row's focus mode.
-    for (field, title) in [
-        (operator_panel::preview::Field::PitchEnvelope, "pitch env"),
-        (operator_panel::preview::Field::Time, "global"),
-    ] {
+    // Real native child focus reveals its section without changing selection
+    // or authoring sound merely because a control received focus.
+    for (parameter, title) in [(82, "lfo"), (20_005, "filter")] {
         let child = editor.read_with(cx, |view, cx| {
-            view.device_panel.operator_previews[&device].controls[&field]
-                .entity
-                .focus_handle(cx)
+            match &view.device_panel.controls[&ParameterKey {
+                device,
+                parameter: hex_lattice_contract::ParameterId::from_static(parameter),
+            }] {
+                ParameterControl::Float { entity, .. } => entity.focus_handle(cx),
+                ParameterControl::Bool { entity, .. } => entity.focus_handle(cx),
+                _ => panic!("native working control"),
+            }
         });
         visual.update(|window, _| child.focus(window));
         visual.run_until_parked();
@@ -656,18 +658,13 @@ fn operator_shell_controls_precede_selectors_and_sections_follow_child_focus(
             for ((_, section), state) in &view.device_panel.operator_section_focus {
                 assert!(
                     state.handle.tab_stop
-                        == matches!(section, operator_panel::Section::Oscillator(_)),
-                    "only explicit oscillator selection surfaces participate in traversal"
+                        == matches!(section, operator_panel::Section::Oscillator(_))
                 );
                 assert_eq!(
                     state.focused,
                     *section == operator_panel::Section::Preview(title)
                 );
             }
-            assert_eq!(
-                view.device_panel.operator_previews[&device].enabled,
-                [true; 1]
-            );
             assert_eq!(view.state.as_ref().unwrap().project, original);
             assert_eq!(view.state.as_ref().unwrap().revision, revision);
         });
@@ -676,7 +673,7 @@ fn operator_shell_controls_precede_selectors_and_sections_follow_child_focus(
 }
 
 #[gpui::test]
-fn operator_preview_invalid_drafts_refuse_forward_and_reverse_tab(cx: &mut TestAppContext) {
+fn operator_native_invalid_drafts_refuse_forward_and_reverse_tab(cx: &mut TestAppContext) {
     cx.update(hex_widgets::bind_numeric_control_keys);
     cx.update(crate::editor::bind_editor_keys);
     let (service, state, track, device) = operator_navigation_tests::operator_fixture();
@@ -685,23 +682,21 @@ fn operator_preview_invalid_drafts_refuse_forward_and_reverse_tab(cx: &mut TestA
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, _| window.activate_window());
     visual.run_until_parked();
-    for (field, valid) in [
-        (operator_panel::preview::Field::PitchEnvelope, "20"),
-        (operator_panel::preview::Field::Time, "30"),
-    ] {
-        let selector = Box::leak(
-            format!(
-                "operator-preview-{}-{}-value",
-                device.value(),
-                field as usize
+    for (parameter, valid) in [(1, "2"), (20_005, "1500")] {
+        let parameter = hex_lattice_contract::ParameterId::from_static(parameter);
+        editor.read_with(cx, |view, _| {
+            assert_ne!(
+                operator_parameter_value(
+                    view.state.as_ref().unwrap(),
+                    track,
+                    device,
+                    parameter.value()
+                ),
+                ParameterValue::Float(valid.parse().unwrap()),
+                "history regression must author a distinct value"
             )
-            .into_boxed_str(),
-        );
-        let bounds = visual.debug_bounds(selector).unwrap();
-        visual.simulate_click(bounds.center(), Modifiers::default());
-        visual.simulate_keystrokes("cmd-a");
-        visual.simulate_input("invalid");
-        visual.run_until_parked();
+        });
+        enter_typed_value(&mut visual, device, parameter, "invalid");
         let before = focused(&mut visual);
         for key in ["tab", "shift-tab"] {
             visual.simulate_keystrokes(key);
@@ -709,42 +704,51 @@ fn operator_preview_invalid_drafts_refuse_forward_and_reverse_tab(cx: &mut TestA
             assert_eq!(
                 focused(&mut visual),
                 before,
-                "invalid preview draft must keep focus"
+                "invalid native draft retains focus"
             );
             editor.read_with(cx, |view, cx| {
-                assert!(
-                    view.device_panel.operator_previews[&device].controls[&field]
-                        .entity
-                        .read(cx)
-                        .is_editing()
-                )
+                let ParameterControl::Float { entity, .. } =
+                    &view.device_panel.controls[&ParameterKey { device, parameter }]
+                else {
+                    panic!("native numeric field")
+                };
+                assert!(entity.read(cx).is_editing());
+                assert_eq!(view.state.as_ref().unwrap().project, original);
+                assert_eq!(view.worker_requests_pending, 0);
             });
         }
         visual.simulate_keystrokes("cmd-a");
         visual.simulate_input(valid);
         visual.simulate_keystrokes("tab");
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+        });
         visual.run_until_parked();
         assert_ne!(
             focused(&mut visual),
             before,
-            "corrected draft permits traversal"
+            "corrected native draft permits traversal"
         );
-        editor.read_with(cx, |view, cx| {
-            assert!(
-                !view.device_panel.operator_previews[&device].controls[&field]
-                    .entity
-                    .read(cx)
-                    .is_editing()
-            );
+        editor.read_with(cx, |view, _| {
             assert_eq!(
-                view.device_panel.operator_previews[&device].values[field as usize],
-                valid.parse::<f64>().unwrap()
+                operator_parameter_value(
+                    view.state.as_ref().unwrap(),
+                    track,
+                    device,
+                    parameter.value()
+                ),
+                ParameterValue::Float(valid.parse().unwrap())
             );
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+        });
+        editor.read_with(cx, |view, _| {
             assert_eq!(
-                view.state.as_ref().unwrap().project,
-                original,
-                "view-only previews do not author sound"
-            );
+                view.state.as_ref().unwrap().project.tracks(),
+                original.tracks()
+            )
         });
     }
 }

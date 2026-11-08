@@ -42,7 +42,7 @@ fn activate(
         .and_then(|s| s.routing_popup)
     {
         choose(view, cx, device, index, owner);
-    } else if preview::finalize_controls(view, cx, device) && finalize_controls(view, cx) {
+    } else if finalize_controls(view, cx) {
         let key = ParameterKey {
             device,
             parameter: id(600),
