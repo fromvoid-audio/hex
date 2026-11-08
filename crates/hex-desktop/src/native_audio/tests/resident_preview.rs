@@ -154,6 +154,7 @@ fn track_gain_gesture_reaches_callback_without_a_pcm_step() {
     }
 }
 
+pub(super) static CONFIRMED_TEST_INTERRUPTS: AtomicU64 = AtomicU64::new(0);
 pub(super) static CONFIRMED_TEST_POINTS: AtomicU64 = AtomicU64::new(0);
 pub(super) static CONFIRMED_TEST_READY: AtomicU64 = AtomicU64::new(0);
 pub(super) static CONFIRMED_TEST_ENDS: AtomicU64 = AtomicU64::new(0);
@@ -239,8 +240,17 @@ impl WorkerAudioSink for ResidentSink {
     > {
         use hex_session::device_gesture::PluginGesturePreparation;
         let case = std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").unwrap_or_default();
-        let retire = case == "delivery_retire";
+        let retire = matches!(
+            case.as_str(),
+            "delivery_retire" | "touch_close_pending" | "touch_close_queued"
+        );
         let touch = case.starts_with("touch");
+        let close = case == "touch_close_begin"
+            && matches!(input.operation(), PluginGesturePreparation::Begin { .. })
+            || case == "touch_close_point"
+                && matches!(input.operation(), PluginGesturePreparation::Preview(_))
+            || case == "touch_close_restored"
+                && matches!(input.operation(), PluginGesturePreparation::Commit(_));
         let preview = matches!(input.operation(), PluginGesturePreparation::Preview(_));
         let confirm = touch || (retire || case == "delivery") && preview;
         let expected = match input.operation() {
@@ -257,6 +267,10 @@ impl WorkerAudioSink for ResidentSink {
             input
         });
         if confirm {
+            if close {
+                assert!(result.is_ok());
+                self.inner.relinquish_output();
+            }
             if retire && preview {
                 assert!(result.is_err());
                 self.inner.relinquish_output();
@@ -314,8 +328,26 @@ impl WorkerAudioSink for ResidentSink {
                         assert_eq!(key, expected.key);
                         CONFIRMED_TEST_NOOPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
-                    Observation::Interrupted { .. } => {
-                        panic!("confirmed fixture operation was interrupted")
+                    Observation::Interrupted {
+                        key,
+                        context,
+                        target,
+                        source,
+                        ..
+                    } => {
+                        assert!(case.starts_with("touch_close_"));
+                        assert_eq!(key, expected.key);
+                        assert_eq!(context.project_generation, key.generation);
+                        assert_eq!(
+                            source.target,
+                            hex_session::service::DeviceCaptureTarget::Vst3(target)
+                        );
+                        assert_eq!(
+                            CONFIRMED_TEST_POINTS.load(std::sync::atomic::Ordering::Relaxed),
+                            u64::from(case != "touch_close_begin")
+                        );
+                        CONFIRMED_TEST_INTERRUPTS
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
             }

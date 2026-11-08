@@ -53,6 +53,88 @@ pub(in crate::editor) fn assert_open_upper_right(
     );
 }
 
+#[gpui::test]
+fn pixel_ghosts_keep_authored_endpoints_on_shared_physical_columns(cx: &mut TestAppContext) {
+    use gpui::{Context, Div, Render, Window, div, prelude::*, px};
+    struct Ghosts;
+    impl Render for Ghosts {
+        fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
+            let stroke = 1.0 / window.scale_factor().max(1.0);
+            let mut root = div().relative().w(px(240.0)).h(px(80.0));
+            for (name, tail, left, width, native) in [
+                ("pixel-narrow", "pixel-narrow-tail", 13.25, 0.75, false),
+                ("pixel-normal", "pixel-normal-tail", 96.75, 80.0, true),
+                (
+                    "pixel-fractional",
+                    "pixel-fractional-tail",
+                    183.25,
+                    43.75,
+                    true,
+                ),
+            ] {
+                let body: Div = hex_widgets::rectangle_surface_pixels(left, 20.25, width, 32.0)
+                    .debug_selector(move || name.into())
+                    .left_0()
+                    .top_0()
+                    .w_full()
+                    .h_full()
+                    .border_l(px(if native { stroke } else { 0.0 }))
+                    .border_r(px(0.0))
+                    .bg(gpui::rgb(0x856050));
+                root = root.child(super::pixel_backdrop_shell(
+                    body,
+                    gpui::Bounds::new(
+                        gpui::point(px(left), px(20.25)),
+                        gpui::size(px(width), px(32.0)),
+                    ),
+                    super::Backdrop {
+                        body: 0x856050,
+                        header: 0x856050,
+                        outline: 0x222222,
+                        hover_outline: 0x222222,
+                        stroke,
+                        bottom_radius: 0.0,
+                        header_height: 14.0,
+                        notch: super::Notch::new(native),
+                    },
+                    native,
+                    move || tail.into(),
+                ));
+            }
+            root
+        }
+    }
+    let handle = *cx.add_window(|_, _| Ghosts);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let scale = visual.update(|window, _| window.scale_factor());
+    for (name, tail, left, width) in [
+        ("pixel-narrow", "pixel-narrow-tail", 13.25, 0.75),
+        ("pixel-normal", "pixel-normal-tail", 96.75, 80.0),
+        ("pixel-fractional", "pixel-fractional-tail", 183.25, 43.75),
+    ] {
+        let bounds = visual.debug_bounds(name).unwrap();
+        assert!((f32::from(bounds.left()) - left).abs() <= 0.5);
+        assert!((f32::from(bounds.size.width) - width).abs() <= 0.5);
+        assert!((f32::from(bounds.top()) - 20.25).abs() <= 0.5);
+        assert_eq!(bounds.size.height, px(32.0));
+        let edge = visual.debug_bounds(tail).unwrap();
+        assert_eq!(
+            edge.left(),
+            bounds.right(),
+            "edge shares the projected endpoint, not a rounded nested offset"
+        );
+        assert_eq!(f64::from(edge.scale(scale).size.width), 1.0);
+    }
+    assert_open_upper_right(&mut visual, "pixel-normal", "pixel-normal-tail", None);
+    assert_open_upper_right(
+        &mut visual,
+        "pixel-fractional",
+        "pixel-fractional-tail",
+        None,
+    );
+}
+
 fn click(visual: &mut VisualTestContext, clip: ClipId, modifiers: Modifiers) {
     let selector = Box::leak(format!("clip-name-{}", clip.value()).into_boxed_str());
     let bounds = visual.debug_bounds(selector).unwrap();

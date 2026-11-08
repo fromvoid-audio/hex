@@ -159,45 +159,79 @@ fn boundary_shell<T: gpui::IntoElement + gpui::Styled>(
     outer
 }
 
-/// Floating previews use the same physical-pixel boundary without changing
-/// the rectangle used for their contents or pointer geometry.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn pixel_boundary_shell(
-    body: impl gpui::IntoElement,
-    left: f32,
-    top: f32,
-    width: f32,
-    height: f32,
-    stroke: f32,
-    color: u32,
+/// A passive pixel-positioned clip. Keep background, body and border columns
+/// in the same containing coordinate space: nesting a percentage edge beneath
+/// a fractional positioned parent can round its endpoint a second time.
+pub(super) fn pixel_backdrop_shell<T: gpui::IntoElement + gpui::Styled>(
+    body: T,
+    bounds: gpui::Bounds<gpui::Pixels>,
+    style: Backdrop,
     native_leading: bool,
+    selector: impl FnOnce() -> String,
 ) -> Div {
-    let mut outer = div()
+    let notch = if native_leading {
+        style.notch.clone()
+    } else {
+        Notch::default()
+    };
+    let mut body = body
         .absolute()
-        .left(px(left))
-        .top(px(top))
-        .w(px(width))
-        .h(px(height))
-        .child(body);
+        .left(bounds.left())
+        .top(bounds.top())
+        .w(bounds.size.width)
+        .h(bounds.size.height);
+    let mut outer = div().absolute().inset_0();
+    if native_leading {
+        let observe = notch.clone();
+        let paint_style = style.clone();
+        outer = outer.child(
+            canvas(
+                move |bounds, _, _| observe.observe(bounds),
+                move |bounds, _, window, _| {
+                    paint_backdrop(
+                        bounds,
+                        &paint_style,
+                        rgb(paint_style.outline).into(),
+                        window,
+                    )
+                },
+            )
+            .absolute()
+            .left(bounds.left())
+            .top(bounds.top())
+            .w(bounds.size.width)
+            .h(bounds.size.height),
+        );
+        body = body
+            .bg(gpui::transparent_black())
+            .border_color(gpui::transparent_black());
+    }
+    outer = outer.child(body);
     if !native_leading {
         outer = outer.child(
             div()
                 .absolute()
-                .left_0()
-                .top_0()
-                .bottom_0()
-                .w(px(stroke))
-                .bg(rgb(color)),
+                .left(bounds.left())
+                .top(bounds.top())
+                .h(bounds.size.height)
+                .w(px(style.stroke))
+                .bg(rgb(style.outline)),
         );
     }
     outer.child(
-        div()
+        trailing_edge(notch, style.outline, style.outline)
+            .debug_selector(selector)
             .absolute()
-            .left(relative(1.0))
-            .top_0()
-            .bottom_0()
-            .w(px(stroke))
-            .bg(rgb(color)),
+            .left(bounds.right())
+            .top(bounds.top())
+            .w(px(style.stroke))
+            .h(px((f32::from(bounds.size.height)
+                - if native_leading {
+                    style.bottom_radius
+                } else {
+                    0.0
+                })
+            .max(0.0))),
     )
 }
 
@@ -247,7 +281,8 @@ pub(super) fn backdrop_shell(
                 move |bounds, _, _| observe.observe(bounds),
                 move |bounds, _, window, _| {
                     if visible {
-                        paint_backdrop(bounds, &paint_style, window);
+                        let color = window.text_style().color;
+                        paint_backdrop(bounds, &paint_style, color, window);
                     }
                 },
             )
@@ -270,7 +305,12 @@ pub(super) fn backdrop_shell(
     )
 }
 
-fn paint_backdrop(bounds: gpui::Bounds<gpui::Pixels>, style: &Backdrop, window: &mut gpui::Window) {
+fn paint_backdrop(
+    bounds: gpui::Bounds<gpui::Pixels>,
+    style: &Backdrop,
+    color: gpui::Hsla,
+    window: &mut gpui::Window,
+) {
     use gpui::{Bounds, ContentMask, Corners, Edges, fill, point, quad};
     if bounds.size.width <= px(0.0) || bounds.size.height <= px(0.0) {
         return;
@@ -301,7 +341,6 @@ fn paint_backdrop(bounds: gpui::Bounds<gpui::Pixels>, style: &Backdrop, window: 
         window.with_content_mask(Some(ContentMask { bounds: inner }), |window| {
             window.paint_quad(fill(header, rgb(style.header)));
         });
-        let color = window.text_style().color;
         window.paint_quad(quad(
             bounds,
             corners,
@@ -358,7 +397,7 @@ fn paint_backdrop(bounds: gpui::Bounds<gpui::Pixels>, style: &Backdrop, window: 
             bounds.top() + px(cut) + inset,
         ));
         if let Ok(path) = diagonal.build() {
-            window.paint_path(path, window.text_style().color);
+            window.paint_path(path, color);
         }
     });
 }

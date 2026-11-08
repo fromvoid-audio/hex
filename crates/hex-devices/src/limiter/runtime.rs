@@ -688,6 +688,9 @@ impl Runtime {
         let signal = Self::prepare_input(config, history, *frame, stats);
         Self::process_signal(config, history, signal, frame, stats);
     }
+    /// Advance gain ramps once per device input frame and preserve the gained
+    /// signal in f64. A buffered consumer may queue it before limiting while
+    /// keeping the current ceiling/output controls at the output stage.
     #[inline(always)]
     fn prepare_input(
         config: &Config,
@@ -715,6 +718,9 @@ impl Runtime {
             .max(signal[1].abs());
         signal
     }
+    /// Limit already-gained input without advancing input/output gain ramps.
+    /// The caller owns ramp timing and supplies the current output gain through
+    /// history; this function preserves the existing limiting and meter laws.
     #[inline(always)]
     fn process_signal(
         config: &Config,
