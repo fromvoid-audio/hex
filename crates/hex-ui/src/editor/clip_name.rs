@@ -250,8 +250,20 @@ impl EditorView {
         fill: u32,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        self.clip_name_strip(track, clip, name, fill, true, cx)
+        self.clip_name_strip(track, clip, name, fill, true, false, cx)
     }
+    /// The canonical frame paints the same header fill under this content.
+    pub(super) fn clip_name_header_on_backdrop(
+        &self,
+        track: hex_project::TrackId,
+        clip: ClipId,
+        name: &str,
+        fill: u32,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        self.clip_name_strip(track, clip, name, fill, true, true, cx)
+    }
+
     pub(super) fn clip_name_preview_header(
         &self,
         track: hex_project::TrackId,
@@ -264,6 +276,7 @@ impl EditorView {
             clip,
             name,
             theme::color(theme::PaletteRole::Raised),
+            false,
             false,
             cx,
         )
@@ -280,6 +293,7 @@ impl EditorView {
             .child(clip_name_text(name))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn clip_name_strip(
         &self,
         track: hex_project::TrackId,
@@ -287,9 +301,11 @@ impl EditorView {
         name: &str,
         fill: u32,
         interactive: bool,
+        on_backdrop: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         clip_name_surface(fill)
+            .when(on_backdrop, |header| header.bg(gpui::transparent_black()))
             .id(("clip-name", clip.value()))
             .debug_selector(move || format!("clip-name-{}", clip.value()))
             .when(interactive, |header| {
