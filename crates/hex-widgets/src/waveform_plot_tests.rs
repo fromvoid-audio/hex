@@ -258,6 +258,8 @@ fn zero_line_refuses_malformed_spans_and_invalid_or_overflowing_scales() {
     assert!(build([flat[1], flat[0]]).is_none());
     assert!(build([flat[0], point(px(20.0), px(8.0))]).is_none());
     assert!(build([flat[0], point(px(f32::NAN), px(7.3))]).is_none());
+    let huge = build([point(px(0.0), px(3.3e38)), point(px(2.0e38), px(3.3e38))]).unwrap();
+    assert!(huge.zero_line_bounds(1.0e-38).is_none());
     let channel = build(flat).unwrap();
     for scale in [
         0.0,
