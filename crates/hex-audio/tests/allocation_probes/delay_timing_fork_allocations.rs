@@ -25,6 +25,7 @@ fn delay_timing_fork_has_no_allocation_or_deallocation() {
     let state = Arc::new(state);
     let make = |bypassed| {
         NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+            modulation: None,
             automation: Default::default(),
             meter: Default::default(),
             owner: ProcessorChainOwner::Main,
@@ -99,6 +100,7 @@ fn delay_tail_split_prepare_render_and_retire_are_allocation_free() {
     let state = Arc::new(state);
     let make = |bypassed| {
         NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+            modulation: None,
             automation: Default::default(),
             meter: Default::default(),
             owner: ProcessorChainOwner::Main,
@@ -203,6 +205,7 @@ fn delay_tail_split_control_and_observation_are_allocation_free() {
         .unwrap();
     let make = |bypassed| {
         NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+            modulation: None,
             automation: automation.clone(),
             meter: Default::default(),
             owner: ProcessorChainOwner::Main,
