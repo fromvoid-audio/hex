@@ -672,14 +672,9 @@ fn return_headers_share_track_geometry_without_redundant_section_chrome(cx: &mut
                         format!("return-track-header-{}", id.value()).into_boxed_str(),
                     ))
                     .unwrap();
-                let gain_prefix = if mode == hex_session::DocumentAudioMode::Resident {
-                    "return-volume"
-                } else {
-                    "return-gain-up"
-                };
                 for prefix in [
                     "return-track-focus",
-                    gain_prefix,
+                    "return-volume",
                     "return-mute",
                     "return-remove",
                 ] {

@@ -349,21 +349,25 @@ fn verified_track_volume_drag_uses_actor_and_keeps_return_gain_explicit(cx: &mut
     assert!(
         visual
             .debug_bounds(Box::leak(
-                format!("return-volume-{}", id.value()).into_boxed_str()
+                format!("return-gain-up-{}", id.value()).into_boxed_str()
             ))
             .is_none()
     );
-    let up = visual
+    let field = visual
         .debug_bounds(Box::leak(
-            format!("return-gain-up-{}", id.value()).into_boxed_str(),
+            format!("return-volume-{}-value", id.value()).into_boxed_str(),
         ))
         .unwrap()
         .center();
-    visual.simulate_mouse_down(up, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+    visual.simulate_click(field, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("-6 db");
+    visual.simulate_keystrokes("enter");
+    let expected = 10_f32.powf(-6.0 / 20.0);
     pump(&editor, cx, |view| {
         view.worker_requests_pending == 0
-            && view.state.as_ref().unwrap().project.return_tracks()[0].gain() > 1.0
+            && (view.state.as_ref().unwrap().project.return_tracks()[0].gain() - expected).abs()
+                < 1e-5
     });
 }
 
@@ -2417,6 +2421,127 @@ fn verified_main_slider_keeps_explicit_entry_and_finalization_without_held_previ
                 |message| message.contains("current edit") && !message.contains("resident")
             ),
             "atomic entry is supported; only the pending edit blocks it"
+        );
+    });
+}
+
+#[gpui::test]
+fn verified_return_slider_keeps_atomic_history_and_reverts_refused_edits(cx: &mut TestAppContext) {
+    use hex_session::{DocumentAudioMode, service::Request};
+    let (_browser, mut visual, editor, tracks) = actor_fixture_in_mode(
+        cx,
+        super::super::test_environment::Environment::new().unwrap(),
+        DocumentAudioMode::VerifiedStreaming,
+    );
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::AddReturnTrack {
+            name: "bus".into()
+        })));
+    });
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && !view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .return_tracks()
+                .is_empty()
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.document_audio_mode,
+            DocumentAudioMode::VerifiedStreaming
+        )
+    });
+    let id = editor.read_with(cx, |view, _| {
+        view.state.as_ref().unwrap().project.return_tracks()[0].id()
+    });
+    let field_id = Box::leak(format!("return-volume-{}-value", id.value()).into_boxed_str());
+    let rail_id = Box::leak(format!("return-volume-{}-slider", id.value()).into_boxed_str());
+    let field = visual.debug_bounds(field_id).unwrap().center();
+    visual.simulate_click(field, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("-6 db");
+    editor.update(cx, |view, cx| {
+        assert!(super::super::device_panel::finalize_controls(view, cx))
+    });
+    let expected = 10_f32.powf(-6.0 / 20.0);
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && (view.state.as_ref().unwrap().project.return_tracks()[0].gain() - expected).abs()
+                < 1e-5
+    });
+    editor.read_with(cx, |view, _| {
+        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.audible_playback.is_none(), "no resident fallback");
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.master_gain(), 1.0);
+        assert_eq!(project.track(tracks[0]).unwrap().gain(), 0.5);
+        assert_eq!(project.track(tracks[1]).unwrap().gain(), 1.5);
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.state.as_ref().unwrap().project.return_tracks()[0].gain() == 1.0
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && (view.state.as_ref().unwrap().project.return_tracks()[0].gain() - expected).abs()
+                < 1e-5
+    });
+    visual.run_until_parked();
+    let rail = visual.debug_bounds(rail_id).unwrap();
+    let start = point(rail.left() + px(10.0), rail.center().y);
+    let end = start - point(px(0.0), px(18.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.error
+                .as_deref()
+                .is_some_and(|s| s.contains("resident"))
+        );
+        assert!(view.device_gesture.snapshot().is_none());
+        assert!(
+            (view.state.as_ref().unwrap().project.return_tracks()[0].gain() - expected).abs()
+                < 1e-5
+        );
+    });
+    let field = visual.debug_bounds(field_id).unwrap().center();
+    visual.simulate_click(field, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("-12 db");
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::Gain {
+            track: tracks[0],
+            gain: 0.2
+        })))
+    });
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
+        assert!(
+            (view.state.as_ref().unwrap().project.return_tracks()[0].gain() - expected).abs()
+                < 1e-5
+        );
+        assert!(
+            (view.track_gain_controls.mixer[&super::MixerKey::ReturnGain(id)]
+                .entity
+                .read(cx)
+                .value()
+                - f64::from(expected))
+            .abs()
+                < 1e-5
+        );
+        assert!(
+            view.error
+                .as_deref()
+                .is_some_and(|s| s.contains("current edit") && !s.contains("resident"))
         );
     });
 }
