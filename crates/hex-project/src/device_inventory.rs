@@ -3,6 +3,29 @@ use crate::{Device, DeviceId, Invalid, Project};
 
 pub const MAX_SERIAL_DEVICE_DEPTH: usize = 8;
 
+/// Contiguous subtree in an already validated, bounded canonical owner chain.
+/// Parent IDs always name earlier nodes; stop when a node leaves this subtree.
+pub(crate) fn serial_unit_span(
+    devices: &[Device],
+    start: usize,
+) -> Result<std::ops::Range<usize>, Invalid> {
+    devices
+        .get(start)
+        .ok_or(Invalid("device position is out of bounds"))?;
+    let mut end = start + 1;
+    while let Some(device) = devices.get(end) {
+        if !device.parent().is_some_and(|parent| {
+            devices[start..end]
+                .iter()
+                .any(|ancestor| ancestor.id() == parent)
+        }) {
+            break;
+        }
+        end += 1;
+    }
+    Ok(start..end)
+}
+
 impl Project {
     /// Each authored device root exactly once, including unbound retained sources.
     ///
@@ -181,9 +204,11 @@ mod tests {
         assert_eq!(editor.project().snapshot(), before);
         assert!(editor.redo());
         let authored = editor.project().snapshot();
-        // A partial removal/copy cannot orphan or silently drop the suffix.
+        // Removal owns the whole subtree; partial copying still refuses.
         let root = editor.project().main_devices()[0].id();
-        assert!(editor.execute(Command::RemoveDevice(root)).is_err());
+        editor.execute(Command::RemoveDevice(root)).unwrap();
+        assert_eq!(editor.project().main_devices().len(), 1);
+        assert!(editor.undo());
         assert_eq!(editor.project().snapshot(), authored);
         assert!(
             editor
