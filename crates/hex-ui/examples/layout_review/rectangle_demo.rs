@@ -979,6 +979,24 @@ impl Render for RectangleDemo {
                 });
                 section_hover.contains(id, section.start(), section.end())
             });
+            let held_marker = self.section_marker_latched
+                || matches!(
+                    self.pending.as_ref(),
+                    Some(Pending::Section { command, .. }) if matches!(command.as_ref(),
+                        Command::MoveArrangementSectionMarker { .. }
+                        | Command::ResizeArrangementSectionMarker { .. })
+                );
+            let hover_marker = self.pending.is_none()
+                && self.capture.is_none()
+                && crate::section_input::EditModifiers::from(window.modifiers()).marker_only
+                && self.bounds.is_some_and(|bounds| {
+                    let pointer = window.mouse_position();
+                    bounds.contains(&pointer)
+                        && pointer.x >= bounds.left() + px(start * width)
+                        && pointer.x < bounds.left() + px(end * width)
+                });
+            let marker_only =
+                self.kind == Kind::Section && ((held_marker && hovered) || hover_marker);
             let surface = if self.kind == Kind::Section {
                 crate::section_surface::surface(
                     start,
@@ -990,6 +1008,12 @@ impl Render for RectangleDemo {
                     hovered,
                 )
                 .cursor(RectanglePart::Body.cursor())
+                .children(marker_only.then(|| {
+                    crate::section_surface::marker_only_overlay(
+                        identity,
+                        crate::section_surface::CHAMFER,
+                    )
+                }))
                 .children((self.section_focus && selected).then(|| {
                     crate::section_surface::focus::overlay(
                         identity,
@@ -1002,14 +1026,24 @@ impl Render for RectangleDemo {
                 }))
                 .child(
                     crate::section_surface::header(identity, selected, hovered, 14.0)
+                        .when(marker_only, |header| {
+                            header.text_color(rgb(theme::color(theme::PaletteRole::Text)))
+                        })
                         .debug_selector({
                             let id = self.id.clone();
                             move || format!("{id}-section-header-{index}")
                         })
-                        .child(theme::text(section_paint.get(index).map_or_else(
-                            || "section".to_owned(),
-                            |section| section.name().to_owned(),
-                        ))),
+                        .child(theme::text({
+                            let name = section_paint.get(index).map_or_else(
+                                || "section".to_owned(),
+                                |section| section.name().to_owned(),
+                            );
+                            if marker_only {
+                                format!("◇ {name}")
+                            } else {
+                                name
+                            }
+                        })),
                 )
             } else {
                 rectangle_surface(start, end - start, pixel_width)
@@ -1171,6 +1205,9 @@ impl Render for RectangleDemo {
             .w_full()
             .on_modifiers_changed(cx.listener(
                 |view, event: &gpui::ModifiersChangedEvent, window, cx| {
+                    if view.kind == Kind::Section {
+                        cx.notify();
+                    }
                     if view.kind == Kind::Section && view.capture.is_some() {
                         let position = window.mouse_position();
                         view.change(position.x.into(), position.y.into(), event.modifiers, cx);

@@ -673,6 +673,20 @@ pub(crate) fn section_focus_ink(identity: hex_project::ElementColor) -> u32 {
     (element_colors(identity).accent << 8) | u32::from(SECTION_FOCUS_HATCH.alpha)
 }
 
+/// Marker-only edits stay near-hollow across identities and selected states.
+pub(crate) const SECTION_MARKER_ONLY_OUTLINE_DEVICE_PX: f32 = 2.0;
+
+pub(crate) fn section_marker_only_colors(identity: hex_project::ElementColor) -> (u32, u32) {
+    (
+        mix(
+            color(PaletteRole::Surface),
+            element_colors(identity).muted,
+            0.08,
+        ),
+        color(PaletteRole::Primary),
+    )
+}
+
 /// Restrained Main section surfaces share the clip body selection lift and
 /// primary outline. Unselected identity and hover remain unchanged.
 pub(crate) fn section_colors(
