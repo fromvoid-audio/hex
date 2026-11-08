@@ -744,6 +744,10 @@ fn all_numeric_presentations_scrub_upward_and_ignore_horizontal_motion(cx: &mut 
             NumericControlKind::VerticalSlider,
             NumericControlPresentation::VerticalSlider,
         ),
+        (
+            NumericControlKind::VerticalSlider,
+            NumericControlPresentation::FilledVerticalSlider,
+        ),
         (NumericControlKind::Knob, NumericControlPresentation::Knob),
         (
             NumericControlKind::Knob,
@@ -789,7 +793,12 @@ fn all_numeric_presentations_scrub_upward_and_ignore_horizontal_motion(cx: &mut 
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.simulate_resize(size(px(400.0), px(140.0)));
         visual.run_until_parked();
-        let field = visual.debug_bounds("axis-pan-value").unwrap();
+        let selector = if appearance == NumericControlPresentation::FilledVerticalSlider {
+            "axis-pan-slider"
+        } else {
+            "axis-pan-value"
+        };
+        let field = visual.debug_bounds(selector).unwrap();
         let start = field.center();
         for (dx, dy) in [(24.0, 0.0), (0.0, -24.0)] {
             control.update(cx, |control, cx| {
@@ -822,7 +831,7 @@ fn all_numeric_presentations_scrub_upward_and_ignore_horizontal_motion(cx: &mut 
                     .count(),
                 1
             );
-            assert_eq!(visual.debug_bounds("axis-pan-value").unwrap(), field);
+            assert_eq!(visual.debug_bounds(selector).unwrap(), field);
         }
     }
 }
