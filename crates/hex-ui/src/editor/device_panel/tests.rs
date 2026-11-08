@@ -4796,7 +4796,7 @@ fn command_f_preserves_invalid_return_send_draft(cx: &mut TestAppContext) {
     visual.simulate_mouse_down(value.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(value.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_keystrokes("cmd-a");
-    visual.simulate_input("2.5");
+    visual.simulate_input("7 db");
     let focus = visual.update(|window, cx| window.focused(cx).unwrap());
     visual.simulate_keystrokes("cmd-f");
     visual.run_until_parked();
@@ -5155,7 +5155,7 @@ fn return_send_numeric_entry_uses_one_undoable_canonical_edit(cx: &mut TestAppCo
     visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
     visual.simulate_keystrokes("cmd-a");
-    visual.simulate_input("0.375");
+    visual.simulate_input("-8.519374645 db");
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         let control = &view.device_panel.send_controls[&SendControlKey {
@@ -5388,7 +5388,7 @@ fn valid_return_send_draft_commits_once_when_owner_scrolls_offscreen(cx: &mut Te
     visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
     visual.simulate_keystrokes("cmd-a");
-    visual.simulate_input("0.625");
+    visual.simulate_input("-4.082399653 db");
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         let control = &view.device_panel.send_controls[&SendControlKey {
@@ -5480,7 +5480,7 @@ fn invalid_return_send_draft_cancels_and_restores_when_owner_scrolls_offscreen(
     visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
     visual.simulate_keystrokes("cmd-a");
-    visual.simulate_input("2.5");
+    visual.simulate_input("7 db");
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         let control = &view.device_panel.send_controls[&SendControlKey {
@@ -5570,7 +5570,7 @@ fn invalid_return_send_draft_blocks_finalize_and_escape_restores_canonical(
     visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
     visual.simulate_keystrokes("cmd-a");
-    visual.simulate_input("2.5");
+    visual.simulate_input("7 db");
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         let control = &view.device_panel.send_controls[&SendControlKey {

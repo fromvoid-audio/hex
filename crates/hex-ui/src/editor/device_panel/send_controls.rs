@@ -1,4 +1,5 @@
 //! Reusable numeric controls and typed gesture routing for return sends.
+//! The filled field displays decibels; canonical commands retain linear gain.
 use super::{
     EditorView, SendControl, SendControlKey, commit_owned_numeric_edit, control_style,
     dispatch_numeric_gesture,
@@ -10,7 +11,7 @@ use hex_project::TrackId;
 use hex_session::device_gesture::GestureTarget;
 use hex_widgets::{
     NumericControl, NumericControlConfig, NumericControlEvent, NumericControlKind,
-    NumericEventPhase, NumericScale, NumericSpec,
+    NumericControlPresentation, NumericEventPhase, NumericScale, NumericSpec,
 };
 use std::cell::Cell;
 
@@ -28,6 +29,25 @@ fn canonical_gain(view: &EditorView, key: SendControlKey) -> Option<f32> {
             .find(|send| send.return_track() == key.return_track)
             .map_or(0.0, hex_project::SendLevel::gain),
     )
+}
+
+/// An unfinished send retains both axes of the Console page on resize.
+pub(in crate::editor) fn pending_send(
+    view: &EditorView,
+    cx: &gpui::App,
+) -> Option<(TrackId, hex_project::ReturnId)> {
+    if view.device_panel.generation != view.project_generation {
+        return None;
+    }
+    view.device_panel
+        .send_controls
+        .iter()
+        .find_map(|(key, binding)| {
+            let control = binding.entity.read(cx);
+            ((control.is_interacting() || control.is_editing())
+                && canonical_gain(view, *key).is_some())
+            .then_some((key.track, key.return_track))
+        })
 }
 
 pub fn return_send_numeric_control(
@@ -50,13 +70,20 @@ pub fn return_send_numeric_control(
             return_track,
         };
         let id = format!("return-send-{}-{}", track.value(), return_track.value());
-        let spec = match NumericSpec::new(0.0, 2.0, 0.0, NumericScale::Linear, 3, None::<String>) {
+        let spec = match NumericSpec::new(
+            0.0,
+            2.0,
+            0.0,
+            NumericScale::LinearAmplitudeDecibels,
+            1,
+            Some("db"),
+        ) {
             Ok(spec) => spec,
             Err(_) => return div().id("invalid-return-send-control"),
         };
         let config = match NumericControlConfig::new(
             id,
-            theme::text("send"),
+            theme::text("send · db"),
             NumericControlKind::HorizontalSlider,
             spec,
             f64::from(gain),
@@ -65,6 +92,7 @@ pub fn return_send_numeric_control(
             Ok(config) => config,
             Err(_) => return div().id("invalid-return-send-control"),
         };
+        let config = config.with_presentation(NumericControlPresentation::FilledSlider);
         let entity = cx.new(|control_cx| NumericControl::from_config(control_cx, config));
         let atomic_admitted = Cell::new(false);
         let subscription = cx.subscribe(
@@ -184,7 +212,7 @@ pub fn return_send_numeric_control(
             .into(),
         ))
         .w(px(136.0))
-        .h(px(24.0))
+        .h(px(18.0))
         .child(control.entity.clone())
 }
 
