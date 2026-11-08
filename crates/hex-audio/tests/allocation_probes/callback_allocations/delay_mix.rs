@@ -71,6 +71,7 @@ fn delay_mix_automation_callback_publication_history_and_save_reopen() -> Result
     measured_block(&mut callback, &mut out);
     assert!(out.iter().flatten().all(|v| v.is_finite()));
     assert!(out.iter().flatten().any(|v| v.abs() > 0.0));
+    let previous_output = out[BLOCK - 1][0];
     for (parameter, a, b) in [
         (p::FEEDBACK, 0.2 / 0.95, 0.8 / 0.95),
         (p::DRY_WET, 0.1, 0.9),
@@ -112,6 +113,9 @@ fn delay_mix_automation_callback_publication_history_and_save_reopen() -> Result
     measured_block(&mut callback, &mut out);
     assert!(out.iter().flatten().all(|v| v.is_finite()));
     assert!(out.iter().flatten().any(|v| v.abs() > 0.0));
+    // A retained old graph would remain at its previous steady output. The
+    // new feedback/mix ramp must be audible in this actual callback.
+    assert!(out[BLOCK - 1][0] > previous_output + 1e-6);
     control.reclaim();
     editor.execute(Command::RemoveDevice(device))?;
     control

@@ -84,7 +84,7 @@ mod tests {
         DevicePreparationContext, EMPTY_DEVICE_RESOURCES as R, NativeParameterAutomation,
         ProcessorChainOwner, ProcessorInstanceIdentity, TuningTable,
     };
-    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    use hex_lattice_contract::ParameterValue;
     fn state(feedback: f32, mix: f32) -> NativeDeviceState {
         state::encode(Settings::from_legacy([1.0, feedback, mix])).unwrap()
     }
