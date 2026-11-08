@@ -1,7 +1,7 @@
 //! Header destinations capture the painted TrackId, independent of
 //! device-panel selection. Existing worker stamps and prepare-before-commit own
-//! insertion/history. Browser effects append; browser instruments require an
-//! empty chain. Option-drag copies append through the canonical clipboard edit.
+//! insertion/history. Browser effects append; browser instruments replace the
+//! existing instrument or precede effects. Option-drag copies use clipboard edits.
 use super::{
     EditorView,
     drag::{NativeDeviceDrag, NativeDeviceDragSource},
@@ -48,7 +48,18 @@ impl EditorView {
             }
             return Err("hold option to copy devices onto a track");
         };
-        self.browser_device_append_request(track, class, type_id, cx)
+        if class != NativeDeviceClass::Instrument {
+            return self.browser_device_append_request(track, class, type_id, cx);
+        }
+        let target = self.check_device_append_target(track, cx)?;
+        Ok(Request::DropNativeDevice {
+            project_generation: generation,
+            revision: drag.revision,
+            source: NativeDeviceDropSource::Browser { class, type_id },
+            track,
+            before: None,
+            replace: target.instrument().map(hex_project::Device::id),
+        })
     }
 
     fn check_device_append_target(
