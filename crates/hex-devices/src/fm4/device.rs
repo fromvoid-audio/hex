@@ -4,6 +4,8 @@
 //! version-1 payload is a bounded, exact little-endian sequence
 //! of 36 finite `f32` fields; preparation validates it through the standalone
 //! oscillator, routing and envelope constructors.
+mod runtime;
+
 use super::{Envelope, OPERATORS, Oscillator, PreparedFm4, Routing};
 use hex_lattice::{NativeInstrumentDefinition, PreparedAnalyticNote, PreparedNativeInstrument};
 use hex_lattice_contract::{

@@ -1155,41 +1155,31 @@ impl EditorView {
                             ) else {
                                 return;
                             };
-                            if event.modifiers.shift {
-                                view.cancel_midi_audition();
-                                view.clear_midi_time_selection();
-                                view.midi_time_selection.cancel();
-                                view.midi_marker = Some(local_beat.raw());
-                                if let Some(marquee) = view
-                                    .midi_marquee_context(rendered_context.bounds)
-                                    .and_then(|context| {
-                                        super::midi_selection::Marquee::begin(
-                                            context,
-                                            [x, y],
-                                            true,
-                                            &view.midi_selection,
-                                        )
-                                    })
-                                    && view.capture_midi_marquee_pointer(
-                                        &marquee,
-                                        super::midi_marquee::Surface::Piano(std::sync::Arc::clone(
-                                            &event_scene,
-                                        )),
-                                        window,
-                                        view_cx,
+                            view.cancel_midi_audition();
+                            view.clear_midi_time_selection();
+                            view.midi_time_selection.cancel();
+                            view.midi_marker = Some(local_beat.raw());
+                            if let Some(marquee) = view
+                                .midi_marquee_context(rendered_context.bounds)
+                                .and_then(|context| {
+                                    super::midi_selection::Marquee::begin(
+                                        context,
+                                        [x, y],
+                                        event.modifiers.shift,
+                                        &view.midi_selection,
                                     )
-                                {
-                                    view.midi_marquee = Some(marquee);
-                                    view_cx.stop_propagation();
-                                }
-                            } else {
-                                view.begin_midi_grid_time_selection(
-                                    rendered_context.bounds,
-                                    f32::from(event.position.x),
-                                    event.modifiers.platform,
+                                })
+                                && view.capture_midi_marquee_pointer(
+                                    &marquee,
+                                    super::midi_marquee::Surface::Piano(std::sync::Arc::clone(
+                                        &event_scene,
+                                    )),
                                     window,
                                     view_cx,
-                                );
+                                )
+                            {
+                                view.midi_marquee = Some(marquee);
+                                view_cx.stop_propagation();
                             }
                             view_cx.notify();
                             return;
@@ -1476,16 +1466,7 @@ impl EditorView {
                     cx.notify();
                 }),
             ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))])
-            .children([self.midi_button(
-                if self.midi_audition.enabled { "a+" } else { "a" },
-                "toggle note audition · selection plays up to 17 notes · computer and hardware input take priority",
-                cx.listener(|v, _, window, cx| {
-                    v.midi_audition.enabled = !v.midi_audition.enabled;
-                    v.cancel_midi_audition();
-                    v.midi_focus.focus(window);
-                    cx.notify();
-                }),
-            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))])
+            .children([self.midi_audition_button(cx)])
             .children([self.midi_button(
                 if self.midi_step.enabled { "st" } else { "s" },
                 "toggle step entry · enable computer keyboard with m · hold notes and press right · no notes inserts a rest",
@@ -2093,6 +2074,43 @@ impl EditorView {
             .absolute()
             .size_full(),
         )
+    }
+
+    fn midi_audition_button(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        const HINT: &str = "toggle note audition · selection plays up to 17 notes · computer and hardware input take priority";
+        let mut style = theme::action_style();
+        if self.midi_audition.enabled {
+            let control = theme::control_style();
+            style.background = control.accent;
+            style.text = control.accent_text;
+            style.hover_background = control.accent;
+            style.hover_text = Some(control.accent_text);
+        }
+        let ink = style.text;
+        hex_widgets::action_surface(style)
+            .id(HINT)
+            .debug_selector(|| HINT.into())
+            .w(px(25.0))
+            .h(px(22.0))
+            .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+            .children([gpui::svg()
+                .path("icons/midi/audition.svg")
+                .size(px(14.0))
+                .text_color(rgb(ink))
+                .debug_selector(|| "midi-audition-speaker".into())])
+            .tooltip(|_, cx| {
+                cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
+                    description: HINT.into(),
+                })
+                .into()
+            })
+            .on_click(cx.listener(|v, _, window, cx| {
+                v.midi_audition.enabled = !v.midi_audition.enabled;
+                v.cancel_midi_audition();
+                v.midi_focus.focus(window);
+                cx.notify();
+            }))
     }
 
     pub(super) fn midi_button(

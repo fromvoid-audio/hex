@@ -60,6 +60,22 @@ pub(super) struct Preparation<'a> {
     pub deferred: bool,
 }
 
+pub(super) fn start_failed_copy(
+    state: &State,
+    lane: &mut Lane,
+    scope: DeviceAutomationTakeScope,
+    destination: &Path,
+    max_events: u64,
+    gesture_active: bool,
+) -> Result<Step, String> {
+    if gesture_active {
+        return Err("vst3 recovery requires a quiescent gesture".into());
+    }
+    let source = lane.failed_source(scope)?;
+    let observations = state.failed_observations(scope, source)?;
+    lane.copy_failed_plugin(scope, destination, max_events, observations)
+}
+
 fn snapshot(operation: PluginGesturePreparation) -> GestureSnapshot {
     match operation {
         PluginGesturePreparation::Begin { snapshot, .. }
@@ -69,6 +85,40 @@ fn snapshot(operation: PluginGesturePreparation) -> GestureSnapshot {
     }
 }
 impl State {
+    /// Copy the bounded receipts only after the original gesture is quiescent.
+    /// The owner retains every original; an empty result never clears custody.
+    pub(super) fn failed_observations(
+        &self,
+        scope: DeviceAutomationTakeScope,
+        source: DeviceAutomationSource,
+    ) -> Result<Vec<PluginParameterObservation>, String> {
+        if self.active.is_some() || self.terminal.is_some() {
+            return Err("vst3 recovery requires a quiescent gesture".into());
+        }
+        let Some(failed) = self.failed.as_ref() else {
+            return Ok(Vec::new());
+        };
+        if !failed.ended || failed.scope != scope || failed.source != source {
+            return Err("vst3 recovery custody is incomplete or belongs to another source".into());
+        }
+        let mut observations = Vec::with_capacity(3);
+        if let Some(pending) = failed.pending.as_ref() {
+            let DeviceAutomationTakeAction::PluginObservation(observation) = pending else {
+                return Err("vst3 recovery has an unsupported pending action".into());
+            };
+            observations.push(**observation);
+        }
+        let mut gap = false;
+        for observation in failed.failed_observations {
+            match observation {
+                Some(_) if gap => return Err("vst3 recovery observation custody has a gap".into()),
+                Some(observation) => observations.push(observation),
+                None => gap = true,
+            }
+        }
+        Ok(observations)
+    }
+
     pub(super) fn terminal_for(&self, snapshot: Option<GestureSnapshot>) -> Option<GestureRequest> {
         let snapshot = snapshot
             .filter(|snapshot| self.owns(Some(*snapshot)) || self.retired == Some(snapshot.key))?;

@@ -74,6 +74,10 @@ pub(crate) fn fixture_view(
 
 pub(super) struct PendingPluginEffect {
     pub(super) status: String,
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) destination: PluginEffectDestination,
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) before: Option<hex_project::DeviceId>,
     control: Arc<PluginEffectControl>,
     trace: Option<crate::diagnostics::PluginLoad>,
 }
@@ -185,6 +189,10 @@ impl EditorView {
                 control,
                 trace,
                 status,
+                #[cfg(all(test, feature = "ui-test-support"))]
+                destination,
+                #[cfg(all(test, feature = "ui-test-support"))]
+                before,
             });
             self.error = None;
         }

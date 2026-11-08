@@ -70,7 +70,7 @@ fn paint_fixture(
 }
 
 #[gpui::test]
-fn double_press_paints_existing_clip_header_without_moving_it(cx: &mut TestAppContext) {
+fn double_press_selects_existing_clip_header_without_moving_it(cx: &mut TestAppContext) {
     for reverse in [false, true] {
         let (handle, editor, track) = paint_fixture(cx, false);
         let mut visual = VisualTestContext::from_window(handle, cx);
@@ -102,10 +102,17 @@ fn double_press_paints_existing_clip_header_without_moving_it(cx: &mut TestAppCo
             Modifiers::default(),
         );
         editor.read_with(cx, |view, _| {
-            assert!(
-                view.clip_paint_gesture.is_some(),
-                "header double press paints"
-            );
+            let clip = view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .midi_clips()[0]
+                .id();
+            assert_eq!(view.selected_clip(), Some(clip));
+            assert!(view.clip_paint_gesture.is_none());
             assert!(view.pointer_down.is_none());
             assert!(view.active_clip_drag.is_none());
             assert!(view.time_selection_gesture.is_none());
@@ -126,7 +133,7 @@ fn released_paint_survives_repaints_and_escape_until_success_or_refusal(cx: &mut
             ))
             .unwrap();
         let at = point(
-            lane.left() + lane.size.width * 0.1875,
+            lane.left() + lane.size.width * 0.5,
             lane.top() + lane.size.height * if stale { 0.85 } else { 0.5 },
         );
         let end = point(at.x + lane.size.width * 0.0625, at.y);
@@ -171,7 +178,7 @@ fn released_paint_survives_repaints_and_escape_until_success_or_refusal(cx: &mut
                     .unwrap()
                     .midi_clips()
                     .len(),
-                if stale { 1 } else { 3 }
+                if stale { 1 } else { 2 }
             );
             if !stale {
                 let painted = view.state.as_ref().unwrap().project.clone();
@@ -201,10 +208,10 @@ fn released_paint_survives_repaints_and_escape_until_success_or_refusal(cx: &mut
 }
 
 #[gpui::test]
-fn audio_rectangle_double_press_paints_at_every_height(cx: &mut TestAppContext) {
+fn audio_rectangle_double_press_selects_at_every_height(cx: &mut TestAppContext) {
     use super::super::clip_drag_ui_test::{audio_project, editor_window};
     for (fraction, reverse) in [(0.15, false), (0.5, true), (0.85, false)] {
-        let (project, track, _, _) = audio_project();
+        let (project, track, _, clip) = audio_project();
         let (handle, editor) = editor_window(cx, project, std::sync::Arc::default());
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
@@ -236,11 +243,12 @@ fn audio_rectangle_double_press_paints_at_every_height(cx: &mut TestAppContext) 
         );
         visual.run_until_parked();
         assert!(
-            visual.debug_bounds("clip-paint-preview").is_some(),
+            visual.debug_bounds("clip-paint-preview").is_none(),
             "height {fraction}"
         );
         editor.read_with(cx, |view, _| {
-            assert!(view.clip_paint_held());
+            assert_eq!(view.selected_clip(), Some(clip));
+            assert!(!view.clip_paint_held());
             assert!(view.pointer_down.is_none());
             assert!(view.active_clip_drag.is_none());
             assert!(view.time_selection_gesture.is_none());
@@ -264,7 +272,7 @@ fn closed_service_refusal_retires_unsubmitted_paint_without_editing(cx: &mut Tes
         ))
         .unwrap();
     let at = point(
-        lane.left() + lane.size.width * 0.1875,
+        lane.left() + lane.size.width * 0.5,
         lane.top() + lane.size.height * 0.5,
     );
     visual.simulate_event(MouseDownEvent {

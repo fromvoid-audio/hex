@@ -19,7 +19,8 @@ use std::sync::Arc;
 
 const TRACK_COLUMN_WIDTH: f32 = 148.0;
 const SCENE_ROW_HEIGHT: f32 = 31.0;
-const TRACK_HEADER_HEIGHT: f32 = 34.0;
+// Shared by the pinned Return bank so scene and mixer columns stay aligned.
+pub(super) const TRACK_HEADER_HEIGHT: f32 = 28.0;
 // Eight nested ancestors fit while preserving a usable header label.
 const GROUP_BAND_HEIGHT: f32 = 1.0;
 const SCENE_HEADER_WIDTH: f32 = 150.0;
@@ -422,8 +423,7 @@ impl EditorView {
             self.session_routes
                 .routes_available(snapshot, &state.project, revision, generation)
         });
-        let available_width =
-            f32::from(window.bounds().size.width) - self.browser_content_width(window);
+        let available_width = self.workspace_body_width(window);
         super::device_panel::retire_removed_send_controls(self, cx);
         let pending_send = super::device_panel::pending_send(self, cx);
         let pending_return = self
@@ -610,14 +610,10 @@ impl EditorView {
                             .items_center()
                             .border_l_1()
                             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-                            .bg(rgb(theme::color(if selected {
-                                theme::PaletteRole::Raised
-                            } else {
-                                theme::PaletteRole::Surface
-                            })))
-                            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
-                            .text_xs()
-                            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+                            .bg(rgb(theme::element_colors(track.color()).accent))
+                            .text_size(px(11.0))
+                            .line_height(px(14.0))
+                            .text_color(rgb(theme::color(theme::PaletteRole::ClipText)))
                             .child(
                                 div()
                                     .min_w_0()
@@ -684,15 +680,7 @@ impl EditorView {
                                                 })
                                                 .into()
                                             })
-                                            .child(theme::text(if folded { ">" } else { "v" }))
-                                    }))
-                                    .children(track.is_group().then(|| {
-                                        div()
-                                            .flex_shrink_0()
-                                            .debug_selector(move || {
-                                                format!("group-track-marker-{}", track_id.value())
-                                            })
-                                            .child(theme::text("group · "))
+                                            .child(theme::text(if folded { "▸" } else { "▾" }))
                                     }))
                                     .child(
                                         div()
@@ -740,16 +728,20 @@ impl EditorView {
                     true,
                     cx,
                 ),
-            )
-            .child(div().w(px(return_width)).flex_shrink_0())
-            .child(self.console_main_header(SCENE_HEADER_WIDTH, &return_page, frame, cx))
-            .child(self.console_reorder_layer(
-                page.clone(),
-                frame,
-                TRACK_COLUMN_WIDTH,
-                SCENE_HEADER_WIDTH + return_width,
-                cx,
-            ));
+            );
+        let header = super::console_columns::pinned_row(
+            header,
+            return_width,
+            self.console_main_header(SCENE_HEADER_WIDTH, &return_page, frame, cx),
+            TRACK_HEADER_HEIGHT,
+        )
+        .child(self.console_reorder_layer(
+            page.clone(),
+            frame,
+            TRACK_COLUMN_WIDTH,
+            SCENE_HEADER_WIDTH + return_width,
+            cx,
+        ));
 
         let scene_rows = uniform_list(
             "session-scene-rows",
@@ -776,10 +768,19 @@ impl EditorView {
         let body = div()
             .relative()
             .flex_1()
+            .min_w_0()
             .min_h_0()
             .flex()
             .flex_col()
-            .child(div().flex_shrink_0().flex().overflow_hidden().child(header))
+            .child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .flex()
+                    .overflow_hidden()
+                    .child(header),
+            )
             .child(
                 div()
                     .flex_1()
@@ -799,6 +800,7 @@ impl EditorView {
         div()
             .relative()
             .flex_1()
+            .min_w_0()
             .min_h_0()
             .flex()
             .flex_col()
@@ -1182,7 +1184,6 @@ impl EditorView {
             .map(|scene| scene.id());
         let selected = self.selected_scene == Some(scene_id);
         let mut row = div()
-            .id(("session-scene-row", scene_id.value()))
             .w_full()
             .h(px(SCENE_ROW_HEIGHT))
             .flex_shrink_0()
@@ -1638,11 +1639,13 @@ impl EditorView {
             false,
             cx,
         );
-        row = row
-            .child(tail)
-            .child(div().w(px(return_width)).flex_shrink_0())
-            .child(scene_column);
-        row
+        super::console_columns::pinned_row(
+            row.child(tail),
+            return_width,
+            scene_column,
+            SCENE_ROW_HEIGHT,
+        )
+        .id(("session-scene-row", scene_id.value()))
     }
 
     fn console_insertion_strip(
@@ -1681,21 +1684,12 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let mut row = div()
-            .id("console-append-row")
-            .debug_selector(|| "console-append-row".into())
             .w_full()
             .h(px(SCENE_ROW_HEIGHT))
             .flex()
             .flex_shrink_0()
             .border_b_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-            .on_mouse_down(
-                gpui::MouseButton::Right,
-                cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
-                    cx.stop_propagation();
-                    view.open_console_scene_context_menu(event.position, None, window, cx);
-                }),
-            );
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)));
         if let Some(state) = self.state.as_ref() {
             for track in page.columns.iter().filter_map(|column| {
                 state
@@ -1752,17 +1746,24 @@ impl EditorView {
             false,
             cx,
         );
-        row.child(tail)
-            .child(div().w(px(return_width)).flex_shrink_0())
-            .child(
-                div()
-                    .w(px(SCENE_HEADER_WIDTH))
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .text_xs()
-                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(theme::text("add scene")),
+        let main = div()
+            .w(px(SCENE_HEADER_WIDTH))
+            .flex_shrink_0()
+            .px_2()
+            .flex()
+            .items_center()
+            .text_xs()
+            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+            .child(theme::text("add scene"));
+        super::console_columns::pinned_row(row.child(tail), return_width, main, SCENE_ROW_HEIGHT)
+            .id("console-append-row")
+            .debug_selector(|| "console-append-row".into())
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    view.open_console_scene_context_menu(event.position, None, window, cx);
+                }),
             )
     }
 

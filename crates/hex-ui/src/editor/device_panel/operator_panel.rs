@@ -13,27 +13,66 @@ use hex_project::DeviceId;
 pub(super) mod algorithms;
 pub(super) mod context;
 pub(super) mod envelope;
+pub(super) mod filter_response;
 mod global;
 pub(super) mod harmonics;
+pub(super) mod oscillator_options;
 pub(super) mod preview;
+pub(super) mod routing_picker;
 
 pub(super) const OPERATOR_FRAME_WIDTH: f32 = crate::device_composition::VECTOR_WIDTH;
 // Two compact control columns with a narrow power/identity column.
 const SHELL_WIDTH: f32 = crate::device_composition::VECTOR_SHELL_WIDTH;
 const FIELD_WIDTH: f32 = 46.0;
+
+pub(super) fn detail_width(page: OperatorPage) -> f32 {
+    if matches!(page, OperatorPage::Routing | OperatorPage::Lfo) {
+        crate::device_composition::VECTOR_ADVANCED_DETAIL_WIDTH
+    } else {
+        crate::device_composition::VECTOR_DETAIL_WIDTH
+    }
+}
+
+pub(super) fn frame_width(state: OperatorPanelState) -> f32 {
+    OPERATOR_FRAME_WIDTH + detail_width(state.page) - crate::device_composition::VECTOR_DETAIL_WIDTH
+        + if state.options_open {
+            crate::device_composition::VECTOR_OPTIONS_WIDTH
+        } else {
+            0.0
+        }
+}
+
 // Retain the implementation while these additional harmonic tools are dormant.
 const SHOW_HARMONIC_TOOLS: bool = false;
 
 gpui::actions!(
     hex_operator,
-    [ActivateRouting, ActivateSection, ActivatePower]
+    [
+        ActivateRouting,
+        RoutingSettings,
+        CloseRouting,
+        NextRouting,
+        PreviousRouting,
+        ActivateSection,
+        ActivatePower,
+        ToggleOptions
+    ]
 );
 
 pub(in crate::editor) fn bind_keys(cx: &mut gpui::App) {
     cx.bind_keys([
+        gpui::KeyBinding::new("enter", ToggleOptions, Some("hex_operator_options")),
+        gpui::KeyBinding::new("space", ToggleOptions, Some("hex_operator_options")),
         gpui::KeyBinding::new("enter", ActivateSection, Some("hex_operator_section")),
         gpui::KeyBinding::new("enter", ActivatePower, Some("hex_operator_power")),
         gpui::KeyBinding::new("enter", ActivateRouting, Some("hex_operator_routing")),
+        gpui::KeyBinding::new("space", ActivateRouting, Some("hex_operator_routing")),
+        gpui::KeyBinding::new("alt-enter", RoutingSettings, Some("hex_operator_routing")),
+        gpui::KeyBinding::new("escape", CloseRouting, Some("hex_operator_routing_open")),
+        gpui::KeyBinding::new("down", NextRouting, Some("hex_operator_routing_open")),
+        gpui::KeyBinding::new("right", NextRouting, Some("hex_operator_routing_open")),
+        gpui::KeyBinding::new("up", PreviousRouting, Some("hex_operator_routing_open")),
+        gpui::KeyBinding::new("left", PreviousRouting, Some("hex_operator_routing_open")),
     ]);
 }
 
@@ -41,6 +80,7 @@ pub(in crate::editor) fn bind_keys(cx: &mut gpui::App) {
 pub(super) struct OperatorPanelState {
     pub(super) selected_operator: usize,
     pub(super) page: OperatorPage,
+    pub(super) options_open: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -58,6 +98,7 @@ pub(super) enum NavigationTarget {
     Oscillator(usize),
     Page(OperatorPage),
     Algorithm(u32),
+    Options,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -91,6 +132,9 @@ pub(super) fn render_body(
     device_view: &NativeDeviceView,
 ) -> Stateful<Div> {
     let state = *view.device_panel.operator_pages.entry(device).or_default();
+    if state.page != OperatorPage::Filter {
+        filter_response::hide(view, device);
+    }
     let owner = context::Owner::capture(view, device);
     let parameters = &device_view.parameters;
     let identity = DeviceControlIdentity {
@@ -110,6 +154,21 @@ pub(super) fn render_body(
         shell = shell.child(operator_row(
             view, cx, device, identity, parameters, operator,
         ));
+    }
+
+    let control = oscillator_options::button(view, cx, device, state.options_open);
+    shell = shell.child(control);
+    let mut left = div().flex().h_full().flex_shrink_0().child(shell);
+    if state.options_open {
+        let control = oscillator_options::render(
+            view,
+            cx,
+            device,
+            identity,
+            parameters,
+            state.selected_operator,
+        );
+        left = left.child(control);
     }
 
     envelope::retire_hidden(
@@ -148,7 +207,7 @@ pub(super) fn render_body(
     } else {
         page_tabs(view, cx, device, owner, state)
     };
-    let detail = crate::device_composition::tabbed_detail(detail, tabs)
+    let detail = crate::device_composition::tabbed_detail(detail, tabs, detail_width(state.page))
         .on_children_prepainted(context::section_listener(view, cx, device, Section::Detail))
         .id(ElementId::Name(
             format!("operator-detail-{}", device.value()).into(),
@@ -156,7 +215,7 @@ pub(super) fn render_body(
         .debug_selector(move || format!("operator-detail-{}", device.value()))
         .track_focus(&detail_focus);
     let preview = preview::render(view, cx, device, device_view);
-    crate::device_composition::three_pane(shell, detail, preview)
+    crate::device_composition::three_pane(left, detail, preview)
         .tab_group()
         .id(ElementId::Name(
             format!("operator-body-{}", device.value()).into(),
@@ -170,7 +229,7 @@ pub(super) fn render_body(
                     && !event.keystroke.modifiers.platform
                     && owner.is_some_and(|owner| owner.is_current(view))
                 {
-                    if preview::finalize_controls(view, cx, device) && finalize_controls(view, cx) {
+                    if finalize_controls(view, cx) {
                         if event.keystroke.modifiers.shift {
                             window.focus_prev();
                         } else {
@@ -243,19 +302,15 @@ fn operator_row(
     operator: usize,
 ) -> Stateful<Div> {
     let base = operator as u32 * 3 + 1;
-    let fixed_id = 62 + operator as u32 * 3;
-    let fixed_value = value(view, device, parameters, id(fixed_id));
-    let fixed = matches!(fixed_value, Some(ParameterValue::Bool(true)));
-    let primary_id = if fixed { fixed_id + 1 } else { base };
     let primary = shell_control(
         view,
         cx,
         device,
         identity,
         parameters,
-        id(primary_id),
+        id(base),
         ControlPresentation::FilledSlider,
-        Some(if fixed { "freq" } else { "coarse" }),
+        Some("coarse"),
     );
     let fine = compact_control_with_codec(
         view,
@@ -318,15 +373,15 @@ fn operator_row(
                 cx.stop_propagation();
             }),
         );
-    let fixed_control = shell_control(
+    let control = compact_control(
         view,
         cx,
         device,
         identity,
         parameters,
-        id(fixed_id),
-        ControlPresentation::CompactButton,
-        Some(""),
+        id(613 + operator as u32),
+        ControlPresentation::FilledVerticalSlider,
+        Some("pitch keytrack"),
     );
     let waveform = compact_control(
         view,
@@ -338,19 +393,14 @@ fn operator_row(
         ControlPresentation::CompactSelector,
         Some("wave"),
     );
+    let icon = gpui::svg()
+        .path("icons/device/keyboard.svg")
+        .w(px(10.0))
+        .h(px(8.0))
+        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+        .debug_selector(move || format!("operator-keytrack-icon-{}-{operator}", device.value()));
     row = row
         .child(operator_power(view, cx, device, parameters, operator))
-        .child(
-            div()
-                .w(px(18.0))
-                .flex_shrink_0()
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap(px(4.0))
-                .child(section_title(["a", "b", "c", "d"][operator]))
-                .child(fixed_control),
-        )
         .child(
             div()
                 .w(px(60.0))
@@ -370,6 +420,17 @@ fn operator_row(
                 .gap(px(2.0))
                 .child(level)
                 .child(waveform),
+        )
+        .child(
+            div()
+                .w(px(12.0))
+                .flex_shrink_0()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(1.0))
+                .child(control)
+                .child(icon),
         );
     row
 }
@@ -520,169 +581,12 @@ fn oscillator_envelope_detail(
     operator: usize,
     page: OperatorPage,
 ) -> Stateful<Div> {
-    let phase = compact_control_with_codec(
-        view,
-        cx,
-        device,
-        identity,
-        parameters,
-        id(operator as u32 * 3 + 3),
-        ControlPresentation::InlineValue,
-        Some("phase"),
-        Some(super::numeric_display::NumericDisplayCodec::Percent),
-    );
-    let companion_base = 357 + operator as u32 * 8;
-    let oscillator_velocity = compact_control_with_codec(
-        view,
-        cx,
-        device,
-        identity,
-        parameters,
-        id(companion_base + 1),
-        ControlPresentation::InlineValue,
-        Some("osc<vel"),
-        Some(super::numeric_display::NumericDisplayCodec::Percent),
-    );
-    let restart = compact_control(
-        view,
-        cx,
-        device,
-        identity,
-        parameters,
-        id(companion_base),
-        ControlPresentation::CompactButton,
-        Some("r"),
-    );
-    let quantize = compact_control(
-        view,
-        cx,
-        device,
-        identity,
-        parameters,
-        id(companion_base + 2),
-        ControlPresentation::CompactButton,
-        Some("q"),
-    );
-    let feedback = compact_control_with_codec(
-        view,
-        cx,
-        device,
-        identity,
-        parameters,
-        id(78 + operator as u32),
-        ControlPresentation::InlineValue,
-        Some("feedback"),
-        Some(super::numeric_display::NumericDisplayCodec::Percent),
-    );
-    let fixed = matches!(
-        value(view, device, parameters, id(62 + operator as u32 * 3)),
-        Some(ParameterValue::Bool(true))
-    );
-    let multiplier = fixed.then(|| {
-        compact_control(
-            view,
-            cx,
-            device,
-            identity,
-            parameters,
-            id(64 + operator as u32 * 3),
-            ControlPresentation::InlineValue,
-            Some("multi"),
-        )
-    });
-    let (graph, waveform_preview) = harmonics::graph(view, cx, device, operator, parameters);
+    let (graph, _) = harmonics::graph(view, cx, device, operator, parameters);
     let harmonic_range_control = harmonics::ranges(view, cx, device, operator, parameters);
-    let harmonic_repeat_control = compact_control(
-        view,
-        cx,
-        device,
-        identity,
-        parameters,
-        id(353 + operator as u32),
-        ControlPresentation::CompactSelector,
-        Some("repeat"),
-    );
-    let envelope_fields =
-        envelope_fields(view, cx, device, identity, parameters, operator, multiplier)
-            .when(SHOW_HARMONIC_TOOLS, |fields| {
-                fields.child(harmonics::tools(view, cx, device, operator))
-            });
-    let oscillator_fields = div()
-        .id("operator-oscillator-fields")
-        .debug_selector(|| "operator-oscillator-fields".into())
-        .w(px(120.0))
-        .flex_shrink_0()
-        .flex()
-        .flex_col()
-        .child(
-            div()
-                .w_full()
-                .h(px(21.0))
-                .flex_shrink_0()
-                .flex()
-                .gap(px(4.0))
-                .child(
-                    div()
-                        .id("operator-waveform-preview")
-                        .debug_selector(|| "operator-waveform-preview".into())
-                        .w(px(52.0))
-                        .h(px(21.0))
-                        .flex_shrink_0()
-                        .child(waveform_preview),
-                ),
-        )
-        .child(
-            div()
-                .w_full()
-                .h(px(21.0))
-                .flex_shrink_0()
-                .flex()
-                .gap(px(4.0))
-                .child(detail_field(
-                    device,
-                    id(78 + operator as u32),
-                    "feedback",
-                    52.0,
-                    feedback,
-                ))
-                .child(detail_field(
-                    device,
-                    id(353 + operator as u32),
-                    "repeat",
-                    64.0,
-                    harmonic_repeat_control,
-                )),
-        )
-        .child(
-            div()
-                .w_full()
-                .h(px(21.0))
-                .flex_shrink_0()
-                .flex()
-                .gap(px(4.0))
-                .child(detail_field(
-                    device,
-                    id(operator as u32 * 3 + 3),
-                    "phase",
-                    58.0,
-                    div()
-                        .flex()
-                        .gap(px(2.0))
-                        .child(div().w(px(42.0)).child(phase))
-                        .child(restart),
-                ))
-                .child(detail_field(
-                    device,
-                    id(companion_base + 1),
-                    "osc<vel",
-                    58.0,
-                    div()
-                        .flex()
-                        .gap(px(2.0))
-                        .child(div().w(px(42.0)).child(oscillator_velocity))
-                        .child(quantize),
-                )),
-        );
+    let envelope_fields = envelope_fields(view, cx, device, identity, parameters, operator)
+        .when(SHOW_HARMONIC_TOOLS, |fields| {
+            fields.child(harmonics::tools(view, cx, device, operator))
+        });
     let upper_display = if page == OperatorPage::Envelope {
         let base = 33 + operator as u32 * 6;
         let values = std::array::from_fn(|field| {
@@ -737,8 +641,7 @@ fn oscillator_envelope_detail(
                         .flex()
                         .flex_col()
                         .child(envelope_fields),
-                )
-                .child(oscillator_fields),
+                ),
         )
 }
 
@@ -817,7 +720,6 @@ fn detail_field(
         )
 }
 
-#[allow(clippy::too_many_arguments)] // Fixed multiplier shares the third inspector row.
 fn envelope_fields(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
@@ -825,7 +727,6 @@ fn envelope_fields(
     identity: DeviceControlIdentity,
     parameters: &[NativeDeviceParameterView],
     operator: usize,
-    multiplier: Option<Div>,
 ) -> Div {
     use super::numeric_display::NumericDisplayCodec as Codec;
     let base = 33 + operator as u32 * 6;
@@ -943,7 +844,7 @@ fn envelope_fields(
         None,
         Some(Codec::Percent),
     );
-    let mut row = div()
+    let row = div()
         .w_full()
         .h(px(21.0))
         .flex_shrink_0()
@@ -951,15 +852,6 @@ fn envelope_fields(
         .gap(px(4.0))
         .child(loop_cell)
         .child(detail_field(device, id(companion + 4), "key", 46.0, key));
-    if let Some(multiplier) = multiplier {
-        row = row.child(detail_field(
-            device,
-            id(64 + operator as u32 * 3),
-            "multi",
-            46.0,
-            multiplier,
-        ));
-    }
     fields.child(row)
 }
 
@@ -1310,44 +1202,45 @@ fn filter_detail(
     identity: DeviceControlIdentity,
     parameters: &[NativeDeviceParameterView],
 ) -> Stateful<Div> {
-    let mut detail = div()
+    let graph = filter_response::graph(view, cx, device, parameters);
+    let mut row = div()
+        .w_full()
+        .h(px(27.0))
+        .flex_shrink_0()
+        .flex()
+        .gap(px(4.0));
+    for (parameter, label, width) in [
+        (20_003, "slope", 52.0),
+        (20_004, "circuit", 64.0),
+        (20_007, "morph", 56.0),
+    ] {
+        let control = compact_control(
+            view,
+            cx,
+            device,
+            identity,
+            parameters,
+            id(parameter),
+            if parameter < 20_005 {
+                ControlPresentation::CompactSelector
+            } else {
+                ControlPresentation::InlineValue
+            },
+            None,
+        );
+        row = row.child(detail_field(device, id(parameter), label, width, control));
+    }
+    div()
         .w_full()
         .h_full()
         .flex()
         .flex_col()
-        .gap(px(4.0))
-        .child(section_title("filter"));
-    for fields in [
-        &[(20_003, "slope"), (20_004, "circuit")][..],
-        &[(20_007, "morph")][..],
-    ] {
-        let mut row = div()
-            .w_full()
-            .h(px(48.0))
-            .flex()
-            .items_center()
-            .gap(px(3.0));
-        for &(parameter, label) in fields {
-            row = row.child(compact_control(
-                view,
-                cx,
-                device,
-                identity,
-                parameters,
-                id(parameter),
-                if parameter < 20_005 {
-                    ControlPresentation::CompactSelector
-                } else {
-                    ControlPresentation::MicroDial
-                },
-                Some(label),
-            ));
-        }
-        detail = detail.child(row);
-    }
-    detail.id(ElementId::Name(
-        format!("operator-filter-detail-{}", device.value()).into(),
-    ))
+        .gap(px(2.0))
+        .child(graph)
+        .child(row)
+        .id(ElementId::Name(
+            format!("operator-filter-detail-{}", device.value()).into(),
+        ))
 }
 
 pub(super) fn filter_summary(

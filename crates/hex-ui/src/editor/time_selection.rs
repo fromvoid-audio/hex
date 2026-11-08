@@ -5,7 +5,7 @@ use crate::theme;
 use gpui::{
     Context, CursorStyle, Div, Stateful, Window, canvas, div, prelude::*, px, relative, rgb,
 };
-use hex_project::{Command, TrackId};
+use hex_project::{ClipId, Command, TrackId};
 use hex_session::service::Request;
 use hex_widgets::{RangeSelectionTarget, RangeSelectionZones};
 use std::time::Instant;
@@ -416,7 +416,7 @@ impl EditorView {
         ) else {
             return false;
         };
-        let (ordinary_handle, priority_control, _) =
+        let (ordinary_handle, priority_control, _, _) =
             self.clip_pointer_handles(track, x, y, viewport, self.option_held, true);
         if !self.time_selection_key_held
             && (priority_control || ((extend || !inside_selection) && ordinary_handle))
@@ -1129,10 +1129,18 @@ impl EditorView {
         viewport: super::viewport::Viewport,
         painting: bool,
     ) -> bool {
-        let (ordinary, priority, _) =
+        let (ordinary, priority, _, _) =
             self.clip_pointer_handles(track, x, y, viewport, self.option_held, !painting);
         ordinary || priority
     }
+    /// Hit the topmost painted clip body using the same bounds as its controls.
+    pub(super) fn visible_clip_at_pointer(&self, track: TrackId, x: f32, y: f32) -> Option<ClipId> {
+        let state = self.state.as_ref()?;
+        let viewport = self.visible_viewport(state.timeline_frames);
+        self.clip_pointer_handles(track, x, y, viewport, false, true)
+            .3
+    }
+
     pub(super) fn pointer_hits_priority_clip_control(&self, x: f32, y: f32, option: bool) -> bool {
         let Some((track, _)) = self.visible_lane_at(x, y) else {
             return false;
@@ -1172,7 +1180,7 @@ impl EditorView {
     }
     /// Ordinary headers/trim edges may yield to a selected time range; visible
     /// fade and loop controls and an eligible Option-repeat edge take priority.
-    /// Returns ordinary hit, priority hit, and Option-repeat hit respectively.
+    /// Returns ordinary, priority and Option-repeat hits plus the topmost clip.
     fn clip_pointer_handles(
         &self,
         track: TrackId,
@@ -1181,18 +1189,18 @@ impl EditorView {
         viewport: super::viewport::Viewport,
         option: bool,
         include_header: bool,
-    ) -> (bool, bool, bool) {
+    ) -> (bool, bool, bool, Option<ClipId>) {
         let Some(state) = self.state.as_ref() else {
-            return (true, false, false);
+            return (true, false, false, None);
         };
         let Some(track) = state.project.track(track) else {
-            return (true, false, false);
+            return (true, false, false, None);
         };
         let Some(lane) = self.drag_lanes.get(&track.id()) else {
-            return (true, false, false);
+            return (true, false, false, None);
         };
         let Some(viewport_end) = viewport.end().filter(|_| viewport.length > 0) else {
-            return (true, false, false);
+            return (true, false, false, None);
         };
         let handle_hit = |start: u64, end: u64| {
             let visible_start = start.max(viewport.start);
@@ -1247,6 +1255,7 @@ impl EditorView {
                             )
                             .is_some_and(|c| c.hit(x, y)),
                         repeat,
+                        Some(clip.id()),
                     )
                 })
             })
@@ -1275,11 +1284,12 @@ impl EditorView {
                                 )
                                 .is_some_and(|c| c.hit(x, y)),
                             repeat,
+                            Some(clip.id()),
                         )
                     })
                 })
             })
-            .unwrap_or((false, false, false))
+            .unwrap_or((false, false, false, None))
     }
 
     /// Paint one opaque marker at the true dragged endpoint, above the range's

@@ -3,10 +3,14 @@
 //! The disk worker seals the file independently of callback and UI lifetimes.
 use super::Session;
 mod plugin_observation;
+pub use plugin_observation::{
+    FailedPluginContinuation, copy_failed_plugin_on_control,
+    copy_failed_plugin_with_receipt_on_control, prepare_failed_plugin_continuation,
+};
 mod recovery;
 use super::automation_draft::{
-    DeviceDraftInput, DraftProvenance, DraftWorker, DraftWorkerOutcome, Vst3CaptureTarget,
-    Vst3ParameterApplication,
+    DeviceDraftInput, DraftProvenance, DraftWorker, DraftWorkerOutcome, RecoveryCopyWorker,
+    Vst3CaptureTarget, Vst3ParameterApplication,
 };
 use super::automation_take::{CompletedAutomationTake, prepare_device_take_adoption_on_control};
 use hex_engine::{AudioSourceContext, NativeParameterApplication, NativeParameterInputTarget};
@@ -84,7 +88,7 @@ impl From<DeviceCaptureTarget> for TakePublication {
 
 /// Copied observation of the applied and playing resident output. The
 /// callback still checks the actual source and epoch when admitting Begin.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeviceAutomationSource {
     pub target: DeviceCaptureTarget,
     pub sample_rate: u32,
@@ -101,6 +105,15 @@ impl DeviceAutomationSource {
             && self.output_identity == scope.stamp.output_identity
             && self.audio_revision == scope.stamp.audio_revision
             && self.transport_epoch == scope.stamp.transport_epoch
+    }
+
+    fn capture_clock(self, project: &hex_project::Project) -> CaptureClock {
+        CaptureClock {
+            sample_rate: self.sample_rate,
+            loop_region: self
+                .section_loop
+                .or_else(|| project.loop_region().filter(|region| region.enabled())),
+        }
     }
 }
 
@@ -119,6 +132,19 @@ pub enum DeviceAutomationTakeAction {
     /// Poll without waiting for disk. A sealed matching take commits during
     /// this request through the ordinary Session edit transaction.
     Poll,
+    /// Start a non-adoptable checkpoint of the retained failed writer custody.
+    CopyFailed {
+        destination: PathBuf,
+        max_events: u64,
+    },
+    /// Copy failed VST3 custody together with the quiesced SDK observations.
+    /// Session obtains observations from their owner rather than the caller.
+    CopyFailedPlugin {
+        destination: PathBuf,
+        max_events: u64,
+    },
+    /// Poll the one failed-writer copy without waiting for disk.
+    PollFailedCopy,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -143,7 +169,15 @@ pub(super) struct Lane {
     active: Option<Active>,
     // A failed writer can still own unsynced original batches. Keep these
     // with their original source and refuse new takes until recovery.
-    failed: Option<Box<DraftWorkerOutcome>>,
+    failed: Option<Failed>,
+    failed_copy: RecoveryCopyWorker,
+    copy_destination: Option<PathBuf>,
+}
+
+struct Failed {
+    scope: DeviceAutomationTakeScope,
+    source: DeviceAutomationSource,
+    outcome: Arc<DraftWorkerOutcome>,
 }
 
 struct Active {
@@ -159,6 +193,59 @@ pub(super) enum Step {
 }
 
 impl Lane {
+    pub(super) fn failed_source(
+        &self,
+        scope: DeviceAutomationTakeScope,
+    ) -> Result<DeviceAutomationSource, String> {
+        let failed = self
+            .failed
+            .as_ref()
+            .ok_or("no failed device automation custody is available")?;
+        if failed.scope != scope || !failed.source.matches(scope) {
+            return Err("device automation recovery belongs to another take".into());
+        }
+        Ok(failed.source)
+    }
+
+    pub(super) fn copy_failed_plugin(
+        &mut self,
+        scope: DeviceAutomationTakeScope,
+        destination: &Path,
+        max_events: u64,
+        observations: Vec<super::PluginParameterObservation>,
+    ) -> Result<Step, String> {
+        let source = self.failed_source(scope)?;
+        if !matches!(scope.target, DeviceCaptureTarget::Vst3(_))
+            || max_events > hex_project::MAX_DEVICE_AUTOMATION_POINTS as u64
+            || observations.len() > 3
+        {
+            return Err("invalid VST3 recovery target or budget".into());
+        }
+        let failed = self
+            .failed
+            .as_ref()
+            .ok_or("no failed device automation custody is available")?;
+        let destination = super::recovery::absolute_document_path(destination)?;
+        let copy_path = destination.clone();
+        self.failed_copy
+            .start_with(&failed.outcome, move |outcome| {
+                copy_failed_plugin_on_control(
+                    outcome,
+                    &copy_path,
+                    DraftReadLimits {
+                        max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
+                    },
+                    max_events,
+                    scope,
+                    source,
+                    &observations,
+                )
+                .map(|_| ())
+            })?;
+        self.copy_destination = Some(destination);
+        Ok(Step::Progress(DeviceAutomationTakeProgress::Pending))
+    }
+
     pub(super) fn path(&self) -> Option<&Path> {
         self.active.as_ref().map(|active| active.input.path())
     }
@@ -177,7 +264,7 @@ impl Lane {
     ) -> Result<Step, String> {
         if let Some(failed) = self.failed.as_ref() {
             return Err(retained_error(
-                &failed.path,
+                &failed.outcome.path,
                 "recover the previous device automation take first",
             ));
         }
@@ -187,15 +274,7 @@ impl Lane {
         if !source.matches(scope) || source.sample_rate != session.project().sample_rate() {
             return Err("device automation source or transport changed".into());
         }
-        let clock = CaptureClock {
-            sample_rate: source.sample_rate,
-            loop_region: source.section_loop.or_else(|| {
-                session
-                    .project()
-                    .loop_region()
-                    .filter(|region| region.enabled())
-            }),
-        };
+        let clock = source.capture_clock(session.project());
         let path = draft_path(directory)?;
         let (input, worker) = match scope.target {
             DeviceCaptureTarget::Native(target) => DeviceDraftInput::start_on_control(
@@ -233,6 +312,58 @@ impl Lane {
         action: &DeviceAutomationTakeAction,
     ) -> Result<Step, String> {
         use DeviceAutomationTakeProgress as Progress;
+        if matches!(
+            action,
+            DeviceAutomationTakeAction::CopyFailed { .. }
+                | DeviceAutomationTakeAction::PollFailedCopy
+        ) {
+            let failed = self
+                .failed
+                .as_ref()
+                .ok_or("no failed device automation custody is available")?;
+            if failed.scope != scope || !failed.source.matches(scope) {
+                return Err("device automation recovery belongs to another take".into());
+            }
+            return match action {
+                DeviceAutomationTakeAction::CopyFailed {
+                    destination,
+                    max_events,
+                } => {
+                    if *max_events > hex_project::MAX_DEVICE_AUTOMATION_POINTS as u64 {
+                        return Err("device automation recovery exceeds the event budget".into());
+                    }
+                    let destination = super::recovery::absolute_document_path(destination)?;
+                    self.failed_copy.start(
+                        &failed.outcome,
+                        destination.clone(),
+                        DraftReadLimits {
+                            max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
+                        },
+                        *max_events,
+                    )?;
+                    self.copy_destination = Some(destination);
+                    Ok(Step::Progress(Progress::Pending))
+                }
+                DeviceAutomationTakeAction::PollFailedCopy => {
+                    if self.copy_destination.is_none() {
+                        return Err("no device automation recovery copy is pending".into());
+                    }
+                    let Some(completion) = self.failed_copy.poll() else {
+                        return Ok(Step::Progress(Progress::Pending));
+                    };
+                    let destination = self
+                        .copy_destination
+                        .take()
+                        .ok_or("automation recovery destination is unavailable")?;
+                    if !Arc::ptr_eq(&completion.outcome, &failed.outcome) {
+                        return Err("automation recovery custody changed during copy".into());
+                    }
+                    completion.result?;
+                    Ok(Step::Progress(Progress::Retained(destination)))
+                }
+                _ => Err("invalid automation recovery action".into()),
+            };
+        }
         let active = self
             .active
             .as_mut()
@@ -249,6 +380,11 @@ impl Lane {
         };
         while active.input.poll().is_some() {}
         let progress = match action {
+            DeviceAutomationTakeAction::CopyFailed { .. }
+            | DeviceAutomationTakeAction::CopyFailedPlugin { .. }
+            | DeviceAutomationTakeAction::PollFailedCopy => {
+                return Err("invalid active automation recovery action".into());
+            }
             DeviceAutomationTakeAction::Begin => {
                 return Err("device automation take is already active".into());
             }
@@ -333,8 +469,9 @@ impl Lane {
                 let Some(outcome) = active.input.try_take_outcome() else {
                     return Ok(Step::Progress(Progress::Pending));
                 };
+                let source = active.source;
                 self.active = None;
-                return self.resolve(session, document_base, current, scope, outcome);
+                return self.resolve(session, document_base, current, scope, source, outcome);
             }
         };
         Ok(Step::Progress(progress))
@@ -356,11 +493,16 @@ impl Lane {
         document_base: Option<&Path>,
         current: AudioSourceContext,
         scope: DeviceAutomationTakeScope,
+        source: DeviceAutomationSource,
         outcome: DraftWorkerOutcome,
     ) -> Result<Step, String> {
         if let Some(reason) = outcome.failure.as_deref() {
             let error = retained_error(&outcome.path, reason);
-            self.failed = Some(Box::new(outcome));
+            self.failed = Some(Failed {
+                scope,
+                source,
+                outcome: Arc::new(outcome),
+            });
             return Err(error);
         }
         if !matches!(outcome.requested_terminal, DraftTerminal::Finished(_))
