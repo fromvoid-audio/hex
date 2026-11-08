@@ -603,3 +603,89 @@ fn bypass_advances_the_same_filter_and_automated_control_history() {
         assert_eq!(after_bypass, after_active);
     }
 }
+
+#[test]
+fn shared_lfo_drives_two_utility_controls_on_each_sample() {
+    use hex_lattice::{
+        ModulationLfoBank, ModulationRoute, ModulationSourceId, ModulationTarget,
+        PreparedLfoSource, PreparedModulation,
+    };
+    let base = UTILITY_DEFINITION.default_state().unwrap();
+    let ids = [parameter::GAIN, parameter::BALANCE];
+    let targets = ids.map(|id| ModulationTarget {
+        descriptor: *DESCRIPTORS.iter().find(|d| d.id == id).unwrap(),
+        semantics: UTILITY_DEFINITION
+            .parameter_semantics_for_state(&base, id)
+            .unwrap()
+            .unwrap(),
+        base: UTILITY_DEFINITION.read_parameter(&base, id).unwrap(),
+    });
+    let program = PreparedModulation::new(
+        &targets,
+        &[
+            ModulationRoute {
+                source: 0,
+                target: ids[0],
+                amount: 0.01,
+            },
+            ModulationRoute {
+                source: 0,
+                target: ids[1],
+                amount: 0.2,
+            },
+        ],
+        1,
+    )
+    .unwrap();
+    let source_id = ModulationSourceId::new(1).unwrap();
+    let source = PreparedLfoSource::free(source_id, 48_000.0, 12_000.0, 0.0).unwrap();
+    let mut bank = ModulationLfoBank::new(&[source], 5).unwrap();
+    bank.begin();
+    bank.render_chunk(5).unwrap();
+    let sources = [bank.samples(source_id).unwrap()];
+    let block = program.block(None, &sources, 5).unwrap();
+    let factory = UtilityDefinition::prepare_owned_automated_filter(&base, 48_000).unwrap();
+    let mut runtime = factory.create_runtime();
+    let input = [[0.25, -0.1]; 5];
+    let mut output = input;
+    runtime
+        .process_block_with_automation(
+            &mut output,
+            None,
+            &block,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    for (index, lfo) in [0.0, 1.0, 0.0, -1.0, 0.0].into_iter().enumerate() {
+        let gain = (1.0 + lfo * 0.01 * MAX_UTILITY_GAIN).clamp(0.0, MAX_UTILITY_GAIN);
+        let balance = lfo * 0.4;
+        let state = UTILITY_DEFINITION
+            .patch_parameter(&base, ids[0], ParameterValue::Float(gain))
+            .unwrap();
+        let state = UTILITY_DEFINITION
+            .patch_parameter(&state, ids[1], ParameterValue::Float(balance))
+            .unwrap();
+        let expected = static_render(&state, &input[index..index + 1])[0];
+        for channel in 0..2 {
+            assert!((output[index][channel] - expected[channel]).abs() < 1e-5);
+        }
+    }
+    bank.rollback();
+    bank.begin();
+    bank.render_chunk(5).unwrap();
+    let retry_sources = [bank.samples(source_id).unwrap()];
+    let retry_block = program.block(None, &retry_sources, 5).unwrap();
+    let mut retry = input;
+    let mut retry_runtime = factory.create_runtime();
+    retry_runtime
+        .process_block_with_automation(
+            &mut retry,
+            None,
+            &retry_block,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    assert_eq!(retry, output);
+    bank.commit().unwrap();
+    assert_eq!(UTILITY_DEFINITION.default_state().unwrap(), base);
+}
