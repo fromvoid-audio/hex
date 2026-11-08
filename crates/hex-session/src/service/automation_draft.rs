@@ -26,7 +26,7 @@ pub use hex_storage::automation_draft::{
 pub use native_device::{
     DeviceDraftInput, Vst3ApplicationValue, Vst3CaptureTarget, Vst3ParameterApplication,
 };
-pub use recovery_copy::copy_failed_on_control;
+pub use recovery_copy::{RecoveryCopyReceipt, copy_failed_on_control};
 pub use recovery_worker::{RecoveryCopyCompletion, RecoveryCopyWorker};
 use std::{
     collections::VecDeque,

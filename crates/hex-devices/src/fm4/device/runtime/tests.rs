@@ -1,3 +1,4 @@
+mod retarget;
 use super::*;
 use hex_lattice::{
     BorrowedDeviceResources, NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair,

@@ -13,6 +13,12 @@
 //! Voice age/gate and the original tuned phase-step law are unchanged by carrier
 //! controls. Per-voice f32 source samples receive occurrence gain before f64 sum.
 //! Complete controls, effective pruning and voices participate in twin history.
+//! A prepared retarget may change same-rate tuning and Base carriers only.
+//! Each retained voice carries four modulo-2^64 phase offsets; retarget adds
+//! (source_step-target_step)*age without changing age/gate/velocity. Both twins
+//! validate exact target proof, complete noncarrier authored law and every live
+//! target pitch before mutation. Effective carrier ramps survive the handoff;
+//! the next segment selects the target's Base or supplied authored values.
 //! No assets, queues, host publication, event scheduler or new resource owner.
 //! Native definition admission and parameter metadata remain unchanged.
 use super::*;
@@ -20,13 +26,17 @@ use crate::fm4::{
     PreparedEnvelope, PreparedFmConfiguration, audible_operator_ancestors, prepared_steps_frequency,
 };
 use hex_lattice::{
-    DeviceResources, InstrumentParameterRuntime, MutableInstrumentRuntime, NativeInstrumentClock,
-    NativeInstrumentEvent, NativeInstrumentOccurrenceGain, NativeInstrumentRuntimeError as Error,
-    NativeParameterAutomation, PreparedMutableInstrumentRuntime, StereoFrame,
+    DeviceResources, InstrumentHistoryRetargetPreparation, InstrumentParameterRuntime,
+    MutableInstrumentRuntime, NativeInstrumentClock, NativeInstrumentEvent,
+    NativeInstrumentOccurrenceGain, NativeInstrumentRuntimeError as Error,
+    NativeParameterAutomation, PreparedInstrumentHistoryRetarget, PreparedMutableInstrumentRuntime,
+    StereoFrame,
 };
 use std::any::Any;
 const VOICES: usize = 64;
 const EVENTS: usize = 259;
+const CARRIER_START: usize = (OSCILLATOR_FIELDS + ROUTING_FIELDS) * size_of::<f32>();
+const CARRIER_END: usize = CARRIER_START + CARRIER_FIELDS * size_of::<f32>();
 const CARRIERS: [ParameterDescriptor; 4] = [
     PARAMETERS[24],
     PARAMETERS[25],
@@ -100,6 +110,25 @@ struct Config {
     table: &'static crate::SineTable,
     smoothing: u32,
 }
+impl Config {
+    fn same_target(&self, other: &Self) -> bool {
+        self.identity == other.identity
+            && self.tuning == other.tuning
+            && self.sample_rate == other.sample_rate
+    }
+}
+/// Exact immutable target authority; custody remains with the prepared graph.
+struct Retarget {
+    target: Config,
+}
+impl PreparedInstrumentHistoryRetarget for Retarget {
+    fn declared_fixed_storage_bytes(&self) -> usize {
+        size_of::<Self>()
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
 struct Factory {
     config: Config,
 }
@@ -110,6 +139,7 @@ struct Voice {
     velocity: u8,
     age: u64,
     gate: Option<u64>,
+    phase_offsets: [u64; 4],
 }
 impl Voice {
     fn advance(&mut self, frames: u64, release: u64) {
@@ -204,6 +234,7 @@ impl Runtime {
                     velocity,
                     age: 0,
                     gate: None,
+                    phase_offsets: [0; 4],
                 };
             }
             NativeInstrumentEvent::NoteOff { occurrence_id, .. } => {
@@ -217,6 +248,16 @@ impl Runtime {
             NativeInstrumentEvent::Expression { .. } => {}
         }
         Ok(())
+    }
+    fn set_carriers(&mut self, carriers: [f64; 4]) {
+        self.effective = self.config.full;
+        self.effective.routing.carriers = carriers;
+        let audible = audible_operator_ancestors(&self.effective.levels, &self.effective.routing);
+        for (index, audible) in audible.into_iter().enumerate() {
+            if !audible {
+                self.effective.levels[index] = 0.0;
+            }
+        }
     }
     fn render(
         &mut self,
@@ -236,15 +277,7 @@ impl Runtime {
                 self.controls[index].sample(target, self.config.smoothing, self.cold)
             });
             if carriers != self.effective.routing.carriers {
-                self.effective = self.config.full;
-                self.effective.routing.carriers = carriers;
-                let audible =
-                    audible_operator_ancestors(&self.effective.levels, &self.effective.routing);
-                for (index, audible) in audible.into_iter().enumerate() {
-                    if !audible {
-                        self.effective.levels[index] = 0.0;
-                    }
-                }
+                self.set_carriers(carriers);
             }
             self.cold = false;
             while let Some(event) = events
@@ -268,10 +301,14 @@ impl Runtime {
                     .envelope
                     .level(voice.age, voice.gate.unwrap_or(u64::MAX))
                     * (f64::from(voice.velocity) / 127.0);
+                let mut configuration = self.effective;
+                for (phase, offset) in configuration.phases.iter_mut().zip(voice.phase_offsets) {
+                    *phase = phase.wrapping_add(offset);
+                }
                 let sample = if amplitude == 0.0 {
                     0.0
                 } else {
-                    (self.effective.routed_output::<false>(
+                    (configuration.routed_output::<false>(
                         self.config.table,
                         voice.age,
                         &steps,
@@ -307,7 +344,16 @@ impl PreparedMutableInstrumentRuntime for Factory {
         Some(0)
     }
     fn runtime_version(&self) -> u32 {
-        1
+        2
+    }
+    fn prepare_history_retarget_target(
+        &self,
+    ) -> Result<InstrumentHistoryRetargetPreparation, DeviceContractError> {
+        Ok(InstrumentHistoryRetargetPreparation::Prepared(Box::new(
+            Retarget {
+                target: self.config,
+            },
+        )))
     }
     fn declared_twin_bytes(&self) -> usize {
         size_of::<Runtime>()
@@ -423,6 +469,59 @@ impl MutableInstrumentRuntime for Runtime {
             self.voices = previous.voices;
             self.controls = previous.controls;
             self.effective = previous.effective;
+            self.cold = previous.cold;
+        }
+    }
+    fn can_retarget_history_from(
+        &self,
+        previous: &dyn MutableInstrumentRuntime,
+        proof: &dyn PreparedInstrumentHistoryRetarget,
+    ) -> bool {
+        let (Some(previous), Some(proof)) = (
+            previous.as_any().downcast_ref::<Self>(),
+            proof.as_any().downcast_ref::<Retarget>(),
+        ) else {
+            return false;
+        };
+        self.config.same_target(&proof.target)
+            && self.config.sample_rate == previous.config.sample_rate
+            && self.config.identity[..CARRIER_START] == previous.config.identity[..CARRIER_START]
+            && self.config.identity[CARRIER_END..] == previous.config.identity[CARRIER_END..]
+            && previous
+                .voices
+                .iter()
+                .filter(|voice| voice.id != 0)
+                .all(|voice| {
+                    self.config
+                        .steps
+                        .get(usize::from(voice.pitch))
+                        .is_some_and(Option::is_some)
+                })
+    }
+    fn retarget_history_from(
+        &mut self,
+        previous: &dyn MutableInstrumentRuntime,
+        _: &dyn PreparedInstrumentHistoryRetarget,
+    ) {
+        if let Some(previous) = previous.as_any().downcast_ref::<Self>() {
+            self.voices = previous.voices;
+            for voice in self.voices.iter_mut().filter(|voice| voice.id != 0) {
+                let (Some(source), Some(target)) = (
+                    previous.config.steps[usize::from(voice.pitch)],
+                    self.config.steps[usize::from(voice.pitch)],
+                ) else {
+                    continue;
+                };
+                for ((offset, source), target) in
+                    voice.phase_offsets.iter_mut().zip(source).zip(target)
+                {
+                    // Oscillator phase is modulo 2^64, including repeated retunes.
+                    *offset =
+                        offset.wrapping_add(source.wrapping_sub(target).wrapping_mul(voice.age));
+                }
+            }
+            self.controls = previous.controls;
+            self.set_carriers(previous.controls.map(|control| control.current));
             self.cold = previous.cold;
         }
     }
