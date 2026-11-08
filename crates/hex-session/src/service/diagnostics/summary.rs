@@ -1750,7 +1750,7 @@ pub(super) fn request(value: &Request) -> Description {
 
 pub(super) fn gesture(value: &crate::device_gesture::GestureRequest) -> Description {
     match value {
-        crate::device_gesture::GestureRequest::BeginPlugin { key, origin } => {
+        crate::device_gesture::GestureRequest::BeginPlugin { key, origin, .. } => {
             describe!("begin_plugin"; ["key_generation" => key.generation, "key_token" => key.token,
                 "device" => origin.device.value(), "parameter" => origin.parameter,
                 "normalized" => origin.initial.normalized(),

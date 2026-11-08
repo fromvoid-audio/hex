@@ -169,7 +169,10 @@ impl Plugins {
         {
             return Err(refused("retain confirmed vst3 points before another input"));
         }
-        if let PluginGesturePreparation::Begin { origin, snapshot } = input.operation() {
+        if let PluginGesturePreparation::Begin {
+            origin, snapshot, ..
+        } = input.operation()
+        {
             let restored_revision = self
                 .restore
                 .as_ref()
