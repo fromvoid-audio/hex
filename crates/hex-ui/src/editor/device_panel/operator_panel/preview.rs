@@ -156,6 +156,7 @@ pub(super) fn render(
             None,
             &[Field::Time, Field::Tone, Field::Volume],
         ),
+        super::global::voices(view, cx, device, device_view),
     ];
     let mut content = hex_widgets::device_rail(super::super::device_layout_style())
         .w_full()
