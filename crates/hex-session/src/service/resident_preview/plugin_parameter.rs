@@ -17,7 +17,16 @@ pub(super) fn operation(
     admission: sampler_export::Admission<'_>,
 ) -> crate::device_gesture::PreparedGesture {
     let snapshot = match operation {
-        PluginGesturePreparation::Begin { origin, snapshot } => {
+        PluginGesturePreparation::Begin {
+            origin,
+            snapshot,
+            recording,
+        } => {
+            if recording {
+                return Err(SessionError::Invalid(
+                    "vst3 recording requires the durable gesture connection",
+                ));
+            }
             if origin.context != context {
                 return Err(SessionError::Invalid("plugin parameter context changed"));
             }
@@ -563,6 +572,37 @@ mod tests {
             plugin_value: Some(PluginParameterValue::new(0.75).unwrap()),
         };
         let mut sink = MissingOutput::default();
+        let recording = operation(
+            &mut session,
+            PluginGesturePreparation::Begin {
+                origin: crate::device_gesture::PluginParameterOrigin {
+                    context,
+                    device,
+                    parameter: 0,
+                    page_first: 0,
+                    metadata_revision: 1,
+                    initial: draft.plugin_value.unwrap(),
+                },
+                snapshot: GestureSnapshot {
+                    sequence: 0,
+                    ..draft
+                },
+                recording: true,
+            },
+            context,
+            &mut None,
+            &mut None,
+            &mut sink,
+            sampler_export::Admission::default(),
+        );
+        assert!(matches!(
+            recording,
+            Err(SessionError::Invalid(
+                "vst3 recording requires the durable gesture connection"
+            ))
+        ));
+        assert!(sink.finished.is_empty());
+        assert_eq!(session.project(), &before);
         assert_eq!(
             sink.received_foreign_program_on_control(
                 hex_lattice_contract::ForeignProcessorBinding {

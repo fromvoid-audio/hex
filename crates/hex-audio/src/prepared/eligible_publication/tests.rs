@@ -11,6 +11,8 @@ mod fanout;
 mod native_resources;
 #[cfg(feature = "allocation-probe")]
 mod pages;
+#[cfg(all(feature = "allocation-probe", feature = "stream-test-support"))]
+mod read_failure;
 #[cfg(feature = "allocation-probe")]
 mod readiness;
 #[cfg(feature = "allocation-probe")]

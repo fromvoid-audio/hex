@@ -1158,6 +1158,7 @@ fn changed_source_during_playback_reports_fault_and_preserves_committed_audio() 
         std::thread::yield_now();
     }
     let reported = control.status.stream_source_changed.load(Acquire);
+    assert!(!control.status.take_stream_read_failure());
     control.stop();
     let measured = allocation_counter::measure(|| {
         data.owner_mut().unwrap().run(|c, _| {
@@ -1207,6 +1208,7 @@ fn changed_source_during_playback_reports_fault_and_preserves_committed_audio() 
     control.stop();
     data.owner_mut().unwrap().run(|c, _| c.begin_block());
     std::fs::write(&source_path, &original).unwrap();
+    control.status.stream_read_failed.store(true, Release);
     let replacement_definition = wav.definition(asset, 11);
     let replacement = stream_fixture::owner_with_context(
         &project,
@@ -1250,6 +1252,7 @@ fn changed_source_during_playback_reports_fault_and_preserves_committed_audio() 
     );
     assert_eq!(control.status.applied_revision.load(Acquire), 2);
     assert!(!control.status.stream_source_changed.load(Acquire));
+    assert!(!control.status.take_stream_read_failure());
     let old = recover(&mut control, &ticket);
     assert_eq!(old.return_kind, crate::AudioCandidateReturnKind::Replaced);
     drop(old);

@@ -37,6 +37,7 @@ pub enum PluginGesturePreparation {
     Begin {
         origin: PluginParameterOrigin,
         snapshot: GestureSnapshot,
+        recording: bool,
     },
     /// Repeating the accepted sequence during a canonical rebase revalidates
     /// the actual source without enqueueing the parameter point again.
@@ -53,6 +54,23 @@ impl GestureClient {
         &mut self,
         origin: PluginParameterOrigin,
     ) -> Result<GestureKey, &'static str> {
+        self.begin_plugin_mode(origin, false)
+    }
+
+    /// A recorded trajectory must reach its recording owner even when the
+    /// final scalar equals the initial value. This grants no host admission.
+    pub fn begin_plugin_recording(
+        &mut self,
+        origin: PluginParameterOrigin,
+    ) -> Result<GestureKey, &'static str> {
+        self.begin_plugin_mode(origin, true)
+    }
+
+    fn begin_plugin_mode(
+        &mut self,
+        origin: PluginParameterOrigin,
+        recording: bool,
+    ) -> Result<GestureKey, &'static str> {
         if self.recovery_pending {
             if !self.has_pending_terminal() {
                 self.cancel()?;
@@ -68,7 +86,11 @@ impl GestureClient {
             token: self.next_token,
         };
         self.active = Some(plugin_snapshot(key, origin));
-        self.pending_begin = Some(GestureRequest::BeginPlugin { key, origin });
+        self.pending_begin = Some(GestureRequest::BeginPlugin {
+            key,
+            origin,
+            recording,
+        });
         Ok(key)
     }
     pub fn change_plugin(&mut self, value: PluginParameterValue) -> Result<u64, &'static str> {
@@ -146,7 +168,9 @@ impl GestureMachine {
     ) -> Result<(), SessionError> {
         let key = request.key();
         match request {
-            GestureRequest::BeginPlugin { origin, .. } => {
+            GestureRequest::BeginPlugin {
+                origin, recording, ..
+            } => {
                 if origin.context.project_generation != generation
                     || self.active.is_some()
                     || self.last_key.is_some_and(|last| {
@@ -172,11 +196,12 @@ impl GestureMachine {
                     GesturePreparation::Plugin(PluginGesturePreparation::Begin {
                         origin,
                         snapshot,
+                        recording,
                     }),
                 )?;
                 self.active = Some(Active {
                     snapshot,
-                    kind: ActiveKind::Plugin,
+                    kind: ActiveKind::Plugin { recording },
                     state_origin: Some(state),
                     creation_origin: None,
                     origin_parameters: None,
@@ -231,7 +256,10 @@ impl GestureMachine {
                         .ok_or(SessionError::Invalid(
                             "plugin gesture initial value is missing",
                         ))?;
-                    if value == initial {
+                    let recording = self.active.as_ref().is_some_and(|active| {
+                        matches!(active.kind, ActiveKind::Plugin { recording: true })
+                    });
+                    if value == initial && !recording {
                         let prepared = prepare(
                             session,
                             GesturePreparation::Plugin(PluginGesturePreparation::Restore {

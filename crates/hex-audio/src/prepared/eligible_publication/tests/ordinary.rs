@@ -348,6 +348,7 @@ fn ordinary_publication_reports_changed_source_after_catalog_admission() {
         editor_revision: 3,
     };
     control.status.stream_source_changed.store(true, Release);
+    control.status.stream_read_failed.store(true, Release);
     let donor_revision = control
         .publish_with_admission_and_source_on_control(
             donor,
@@ -363,6 +364,7 @@ fn ordinary_publication_reports_changed_source_after_catalog_admission() {
         donor_revision
     );
     assert!(!control.status.stream_source_changed.load(Acquire));
+    assert!(!control.status.take_stream_read_failure());
     let domain = control
         .register_audio_candidate_domain_with_readiness(
             stream_fixture::pair(definition),

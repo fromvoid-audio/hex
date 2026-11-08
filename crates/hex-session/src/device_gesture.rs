@@ -157,6 +157,7 @@ pub enum GestureRequest {
     BeginPlugin {
         key: GestureKey,
         origin: PluginParameterOrigin,
+        recording: bool,
     },
     ChangePlugin {
         key: GestureKey,
@@ -1238,7 +1239,9 @@ struct Active {
 
 #[derive(Clone, Copy)]
 enum ActiveKind {
-    Plugin,
+    Plugin {
+        recording: bool,
+    },
     TrackGain,
     TrackGains,
     TrackBalance,
@@ -2044,7 +2047,7 @@ impl GestureMachine {
                     return Err(SessionError::Invalid("return send target was removed"));
                 }
             }
-            (GestureTarget::PluginParameter { device, .. }, ActiveKind::Plugin) => {
+            (GestureTarget::PluginParameter { device, .. }, ActiveKind::Plugin { .. }) => {
                 let origin = active
                     .state_origin
                     .as_ref()
