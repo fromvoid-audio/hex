@@ -20,6 +20,28 @@ pub fn copy_failed_plugin_on_control(
     source: DeviceAutomationSource,
     observations: &[Observation],
 ) -> Result<DraftTerminal, String> {
+    copy_failed_plugin_with_receipt_on_control(
+        outcome,
+        destination,
+        limits,
+        max_events,
+        scope,
+        source,
+        observations,
+    )
+    .map(|receipt| receipt.terminal())
+}
+
+/// Copy and return a content-bound receipt; it does not transfer custody.
+pub fn copy_failed_plugin_with_receipt_on_control(
+    outcome: &DraftWorkerOutcome,
+    destination: &Path,
+    limits: DraftReadLimits,
+    max_events: u64,
+    scope: DeviceAutomationTakeScope,
+    source: DeviceAutomationSource,
+    observations: &[Observation],
+) -> Result<super::super::automation_draft::RecoveryCopyReceipt, String> {
     use hex_storage::automation_draft::DraftTarget;
 
     let DeviceCaptureTarget::Vst3(target) = scope.target else {

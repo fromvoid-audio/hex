@@ -4,7 +4,8 @@
 use super::Session;
 mod plugin_observation;
 pub use plugin_observation::{
-    FailedPluginContinuation, copy_failed_plugin_on_control, prepare_failed_plugin_continuation,
+    FailedPluginContinuation, copy_failed_plugin_on_control,
+    copy_failed_plugin_with_receipt_on_control, prepare_failed_plugin_continuation,
 };
 mod recovery;
 use super::automation_draft::{
