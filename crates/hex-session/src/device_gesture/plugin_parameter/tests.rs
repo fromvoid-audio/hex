@@ -183,6 +183,129 @@ fn exact_source_loss_retires_plugin_input_without_claiming_restore_or_touching_n
 }
 
 #[test]
+fn released_recording_refusal_ends_only_its_matching_terminal_without_source_loss() {
+    for recording in [false, true] {
+        for cancel in [false, true] {
+            let (mut session, origin, prepared) = fixture();
+            let before = session.project().clone();
+            let mut client = GestureClient::default();
+            let key = if recording {
+                client.begin_plugin_recording(origin).unwrap()
+            } else {
+                client.begin_plugin(origin).unwrap()
+            };
+            let mut machine = GestureMachine::default();
+            let begin = client.next_request().unwrap();
+            client.mark_submitted();
+            let began =
+                machine.handle_prepared(&mut session, begin, Some(&prepared), 9, |_, _| Ok(None));
+            assert!(client.acknowledge_with_snapshot(&began.ack, machine.snapshot()));
+            client.change_plugin(value(0.75)).unwrap();
+            let change = client.next_request().unwrap();
+            client.mark_submitted();
+            let changed =
+                machine.handle_prepared(&mut session, change, Some(&prepared), 9, |_, _| Ok(None));
+            assert!(client.acknowledge_with_snapshot(&changed.ack, machine.snapshot()));
+            if cancel {
+                client.cancel().unwrap();
+            } else {
+                client.finish_plugin(value(0.75)).unwrap();
+            }
+            let terminal = client.next_request().unwrap();
+            client.mark_submitted();
+            let refused = machine.handle_prepared(
+                &mut session,
+                terminal,
+                Some(&prepared),
+                9,
+                |_, operation| match operation {
+                    GesturePreparation::Plugin(PluginGesturePreparation::Preview(_)) => Ok(None),
+                    GesturePreparation::Plugin(
+                        PluginGesturePreparation::Commit(_)
+                        | PluginGesturePreparation::Restore { .. },
+                    ) => Err(SessionError::PluginRecordingReleased(
+                        "recording retained after publication refusal".into(),
+                    )),
+                    _ => panic!("expected plugin terminal"),
+                },
+            );
+            assert!(!refused.ack.accepted && !refused.ack.source_lost);
+            assert_eq!(refused.ack.preview_retained, !recording);
+            assert_eq!(machine.snapshot().is_none(), recording);
+            assert!(refused.playback.is_none() && !refused.canonical_changed);
+            assert_eq!(session.project(), &before);
+            assert!(client.acknowledge_with_snapshot(&refused.ack, machine.snapshot()));
+            assert_eq!(client.is_recovery_pending(), !recording);
+            if recording {
+                assert!(client.snapshot().is_none());
+                let next = client.begin_plugin_recording(origin).unwrap();
+                let begin = client.next_request().unwrap();
+                client.mark_submitted();
+                let began =
+                    machine
+                        .handle_prepared(&mut session, begin, Some(&prepared), 9, |_, _| Ok(None));
+                let stale =
+                    machine.handle_prepared(&mut session, terminal, Some(&prepared), 9, |_, _| {
+                        panic!("stale terminal cannot reach the host")
+                    });
+                assert!(!stale.ack.accepted && !stale.ack.source_lost);
+                assert_eq!(machine.snapshot().unwrap().key, next);
+                assert!(!client.acknowledge_with_snapshot(&refused.ack, None));
+                assert_eq!(client.snapshot().unwrap().key, next);
+                assert_ne!(next, key);
+                assert!(client.acknowledge_with_snapshot(&began.ack, machine.snapshot()));
+            }
+        }
+    }
+}
+
+#[test]
+fn released_recording_marker_cannot_retire_a_nonterminal_preview() {
+    let (mut session, origin, prepared) = fixture();
+    let before = session.project().clone();
+    let key = GestureKey {
+        generation: 9,
+        token: 1,
+    };
+    let mut machine = GestureMachine::default();
+    assert!(
+        machine
+            .handle_prepared(
+                &mut session,
+                GestureRequest::BeginPlugin {
+                    key,
+                    origin,
+                    recording: true
+                },
+                Some(&prepared),
+                9,
+                |_, _| Ok(None),
+            )
+            .ack
+            .accepted
+    );
+    let active = machine.snapshot();
+    let refused = machine.handle_prepared(
+        &mut session,
+        GestureRequest::ChangePlugin {
+            key,
+            sequence: 1,
+            value: value(0.75),
+        },
+        Some(&prepared),
+        9,
+        |_, _| {
+            Err(SessionError::PluginRecordingReleased(
+                "invalid nonterminal marker".into(),
+            ))
+        },
+    );
+    assert!(!refused.ack.accepted && !refused.ack.source_lost);
+    assert_eq!(machine.snapshot(), active);
+    assert_eq!(session.project(), &before);
+}
+
+#[test]
 fn canonical_rebase_revalidates_plugin_without_replaying_input_or_fabricating_a_revision() {
     let (mut session, origin, prepared) = fixture();
     let key = GestureKey {
