@@ -678,6 +678,7 @@ pub(super) struct ResidentHarness {
     allow_unavailable: bool,
     pub(super) unavailable: Vec<String>,
     pub(super) publication_refusals: Vec<String>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) degraded_devices: Vec<u64>,
     constructor_submitted: Option<(u64, AudioSourceContext)>,
     /// `OutputReleased` events in delivery order: (generation, old output).
@@ -940,6 +941,7 @@ impl ResidentHarness {
             allow_unavailable,
             unavailable: Vec::new(),
             publication_refusals: Vec::new(),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             degraded_devices: Vec::new(),
             constructor_submitted: None,
             released: Vec::new(),
@@ -1040,6 +1042,7 @@ impl ResidentHarness {
                     state: EditorPublicationState::Refused(error),
                     ..
                 } => self.publication_refusals.push(error),
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 EditorAudioEvent::DegradedPlugins { devices, .. } => {
                     self.degraded_devices = devices;
                 }
