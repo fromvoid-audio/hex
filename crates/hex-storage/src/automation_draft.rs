@@ -536,14 +536,33 @@ impl DraftReader {
     /// prefix. Header damage/future versions refuse before exposing source state.
     pub fn open(path: impl AsRef<Path>, limits: DraftReadLimits) -> Result<Self, DraftError> {
         let path = path.as_ref();
-        Self::open_inner(path, limits).map_err(|source| DraftError {
+        Self::open_inner(path, limits, None).map_err(|source| DraftError {
             path: path.to_path_buf(),
             progress: DraftProgress::default(),
             published: true,
             source: Box::new(source),
         })
     }
-    fn open_inner(path: &Path, limits: DraftReadLimits) -> Result<Self, StorageError> {
+    /// Accept a validated prefix of at most `max_events`, inspecting one further
+    /// record to detect excess events, a terminal, or a damaged tail.
+    pub fn open_bounded(
+        path: impl AsRef<Path>,
+        limits: DraftReadLimits,
+        max_events: u64,
+    ) -> Result<Self, DraftError> {
+        let path = path.as_ref();
+        Self::open_inner(path, limits, Some(max_events)).map_err(|source| DraftError {
+            path: path.to_path_buf(),
+            progress: DraftProgress::default(),
+            published: true,
+            source: Box::new(source),
+        })
+    }
+    fn open_inner(
+        path: &Path,
+        limits: DraftReadLimits,
+        max_events: Option<u64>,
+    ) -> Result<Self, StorageError> {
         let metadata = fs::symlink_metadata(path)?;
         if !metadata.is_file() || metadata.file_type().is_symlink() {
             return Err(StorageError::Invalid(
@@ -655,6 +674,11 @@ impl DraftReader {
             }
             match decode_record(&record) {
                 Ok(Record::Event(event)) if validate_event(previous, event).is_ok() => {
+                    if max_events.is_some_and(|max| reader.records.progress.durable_events >= max) {
+                        return Err(StorageError::Invalid(
+                            "automation draft exceeds caller event budget; preserve original file",
+                        ));
+                    }
                     let Some(count) = reader.records.progress.durable_events.checked_add(1) else {
                         reader.outcome = DraftOutcome::Damaged {
                             reason: DraftDamage::InvalidRecord,

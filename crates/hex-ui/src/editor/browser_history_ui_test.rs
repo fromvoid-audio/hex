@@ -1057,7 +1057,7 @@ fn review_readiness_indexed_expansion_waits_then_restores_native_top(cx: &mut Te
         editor.read_with(visual, |view, _| {
             assert_eq!(
                 view.browser.scroll.0.borrow().base_handle.offset().y,
-                -px(index as f32 * 22.0),
+                -px(index as f32 * super::super::ROW_HEIGHT),
                 "fixture must realize the strict anchor without bottom clamping"
             );
         });

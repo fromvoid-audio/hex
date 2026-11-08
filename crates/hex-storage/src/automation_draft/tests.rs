@@ -115,6 +115,47 @@ fn open(path: &Path) -> DraftReader {
 }
 
 #[test]
+fn bounded_reader_refuses_only_prefixes_beyond_budget() {
+    let dir = TestDir::new();
+    let path = dir.path();
+    let (source, target, provenance) = fixture();
+    let mut writer = DraftWriter::create_new(&path, &source, target, provenance).unwrap();
+    writer.append(&[event(0), event(1)]).unwrap();
+    drop(writer);
+    let original = fs::read(&path).unwrap();
+
+    let reader = DraftReader::open_bounded(&path, limits(), 2).unwrap();
+    assert_eq!(reader.progress().durable_events, 2);
+    assert_eq!(reader.outcome(), DraftOutcome::Interrupted);
+    drop(reader);
+    let error = DraftReader::open_bounded(&path, limits(), 1).err().unwrap();
+    assert!(error.to_string().contains("event budget"));
+    assert_eq!(fs::read(&path).unwrap(), original);
+    assert_eq!(open(&path).progress().durable_events, 2);
+}
+
+#[test]
+fn bounded_reader_preserves_damage_at_limit() {
+    let dir = TestDir::new();
+    let path = dir.path();
+    let (source, target, provenance) = fixture();
+    let mut writer = DraftWriter::create_new(&path, &source, target, provenance).unwrap();
+    writer.append(&[event(0)]).unwrap();
+    drop(writer);
+    let mut bytes = fs::read(&path).unwrap();
+    bytes.push(1);
+    fs::write(&path, &bytes).unwrap();
+    let reader = DraftReader::open_bounded(&path, limits(), 1).unwrap();
+    assert_eq!(
+        reader.outcome(),
+        DraftOutcome::Damaged {
+            reason: DraftDamage::TruncatedRecord
+        }
+    );
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+}
+
+#[test]
 fn duration_independent_pages_preserve_more_than_65536_exact_applications() {
     let dir = TestDir::new();
     let path = dir.path();
