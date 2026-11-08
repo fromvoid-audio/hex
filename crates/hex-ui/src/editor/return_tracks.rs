@@ -230,19 +230,22 @@ impl EditorView {
                     cx,
                 ))
                 .child(
-                    return_button(
-                        format!("return-mute-{}", id.value()),
+                    super::waveform::toggle_button_with_style(
                         if muted { "○" } else { "●" },
                         if muted {
                             "activate return"
                         } else {
                             "deactivate return"
                         },
+                        ("return-mute", id.value()),
+                        theme::action_style().with_state_colors(active_background, active_text),
                     )
-                    .w(px(28.0))
-                    .h(px(18.0))
-                    .bg(rgb(active_background))
-                    .text_color(rgb(active_text))
+                    .debug_selector(move || format!("return-mute-{}", id.value()))
+                    .w(px(20.0))
+                    .h(px(14.0))
+                    .text_size(px(10.0))
+                    .border_1()
+                    .border_color(rgb(theme::control_style().border))
                     .on_click(cx.listener(move |view, _, _, cx| {
                         super::device_panel::enqueue_return_edit(
                             view,

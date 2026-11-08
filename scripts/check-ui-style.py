@@ -203,10 +203,10 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
         header_mixer_component = (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/tracks.rs'
             and suffix.startswith(('utilities)', 'activator)', 'solo)', 'arm)',
-                                   'self.track_pan(', 'header_content)'))
+                                   'self.track_pan(', 'header_content)', 'toggle_button_with_style('))
         ) or (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/return_tracks.rs'
-            and suffix.startswith(('self.return_volume(', 'gain_control)'))
+            and suffix.startswith(('self.return_volume(', 'gain_control)', 'super::waveform::toggle_button_with_style('))
         ) or (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/mixer.rs'
             and suffix.startswith(('super::track_meters::render(', 'toggle_button_with_style('))
