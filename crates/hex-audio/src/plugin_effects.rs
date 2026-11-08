@@ -572,7 +572,7 @@ impl NativeEffectCallback {
             && !self.transport.is_revoked()
             && self.tail.drained()
     }
-    #[cfg(all(test, feature = "allocation-probe"))]
+    #[cfg(feature = "allocation-probe")]
     pub(crate) fn transport_fault_for_test(&self) -> Option<Fault> {
         self.transport.fault()
     }
