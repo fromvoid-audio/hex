@@ -84,7 +84,7 @@ mod tests {
         (e, device)
     }
     fn changed_state() -> NativeDeviceState {
-        NativeDeviceState::new(state().type_id().clone(), 1, vec![9, 8]).unwrap()
+        NativeDeviceState::new(state().type_id(), 1, vec![9, 8]).unwrap()
     }
     fn command(e: &Editor, device: DeviceId, rows: Vec<DeviceAutomation>) -> Command {
         let d = e.project().device(device).unwrap();
