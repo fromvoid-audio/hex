@@ -72,7 +72,8 @@ impl ChainCustody {
                     .migrate_state(state)
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
                 let processor = if !device
-                    .reading_automation()
+                    .automation()
+                    .iter()
                     .any(|lane| lane.target.provider_parameter().is_some())
                     && !native_input.is_some_and(|input| {
                         input.device() == device.id()
@@ -166,12 +167,12 @@ impl ChainCustody {
             .iter()
             .map(|device| {
                 let provider = device
-                    .reading_automation()
+                    .automation().iter()
                     .filter(|lane| !lane.target.is_host())
                     .count();
                 hex_lattice::PreparedParameterAutomation::quoted_construction_overlap_bytes_with_host(
                     provider,
-                    device.reading_automation().count().checked_sub(provider)?,
+                    device.automation().len().checked_sub(provider)?,
                     device
                         .reading_automation()
                         .try_fold(0usize, |sum, lane| sum.checked_add(lane.point_count()))?,
@@ -236,12 +237,12 @@ impl ChainCustody {
             .iter()
             .map(|device| {
                 let provider = device
-                    .reading_automation()
+                    .automation().iter()
                     .filter(|lane| !lane.target.is_host())
                     .count();
                 hex_lattice::PreparedParameterAutomation::quoted_construction_overlap_bytes_with_host(
                     provider,
-                    device.reading_automation().count().checked_sub(provider)?,
+                    device.automation().len().checked_sub(provider)?,
                     device
                         .reading_automation()
                         .try_fold(0usize, |sum, lane| sum.checked_add(lane.point_count()))?,
@@ -844,7 +845,13 @@ mod tests {
             let saturator = family == 1;
             let auto_pan = family == 2;
             let mut static_bytes = None;
-            for automated in [false, true] {
+            for reading in [
+                None,
+                Some(hex_project::AutomationReadSelection::Authored),
+                Some(hex_project::AutomationReadSelection::Base),
+            ] {
+                let automated = reading.is_some();
+                let selection = reading.unwrap_or(hex_project::AutomationReadSelection::Authored);
                 let (project, mut bank) = crate::audio_preparation::tests::fixture(2);
                 bank.reservation.handle_obligations = 32;
                 let original = bank.sources.as_ptr();
@@ -886,7 +893,7 @@ mod tests {
                             vec![hex_project::DeviceAutomation {
                                 touch: Vec::new(),
                                 vst3_class: None,
-                                read_selection: hex_project::AutomationReadSelection::Authored,
+                                read_selection: selection,
                                 target: hex_lattice_contract::DeviceAutomationTarget::Parameter(
                                     if auto_pan {
                                         hex_devices::auto_pan::parameter::AMOUNT
@@ -932,7 +939,7 @@ mod tests {
                         device.automation.push(hex_project::DeviceAutomation {
                             touch: Vec::new(),
                             vst3_class: None,
-                            read_selection: hex_project::AutomationReadSelection::Authored,
+                            read_selection: selection,
                             target,
                             points: vec![
                                 hex_project::AutomationPoint {
