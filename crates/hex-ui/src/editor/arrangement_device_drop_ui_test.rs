@@ -99,6 +99,12 @@ fn arrangement_catalog_pointer_drop_captures_target_and_preview_without_selectio
                     _ => ArrangementDeviceDestination::NewTrack { before_track: None },
                 };
                 assert_eq!(view.last_enqueued_arrangement_device_drop, Some(expected));
+                let expected_gain = if destination == 0 {
+                    None
+                } else {
+                    Some(0.251_188_64)
+                };
+                assert_eq!(view.last_enqueued_device_track_gain, Some(expected_gain));
                 assert_eq!(
                     view.selected_track,
                     if destination == 2 { None } else { Some(first) }

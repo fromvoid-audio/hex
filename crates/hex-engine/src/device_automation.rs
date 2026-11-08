@@ -1,4 +1,6 @@
 //! Canonical device-envelope admission and control-side native program preparation.
+//! Retained native/host targets keep their preparation eligibility when reading
+//! base values; only authored/touch readings change, not the target union.
 //! Utility effect controls are consumed by the existing closed processor family.
 //! Host trims are consumed at native effect boundaries (track/main/return).
 //! Foreign processors and source-owned instruments/effects refuse host targets;
@@ -7,6 +9,8 @@ use crate::{Invalid, NativeDeviceClass};
 use hex_lattice::{NativeTransientValue, ProcessorChainOwner, ProcessorInstanceIdentity};
 use hex_lattice_contract::{DeviceAutomationTarget, DeviceTypeId, NativeDeviceState, ParameterId};
 pub const DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED: &str = "device parameter automation playback is not prepared; use a compatible build or clear the envelope in a copy";
+/// Maximum recorded targets admitted into one prepared binding union.
+pub(crate) const MAX_EXTERNAL_PARAMETER_TARGETS: usize = 256;
 
 /// Canonical control-side arm description for one supported native effect.
 /// This Copy identity grants neither publication nor a runtime/source lease.
@@ -200,6 +204,7 @@ fn target_supported(
 ) -> bool {
     match target {
         DeviceAutomationTarget::Parameter(id) => supported(registry, state, id),
+        DeviceAutomationTarget::Vst3 { .. } => false,
         DeviceAutomationTarget::HostInputGain | DeviceAutomationTarget::HostOutputGain => {
             // Registry presence alone must not grant foreign providers a host
             // law that would bypass their aligned dry-input history.
@@ -240,18 +245,23 @@ pub(crate) fn validate_project_with_registry(
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
 ) -> Result<(), Invalid> {
     if project.native_sources().iter().any(|source| {
-        source
-            .devices()
-            .any(|device| !device.automation().is_empty())
+        source.devices().any(|device| {
+            device.automation().iter().any(|lane| {
+                device.id() != source.instrument().id()
+                    || !crate::compile::is_vst3_instrument(device)
+                    || !matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
+            })
+        })
     }) {
         return Err(Invalid(DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED));
     }
     for device in effect_devices(project) {
-        if device
-            .automation()
-            .iter()
-            .any(|lane| !target_supported(registry, device.state(), lane.target))
-        {
+        if device.automation().iter().any(|lane| {
+            // The Arrangement compiler verifies exact foreign capabilities
+            // for both effect chains and instrument sources.
+            !matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
+                && !target_supported(registry, device.state(), lane.target)
+        }) {
             return Err(Invalid(DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED));
         }
     }
@@ -260,33 +270,116 @@ pub(crate) fn validate_project_with_registry(
 pub(crate) fn quote(device: &hex_project::Device) -> Result<usize, crate::AudioStorageError> {
     quote_with_input(device, None)
 }
-/// Persistent flat backing after arm preparation. Only a missing provider
-/// reading slot adds an ID and opaque metadata lane; host input adds neither.
+/// Persistent flat backing for retained target eligibility and optional arming.
+/// Unread targets keep zero-point base-fallback metadata; a missing live provider
+/// adds one ID/metadata slot. A host input arm adds neither.
 pub(crate) fn quote_with_input(
     device: &hex_project::Device,
     input: Option<NativeParameterInputTarget>,
 ) -> Result<usize, crate::AudioStorageError> {
-    let (provider, host, points) = reading_counts(device)?;
-    let provider = provider
-        .checked_add(usize::from(input_needs_provider_fallback(device, input)?))
-        .ok_or(crate::AudioStorageError::Overflow)?;
+    quote_with_inputs_and_external(device, input, &[])
+}
+pub(crate) fn quote_with_inputs_and_external(
+    device: &hex_project::Device,
+    input: Option<NativeParameterInputTarget>,
+    external: &[NativeParameterInputTarget],
+) -> Result<usize, crate::AudioStorageError> {
+    let (provider, host, points, _) = counts_with_external(device, input, external)?;
     hex_lattice::PreparedParameterAutomation::quoted_storage_bytes_with_host(provider, host, points)
+        .and_then(|bytes| {
+            bytes.checked_add(
+                hex_lattice::PreparedParameterAutomation::quoted_touch_storage_bytes(
+                    reading_touch_count(device),
+                )?,
+            )
+        })
         .ok_or(crate::AudioStorageError::Overflow)
 }
-/// Additional temporary old-vector backing during insertion of a provider
-/// fallback. Normal envelope construction already accounts raw metadata/points;
-/// this charge covers the old compiled IDs/lanes during arm-time reallocation.
+/// Additional temporary old-vector backing while unread targets, live input or
+/// external targets add fallback slots. Points/touch buffers are not duplicated;
+/// the final union bounds old ID/metadata vectors during sequential insertion.
 /// The normalized/compiled point vectors are not duplicated by insertion.
 pub(crate) fn input_construction_growth_overlap(
     device: &hex_project::Device,
     input: Option<NativeParameterInputTarget>,
 ) -> Result<usize, crate::AudioStorageError> {
+    input_and_external_growth_overlap(device, input, &[])
+}
+pub(crate) fn input_and_external_growth_overlap(
+    device: &hex_project::Device,
+    input: Option<NativeParameterInputTarget>,
+    external: &[NativeParameterInputTarget],
+) -> Result<usize, crate::AudioStorageError> {
+    let (provider, host, _, added_external) = counts_with_external(device, input, external)?;
+    if added_external
+        || device.automation().iter().any(|lane| {
+            !lane.is_reading() && !matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
+        })
+    {
+        // Any previous vector during sequential insertion is no larger than
+        // the final union. This bound covers its overlap with the new backing.
+        return hex_lattice::PreparedParameterAutomation::quoted_storage_bytes_with_host(
+            provider, host, 0,
+        )
+        .ok_or(crate::AudioStorageError::Overflow);
+    }
     if !input_needs_provider_fallback(device, input)? {
         return Ok(0);
     }
-    let (provider, host, _) = reading_counts(device)?;
+    let (provider, host, _) = prepared_counts(device)?;
     hex_lattice::PreparedParameterAutomation::quoted_storage_bytes_with_host(provider, host, 0)
         .ok_or(crate::AudioStorageError::Overflow)
+}
+
+fn counts_with_external(
+    device: &hex_project::Device,
+    input: Option<NativeParameterInputTarget>,
+    external: &[NativeParameterInputTarget],
+) -> Result<(usize, usize, usize, bool), crate::AudioStorageError> {
+    if external.len() > MAX_EXTERNAL_PARAMETER_TARGETS {
+        return Err(crate::AudioStorageError::Capacity);
+    }
+    let (mut provider, mut host, points) = prepared_counts(device)?;
+    let live_fallback = input_needs_provider_fallback(device, input)?;
+    provider = provider
+        .checked_add(usize::from(live_fallback))
+        .ok_or(crate::AudioStorageError::Overflow)?;
+    let mut added_external = false;
+    for (index, target) in external
+        .iter()
+        .enumerate()
+        .filter(|(_, target)| target.device == device.id())
+    {
+        if target.device_type != device.state().type_id()
+            || external[..index]
+                .iter()
+                .any(|old| old.device == target.device && old.target == target.target)
+        {
+            return Err(crate::AudioStorageError::SourceMismatch);
+        }
+        if device
+            .automation()
+            .iter()
+            .any(|lane| lane.target == target.target)
+            || (live_fallback
+                && input.is_some_and(|live| {
+                    live.device == target.device && live.target == target.target
+                }))
+        {
+            continue;
+        }
+        if target.target.provider_parameter().is_some() {
+            provider = provider
+                .checked_add(1)
+                .ok_or(crate::AudioStorageError::Overflow)?;
+        } else {
+            host = host
+                .checked_add(1)
+                .ok_or(crate::AudioStorageError::Overflow)?;
+        }
+        added_external = true;
+    }
+    Ok((provider, host, points, added_external))
 }
 fn input_needs_provider_fallback(
     device: &hex_project::Device,
@@ -300,25 +393,33 @@ fn input_needs_provider_fallback(
     }
     Ok(input.target.provider_parameter().is_some()
         && !device
-            .reading_automation()
+            .automation()
+            .iter()
             .any(|lane| lane.target == input.target))
 }
-fn reading_counts(
+fn reading_touch_count(device: &hex_project::Device) -> usize {
+    device
+        .reading_automation()
+        .map(|lane| lane.touch.len())
+        .sum()
+}
+
+fn prepared_counts(
     device: &hex_project::Device,
 ) -> Result<(usize, usize, usize), crate::AudioStorageError> {
     let points = device
         .reading_automation()
-        .try_fold(0usize, |sum, lane| sum.checked_add(lane.points.len()))
+        .try_fold(0usize, |sum, lane| sum.checked_add(lane.point_count()))
         .ok_or(crate::AudioStorageError::Overflow)?;
-    let provider = device
-        .reading_automation()
-        .filter(|lane| !lane.target.is_host())
-        .count();
-    Ok((
-        provider,
-        device.reading_automation().count() - provider,
-        points,
-    ))
+    // Foreign programs retain their separate preflight/representation. Native
+    // and host metadata remains eligible even while its authored data is muted.
+    let eligible = || {
+        device.automation().iter().filter(|lane| {
+            lane.is_reading() || !matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
+        })
+    };
+    let provider = eligible().filter(|lane| !lane.target.is_host()).count();
+    Ok((provider, eligible().count() - provider, points))
 }
 pub(crate) fn prepare(
     device: &hex_project::Device,
@@ -343,7 +444,63 @@ pub(crate) fn prepare_with_registry_and_input(
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     input: Option<NativeParameterInputTarget>,
 ) -> Result<hex_lattice::PreparedParameterAutomation, Invalid> {
-    let mut program = prepare_envelopes_with_registry(device, registry)?;
+    prepare_with_registry_inputs_and_external(device, registry, input, &[])
+}
+
+/// Compile the factory's retained target union with reading data and one separate
+/// live-input arm. External targets only add reading slots; they do not arm a
+/// gesture, add authored points or own a source. Budget callers must account
+/// for each missing slot and transient vector growth before using this path.
+pub(crate) fn prepare_with_registry_inputs_and_external(
+    device: &hex_project::Device,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    input: Option<NativeParameterInputTarget>,
+    external: &[NativeParameterInputTarget],
+) -> Result<hex_lattice::PreparedParameterAutomation, Invalid> {
+    prepare_with_reading_routes(device, registry, input, external, false)
+}
+
+pub(crate) fn prepare_closed_effect(
+    device: &hex_project::Device,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    input: Option<NativeParameterInputTarget>,
+) -> Result<hex_lattice::PreparedParameterAutomation, Invalid> {
+    prepare_with_reading_routes(device, registry, input, &[], true)
+}
+
+fn prepare_with_reading_routes(
+    device: &hex_project::Device,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    input: Option<NativeParameterInputTarget>,
+    external: &[NativeParameterInputTarget],
+    foreign_preflighted: bool,
+) -> Result<hex_lattice::PreparedParameterAutomation, Invalid> {
+    if external.len() > MAX_EXTERNAL_PARAMETER_TARGETS {
+        return Err(Invalid("recorded parameter target limit exceeded"));
+    }
+    let mut program = prepare_envelopes_with_registry(device, registry, foreign_preflighted)?;
+    // Reading selects values; retained targets keep the same prepared family,
+    // latency and resource promise through Base/Authored changes. Existing
+    // base-fallback slots hold metadata without points, a clock or a live arm.
+    for lane in device.automation().iter().filter(|lane| !lane.is_reading()) {
+        match lane.target {
+            DeviceAutomationTarget::Parameter(parameter) => {
+                let (descriptor, semantics) = provider_description(device, registry, parameter)?;
+                program
+                    .prepare_external_provider(descriptor, semantics)
+                    .map_err(|_| {
+                        Invalid("retained native target preparation exceeds its budget")
+                    })?;
+            }
+            DeviceAutomationTarget::HostInputGain | DeviceAutomationTarget::HostOutputGain => {
+                program
+                    .prepare_external_host(lane.target)
+                    .map_err(|_| Invalid("retained host target preparation exceeds its budget"))?;
+            }
+            DeviceAutomationTarget::Vst3 { .. } => {}
+        }
+    }
+
     if let Some(input) = input.filter(|input| input.device == device.id()) {
         if input.device_type != device.state().type_id()
             || !target_supported(registry, device.state(), input.target)
@@ -354,22 +511,7 @@ pub(crate) fn prepare_with_registry_and_input(
         }
         match input.target {
             DeviceAutomationTarget::Parameter(parameter) => {
-                let definition = registry
-                    .definition(input.device_type)
-                    .ok_or(Invalid("native parameter input device is unsupported"))?;
-                let descriptor =
-                    hex_lattice_contract::validated_state_descriptors(definition, device.state())
-                        .map_err(|_| Invalid("native parameter input metadata is invalid"))?
-                        .into_iter()
-                        .find(|descriptor| descriptor.id == parameter)
-                        .ok_or(Invalid("native parameter input parameter no longer exists"))?;
-                let semantics = hex_lattice_contract::validated_parameter_semantics(
-                    definition,
-                    device.state(),
-                    parameter,
-                )
-                .map_err(|_| Invalid("native parameter input semantics are invalid"))?
-                .ok_or(Invalid("native parameter input semantics are undeclared"))?;
+                let (descriptor, semantics) = provider_description(device, registry, parameter)?;
                 program
                     .arm_provider_input(descriptor, semantics)
                     .map_err(|_| {
@@ -381,13 +523,75 @@ pub(crate) fn prepare_with_registry_and_input(
                 .map_err(|_| Invalid("native host gain input target is invalid"))?,
         }
     }
+    for (index, target) in external
+        .iter()
+        .enumerate()
+        .filter(|(_, target)| target.device == device.id())
+    {
+        if external[..index]
+            .iter()
+            .any(|previous| previous.device == target.device && previous.target == target.target)
+        {
+            return Err(Invalid("duplicate recorded automation target"));
+        }
+        if target.device_type != device.state().type_id()
+            || !target_supported(registry, device.state(), target.target)
+        {
+            return Err(Invalid(
+                "recorded parameter target changed or is unsupported",
+            ));
+        }
+        match target.target {
+            DeviceAutomationTarget::Parameter(parameter) => {
+                let (descriptor, semantics) = provider_description(device, registry, parameter)?;
+                program
+                    .prepare_external_provider(descriptor, semantics)
+                    .map_err(|_| {
+                        Invalid("recorded parameter program is invalid or exceeds its budget")
+                    })?;
+            }
+            host => program.prepare_external_host(host).map_err(|_| {
+                Invalid("recorded host gain program is invalid or exceeds its budget")
+            })?,
+        }
+    }
     Ok(program)
+}
+
+fn provider_description(
+    device: &hex_project::Device,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    parameter: ParameterId,
+) -> Result<
+    (
+        hex_lattice_contract::ParameterDescriptor,
+        hex_lattice_contract::ParameterSemantics,
+    ),
+    Invalid,
+> {
+    let definition = registry
+        .definition(device.state().type_id())
+        .ok_or(Invalid("native parameter input device is unsupported"))?;
+    let descriptor = hex_lattice_contract::validated_state_descriptors(definition, device.state())
+        .map_err(|_| Invalid("native parameter input metadata is invalid"))?
+        .into_iter()
+        .find(|descriptor| descriptor.id == parameter)
+        .ok_or(Invalid("native parameter input parameter no longer exists"))?;
+    let semantics =
+        hex_lattice_contract::validated_parameter_semantics(definition, device.state(), parameter)
+            .map_err(|_| Invalid("native parameter input semantics are invalid"))?
+            .ok_or(Invalid("native parameter input semantics are undeclared"))?;
+    Ok((descriptor, semantics))
 }
 fn prepare_envelopes_with_registry(
     device: &hex_project::Device,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    foreign_preflighted: bool,
 ) -> Result<hex_lattice::PreparedParameterAutomation, Invalid> {
-    if device.automation().is_empty() {
+    let local = |lane: &&hex_project::DeviceAutomation| {
+        !foreign_preflighted || !matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
+    };
+    if !device.automation().iter().any(|lane| local(&lane)) {
         return Ok(Default::default());
     }
     let definition = registry
@@ -395,13 +599,15 @@ fn prepare_envelopes_with_registry(
         .ok_or(Invalid(DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED))?;
     let count = device
         .reading_automation()
-        .try_fold(0usize, |sum, lane| sum.checked_add(lane.points.len()))
+        .filter(local)
+        .try_fold(0usize, |sum, lane| sum.checked_add(lane.point_count()))
         .ok_or(Invalid("device automation point count overflow"))?;
     let mut lanes = Vec::new();
     lanes
         .try_reserve_exact(
             device
                 .reading_automation()
+                .filter(local)
                 .filter(|lane| !lane.target.is_host())
                 .count(),
         )
@@ -410,6 +616,7 @@ fn prepare_envelopes_with_registry(
     host.try_reserve_exact(
         device
             .reading_automation()
+            .filter(local)
             .filter(|lane| lane.target.is_host())
             .count(),
     )
@@ -418,7 +625,7 @@ fn prepare_envelopes_with_registry(
     points
         .try_reserve_exact(count)
         .map_err(|_| Invalid("could not reserve device automation points"))?;
-    for lane in device.automation() {
+    for lane in device.automation().iter().filter(local) {
         if !target_supported(registry, device.state(), lane.target) {
             return Err(Invalid(DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED));
         }
@@ -459,7 +666,31 @@ fn prepare_envelopes_with_registry(
             });
         }
     }
-    hex_lattice::PreparedParameterAutomation::new_with_host(lanes, host, points)
+    let mut touch = Vec::new();
+    touch
+        .try_reserve_exact(reading_touch_count(device))
+        .map_err(|_| Invalid("could not reserve device automation touch spans"))?;
+    for lane in device.reading_automation() {
+        for span in &lane.touch {
+            let start = points.len();
+            points.extend(
+                span.steps
+                    .iter()
+                    .map(|step| hex_lattice::ParameterAutomationPoint {
+                        beat_raw: step.beat.raw(),
+                        normalized: step.value.get(),
+                        step: true,
+                    }),
+            );
+            touch.push(hex_lattice::ParameterAutomationTouchSpan {
+                target: lane.target,
+                start_beat: span.start.raw(),
+                end_beat: span.end.raw(),
+                points: start..points.len(),
+            });
+        }
+    }
+    hex_lattice::PreparedParameterAutomation::new_with_host_and_touch(lanes, host, points, touch)
         .map_err(|_| Invalid("device automation program is invalid or exceeds its budget"))
 }
 

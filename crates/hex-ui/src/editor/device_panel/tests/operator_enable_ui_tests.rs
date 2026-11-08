@@ -51,8 +51,8 @@ fn operator_enable_badges_commit_canonical_history_and_reopen(cx: &mut TestAppCo
         });
         editor.read_with(cx, |view, _| {
             assert_eq!(
-                view.device_panel.operator_pages[&device].selected_operator,
-                operator as usize
+                view.device_panel.operator_pages[&device].selected_operator, 0,
+                "power edits preserve the explicitly selected envelope"
             );
             assert_eq!(
                 view.device_panel.operator_pages[&device].page,
@@ -148,121 +148,80 @@ fn operator_enable_rapid_clicks_use_pending_value_and_queue_refusal_restores_it(
 }
 
 #[gpui::test]
-fn operator_selector_focus_and_keyboard_navigation_do_not_replace_enable_click(
-    cx: &mut TestAppContext,
-) {
-    cx.update(hex_widgets::bind_numeric_control_keys);
+fn oscillator_power_keyboard_and_pointer_preserve_selection(cx: &mut TestAppContext) {
     cx.update(crate::editor::bind_editor_keys);
     let (service, state, track, device) = operator_navigation_tests::operator_fixture();
-    let original = state
-        .project
-        .track(track)
-        .unwrap()
-        .instrument()
-        .unwrap()
-        .state()
-        .clone();
+    let original = state.project.clone();
     let revision = state.revision;
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, _| window.activate_window());
     visual.run_until_parked();
-    let focus = editor.read_with(cx, |view, _| {
+    let power = editor.read_with(cx, |view, _| {
         view.device_panel.operator_navigation_focus
             [&(device, operator_panel::NavigationTarget::Oscillator(3))]
             .clone()
     });
-    visual.update(|window, _| focus.focus(window));
-    visual.run_until_parked();
-    visual.simulate_keystrokes("enter space");
-    visual.run_until_parked();
+    visual.update(|window, _| power.focus(window));
+    visual.simulate_keystrokes("enter");
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|s| s.revision == revision + 1)
+    });
     editor.read_with(cx, |view, _| {
-        let state = view.state.as_ref().unwrap();
         assert_eq!(
-            state.revision, revision,
-            "focus/keyboard activation is navigation only"
+            operator_parameter_value(view.state.as_ref().unwrap(), track, device, 516),
+            ParameterValue::Bool(false)
         );
-        assert_eq!(
-            state
-                .project
-                .track(track)
-                .unwrap()
-                .instrument()
-                .unwrap()
-                .state(),
-            &original
-        );
-        assert!(view.pending_requests.is_empty());
-        assert_eq!(view.worker_requests_pending, 0);
         assert_eq!(
             view.device_panel.operator_pages[&device].selected_operator,
-            3
+            0
         );
-        assert!(
-            matches!(
-                view.last_transport_command,
-                Some(hex_engine::PlaybackCommand::PlayFrom(_))
-            ),
-            "space in a focused section must start transport"
+    });
+    visual.run_until_parked();
+    let background =
+        super::operator_context_selection_tests::row_background(&mut visual, device, 2);
+    visual.simulate_click(background, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.operator_pages[&device].selected_operator,
+            2
         );
+        assert_eq!(view.state.as_ref().unwrap().revision, revision + 1);
     });
     let selector = Box::leak(format!("operator-select-{}-3", device.value()).into_boxed_str());
     let bounds = visual.debug_bounds(selector).unwrap();
     visual.simulate_click(bounds.center(), Modifiers::default());
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
-            && view.pending_requests.is_empty()
-            && operator_parameter_value(view.state.as_ref().unwrap(), track, device, 516)
-                == ParameterValue::Bool(false)
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|s| s.revision == revision + 2)
     });
-    let expected = hex_engine::patch_native_device_parameter_for_class(
-        NativeDeviceClass::Instrument,
-        &original,
-        hex_lattice_contract::ParameterId::from_static(516),
-        ParameterValue::Bool(false),
-    )
-    .unwrap();
     editor.read_with(cx, |view, _| {
-        let state = view.state.as_ref().unwrap();
         assert_eq!(
-            state.revision,
-            revision + 1,
-            "one click creates one canonical edit"
+            view.device_panel.operator_pages[&device].selected_operator,
+            2
         );
-        assert_eq!(
-            state
-                .project
-                .track(track)
-                .unwrap()
-                .instrument()
-                .unwrap()
-                .state(),
-            &expected
-        );
-    });
-    visual.run_until_parked();
-    assert!(visual.update(|window, _| focus.is_focused(window)));
-    visual.simulate_keystrokes("enter space");
-    visual.run_until_parked();
-    editor.read_with(cx, |view, _| {
-        assert_eq!(view.state.as_ref().unwrap().revision, revision + 1)
+        assert_eq!(view.state.as_ref().unwrap().project, original);
     });
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
     pump_until(&editor, cx, |view| {
-        view.state.as_ref().unwrap().revision == revision + 2
+        view.worker_requests_pending == 0
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|s| s.revision == revision + 3)
     });
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.state
-                .as_ref()
-                .unwrap()
-                .project
-                .track(track)
-                .unwrap()
-                .instrument()
-                .unwrap()
-                .state(),
-            &original
+            operator_parameter_value(view.state.as_ref().unwrap(), track, device, 516),
+            ParameterValue::Bool(false)
         )
     });
 }

@@ -75,13 +75,7 @@ fn first_play(grouped: bool, stop_pending: bool) {
             },
         )
         .unwrap();
-    assert_eq!(
-        control
-            .audio_candidate_domain_usage()
-            .unwrap()
-            .occupied_domains,
-        1
-    );
+    assert_eq!(observed_usage(&control).occupied_domains, 1);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
         match control
@@ -103,13 +97,7 @@ fn first_play(grouped: bool, stop_pending: bool) {
         control.poll_audio_candidate_domain_preparation(domain),
         Err("candidate publication queue is full")
     );
-    assert_eq!(
-        control
-            .audio_candidate_domain_usage()
-            .unwrap()
-            .occupied_domains,
-        1
-    );
+    assert_eq!(observed_usage(&control).occupied_domains, 1);
     data.owner_mut()
         .unwrap()
         .run(|callback, _| callback.begin_block()); // only exact loan transfer
@@ -637,7 +625,12 @@ fn two_source_small_pool_refusal_after_commit_preserves_pcm_clock_and_applied_pr
         std::thread::yield_now();
     }
     assert_eq!(control.status.position.load(Acquire), 512);
-    assert_eq!(&output[..256], &[[0.25; 2]; 256]);
+    // A ready streamed Play from the paused frame ramps in over 128 frames,
+    // like the resident path (#4140).
+    for (i, frame) in output[..256].iter().enumerate() {
+        let gain = (i + 1).min(128) as f32 / 128.0;
+        assert_eq!(*frame, [0.25 * gain; 2], "frame {i}");
+    }
     let mut backend = Some(());
     let mut pending = false;
     let mut disposed = false;
@@ -863,7 +856,8 @@ fn ready_candidate_group_retry_releases_speculation_for_old_page_and_remains_can
         pause
     );
     assert_eq!(control.status.consumed_command.load(Acquire), pause);
-    assert_eq!(control.status.position.load(Acquire), position);
+    // The Pause applies at the end of its 128-frame fade (#4151).
+    assert_eq!(control.status.position.load(Acquire), position + 128);
     assert!(!control.status.playing.load(Acquire));
     assert_eq!(control.status.applied_revision.load(Acquire), 1);
     assert!(control.status.publication_pending.load(Acquire));
@@ -1164,6 +1158,7 @@ fn changed_source_during_playback_reports_fault_and_preserves_committed_audio() 
         std::thread::yield_now();
     }
     let reported = control.status.stream_source_changed.load(Acquire);
+    assert!(!control.status.take_stream_read_failure());
     control.stop();
     let measured = allocation_counter::measure(|| {
         data.owner_mut().unwrap().run(|c, _| {
@@ -1213,6 +1208,7 @@ fn changed_source_during_playback_reports_fault_and_preserves_committed_audio() 
     control.stop();
     data.owner_mut().unwrap().run(|c, _| c.begin_block());
     std::fs::write(&source_path, &original).unwrap();
+    control.status.stream_read_failed.store(true, Release);
     let replacement_definition = wav.definition(asset, 11);
     let replacement = stream_fixture::owner_with_context(
         &project,
@@ -1256,6 +1252,7 @@ fn changed_source_during_playback_reports_fault_and_preserves_committed_audio() 
     );
     assert_eq!(control.status.applied_revision.load(Acquire), 2);
     assert!(!control.status.stream_source_changed.load(Acquire));
+    assert!(!control.status.take_stream_read_failure());
     let old = recover(&mut control, &ticket);
     assert_eq!(old.return_kind, crate::AudioCandidateReturnKind::Replaced);
     drop(old);
@@ -1435,7 +1432,7 @@ fn changed_file_pending_domain_refuses_without_loan_or_ack_and_keeps_pool_until_
             },
         )
         .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + LIFECYCLE_BOUND;
     loop {
         match control
             .poll_audio_candidate_domain_preparation(token)
@@ -1448,18 +1445,12 @@ fn changed_file_pending_domain_refuses_without_loan_or_ack_and_keeps_pool_until_
             other => panic!("unexpected preparation: {other:?}"),
         }
         assert!(std::time::Instant::now() < deadline);
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
     // A normal verification refusal is accepted cleanup, not a poisoned Root
     // or a fabricated page/installation success. The real pool stays charged.
     assert!(control.candidate_root.eligible_claims_open());
-    assert_eq!(
-        control
-            .audio_candidate_domain_usage()
-            .unwrap()
-            .occupied_domains,
-        1
-    );
+    assert_eq!(observed_usage(&control).occupied_domains, 1);
     let measured = allocation_counter::measure(|| {
         data.owner_mut()
             .unwrap()
@@ -1482,7 +1473,7 @@ fn changed_file_pending_domain_refuses_without_loan_or_ack_and_keeps_pool_until_
             break;
         }
         assert!(std::time::Instant::now() < deadline);
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
     drop(owner);
     drop(data);

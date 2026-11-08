@@ -1,11 +1,11 @@
 //! Borrowed rendering through the actual loaned endpoint bank. Lazy staging and
 //! final acceptance use the same entry/cycle implementation as NativeEffectCallbacks.
 use super::*;
-use hex_lattice::{ForeignProcessorNode, ForeignProcessors};
+use hex_lattice::{ForeignNote, ForeignProcessorNode, ForeignProcessors};
 use hex_lattice_contract::DeviceContractError;
 use hex_plugin_host::transport::Fault;
 impl NativeEndpointBank {
-    #[cfg(all(test, feature = "allocation-probe"))]
+    #[cfg(feature = "allocation-probe")]
     pub(crate) fn test_transport_fault(&self, binding: Binding) -> Option<Fault> {
         self.entries
             .iter()
@@ -82,6 +82,16 @@ impl NativeEndpointBank {
         }
         Ok(())
     }
+    pub(crate) fn end_staging_at_pause(&mut self, frame: usize) {
+        for index in 0..self.routing_len {
+            if let Some(entry) = self.entries[self.routing[index]]
+                .as_mut()
+                .and_then(|entry| entry.0.callback.as_mut())
+            {
+                entry.end_staging_at_pause(frame);
+            }
+        }
+    }
     pub(crate) fn reject_rendering(&mut self) {
         self.cycle.reject();
         for index in 0..self.routing_len {
@@ -95,6 +105,9 @@ impl NativeEndpointBank {
     }
 }
 impl ForeignProcessors for NativeEndpointBank {
+    fn returns_post_trim(&self, _node: ForeignProcessorNode<'_>) -> bool {
+        true
+    }
     fn process_segment(
         &mut self,
         node: ForeignProcessorNode<'_>,
@@ -112,6 +125,17 @@ impl ForeignProcessors for NativeEndpointBank {
         parameters: &[hex_lattice_contract::ForeignParameterPoint],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
+        self.process_segment_with_notes(node, offset, frames, parameters, &[], clock)
+    }
+    fn process_segment_with_notes(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        parameters: &[hex_lattice_contract::ForeignParameterPoint],
+        notes: &[ForeignNote],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
         let selected = node.prepared.binding().and_then(|binding| {
             self.routing[..self.routing_len]
                 .binary_search_by_key(&Some(binding), |slot| {
@@ -125,7 +149,9 @@ impl ForeignProcessors for NativeEndpointBank {
                 .as_mut()
                 .and_then(|e| e.0.callback.as_mut())
                 .ok_or(DeviceContractError::ForeignProcessingUnavailable)
-                .and_then(|entry| entry.process(extent, node, offset, frames, parameters, clock)),
+                .and_then(|entry| {
+                    entry.process(extent, node, offset, frames, parameters, notes, clock)
+                }),
             _ => Err(DeviceContractError::ForeignProcessingUnavailable),
         };
         if result.is_err() {

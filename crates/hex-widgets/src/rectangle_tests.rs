@@ -103,11 +103,15 @@ fn selection_policy_keeps_clip_range_and_section_toggle_contracts_explicit() {
         RectangleSelection::Range { additive: true }
     );
     assert_eq!(
-        RectangleSelectionPolicy::Toggle.intent(shift),
+        RectangleSelectionPolicy::Section.intent(shift),
+        RectangleSelection::Range { additive: false }
+    );
+    assert_eq!(
+        RectangleSelectionPolicy::Section.intent(both),
         RectangleSelection::Toggle
     );
     assert_eq!(
-        RectangleSelectionPolicy::Toggle.intent(command),
+        RectangleSelectionPolicy::Section.intent(command),
         RectangleSelection::Replace
     );
 }

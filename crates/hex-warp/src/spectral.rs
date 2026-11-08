@@ -2,7 +2,7 @@
 //! envelope reimposition for formant-preserving transposition.
 use super::{
     fft::{self, Complex},
-    resample::{BANK_BYTES, Bandlimited},
+    resample::{Bandlimited, bank_bytes},
     *,
 };
 fn wrap(phase: f64) -> f64 {
@@ -37,7 +37,7 @@ pub(super) fn render(
     let hop = n / 4;
     let bytes = n
         .checked_mul(112)
-        .and_then(|n| n.checked_add(BANK_BYTES))
+        .and_then(|n| n.checked_add(bank_bytes(work.resampler)))
         .ok_or(Error::ScratchLimit)?;
     let mut accumulator = Accumulator::new(request.output_frames, n * 2 + hop + 4, work, bytes)?;
     let bank = Bandlimited::new(1.0, work)?;

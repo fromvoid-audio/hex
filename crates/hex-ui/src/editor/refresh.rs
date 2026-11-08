@@ -7,12 +7,16 @@ const DIAGNOSTIC_REFRESH: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct AudioFrame {
+    pub source: u64,
+    pub cpu: hex_audio::cpu_meter::CpuSample,
     pub playing: bool,
     pub position: u64,
     pub peak_left: u32,
     pub peak_right: u32,
     pub applied_revision: u64,
     pub deadline_misses: u64,
+    /// Callbacks that held streamed playback silent mid-play (disk overload).
+    pub stream_starved: u64,
     pub callback_us: u64,
     pub render_fault: bool,
     pub device_fault: bool,
@@ -24,12 +28,15 @@ impl AudioFrame {
     /// remain independent relaxed loads, with no age or coherent-pair guarantee.
     pub(super) fn capture(status: &Status) -> Self {
         Self {
+            source: 0,
+            cpu: status.cpu_meter.snapshot(),
             playing: status.playing.load(Relaxed),
             position: status.position.load(Relaxed),
             peak_left: status.peak_left.load(Relaxed),
             peak_right: status.peak_right.load(Relaxed),
             applied_revision: status.applied_revision.load(Relaxed),
             deadline_misses: status.deadline_misses.load(Relaxed),
+            stream_starved: status.stream_starved_callbacks.load(Relaxed),
             callback_us: status.callback_max_ns.load(Relaxed) / 1_000,
             render_fault: status.render_fault.load(Relaxed),
             device_fault: status.device_fault.load(Relaxed),
@@ -60,10 +67,27 @@ impl super::EditorView {
         visible_change: bool,
         now: Instant,
     ) -> bool {
+        let cpu_changed = self.cpu_meter.observe(
+            frame
+                .filter(|f| !f.shutdown_complete && !f.device_fault)
+                .map(|f| (f.source, f.cpu, f.deadline_misses)),
+            now,
+        );
+        let main_changed = self.track_meters.observe_main(frame, now);
         let availability_changed = self.output_meter_frame.is_some() != frame.is_some();
         self.output_meter_frame = frame;
-        self.redraw_gate
-            .should_redraw(visible_change || availability_changed, frame, now)
+        let overload_changed = self
+            .disk_overload
+            .observe(frame.map(|frame| (frame.source, frame.stream_starved)), now);
+        self.redraw_gate.should_redraw(
+            visible_change
+                || main_changed
+                || availability_changed
+                || overload_changed
+                || cpu_changed,
+            frame,
+            now,
+        )
     }
 }
 
@@ -121,12 +145,15 @@ mod tests {
 
     fn frame(playing: bool) -> AudioFrame {
         AudioFrame {
+            source: 1,
+            cpu: Default::default(),
             playing,
             position: 0,
             peak_left: 0,
             peak_right: 0,
             applied_revision: 1,
             deadline_misses: 0,
+            stream_starved: 0,
             callback_us: 10,
             render_fault: false,
             device_fault: false,

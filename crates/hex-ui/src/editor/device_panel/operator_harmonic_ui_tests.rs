@@ -47,7 +47,7 @@ fn rendered_harmonic_stroke_is_atomic_and_shift_preserves_other_columns(cx: &mut
     }
     let tab_bounds = visual.debug_bounds(tab).unwrap();
     assert!(bounds.bottom() <= tab_bounds.top());
-    let preview = visual.debug_bounds("operator-waveform-preview").unwrap();
+    let preview = visual.debug_bounds("operator-fixed-anchors").unwrap();
     assert!(preview.top() >= tab_bounds.bottom());
     assert!(preview.size.width >= px(48.0));
     assert!(preview.size.height >= px(12.0));
@@ -456,7 +456,7 @@ fn hiding_harmonic_field_cancels_stroke_and_keeps_the_preview(cx: &mut TestAppCo
         );
     });
     assert!(visual.debug_bounds(graph).is_none());
-    assert!(visual.debug_bounds("operator-waveform-preview").is_some());
+    assert!(visual.debug_bounds("operator-fixed-anchors").is_some());
     visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_click(tab_bounds.center(), Modifiers::default());
     visual.run_until_parked();

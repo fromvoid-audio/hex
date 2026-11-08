@@ -5,6 +5,10 @@
 
 namespace hex_instance {
 inline constexpr size_t CONTROLLER_PAGE_COUNT=4;
+inline constexpr uint8 TOGGLE_EDITOR=6;
+inline constexpr uint8 CLOSE_EDITOR=7;
+inline constexpr uint8 SELECTED_PARAMETERS=8;
+inline bool editor_request(uint8 kind) { return kind==TOGGLE_EDITOR || kind==CLOSE_EDITOR; }
 struct ControllerQuery {
     uint16 first=0;uint64 revision=0;
     uint8 kind=0;uint32 id=0;uint64 bits=0;String128 text{};
@@ -30,6 +34,7 @@ struct ControllerParameterPage {
     uint16 first=0,total=0,count=0;
     bool changed=false;
     bool conversion=false;ControllerConversion converted{};
+    std::array<unsigned char,32> descriptor_signature{};
     std::array<ControllerParameter,CONTROLLER_PAGE_COUNT> parameters{};
 };
 static_assert(sizeof(ControllerParameterPage)<8192,
@@ -53,9 +58,12 @@ inline bool controller_text(String128 value) {
     return false;
 }
 inline bool valid_controller_query(const ControllerQuery& query) {
-    if(query.first>HOST_PARAMETER_COUNT || (query.first && !query.revision) || query.kind>5) return false;
+    if(query.first>HOST_PARAMETER_COUNT ||
+       (query.first && !query.revision && query.kind!=SELECTED_PARAMETERS) || query.kind>SELECTED_PARAMETERS) return false;
     String128 text{};std::memcpy(text,query.text,sizeof(text));
     if(!controller_text(text) || std::memcmp(text,query.text,sizeof(text))) return false;
+    if(editor_request(query.kind)) return !query.first && !query.revision && !query.id && !query.bits && !text[0];
+    if(query.kind==SELECTED_PARAMETERS) return !query.revision && !query.id && !query.bits && !text[0];
     if(!query.kind) return !query.id && !query.bits && !text[0];
     if(query.first || query.id>static_cast<uint32>(std::numeric_limits<int32>::max())) return false;
     double value=0;std::memcpy(&value,&query.bits,8);
@@ -93,12 +101,18 @@ inline bool controller_conversion(IEditController* controller,const ParameterSna
 inline bool controller_page(IEditController* controller,const ParameterSnapshot* snapshot,
                             const ControllerQuery& query,ControllerParameterPage& result) {
     const auto first=query.first;const auto revision=query.revision;
-    if(![NSThread isMainThread] || !valid_controller_query(query)) return false;
+    if(![NSThread isMainThread] || !valid_controller_query(query) || editor_request(query.kind)) return false;
     result={};result.first=first;
     if((controller && !snapshot) || (snapshot && snapshot->count>HOST_PARAMETER_COUNT)) return false;
-    if(snapshot) {result.revision=snapshot->revision;result.total=static_cast<uint16>(snapshot->count);}
+    if(snapshot) {
+        result.revision=snapshot->revision;result.total=static_cast<uint16>(snapshot->count);
+        result.descriptor_signature=snapshot->descriptor_signature;
+    }
     if((revision && revision!=result.revision) || first>result.total) {result.changed=true;return true;}
-    if(query.kind) {
+    // Selected eligibility reads remain fresh while PCM feedback advances the
+    // ordinary enumeration revision. The original reader validates its target
+    // row before granting eligibility; this page itself is only copied data.
+    if(query.kind && query.kind!=SELECTED_PARAMETERS) {
         result.conversion=true;
         return controller_conversion(controller,snapshot,query,result.converted);
     }

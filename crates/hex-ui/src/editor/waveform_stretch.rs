@@ -44,6 +44,7 @@ pub(super) fn stretch_waveform_view(
         tempo,
         asset,
         prepared,
+        ink,
     } = request;
     // Accept exactly the shared canonical stretch operation; changing pitch,
     // source, processing algorithm or arbitrary roots cannot borrow old peaks.
@@ -58,7 +59,7 @@ pub(super) fn stretch_waveform_view(
     let source_end = original
         .source_offset()
         .checked_add(original.source_length())?;
-    let asset_frames = asset.map_or(source_end, |source| source.source_frames as u64);
+    let asset_frames = asset.map_or(source_end, |source| source.source_frames() as u64);
     let expected = preview_audio_clip_stretch(original, edge, frame, tempo, asset_frames).ok()?;
     if &expected != preview {
         return None;
@@ -68,14 +69,14 @@ pub(super) fn stretch_waveform_view(
         let accepted = prepared?;
         if accepted.offset != offset
             || accepted.length != original.duration()
-            || accepted.waveform.source_frames as u64 != length
+            || accepted.waveform.source_frames() as u64 != length
         {
             return None;
         }
         Arc::clone(&accepted.waveform)
     } else {
         let source = asset?;
-        if (source.source_frames as u64) < asset_frames {
+        if (source.source_frames() as u64) < asset_frames {
             return None;
         }
         Arc::clone(source)
@@ -93,6 +94,7 @@ pub(super) fn stretch_waveform_view(
         visible_end,
         Some(cache),
         grid,
+        ink,
     ))
 }
 

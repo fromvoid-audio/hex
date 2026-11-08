@@ -83,3 +83,70 @@ fn max_density_eq_processing_bypass_history_copy_and_reset_allocate_and_free_not
         (0, 0, 0, 0)
     );
 }
+
+#[test]
+fn combined_eq_retarget_and_bypass_handoff_does_not_allocate_or_free() {
+    use hex_lattice::{
+        NativeRuntimeChain, PreparedProcessorInstance, ProcessorChainOwner, StereoMatrix,
+    };
+    use std::sync::Arc;
+    let make = |gain, bypassed| {
+        let mut settings = EqState {
+            output_gain: gain,
+            ..Default::default()
+        };
+        settings
+            .add(Node::new(NodeId::new(1).unwrap(), 1_000.0, 6.0, 0).unwrap())
+            .unwrap();
+        let state = settings.encode().unwrap();
+        let prepared = EQ_DEFINITION
+            .prepare_processor(
+                &state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
+            .unwrap()
+            .unwrap();
+        NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+            meter: Default::default(),
+            owner: ProcessorChainOwner::Track(1),
+            device_id: 1,
+            device_type: state.type_id(),
+            matrix: StereoMatrix::identity(),
+            bypassed,
+            sample_rate: 48_000,
+            configuration: Some(Arc::new(state)),
+            definition: Some(Arc::from(prepared)),
+        }])
+        .unwrap()
+    };
+    let mut old = make(1.0, false);
+    let mut candidate = make(2.0, true);
+    let mut frames = [[0.2, -0.1]; 64];
+    old.begin_block();
+    old.process_block(&mut frames).unwrap();
+    old.commit_block();
+    let mut admitted = false;
+    let measurement = allocation_counter::measure(|| {
+        admitted = candidate.can_retarget_parameters_from_range(&old, 0..1);
+        candidate.transfer_history_from(&mut old);
+        candidate.begin_block();
+        candidate.process_block(&mut frames).unwrap();
+        candidate.commit_block();
+    });
+    assert!(admitted);
+    assert_eq!(
+        (
+            measurement.count_total,
+            measurement.bytes_total,
+            measurement.count_current,
+            measurement.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+}
+
+mod node_automation;

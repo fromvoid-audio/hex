@@ -1,8 +1,5 @@
 //! Compact canonical mixer controls. All musical changes stay on the actor.
-use super::{
-    EditorView,
-    waveform::{button, toggle_button_with_style},
-};
+use super::{EditorView, waveform::button};
 use crate::theme;
 use gpui::{Context, Div, div, prelude::*, px, rgb};
 use hex_project::Command;
@@ -27,7 +24,9 @@ impl EditorView {
         let Some(state) = self.state.clone() else {
             return strip;
         };
-        if let Some(track) = self.selected_track.and_then(|id| state.project.track(id)) {
+        if let Some(track) = self.selected_track.and_then(|id| state.project.track(id))
+            && !show_main
+        {
             let id = track.id();
             strip = strip
                 .child(
@@ -80,56 +79,11 @@ impl EditorView {
                 );
         }
         if show_main {
-            if let Some(track) = self.selected_track.and_then(|id| state.project.track(id)) {
-                let id = track.id();
-                let (background, text) = super::track_gain::activator_colors(!track.muted());
-                let (solo_background, solo_text) =
-                    super::track_gain::activator_colors(track.soloed());
-                strip = strip
-                    .child(
-                        toggle_button_with_style(
-                            "on",
-                            if track.muted() {
-                                "activate track"
-                            } else {
-                                "deactivate track"
-                            },
-                            ("console-track-mute", id.value()),
-                            theme::action_style().with_state_colors(background, text),
-                        )
-                        .debug_selector(|| "console-track-mute".into())
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            cx.stop_propagation();
-                            view.toggle_mute(id);
-                            cx.notify();
-                        })),
-                    )
-                    .child(
-                        toggle_button_with_style(
-                            "s",
-                            "solo track · s · cmd+click additive",
-                            ("console-track-solo", id.value()),
-                            theme::action_style().with_state_colors(solo_background, solo_text),
-                        )
-                        .debug_selector(|| "console-track-solo".into())
-                        .on_click(cx.listener(
-                            move |view, event: &gpui::ClickEvent, _, cx| {
-                                cx.stop_propagation();
-                                view.toggle_solo(id, !event.modifiers().platform);
-                                cx.notify();
-                            },
-                        )),
-                    );
-            }
-            use hex_session::device_gesture::GestureTarget;
             let active_gain = self.device_gesture.snapshot().and_then(|snapshot| {
                 if snapshot.key.generation != self.project_generation {
                     return None;
                 }
-                match snapshot.target {
-                    GestureTarget::TrackGain { track } => Some(track),
-                    _ => None,
-                }
+                snapshot.target.track_gain_anchor()
             });
             let owner = active_gain
                 .or_else(|| {
@@ -138,7 +92,7 @@ impl EditorView {
                 })
                 .and_then(|id| state.project.track(id))
                 .or_else(|| self.selected_track.and_then(|id| state.project.track(id)));
-            if let Some(track) = owner {
+            if let Some(track) = owner.filter(|track| !self.console_mixer_contains(track.id())) {
                 let id = track.id();
                 if self.selected_track != Some(id) {
                     strip = strip.child(
@@ -156,16 +110,6 @@ impl EditorView {
                         .flex_shrink_0()
                         .debug_selector(move || format!("console-track-gain-{}", id.value()))
                         .child(gain),
-                );
-            }
-            if let Some(track) = self.selected_track.and_then(|id| state.project.track(id)) {
-                let id = track.id();
-                let peak = self.track_meters.level(id);
-                strip = strip.child(
-                    div()
-                        .flex_shrink_0()
-                        .debug_selector(move || format!("console-track-meter-{}", id.value()))
-                        .child(super::track_meters::render(id, peak, 26.0)),
                 );
             }
         }
@@ -190,65 +134,17 @@ impl EditorView {
                 cx.notify();
             })),
         );
-        if show_main {
-            strip = strip
-                .child(div().flex_1())
-                .child(
-                    div()
-                        .id("console-main-header")
-                        .debug_selector(|| "console-main-header".into())
-                        .on_click(cx.listener(|view, _, window, cx| {
-                            super::device_panel::select_main(view, window, cx)
-                        }))
-                        .child(theme::text("main")),
-                )
-                .children([self.main_track_controls(cx)]);
-        }
         strip
     }
 
-    pub(super) fn main_track_controls(&self, cx: &mut Context<Self>) -> Div {
-        let Some(state) = self.state.as_ref() else {
-            return div();
-        };
+    pub(super) fn main_track_controls(&mut self, cx: &mut Context<Self>) -> Div {
         div()
-            .debug_selector(|| "main-track-controls".to_owned())
+            .debug_selector(|| "main-track-controls".into())
+            .w(px(110.0))
+            .h(px(18.0))
             .flex()
             .items_center()
-            .gap_1()
-            .child(
-                button("−", "decrease main gain", ("master-down", 0)).on_click(cx.listener(
-                    |view, _, _, cx| {
-                        view.enqueue(Request::Edit(Command::MasterGainBy { amount: -0.1 }));
-                        cx.notify();
-                    },
-                )),
-            )
-            .child(
-                button("•", "reset main gain to unity", ("master-reset", 0)).on_click(cx.listener(
-                    |view, _, _, cx| {
-                        view.enqueue(Request::Edit(Command::MasterGain { gain: 1.0 }));
-                        cx.notify();
-                    },
-                )),
-            )
-            .child(
-                button("+", "increase main gain", ("master-up", 0))
-                    .debug_selector(|| "main-gain-up".to_owned())
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        view.enqueue(Request::Edit(Command::MasterGainBy { amount: 0.1 }));
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .w(px(42.0))
-                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                    .child(theme::text(format!(
-                        "{:.0}%",
-                        state.project.master_gain() * 100.0
-                    ))),
-            )
+            .child(self.main_volume(cx))
     }
 }
 
@@ -258,5 +154,75 @@ fn balance_label(balance: f32) -> String {
         "balance c".into()
     } else {
         format!("balance {}{percent}", if balance < 0.0 { "l" } else { "r" })
+    }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod tests {
+    use crate::editor::{
+        EditorMode,
+        clip_drag_ui_test::{audio_project, editor_window},
+    };
+    use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, px, size};
+
+    #[gpui::test]
+    fn off_page_numeric_draft_keeps_one_footer_owner(cx: &mut TestAppContext) {
+        cx.update(crate::editor::bind_editor_keys);
+        let (project, first, second, _) = audio_project();
+        let (handle, editor) = editor_window(cx, project, Default::default());
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(size(px(640.0), px(800.0)));
+        editor.update(&mut visual, |view, cx| {
+            view.mode = EditorMode::Session;
+            view.selected_track = Some(first);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.session_visible_columns, 1)
+        });
+        let field_id = Box::leak(format!("track-volume-{}-value", first.value()).into_boxed_str());
+        let field = visual.debug_bounds(field_id).unwrap().center();
+        visual.simulate_mouse_down(field, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(field, MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("+100 db");
+        let next = visual.debug_bounds("next tracks").unwrap().center();
+        visual.simulate_mouse_down(next, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(next, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.session_track_start, 0,
+                "paging cannot hide an invalid draft"
+            )
+        });
+        // A retained/programmatic selection may still move the page. Its draft
+        // then moves into the existing footer instead of being mounted twice.
+        editor.update(&mut visual, |view, cx| {
+            view.session_track_start = 1;
+            view.selected_track = Some(second);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds(field_id).is_some());
+        assert!(visual.debug_bounds("console-track-gain-owner").is_some());
+        let old_column =
+            Box::leak(format!("console-mixer-column-{}", first.value()).into_boxed_str());
+        assert!(visual.debug_bounds(old_column).is_none());
+        let field = visual.debug_bounds(field_id).unwrap().center();
+        visual.simulate_mouse_down(field, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(field, MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        assert!(visual.debug_bounds(field_id).is_none());
+        assert!(visual.debug_bounds("console-track-gain-owner").is_none());
+        let previous = visual.debug_bounds("previous tracks").unwrap().center();
+        visual.simulate_mouse_down(previous, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(previous, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.session_track_start, 0, "paging resumes after cancel")
+        });
     }
 }
