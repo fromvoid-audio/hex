@@ -1,4 +1,5 @@
-//! Visible track peaks from the currently applied playback observation.
+//! Applied track/Return peaks and final-output Main peaks, with shared presentation.
+mod main_output;
 mod scale;
 
 use super::{
@@ -14,6 +15,7 @@ use std::time::Instant;
 
 #[derive(Default)]
 pub(super) struct State {
+    main: main_output::State,
     identity: Option<(u64, u64)>,
     levels: BTreeMap<TrackId, [f32; 2]>,
     returns: BTreeMap<ReturnId, [f32; 2]>,
@@ -34,8 +36,12 @@ impl State {
     fn clear(&mut self) -> bool {
         let changed = !self.levels.is_empty() || !self.returns.is_empty();
         let scratch = std::mem::take(&mut self.scratch);
+        // Main observes the output itself, including preview without an applied
+        // project observation. Clearing track observations must not erase it.
+        let main = std::mem::take(&mut self.main);
         *self = Self {
             scratch,
+            main,
             ..Self::default()
         };
         changed
@@ -70,11 +76,7 @@ impl State {
         self.decay(now)
     }
     fn decay(&mut self, now: Instant) -> f32 {
-        let elapsed = self.updated.map_or(0.0, |previous| {
-            now.saturating_duration_since(previous).as_secs_f32()
-        });
-        self.updated = Some(now);
-        10.0_f32.powf(-12.0 * elapsed / 20.0)
+        decay_factor(&mut self.updated, now)
     }
     pub(super) fn level(&self, track: TrackId) -> [f32; 2] {
         self.levels.get(&track).copied().unwrap_or([0.0; 2])
@@ -82,10 +84,28 @@ impl State {
     pub(super) fn return_level(&self, id: ReturnId) -> [f32; 2] {
         self.returns.get(&id).copied().unwrap_or([0.0; 2])
     }
+    pub(super) fn main_level(&self) -> [f32; 2] {
+        self.main.level()
+    }
+    pub(super) fn observe_main(
+        &mut self,
+        frame: Option<super::refresh::AudioFrame>,
+        now: Instant,
+    ) -> bool {
+        self.main.observe(frame, now)
+    }
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn set_test_level(&mut self, id: TrackId, peak: [f32; 2]) {
         self.levels.insert(id, peak);
     }
+}
+
+fn decay_factor(updated: &mut Option<Instant>, now: Instant) -> f32 {
+    let elapsed = updated.map_or(0.0, |previous| {
+        now.saturating_duration_since(previous).as_secs_f32()
+    });
+    *updated = Some(now);
+    10.0_f32.powf(-12.0 * elapsed / 20.0)
 }
 
 fn decay_level(level: f32, decay: f32) -> f32 {
@@ -290,6 +310,10 @@ pub(super) fn render_return(id: ReturnId, peak: [f32; 2], height: f32) -> Div {
     render_meter(format!("return-output-meter-{}", id.value()), peak, height)
 }
 
+pub(super) fn render_main(peak: [f32; 2], height: f32) -> Div {
+    render_meter("main-output-meter".into(), peak, height)
+}
+
 fn render_meter(id: String, peaks: [f32; 2], height: f32) -> Div {
     let style = theme::track_meter_style();
     let description = format!(
@@ -311,13 +335,14 @@ fn render_meter(id: String, peaks: [f32; 2], height: f32) -> Div {
         .flex_shrink_0();
     for (side, peak) in ["left", "right"].into_iter().zip(peaks) {
         let channel_id = format!("{id}-{side}");
-        let mut bar = hex_widgets::signal_meter(
+        let mut bar = hex_widgets::level_meter(
             channel_id.clone().into(),
             scale::fraction(peak),
+            peak.is_finite() && peak > 1.0,
             hex_widgets::LevelMeterStyle {
                 background: style.rail,
                 fill: style.accent,
-                above: style.accent,
+                above: theme::meter_colors().clipping,
             },
         )
         .w(px(hex_widgets::STEREO_PEAK_BAR_WIDTH))
@@ -397,13 +422,14 @@ mod tests {
         let view = handle.root(cx).unwrap();
         let mut visual = VisualTestContext::from_window(*handle, cx);
         for height in [18.0, 50.0] {
-            for (peak, expected) in [
-                (0.0, 0.0),
-                (scale::FLOOR_AMPLITUDE, 0.0),
-                (10_f32.powf(-24.0 / 20.0), 0.5),
-                (1.0, 0.8972),
-                (10_f32.powf(6.0 / 20.0), 1.0),
-                (100.0, 1.0),
+            for (peak, expected, clipping) in [
+                (0.0, 0.0, false),
+                (scale::FLOOR_AMPLITUDE, 0.0, false),
+                (10_f32.powf(-24.0 / 20.0), 0.5, false),
+                (1.0, 0.8972, false),
+                (10_f32.powf(6.0 / 20.0), 1.0, true),
+                // Continued clipping must not undo the user's acknowledgement.
+                (100.0, 1.0, false),
             ] {
                 view.update(&mut visual, |view, cx| {
                     view.peak = [peak, 0.001];
@@ -419,7 +445,10 @@ mod tests {
                 assert_eq!(right.size.width, px(3.0));
                 assert_eq!(right.left() - left.right(), px(1.0));
                 assert_eq!(left.size.height, right.size.height);
-                assert!(visual.debug_bounds("scale-probe-left-above").is_none());
+                assert_eq!(
+                    visual.debug_bounds("scale-probe-left-above").is_some(),
+                    clipping
+                );
                 assert!(visual.debug_bounds("scale-probe-right-above").is_none());
                 assert_eq!(well.size.height, px((height - 8.0).clamp(10.0, 42.0)));
                 let fill = visual
@@ -453,6 +482,11 @@ mod tests {
                 assert!(unity.top() >= well.top() && unity.bottom() <= well.bottom());
                 let expected_unity = f32::from(well.size.height) * (1.0 - 0.8972);
                 assert!((f32::from(unity.top() - well.top()) - expected_unity).abs() <= 1.0);
+                if let Some(cap) = visual.debug_bounds("scale-probe-left-above") {
+                    visual.simulate_click(cap.center(), gpui::Modifiers::default());
+                    visual.run_until_parked();
+                    assert!(visual.debug_bounds("scale-probe-left-above").is_none());
+                }
             }
         }
     }

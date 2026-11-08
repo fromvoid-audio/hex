@@ -38,7 +38,11 @@ pub fn project_with_operators(
     level: f32,
     all_operators: bool,
 ) -> Result<Fixture, Box<dyn Error>> {
-    if tracks == 0 || tracks > hex_project::MAX_TRACKS || notes_per_track == 0 {
+    if tracks == 0
+        || tracks > hex_project::MAX_TRACKS
+        || notes_per_track == 0
+        || notes_per_track > 128
+    {
         return Err("tracks and notes must be nonzero and within project limits".into());
     }
     let authored_notes = tracks
@@ -62,7 +66,13 @@ pub fn project_with_operators(
                 id: take_id(&mut next_id)?,
                 start_raw: 0,
                 duration_raw: note_duration,
-                pitch: 48 + ((track_index + note_index) % 36) as u8,
+                // Keep historical small workloads identical. Larger admission
+                // probes need distinct pitches rather than invalid same-pitch overlaps.
+                pitch: if notes_per_track <= 36 {
+                    48 + ((track_index + note_index) % 36) as u8
+                } else {
+                    u8::try_from(note_index)?
+                },
                 channel: 0,
                 velocity: 100,
             });
@@ -252,6 +262,13 @@ pub fn shared_source_project_with_operators(
 
 pub fn state(feedback: f32, level: f32) -> Result<NativeDeviceState, Box<dyn Error>> {
     let state = OPERATOR_METADATA.default_state()?;
+    let state = OPERATOR_METADATA.patch_parameter(
+        &state,
+        parameter::GLOBAL_MODE,
+        ParameterValue::Choice(1),
+    )?;
+    let state =
+        OPERATOR_METADATA.patch_parameter(&state, parameter::VOICES, ParameterValue::Choice(14))?;
     let state = OPERATOR_METADATA.patch_parameter(
         &state,
         parameter::feedback(1),

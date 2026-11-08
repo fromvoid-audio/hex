@@ -1,14 +1,15 @@
 //! Bounded Console Return presentation. This transient page owns no musical
 //! state: existing numeric bindings, Return commands and observation caches do.
 //! The bank reserves matching space in every grid row; its body has no fake
-//! clip/drop targets. A numeric draft remains on its original Return on resize.
+//! clip/drop targets. Name/numeric drafts remain on their Return on resize;
+//! keyboard header selection reuses the shared focus owner across pages.
 use super::{
     EditorView,
     console_columns::ColumnFrame,
     waveform::{button, toggle_button_with_style},
 };
 use crate::theme;
-use gpui::{Context, Div, Stateful, div, prelude::*, px, rgb};
+use gpui::{App, Context, Div, KeyBinding, Stateful, Window, div, prelude::*, px, rgb};
 use hex_project::{Project, ReturnId};
 use std::ops::Range;
 
@@ -84,7 +85,76 @@ impl State {
     }
 }
 
+pub(super) fn bind_keys(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new(
+            "left",
+            super::SelectPreviousReturn,
+            Some("hex_console_return_header && !hex_text_editing && !hex_text_input"),
+        ),
+        KeyBinding::new(
+            "right",
+            super::SelectNextReturn,
+            Some("hex_console_return_header && !hex_text_editing && !hex_text_input"),
+        ),
+    ]);
+}
+
 impl EditorView {
+    pub(super) fn select_adjacent_console_return(
+        &mut self,
+        next: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mode != super::EditorMode::Session
+            || self.track_reorder_active()
+            || !self.track_view_change_available(cx)
+        {
+            return;
+        }
+        let Some(super::track_name::Target::Return(current)) = self.focused_header_target(window)
+        else {
+            return;
+        };
+        let Some(state) = &self.state else {
+            return;
+        };
+        let returns = state.project.return_tracks();
+        let total = returns.len();
+        let Some(index) = returns.iter().position(|track| track.id() == current) else {
+            return;
+        };
+        let index = if next {
+            index.saturating_add(1).min(returns.len().saturating_sub(1))
+        } else {
+            index.saturating_sub(1)
+        };
+        let Some(id) = returns.get(index).map(hex_project::ReturnTrack::id) else {
+            return;
+        };
+        if !self.focus_return_details(id, window, cx) {
+            return;
+        }
+        let count = self
+            .console_returns
+            .end
+            .saturating_sub(self.console_returns.start)
+            .max(1);
+        if index < self.console_returns.start {
+            self.console_returns.start = index;
+        }
+        if index >= self.console_returns.end {
+            self.console_returns.start = index + 1 - count;
+        }
+        // Keep the desired range coherent between key events, including
+        // several presses before the next page has painted.
+        self.console_returns.end = self.console_returns.start.saturating_add(count).min(total);
+        self.header_name_focus(super::track_name::Target::Return(id), cx)
+            .focus(window);
+        cx.notify();
+    }
+
     pub(super) fn console_return_paging(
         &self,
         page: &Page,
@@ -189,6 +259,13 @@ impl EditorView {
                 } else {
                     theme::PaletteRole::Surface
                 })))
+                .tooltip(|_, cx| {
+                    cx.new(|_| super::transport::MiniTooltip {
+                        kind: crate::tooltips::Kind::Identification,
+                        description: "return · left/right select · cmd+r rename".into(),
+                    })
+                    .into()
+                })
                 .child(self.track_name_label(
                     super::track_name::Target::Return(id),
                     track.name(),
@@ -613,6 +690,269 @@ mod ui_tests {
         });
         editor.read_with(cx, |view, _| {
             assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before)
+        });
+    }
+
+    #[gpui::test]
+    fn keyboard_selection_crosses_return_pages_without_canonical_edits(cx: &mut TestAppContext) {
+        cx.update(crate::editor::bind_editor_keys);
+        let (mut visual, editor, ids) = fixture(cx);
+        editor.update(&mut visual, |view, cx| {
+            view.selected_track = Some(view.state.as_ref().unwrap().project.tracks()[0].id());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let (before, selected) = editor.read_with(&visual, |view, _| {
+            (
+                view.state.as_ref().unwrap().project.snapshot(),
+                view.selected_track,
+            )
+        });
+        let first = visual
+            .debug_bounds(selector("console-return-header", ids[0], ""))
+            .unwrap()
+            .center();
+        visual.simulate_click(first, Modifiers::default());
+        visual.run_until_parked();
+        for &id in ids.iter().skip(1) {
+            visual.simulate_keystrokes("right");
+            visual.run_until_parked();
+            editor.read_with(&visual, |view, _| assert_eq!(view.focused_return, Some(id)));
+            assert!(
+                visual
+                    .debug_bounds(selector("console-return-header", id, ""))
+                    .is_some()
+            );
+        }
+        visual.simulate_keystrokes("right");
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.focused_return, Some(ids[15]))
+        });
+        for index in (0..15).rev() {
+            visual.simulate_keystrokes("left");
+            visual.run_until_parked();
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(view.focused_return, Some(ids[index]))
+            });
+            assert!(
+                visual
+                    .debug_bounds(selector("console-return-header", ids[index], ""))
+                    .is_some()
+            );
+        }
+        visual.simulate_keystrokes("left");
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.focused_return, Some(ids[0]))
+        });
+        // Repeated keys crossing an unpainted page must preserve the header's
+        // keyboard context rather than falling through to clip navigation.
+        visual.simulate_keystrokes("right");
+        visual.run_until_parked();
+        visual.simulate_keystrokes("right");
+        visual.simulate_keystrokes("right");
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.focused_return, Some(ids[3]));
+            assert_eq!(
+                (view.console_returns.start, view.console_returns.end),
+                (2, 4)
+            );
+            assert_eq!(view.selected_track, selected);
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+            assert!(view.last_enqueued_edit.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn return_name_and_numeric_arrows_keep_their_editing_context(cx: &mut TestAppContext) {
+        cx.update(crate::editor::bind_editor_keys);
+        let (mut visual, editor, ids) = fixture(cx);
+        let before = editor.read_with(&visual, |view, _| {
+            view.state.as_ref().unwrap().project.snapshot()
+        });
+        let header = visual
+            .debug_bounds(selector("console-return-header", ids[1], ""))
+            .unwrap()
+            .center();
+        visual.simulate_click(header, Modifiers::default());
+        visual.simulate_keystrokes("cmd-r");
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("return-name-input").is_some());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("draft bus");
+        visual.simulate_keystrokes("left");
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.focused_return, Some(ids[1]));
+            assert_eq!(
+                view.track_name.pending_return(view.project_generation),
+                Some(ids[1])
+            );
+        });
+        visual.simulate_resize(size(px(640.0), px(800.0)));
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("return-name-input").is_some());
+        assert!(
+            visual
+                .debug_bounds(selector("console-return-header", ids[1], ""))
+                .is_some()
+        );
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        visual.simulate_keystrokes("left");
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.focused_return, Some(ids[0]))
+        });
+        let field = visual
+            .debug_bounds(selector("return-volume", ids[0], "-value"))
+            .unwrap()
+            .center();
+        visual.simulate_click(field, Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("-8 db");
+        visual.simulate_keystrokes("right");
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            assert_eq!(view.focused_return, Some(ids[0]));
+            assert_eq!(
+                view.track_gain_controls
+                    .pending_return_gain(view.project_generation, cx),
+                Some(ids[0])
+            );
+        });
+        // A delayed menu answer must not create a second text draft over an
+        // unfinished numeric edit, even if the canonical revision is unchanged.
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("+100 db");
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                view.begin_captured_name(
+                    super::super::track_name::Target::Return(ids[0]),
+                    view.project_generation,
+                    view.state.as_ref().unwrap().revision,
+                    window,
+                    cx,
+                );
+            });
+        });
+        editor.read_with(&visual, |view, cx| {
+            assert!(!view.track_name.is_editing());
+            assert_eq!(
+                view.track_gain_controls
+                    .pending_return_gain(view.project_generation, cx),
+                Some(ids[0])
+            );
+            assert!(
+                view.error
+                    .as_deref()
+                    .is_some_and(|message| message.contains("numeric edit"))
+            );
+        });
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before)
+        });
+        // Ordinary Console track naming keeps its existing admission boundary.
+        let track = editor.read_with(&visual, |view, _| {
+            view.state.as_ref().unwrap().project.tracks()[0].id()
+        });
+        let header = visual
+            .debug_bounds(Box::leak(
+                format!("session-track-{}", track.value()).into_boxed_str(),
+            ))
+            .unwrap()
+            .center();
+        visual.simulate_click(header, Modifiers::default());
+        visual.simulate_keystrokes("cmd-r");
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("return-name-input").is_none());
+        assert!(visual.debug_bounds("track-name-input").is_none());
+    }
+
+    #[gpui::test]
+    fn console_return_rename_commits_one_actor_edit_and_escape_cancels(cx: &mut TestAppContext) {
+        use crate::editor::track_gain::tests::{actor_fixture, pump};
+        use hex_project::Command;
+        use hex_session::service::Request;
+        let (_directory, mut visual, editor, _) = actor_fixture(cx);
+        editor.update(cx, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::AddReturnTrack {
+                name: "bus".into()
+            })))
+        });
+        pump(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.state.as_ref().unwrap().project.return_tracks().len() == 1
+        });
+        editor.update(cx, |view, cx| {
+            view.mode = EditorMode::Session;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let (id, tracks) = editor.read_with(cx, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            (
+                project.return_tracks()[0].id(),
+                project
+                    .tracks()
+                    .iter()
+                    .map(|t| (t.id(), t.name().to_owned()))
+                    .collect::<Vec<_>>(),
+            )
+        });
+        let header = visual
+            .debug_bounds(selector("console-return-header", id, ""))
+            .unwrap()
+            .center();
+        visual.simulate_click(header, Modifiers::default());
+        visual.simulate_keystrokes("cmd-r");
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("return-name-input").is_some());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("delay bus");
+        visual.simulate_keystrokes("enter");
+        pump(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.state.as_ref().unwrap().project.return_tracks()[0].name() == "delay bus"
+        });
+        editor.read_with(cx, |view, _| {
+            assert!(matches!(view.last_enqueued_edit.as_ref(), Some(Command::RenameReturnTrack { return_track, name }) if *return_track == id && name == "delay bus"));
+            assert_eq!(view.state.as_ref().unwrap().project.tracks().iter().map(|t| (t.id(), t.name().to_owned())).collect::<Vec<_>>(), tracks);
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.state.as_ref().unwrap().project.return_tracks()[0].name() == "bus"
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+        pump(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.state.as_ref().unwrap().project.return_tracks()[0].name() == "delay bus"
+        });
+        visual.run_until_parked();
+        let revision = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().revision);
+        let header = visual
+            .debug_bounds(selector("console-return-header", id, ""))
+            .unwrap()
+            .center();
+        visual.simulate_click(header, Modifiers::default());
+        visual.simulate_keystrokes("cmd-r");
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("discard me");
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert!(!view.track_name.is_editing());
+            assert_eq!(view.worker_requests_pending, 0);
+            assert_eq!(view.state.as_ref().unwrap().revision, revision);
+            assert_eq!(
+                view.state.as_ref().unwrap().project.return_tracks()[0].name(),
+                "delay bus"
+            );
         });
     }
 }

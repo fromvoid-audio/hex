@@ -199,14 +199,22 @@ impl EditorView {
                     .h_full()
                     .flex_shrink_0()
                     .flex()
-                    .flex_col()
-                    .justify_center()
+                    .items_center()
                     .gap(px(4.0))
                     .px(px(6.0))
                     .border_l_1()
                     .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-                    .child(self.main_track_controls(cx))
-                    .child(self.sample_arm_button(super::sample_recorder::Arm::Main, cx)),
+                    .children([
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.0))
+                            .child(self.main_track_controls(cx))
+                            .child(self.sample_arm_button(super::sample_recorder::Arm::Main, cx)),
+                        super::track_meters::render_main(self.track_meters.main_level(), 50.0),
+                    ]),
             )
     }
 }
