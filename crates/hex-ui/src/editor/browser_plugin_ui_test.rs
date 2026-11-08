@@ -1136,3 +1136,125 @@ fn all_search_keeps_within_kind_order_and_single_kind_queries(cx: &mut TestAppCo
         });
     }
 }
+
+#[gpui::test]
+fn vst_effect_drag_to_unselected_track_header_reaches_plugin_worker(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    for mode in [
+        crate::editor::EditorMode::Arrangement,
+        crate::editor::EditorMode::Session,
+    ] {
+        let (handle, editor, tracks, directory, _) =
+            browser_drag_fixture_with_tracks(cx, &["selected", "target"]);
+        let module = directory.0.canonicalize().unwrap().join("Original.vst3");
+        let mut catalog = original_plugin_catalog(module);
+        let class = &mut catalog.entries[0]
+            .last_good
+            .as_mut()
+            .unwrap()
+            .discovery
+            .as_mut()
+            .unwrap()
+            .classes[0];
+        class.class_flags = Some(0);
+        class.subcategories = Some("Fx".into());
+        class.class_vendor = Some("Original Vendor".into());
+        class.class_version = Some("1".into());
+        class.class_sdk_version = Some("3.8".into());
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        editor.update(&mut visual, |view, cx| {
+            view.selected_track = Some(tracks[0]);
+            view.mode = mode;
+            view.select_browser_source(BrowserSection::Plugins, cx);
+        });
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            visual.run_until_parked();
+            if editor.read_with(&visual, |view, _| !view.browser.plugins.loading) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        editor.update(&mut visual, |view, cx| {
+            view.apply_plugin_catalog(catalog, cx);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let source = visual.debug_bounds("browser-vst3-row-0").unwrap().center();
+        let selector = Box::leak(
+            format!(
+                "{}-{}",
+                if mode == crate::editor::EditorMode::Arrangement {
+                    "arrangement-track-header"
+                } else {
+                    "session-track"
+                },
+                tracks[1].value()
+            )
+            .into_boxed_str(),
+        );
+        let target = visual.debug_bounds(selector).unwrap().center();
+        for refusal in 0..2 {
+            visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(
+                point(source.x + px(12.0), source.y),
+                MouseButton::Left,
+                Modifiers::default(),
+            );
+            visual.run_until_parked();
+            editor.update(&mut visual, |view, _| {
+                if refusal == 0 {
+                    view.worker_requests_pending = 1;
+                } else {
+                    view.project_generation += 1;
+                }
+            });
+            visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+            editor.update(&mut visual, |view, cx| {
+                assert!(view.pending_plugin_effect.is_none());
+                assert!(view.active_native_device_drag.is_none());
+                if refusal == 0 {
+                    view.worker_requests_pending = 0;
+                } else {
+                    view.project_generation -= 1;
+                }
+                cx.notify();
+            });
+            visual.run_until_parked();
+        }
+        let original_feedback = visual.rendered_background(selector);
+        visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(source.x + px(12.0), source.y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        assert_ne!(visual.rendered_background(selector), original_feedback);
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                view.pending_plugin_effect.is_none(),
+                "hover must not instantiate the plugin"
+            )
+        });
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        editor.read_with(&visual, |view, _| {
+            let pending = view.pending_plugin_effect.as_ref().unwrap_or_else(|| {
+                panic!("header drop must reach the plugin worker: {:?}", view.error)
+            });
+            assert_eq!(
+                pending.destination,
+                hex_session::service::PluginEffectDestination::Track(tracks[1])
+            );
+            assert_eq!(
+                pending.before, None,
+                "the plugin appends to the captured track"
+            );
+            assert_eq!(view.selected_track, Some(tracks[0]));
+        });
+    }
+}
