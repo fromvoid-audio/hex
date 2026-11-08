@@ -82,7 +82,7 @@ impl PreparedOwnedProcessorRuntime for Factory {
 }
 #[derive(Clone, Copy, Debug)]
 struct Scalar {
-    controls: crate::parameter_binding::Controls<automation::Mix, { automation::COUNT }>,
+    controls: crate::parameter_binding::Controls<automation::ControlValues, { automation::COUNT }>,
     next: usize,
     valid: usize,
     nonzero: usize,
@@ -116,7 +116,10 @@ impl Scalar {
             );
         }
         Self {
-            controls: crate::parameter_binding::Controls::new(automation::Mix::new(s), admitted),
+            controls: crate::parameter_binding::Controls::new(
+                automation::ControlValues::new(s),
+                admitted,
+            ),
             next: 0,
             valid: 0,
             nonzero: 0,
@@ -257,6 +260,8 @@ impl Runtime {
         let mut unbound = old_settings;
         unbound.set(FEEDBACK, self.settings.value(FEEDBACK));
         unbound.set(DRY_WET, self.settings.value(DRY_WET));
+        unbound.set(FREQUENCY, self.settings.value(FREQUENCY));
+        unbound.set(WIDTH, self.settings.value(WIDTH));
         if self.settings != unbound {
             self.primary.ramp_left = self.rate.div_ceil(100);
         }
@@ -410,16 +415,15 @@ impl Runtime {
             s.mix += (f64::from(targets.mix) - s.mix) / f64::from(s.ramp_left);
             s.filter_mix +=
                 (f64::from(settings.flag(FILTER)) - s.filter_mix) / f64::from(s.ramp_left);
-            s.frequency +=
-                (f64::from(settings.value(FREQUENCY)) - s.frequency) / f64::from(s.ramp_left);
-            s.width += (f64::from(settings.value(WIDTH)) - s.width) / f64::from(s.ramp_left);
+            s.frequency += (f64::from(targets.frequency) - s.frequency) / f64::from(s.ramp_left);
+            s.width += (f64::from(targets.width) - s.width) / f64::from(s.ramp_left);
             s.ramp_left -= 1;
             if s.ramp_left == 0 {
                 s.feedback = f64::from(targets.feedback);
                 s.mix = f64::from(targets.mix);
                 s.filter_mix = f64::from(settings.flag(FILTER));
-                s.frequency = f64::from(settings.value(FREQUENCY));
-                s.width = f64::from(settings.value(WIDTH));
+                s.frequency = f64::from(targets.frequency);
+                s.width = f64::from(targets.width);
             }
             (s.dry_gain, s.wet_gain) = mix_gains(s.mix, settings.flag(EQUAL_LOUDNESS));
         }

@@ -34,7 +34,7 @@ fn delay_mix_all_owners_follow_the_native_ramp_and_seek_reset() {
                 hex_lattice_contract::ParameterValue::Bool(false),
             ),
             (p::TIME, hex_lattice_contract::ParameterValue::Float(1.0)),
-            (p::FILTER, hex_lattice_contract::ParameterValue::Bool(false)),
+            (p::FILTER, hex_lattice_contract::ParameterValue::Bool(true)),
             (
                 p::HIGH_QUALITY,
                 hex_lattice_contract::ParameterValue::Bool(false),
@@ -122,6 +122,29 @@ fn delay_mix_all_owners_follow_the_native_ramp_and_seek_reset() {
         let gain = 1.0 - m + if owner == 2 { 1.0 } else { 0.0 };
         for (c, sample) in dry.iter().enumerate() {
             assert!((f64::from(out[0][c]) - f64::from(*sample) * gain).abs() < 1e-7);
+        }
+        // Each filter lane must affect PCM independently of feedback/mix.
+        let mut previous = out.clone();
+        for (parameter, value) in [(p::FREQUENCY, 0.8), (p::WIDTH, 0.1)] {
+            editor
+                .execute(Command::ReplaceDeviceAutomation {
+                    device,
+                    parameter,
+                    points: vec![AutomationPoint {
+                        beat: BeatTime::ZERO,
+                        value: AutomationValue::new(value).unwrap(),
+                        outgoing: AutomationInterpolation::Step,
+                    }],
+                })
+                .unwrap();
+            let next = render(editor.project(), 13);
+            assert!(
+                next.iter()
+                    .zip(&previous)
+                    .any(|(a, b)| (a[0] - b[0]).abs() > 1e-7)
+            );
+            assert_eq!(next, render(editor.project(), FRAMES));
+            previous = next;
         }
         let mut playback = SessionPlayback::new(prepare(editor.project())).unwrap();
         playback.apply(SessionPlaybackCommand::Play).unwrap();
