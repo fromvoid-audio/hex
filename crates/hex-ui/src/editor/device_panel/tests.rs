@@ -40,6 +40,7 @@ mod operator_preview_navigation_tests;
 mod operator_selector_keys_ui_tests;
 mod operator_tab_tests;
 mod operator_tuning_ui_tests;
+mod operator_voice_ui_tests;
 mod overdrive_ui_tests;
 mod parameter_rows_tests;
 mod reverb_ui_tests;
