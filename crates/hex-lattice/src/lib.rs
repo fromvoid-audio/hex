@@ -17,6 +17,7 @@ pub use aux_input::{AuxiliaryBlockError, StereoAuxiliaryBlock};
 mod foreign_processor;
 mod host_output_gain_ramp;
 mod matrix_ramp;
+mod modulation_sources;
 mod meter;
 mod modulation;
 mod owned_processor;
@@ -50,6 +51,7 @@ pub use modulation::{
     MAX_MODULATION_BLOCK_FRAMES, MAX_MODULATION_ROUTES, MAX_MODULATION_SOURCES, ModulationBlock,
     ModulationRoute, ModulationTarget, PreparedModulation,
 };
+pub use modulation_sources::{ModulationLfoBank, ModulationSourceId, PreparedLfoSource};
 pub use owned_processor::{
     MAX_RESERVED_BYPASS_FRAMES, OwnedProcessorRuntime, PreparedOwnedProcessorRuntime,
     PreparedProcessorFactory, PreparedRuntimeDevice, PreparedRuntimeInstance,
