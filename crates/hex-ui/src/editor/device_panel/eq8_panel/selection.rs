@@ -70,6 +70,33 @@ pub(super) fn release(panel: &mut Eq8PanelState, band: usize) {
 mod tests {
     use super::*;
     #[test]
+    fn cancel_marquee_restores_primary_and_complete_membership() {
+        use hex_widgets::{ResponseGraphMarqueeEvent as Event, ResponseGraphMarqueePhase as Phase};
+        let mut panel = Eq8PanelState::default();
+        marquee(&mut panel, &[2, 4]);
+        panel.selected_band = 4;
+        marquee_event(
+            &mut panel,
+            &Event {
+                phase: Phase::Change,
+                selected: vec![1, 3],
+                modifiers: Default::default(),
+            },
+        );
+        assert_eq!(mask(&panel), 10);
+        marquee_event(
+            &mut panel,
+            &Event {
+                phase: Phase::Cancel,
+                selected: vec![2, 4],
+                modifiers: Default::default(),
+            },
+        );
+        assert_eq!(mask(&panel), 20);
+        assert_eq!(panel.selected_band, 4);
+        assert!(panel.marquee_before.is_none());
+    }
+    #[test]
     fn marquee_masks_fixed_slots_and_click_collapse_waits_for_release() {
         let mut p = Eq8PanelState::default();
         assert_eq!(mask(&p), 1);

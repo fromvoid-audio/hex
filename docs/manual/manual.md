@@ -891,11 +891,15 @@ undoable edit. vertical movement changes q for a cut or notch, or the gain of a
 bell. existing nodes keep their own selection and drag targets. press
 **escape** to cancel.
 
-drag across empty space in the eq graph to select every node inside the
-rectangle; **shift** adds to the selection and **command** toggles nodes.
+hold **shift** and drag across empty space in the eq graph to select every node
+inside the rectangle; **shift-command** toggles those nodes against the selection.
 dragging a selected node moves the whole selection, keeping each node's
 spacing, and **backspace** or **remove** deletes every selected node with its
 automation. one undo restores either edit.
+
+the fixed eight-band eq uses the same marquee selection. dragging a selected
+band moves the group in one undoable edit. **backspace** disables the selected
+bands; their fixed slots remain available. one undo restores their on flags.
 
 each visible eq has its own live spectrum, including eqs on return and main
 tracks. selecting another device keeps these spectra running. use **spectrum**

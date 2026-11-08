@@ -23,6 +23,19 @@ fn window(
         .unwrap();
     let state = receive_service_event(&service).state;
     let device = state.project.track(track).unwrap().devices()[0].id();
+    // Fixed slots start disabled. Enable the two selected slots so disable
+    // changes canonical state and its Undo cannot consume the AddDevice edge.
+    let mut state = state;
+    for parameter in [6, 11] {
+        service
+            .submit(Request::SetDeviceParameter {
+                device,
+                parameter: hex_lattice_contract::ParameterId::from_static(parameter),
+                value: ParameterValue::Bool(true),
+            })
+            .unwrap();
+        state = receive_service_event(&service).state;
+    }
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     (handle, editor, track, device)
 }
