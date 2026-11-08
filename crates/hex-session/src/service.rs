@@ -680,6 +680,11 @@ pub enum Request {
     QueryFailedPluginAutomation {
         request_id: u64,
     },
+    /// Observe earlier device-automation custody in worker order. The caller
+    /// must prevent later admissions until it acts on this response.
+    QueryDeviceAutomationCloseSafety {
+        request_id: u64,
+    },
     /// Recover one completed device take without reconstructing its old worker.
     /// Current context fences publication; expected target/provenance bind only
     /// the immutable file. Every path echoes request_id through take completion.
@@ -972,6 +977,7 @@ impl Request {
             Self::QueryPluginParameters(_)
                 | Self::ContinuePluginParameters
                 | Self::QueryFailedPluginAutomation { .. }
+                | Self::QueryDeviceAutomationCloseSafety { .. }
         )
     }
     /// The canonical `ExportRange` parts of an export request; `Export` is its
@@ -2861,6 +2867,18 @@ fn run_worker(
         let mut failed_plugin_adoption = None;
         let mut failed_plugin_publication_confirmed = false;
         let resolved_edit = match &request {
+            Request::QueryDeviceAutomationCloseSafety { request_id } => {
+                let safe = native_automation_take.close_safe() && plugin_recording.close_safe();
+                device_automation_take_complete = Some(DeviceAutomationTakeCompletion {
+                    request_id: *request_id,
+                    progress: if safe {
+                        DeviceAutomationTakeProgress::CloseSafe
+                    } else {
+                        DeviceAutomationTakeProgress::CloseBlocked
+                    },
+                });
+                None
+            }
             Request::QueryFailedPluginAutomation { request_id } => {
                 let gesture_active = pending_sampler_parameter.is_some()
                     || device_gesture.snapshot().is_some()
@@ -3849,6 +3867,7 @@ fn run_worker(
                     | Request::ContinueSamplerEdit
                     | Request::DeviceAutomationTake { .. }
                     | Request::QueryFailedPluginAutomation { .. }
+                    | Request::QueryDeviceAutomationCloseSafety { .. }
                     | Request::RecoverDeviceAutomationTake { .. }
                     | Request::InsertPluginEffect(_)
                     | Request::ContinuePluginEffect
@@ -6455,6 +6474,7 @@ fn run_worker(
                 }
                 Request::DeviceAutomationTake { .. }
                 | Request::QueryFailedPluginAutomation { .. }
+                | Request::QueryDeviceAutomationCloseSafety { .. }
                 | Request::RecoverDeviceAutomationTake { .. } => {}
                 Request::ArmNativeParameterRecording {
                     project_generation: expected_generation,
