@@ -1,4 +1,7 @@
 //! Optional bounded mutable note runtimes for instruments with voice history.
+mod automation;
+pub use automation::{InstrumentParameterRuntime, MAX_INSTRUMENT_AUTOMATION_FRAMES};
+
 use super::StereoFrame;
 use hex_lattice_contract::DeviceContractError;
 use std::{any::Any, fmt};
@@ -170,6 +173,13 @@ pub struct NativeInstrumentRuntimeLimits {
 /// envelope release and internal feedback/output state; the runtime must
 /// become quiescent by that bound.
 pub trait PreparedMutableInstrumentRuntime: Send + Sync {
+    /// Exact sorted, unique parameter grants for the borrowed automation view.
+    /// Empty keeps the existing unsupported path. Both actual twins must expose
+    /// these same immutable descriptors for their entire lifetime.
+    fn parameter_automation_descriptors(&self) -> &[hex_lattice_contract::ParameterDescriptor] {
+        &[]
+    }
+
     /// Immutable opt-in for exact read-only active occurrence IDs. Both actual
     /// twins must agree before the pair is admitted; the default is unsupported.
     fn supports_active_occurrence_ids(&self) -> bool {
@@ -292,6 +302,12 @@ pub struct AnalyticInstrumentHistory<'a> {
 /// reset must be infallible,
 /// allocation-free and bounded by the declared event and occurrence limits.
 pub trait MutableInstrumentRuntime: Any + Send {
+    /// Optional borrowed view into this same voice/runtime owner. Its immutable
+    /// grants must match the prepared factory; no new resource custody is created.
+    fn parameter_automation(&mut self) -> Option<&mut dyn InstrumentParameterRuntime> {
+        None
+    }
+
     /// Must agree with the prepared factory and remain invariant for this runtime.
     fn supports_active_occurrence_ids(&self) -> bool {
         false
@@ -434,6 +450,8 @@ pub enum NativeInstrumentRuntimeError {
     InvalidActiveOccurrenceIds,
     InvalidOccurrenceGain,
     UnsupportedOccurrenceGain,
+    UnsupportedParameterAutomation,
+    InvalidParameterAutomation,
     RuntimeBudgetExceeded,
     InvalidEventBatch,
     EventCapacityExceeded,
@@ -458,6 +476,10 @@ impl NativeInstrumentRuntimeError {
             }
             Self::InvalidOccurrenceGain => "native instrument occurrence gain is invalid",
             Self::UnsupportedOccurrenceGain => "native instrument occurrence gain is unsupported",
+            Self::UnsupportedParameterAutomation => {
+                "native instrument parameter automation is unsupported"
+            }
+            Self::InvalidParameterAutomation => "native instrument parameter automation is invalid",
             Self::RuntimeBudgetExceeded => "native instrument runtime exceeds caller limits",
             Self::InvalidEventBatch => "native instrument event batch is invalid",
             Self::EventCapacityExceeded => "native instrument event or voice capacity is exceeded",
@@ -484,6 +506,7 @@ impl std::error::Error for NativeInstrumentRuntimeError {}
 pub struct NativeInstrumentRuntimePair {
     active_occurrence_ids: bool,
     occurrence_gain: bool,
+    parameter_automation: bool,
     steals_releasing_voices: bool,
     runtime_version: u32,
     declared_pair_bytes: usize,
@@ -528,8 +551,16 @@ impl NativeInstrumentRuntimePair {
             return Err(NativeInstrumentRuntimeError::RuntimeBudgetExceeded);
         }
 
-        let primary = prepared.create_runtime();
-        let scratch = prepared.create_runtime();
+        let descriptors = prepared.parameter_automation_descriptors();
+        automation::validate_grants(descriptors)?;
+        let mut primary = prepared.create_runtime();
+        let mut scratch = prepared.create_runtime();
+        let parameter_automation = !descriptors.is_empty();
+        if !automation::matches_grants(primary.as_mut(), descriptors)
+            || !automation::matches_grants(scratch.as_mut(), descriptors)
+        {
+            return Err(NativeInstrumentRuntimeError::IncompatibleTwins);
+        }
         if !primary.can_copy_history_from(scratch.as_ref())
             || !scratch.can_copy_history_from(primary.as_ref())
             || primary.supports_active_occurrence_ids() != active_occurrence_ids
@@ -548,6 +579,7 @@ impl NativeInstrumentRuntimePair {
         Ok(Self {
             active_occurrence_ids,
             occurrence_gain,
+            parameter_automation,
             steals_releasing_voices,
             runtime_version,
             declared_pair_bytes,
