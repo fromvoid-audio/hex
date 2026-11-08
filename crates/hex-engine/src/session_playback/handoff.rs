@@ -3754,6 +3754,9 @@ impl SessionPlayback {
             {
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
+            runtime
+                .preflight_tail_parameters()
+                .map_err(|error| error.render_error())?;
             old_track_mutable_tail_slots[old_index] = Some(slot);
         }
         self.release_scratch.sort_unstable_by_key(|entry| {
@@ -4346,8 +4349,23 @@ impl SessionPlayback {
             &previous.return_chains,
             previous.revision.arrangement().return_buses(),
         )?;
+        // Capture THEN-current committed targets before any owned transfer.
+        // These donor buffers are inactive staging while attached; an earlier
+        // successful capture changes no audio/history/ownership if a later one
+        // refuses. Existing detached tails keep their already-frozen values.
+        for (old_index, slot) in old_track_mutable_tail_slots.iter().enumerate() {
+            if slot.is_some() {
+                previous
+                    .mutable_instruments
+                    .get_mut(old_index)
+                    .and_then(Option::as_mut)
+                    .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?
+                    .capture_tail_parameters()
+                    .map_err(|error| error.render_error())?;
+            }
+        }
         // All admission/storage and source-lease checks precede destructive
-        // owned-history transfers. The donor remains untouched on refusal.
+        // owned-history transfers. The donor remains audibly untouched on refusal.
         for (new_index, bus) in self
             .revision
             .arrangement()
