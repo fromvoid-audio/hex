@@ -476,6 +476,14 @@ impl EditorView {
                                 return (false, false);
                             }
                             if event.click_count == 2
+                                && let Some((track, _)) = view.visible_lane_at(x, y)
+                                && let Some(clip) = view.visible_clip_at_pointer(track, x, y)
+                            {
+                                view.select_clip_header(track, clip, event.modifiers, window, cx);
+                                view.focus.focus(window);
+                                return (true, false);
+                            }
+                            if event.click_count == 2
                                 && !event.modifiers.shift
                                 && view.begin_clip_paint(x, y, event.modifiers.platform)
                             {
