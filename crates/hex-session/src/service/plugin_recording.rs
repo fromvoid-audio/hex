@@ -19,6 +19,8 @@ pub(super) struct State {
 struct Active {
     key: crate::device_gesture::GestureKey,
     scope: DeviceAutomationTakeScope,
+    source: DeviceAutomationSource,
+    has_points: bool,
     pending: Option<DeviceAutomationTakeAction>,
     released: bool,
     ended: bool,
@@ -179,10 +181,19 @@ impl Preparation<'_> {
                     .as_ref()
                     .is_some_and(|active| active.ended)
                 {
+                    if self.state.active.as_ref().is_some_and(|active| {
+                        active
+                            .deadline
+                            .is_some_and(|deadline| Instant::now() >= deadline)
+                    }) {
+                        return Some(Err(SessionError::Invalid(
+                            "vst3 restoration is still pending; retry release to recover the retained take",
+                        )));
+                    }
                     return Some(self.pending_result());
                 }
             }
-            return Some(self.finish(session, operation, context, sink, Some(current), admission));
+            return Some(self.finish(session, operation, context, sink, current, admission));
         }
         if self
             .state
@@ -193,7 +204,7 @@ impl Preparation<'_> {
             if matches!(operation, PluginGesturePreparation::Preview(_)) {
                 return Some(Err(SessionError::Invalid("vst3 recording is finishing")));
             }
-            return Some(self.finish(session, operation, context, sink, Some(current), admission));
+            return Some(self.finish(session, operation, context, sink, current, admission));
         }
         self.state
             .active
@@ -234,6 +245,8 @@ impl Preparation<'_> {
                 self.state.active = Some(Active {
                     key,
                     scope,
+                    source,
+                    has_points: false,
                     pending: None,
                     released: false,
                     ended: false,
@@ -289,7 +302,7 @@ impl Preparation<'_> {
             operation,
             PluginGesturePreparation::Commit(_) | PluginGesturePreparation::Restore { .. }
         ) {
-            self.finish(session, operation, context, sink, Some(current), admission)
+            self.finish(session, operation, context, sink, current, admission)
         } else {
             Ok(None)
         }
@@ -324,6 +337,8 @@ impl Preparation<'_> {
             let Some(action) = active.pending.as_ref() else {
                 break;
             };
+            active.has_points |= matches!(action, DeviceAutomationTakeAction::PluginObservation(observation)
+                if matches!(**observation, PluginParameterObservation::Delivered(_)));
             match self
                 .lane
                 .receive(session, self.document_base, context, active.scope, action)
@@ -424,14 +439,25 @@ impl Preparation<'_> {
                     },
                 )
                 .is_ok_and(|scope| scope == active.scope)
+                    && point.source.section_loop == active.source.section_loop
+                    && point.application.binding == point.target.binding
+                    && point.application.parameter == point.target.parameter
+                    && point.delivery_performance_frame
+                        >= point.application.origin.performance_frame
+                    && point.application.value == automation_draft::Vst3ApplicationValue::Restored
             };
             match observation {
                 PluginParameterObservation::Restored(point) if matches(point) => {
                     active.released = true;
                     active.ended = true;
                 }
-                PluginParameterObservation::Unchanged { key } if key == active.key => {
+                PluginParameterObservation::Unchanged { key }
+                    if key == active.key && !active.has_points =>
+                {
                     active.ended = true;
+                }
+                PluginParameterObservation::Delivered(_) => {
+                    active.has_points = true;
                 }
                 _ => {}
             }
@@ -446,7 +472,7 @@ impl Preparation<'_> {
         operation: PluginGesturePreparation,
         context: hex_engine::AudioSourceContext,
         sink: &mut dyn WorkerAudioSink,
-        current: Option<&mut Option<resident_audio::Snapshot>>,
+        current: &mut Option<resident_audio::Snapshot>,
         admission: sampler_export::Admission<'_>,
     ) -> PreparedGesture {
         let Some(active) = self.state.active.as_mut() else {
@@ -455,11 +481,6 @@ impl Preparation<'_> {
         if active.outcome.is_none() {
             return self.pending_result();
         }
-        // The caller must supply the canonical publication owner even on a
-        // continuation; a poll never commits through a substitute transaction.
-        let Some(current) = current else {
-            return self.pending_result();
-        };
         let Some(mut active) = self.state.active.take() else {
             return Err(SessionError::Invalid("vst3 recording is no longer active"));
         };

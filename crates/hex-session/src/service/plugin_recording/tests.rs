@@ -81,11 +81,13 @@ fn delivery(
         delivery_performance_frame: frame + 100,
     }
 }
-fn active(scope: DeviceAutomationTakeScope) -> State {
+fn active(scope: DeviceAutomationTakeScope, source: DeviceAutomationSource) -> State {
     State {
         active: Some(Active {
             key: gesture(scope).key,
             scope,
+            source,
+            has_points: false,
             pending: None,
             released: false,
             ended: false,
@@ -104,7 +106,7 @@ fn original_points_and_restoration_reach_the_shared_writer_before_terminal_is_re
     let before = session.project().clone();
     let mut lane = Lane::default();
     lane.begin(&session, None, scope, source, &files.0).unwrap();
-    let mut state = active(scope);
+    let mut state = active(scope, source);
     let request = GestureRequest::CommitPlugin {
         key: gesture(scope).key,
         sequence: 2,
@@ -173,7 +175,7 @@ fn original_points_and_restoration_reach_the_shared_writer_before_terminal_is_re
 #[test]
 fn failed_writer_retains_late_point_and_actual_terminal_without_fabricating_release() {
     let (_files, session, scope, source) = fixture();
-    let mut state = active(scope);
+    let mut state = active(scope, source);
     let active = state.active.as_mut().unwrap();
     active.outcome = Some(Err("disk failure".into()));
     let point = delivery(scope, source, 8, Vst3ApplicationValue::Value(0.75));
@@ -209,7 +211,7 @@ fn failed_writer_retains_late_point_and_actual_terminal_without_fabricating_rele
 #[test]
 fn another_sources_terminal_does_not_prove_this_recording_released() {
     let (_files, session, scope, source) = fixture();
-    let mut state = active(scope);
+    let mut state = active(scope, source);
     state.active.as_mut().unwrap().outcome = Some(Err("disk failure".into()));
     let mut end = delivery(scope, source, 24, Vst3ApplicationValue::Restored);
     end.key.token += 1;
@@ -230,4 +232,119 @@ fn another_sources_terminal_does_not_prove_this_recording_released() {
     assert!(!state.active.as_ref().unwrap().released);
     assert!(!state.active.as_ref().unwrap().ended);
     assert!(state.active.as_ref().unwrap().failed_observations[0].is_some());
+}
+
+#[test]
+fn failed_admission_releases_the_empty_sdk_gesture_before_any_point() {
+    let (files, mut session, scope, source) = fixture();
+    let before = session.project().clone();
+    let occupied = files.0.join("occupied");
+    std::fs::write(&occupied, b"preserve").unwrap();
+    let recovery = occupied.join("recovery.hex");
+    let snapshot = gesture(scope);
+    let DeviceCaptureTarget::Vst3(target) = scope.target else {
+        panic!("foreign fixture");
+    };
+    let mut sink = Sink {
+        observations: VecDeque::from([PluginParameterObservation::Ready {
+            key: snapshot.key,
+            context: scope.context(),
+            target,
+            source,
+        }]),
+        ..Sink::default()
+    };
+    let mut state = State::default();
+    let mut lane = Lane::default();
+    let result = Preparation {
+        state: &mut state,
+        lane: &mut lane,
+        document_base: None,
+        recovery: Some(&recovery),
+        may_defer: false,
+        deferred: false,
+    }
+    .after(
+        &mut session,
+        PluginGesturePreparation::Begin {
+            snapshot,
+            recording: true,
+            origin: crate::device_gesture::PluginParameterOrigin {
+                context: scope.context(),
+                device: target.device,
+                parameter: target.parameter,
+                page_first: 0,
+                metadata_revision: 1,
+                initial: snapshot.plugin_value.unwrap(),
+            },
+        },
+        scope.context(),
+        &mut sink,
+        Ok(PluginParameterGestureResult::Applied),
+        &mut None,
+        sampler_export::Admission::default(),
+    );
+    assert!(result.is_err());
+    assert_eq!(sink.restorations, 1);
+    assert!(sink.observations.is_empty());
+    assert!(!lane.busy());
+    assert!(!state.pending());
+    assert_eq!(std::fs::read(occupied).unwrap(), b"preserve");
+    assert_eq!(session.project(), &before);
+}
+
+#[test]
+fn expired_failed_release_refuses_without_discarding_original_or_claiming_restoration() {
+    let (_files, mut session, scope, source) = fixture();
+    let before = session.project().clone();
+    let mut state = active(scope, source);
+    let active = state.active.as_mut().unwrap();
+    active.has_points = true;
+    active.pending = Some(DeviceAutomationTakeAction::PluginObservation(Box::new(
+        PluginParameterObservation::Delivered(delivery(
+            scope,
+            source,
+            8,
+            Vst3ApplicationValue::Value(0.75),
+        )),
+    )));
+    active.outcome = Some(Err("disk failure".into()));
+    active.deadline = Some(Instant::now());
+    let mut sink = Sink::default();
+    let mut lane = Lane::default();
+    let mut prep = Preparation {
+        state: &mut state,
+        lane: &mut lane,
+        document_base: None,
+        recovery: None,
+        may_defer: true,
+        deferred: false,
+    };
+    let snapshot = gesture(scope);
+    let result = prep.before(
+        &mut session,
+        PluginGesturePreparation::Restore {
+            snapshot,
+            initial: snapshot.plugin_value.unwrap(),
+        },
+        scope.context(),
+        &mut sink,
+        &mut None,
+        sampler_export::Admission::default(),
+    );
+    assert!(matches!(
+        result,
+        Some(Err(SessionError::Invalid(
+            "vst3 restoration is still pending; retry release to recover the retained take"
+        )))
+    ));
+    assert!(!prep.deferred);
+    let active = state.active.as_ref().unwrap();
+    assert!(!active.ended && !active.released);
+    assert!(active.pending.is_some());
+    assert!(matches!(
+        active.failed_observations[0],
+        Some(PluginParameterObservation::Unchanged { .. })
+    ));
+    assert_eq!(session.project(), &before);
 }
